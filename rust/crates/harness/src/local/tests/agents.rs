@@ -2631,7 +2631,7 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
     );
     // Recover a committed copy whose acknowledgement was lost before its
     // manifest. The source has vanished, so a reread cannot pass this control.
-    use crate::conversation::{ContentAccess, ContentChange, ContentPublisher as _};
+    use crate::conversation::{ContentAccess, ContentChange};
     let key = b"copy-ack-lost";
     let text = "@vanished.txt";
     let base = format!(

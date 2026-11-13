@@ -501,10 +501,10 @@ impl LocalHarness {
             .map_err(Error::from)?;
         let publisher = content
             .writer
-            .as_ref()
+            .as_deref()
             .ok_or_else(|| Error::Unauthorized("mention capture has no journal writer".into()))?;
         let operation = publication_operation(b"acyclic.local.mention-manifest/v2\0", key);
-        if let Some(manifest) = self.observe_manifest(operation, &*publisher).await? {
+        if let Some(manifest) = self.observe_manifest(operation, publisher).await? {
             return Ok(Some(manifest));
         }
         // A replay whose first delivery staged no manifest attaches none.
@@ -526,7 +526,7 @@ impl LocalHarness {
         );
         let copies_operation = publication_operation(b"acyclic.local.mention-copies/v1\0", key);
         let items = self
-            .resolve_attachments(&base, text, &*reader, &*publisher, copies_operation)
+            .resolve_attachments(&base, text, &*reader, publisher, copies_operation)
             .await?
             .into_iter()
             .map(|file| crate::conversation::Attachment { file, label: None })
@@ -547,7 +547,7 @@ impl LocalHarness {
             Ok((manifest, _)) => Ok(Some(manifest)),
             // A concurrent first send pinned its manifest first: that one stands.
             Err(error) => self
-                .observe_manifest(operation, &*publisher)
+                .observe_manifest(operation, publisher)
                 .await?
                 .map(Some)
                 .ok_or(error),
