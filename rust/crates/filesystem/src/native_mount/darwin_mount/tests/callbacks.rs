@@ -394,3 +394,61 @@ fn create(context: &Arc<DarwinMountContext>, path: &CStr) -> (c_int, u64) {
     };
     (status, handle)
 }
+
+fn fsync_keeps_its_open_handle(bypass_handle: bool) -> TestResult {
+    use super::super::file_ops::{acyclic_fs_darwin_mount_fsync, acyclic_fs_darwin_mount_release};
+
+    let (source, context, work) = checkout_context(MountPublication::Manual)?;
+    let path = MountPath::root().child(b"sync-owner".to_vec());
+    context.mutate(
+        || source.create_file(&path, FileMetadata::default(), None, &work),
+        &work,
+    )?;
+    let handle = context.open(
+        &path,
+        crate::native_mount::MountOpenAccess::ReadWrite,
+        0,
+        &work,
+    )?;
+    let address = &context as *const DarwinMountContext as usize;
+    let name = CString::new("/sync-owner")?;
+    // SAFETY: the context and terminated path remain live through this call.
+    assert_eq!(
+        unsafe {
+            super::super::namespace_ops::acyclic_fs_darwin_mount_remove(address, name.as_ptr(), 0)
+        },
+        0
+    );
+    // SAFETY: this live context owns the handle. A retained open handle needs
+    // no path, including when the kernel has already unlinked its name.
+    assert_eq!(
+        unsafe { acyclic_fs_darwin_mount_fsync(address, std::ptr::null(), handle) },
+        0
+    );
+    assert_eq!(
+        unsafe { acyclic_fs_darwin_mount_release(address, std::ptr::null(), handle) },
+        0
+    );
+    let result = if bypass_handle {
+        // The old bridge erased the handle and synced the context directly.
+        super::super::ffi(address, true, |context, work| {
+            context.sync(work)?;
+            Ok(0)
+        })
+    } else {
+        unsafe { acyclic_fs_darwin_mount_fsync(address, std::ptr::null(), handle) }
+    };
+    assert_eq!(result, -libc::ESTALE, "fsync accepted a released handle");
+    Ok(())
+}
+
+#[test]
+fn fsync_rejects_a_released_handle_without_requiring_a_path() -> TestResult {
+    fsync_keeps_its_open_handle(false)
+}
+
+#[test]
+#[should_panic(expected = "fsync accepted a released handle")]
+fn fsync_negative_control_detects_erased_handle() {
+    fsync_keeps_its_open_handle(true).expect("real callback fixture");
+}

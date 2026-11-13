@@ -183,8 +183,22 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_flush(
 }
 
 #[unsafe(no_mangle)]
-pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_fsync(address: usize) -> c_int {
+pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_fsync(
+    address: usize,
+    path: *const c_char,
+    handle: u64,
+) -> c_int {
     ffi(address, true, |context, work| {
+        if handle == 0 {
+            context.lookup(&mount_path(path, work)?, work)?;
+        } else if !context
+            .files
+            .read()
+            .map_err(|_| driver_errno(libc::EIO))?
+            .contains_key(&handle)
+        {
+            return Err(driver_errno(libc::ESTALE));
+        }
         context.sync(work)?;
         Ok(0)
     })
