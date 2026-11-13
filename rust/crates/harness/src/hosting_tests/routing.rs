@@ -6,7 +6,7 @@ use acyclic_actors::route::{
 };
 use acyclic_stream::{
     CommitEffect, CommitMutation, CommitOutcome, CommitRequest, FollowRequest, IdempotencyKey,
-    StreamPath, StreamProvider as _, StreamProviderExt as _,
+    StreamPath, StreamProvider as _,
 };
 use futures::TryStreamExt as _;
 
@@ -319,12 +319,18 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
             local
                 .commit(CommitRequest {
                     deadline_unix_millis: None,
+                    idempotency_key: registration.intent.clone(),
+                    effects: registration.effects(&paths)?.into(),
+                })
+                .await?,
+            CommitOutcome::Committed(_)
+        ));
+        assert!(matches!(
+            local
+                .commit(CommitRequest {
+                    deadline_unix_millis: None,
                     idempotency_key: IdempotencyKey::new(b"source-publication".to_vec())?,
-                    effects: registration
-                        .effects(&paths)?
-                        .into_iter()
-                        .chain(std::iter::once(message.outbox_effect(&paths)?))
-                        .collect(),
+                    effects: vec![message.outbox_effect(&paths)?],
                 })
                 .await?,
             CommitOutcome::Committed(_)
