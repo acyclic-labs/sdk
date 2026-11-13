@@ -226,7 +226,11 @@ where
                         &child_text,
                         crate::lazy_workspace::InspectBasis {
                             state: Some(state),
-                            listed: Some(node),
+                            // A directory name need not eagerly render its file. Resolve
+                            // unknown lengths at this pinned cut before publishing attributes.
+                            listed: (node.kind != SourceNodeKind::RegularFile
+                                || node.logical_bytes.is_some())
+                            .then_some(node),
                             unobserved: entry.unobserved,
                             ..crate::lazy_workspace::InspectBasis::default()
                         },

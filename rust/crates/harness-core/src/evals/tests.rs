@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
-    AgentId, OperationId,
-    agent::{AgentPath, AgentRecord, Sender},
+    OperationId,
+    agent::{AgentId, AgentPath, AgentRecord, Sender},
     filesystem::MemoryHarnessStorage,
 };
 use acyclic_fs::{CancellationToken, NativeMaterializationWork, VolumeLimits, WorkBudget};
@@ -36,7 +36,9 @@ async fn computed_cases_keep_original_decisions_cut_ranges_and_event_delivery() 
     acyclic_native_runtime::initialize_native_io_services()?;
     let agent = AgentPath::root(&AgentId::from_bytes([73; 16]));
     let stream = agent.conversation()?;
-    let storage = MemoryHarnessStorage::new(agent.id(), 1_000_000).await?;
+    let storage =
+        MemoryHarnessStorage::new(crate::AgentId::from_bytes(agent.id().to_bytes()), 1_000_000)
+            .await?;
     let streams = Arc::new(MemoryStream::default());
     let mut entries = Vec::new();
     let mut checkpoints = Vec::new();

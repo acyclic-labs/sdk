@@ -125,7 +125,7 @@ fn sequence(
     ctx: &mut KernelAccounting<'_>,
 ) -> Result<Option<u64>, DemandError> {
     let text = path.unicode_text(ctx)?;
-    if text == "/" {
+    if text.as_str() == "/" {
         return Ok(None);
     }
     let name = text
@@ -157,13 +157,13 @@ fn node(length: Option<u64>, sequence: Option<u64>) -> SourceNode {
     }
 }
 
-struct Range<'a, W> {
+struct Range<'a, W: ?Sized> {
     sink: &'a mut W,
     position: u64,
     offset: u64,
     length: u64,
 }
-impl<W: Write> Write for Range<'_, W> {
+impl<W: Write + ?Sized> Write for Range<'_, W> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         let start = self
             .offset
