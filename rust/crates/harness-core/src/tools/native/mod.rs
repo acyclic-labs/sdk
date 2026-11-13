@@ -266,16 +266,14 @@ impl NativeTools {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        let mut presented = std::collections::BTreeMap::<&str, Vec<String>>::new();
+        let mut presented = std::collections::BTreeMap::<&str, Vec<&str>>::new();
         for ((name, implementation, definition, arguments), capability) in
             self.0.iter().zip(capabilities)
         {
             let Some(capability) = capability else {
                 continue;
             };
-            let original = implementation
-                .clone()
-                .unwrap_or_else(|| Arc::clone(&capability));
+            let original = implementation.as_ref().unwrap_or(&capability);
             let already_bound = tools
                 .get_shared(&definition.name, Some(&definition.revision), None)?
                 .is_some_and(|registered| {
@@ -284,7 +282,7 @@ impl NativeTools {
                     };
                     let (template, refused) = arguments.binding();
                     Arc::ptr_eq(binding.capability, &capability)
-                        && Arc::ptr_eq(binding.implementation, &original)
+                        && Arc::ptr_eq(binding.implementation, original)
                         && binding.arguments == template
                         && binding.refused == refused
                         && registered.definition.name == definition.name
@@ -295,9 +293,10 @@ impl NativeTools {
                         && registered.definition.projection_schema
                             == original.definition.projection_schema
                 });
-            let native = definition.name.clone();
-            let revision = definition.revision.clone();
             if !already_bound {
+                let original = implementation
+                    .clone()
+                    .unwrap_or_else(|| Arc::clone(&capability));
                 tools.register(
                     (
                         adapted(
@@ -313,12 +312,12 @@ impl NativeTools {
                     None,
                 )?;
             }
-            tools.select_model_version(&native, &revision)?;
-            presented.entry(name).or_default().push(native);
+            tools.select_model_version(&definition.name, &definition.revision)?;
+            presented.entry(name).or_default().push(&definition.name);
         }
         presented
             .into_iter()
-            .try_for_each(|(capability, natives)| tools.present_natively(capability, natives))
+            .try_for_each(|(capability, natives)| tools.present_natively(capability, &natives))
     }
 }
 

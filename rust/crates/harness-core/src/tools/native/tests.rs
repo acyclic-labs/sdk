@@ -283,7 +283,7 @@ fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Res
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     // Canonical presentation cannot create a missing selection.
     assert!(matches!(
-        ToolRegistry::default().present_natively("shell", vec!["shell".into()]),
+        ToolRegistry::default().present_natively("shell", &["shell"]),
         Err(Error::NotFound(_)),
     ));
     Ok(())

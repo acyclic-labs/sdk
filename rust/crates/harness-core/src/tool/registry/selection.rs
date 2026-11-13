@@ -152,22 +152,25 @@ impl ToolRegistry {
     /// already registered and selected under their own names. Calls under the
     /// capability's own name are no longer offered, unless included among the
     /// declarations; its selected revision then stays callable.
-    pub(crate) fn present_natively(&mut self, name: &str, natives: Vec<String>) -> Result<()> {
+    /// Names are copied only when the presentation actually changes.
+    pub(crate) fn present_natively(&mut self, name: &str, natives: &[&str]) -> Result<()> {
         let selection = self
             .data
             .selected
             .get(name)
             .ok_or_else(|| Error::NotFound(format!("tool {name}")))?;
         if (natives.len() == 1 && natives[0] == name)
-            || matches!(selection, ModelSelection::Native { names, .. } if names == &natives)
+            || matches!(selection, ModelSelection::Native { names, .. } if names.iter().map(String::as_str).eq(natives.iter().copied()))
         {
             return Ok(());
         }
+        let includes_self = natives.contains(&name);
+        let natives: Vec<String> = natives.iter().map(|native| (*native).to_owned()).collect();
         let selection = Arc::make_mut(&mut self.data)
             .selected
             .get_mut(name)
             .ok_or_else(|| Error::NotFound(format!("tool {name}")))?;
-        let revision = if natives.iter().any(|native| native == name) {
+        let revision = if includes_self {
             match std::mem::replace(selection, ModelSelection::Hidden) {
                 ModelSelection::Revision(revision) => Some(revision),
                 previous => {
