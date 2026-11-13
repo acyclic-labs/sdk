@@ -31,6 +31,13 @@ fn closed_diagnostics_preserve_every_declared_category() {
         let error = closed_error(&closed);
         assert_eq!(error.category(), category);
         assert_eq!(tonic::Status::from(&error).message(), "caller diagnostic");
+        let source = std::error::Error::source(&error).expect("retained refusal");
+        let parts = source
+            .source()
+            .expect("original failure")
+            .downcast_ref::<acyclic_auth::refusal::Parts>()
+            .expect("typed status");
+        assert_eq!(parts.message, "caller diagnostic");
         let old = crate::wire_codec::status(&tonic::Status::new(
             tonic::Status::from(&category).code(),
             &closed.message,
