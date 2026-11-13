@@ -75,9 +75,7 @@ impl<'a> PeerRoute<'a> {
         let Sender::Agent { path: sender } = &message.from else {
             return Err(Error::Record("peer route requires agent attribution"));
         };
-        let recipient = AgentPath::root(&super::AgentId::try_from(
-            envelope.to.id().as_str().to_owned(),
-        )?);
+        let recipient = AgentPath::root(&super::AgentId::try_from(envelope.to.id().to_owned())?);
         if sender.depth() != 0
             || sender == &recipient
             || envelope.sender.account() != envelope.to.account()
