@@ -622,7 +622,28 @@ mod tests {
             None,
             &mut accounting,
         )?;
-        assert_eq!(decoded.original_evidence, Some(evidence.as_slice()));
+        let reference = decoded
+            .original_evidence
+            .ok_or("missing original evidence")?;
+        let body = crate::kernel::read_blob_range_with_accounting(
+            fs.objects(),
+            reference.root,
+            crate::ByteRange {
+                offset: 0,
+                length: reference.bytes,
+            },
+            crate::kernel::DecodeLimits::for_volume(volume.config()),
+            &mut accounting,
+            &cancellation,
+            true,
+        )
+        .await?;
+        crate::kernel::verify_original_publication_evidence(
+            reference,
+            &body.bytes,
+            &mut accounting,
+        )?;
+        assert_eq!(body.bytes.as_ref(), evidence.as_slice());
         drop(durable);
         Ok(())
     }

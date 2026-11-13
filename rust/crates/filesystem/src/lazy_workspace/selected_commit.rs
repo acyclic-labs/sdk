@@ -37,7 +37,7 @@ impl<
                 &self.workspace.volume,
                 operation,
                 Some(self.workspace.limits().maximum_object_bytes),
-                None,
+                Some(self.workspace.limits().maximum_object_bytes),
                 ctx,
                 cancellation(ctx),
             )
@@ -61,21 +61,29 @@ impl<
             let (funding, admitted) = ctx.record_actual_owned(bytes)?;
             guard = funding;
             if let Err(error) = admitted {
-                drop(evidence);
                 drop(record);
                 crate::kernel::retire_allocation(guard, bytes, ctx)?;
                 return Err(error.into());
             }
         }
         let record = Owned::new(record, guard, bytes);
-        let result = (|| {
+        let result = (async {
             if actual != generation {
                 return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
             }
-            let evidence = evidence
-                .as_deref()
-                .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
-            let context = publication_codec::decode_publication_context(evidence, operation, ctx)?;
+            let reference = evidence.ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
+            let evidence = self
+                .workspace
+                .volume
+                .fs
+                .read_original_publication_evidence(
+                    &self.workspace.volume,
+                    reference,
+                    ctx,
+                    cancellation(ctx),
+                )
+                .await?;
+            let context = publication_codec::decode_publication_context(&evidence, operation, ctx)?;
             let NativeSnapshotContext::Selected { cut, input } = context else {
                 return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
             };
@@ -99,8 +107,8 @@ impl<
                 ),
                 input,
             ))
-        })();
-        drop(evidence);
+        })
+        .await;
         record.retire(ctx)?;
         result
     }

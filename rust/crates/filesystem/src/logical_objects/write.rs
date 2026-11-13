@@ -122,7 +122,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
         work: &mut KernelAccounting<'_>,
     ) -> Result<(), crate::FsError> {
         work.check()?;
-        if scope.objects.is_empty() {
+        if scope.is_empty() {
             return Ok(());
         }
         // Retaining makes the closure durable in one round.
@@ -130,7 +130,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             durability_operations: 1,
             ..WorkCounters::UNCHARGED
         })?;
-        let request = retention(self.epoch.current(), scope.objects, work)?;
+        let request = retention(self.epoch.current(), scope, work)?;
         invocation::Provider::retain(&*self.provider, request, work).await?;
         #[cfg(all(test, not(target_arch = "wasm32")))]
         self.epoch.hooks.retained().await;

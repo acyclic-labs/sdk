@@ -112,6 +112,17 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         self.take_objects()
     }
 
+    pub(crate) async fn prove_blob_closure(
+        &mut self,
+        root: ObjectId,
+        expected_bytes: u64,
+    ) -> Result<(Vec<ObjectId>, ProofGuard), crate::FsError> {
+        if self.prove_blob(root).await? != expected_bytes {
+            return Err(ClosureError::BlobLengthMismatch.into());
+        }
+        self.take_objects()
+    }
+
     fn examine(&self, count: usize) -> Result<(), crate::FsError> {
         self.meter.charge(WorkCounters {
             items_examined: usize_to_u64(count),

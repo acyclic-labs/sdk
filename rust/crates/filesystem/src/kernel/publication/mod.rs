@@ -75,6 +75,8 @@ pub struct PublicationIntent {
     pub operation_context: Option<Digest>,
     /// Original operation evidence retained through publication.
     pub original_evidence: Option<acyclic_stream::OwnedBytes>,
+    pub(crate) original_evidence_reference: Option<OriginalEvidence>,
+    pub(crate) original_evidence_custody: Option<bytes::Bytes>,
     /// Original permit used when reconstructing a retry fingerprint.
     pub fingerprint_permit: Option<PublicationPermit>,
     /// Current publication authorization.
@@ -88,6 +90,8 @@ impl PublicationIntent {
             preconditions: None,
             operation_context,
             original_evidence: None,
+            original_evidence_reference: None,
+            original_evidence_custody: None,
             fingerprint_permit: None,
             permit,
         }
@@ -221,9 +225,9 @@ mod codec;
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub mod codec_fuzz;
-pub(crate) use codec::decode_publication_evidence_with_accounting;
 pub use codec::decode_published_generation;
 use codec::*;
+pub(crate) use codec::{OriginalEvidence, decode_publication_evidence_with_accounting};
 mod combiner;
 pub(crate) use combiner::Volume as AuthorityActor;
 pub(crate) use combiner::authority_actor;
@@ -233,8 +237,10 @@ use construction::*;
 mod authenticate;
 mod composition;
 mod engine;
+mod original_evidence;
 mod preparation;
 pub(crate) use composition::{PreparedPublication, prepare_publication};
+pub(crate) use original_evidence::verify as verify_original_publication_evidence;
 mod projection;
 use engine::*;
 mod api;

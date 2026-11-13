@@ -288,8 +288,14 @@ async fn fixture_with_fence(
             operation_id: OperationId::from_bytes([id; 16]),
             generation_root: root,
         };
-        let mut commit =
-            prepare_publication_commit(request, None, None, None, &mut accounting, &cancel)?;
+        let mut commit = prepare_publication_commit(
+            request,
+            None,
+            None,
+            (None, None),
+            &mut accounting,
+            &cancel,
+        )?;
         commit.publication = Some(
             PublicationChanges::proposed(
                 objects,
@@ -431,7 +437,7 @@ async fn generation_catalog_single_group_and_quote_use_receipts_without_prefligh
                     request,
                     None,
                     None,
-                    None,
+                    (None, None),
                     &mut KernelAccounting::standalone(crate::performance::BOUNDARY_BUDGET, &cancel),
                     &cancel,
                 )?;
@@ -959,8 +965,14 @@ async fn group_capacity_quote_covers_reused_to_composed_generation_shape() -> Te
         };
         let mut accounting =
             KernelAccounting::standalone(crate::performance::BOUNDARY_BUDGET, &cancel);
-        let mut commit =
-            prepare_publication_commit(request, None, None, None, &mut accounting, &cancel)?;
+        let mut commit = prepare_publication_commit(
+            request,
+            None,
+            None,
+            (None, None),
+            &mut accounting,
+            &cancel,
+        )?;
         commit.publication = Some(changes.composed(
             head,
             (head, request.generation_root),

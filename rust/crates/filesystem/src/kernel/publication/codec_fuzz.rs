@@ -22,9 +22,7 @@ pub fn check(bytes: &[u8]) {
         &mut encoded,
         value.publication.volume_id,
         value.publication.generation_root,
-        value
-            .original_evidence
-            .map(|bytes| (bytes, original_evidence_digest(bytes))),
+        value.original_evidence,
         value.origin,
     );
     assert_eq!(encoded.len(), length);
@@ -53,7 +51,7 @@ pub fn check(bytes: &[u8]) {
         assert_eq!(calls, stop + 1);
     }
     let mut header = bytes[..PAYLOAD_DOMAIN.len() + 2].to_vec();
-    for version in [0_u16, 1, 2, 3, 5, u16::MAX] {
+    for version in [0_u16, 1, 2, 3, 4, u16::MAX] {
         header[PAYLOAD_DOMAIN.len()..].copy_from_slice(&version.to_le_bytes());
         assert_eq!(
             decode_publication_evidence::<CanonicalDecodeError>(
@@ -65,7 +63,7 @@ pub fn check(bytes: &[u8]) {
             .err(),
             Some(CanonicalDecodeError::UnsupportedVersion {
                 found: version,
-                expected: 4,
+                expected: 5,
             })
         );
     }
@@ -84,19 +82,19 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, crate::FsError> {
     for (names, storage) in [
         (
             [
-                "publication-plain",
-                "publication-plain-evidence",
-                "publication-plain-origin",
-                "publication-plain-origin-evidence",
+                "publication-plain-v5",
+                "publication-plain-evidence-v5",
+                "publication-plain-origin-v5",
+                "publication-plain-origin-evidence-v5",
             ],
             None,
         ),
         (
             [
-                "publication-sealed",
-                "publication-sealed-evidence",
-                "publication-sealed-origin",
-                "publication-sealed-origin-evidence",
+                "publication-sealed-v5",
+                "publication-sealed-evidence-v5",
+                "publication-sealed-origin-v5",
+                "publication-sealed-origin-evidence-v5",
             ],
             Some(crate::ObjectStorage {
                 locator: Digest::from_bytes([11; 32]),
@@ -122,7 +120,15 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, crate::FsError> {
             },
         };
         for (index, name) in names.into_iter().enumerate() {
-            let evidence = (index & 1 != 0).then_some(b"original operation bytes".as_slice());
+            let evidence = (index & 1 != 0).then_some(OriginalEvidence {
+                root: ObjectId {
+                    kind: ObjectKind::Blob,
+                    digest: Digest::from_bytes([14; 32]),
+                    storage,
+                },
+                bytes: b"original operation bytes".len() as u64,
+                digest: original_evidence_digest(b"original operation bytes"),
+            });
             let origin = (index & 2 != 0).then_some(original);
             let length = publication_payload_length_with_evidence(root, evidence, origin)?;
             let mut bytes = Vec::with_capacity(length);
@@ -130,7 +136,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, crate::FsError> {
                 &mut bytes,
                 VolumeId::from_bytes([5; 16]),
                 root,
-                evidence.map(|bytes| (bytes, original_evidence_digest(bytes))),
+                evidence,
                 origin,
             );
             check(&bytes);

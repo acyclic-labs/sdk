@@ -74,6 +74,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let result = self
                 .flush_publication(
                     crate::PublicationScope {
+                        related_objects: &[],
                         objects: &closure,
                         proven_at,
                     },
@@ -112,6 +113,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let result = self
                 .flush_publication(
                     crate::PublicationScope {
+                        related_objects: &[],
                         objects: &publication.objects,
                         proven_at: publication.proven_at,
                     },
@@ -415,21 +417,13 @@ pub(crate) async fn stage_content_for_volume_with_accounting<
     }
     accounting.check()?;
     cancellation.check()?;
-    let chunk_bytes = u32::try_from(volume.config.limits.maximum_object_bytes.min(1024 * 1024))
-        .unwrap_or(u32::MAX)
-        .max(1);
-    let page_bytes = u32::try_from(volume.config.limits.maximum_object_bytes)
-        .unwrap_or(u32::MAX)
-        .max(1);
     let blob = crate::kernel::build_blob_with_accounting(
         &volume.fs.inner.objects,
         source,
-        BlobBuildOptions {
-            chunk_bytes,
-            page_items: volume.config.limits.maximum_directory_page_entries,
-            page_bytes,
-            maximum_blob_bytes: maximum_source_bytes,
-        },
+        BlobBuildOptions::for_limits(
+            DecodeLimits::for_volume(volume.config),
+            maximum_source_bytes,
+        ),
         accounting,
         cancellation,
     )

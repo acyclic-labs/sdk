@@ -200,6 +200,28 @@ fn capture_filesystem_records(
 
 fn capture() -> Result<(), Box<dyn Error>> {
     std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"))?;
+    if std::env::args().any(|arg| arg == "--only-filesystem-publications") {
+        let seeds = acyclic_fs::kernel::publication_codec_fuzz::seeds()?;
+        let names = seeds
+            .iter()
+            .map(|(name, _)| format!("filesystem_pages/{name}"))
+            .collect::<std::collections::HashSet<_>>();
+        let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?
+            .lines()
+            .filter(|line| !names.contains(line.split('\t').next().unwrap_or(line)))
+            .map(|line| format!("{line}\n"))
+            .collect::<String>();
+        for (name, bytes) in seeds {
+            save(
+                "filesystem_pages",
+                name,
+                &bytes,
+                "filesystem::kernel publication v5 writer; fixed original evidence reference",
+                &mut manifest,
+            )?;
+        }
+        return finish_selected(&manifest, |name| names.contains(name));
+    }
     if std::env::args().any(|arg| arg == "--only-filesystem-records") {
         let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?;
         let names = capture_filesystem_records(&mut manifest)?;
