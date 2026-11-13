@@ -76,6 +76,16 @@ pub(crate) fn child_len(child: &crate::Child) -> usize {
         )
 }
 
+/// Encoded page length from its framed children and optional continuation.
+pub(crate) fn children_page_len(
+    children_bytes: usize,
+    next_after: Option<&crate::StreamPath>,
+) -> usize {
+    block_len(32)
+        .saturating_add(children_bytes)
+        .saturating_add(next_after.map_or(0, |path| block_len(path.as_str().len())))
+}
+
 pub(crate) fn heads_len(view: &crate::Heads) -> usize {
     let revision = &view.snapshot;
     let snapshot = (if revision.scope.as_bytes().is_empty() {
@@ -109,20 +119,13 @@ pub(crate) fn heads_len(view: &crate::Heads) -> usize {
         })
         .fold(0usize, usize::saturating_add);
     let children = view.children.as_ref().map_or(0, |page| {
-        block_len(
-            block_len(page.hierarchy_version.as_bytes().len())
-                .saturating_add(
-                    page.children
-                        .iter()
-                        .map(|child| block_len(child_len(child)))
-                        .fold(0usize, usize::saturating_add),
-                )
-                .saturating_add(
-                    page.next_after
-                        .as_ref()
-                        .map_or(0, |path| block_len(path.as_str().len())),
-                ),
-        )
+        block_len(children_page_len(
+            page.children
+                .iter()
+                .map(|child| block_len(child_len(child)))
+                .fold(0usize, usize::saturating_add),
+            page.next_after.as_ref(),
+        ))
     });
     block_len(snapshot)
         .saturating_add(

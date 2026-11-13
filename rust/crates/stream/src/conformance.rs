@@ -989,32 +989,42 @@ pub async fn verify_page_tail_bytes(
     {
         return Err(violated!());
     }
-    let page = match provider
-        .children_page(ChildrenPageRequest {
-            parent: Some(path("conformance/page-bytes")?),
-            after: None,
-            hierarchy_version: None,
-            limit: u32::try_from(count).map_err(|_| StreamError::LimitExceeded)?,
-            tail_stream: Some(path("status")?),
-        })
-        .await
-    {
-        Err(StreamError::LimitExceeded) => return Ok(()),
-        result => result?,
+    let mut request = ChildrenPageRequest {
+        parent: Some(path("conformance/page-bytes")?),
+        after: None,
+        hierarchy_version: None,
+        limit: u32::try_from(count).map_err(|_| StreamError::LimitExceeded)?,
+        tail_stream: Some(path("status")?),
     };
-    if page.children.is_empty()
-        || page.children.len() > count
-        || (page.children.len() < count && page.next_after.is_none())
-        || page.children.iter().any(|child| {
-            child
-                .tail_record
-                .as_ref()
-                .is_none_or(|record| record.value != value || record.headers != headers)
-        })
-        || prost::Message::encoded_len(&crate::wire_codec::children_page_to_wire(page))
+    let mut seen = 0;
+    while seen < count {
+        let page = provider.children_page(request.clone()).await?;
+        page.validate_for(&request)?;
+        if page.children.is_empty() || page.children.len() > count - seen {
+            return Err(violated!());
+        }
+        for child in &page.children {
+            if child.path != path(&format!("conformance/page-bytes/{seen:04}"))?
+                || child.tail != Some(1)
+                || child
+                    .tail_record
+                    .as_ref()
+                    .is_none_or(|record| record.value != value || record.headers != headers)
+            {
+                return Err(violated!());
+            }
+            seen += 1;
+        }
+        if page.next_after.is_some() != (seen < count) {
+            return Err(violated!());
+        }
+        request.after = page.next_after.clone();
+        request.hierarchy_version = Some(page.hierarchy_version);
+        if prost::Message::encoded_len(&crate::wire_codec::children_page_to_wire(page))
             > crate::MAX_COMMAND_BYTES
-    {
-        return Err(violated!());
+        {
+            return Err(violated!());
+        }
     }
     Ok(())
 }

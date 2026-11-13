@@ -406,44 +406,50 @@ fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPa
             &mut paths,
         )?;
     }
-    let has_more = paths.len() > request.limit as usize;
+    let mut has_more = paths.len() > request.limit as usize;
     paths.truncate(request.limit as usize);
+    let count = paths.len();
+    let mut children: Vec<Child> = Vec::new();
+    let mut children_bytes = 0usize;
+    for (index, path) in paths.into_iter().enumerate() {
+        let (tail, tail_record) =
+            projected_tail(&state.paths, &path, request.tail_stream.as_ref())?;
+        let origin = state.paths.origin(&path)?;
+        let child = Child {
+            path,
+            tail,
+            tail_record,
+            origin,
+        };
+        #[cfg(all(loom, not(target_arch = "wasm32")))]
+        let size =
+            if crate::verification::fault_is(crate::verification::Fault::IgnorePageRecordBytes) {
+                child.path.as_str().len()
+            } else {
+                crate::wire_codec::requests::child_len(&child)
+            };
+        #[cfg(not(all(loom, not(target_arch = "wasm32"))))]
+        let size = crate::wire_codec::requests::child_len(&child);
+        let candidate_bytes =
+            children_bytes.saturating_add(crate::wire_codec::requests::block_len(size));
+        let next_after = (has_more || index + 1 < count).then_some(&child.path);
+        if crate::wire_codec::requests::children_page_len(candidate_bytes, next_after)
+            > crate::MAX_COMMAND_BYTES
+        {
+            if children.is_empty() {
+                return Err(StreamError::LimitExceeded);
+            }
+            has_more = true;
+            break;
+        }
+        children_bytes = candidate_bytes;
+        children.push(child);
+    }
     let next_after = if has_more {
-        paths.last().cloned()
+        children.last().map(|child| child.path.clone())
     } else {
         None
     };
-    let mut page_bytes =
-        64usize.saturating_add(next_after.as_ref().map_or(0, |path| path.as_str().len()));
-    let children = paths
-        .into_iter()
-        .map(|path| {
-            let (tail, tail_record) =
-                projected_tail(&state.paths, &path, request.tail_stream.as_ref())?;
-            let origin = state.paths.origin(&path)?;
-            let child = Child {
-                path,
-                tail,
-                tail_record,
-                origin,
-            };
-            #[cfg(all(loom, not(target_arch = "wasm32")))]
-            let size =
-                if crate::verification::fault_is(crate::verification::Fault::IgnorePageRecordBytes)
-                {
-                    child.path.as_str().len()
-                } else {
-                    crate::wire_codec::requests::child_len(&child)
-                };
-            #[cfg(not(all(loom, not(target_arch = "wasm32"))))]
-            let size = crate::wire_codec::requests::child_len(&child);
-            page_bytes = page_bytes.saturating_add(size).saturating_add(10);
-            if page_bytes > crate::MAX_COMMAND_BYTES {
-                return Err(StreamError::LimitExceeded);
-            }
-            Ok(child)
-        })
-        .collect::<Result<Vec<_>, StreamError>>()?;
     let result = ChildrenPage {
         hierarchy_version: state.hierarchy_version,
         children,
