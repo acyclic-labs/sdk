@@ -73,7 +73,8 @@ async fn one_operation_captures_native_edits_before_distinct_file_publications()
                 path,
                 Default::default(),
             )?
-            .await?;
+            .await?
+            .0;
         // Replaying a completed publication must retain its original receipt.
         let replay = publisher
             .stage(
@@ -84,7 +85,8 @@ async fn one_operation_captures_native_edits_before_distinct_file_publications()
                 path,
                 Default::default(),
             )?
-            .await?;
+            .await?
+            .0;
         assert_eq!(file, replay);
         assert_eq!(
             std::fs::read(directory.path().join(path)).map_err(storage)?,
@@ -1444,7 +1446,7 @@ async fn removed_captured_directory_can_become_a_file_before_checkout_capture() 
                 .map_err(storage)?
                 .value
                 .kind,
-            acyclic_fs::kernel::FileKind::RegularFile
+            acyclic_fs::kernel::FileKind::Regular
         );
     }
     Ok(())
