@@ -397,6 +397,16 @@ pub fn decode_changes(bytes: &[u8]) -> Result<wire::ChangeRecord, StreamError> {
     decode_record(bytes, Some(FORMAT), None, 0, |_| true)
 }
 
+/// Borrow a typed publication's context after authenticating its complete
+/// body/index association. Opaque records return None. This performs no heap
+/// allocation and does not decode or copy the change entries.
+pub fn changes_context<'a>(
+    bytes: &'a [u8],
+    headers: &'a RecordHeaders,
+) -> Result<Option<&'a [u8]>, StreamError> {
+    Ok(AdmittedRecord::new(bytes, headers)?.context)
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn decode(
     bytes: &[u8],
@@ -452,26 +462,34 @@ pub(crate) fn validate(bytes: &[u8], headers: &RecordHeaders) -> Result<(), Stre
 pub(crate) struct AdmittedRecord<'a> {
     bytes: &'a [u8],
     format: Option<&'a [u8]>,
+    context: Option<&'a [u8]>,
     keys: &'a [OwnedBytes],
 }
 
 impl<'a> AdmittedRecord<'a> {
     pub(crate) fn new(bytes: &'a [u8], headers: &'a RecordHeaders) -> Result<Self, StreamError> {
         let format = reader_format(headers)?;
+        let mut context = None;
         if format.is_some() {
             if bytes.len().saturating_add(headers.payload_bytes()) > crate::MAX_RECORD_BYTES {
                 return Err(StreamError::LimitExceeded);
             }
             let mut expected = headers.keys().iter();
-            parse_record(bytes, format, Some(headers.keys()), None, |key, _, _| {
-                if expected
-                    .next()
-                    .is_none_or(|expected| expected.as_ref() != key)
-                {
-                    return Err(StreamError::InvalidArgument);
-                }
-                Ok(())
-            })?;
+            context = Some(parse_record(
+                bytes,
+                format,
+                Some(headers.keys()),
+                None,
+                |key, _, _| {
+                    if expected
+                        .next()
+                        .is_none_or(|expected| expected.as_ref() != key)
+                    {
+                        return Err(StreamError::InvalidArgument);
+                    }
+                    Ok(())
+                },
+            )?);
             if expected.next().is_some() {
                 return Err(StreamError::InvalidArgument);
             }
@@ -479,6 +497,7 @@ impl<'a> AdmittedRecord<'a> {
         Ok(Self {
             bytes,
             format,
+            context,
             keys: if format.is_some() {
                 headers.keys()
             } else {

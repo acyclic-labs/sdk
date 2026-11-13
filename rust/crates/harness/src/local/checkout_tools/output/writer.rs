@@ -10,6 +10,7 @@ const OUTPUT_BATCH_BYTES: usize = 64 * 1024;
 
 pub(super) struct Writer {
     context: ToolContext,
+    output: crate::runtime::ToolOutputLog,
     sequence: (u64, u64),
     pending: (Vec<u8>, Vec<u8>),
     maximum: usize,
@@ -34,6 +35,7 @@ impl Writer {
             return Err(Error::Storage("tool output has no file budget".into()));
         }
         let writer = Self {
+            output: crate::runtime::ToolOutputLog::new(context.clone()),
             context: context.clone(),
             sequence: (0, 0),
             pending: (Vec::new(), Vec::new()),
@@ -114,12 +116,8 @@ impl Writer {
         let next = sequence
             .checked_add(1)
             .ok_or_else(|| Error::Storage("tool output sequence overflow".into()))?;
-        self.stage(
-            &format!("{stream}/{sequence:016x}"),
-            pending,
-            "application/octet-stream",
-        )
-        .await?;
+        let name = format!("{stream}/{sequence:016x}");
+        self.output.publish_chunk(&name, pending).await?;
         if stderr {
             self.pending.1.clear();
             self.sequence.1 = next;

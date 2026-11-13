@@ -246,29 +246,33 @@ pub enum AgentCommand {
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         id: IntentId,
     },
-    /// Snapshot explicit paths in a named client session; wait on its original
+    /// Snapshot explicit paths under an agent file root; wait on its original
     /// filesystem publication producer when `after` is still current.
     ClientFiles {
         /// Agent selected within the authenticated tree.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
-        /// Stable UI-session identity within that agent.
-        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
-        session: acyclic_harness_core::OperationId,
+        /// Original private/home binding or a named client session.
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown"))]
+        root: acyclic_harness_core::client_files::FileRoot,
+        /// Select this protected original publication instead of writable paths.
+        #[serde(default)]
+        #[cfg_attr(feature = "wasm", tsify(type = "string | null"))]
+        publication: Option<acyclic_harness_core::OperationId>,
         /// Distinct relative file paths; no directory scan is performed.
         paths: Vec<String>,
-        /// Wait for a generation different from this committed snapshot.
+        /// Wait for a different authored/query input vector.
         #[cfg_attr(feature = "wasm", tsify(type = "unknown | null"))]
-        after: Option<acyclic_harness_core::resources::GenerationRef>,
+        after: Option<acyclic_harness_core::client_files::FileCut>,
     },
-    /// Atomic conditional publication to that same session volume.
+    /// Atomic conditional publication to that same agent file root.
     PublishClientFiles {
         /// Agent selected within the authenticated tree.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
-        /// Stable UI-session identity within that agent.
-        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
-        session: acyclic_harness_core::OperationId,
+        /// Original private/home binding or a named client session.
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown"))]
+        root: acyclic_harness_core::client_files::FileRoot,
         /// Caller-retained identity of this conditional publication.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         operation: acyclic_harness_core::OperationId,
@@ -285,7 +289,7 @@ pub enum AgentCommand {
         paths: Vec<String>,
         /// Wait on the original filesystem producer after this generation.
         #[cfg_attr(feature = "wasm", tsify(type = "unknown | null"))]
-        after: Option<acyclic_harness_core::resources::GenerationRef>,
+        after: Option<acyclic_harness_core::client_files::FileCut>,
     },
     /// Read bounded text prefixes at one live agent-file snapshot.
     AgentFilePreviews {
@@ -699,10 +703,20 @@ pub enum ReadTarget {
 impl AgentCommand {
     fn validate(&self) -> Result<(), CommandError> {
         match self {
+            Self::ClientFiles {
+                publication: Some(_),
+                after: Some(_),
+                ..
+            } => Err(CommandError::Invalid),
             Self::SetPeerMembership { agent, .. } if agent.parent().is_some() => {
                 Err(CommandError::Invalid)
             }
             Self::NameSession { name, .. } | Self::ResolveSession { name } if name.is_empty() => {
+                Err(CommandError::Invalid)
+            }
+            Self::ClientFiles { after, .. } | Self::AgentFiles { after, .. }
+                if after.as_ref().is_some_and(|cut| cut.version != 1) =>
+            {
                 Err(CommandError::Invalid)
             }
             Self::ClientFiles { paths, .. }
@@ -735,6 +749,9 @@ impl AgentCommand {
                 }
                 let mut unique = std::collections::BTreeSet::new();
                 for change in changes {
+                    if change.text.is_none() && change.expected.is_none() {
+                        return Err(CommandError::Invalid);
+                    }
                     if !unique.insert(&change.path) {
                         return Err(CommandError::Invalid);
                     }

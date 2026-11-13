@@ -235,7 +235,9 @@ pub use facade::{
     ResolvedDirectoryEntry, ResolvedDirectoryPage, ResolvedFile, ResolvedFileRangeReadRequest,
     StagedContent, Volume, VolumeInitialization,
 };
-pub use facade::{CreateSpec, ForkSpec, ForkedGeneration, PublishSpec, RestoreSpec};
+pub use facade::{
+    CreateSpec, ForkSpec, ForkedGeneration, PublishSpec, RestoreSpec, TransactionSpec,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub use facade::{
     LocalAuthorityBackend, LocalFs, LocalGarbageCollection, LocalObjectBackend,
@@ -272,8 +274,9 @@ pub use kernel::{
 pub use lazy_workspace::{
     LazyDirectoryCursor, LazyDirectoryEntry, LazyDirectoryPage, LazyForkOrigin, LazyForkPhase,
     LazyLookup, LazyOverlay, LazyOverlayId, LazyShadow, LazyShadowId, LazySnapshotId,
-    LazySnapshotRef, LazyStat, LazyWorkspace, LazyWorkspaceError, LazyWorkspaceState,
-    LazyWorkspaceStore, MemoryLazyWorkspaceStore, NativePublicationSnapshot, SelectedImportPlan,
+    LazySnapshotRef, LazySourceRecord, LazyStat, LazyStoredRecord, LazyWorkspace,
+    LazyWorkspaceError, LazyWorkspaceState, LazyWorkspaceStore, MemoryLazyWorkspaceStore,
+    NativePublicationSnapshot, SelectedImportPlan,
 };
 pub use lineage::{
     MemoryWorkspaceLineageStore, MemoryWorkspaceLineageStoreError, WorkspaceGraph,
@@ -348,7 +351,8 @@ pub use native_mount::{
     NativeStorageAccelerationEvidence, NativeStorageCapabilities, NativeStorageCapabilityError,
     NativeWorkingSet, SharedCheckout, SharedCheckoutState,
     detach_native_mount_destination_after_crash, initialize_native_mount_services,
-    initialize_native_mount_services_async, materialize_checkout, materialize_checkout_paths,
+    initialize_native_mount_services_async, initialize_native_source_services,
+    initialize_native_source_services_async, materialize_checkout, materialize_checkout_paths,
     mount_native, mount_native_over_existing, native_mount_control_paths,
     prepare_native_mount_start, probe_native_mount, probe_native_storage_accelerations,
     probe_native_storage_capabilities, reclaim_native_mount_destination_fence,

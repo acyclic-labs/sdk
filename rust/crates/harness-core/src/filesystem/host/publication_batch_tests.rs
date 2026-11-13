@@ -1018,6 +1018,10 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
             observed.files().collect::<Vec<_>>(),
             original.files().collect::<Vec<_>>()
         );
+        assert!(
+            host.original_changes_progress(&volume, &original, None)
+                .await?
+        );
         let first = original.files().next().unwrap();
         assert_eq!(
             host.read_content(first, &read, 64, None).await?.as_ref(),
@@ -1035,6 +1039,10 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
             )?
             .await?;
         assert_eq!(replay.generation, original.generation);
+        assert!(
+            host.original_changes_progress(&volume, &replay, None)
+                .await?
+        );
         assert_eq!(
             replay.files().collect::<Vec<_>>(),
             original.files().collect::<Vec<_>>()
@@ -1183,6 +1191,10 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                 .expect("a delete-only ceiling must publish deletions");
             assert_eq!(removed.members.len(), 1);
             assert_eq!(removed.files().count(), 0);
+            assert!(
+                host.original_changes_progress(&volume, &removed, None)
+                    .await?
+            );
             let replay = host
                 .put_changes(
                     &volume,
@@ -1201,11 +1213,134 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                 .expect("the delete ceiling can recover its deletion receipt");
             assert_eq!(observed.generation, removed.generation);
             assert_eq!(observed.members, removed.members);
+            assert!(
+                host.original_changes_progress(&volume, &observed, None)
+                    .await?
+            );
+            let absent = host
+                .put_changes(
+                    &volume,
+                    &write,
+                    &[ContentChange::Delete { path: first.path() }],
+                    &IdempotencyKey::new(format!("absent-delete-{index}"))?,
+                    Some(64),
+                    delete_access,
+                    None,
+                )?
+                .await?;
+            assert!(
+                !host
+                    .original_changes_progress(&volume, &absent, None)
+                    .await?,
+                "deleting an absent path must not reset the no-progress query"
+            );
         }
         // The original immutable source remains readable after deletion.
         assert_eq!(
             host.read_content(first, &read, 64, None).await?.as_ref(),
             b"first"
+        );
+        // Content progress belongs to the original conditional receipt. A new
+        // version or later changed head cannot turn a same-byte write into
+        // progress, including through measured/native custody and recovery.
+        let update = actions(&[Action::Create, Action::Write])?;
+        let update_access = ContentAccess {
+            ceiling: Some(&update),
+            io: io.as_ref(),
+        };
+        let mut receipt = host
+            .put_changes(
+                &volume,
+                &write,
+                &[add("progress")],
+                &IdempotencyKey::new("progress-create")?,
+                Some(64),
+                update_access,
+                None,
+            )?
+            .await?;
+        for (key, bytes, changed) in [
+            ("progress-same", b"first".as_slice(), false),
+            ("progress-changed", b"changed".as_slice(), true),
+            ("progress-same-again", b"changed".as_slice(), false),
+        ] {
+            if changed {
+                let source = receipt.files().next().unwrap();
+                let forged = FileRef::new(
+                    source.volume().clone(),
+                    source.path().into(),
+                    source.version().into(),
+                    FileDescriptor::from_bytes(bytes, source.descriptor().media_type(), &mut None)?,
+                    source.display_name().into(),
+                    &mut None,
+                )?;
+                let rejected = host
+                    .put_changes(
+                        &volume,
+                        &write,
+                        &[ContentChange::UpdateExpected {
+                            source: &forged,
+                            bytes,
+                        }],
+                        &IdempotencyKey::new("forged-progress-source")?,
+                        Some(64),
+                        update_access,
+                        None,
+                    )?
+                    .await
+                    .expect_err("caller descriptor replaced original content truth");
+                assert_eq!(rejected.code(), crate::wire::ErrorCode::Conflict);
+                assert!(
+                    host.observe_changes(
+                        &volume,
+                        &write,
+                        &IdempotencyKey::new("forged-progress-source")?,
+                        Some(64_000),
+                        update_access,
+                    )?
+                    .await?
+                    .is_none()
+                );
+            }
+            let changes = [ContentChange::UpdateExpected {
+                source: receipt.files().next().unwrap(),
+                bytes,
+            }];
+            let next = host
+                .put_changes(
+                    &volume,
+                    &write,
+                    &changes,
+                    &IdempotencyKey::new(key)?,
+                    Some(64),
+                    update_access,
+                    None,
+                )?
+                .await?;
+            assert_eq!(
+                host.original_changes_progress(&volume, &next, None).await?,
+                changed
+            );
+            receipt = next;
+        }
+        let original_noop = host
+            .observe_changes(
+                &volume,
+                &write,
+                &IdempotencyKey::new("progress-same")?,
+                Some(64_000),
+                update_access,
+            )?
+            .await?
+            .expect("original same-byte receipt missing after later changes");
+        assert!(
+            !host
+                .original_changes_progress(&volume, &original_noop, None)
+                .await?
+        );
+        assert_eq!(
+            original_noop.files().next().unwrap().descriptor().sha256(),
+            first.descriptor().sha256()
         );
     }
     Ok(())

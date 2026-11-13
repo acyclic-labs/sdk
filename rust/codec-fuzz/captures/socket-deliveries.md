@@ -23,3 +23,12 @@ target ran 64 units (seed 1); this is not complete branch coverage.
 Error has no captured shipped producer. Malformed metadata, foreign members and
 upgrades remain separate validation obligations. No alternate socket runtime,
 decoder, protobuf schema or corpus target was introduced.
+
+The original Open envelope carries the retired `acyclic.actors.invoke` marker.
+The current invocation generation refuses that marker: this historical envelope
+must remain byte-exact and must produce neither an invocation nor a socket Open.
+The remaining socket event captures still require positive event admission.
+Current Open delivery recapture belongs to the tracked Actors format follow-up
+in `compatibility/FORMATS.md`; retaining these historical bytes does not qualify
+that current writer. Current generated seeds, including pause transitions, use
+the production encoders independently of this historical refusal input.

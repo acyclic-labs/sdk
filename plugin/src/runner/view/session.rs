@@ -2,7 +2,7 @@
 use super::*;
 use acyclic_harness::{
     OperationId,
-    client_files::{ClientFileChange, ClientFiles},
+    client_files::{ClientFileChange, ClientFiles, FileRoot},
     command_request::{
         CommandFileChange, CommandFileRoot, CommandFileSnapshot, layout_view, view_changes,
     },
@@ -44,6 +44,12 @@ struct FeedbackFile {
     reports: Vec<String>,
 }
 
+fn root(conversation: &Conversation) -> FileRoot {
+    FileRoot::ClientSession {
+        session: conversation.client_session(),
+    }
+}
+
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CommandFile {
@@ -66,7 +72,7 @@ fn paths() -> Vec<String> {
 impl Session {
     pub async fn open(conversation: &Conversation) -> Result<Self, Failure> {
         let snapshot = conversation
-            .client_files(conversation.client_session(), paths(), None)
+            .files(root(conversation), paths(), None)
             .await?;
         let mut session = Self {
             snapshot,
@@ -106,7 +112,7 @@ impl Session {
             self.feedback = feedback;
         }
         let source = self.snapshot.files.get(PRICES).and_then(Option::as_ref);
-        if source.map(|file| file.file.descriptor()) != self.price_source.as_ref() {
+        if source.map(|file| file.descriptor()) != self.price_source.as_ref() {
             let prices = match source {
                 Some(file) => {
                     acyclic_harness::executor::ModelPrices::from_jsonl(file.text.as_bytes())?
@@ -114,7 +120,7 @@ impl Session {
                 None => Default::default(),
             };
             self.prices = Arc::new(prices);
-            self.price_source = source.map(|file| file.file.descriptor().clone());
+            self.price_source = source.map(|file| file.descriptor().clone());
         }
         self.tree = self
             .snapshot
@@ -254,8 +260,8 @@ impl Session {
             operation: OperationId::new(),
             change: ClientFileChange {
                 path: FEEDBACK.into(),
-                expected: source.map(|file| file.file.clone()),
-                text: serde_json::to_string(&document)?,
+                expected: source.and_then(|file| file.original().cloned()),
+                text: Some(serde_json::to_string(&document)?),
             },
         });
         Ok(())
@@ -278,13 +284,13 @@ impl Session {
                 OperationId::new(),
                 vec![ClientFileChange {
                     path: PRICES.into(),
-                    expected: expected.map(|file| file.file.clone()),
-                    text,
+                    expected: expected.and_then(|file| file.original().cloned()),
+                    text: Some(text),
                 }],
             )
             .await?;
         self.snapshot = conversation
-            .client_files(conversation.client_session(), paths(), None)
+            .files(root(conversation), paths(), None)
             .await?;
         self.project()
     }
@@ -294,7 +300,7 @@ impl Session {
             .files
             .get("layout.json")
             .and_then(Option::as_ref)
-            .map(|file| *file.file.descriptor().sha256())
+            .map(|file| *file.descriptor().sha256())
     }
 
     pub async fn select(
@@ -410,22 +416,22 @@ impl Session {
                     .files
                     .get(&path)
                     .and_then(Option::as_ref)
-                    .map(|file| file.file.clone());
+                    .and_then(|file| file.original().cloned());
                 Ok(ClientFileChange {
                     path,
                     expected,
-                    text: serde_json::to_string(&change.contents)?,
+                    text: Some(serde_json::to_string(&change.contents)?),
                 })
             })
             .collect::<Result<Vec<_>, Failure>>()?;
         conversation
-            .publish_client_files(conversation.client_session(), operation, changes)
+            .publish_files(root(conversation), operation, changes)
             .await?;
         // The next conditional edit needs the committed descriptor, including
         // another command in this input batch. Read one consistent query cut
         // while retaining projections of unchanged original file contents.
         self.snapshot = conversation
-            .client_files(conversation.client_session(), paths(), None)
+            .files(root(conversation), paths(), None)
             .await?;
         self.project()
     }
@@ -441,11 +447,11 @@ fn session_path(root: CommandFileRoot, path: &str) -> Result<String, Failure> {
 
 pub(super) fn follow(
     conversation: Arc<Conversation>,
-    after: acyclic_harness::resources::GenerationRef,
+    after: acyclic_harness::client_files::FileCut,
 ) -> futures::future::LocalBoxFuture<'static, acyclic_harness::Result<ClientFiles>> {
     super::super::phase(|| async move {
         conversation
-            .client_files(conversation.client_session(), paths(), Some(after))
+            .files(root(&conversation), paths(), Some(after))
             .await
     })
 }
@@ -509,7 +515,7 @@ mod tests {
         let mut stale = Session::open(&conversation).await?;
         let mut conflicting = Session::open(&conversation).await?;
         let displayed = conflicting.layout_digest();
-        let original_generation = conflicting.snapshot.generation.clone();
+        let original_cut = conflicting.snapshot.cut.clone();
         conflicting
             .prepare_feedback(&conversation, "An edit lost its source.")
             .await?;
@@ -521,11 +527,7 @@ mod tests {
             .as_ref()
             .ok_or("pending feedback absent")?;
         let (snapshot, ()) = futures::try_join!(
-            follow(
-                Arc::clone(&conversation),
-                reader.snapshot.generation.clone()
-            )
-            .map_err(Failure::from),
+            follow(Arc::clone(&conversation), reader.snapshot.cut.clone()).map_err(Failure::from),
             conversation
                 .publish_client_files(
                     conversation.client_session(),
@@ -547,7 +549,10 @@ mod tests {
             .as_ref()
             .ok_or("feedback absent")?;
         assert_eq!(
-            file.file.volume().class(),
+            file.original()
+                .ok_or("feedback is not authored")?
+                .volume()
+                .class(),
             acyclic_harness::conversation::VolumeClass::SessionShared
         );
         assert_eq!(serde_json::from_str::<FeedbackFile>(&file.text)?.version, 1);
@@ -560,9 +565,9 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert_eq!(conflicting.snapshot.generation, original_generation);
+        assert_eq!(conflicting.snapshot.cut, original_cut);
         assert_eq!(conflicting.layout_digest(), displayed);
-        conflicting.snapshot = follow(Arc::clone(&conversation), original_generation).await?;
+        conflicting.snapshot = follow(Arc::clone(&conversation), original_cut).await?;
         conflicting.project()?;
         let mut previous = displayed;
         let mut overlay = None;
@@ -712,16 +717,12 @@ mod tests {
                     .files
                     .get(COMMANDS)
                     .and_then(Option::as_ref)
-                    .map(|file| file.file.clone()),
-                text,
+                    .and_then(|file| file.original().cloned()),
+                text: Some(text),
             };
             let (snapshot, _) = futures::try_join!(
-                follow(Arc::clone(&conversation), ui.snapshot.generation.clone()),
-                conversation.publish_client_files(
-                    conversation.client_session(),
-                    OperationId::new(),
-                    vec![change],
-                ),
+                follow(Arc::clone(&conversation), ui.snapshot.cut.clone()),
+                conversation.publish_files(root(&conversation), OperationId::new(), vec![change],),
             )?;
             ui.snapshot = snapshot;
             ui.project()?;
@@ -766,8 +767,7 @@ mod tests {
         })
         .to_string();
         let (price_snapshot, ()) = futures::try_join!(
-            follow(Arc::clone(&conversation), ui.snapshot.generation.clone())
-                .map_err(Failure::from),
+            follow(Arc::clone(&conversation), ui.snapshot.cut.clone()).map_err(Failure::from),
             ui.prices(&conversation, price_text.clone()),
         )?;
         assert_eq!(
@@ -786,12 +786,12 @@ mod tests {
                 .files
                 .get(PRICES)
                 .and_then(Option::as_ref)
-                .map(|file| &file.file),
+                .and_then(|file| file.original()),
             ui.snapshot
                 .files
                 .get(PRICES)
                 .and_then(Option::as_ref)
-                .map(|file| &file.file)
+                .and_then(|file| file.original())
         );
         let operation = OperationId::new();
         ui.publish(
@@ -838,8 +838,7 @@ mod tests {
                 .resolve(&format!("/theme {mode}"), u64::MAX)?
                 .ok_or("theme command is absent")?;
             let (changed, ()) = futures::try_join!(
-                follow(Arc::clone(&conversation), ui.snapshot.generation.clone())
-                    .map_err(Failure::from),
+                follow(Arc::clone(&conversation), ui.snapshot.cut.clone()).map_err(Failure::from),
                 ui.submit(&conversation, &resolution),
             )?;
             let file = changed
@@ -860,8 +859,8 @@ mod tests {
                     .files
                     .get("config/theme.json")
                     .and_then(Option::as_ref)
-                    .map(|file| &file.file),
-                Some(&file.file)
+                    .and_then(|file| file.original()),
+                file.original()
             );
         }
         // Another UI publishes a panel before this UI's pending follow is
@@ -953,8 +952,7 @@ mod tests {
         // Poll the original live query before publishing through a second call
         // on the same authenticated session. No timing or readiness probe.
         let (changed, ()) = futures::try_join!(
-            follow(Arc::clone(&conversation), ui.snapshot.generation.clone())
-                .map_err(Failure::from),
+            follow(Arc::clone(&conversation), ui.snapshot.cut.clone()).map_err(Failure::from),
             ui.select(&conversation, Some(&CommandQuery::Diff)),
         )?;
         let original = changed
@@ -967,15 +965,16 @@ mod tests {
             Some("diff")
         );
         assert_eq!(
-            original.file.volume().class(),
+            original.original().unwrap().volume().class(),
             acyclic_harness::conversation::VolumeClass::SessionShared
         );
-        assert_ne!(original.file.volume(), harness.project());
-        assert_ne!(original.file.volume(), harness.scratch());
+        assert_ne!(original.original().unwrap().volume(), harness.project());
+        assert_ne!(original.original().unwrap().volume(), harness.scratch());
         if std::env::var_os("ACYCLIC_CAPTURE_CLIENT_FILES").is_some() {
             let command = acyclic_harness_client::AgentCommand::ClientFiles {
                 agent: connection.root().clone(),
-                session: conversation.client_session(),
+                root: root(&conversation),
+                publication: None,
                 paths: paths(),
                 after: None,
             };
@@ -998,7 +997,7 @@ mod tests {
         // Another writer publishes prices while the terminal's follow still
         // names its earlier cut. A view command observes the new original file
         // first; the eventual follow must retain that same admitted book.
-        let before_prices = ui.snapshot.generation.clone();
+        let before_prices = ui.snapshot.cut.clone();
         let mut replacement: Value = serde_json::from_str(&price_text)?;
         replacement["revision"] = "selected-2".into();
         replacement["currency"] = "EUR".into();
@@ -1013,8 +1012,8 @@ mod tests {
                         .files
                         .get(PRICES)
                         .and_then(Option::as_ref)
-                        .map(|file| file.file.clone()),
-                    text: replacement.to_string(),
+                        .and_then(|file| file.original().cloned()),
+                    text: Some(replacement.to_string()),
                 }],
             )
             .await?;
@@ -1039,7 +1038,7 @@ mod tests {
         large["description"] = Value::String("x".repeat(32 * 1024 + 1));
         ui_create(
             &conversation,
-            Some(original.file.clone()),
+            Some(original.original().unwrap().clone()),
             large.to_string(),
         )
         .await?;
@@ -1066,7 +1065,13 @@ mod tests {
         );
         assert!(
             resumed
-                .client_files(OperationId::new(), vec!["layout.json".into()], None)
+                .files(
+                    FileRoot::ClientSession {
+                        session: OperationId::new()
+                    },
+                    vec!["layout.json".into()],
+                    None
+                )
                 .await?
                 .files
                 .get("layout.json")
@@ -1077,7 +1082,7 @@ mod tests {
         // will never produce the filesystem event the reader is awaiting.
         assert!(
             futures::try_join!(
-                follow(Arc::clone(&resumed), reopened.snapshot.generation.clone()),
+                follow(Arc::clone(&resumed), reopened.snapshot.cut.clone()),
                 ui_create(&resumed, None, original.text.clone()),
             )
             .is_err()
@@ -1091,13 +1096,13 @@ mod tests {
         let mut unsupported: Value = serde_json::from_str(&commands.text)?;
         unsupported["version"] = Value::from(2);
         resumed
-            .publish_client_files(
-                resumed.client_session(),
+            .publish_files(
+                root(&resumed),
                 OperationId::new(),
                 vec![ClientFileChange {
                     path: COMMANDS.into(),
-                    expected: Some(commands.file.clone()),
-                    text: unsupported.to_string(),
+                    expected: Some(commands.original().unwrap().clone()),
+                    text: Some(unsupported.to_string()),
                 }],
             )
             .await?;
@@ -1113,11 +1118,11 @@ mod tests {
         // Restore the exact original catalogue through its new conditional cut
         // before checking the independently versioned layout file.
         let source = resumed
-            .client_files(resumed.client_session(), vec![COMMANDS.into()], None)
+            .files(root(&resumed), vec![COMMANDS.into()], None)
             .await?;
         resumed
-            .publish_client_files(
-                resumed.client_session(),
+            .publish_files(
+                root(&resumed),
                 OperationId::new(),
                 vec![ClientFileChange {
                     path: COMMANDS.into(),
@@ -1125,20 +1130,20 @@ mod tests {
                         .files
                         .get(COMMANDS)
                         .and_then(Option::as_ref)
-                        .map(|file| file.file.clone()),
-                    text: commands.text.clone(),
+                        .and_then(|file| file.original().cloned()),
+                    text: Some(commands.text.clone()),
                 }],
             )
             .await?;
         let replacement = serde_json::json!({"version":2,"open_view":"history"}).to_string();
         let command = acyclic_harness_client::AgentCommand::PublishClientFiles {
             agent: connection.root().clone(),
-            session: resumed.client_session(),
+            root: root(&resumed),
             operation: OperationId::new(),
             changes: vec![ClientFileChange {
                 path: "layout.json".into(),
-                expected: Some(original.file.clone()),
-                text: replacement,
+                expected: Some(original.original().unwrap().clone()),
+                text: Some(replacement),
             }],
         };
         let reply = connection.execute(&command).await?;
@@ -1180,13 +1185,13 @@ mod tests {
         text: String,
     ) -> acyclic_harness::Result<acyclic_harness::resources::GenerationRef> {
         conversation
-            .publish_client_files(
-                conversation.client_session(),
+            .publish_files(
+                root(conversation),
                 OperationId::new(),
                 vec![ClientFileChange {
                     path: "layout.json".into(),
                     expected,
-                    text,
+                    text: Some(text),
                 }],
             )
             .await

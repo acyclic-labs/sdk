@@ -2,6 +2,254 @@ use super::*;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test(flavor = "multi_thread")]
+async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_writes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source_root = tempfile::tempdir()?;
+    std::fs::write(source_root.path().join("removed"), b"source before")?;
+    std::fs::write(source_root.path().join("edited"), b"before")?;
+    let view = mounted_view(source_root.path(), "original-native-cuts").await?;
+    let cancellation = CancellationToken::new();
+    let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let mut accounting =
+        crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let publish = async || {
+        let mut acknowledged = None;
+        let receipt = view
+            .sync_async_with_permit_qualified_native_work_guarded_with_ack(
+                crate::PublicationPermit::Unrestricted,
+                &work,
+                &cancellation,
+                &mut acknowledged,
+                None,
+                |_| async { Ok::<(), MountSourceError>(()) },
+            )
+            .await
+            .map_err(|(cause, _)| cause)?;
+        assert_eq!(acknowledged, Some(receipt));
+        Ok::<_, MountSourceError>(receipt)
+    };
+    let created = mounted(&["created"]);
+    view.create_file(&created, FileMetadata::default(), None, &work)?;
+    view.write_range(&created, 0, Bytes::from_static(b"original publication"))?;
+    view.remove(&mounted(&["removed"]), None, &work)?;
+    view.write_range(&mounted(&["edited"]), 0, Bytes::from_static(b"after!"))?;
+    let receipt = publish().await?;
+    let operation = receipt.operation().ok_or("missing native DATA operation")?;
+    assert!(
+        view.lazy
+            .state(&mut accounting)
+            .await?
+            .pending_remove
+            .is_none()
+    );
+    let cuts = view
+        .lazy
+        .original_publication_cuts(operation, &mut accounting)
+        .await?
+        .ok_or("original native cuts missing")?;
+    let (before, after) = cuts;
+    assert_eq!(after.authored_generation, receipt.generation());
+    assert!(
+        view.lazy
+            .stat_at_snapshot(before, "/created", &mut accounting)
+            .await?
+            .is_none()
+    );
+    assert!(
+        view.lazy
+            .stat_at_snapshot(after, "/removed", &mut accounting)
+            .await?
+            .is_none()
+    );
+    assert_eq!(
+        view.lazy
+            .read_at_snapshot(before, "/removed", None, 64, &mut accounting)
+            .await?
+            .0
+            .bytes
+            .as_ref(),
+        b"source before"
+    );
+    assert_eq!(
+        view.lazy
+            .read_at_snapshot(after, "/created", None, 64, &mut accounting)
+            .await?
+            .0
+            .bytes
+            .as_ref(),
+        b"original publication"
+    );
+    std::fs::remove_file(source_root.path().join("edited"))?;
+    view.fence_changes()?;
+    assert_eq!(
+        view.lazy
+            .read_at_snapshot(before, "/edited", None, 64, &mut accounting)
+            .await?
+            .0
+            .bytes
+            .as_ref(),
+        b"before"
+    );
+    assert_eq!(
+        view.lazy
+            .read_at_snapshot(after, "/edited", None, 64, &mut accounting)
+            .await?
+            .0
+            .bytes
+            .as_ref(),
+        b"after!"
+    );
+    view.write_range(&created, 0, Bytes::from_static(b"later"))?;
+    let later = publish().await?;
+    assert_ne!(later.generation(), receipt.generation());
+    assert_eq!(
+        view.lazy
+            .original_publication(operation, &mut accounting)
+            .await?,
+        Some(receipt)
+    );
+    assert_eq!(
+        view.lazy
+            .original_publication_cuts(operation, &mut accounting)
+            .await?,
+        Some(cuts)
+    );
+    assert!(
+        view.lazy
+            .original_publication_cuts(crate::OperationId::new(), &mut accounting)
+            .await?
+            .is_none()
+    );
+    assert!(
+        publish().await?.operation().is_none(),
+        "clean sync invented a DATA operation"
+    );
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn caller_selected_publication_replays_a_clean_receipt_without_claiming_later_edits()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source_root = tempfile::tempdir()?;
+    let view = mounted_view(source_root.path(), "caller-native-capture").await?;
+    let cancellation = CancellationToken::new();
+    let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let mut accounting =
+        crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let operation = crate::OperationId::new();
+    let mut denied_acknowledgement = None;
+    let denied = view
+        .sync_async_with_permit_qualified_native_work_guarded_with_ack(
+            crate::PublicationPermit::Unrestricted,
+            &work,
+            &cancellation,
+            &mut denied_acknowledgement,
+            Some(operation),
+            |_| async { Err::<(), _>(MountSourceError::Stale) },
+        )
+        .await;
+    assert!(denied.is_err());
+    assert!(denied_acknowledgement.is_none());
+    assert!(
+        view.lazy
+            .original_publication(operation, &mut accounting)
+            .await?
+            .is_none()
+    );
+    let capture = async |operation| {
+        let mut acknowledged = None;
+        let receipt = view
+            .sync_async_with_permit_qualified_native_work_guarded_with_ack(
+                crate::PublicationPermit::Unrestricted,
+                &work,
+                &cancellation,
+                &mut acknowledged,
+                Some(operation),
+                |_| async { Ok::<(), MountSourceError>(()) },
+            )
+            .await
+            .map_err(|(cause, _)| cause)?;
+        assert_eq!(acknowledged, Some(receipt));
+        Ok::<_, MountSourceError>(receipt)
+    };
+    let clean = capture(operation)
+        .await
+        .map_err(|error| format!("clean capture: {error}"))?;
+    assert_eq!(clean.operation(), Some(operation));
+    let (before, after) = view
+        .lazy
+        .original_publication_cuts(operation, &mut accounting)
+        .await
+        .map_err(|error| format!("clean original cuts: {error}"))?
+        .ok_or("missing clean publication cuts")?;
+    assert_eq!(before.overlay, after.overlay);
+    assert_eq!(before.shadows, after.shadows);
+    let later_path = mounted(&["later"]);
+    view.create_file(&later_path, FileMetadata::default(), None, &work)?;
+    view.write_range(&later_path, 0, Bytes::from_static(b"later native edit"))?;
+    for (published_later, retain_later) in
+        [(false, false), (false, true), (true, false), (true, true)]
+    {
+        if published_later {
+            let later = capture(crate::OperationId::new()).await?;
+            assert_ne!(later.generation(), clean.generation());
+        }
+        let pending = retain_later.then(crate::OperationId::new);
+        if let Some(pending) = pending {
+            let mut checkout = view.authored.shared_checkout().lock().await;
+            checkout.retain_operation_id(pending)?;
+        }
+        let appended = work.receipt().authority_records_appended;
+        let mut acknowledged = None;
+        let replay = view
+            .sync_async_with_permit_qualified_native_work_guarded_with_ack(
+                crate::PublicationPermit::Unrestricted,
+                &work,
+                &cancellation,
+                &mut acknowledged,
+                Some(operation),
+                |_: &crate::NativeMaterializationWork|
+                    -> std::future::Ready<Result<(), MountSourceError>> {
+                    panic!("settled capture replay must not seal later edits");
+                },
+            )
+            .await
+            .map_err(|(cause, _)| cause)?;
+        assert_eq!(replay, clean);
+        assert_eq!(acknowledged, Some(clean));
+        assert_eq!(work.receipt().authority_records_appended, appended);
+        if let Some(pending) = pending {
+            let mut checkout = view.authored.shared_checkout().lock().await;
+            assert_eq!(
+                checkout.retained_operation_id(),
+                pending,
+                "completed replay replaced later recovery custody"
+            );
+            checkout.clear_retained_operation(pending);
+        }
+        assert!(
+            view.lazy
+                .stat_at_snapshot(after, "/later", &mut accounting)
+                .await?
+                .is_none()
+        );
+    }
+    assert_eq!(
+        view.lazy
+            .read_range("/later", 0, 17, &mut accounting)
+            .await?
+            .bytes
+            .as_ref(),
+        b"later native edit"
+    );
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test(flavor = "multi_thread")]
 async fn publication_rebases_authored_records_but_rejects_overlapping_callbacks()
 -> Result<(), Box<dyn std::error::Error>> {
     for overlap in [false, true] {
@@ -1045,6 +1293,7 @@ async fn post_ack_reads_keep_operation_custody_until_real_companion_settlement()
                     &work,
                     &cancellation,
                     &mut acknowledged,
+                    None,
                     allow.clone(),
                 )
                 .await;
@@ -1087,6 +1336,7 @@ async fn post_ack_reads_keep_operation_custody_until_real_companion_settlement()
                 &work,
                 &cancellation,
                 &mut acknowledged,
+                None,
                 guarded,
             ),
         );
@@ -1305,6 +1555,7 @@ async fn post_ack_reads_keep_operation_custody_until_real_companion_settlement()
                 &retry_work,
                 &retry_cancel,
                 &mut retry_ack,
+                None,
                 no_second_seal,
             )
             .await

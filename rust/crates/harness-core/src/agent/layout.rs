@@ -40,7 +40,14 @@ pub const VOLUMES: &str = "harness/volumes";
 /// Root of status streams, mirroring agent ancestry outside fork destinations.
 pub const STATUSES: &str = "harness/status";
 /// Relative names a child does not inherit from its parent.
-pub const NOT_INHERITED: [&str; 5] = [CHILDREN, CLOSED, TARGETS, MACHINES, "context"];
+pub const NOT_INHERITED: [&str; 6] = [
+    CHILDREN,
+    CLOSED,
+    TARGETS,
+    MACHINES,
+    "context",
+    "supervision",
+];
 
 const CONVERSATION: &str = "conversation";
 /// Generation-linked checkpoints, indexed like [`CONVERSATION`].
@@ -286,6 +293,15 @@ impl AgentPath {
     /// Close marker stream; its existence refuses every later inbox append.
     pub fn closed(&self) -> Result<StreamPath, Error> {
         stream(&format!("{}/{CLOSED}", self.text))
+    }
+
+    /// Canonical addresses from the tree root through this agent, inclusive.
+    /// Borrows the validated ancestry without allocating parent paths.
+    pub fn ancestors(&self) -> impl ExactSizeIterator<Item = &str> + '_ {
+        (0..self.depth + 1).map(|depth| {
+            let end = AGENTS.len() + 1 + ID_HEX + depth * (CHILDREN.len() + 2 + ID_HEX);
+            &self.text[..end]
+        })
     }
 
     /// Host-owned peer admission for one root, outside every fork destination.

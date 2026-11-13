@@ -202,7 +202,11 @@ impl ExecutionEvent {
             })
         };
         let (call, files): (Option<&String>, [Option<&FileRef>; 3]) = match self {
-            Started { .. } | ModelStopped { .. } | ModelWait { .. } => (None, [None; 3]),
+            Started { .. }
+            | Progress { .. }
+            | ModelStopped { .. }
+            | ModelWait { .. }
+            | ModelOutput { .. } => (None, [None; 3]),
             ModelInline { event, usage, .. } => (Some(event), [usage.as_ref(), None, None]),
             ConversationItem {
                 envelope: projection,
@@ -232,6 +236,7 @@ impl ExecutionEvent {
         let bytes = call.map_or(0, |call| call.capacity() as u64);
         let bytes = match self {
             ToolFailed { cause, .. } => add(bytes, cause.message.capacity() as u64)?,
+            Progress { publication } => add(bytes, publication.logical_owned_bytes()?)?,
             _ => bytes,
         };
         files

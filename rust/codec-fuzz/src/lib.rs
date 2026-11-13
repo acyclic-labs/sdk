@@ -637,6 +637,7 @@ pub fn actor_seeds()
     );
     seeds.push(("delivery", bytes, "guest::wire::encode_delivery"));
     let mut transition = guest::Transition {
+        pause: false,
         response: None,
         checkpoint,
         alarm: guest::AlarmChange::Keep,
@@ -675,6 +676,10 @@ pub fn actor_seeds()
         );
         seeds.push((name, bytes, "guest::wire::encode_transition"));
     }
+    transition.pause = true;
+    let bytes = wire::encode_transition(&transition)?;
+    assert_eq!(wire::decode_transition(&bytes)?, transition);
+    seeds.push(("transition-paused", bytes, "guest::wire::encode_transition"));
     seeds.extend(futures::executor::block_on(actor_alarm_seeds())?);
     seeds.extend(actor_socket_seeds()?);
     seeds.extend(actor_socket_input_seeds()?);
@@ -806,6 +811,30 @@ fn actor_socket_input_seeds()
         let bytes: Vec<u8> = serde_json::from_value(capture["bytes"].clone())?;
         let (delivery, checkpoint) = wire::decode_delivery(&bytes)?;
         assert_eq!(wire::encode_delivery(&delivery, checkpoint.as_ref()), bytes);
+        // Retired invocation records are historical refusal inputs, not
+        // current socket-open writers. Preserve their exact captured bytes.
+        if delivery.record.as_ref().is_some_and(|record| {
+            record
+                .headers
+                .attributes()
+                .iter()
+                .any(|attribute| attribute.name == "acyclic.actors.invoke")
+        }) {
+            assert!(
+                delivery.invocation()?.is_none(),
+                "retired invocation was admitted"
+            );
+            assert!(
+                delivery.socket()?.is_none(),
+                "retired invocation opened a socket"
+            );
+            seeds.push((
+                name,
+                bytes,
+                "historical Runtime socket delivery; retired invocation marker refused",
+            ));
+            continue;
+        }
         let socket = delivery
             .socket()?
             .ok_or("socket input writer must be admitted")?;
@@ -1173,9 +1202,9 @@ async fn actor_alarm_seeds()
             None,
         ),
     ] {
-        let delivered = match &trigger {
-            Trigger::Record { sequence, .. } => Some(&inputs[usize::try_from(*sequence)?]),
-            Trigger::Alarm { .. } => None,
+        let delivered = match trigger.record_position() {
+            Some((_, sequence)) => Some(&inputs[usize::try_from(sequence)?]),
+            None => None,
         };
         store
             .publish(
@@ -1184,6 +1213,7 @@ async fn actor_alarm_seeds()
                 &trigger,
                 delivered,
                 Transition {
+                    pause: false,
                     response: None,
                     checkpoint: checkpoint.clone(),
                     alarm,

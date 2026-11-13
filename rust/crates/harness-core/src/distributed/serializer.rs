@@ -1,9 +1,19 @@
 use super::*;
 
-fn stream_path(
+pub(crate) fn stream_path(
     value: &str,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<acyclic_stream::StreamPath> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(original) = work.as_deref().and_then(|io| io.original_native_work()) {
+        let result = acyclic_stream::StreamPath::new_native(value, &original.runtime_meter());
+        return result
+            .map_err(|error| Error::NativeWork {
+                cause: original.runtime_error(error),
+                custody: None,
+            })?
+            .map_err(|error| operations::stream_error_with_work(error, work));
+    }
     if let Some(work) = work.as_deref_mut() {
         work.admit_allocation(value.len() as u64)?;
         work.copy_bytes(value.len() as u64)?;

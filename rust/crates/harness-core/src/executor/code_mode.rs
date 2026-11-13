@@ -363,6 +363,12 @@ impl StockExecution<'_> {
                         let input_bytes = call.arguments.value.len();
                         let result = self.js_call(journal, identity, parent, ordinal, &call, &mut inner_context).await?;
                         let result = match result {
+                            ExecutionProgress::Controlled(control) => {
+                                stop.0.cancel();
+                                drop(call);
+                                let _ = worker.await;
+                                return Ok(ExecutionProgress::Controlled(control));
+                            }
                             ExecutionProgress::Ready(result) => result,
                             ExecutionProgress::Pending(operation) => {
                                 stop.0.cancel();
@@ -585,6 +591,9 @@ impl StockExecution<'_> {
         .await?
         {
             ExecutionProgress::Ready(receipt) => receipt,
+            ExecutionProgress::Controlled(control) => {
+                return Ok(ExecutionProgress::Controlled(control));
+            }
             ExecutionProgress::Pending(operation) => {
                 return Ok(ExecutionProgress::Pending(operation));
             }

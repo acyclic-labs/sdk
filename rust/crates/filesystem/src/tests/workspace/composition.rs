@@ -365,6 +365,91 @@ async fn restoring_generation_and_context_cut_is_atomic() -> Result<(), Box<dyn 
     Ok(())
 }
 
+/// A file control and its caller's actor/event decision share one publication.
+/// Either side's stale cut refuses both, including a concurrent disjoint write.
+#[tokio::test]
+async fn transaction_candidates_and_caller_controls_publish_atomically()
+-> Result<(), Box<dyn Error>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::initialize_test_native_io();
+    for (attempt, caller_tail, concurrent) in [(1, 7, false), (2, 0, true), (3, 0, false)] {
+        let stream = Arc::new(MemoryStream::default());
+        let fs = placed(&stream)?;
+        let workspace = unbounded!(fs, create_workspace("control"))?;
+        let original = unbounded!(workspace, head())?;
+        let mut transaction = unbounded!(
+            workspace,
+            begin_transaction(IdempotencyKey::from_bytes([attempt; 16]))
+        )?;
+        transaction.write_text("/pause", "").await?;
+        let marker = StreamPath::new("harness/actor/control")?;
+        let mut commit = FilesystemCommit::new(CommitRequest {
+            deadline_unix_millis: None,
+            effects: vec![CommitEffect::hard(
+                vec![CommitCondition::Tail {
+                    path: marker.clone(),
+                    expected: caller_tail,
+                }],
+                vec![CommitMutation::Append {
+                    path: marker.clone(),
+                    records: vec![record(b"paused")],
+                }],
+            )],
+            idempotency_key: acyclic_stream::IdempotencyKey::new(vec![attempt])?,
+        });
+        let specs = [crate::TransactionSpec {
+            transaction: &transaction,
+            permit: crate::PublicationPermit::Unrestricted,
+        }];
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let cancel = CancellationToken::new();
+            let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
+                .map_err(|(error, _)| error)?;
+            let (generations, allocation) = fs
+                .prepare_transaction_many(&specs, &mut commit, &work, &cancel)
+                .await?;
+            assert_eq!(generations.len(), 1);
+            assert_eq!(generations[0].workspace_id(), original.workspace_id());
+            assert_ne!(generations[0].id(), original.id());
+            assert!(allocation.work().shares_ledger(&work));
+            drop(generations);
+            drop(allocation);
+        }
+        #[cfg(target_arch = "wasm32")]
+        unbounded!(fs, prepare_transaction_many(&specs, &mut commit))?;
+        assert_eq!(unbounded!(workspace, head())?.id(), original.id());
+        assert!(stream.tail(marker.clone()).await.is_err());
+        if concurrent {
+            workspace.write_text("/unrelated", "owner edit").await?;
+        }
+        let replay = commit.request().clone();
+        let outcome = unbounded!(fs, submit_commit(commit))?;
+        if attempt == 3 {
+            assert!(matches!(outcome, FilesystemCommitOutcome::Committed(_)));
+            assert_eq!(unbounded!(workspace, read("/pause", 1))?.as_ref(), b"");
+            assert_eq!(stream.tail(marker.clone()).await?, 1);
+            let head = unbounded!(workspace, head())?.id();
+            stream.commit(replay).await?;
+            assert_eq!(unbounded!(workspace, head())?.id(), head);
+            assert_eq!(stream.tail(marker.clone()).await?, 1);
+        } else {
+            assert!(matches!(outcome, FilesystemCommitOutcome::Rejected(_)));
+            assert!(unbounded!(workspace, stat("/pause")).is_err());
+            assert!(stream.tail(marker.clone()).await.is_err());
+            if concurrent {
+                assert_eq!(
+                    unbounded!(workspace, read("/unrelated", 32))?.as_ref(),
+                    b"owner edit"
+                );
+            } else {
+                assert_eq!(unbounded!(workspace, head())?.id(), original.id());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// A head-conditioned spawn of an unchanged source commits.
 #[tokio::test]
 async fn a_head_conditioned_fork_of_an_unchanged_source_commits() -> Result<(), Box<dyn Error>> {

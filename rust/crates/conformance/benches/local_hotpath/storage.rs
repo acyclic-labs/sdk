@@ -470,6 +470,7 @@ async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements<'_>) 
             sequence,
         };
         let transition = || Transition {
+            pause: false,
             response: None,
             checkpoint: Checkpoint {
                 codec: CodecIdentity {

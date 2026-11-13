@@ -735,7 +735,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
             changes: vec![crate::client_files::ClientFileChange {
                 path: "ui/title".into(),
                 expected: None,
-                text: "forged title".into(),
+                text: Some("forged title".into()),
             }],
         },
     ] {

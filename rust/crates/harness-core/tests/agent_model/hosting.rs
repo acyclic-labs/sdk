@@ -210,6 +210,1047 @@ fn root(agent: AgentId, fresh: Vec<WorkspaceEntry>) -> RootRequest {
     }
 }
 
+// Pending inbox envelopes are host-owned journal content, not published client
+// output. Inspect the original reference under the fixture owner's authority.
+async fn read_host_input(
+    bound: &Bound<MemoryStream, Objects>,
+    issuer: &AuthorityRoot,
+    agent: &AgentPath,
+    file: &acyclic_harness_core::conversation::FileRef,
+) -> Result<Vec<u8>> {
+    use acyclic_harness_core::conversation::{ContentResidencyVerifier, VolumeOperation};
+    let journal = acyclic_harness_core::conversation::journal_volume(provider()?, &agent.id())?;
+    let scope = issuer.bootstrap_scope(
+        "control-input",
+        &acyclic_harness_core::Capabilities::new([
+            journal.capability(VolumeOperation::Read, &mut None)?,
+            acyclic_harness_core::contract::capability::HARNESS_HOST.to_owned(),
+        ]),
+        Some(acyclic_harness_core::AgentId::from_bytes(agent.id_bytes())),
+        &mut None,
+    )?;
+    let reader = acyclic_harness_core::filesystem::FilesystemContentVerifier::new(
+        bound.volumes().clone(),
+        &issuer.verifier(&mut None)?,
+        &scope,
+        None,
+        None,
+    )?;
+    Ok(reader
+        .read(file, file.descriptor().byte_length(), None, None)?
+        .await?
+        .to_vec())
+}
+
+/// Drive the real filesystem producer, shared dispatcher and ordinary client
+/// files. Every wait is on the original event or inbox append, never a timer.
+#[tokio::test]
+async fn file_controls_pause_resume_append_steering_and_stop_through_shared_dispatch() -> Result {
+    for guest in [false, true] {
+        for maximum in [None, Some(64 * 1024)] {
+            file_control_journey(guest, maximum).await?;
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn rejected_steering_cannot_block_owner_pause_or_stop() -> Result {
+    use acyclic_harness_core::{
+        filesystem::{WorkspaceMutation, workspace_ref},
+        supervision::{Event, Lifecycle},
+    };
+    use futures::TryStreamExt as _;
+    for (bytes, rejected) in [
+        (vec![0xff], true),
+        (vec![b'x'; 64 * 1024 + 1], true),
+        // The file fits, but its escaped input envelope exceeds the selected
+        // per-message capacity. Refuse the input without discarding the pause.
+        (vec![b'"'; 32 * 1024], true),
+        (b"healthy steering".to_vec(), false),
+    ] {
+        let stream = Arc::new(MemoryStream::default());
+        let issuer = AuthorityRoot::new(
+            "agents",
+            [7; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "local".into(),
+            },
+        );
+        let bound = Bound::local_root(issuer.clone(), placement(&stream)?, turns()?)?;
+        let private = volume(PRIVATE_VOLUME, id(125))?;
+        let RootSubmission::Created(agent) = bound
+            .create_root(
+                &intent("bad-steering"),
+                root(id(125), vec![private.clone()]),
+            )
+            .await?
+        else {
+            return Err("root uncertain".into());
+        };
+        let actor = bound.agents().actor(&agent)?;
+        let store = acyclic_harness_core::agent::actor_store(&stream)?;
+        let workspace = workspace_ref(
+            private.volume()?.provider().clone(),
+            &private.volume()?.storage_name(&mut None)?,
+        )?;
+        let mut request = acyclic_stream::FollowRequest::new(
+            acyclic_harness_core::supervision::streams::path(&agent)?,
+            0,
+        );
+        request.when_absent = acyclic_stream::WhenAbsent::Wait;
+        let mut feed = acyclic_stream::records_only(stream.follow(request).await?);
+        let exercise = async {
+            // Use the ordinary filesystem producer: control files may be
+            // authored through any filesystem client, including binary writes.
+            bound
+                .volumes()
+                .apply(
+                    &workspace,
+                    None,
+                    &[
+                        WorkspaceMutation::CreateDirectory {
+                            path: "/control".into(),
+                        },
+                        WorkspaceMutation::PutFile {
+                            path: "/control/steer.md".into(),
+                            bytes: bytes::Bytes::from(bytes).into(),
+                        },
+                        WorkspaceMutation::PutFile {
+                            path: "/control/pause".into(),
+                            bytes: bytes::Bytes::new().into(),
+                        },
+                    ],
+                    &acyclic_harness_core::IdempotencyKey("pause-with-steering".into()),
+                )
+                .await?;
+            let paused = feed.try_next().await?.ok_or("control feed ended")?;
+            let paused_event: Event = serde_json::from_slice(&paused.value)?;
+            assert!(matches!(
+                paused_event.event,
+                Lifecycle::Paused { signal: None }
+            ));
+            if rejected {
+                let refusal = feed.try_next().await?.ok_or("rejection missing")?;
+                let refusal_event: Event = serde_json::from_slice(&refusal.value)?;
+                assert!(matches!(refusal_event.event,
+                    Lifecycle::ControlRejected { path } if path == "control/steer.md"));
+                assert_eq!(refusal.commit_id, paused.commit_id);
+                assert_eq!(refusal_event.source, paused_event.source);
+            }
+            bound.agents().runtime().complete().await?;
+            assert!(
+                store
+                    .load(&actor)
+                    .await?
+                    .state()
+                    .ok_or("target missing")?
+                    .paused()
+            );
+            assert_eq!(
+                stream.tail(agent.inbox()?).await?,
+                if rejected { 1 } else { 2 }
+            );
+            assert_eq!(
+                stream
+                    .tail(acyclic_harness_core::supervision::streams::path(&agent)?)
+                    .await?,
+                if rejected { 2 } else { 1 }
+            );
+            if rejected {
+                let mut messages = acyclic_stream::records_only(
+                    stream
+                        .follow(acyclic_stream::FollowRequest::new(agent.inbox()?, 1))
+                        .await?,
+                );
+                bound
+                    .volumes()
+                    .apply(
+                        &workspace,
+                        None,
+                        &[WorkspaceMutation::PutFile {
+                            path: "/control/steer.md".into(),
+                            bytes: bytes::Bytes::from_static(b"corrected steering").into(),
+                        }],
+                        &acyclic_harness_core::IdempotencyKey("correct-steering".into()),
+                    )
+                    .await?;
+                // A rejected candidate must not consume any prompt prefix.
+                // Wait on either original output, so the negative fails on its
+                // explicit rejection rather than waiting for a missing message.
+                let record = tokio::select! {
+                    message = messages.try_next() => message?.ok_or("steering inbox ended")?,
+                    refusal = feed.try_next() => {
+                        let _ = refusal?.ok_or("control feed ended")?;
+                        return Err("corrected steering was rejected".into());
+                    }
+                };
+                let InboxRecord::Message(message) = InboxRecord::decode(&record.value)? else {
+                    return Err("corrected steering did not append a message".into());
+                };
+                let bytes = read_host_input(&bound, &issuer, &agent, &message.body).await?;
+                assert_eq!(
+                    serde_json::from_slice::<ModelContent>(&bytes)?,
+                    ModelContent::Text("corrected steering".into())
+                );
+            }
+            bound
+                .volumes()
+                .apply(
+                    &workspace,
+                    None,
+                    &[WorkspaceMutation::PutFile {
+                        path: "/control/stop".into(),
+                        bytes: bytes::Bytes::new().into(),
+                    }],
+                    &acyclic_harness_core::IdempotencyKey("stop-with-steering".into()),
+                )
+                .await?;
+            let stopped: Event =
+                serde_json::from_slice(&feed.try_next().await?.ok_or("stop missing")?.value)?;
+            assert!(matches!(stopped.event, Lifecycle::Stopped { signal: None }));
+            assert_eq!(stream.tail(agent.closed()?).await?, 1);
+            bound.agents().runtime().complete().await?;
+            assert!(bound.agents().state(&agent).await?.closed);
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        let result: Result = tokio::select! {
+            result = bound.agents().run(|actor, error| panic!("file control delivery {actor:?}: {error}")) => match result { Err(error) => Err(error.into()), Ok(never) => match never {} },
+            result = exercise => result,
+        };
+        result?;
+    }
+    Ok(())
+}
+
+/// Real filesystem output, shared actor alarms and lifecycle feeds. Advance
+/// only the injected clock; every readiness wait follows committed actor state.
+#[tokio::test]
+async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Result {
+    use acyclic_actors::local::ControlledClock;
+    use acyclic_harness_core::{
+        client_files::{ClientFileChange, FileRoot},
+        supervision::{Action, Kind, Lifecycle},
+    };
+    use acyclic_stream::{
+        AppendRecord, AppendRequest, IdempotencyKey, MemoryLimits, RecordHeaders, StreamPath,
+        UnixMillisClock,
+    };
+    use futures::TryStreamExt as _;
+    use std::sync::atomic::AtomicU64;
+    struct CommitClock(AtomicU64);
+    impl UnixMillisClock for CommitClock {
+        fn now_unix_millis(&self) -> u64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+    for finish in [false, true] {
+        let commit_clock = Arc::new(CommitClock(AtomicU64::new(100)));
+        let stream = Arc::new(MemoryStream::new_with_clock(
+            MemoryLimits::default(),
+            commit_clock.clone(),
+        ));
+        let (clock, mut time) = ControlledClock::new(100);
+        let mut execution = turns()?;
+        execution.clock = Arc::new(clock);
+        let placed = placement(&stream)?;
+        let within = placed.within.clone();
+        let issuer = AuthorityRoot::new(
+            "agents",
+            [7; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "quiet".into(),
+            },
+        );
+        let bound = Bound::local_root(issuer.clone(), placed, execution)?;
+        let RootSubmission::Created(agent) = bound
+            .create_root(
+                &intent("quiet-root"),
+                root(id(126), vec![volume(PRIVATE_VOLUME, id(126))?]),
+            )
+            .await?
+        else {
+            return Err("uncertain root".into());
+        };
+        let run = OperationId::from_bytes([231; 16]);
+        let execution = OperationId::from_bytes([232; 16]);
+        let call = OperationId::from_bytes([233; 16]);
+        stream
+            .append(AppendRequest {
+                path: acyclic_harness_core::supervision::streams::path(&agent)?,
+                records: vec![AppendRecord::latest(
+                    serde_json::to_vec(&acyclic_harness_core::supervision::Event {
+                        version: 1,
+                        agent: agent.clone(),
+                        run: Some(run),
+                        source: acyclic_harness_core::supervision::Position {
+                            stream: agent.inbox()?,
+                            sequence: 0,
+                        },
+                        event: Lifecycle::Started { input: 0 },
+                    })?,
+                    acyclic_harness_core::supervision::RUN_KEY,
+                    false,
+                )?],
+                if_tail: None,
+                idempotency_key: IdempotencyKey::new("quiet-run")?,
+            })
+            .await?;
+        let jobs = StreamPath::new(format!("{agent}/supervision/jobs"))?;
+        let mut keys = vec![
+            call.into_bytes().to_vec().into(),
+            b"started".to_vec().into(),
+        ];
+        keys.sort_unstable();
+        let started = serde_json::json!({"version":1,"call":call,"event":{
+            "kind":"started","run":run,"execution":execution,"quiet_ms":10,
+            "action":Action::Pause,"at_ms":100,"source":{"stream":format!("{agent}/execution"),"sequence":0}
+        }});
+        stream
+            .append(AppendRequest {
+                path: jobs.clone(),
+                records: vec![AppendRecord {
+                    value: serde_json::to_vec(&started)?.into(),
+                    headers: RecordHeaders::new(keys, vec![])?,
+                }],
+                if_tail: None,
+                idempotency_key: IdempotencyKey::new("quiet-start")?,
+            })
+            .await?;
+        let actor = ActorReference::new(
+            within.account().as_bytes(),
+            within.namespace().as_str().as_bytes(),
+            format!("tool-quiet-{call}").as_bytes(),
+        )?;
+        let store = actor_store(&stream)?;
+        let mut changes = acyclic_stream::FollowRequest::new(store.path(&actor)?, 0);
+        changes.when_absent = acyclic_stream::WhenAbsent::Wait;
+        let mut states = acyclic_stream::records_only(stream.follow(changes).await?);
+        let wait = async |states: &mut acyclic_stream::RecordStream,
+                          deadline: Option<u64>,
+                          retired: bool|
+               -> Result {
+            loop {
+                states
+                    .try_next()
+                    .await?
+                    .ok_or("quiet state source closed")?;
+                let snapshot = store.load(&actor).await?;
+                if let Some(state) = snapshot.state()
+                    && state.paused() == retired
+                    && state.alarm().deadline_unix_ms() == deadline
+                {
+                    return Ok(());
+                }
+            }
+        };
+        let exercise = async {
+            wait(&mut states, Some(110), false).await?;
+            commit_clock.0.store(105, Ordering::SeqCst);
+            let path = acyclic_harness_core::runtime::tool_output_activity_path(execution, call);
+            let cursor =
+                serde_json::to_string(&acyclic_harness_core::runtime::ToolOutputActivity {
+                    version: 1,
+                    turn: execution,
+                    call,
+                    through: 1,
+                })?;
+            // A model-writable lookalike cannot postpone the host's alarm.
+            bound
+                .publish_files(
+                    &agent,
+                    FileRoot::Private {},
+                    OperationId::from_bytes([234; 16]),
+                    &[ClientFileChange {
+                        path: path.clone(),
+                        expected: None,
+                        text: Some(cursor.clone()),
+                    }],
+                )
+                .await?;
+            bound.agents().runtime().complete().await?;
+            assert_eq!(
+                store
+                    .load(&actor)
+                    .await?
+                    .state()
+                    .ok_or("quiet actor missing")?
+                    .alarm()
+                    .deadline_unix_ms(),
+                Some(110),
+            );
+            use acyclic_harness_core::conversation::{
+                ContentAccess, ContentPublisher, VolumeOperation,
+            };
+            let journal =
+                acyclic_harness_core::conversation::journal_volume(provider()?, &agent.id())?;
+            let scope = issuer.bootstrap_scope(
+                "quiet-output",
+                &acyclic_harness_core::Capabilities::new([
+                    journal.capability(VolumeOperation::Read, &mut None)?,
+                    journal.capability(VolumeOperation::Write, &mut None)?,
+                    acyclic_harness_core::contract::capability::HARNESS_HOST.to_owned(),
+                ]),
+                Some(acyclic_harness_core::AgentId::from_bytes(agent.id_bytes())),
+                &mut None,
+            )?;
+            let publisher = acyclic_harness_core::filesystem::FilesystemContentPublisher::new(
+                bound.volumes().clone(),
+                &journal,
+                &issuer.verifier(&mut None)?,
+                &scope,
+                65_536,
+                None,
+            )?;
+            publisher
+                .stage_once(
+                    OperationId::from_bytes([236; 16]),
+                    &path,
+                    cursor.as_bytes(),
+                    "application/json",
+                    "activity.json",
+                    ContentAccess::default(),
+                )?
+                .await?;
+            wait(&mut states, Some(115), false).await?;
+            time.advance_to(110)?;
+            bound.agents().runtime().complete().await?;
+            let queries =
+                acyclic_harness_core::supervision::streams::Queries::new(&*stream, &agent, run);
+            assert!(
+                queries.read_signal(Kind::Stuck).await?.is_none(),
+                "old alarm ignored fresh output"
+            );
+            if finish {
+                // Completion may be committed while its delivery is still queued.
+                stream.append(AppendRequest { path: jobs.clone(), records: vec![AppendRecord {
+                    value: serde_json::to_vec(&serde_json::json!({"version":1,"call":call,"event":{"kind":"finished"}}))?.into(),
+                    headers: RecordHeaders::new(vec![call.into_bytes().to_vec().into()], vec![])?,
+                }], if_tail: None, idempotency_key: IdempotencyKey::new("quiet-finish")? }).await?;
+            }
+            // B starts after A's tool admission; A's later pause still owns resume.
+            let independent = OperationId::from_bytes([237; 16]);
+            stream
+                .append(AppendRequest {
+                    path: acyclic_harness_core::supervision::streams::path(&agent)?,
+                    records: vec![AppendRecord::latest(
+                        serde_json::to_vec(&acyclic_harness_core::supervision::Event {
+                            version: 1,
+                            agent: agent.clone(),
+                            run: Some(independent),
+                            source: acyclic_harness_core::supervision::Position {
+                                stream: agent.inbox()?,
+                                sequence: 1,
+                            },
+                            event: Lifecycle::Started { input: 1 },
+                        })?,
+                        acyclic_harness_core::supervision::RUN_KEY,
+                        false,
+                    )?],
+                    if_tail: None,
+                    idempotency_key: IdempotencyKey::new("independent-run-before-pause")?,
+                })
+                .await?;
+            assert_eq!(
+                acyclic_harness_core::supervision::streams::active_run(&*stream, &agent)
+                    .await?
+                    .0,
+                Some(independent)
+            );
+            time.advance_to(115)?;
+            if finish {
+                wait(&mut states, None, true).await?;
+                assert!(
+                    queries.read_signal(Kind::Stuck).await?.is_none(),
+                    "completed job signalled stuck"
+                );
+            } else {
+                let mut request = acyclic_stream::FollowRequest::new(
+                    acyclic_harness_core::supervision::streams::path(&agent)?,
+                    0,
+                );
+                request.when_absent = acyclic_stream::WhenAbsent::Wait;
+                let mut feed = acyclic_stream::records_only(stream.follow(request).await?);
+                loop {
+                    let event: acyclic_harness_core::supervision::Event = serde_json::from_slice(
+                        &feed.try_next().await?.ok_or("quiet feed ended")?.value,
+                    )?;
+                    if matches!(
+                        event.event,
+                        Lifecycle::Paused {
+                            signal: Some(Kind::Stuck)
+                        }
+                    ) {
+                        break;
+                    }
+                }
+                assert!(queries.read_signal(Kind::Stuck).await?.is_some());
+                assert!(
+                    store
+                        .load(&bound.agents().actor(&agent)?)
+                        .await?
+                        .state()
+                        .ok_or("target missing")?
+                        .paused()
+                );
+                // The explicit owner pause revision and its deletion form a
+                // resume after a policy pause. Query admission and the target
+                // actor reopen in the same filesystem-control publication.
+                bound
+                    .publish_files(
+                        &agent,
+                        FileRoot::Private {},
+                        OperationId::from_bytes([235; 16]),
+                        &[ClientFileChange {
+                            path: "control/pause".into(),
+                            expected: None,
+                            text: Some(String::new()),
+                        }],
+                    )
+                    .await?;
+                loop {
+                    let event: acyclic_harness_core::supervision::Event = serde_json::from_slice(
+                        &feed
+                            .try_next()
+                            .await?
+                            .ok_or("owner pause source ended")?
+                            .value,
+                    )?;
+                    if matches!(event.event, Lifecycle::Paused { signal: None }) {
+                        break;
+                    }
+                }
+                let files = bound
+                    .files(
+                        &agent,
+                        FileRoot::Private {},
+                        &["control/pause".into()],
+                        None,
+                    )
+                    .await?;
+                bound
+                    .publish_files(
+                        &agent,
+                        FileRoot::Private {},
+                        OperationId::from_bytes([236; 16]),
+                        &[ClientFileChange {
+                            path: "control/pause".into(),
+                            expected: Some(
+                                files.files["control/pause"]
+                                    .as_ref()
+                                    .ok_or("owner pause file missing")?
+                                    .original()
+                                    .unwrap()
+                                    .clone(),
+                            ),
+                            text: None,
+                        }],
+                    )
+                    .await?;
+                let (resumed, publication) = loop {
+                    let record = feed.try_next().await?.ok_or("owner resume source ended")?;
+                    let event: acyclic_harness_core::supervision::Event =
+                        serde_json::from_slice(&record.value)?;
+                    if matches!(event.event, Lifecycle::Resumed {}) {
+                        break (event, record.commit_id);
+                    }
+                };
+                assert!(
+                    queries
+                        .admission(&acyclic_harness_core::supervision::Policy::default())
+                        .await?
+                        .control
+                        .is_none()
+                );
+                assert_eq!(
+                    queries
+                        .checkpoint()
+                        .await?
+                        .ok_or("resumed query missing")?
+                        .source,
+                    resumed.source
+                );
+                assert!(
+                    acyclic_harness_core::supervision::streams::Queries::new(
+                        &*stream,
+                        &agent,
+                        independent,
+                    )
+                    .checkpoint()
+                    .await?
+                    .is_none(),
+                    "resume changed the independent run"
+                );
+                let checkpoint = stream
+                    .latest(
+                        StreamPath::new(format!("{agent}/supervision/runs/{run}/checkpoint"))?,
+                        bytes::Bytes::from_static(b"state").into(),
+                        Default::default(),
+                    )
+                    .await?
+                    .ok_or("query checkpoint record missing")?;
+                assert_eq!(
+                    checkpoint.commit_id, publication,
+                    "query resume was published separately from owner control"
+                );
+                assert!(
+                    !store
+                        .load(&bound.agents().actor(&agent)?)
+                        .await?
+                        .state()
+                        .ok_or("target missing after resume")?
+                        .paused()
+                );
+            }
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        tokio::select! {
+            result = bound.agents().run(|actor, error| panic!("quiet actor {actor:?}: {error}")) => match result {
+                Err(error) => return Err(error.into()), Ok(never) => match never {},
+            },
+            result = exercise => result?,
+        }
+    }
+    Ok(())
+}
+
+async fn file_control_journey(guest: bool, maximum: Option<u64>) -> Result {
+    use acyclic_harness_core::{
+        client_files::{ClientFileChange, FileRoot},
+        filesystem::{WorkspaceMutation, workspace_ref},
+        supervision::{Event, Lifecycle},
+    };
+    use futures::TryStreamExt as _;
+    let stream = Arc::new(MemoryStream::default());
+    let mut options = turns()?;
+    options.limits.maximum_bytes = maximum;
+    let issuer = AuthorityRoot::new(
+        "agents",
+        [7; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "local".into(),
+        },
+    );
+    let bound = Bound::local_root(issuer.clone(), placement(&stream)?, options)?;
+    let guest_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let bound = if guest {
+        use acyclic_actors::guest::{GuestFuture, wire};
+        let native = bound.handler();
+        let interrupt_handler = native.clone();
+        let manifest = wire::decode_manifest(&wire::encode_manifest(native.manifest()))?;
+        let calls = guest_calls.clone();
+        bound.hosting(Arc::new(wire::Remote::new(
+            manifest,
+            move |bytes, cancellation| -> GuestFuture<'static, Vec<u8>> {
+                let native = native.clone();
+                let calls = calls.clone();
+                Box::pin(async move {
+                    let (delivery, checkpoint) = wire::decode_delivery(&bytes)?;
+                    assert!(
+                        !delivery.actor.id().starts_with("file-controls-"),
+                        "host-owned control crossed the guest boundary"
+                    );
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    wire::encode_transition(
+                        &native
+                            .on_record(delivery, checkpoint.as_ref(), cancellation)
+                            .await?,
+                    )
+                })
+            },
+            move |query| -> GuestFuture<'static, bool> {
+                let handler = interrupt_handler.clone();
+                Box::pin(async move { wire::accepts_interrupt(handler.as_ref(), &query).await })
+            },
+        )))?
+    } else {
+        bound
+    };
+    let RootSubmission::Created(agent) = bound
+        .create_root(
+            &intent("file-controls"),
+            root(id(123), vec![volume(PRIVATE_VOLUME, id(123))?]),
+        )
+        .await?
+    else {
+        return Err("root uncertain".into());
+    };
+    let store = acyclic_harness_core::agent::actor_store(&stream)?;
+    let actor = bound.agents().actor(&agent)?;
+    // All three revisions commit while the dispatcher is dormant. A later
+    // steering key must not overtake an earlier stop request and its deletion.
+    let RootSubmission::Created(stopped) = bound
+        .create_root(
+            &intent("stop-before-steer"),
+            root(id(124), vec![volume(PRIVATE_VOLUME, id(124))?]),
+        )
+        .await?
+    else {
+        return Err("second root uncertain".into());
+    };
+    bound
+        .publish_files(
+            &stopped,
+            FileRoot::Private {},
+            OperationId::from_bytes([201; 16]),
+            &[ClientFileChange {
+                path: "control/stop".into(),
+                expected: None,
+                text: Some(String::new()),
+            }],
+        )
+        .await?;
+    let stop = bound
+        .files(
+            &stopped,
+            FileRoot::Private {},
+            &["control/stop".into()],
+            None,
+        )
+        .await?
+        .files["control/stop"]
+        .as_ref()
+        .ok_or("stop missing")?
+        .original()
+        .unwrap()
+        .clone();
+    bound
+        .publish_files(
+            &stopped,
+            FileRoot::Private {},
+            OperationId::from_bytes([202; 16]),
+            &[ClientFileChange {
+                path: "control/stop".into(),
+                expected: Some(stop),
+                text: None,
+            }],
+        )
+        .await?;
+    bound
+        .publish_files(
+            &stopped,
+            FileRoot::Private {},
+            OperationId::from_bytes([203; 16]),
+            &[ClientFileChange {
+                path: "control/steer.md".into(),
+                expected: None,
+                text: Some("later input".into()),
+            }],
+        )
+        .await?;
+    let mut stop_request = acyclic_stream::FollowRequest::new(
+        acyclic_harness_core::supervision::streams::path(&stopped)?,
+        0,
+    );
+    stop_request.when_absent = acyclic_stream::WhenAbsent::Wait;
+    let mut stop_events = acyclic_stream::records_only(stream.follow(stop_request).await?);
+    let mut request = acyclic_stream::FollowRequest::new(
+        acyclic_harness_core::supervision::streams::path(&agent)?,
+        0,
+    );
+    request.when_absent = acyclic_stream::WhenAbsent::Wait;
+    let mut events = acyclic_stream::records_only(stream.follow(request).await?);
+    let mut inbox = acyclic_stream::records_only(
+        stream
+            .follow(acyclic_stream::FollowRequest::new(agent.inbox()?, 1))
+            .await?,
+    );
+    let write = async |path: &str, text: Option<&str>, number: u8| -> Result {
+        let current = bound
+            .files(&agent, FileRoot::Private {}, &[path.to_owned()], None)
+            .await?;
+        let expected = current
+            .files
+            .get(path)
+            .and_then(Option::as_ref)
+            .and_then(|file| file.original().cloned());
+        bound
+            .publish_files(
+                &agent,
+                FileRoot::Private {},
+                OperationId::from_bytes([number; 16]),
+                &[ClientFileChange {
+                    path: path.to_owned(),
+                    expected,
+                    text: text.map(str::to_owned),
+                }],
+            )
+            .await?;
+        Ok(())
+    };
+    let event = async |events: &mut acyclic_stream::RecordStream| -> Result<Event> {
+        let record = events.try_next().await?.ok_or("event producer closed")?;
+        let event: Event = serde_json::from_slice(&record.value)?;
+        assert_eq!(event.version, 1);
+        assert_eq!(event.agent, agent);
+        assert_eq!(
+            event.run, None,
+            "owner controls must not invent a run identity"
+        );
+        Ok(event)
+    };
+    let exercise = async {
+        let stopped_event: Event = serde_json::from_slice(
+            &stop_events
+                .try_next()
+                .await?
+                .ok_or("stop producer closed")?
+                .value,
+        )?;
+        assert!(matches!(
+            stopped_event.event,
+            Lifecycle::Stopped { signal: None }
+        ));
+        assert_eq!(stream.tail(stopped.closed()?).await?, 1);
+        bound.agents().runtime().complete().await?;
+        assert!(
+            !store
+                .load(&actor)
+                .await?
+                .state()
+                .ok_or("missing target")?
+                .paused()
+        );
+        write("control/pause", Some(""), 1).await?;
+        assert!(matches!(
+            event(&mut events).await?.event,
+            Lifecycle::Paused { signal: None }
+        ));
+        assert!(
+            store
+                .load(&actor)
+                .await?
+                .state()
+                .ok_or("missing target")?
+                .paused()
+        );
+        write("control/pause", None, 2).await?;
+        assert!(matches!(
+            event(&mut events).await?.event,
+            Lifecycle::Resumed {}
+        ));
+        assert!(
+            !store
+                .load(&actor)
+                .await?
+                .state()
+                .ok_or("missing target")?
+                .paused()
+        );
+        let control = ActorReference::new(
+            actor.account().as_bytes(),
+            actor.namespace().as_str().as_bytes(),
+            format!("file-controls-{}", agent.id()).as_bytes(),
+        )?;
+        let control_state = store.load(&control).await?;
+        let source = control_state
+            .state()
+            .and_then(|state| state.subscriptions().get("file-pause"))
+            .ok_or("control source missing")?
+            .path
+            .clone();
+        let from = stream.tail(source.clone()).await?;
+        let mut expected_inbox = stream.tail(agent.inbox()?).await?;
+        // The original producer chunks these paths: pause is in an earlier
+        // record than steering, but both share one authority revision.
+        let mut batch = vec![ClientFileChange {
+            path: "control/pause".into(),
+            expected: None,
+            text: Some(String::new()),
+        }];
+        batch.extend((0..80).map(|number| ClientFileChange {
+            path: format!("control/q{number:03}"),
+            expected: None,
+            text: Some(String::new()),
+        }));
+        batch.push(ClientFileChange {
+            path: "control/steer.md".into(),
+            expected: None,
+            text: Some("alpha".into()),
+        });
+        bound
+            .publish_files(
+                &agent,
+                FileRoot::Private {},
+                OperationId::from_bytes([3; 16]),
+                &batch,
+            )
+            .await?;
+        let source_tail = stream.tail(source.clone()).await?;
+        let records: Vec<_> = stream
+            .read(acyclic_stream::ReadRequest {
+                key: None,
+                path: source,
+                from,
+                limit: u32::try_from(source_tail - from)?,
+                at_least: Default::default(),
+            })
+            .await?
+            .try_collect()
+            .await?;
+        let keyed = |key: &[u8]| {
+            records.iter().find(|record| {
+                record
+                    .headers
+                    .keys()
+                    .iter()
+                    .any(|value| value.as_ref() == key)
+            })
+        };
+        let pause = keyed(b"control/pause").ok_or("pause record missing")?;
+        let steer = keyed(b"control/steer.md").ok_or("steer record missing")?;
+        assert!(
+            pause.sequence < steer.sequence,
+            "batch did not split its controls"
+        );
+        assert_eq!(pause.commit_id, steer.commit_id);
+        assert!(matches!(
+            event(&mut events).await?.event,
+            Lifecycle::Paused { .. }
+        ));
+        bound.agents().runtime().complete().await?;
+        assert_eq!(
+            stream.tail(agent.inbox()?).await?,
+            expected_inbox + 1,
+            "split publication lost steering after applying pause"
+        );
+        for (text, delta, number) in [("alpha", "alpha", 4), ("alpha beta", " beta", 5)] {
+            if number != 4 {
+                write("control/steer.md", Some(text), number).await?;
+            }
+            loop {
+                let record = inbox.try_next().await?.ok_or("inbox producer closed")?;
+                if let InboxRecord::Message(message) = InboxRecord::decode(&record.value)? {
+                    let bytes = read_host_input(&bound, &issuer, &agent, &message.body).await?;
+                    assert_eq!(
+                        serde_json::from_slice::<ModelContent>(&bytes)?,
+                        ModelContent::Text(delta.into())
+                    );
+                    expected_inbox = record.sequence + 1;
+                    break;
+                }
+            }
+        }
+        let sources = bound
+            .files(
+                &agent,
+                FileRoot::Private {},
+                &["control/pause".into(), "control/steer.md".into()],
+                None,
+            )
+            .await?;
+        // One original publication resumes and rejects a rewrite. Both
+        // lifecycle records must use one captured supervision append cut.
+        bound
+            .publish_files(
+                &agent,
+                FileRoot::Private {},
+                OperationId::from_bytes([6; 16]),
+                &[
+                    ClientFileChange {
+                        path: "control/pause".into(),
+                        expected: Some(
+                            sources.files["control/pause"]
+                                .as_ref()
+                                .ok_or("pause missing")?
+                                .original()
+                                .unwrap()
+                                .clone(),
+                        ),
+                        text: None,
+                    },
+                    ClientFileChange {
+                        path: "control/steer.md".into(),
+                        expected: Some(
+                            sources.files["control/steer.md"]
+                                .as_ref()
+                                .ok_or("steer missing")?
+                                .original()
+                                .unwrap()
+                                .clone(),
+                        ),
+                        text: Some("rewritten".into()),
+                    },
+                ],
+            )
+            .await?;
+        let resumed = event(&mut events).await?;
+        assert!(matches!(resumed.event, Lifecycle::Resumed {}));
+        let rejected = event(&mut events).await?;
+        assert!(
+            matches!(rejected.event, Lifecycle::ControlRejected { path } if path == "control/steer.md")
+        );
+        assert_eq!(resumed.source, rejected.source);
+        assert_eq!(
+            stream.tail(agent.inbox()?).await?,
+            expected_inbox,
+            "rejected rewrite appended model input"
+        );
+        let private = volume(PRIVATE_VOLUME, id(123))?;
+        let workspace = workspace_ref(
+            private.volume()?.provider().clone(),
+            &private.volume()?.storage_name(&mut None)?,
+        )?;
+        let mut steering = "alpha beta".to_owned();
+        // Ordinary filesystem publications can grow the file beyond the
+        // per-input capacity. Each new suffix is still one bounded message.
+        // The rejected rewrite above must not have replaced its admitted base.
+        for number in 7..13 {
+            let delta = format!(
+                "{number}{}",
+                "x".repeat(if maximum.is_none() {
+                    80 * 1024
+                } else {
+                    16 * 1024
+                })
+            );
+            steering.push_str(&delta);
+            bound
+                .volumes()
+                .apply(
+                    &workspace,
+                    None,
+                    &[WorkspaceMutation::PutFile {
+                        path: "/control/steer.md".into(),
+                        bytes: bytes::Bytes::copy_from_slice(steering.as_bytes()).into(),
+                    }],
+                    &acyclic_harness_core::IdempotencyKey(format!("large-steer-{number}")),
+                )
+                .await?;
+            loop {
+                let record = inbox.try_next().await?.ok_or("inbox producer closed")?;
+                if let InboxRecord::Message(message) = InboxRecord::decode(&record.value)? {
+                    let bytes = read_host_input(&bound, &issuer, &agent, &message.body).await?;
+                    assert_eq!(
+                        serde_json::from_slice::<ModelContent>(&bytes)?,
+                        ModelContent::Text(delta)
+                    );
+                    break;
+                }
+            }
+        }
+        write("control/stop", Some(""), 13).await?;
+        assert!(matches!(
+            event(&mut events).await?.event,
+            Lifecycle::Stopped { signal: None }
+        ));
+        assert_eq!(stream.tail(agent.closed()?).await?, 1);
+        bound.agents().runtime().complete().await?;
+        assert!(bound.agents().state(&agent).await?.closed);
+        Ok::<_, Box<dyn std::error::Error>>(())
+    };
+    let result: Result = tokio::select! {
+        result = bound.agents().run(|actor, error| panic!("file control delivery {actor:?}: {error}")) => match result { Err(error) => Err(error.into()), Ok(never) => match never {} },
+        result = exercise => result,
+    };
+    result?;
+    assert_eq!(guest_calls.load(Ordering::SeqCst) > 0, guest);
+    Ok(())
+}
+
 #[tokio::test]
 async fn root_admission_requires_the_implicit_journal_before_io() -> Result {
     use super::wired::Refusing;
@@ -374,6 +1415,76 @@ async fn create_root_preparation_and_intent_replay_are_exact() -> Result {
         )
         .await?;
     assert_eq!(prompt.volume(), &journal);
+    bound
+        .publish_files(
+            &created,
+            acyclic_harness_core::client_files::FileRoot::Private {},
+            OperationId::from_bytes([174; 16]),
+            &[acyclic_harness_core::client_files::ClientFileChange {
+                path: "attachment.txt".into(),
+                expected: None,
+                text: Some("visible input".into()),
+            }],
+        )
+        .await?;
+    let files = bound
+        .files(
+            &created,
+            acyclic_harness_core::client_files::FileRoot::Private {},
+            &[
+                "attachment.txt".into(),
+                "status/session-directory.json".into(),
+            ],
+            None,
+        )
+        .await?;
+    assert!(
+        files.files["status/session-directory.json"].is_none(),
+        "ordinary binding advertised an uninitialized directory"
+    );
+    assert_eq!(files.cut.queries.len(), 1);
+    assert_eq!(files.cut.queries.values().next(), Some(&0));
+    let watched_paths = [
+        "attachment.txt".to_owned(),
+        "status/session-directory.json".to_owned(),
+    ];
+    let watching = bound.files(
+        &created,
+        acyclic_harness_core::client_files::FileRoot::Private {},
+        &watched_paths,
+        Some(&files.cut),
+    );
+    tokio::pin!(watching);
+    assert!(futures::poll!(&mut watching).is_pending());
+    bound.initialize_sessions().await?;
+    let initialized = watching.await?;
+    let directory = initialized.files["status/session-directory.json"]
+        .as_ref()
+        .ok_or("initialization did not wake the pending directory file watch")?;
+    assert!(matches!(
+        directory.source,
+        acyclic_harness_core::client_files::FileSource::Query { .. }
+    ));
+    assert_eq!(
+        initialized.cut.generation, files.cut.generation,
+        "directory initialization changed the authored private filesystem"
+    );
+    let attached = files.files["attachment.txt"]
+        .as_ref()
+        .and_then(|file| file.original())
+        .ok_or("bound attachment missing")?;
+    let envelope = bound
+        .stage_prompt(
+            &created,
+            &alice,
+            &intent("attached"),
+            &ModelContent::Part(acyclic_harness_core::model::ModelContentPart::File {
+                file: attached.clone(),
+                policy: acyclic_harness_core::model::FileProjectionPolicy::BoundedFull,
+            }),
+        )
+        .await?;
+    assert_eq!(envelope.volume(), &journal);
     // Staging an envelope does not authorize a reference to hidden journal
     // content: embedded files still need the ordinary content grant.
     assert!(
@@ -420,6 +1531,203 @@ async fn create_root_preparation_and_intent_replay_are_exact() -> Result {
         .stage_text(&created, "message", &bob, &intent("m1"), ("hi", "hi"))
         .await?;
     Ok(())
+}
+
+/// The guest has no host companion factory. The host derives the child's
+/// control actor from the validated spawn, in its original atomic publication.
+#[tokio::test]
+async fn guest_spawn_creates_host_controls_with_original_child_and_volume_publication() -> Result {
+    use acyclic_actors::guest::{GuestFuture, Handler as _, wire};
+    use acyclic_harness_core::{
+        client_files::{ClientFileChange, FileRoot},
+        filesystem::FilesystemSpawnVolumes,
+        supervision::{Event, Lifecycle},
+    };
+    use futures::TryStreamExt as _;
+    struct SpawnOne;
+    impl TurnDriver for SpawnOne {
+        fn step<'a>(
+            &'a self,
+            agent: &'a AgentState,
+            _: u64,
+            _: Option<Queued>,
+            _: acyclic_actors::guest::CancellationToken,
+        ) -> TurnFuture<'a> {
+            Box::pin(async move {
+                Ok(TurnStep {
+                    checkpoint: None,
+                    outs: if agent.parent.is_none() {
+                        vec![Out::Spawn {
+                            profile: None,
+                            history: None,
+                            intent: "worker".into(),
+                            brief: None,
+                            volumes: Vec::new(),
+                        }]
+                    } else {
+                        Vec::new()
+                    },
+                    wait: Wait::Input,
+                    drops: None,
+                })
+            })
+        }
+    }
+    let stream = Arc::new(MemoryStream::default());
+    let placement = placement(&stream)?;
+    let within = placement.within.clone();
+    let bound = Bound::local_root(
+        AuthorityRoot::new(
+            "agents",
+            [7; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "local".into(),
+            },
+        ),
+        placement,
+        turns()?,
+    )?;
+    let guest = Arc::new(
+        AgentHandler::new(actor_store(&stream)?, SpawnOne, turns()?.actors)?.with_spawn_volumes(
+            Arc::new(FilesystemSpawnVolumes::new(bound.volumes().clone())),
+        ),
+    );
+    let manifest = wire::decode_manifest(&wire::encode_manifest(guest.manifest()))?;
+    let interrupt_handler = guest.clone();
+    let bound = bound.hosting(Arc::new(wire::Remote::new(
+        manifest,
+        move |bytes, cancellation| -> GuestFuture<'static, Vec<u8>> {
+            let guest = guest.clone();
+            Box::pin(async move {
+                let (delivery, checkpoint) = wire::decode_delivery(&bytes)?;
+                assert!(!delivery.actor.id().starts_with("file-controls-"));
+                wire::encode_transition(
+                    &guest
+                        .on_record(delivery, checkpoint.as_ref(), cancellation)
+                        .await?,
+                )
+            })
+        },
+        move |query| -> GuestFuture<'static, bool> {
+            let handler = interrupt_handler.clone();
+            Box::pin(async move { wire::accepts_interrupt(handler.as_ref(), &query).await })
+        },
+    )))?;
+    let RootSubmission::Created(root) = bound
+        .create_root(
+            &intent("guest-parent"),
+            root(id(125), vec![volume(PRIVATE_VOLUME, id(125))?]),
+        )
+        .await?
+    else {
+        return Err("root uncertain".into());
+    };
+    bound.agents().drain(&root).await?;
+    let child = root.child(&AgentId::derive(&root.id(), "worker"))?;
+    bound
+        .agents()
+        .send(
+            &root,
+            &super::user(),
+            &InboxRecord::ApprovalRequested(ApprovalRequested {
+                child: child.clone(),
+                id: intent("wake-parent"),
+            }),
+        )
+        .await?;
+    bound.agents().drain(&root).await?;
+    let store = actor_store(&stream)?;
+    let control = ActorReference::new(
+        within.account().as_bytes(),
+        within.namespace().as_str().as_bytes(),
+        format!("file-controls-{}", child.id()).as_bytes(),
+    )?;
+    let child_actor = bound.agents().actor(&child)?;
+    let creation = async |actor: &ActorReference| -> Result<acyclic_stream::Record> {
+        let mut records = stream
+            .read(acyclic_stream::ReadRequest {
+                key: None,
+                path: store.path(actor)?,
+                from: 0,
+                limit: 1,
+                at_least: Default::default(),
+            })
+            .await?;
+        Ok(records.try_next().await?.ok_or("actor was not created")?)
+    };
+    let child_creation = creation(&child_actor).await?;
+    let control_creation = creation(&control).await?;
+    assert_eq!(child_creation.commit_id, control_creation.commit_id);
+    let publication = stream.read_commit(child_creation.commit_id).await?;
+    assert!(
+        publication.mutations.iter().any(|mutation| {
+            let records = match mutation {
+                acyclic_stream::CommittedMutation::Append(append) => &append.records,
+                acyclic_stream::CommittedMutation::Fork(fork) => &fork.records,
+            };
+            records.iter().any(|record| {
+                matches!(InboxRecord::decode(&record.value),
+            Ok(InboxRecord::ForkAdopted(adopted)) if adopted.agent == child.id())
+            })
+        }),
+        "child adoption was outside its control creation publication"
+    );
+    // Resolve the real new private volume before its child has taken a step.
+    let files = bound
+        .files(
+            &child,
+            FileRoot::Private {},
+            &["control/pause".into()],
+            None,
+        )
+        .await?;
+    assert!(files.files["control/pause"].is_none());
+    let mut follow = acyclic_stream::FollowRequest::new(
+        acyclic_harness_core::supervision::streams::path(&child)?,
+        0,
+    );
+    follow.when_absent = acyclic_stream::WhenAbsent::Wait;
+    let mut events = acyclic_stream::records_only(stream.follow(follow).await?);
+    bound
+        .publish_files(
+            &child,
+            FileRoot::Private {},
+            OperationId::from_bytes([204; 16]),
+            &[ClientFileChange {
+                path: "control/pause".into(),
+                expected: None,
+                text: Some(String::new()),
+            }],
+        )
+        .await?;
+    let exercise = async {
+        let event: Event =
+            serde_json::from_slice(&events.try_next().await?.ok_or("child event missing")?.value)?;
+        assert_eq!(event.agent, child);
+        assert!(matches!(event.event, Lifecycle::Paused { signal: None }));
+        assert!(
+            store
+                .load(&child_actor)
+                .await?
+                .state()
+                .ok_or("child state missing")?
+                .paused()
+        );
+        assert!(
+            !store
+                .load(&bound.agents().actor(&root)?)
+                .await?
+                .state()
+                .ok_or("parent state missing")?
+                .paused()
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    };
+    tokio::select! {
+        result = bound.agents().run(|actor, error| panic!("guest child control {actor:?}: {error}")) => match result { Err(error) => Err(error.into()), Ok(never) => match never {} },
+        result = exercise => result,
+    }
 }
 
 #[tokio::test]

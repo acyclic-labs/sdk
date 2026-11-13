@@ -303,7 +303,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     }
 
     /// Mark `publication`'s actor as an interest holder when its new state
-    /// subscribes beyond `manifest`. Producers into a guest-added interest do
+    /// subscribes beyond its activated manifest or to an external source. Those producers do
     /// not know its observers, and nothing enforces their activation pairing
     /// (see [`Store::activation_record`]), so a dormant interest holder has no
     /// other wake after a restart: a placing host restores it from this
@@ -313,18 +313,18 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         &self,
         publication: &mut super::PreparedPublish,
         actor: &ActorReference,
-        manifest: &crate::guest::Manifest,
+        handler: &dyn crate::guest::Handler,
     ) -> Result<(), Error> {
         let Some(state) = &publication.state else {
             return Ok(());
         };
-        match self.interest_marker(actor, state, manifest)? {
+        match self.interest_marker(actor, state, handler)? {
             Some(marker) => publication.join_host(marker),
             None => Ok(()),
         }
     }
 
-    /// Persist the marker of an actor that holds guest-added interests but
+    /// Persist the marker of an actor that holds unpaired source interests but
     /// was created or resumed without a publication of its own (no input
     /// yet). Its activation is checkpointed once it goes idle, so without the
     /// marker a later host could never restore its interests. One soft commit,
@@ -333,9 +333,9 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         &self,
         actor: &ActorReference,
         state: &super::State,
-        manifest: &crate::guest::Manifest,
+        handler: &dyn crate::guest::Handler,
     ) -> Result<(), Error> {
-        let Some(marker) = self.interest_marker(actor, state, manifest)? else {
+        let Some(marker) = self.interest_marker(actor, state, handler)? else {
             return Ok(());
         };
         // Bounded and rooted: the marker's own path names exactly one write.
@@ -351,19 +351,17 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         Ok(())
     }
 
-    /// The soft marker effect for `actor` when `state` subscribes beyond
-    /// `manifest`.
+    /// The soft marker for subscriptions without a producer activation pairing.
     fn interest_marker(
         &self,
         actor: &ActorReference,
         state: &super::State,
-        manifest: &crate::guest::Manifest,
+        handler: &dyn crate::guest::Handler,
     ) -> Result<Option<CommitEffect>, Error> {
-        if state
-            .subscriptions()
-            .keys()
-            .all(|id| manifest.subscriptions.contains(id))
-        {
+        if state.subscriptions().keys().all(|id| {
+            handler.manifest().subscriptions.contains(id)
+                && !handler.external_subscriptions().contains(id)
+        }) {
             return Ok(None);
         }
         let path = self.interest_marker_path(actor)?;

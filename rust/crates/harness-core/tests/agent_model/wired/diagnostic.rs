@@ -204,9 +204,7 @@ pub(crate) async fn check_diagnostic_read(
     let opened = turns
         .open(
             &parent,
-            turn,
-            0,
-            0,
+            acyclic_harness_core::agent::TurnIdentity::new(turn, 0, 0),
             &input,
             acyclic_actors::guest::CancellationToken::new(),
         )

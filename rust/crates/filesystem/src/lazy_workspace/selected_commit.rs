@@ -12,14 +12,10 @@ impl<
         operation: crate::OperationId,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<LazySnapshotRef>, LazyWorkspaceError> {
-        let Some(generation) = self
-            .operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()), ctx)
-            .await?
-        else {
+        let Some(publication) = self.original_publication(operation, ctx).await? else {
             return Ok(None);
         };
-        self.selected_snapshot(operation, generation, ctx)
-            .await
+        self.selected_publication_snapshot(publication, ctx)
             .map(|(snapshot, _)| Some(snapshot))
     }
 
@@ -29,6 +25,59 @@ impl<
         generation: crate::GenerationId,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(LazySnapshotRef, crate::Digest), LazyWorkspaceError> {
+        let (publication, _, _) = self
+            .load_original_publication(operation, Some(generation), ctx)
+            .await?
+            .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
+        self.selected_publication_snapshot(publication, ctx)
+    }
+
+    fn selected_publication_snapshot(
+        &self,
+        publication: NativePublicationSnapshot,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<(LazySnapshotRef, crate::Digest), LazyWorkspaceError> {
+        let NativeSnapshotContext::Selected { cut, input } = publication.context else {
+            return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
+        };
+        ctx.charge(WorkCounters {
+            bytes_hashed: LazySnapshotRef::hash_bytes(publication.generation),
+            ..WorkCounters::UNCHARGED
+        })?;
+        Ok((
+            LazySnapshotRef::new(
+                cut.workspace_id,
+                publication.generation,
+                cut.source,
+                cut.overlay,
+                cut.shadows,
+            ),
+            input,
+        ))
+    }
+
+    /// Read one operation's actual native DATA receipt and its authenticated
+    /// context. Later head or companion advancement cannot replace this cut.
+    pub async fn original_publication(
+        &self,
+        operation: crate::OperationId,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Option<NativePublicationSnapshot>, LazyWorkspaceError> {
+        Ok(self
+            .load_original_publication(operation, None, ctx)
+            .await?
+            .map(|(publication, _, _)| publication))
+    }
+
+    pub(super) async fn load_original_publication(
+        &self,
+        operation: crate::OperationId,
+        expected: Option<crate::GenerationId>,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<
+        Option<(NativePublicationSnapshot, crate::Sequence, crate::Digest)>,
+        LazyWorkspaceError,
+    > {
         let (record, mut guard) = self
             .workspace
             .volume
@@ -44,7 +93,7 @@ impl<
             .await?;
         let Some((actual, record, evidence)) = record else {
             crate::kernel::retire_allocation(guard, 0, ctx)?;
-            return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
+            return Ok(None);
         };
         let bytes = if self
             .workspace
@@ -69,36 +118,40 @@ impl<
         }
         let record = Owned::new(record, guard, bytes);
         let result = (|| {
-            if actual != generation {
+            if expected.is_some_and(|expected| actual != expected) {
                 return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
             }
             let evidence = evidence
                 .as_deref()
                 .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
             let context = publication_codec::decode_publication_context(evidence, operation, ctx)?;
-            let NativeSnapshotContext::Selected { cut, input } = context else {
-                return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
-            };
-            if cut.workspace_id != self.workspace.id()
-                || cut.config != self.workspace.volume.config
-                || cut.source.identity != self.source.reference().identity
+            if context.workspace_id() != self.workspace.id()
+                || context.config() != self.workspace.volume.config
             {
                 return Err(LazyWorkspaceError::StaleIdentity);
             }
-            ctx.charge(WorkCounters {
-                bytes_hashed: LazySnapshotRef::hash_bytes(generation),
-                ..WorkCounters::UNCHARGED
-            })?;
-            Ok((
-                LazySnapshotRef::new(
-                    cut.workspace_id,
-                    generation,
-                    cut.source,
-                    cut.overlay,
-                    cut.shadows,
-                ),
-                input,
-            ))
+            if let NativeSnapshotContext::Lazy(cut) | NativeSnapshotContext::Selected { cut, .. } =
+                context
+                && cut.source.identity != self.source.reference().identity
+            {
+                return Err(LazyWorkspaceError::StaleIdentity);
+            }
+            let prior = record
+                .value
+                .sequence
+                .get()
+                .checked_sub(1)
+                .filter(|position| *position != 0)
+                .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
+            Ok(Some((
+                NativePublicationSnapshot {
+                    context,
+                    operation: Some(operation),
+                    generation: actual,
+                },
+                crate::Sequence::new(prior),
+                record.value.previous_digest,
+            )))
         })();
         drop(evidence);
         record.retire(ctx)?;

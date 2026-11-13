@@ -8,6 +8,121 @@ use acyclic_fs::{MemoryAuthorityBackend, MemoryObjectBackend};
 
 type Host = FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn original_file_progress_ignores_storage_layout_and_counts_creation() -> Result<()> {
+    let bytes = vec![b'x'; 1_048_576];
+    let (host, file) = published(&bytes).await?;
+    let volume = file.volume();
+    let reference = bounded_io::content_workspace(&host.provider, volume, None)?;
+    let workspace = host.open(&reference, None).await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+    let original = host
+        .generation(&workspace, &host.file_generation(&file, None)?, None)
+        .await?;
+    let mut transaction = workspace
+        .begin_transaction(
+            acyclic_fs::IdempotencyKey::from_bytes([2; 16]),
+            budget,
+            &cancellation,
+        )
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
+    transaction
+        .write_range(
+            "/file.txt",
+            1,
+            bytes[1..bytes.len() - 1].to_vec(),
+            budget,
+            &cancellation,
+        )
+        .await
+        .map_err(|failure| failure.error)?;
+    let acyclic_fs::TransactionCommit::Committed(fragmented) = transaction
+        .commit::<acyclic_fs::WorkspaceError, _, _>(
+            None,
+            acyclic_fs::PublicationPermit::Unrestricted,
+            budget,
+            &cancellation,
+            |_| async {
+                Ok(acyclic_fs::OperationReceipt {
+                    value: (),
+                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                })
+            },
+        )
+        .await
+        .map_err(|failure| failure.error)?
+        .value
+    else {
+        return Err(Error::Invalid("range fixture did not commit".into()));
+    };
+    assert!(
+        !fragmented
+            .matches_file_payload(&original, "/file.txt", budget, &cancellation)
+            .await
+            .map_err(|failure| failure.error)?
+            .value,
+        "fixture did not change storage layout"
+    );
+    let (_issuer, write) = grant(volume, VolumeOperation::Write)?;
+    let flattened = host
+        .put_content(
+            volume,
+            &write,
+            file.path(),
+            &bytes,
+            "text/plain",
+            "file.txt",
+            Some(bytes.len() as u64),
+            &IdempotencyKey::new("flat-rewrite")?,
+            None,
+            crate::conversation::ContentAccess::default(),
+        )
+        .await?;
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(16_000_000, 16_000_000),
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    assert!(
+        host.original_file_progress(&flattened, &io)
+            .await?
+            .is_none(),
+        "same bytes counted as progress after a layout change"
+    );
+    assert!(
+        work.receipt().source_bytes_read > 0,
+        "partial chunk comparison lost its original byte admission"
+    );
+    let created = host
+        .put_content(
+            volume,
+            &write,
+            "new.txt",
+            b"new",
+            "text/plain",
+            "new.txt",
+            Some(3),
+            &IdempotencyKey::new("new-file")?,
+            None,
+            crate::conversation::ContentAccess::default(),
+        )
+        .await?;
+    let progress = host.original_file_progress(&created, &io).await?;
+    let _hold = io.guard_owned(
+        progress
+            .as_ref()
+            .map_or(Ok(0), GenerationRef::logical_owned_bytes)?,
+    )?;
+    assert!(progress.is_some(), "creation did not count as progress");
+    drop(progress);
+    Ok(())
+}
+
 async fn published(body: &[u8]) -> Result<(Arc<Host>, FileRef)> {
     let provider = ProviderRef::new("ranges".into(), "filesystem".into(), "1".into(), &mut None)?;
     let volume = VolumeRef::new(
@@ -299,6 +414,108 @@ async fn private_generation_selection_preserves_absence_and_authority() -> Resul
         .await
         .unwrap_err();
     assert_eq!(error.code(), crate::wire::ErrorCode::Unauthorized);
+    assert!(
+        host.stat_private_path(
+            volume,
+            &read,
+            "absent",
+            Some(&selected),
+            crate::conversation::ContentAccess::default(),
+        )
+        .await?
+        .is_none()
+    );
+    let current = host
+        .stat_private_path(
+            volume,
+            &read,
+            "absent",
+            None,
+            crate::conversation::ContentAccess::default(),
+        )
+        .await?
+        .expect("published path");
+    assert_eq!(current.logical_bytes, Some(3));
+    for path in ["absent", "never-published"] {
+        let error = host
+            .stat_private_path(
+                volume,
+                &read,
+                path,
+                Some(&selected),
+                crate::conversation::ContentAccess {
+                    ceiling: Some(&denied),
+                    io: None,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), crate::wire::ErrorCode::Unauthorized);
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn private_metadata_does_not_materialize_file_bodies() -> Result<()> {
+    let (host, file) = published(&vec![b'x'; 2 * 1024 * 1024]).await?;
+    let (_issuer, read) = grant(file.volume(), VolumeOperation::Read)?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget {
+            source_bytes_read: 64 * 1024,
+            bytes_hashed: 64 * 1024,
+            bytes_copied: 64 * 1024,
+            ..acyclic_fs::WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let stat = host
+        .stat_private_path(
+            file.volume(),
+            &read,
+            file.path(),
+            None,
+            crate::conversation::ContentAccess {
+                ceiling: None,
+                io: Some(&io),
+            },
+        )
+        .await?
+        .expect("published file");
+    assert_eq!(stat.kind, acyclic_fs::kernel::FileKind::Regular);
+    assert_eq!(stat.logical_bytes, Some(file.descriptor().byte_length()));
+    assert!(work.receipt().source_bytes_read < 64 * 1024);
+    assert!(work.receipt().object_bytes_read < file.descriptor().byte_length());
+    assert!(work.receipt().bytes_hashed < 64 * 1024);
+    let denied_work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget {
+            bytes_copied: 0,
+            ..acyclic_fs::WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let denied_io = PreparationIo::from_native_work(&denied_work)?;
+    let error = host
+        .read_private_path_indexed(
+            file.volume(),
+            &read,
+            file.path(),
+            None,
+            Some(1),
+            crate::conversation::ContentAccess {
+                ceiling: None,
+                io: Some(&denied_io),
+            },
+        )
+        .await
+        .unwrap_err();
+    // The selected file also exceeds the input read bound, but its original
+    // accounting failure must not become a model/control input rejection.
+    assert!(!matches!(error, Error::ToolRejected { .. }));
     Ok(())
 }
 
