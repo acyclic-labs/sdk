@@ -6,7 +6,7 @@ use ts_rs::TS;
 /// `tools/<name>/program.ts` or `hooks/<name>/program.ts`. Loading a
 /// manifest grants no execution authority: the caller must still admit the
 /// invocation through the ordinary tool or hook execution boundary.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS, crate::HeapLayout)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProgramManifest {
     /// Persisted authoring format; currently 1.
@@ -24,7 +24,7 @@ pub struct ProgramManifest {
 
 /// Native forms of the same program. An absent native form refuses execution;
 /// it never selects another operating system's interpreter.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct ProgramEntry {
     /// POSIX shell entry file.
@@ -36,3 +36,5 @@ pub struct ProgramEntry {
     #[ts(optional)]
     pub ps1: Option<String>,
 }
+
+impl crate::filesystem::PreparationRecord for ProgramManifest {}

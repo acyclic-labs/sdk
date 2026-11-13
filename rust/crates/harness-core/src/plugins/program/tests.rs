@@ -42,6 +42,113 @@ impl Tree for Files {
     }
 }
 
+struct Metered<'a> {
+    files: &'a Files,
+    io: &'a crate::filesystem::PreparationIo,
+}
+
+impl Tree for Metered<'_> {
+    fn preparation_io(&self) -> Option<&crate::filesystem::PreparationIo> {
+        Some(self.io)
+    }
+    fn read<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> futures::future::BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
+        self.files.read(path)
+    }
+}
+
+#[tokio::test]
+async fn repeated_program_loads_keep_each_receivers_allocation_and_cancellation() -> Result<()> {
+    let mut files = Files::program("tools/count");
+    files.files.insert(
+        "tools/count/description.ts".into(),
+        "export const description = 'a'.repeat(65536);".into(),
+    );
+    let cancel = acyclic_fs::CancellationToken::new();
+    let make_work = |bytes, cancel: &acyclic_fs::CancellationToken| {
+        acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget {
+                peak_allocation_bytes: bytes,
+                ..acyclic_fs::WorkBudget::UNBOUNDED
+            },
+            cancel,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
+    };
+    let producer = make_work(16 * 1024 * 1024, &cancel)?;
+    let producer_io = crate::filesystem::PreparationIo::from_native_work(&producer)?;
+    let first = load_program(
+        &Metered {
+            files: &files,
+            io: &producer_io,
+        },
+        "tools/count",
+    )
+    .await?;
+    let tight = make_work(
+        acyclic_fs::NativeMaterializationWork::accounting_state_bytes() + 4096,
+        &cancel,
+    )?;
+    let tight_io = crate::filesystem::PreparationIo::from_native_work(&tight)?;
+    let baseline = tight.live_allocation_bytes();
+    let error = load_program(
+        &Metered {
+            files: &files,
+            io: &tight_io,
+        },
+        "tools/count",
+    )
+    .await
+    .expect_err("cached configuration cannot fund the receiving manifest copy");
+    assert!(matches!(
+        error,
+        Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                acyclic_fs::WorkError::BudgetExceeded {
+                    counter: "peak_allocation_bytes",
+                    ..
+                }
+            ),
+            ..
+        }
+    ));
+    drop(error);
+    assert_eq!(tight.live_allocation_bytes(), baseline);
+    let receiver = make_work(16 * 1024 * 1024, &cancel)?;
+    let receiver_io = crate::filesystem::PreparationIo::from_native_work(&receiver)?;
+    let second = load_program(
+        &Metered {
+            files: &files,
+            io: &receiver_io,
+        },
+        "tools/count",
+    )
+    .await?;
+    assert_eq!(first.definition, second.definition);
+    let retained = second.custody.as_ref().unwrap().bytes();
+    assert!(retained >= 65536);
+    let before_drop = receiver.live_allocation_bytes();
+    drop(second);
+    assert!(before_drop - receiver.live_allocation_bytes() >= retained);
+    let stopped = acyclic_fs::CancellationToken::new();
+    let stopped_work = make_work(16 * 1024 * 1024, &stopped)?;
+    let stopped_io = crate::filesystem::PreparationIo::from_native_work(&stopped_work)?;
+    stopped.cancel();
+    let error = load_program(
+        &Metered {
+            files: &files,
+            io: &stopped_io,
+        },
+        "tools/count",
+    )
+    .await
+    .expect_err("a previously evaluated program must respect receiver cancellation");
+    assert_eq!(error.code(), crate::wire::ErrorCode::Cancelled);
+    Ok(())
+}
+
 #[tokio::test]
 async fn program_revision_pins_imports_and_entries_without_reading_siblings() -> Result<()> {
     let mut tree = Files::program("tools/count");
@@ -78,21 +185,6 @@ async fn program_revision_pins_imports_and_entries_without_reading_siblings() ->
 
 #[tokio::test]
 async fn authored_arguments_reach_the_canonical_shell_only_as_json_stdin() -> Result<()> {
-    struct Metered<'a> {
-        files: &'a Files,
-        io: &'a crate::filesystem::PreparationIo,
-    }
-    impl Tree for Metered<'_> {
-        fn preparation_io(&self) -> Option<&crate::filesystem::PreparationIo> {
-            Some(self.io)
-        }
-        fn read<'a>(
-            &'a self,
-            path: &'a str,
-        ) -> futures::future::BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
-            self.files.read(path)
-        }
-    }
     let files = Files::program("tools/count");
     let cancel = acyclic_fs::CancellationToken::new();
     let work =
