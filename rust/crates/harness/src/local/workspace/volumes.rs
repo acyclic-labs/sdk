@@ -134,6 +134,7 @@ pub(super) async fn attach(
             native: StateArc::new(AsyncMutex::new(None)),
             users: StateArc::new(projection::Users::default()),
             authority: authority.cloned(),
+            shared_views: tokio::sync::OnceCell::new(),
             _binding: binding.cloned().map(|binding| binding.erase()),
         }));
     }
@@ -199,6 +200,12 @@ impl MountedVolume {
             .options
             .clone()
             .ok_or_else(|| Error::Invalid("logical volume has no native projection".into()))?;
+        self.shared_views
+            .get_or_try_init(|| {
+                acyclic_fs::hold_shared_view_instance(self.task_view_admission.get().cloned())
+            })
+            .await
+            .map_err(|error| Error::from(acyclic_fs::MountLifecycleError::from(error)))?;
         let workspace = self.workspace.workspace();
         if read_only {
             let mount = workspace

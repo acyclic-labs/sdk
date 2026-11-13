@@ -129,6 +129,7 @@ mod host_io;
 mod host_session;
 mod shared;
 mod shared_instance;
+pub(super) use shared_instance::hold as hold_shared_instance;
 mod transport_io;
 
 #[cfg(test)]

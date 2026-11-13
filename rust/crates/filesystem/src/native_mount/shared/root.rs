@@ -98,6 +98,53 @@ pub fn shared_view_root() -> Result<PathBuf, NativeMountError> {
     root_in(&default_view_roots()?)
 }
 
+/// Keeps the shared instance of one view root running while held.
+///
+/// A root's last view tears its instance down, so a host that opens
+/// short-lived views back to back (one per command) would mount and unmount
+/// the root for each. Holding the instance makes a view cost only its own
+/// namespace entry. It holds no view, so it pins no workspace.
+pub struct SharedViewInstance {
+    #[cfg(any(target_os = "linux", windows))]
+    _instance: std::sync::Arc<dyn std::any::Any + Send + Sync>,
+}
+
+impl std::fmt::Debug for SharedViewInstance {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SharedViewInstance")
+    }
+}
+
+/// Starts or joins the instance that views under `admission` (or, without
+/// one, this process's default root) are served by. macOS serves each view
+/// from its own mount, so there the hold is empty.
+pub async fn hold_shared_view_instance(
+    admission: Option<std::sync::Arc<crate::HeldRoot>>,
+) -> Result<SharedViewInstance, NativeMountError> {
+    super::super::lifecycle::run_native_control(move || {
+        #[cfg(any(target_os = "linux", windows))]
+        {
+            let root = match admission.as_deref() {
+                Some(admitted) => shared_view_root_in(admitted)?,
+                None => shared_view_root()?,
+            };
+            #[cfg(target_os = "linux")]
+            let instance = super::super::fuse::hold_shared_instance(&root)?;
+            #[cfg(windows)]
+            let instance = super::super::projfs::hold_shared_instance(&root)?;
+            Ok(SharedViewInstance {
+                _instance: instance,
+            })
+        }
+        #[cfg(not(any(target_os = "linux", windows)))]
+        {
+            drop(admission);
+            Ok(SharedViewInstance {})
+        }
+    })
+    .await?
+}
+
 fn default_view_roots() -> Result<crate::HeldRoot, NativeMountError> {
     let roots = registry::path()?
         .parent()
