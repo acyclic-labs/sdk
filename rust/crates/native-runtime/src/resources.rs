@@ -99,6 +99,30 @@ pub fn mounts_beneath(root: &Path) -> io::Result<u64> {
 }
 
 #[cfg(target_os = "linux")]
+/// Decodes a Linux mountinfo path field without allocating a path.
+#[doc(hidden)]
+pub fn mountinfo_path_bytes(mut field: &[u8]) -> impl Iterator<Item = u8> {
+    std::iter::from_fn(move || {
+        let (byte, after) = match field {
+            [
+                b'\\',
+                high @ b'0'..=b'3',
+                middle @ b'0'..=b'7',
+                low @ b'0'..=b'7',
+                after @ ..,
+            ] => (
+                ((high - b'0') << 6) | ((middle - b'0') << 3) | (low - b'0'),
+                after,
+            ),
+            [byte, after @ ..] => (*byte, after),
+            [] => return None,
+        };
+        field = after;
+        Some(byte)
+    })
+}
+
+#[cfg(target_os = "linux")]
 mod linux {
     use super::{Descriptor, ProcessResources, Sampler};
     use std::ffi::OsString;
@@ -109,28 +133,9 @@ mod linux {
     /// A mountinfo path field, whose space, tab, newline and backslash bytes
     /// are written as three octal digits after a backslash.
     pub(super) fn unescape(field: &[u8]) -> PathBuf {
-        let mut path = Vec::with_capacity(field.len());
-        let mut rest = field;
-        loop {
-            rest = match rest {
-                [
-                    b'\\',
-                    high @ b'0'..=b'3',
-                    middle @ b'0'..=b'7',
-                    low @ b'0'..=b'7',
-                    after @ ..,
-                ] => {
-                    path.push(((high - b'0') << 6) | ((middle - b'0') << 3) | (low - b'0'));
-                    after
-                }
-                [byte, after @ ..] => {
-                    path.push(*byte);
-                    after
-                }
-                [] => break,
-            };
-        }
-        PathBuf::from(OsString::from_vec(path))
+        PathBuf::from(OsString::from_vec(
+            super::mountinfo_path_bytes(field).collect(),
+        ))
     }
 
     pub(super) struct Procfs;

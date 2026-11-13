@@ -383,6 +383,7 @@ fn native_code(error: &crate::NativeTreeMaterializationError) -> Code {
         E::ExternalMutation | E::PreimageConflict | E::AllocationChanged { .. } => Code::Aborted,
         E::UnexpectedBackup => Code::FailedPrecondition,
         E::UnsupportedRename => Code::Unimplemented,
+        E::MountBoundary => Code::FailedPrecondition,
         E::Cancelled => Code::Cancelled,
         E::OriginalWorkPoisoned | E::MissingCustody => Code::Internal,
         E::Io(error) => io_code(error),
