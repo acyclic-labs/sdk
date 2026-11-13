@@ -260,7 +260,7 @@ impl RootWitness {
 /// Version five keeps interaction custody outside authored agent volumes.
 /// Earlier owners may retain private interaction files or in-tree native
 /// preparation, so refuse them before filesystem attachment or capture.
-const RECORD: &str = "owner.v6";
+pub(super) const RECORD: &str = "owner.v6";
 const OLDER_RECORDS: [&str; 5] = ["owner.json", "owner.v2", "owner.v3", "owner.v4", "owner.v5"];
 
 impl Owner {

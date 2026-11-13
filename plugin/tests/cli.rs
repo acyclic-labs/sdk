@@ -880,21 +880,31 @@ async fn doctor_selects_report_mode_from_each_original_terminal_stream() {
 async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
     let fixture = fixture();
     let model = model(fixture._directory.path()).await;
-    fn snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, Option<Vec<u8>>> {
+    #[derive(Debug, Eq, PartialEq)]
+    enum SnapshotEntry {
+        File(Vec<u8>),
+        Link(PathBuf),
+        Node(std::fs::FileType),
+    }
+    fn snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, SnapshotEntry> {
         fn visit(
             root: &Path,
             path: &Path,
-            result: &mut std::collections::BTreeMap<PathBuf, Option<Vec<u8>>>,
+            result: &mut std::collections::BTreeMap<PathBuf, SnapshotEntry>,
         ) {
             for entry in std::fs::read_dir(path).unwrap() {
-                let path = entry.unwrap().path();
-                let directory = path.is_dir();
+                let entry = entry.unwrap();
+                let path = entry.path();
+                let kind = entry.file_type().unwrap();
+                let directory = kind.is_dir();
                 result.insert(
                     path.strip_prefix(root).unwrap().to_owned(),
-                    if directory {
-                        None
+                    if kind.is_file() {
+                        SnapshotEntry::File(std::fs::read(&path).unwrap())
+                    } else if kind.is_symlink() {
+                        SnapshotEntry::Link(std::fs::read_link(&path).unwrap())
                     } else {
-                        Some(std::fs::read(&path).unwrap())
+                        SnapshotEntry::Node(kind)
                     },
                 );
                 if directory {

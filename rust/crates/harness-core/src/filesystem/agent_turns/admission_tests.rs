@@ -484,7 +484,9 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
         policy.layers[0].retain(|rule| rule.id != "published-input");
         policy.layers[0][0].id = "saved-host-custody-".repeat(256);
         assert!(
-            serde_json::to_vec(&policy)?.len()
+            serde_json::to_vec(&policy)
+                .map_err(|error| Error::Invalid(error.to_string()))?
+                .len()
                 > include_bytes!("../host/journal-policy.json").len()
         );
         replace_policy(&workspace, &policy).await?;
