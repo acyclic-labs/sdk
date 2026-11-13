@@ -13,7 +13,7 @@ async fn cancelled_retirement_keeps_contending_async_controls_off_the_executor()
     let physical = tempfile::tempdir()?;
     let lazy = native_lazy_source(physical.path(), "contending-retirement", &cancellation).await?;
     let work = test_work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
-    let options = fixture_options(lazy.workspace(), MountOptions::read_write()).await?;
+    let options = fixture_options(lazy.workspace(), MountOptions::read_write).await?;
     let (source, volume_id, _root) = admitted_source(&lazy, &options, &work).await?;
     let session = CustomerSession::new(
         Some(NativeMountSession::new(
@@ -89,10 +89,9 @@ async fn completed_lazy_retirement_does_not_recheck_a_later_cancelled_waiter()
     let physical = tempfile::tempdir()?;
     let lazy = native_lazy_source(physical.path(), "completed-retirement", &cancellation).await?;
     let work = test_work(crate::performance::BOUNDARY_BUDGET, &cancellation)?;
-    let options = fixture_options(
-        lazy.workspace(),
-        MountOptions::read_write().publication(MountPublication::Manual),
-    )
+    let options = fixture_options(lazy.workspace(), |view, owner| {
+        MountOptions::read_write(view, owner).publication(MountPublication::Manual)
+    })
     .await?;
     let (authored, _, (root, custody)) = admitted_source(&lazy, &options, &work).await?;
     let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(custody) = custody else {
@@ -145,7 +144,7 @@ async fn retired_mount_proof_preserves_all_terminal_causes_on_every_os()
     let work = test_work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
     let (authored, _, root_text) = admitted_source(
         &lazy,
-        &fixture_options(lazy.workspace(), MountOptions::read_write()).await?,
+        &fixture_options(lazy.workspace(), MountOptions::read_write).await?,
         &work,
     )
     .await?;
@@ -251,7 +250,7 @@ async fn lifecycle_operations_reuse_the_mount_source_context()
     let work = test_work(crate::performance::BOUNDARY_BUDGET, &cancellation)?;
     let (source, volume_id, _root) = admitted_source(
         &lazy,
-        &fixture_options(lazy.workspace(), MountOptions::read_write()).await?,
+        &fixture_options(lazy.workspace(), MountOptions::read_write).await?,
         &work,
     )
     .await?;
@@ -336,10 +335,9 @@ async fn lifecycle_operations_retain_the_source_invocation_and_finite_budget()
         ..crate::WorkBudget::UNBOUNDED
     };
     let work = test_work(budget, &cancellation)?;
-    let options = fixture_options(
-        lazy.workspace(),
-        MountOptions::read_write().publication(MountPublication::Manual),
-    )
+    let options = fixture_options(lazy.workspace(), |view, owner| {
+        MountOptions::read_write(view, owner).publication(MountPublication::Manual)
+    })
     .await?;
     let (source, volume_id, _) = admitted_source(&lazy, &options, &work).await?;
     let original = source
@@ -420,12 +418,11 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
         materializations: 0,
         ..crate::WorkBudget::UNBOUNDED
     };
-    let options = fixture_options(
-        lazy.workspace(),
-        MountOptions::read_write()
+    let options = fixture_options(lazy.workspace(), |view, owner| {
+        MountOptions::read_write(view, owner)
             .subdirectory("/selected")
-            .publication(MountPublication::Manual),
-    )
+            .publication(MountPublication::Manual)
+    })
     .await?;
     let work = test_work(budget, &cancellation)?;
     let (ordinary_source, volume, root) = admitted_source(&lazy, &options, &work).await?;
@@ -526,10 +523,9 @@ async fn witnessed_attachment_keeps_the_original_root_and_rejects_unfunded_captu
         .await?;
     let directory = tempfile::tempdir()?;
     let options = recording_options(directory.path());
-    let mount = fixture_options(
-        lazy.workspace(),
-        MountOptions::read_only().subdirectory("/selected-Ã©"),
-    )
+    let mount = fixture_options(lazy.workspace(), |view, owner| {
+        MountOptions::read_only(view, owner).subdirectory("/selected-Ã©")
+    })
     .await?;
     let original = test_work(crate::WorkBudget::UNBOUNDED, &token)?;
     let prepared = generation
@@ -598,7 +594,7 @@ async fn read_only_head_sources_refresh_without_mutation_or_advancing_exact_pins
         let lazy = native_lazy_source(physical.path(), "readonly-refresh", &cancellation).await?;
         let workspace = lazy.workspace();
         workspace.write_text("/file", "original").await?;
-        let options = fixture_options(workspace, MountOptions::read_only())
+        let options = fixture_options(workspace, MountOptions::read_only)
             .await?
             .native_context(&work, None, None);
         let source = if lazy_selection {
@@ -608,13 +604,12 @@ async fn read_only_head_sources_refresh_without_mutation_or_advancing_exact_pins
         };
         let selected = head(workspace, &work).await?;
         let exact_view = compiled(source.as_ref(), 1, vec![], None)?.with_data_generation(selected);
-        let pinned = workspace
-            .native_source(
-                &options
-                    .clone()
-                    .access_view(Arc::new(crate::access::AccessView::new(exact_view))),
-            )
-            .await?;
+        let pinned_options = MountOptions::read_only(
+            Arc::new(crate::access::AccessView::new(exact_view)),
+            Arc::clone(&options.access_refresh),
+        )
+        .native_context(&work, None, None);
+        let pinned = workspace.native_source(&pinned_options).await?;
         let file = native_test_path("file");
         let added = native_test_path("added");
         assert_eq!(source.read_range(&file, 0, 32)?.as_ref(), b"original");
@@ -706,7 +701,7 @@ async fn pinned_native_sources_cannot_publish_and_destinations_preserve_concurre
     let source_options = recording_options(source_root.path());
     let source = admitted
         .prepare_native_working_set(
-            &fixture_options(&workspace, MountOptions::read_only()).await?,
+            &fixture_options(&workspace, MountOptions::read_only).await?,
             &source_options,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
@@ -760,10 +755,9 @@ async fn pinned_native_sources_cannot_publish_and_destinations_preserve_concurre
     assert_eq!(head(&workspace, &fixture_work).await?, concurrent);
 
     let destination_root = tempfile::tempdir()?;
-    let write = fixture_options(
-        &workspace,
-        MountOptions::read_write().publication(MountPublication::Manual),
-    )
+    let write = fixture_options(&workspace, |view, owner| {
+        MountOptions::read_write(view, owner).publication(MountPublication::Manual)
+    })
     .await?;
     let rejected = admitted
         .prepare_native_working_set(
@@ -811,7 +805,7 @@ async fn pinned_native_sources_cannot_publish_and_destinations_preserve_concurre
 }
 
 #[tokio::test]
-async fn lazy_working_set_requires_authority_before_exactifying()
+async fn lazy_working_set_requires_manual_publication_before_exactifying()
 -> Result<(), Box<dyn std::error::Error>> {
     crate::initialize_native_mount_services()?;
     let cancel = crate::CancellationToken::new();
@@ -819,34 +813,18 @@ async fn lazy_working_set_requires_authority_before_exactifying()
     let physical = tempfile::tempdir()?;
     std::fs::create_dir(physical.path().join("hot"))?;
     std::fs::write(physical.path().join("hot/secret"), b"secret")?;
-    let lazy = native_lazy_source(physical.path(), "unbound-working-set", &cancel).await?;
+    let lazy = native_lazy_source(physical.path(), "manual-working-set", &cancel).await?;
     let before = head(lazy.workspace(), &work).await?;
     let destination = tempfile::tempdir()?;
-    assert!(matches!(
-        lazy.prepare_native_working_set(
-            MountOptions::read_write()
-                .subdirectory("/hot")
-                .publication(MountPublication::Manual),
-            &recording_options(destination.path()),
-            crate::WorkBudget::UNBOUNDED,
-            &cancel,
-            PublicationPermit::Unrestricted,
-        )
-        .await,
-        Err(MountLifecycleError::NativePolicy(
-            "native mounts require an authenticated policy and capability view"
-        ))
-    ));
     for publication in [
         MountPublication::CloseAndSync,
         MountPublication::PerMutation,
     ] {
-        let mount = fixture_options(
-            lazy.workspace(),
-            MountOptions::read_write()
+        let mount = fixture_options(lazy.workspace(), |view, owner| {
+            MountOptions::read_write(view, owner)
                 .subdirectory("/hot")
-                .publication(publication),
-        )
+                .publication(publication)
+        })
         .await?;
         assert!(matches!(
             lazy.prepare_native_working_set(
@@ -889,12 +867,11 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
     let before_invalid = head(lazy.workspace(), &fixture_work).await?;
     assert!(matches!(
         lazy.prepare_native_working_set(
-            fixture_options(
-                lazy.workspace(),
-                MountOptions::read_write()
-                    .publication(MountPublication::Manual)
-                    .subdirectory("/hot")
+            fixture_options(lazy.workspace(), |view, owner| MountOptions::read_write(
+                view, owner
             )
+            .publication(MountPublication::Manual)
+            .subdirectory("/hot"))
             .await?,
             &recording_options("relative-native-view"),
             crate::WorkBudget::UNBOUNDED,
@@ -909,12 +886,11 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
     assert_eq!(head(lazy.workspace(), &fixture_work).await?, before_invalid);
     let working_set = lazy
         .prepare_native_working_set(
-            fixture_options(
-                lazy.workspace(),
-                MountOptions::read_write()
+            fixture_options(lazy.workspace(), |view, owner| {
+                MountOptions::read_write(view, owner)
                     .publication(MountPublication::Manual)
-                    .subdirectory("/hot"),
-            )
+                    .subdirectory("/hot")
+            })
             .await?,
             &recording_options(native_view.path()),
             crate::WorkBudget::UNBOUNDED,
@@ -1140,12 +1116,11 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
     let latest_view = tempfile::tempdir()?;
     let ready = lazy
         .prepare_native_working_set(
-            fixture_options(
-                lazy.workspace(),
-                MountOptions::read_write()
+            fixture_options(lazy.workspace(), |view, owner| {
+                MountOptions::read_write(view, owner)
                     .publication(MountPublication::Manual)
-                    .subdirectory("/hot"),
-            )
+                    .subdirectory("/hot")
+            })
             .await?,
             &recording_options(latest_view.path()),
             crate::WorkBudget::UNBOUNDED,
@@ -1295,10 +1270,9 @@ async fn published_lazy_unmount_reuses_the_same_windows_destination()
         let mount = lazy
             .mount(
                 destination.path(),
-                fixture_options(
-                    lazy.workspace(),
-                    MountOptions::read_write().publication(MountPublication::Manual),
-                )
+                fixture_options(lazy.workspace(), |view, owner| {
+                    MountOptions::read_write(view, owner).publication(MountPublication::Manual)
+                })
                 .await?
                 .native_context(&work, None, None),
             )
@@ -1339,10 +1313,9 @@ async fn published_lazy_unmount_captures_authored_changes_before_detach()
         let mount = lazy
             .mount(
                 destination.path(),
-                fixture_options(
-                    lazy.workspace(),
-                    MountOptions::read_write().publication(MountPublication::Manual),
-                )
+                fixture_options(lazy.workspace(), |view, owner| {
+                    MountOptions::read_write(view, owner).publication(MountPublication::Manual)
+                })
                 .await?
                 .native_context(&work, None, None),
             )

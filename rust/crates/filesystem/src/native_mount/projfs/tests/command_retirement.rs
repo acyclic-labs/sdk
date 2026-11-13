@@ -155,10 +155,10 @@ async fn retire_after_cancellation(
     let mount = workspace
         .mount(
             &destination,
-            fixture_access::options(
-                &workspace,
-                crate::MountOptions::read_write().publication(crate::MountPublication::Manual),
-            )
+            fixture_access::options(&workspace, |view, owner| {
+                crate::MountOptions::read_write(view, owner)
+                    .publication(crate::MountPublication::Manual)
+            })
             .await?
             .native_context(&work, None, None),
         )
@@ -313,10 +313,10 @@ async fn command_retirement_retries_the_physical_owner_before_live_controls()
     let mount = workspace
         .mount(
             &destination,
-            fixture_access::options(
-                &workspace,
-                crate::MountOptions::read_write().publication(crate::MountPublication::Manual),
-            )
+            fixture_access::options(&workspace, |view, owner| {
+                crate::MountOptions::read_write(view, owner)
+                    .publication(crate::MountPublication::Manual)
+            })
             .await?
             .native_context(&work, None, None),
         )

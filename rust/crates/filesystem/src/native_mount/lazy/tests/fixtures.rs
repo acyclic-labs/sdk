@@ -306,11 +306,11 @@ pub(super) async fn live_lazy_mount_of(
     )
     .await?
     .0;
-    let options = crate::native_mount::tests::fixture_access::options(
-        lazy.workspace(),
-        MountOptions::read_write().publication(MountPublication::Manual),
-    )
-    .await?;
+    let options =
+        crate::native_mount::tests::fixture_access::options(lazy.workspace(), |view, owner| {
+            MountOptions::read_write(view, owner).publication(MountPublication::Manual)
+        })
+        .await?;
     std::fs::create_dir_all(destination)?;
     Ok(lazy
         .mount(destination, options.native_context(&work, None, None))

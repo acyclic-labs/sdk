@@ -8,7 +8,15 @@ pub(super) async fn rename_hydration_case() -> Result<(), Failure> {
     fs::create_dir(&mount_path)?;
     let workspace = prepare_rename_fixture(root.path()).await?;
     let mount = workspace
-        .mount(&mount_path, MountOptions::read_write())
+        .mount(
+            &mount_path,
+            acyclic_harness::filesystem::local_owner_mount_options(
+                &workspace,
+                "mount-qualification",
+                true,
+            )
+            .await?,
+        )
         .await
         .map_err(stop_failed_mount)?;
     let child_result = capture_child(
@@ -76,10 +84,8 @@ pub(super) fn rename_hydration_child(mount: &Path) -> Result<(), Failure> {
 
 async fn prepare_rename_fixture(root: &Path) -> Result<LocalWorkspace, Failure> {
     let engine = Fs::local(LocalOptions::new(root.join("store"))).await?;
-    let workspace = unbounded!(
-        engine,
-        create_workspace_with_config("rename-hydration", VolumeConfig::native(Lifecycle::Durable),)
-    )?;
+    let workspace =
+        acyclic_harness::filesystem::local_owner_workspace(&engine, "rename-hydration").await?;
     let mut fixture = unbounded!(
         workspace,
         begin_transaction(acyclic_fs::IdempotencyKey::new())

@@ -330,17 +330,34 @@ pub(super) async fn filesystem_sqlite_wal(root: std::path::PathBuf) -> Result<()
     let fs = Box::pin(Fs::local(LocalOptions::new(&store)))
         .await
         .map_err(|error| error.to_string())?;
-    let workspace = Box::pin(fs.create_workspace(
-        "sqlite-wal",
-        acyclic_fs::WorkBudget::UNBOUNDED,
-        &acyclic_fs::CancellationToken::new(),
-    ))
+    let workspace = Box::pin(
+        fs.create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
+            "sqlite-wal",
+            acyclic_fs::VolumeInitialization {
+                config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Durable),
+                access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
+            },
+            acyclic_fs::OperationId::new(),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+            None,
+        ),
+    )
     .await
-    .map(|receipt| receipt.value)
+    .map(|receipt| receipt.value.workspace())
     .map_err(|failure| failure.error)
     .map_err(|error| error.to_string())?;
     let mount = workspace
-        .mount(&destination, MountOptions::read_write())
+        .mount(
+            &destination,
+            acyclic_harness::filesystem::local_owner_mount_options(
+                &workspace,
+                "sqlite-qualification",
+                true,
+            )
+            .await
+            .map_err(|error| error.to_string())?,
+        )
         .await
         .map_err(|error| error.to_string())?;
     let child = run_sqlite_child("--sqlite-wal-child", &destination.join("wal.db")).await;
@@ -384,7 +401,16 @@ pub(super) async fn filesystem_sqlite_wal(root: std::path::PathBuf) -> Result<()
     let remount_path = root.join("remount");
     std::fs::create_dir_all(&remount_path).map_err(|error| error.to_string())?;
     let remount = workspace
-        .mount(&remount_path, MountOptions::read_write())
+        .mount(
+            &remount_path,
+            acyclic_harness::filesystem::local_owner_mount_options(
+                &workspace,
+                "sqlite-qualification",
+                true,
+            )
+            .await
+            .map_err(|error| error.to_string())?,
+        )
         .await
         .map_err(|error| error.to_string())?;
     let child = run_sqlite_child("--sqlite-verify-child", &remount_path.join("wal.db")).await;

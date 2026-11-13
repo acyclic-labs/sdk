@@ -13,10 +13,9 @@ async fn explicit_unmount_retires_the_native_namespace() -> Result<(), Box<dyn s
     let destination = tempfile::tempdir()?;
     let before = crate::capture_root_identity(destination.path())?;
     let lazy = native_lazy_source(physical.path(), "last-mount-owner", &cancellation).await?;
-    let options = super::tests::fixture_options(
-        lazy.workspace(),
-        MountOptions::read_write().publication(MountPublication::Manual),
-    )
+    let options = super::tests::fixture_options(lazy.workspace(), |view, owner| {
+        MountOptions::read_write(view, owner).publication(MountPublication::Manual)
+    })
     .await?;
     let work = test_work(WorkBudget::UNBOUNDED, &cancellation)?;
     let mount = lazy
@@ -108,10 +107,9 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
         Ok::<_, LazyWorkspaceError>(())
     };
     let generation = head(lazy.workspace(), &setup).await?;
-    let options = super::tests::fixture_options(
-        lazy.workspace(),
-        MountOptions::read_write().publication(MountPublication::Manual),
-    )
+    let options = super::tests::fixture_options(lazy.workspace(), |view, owner| {
+        MountOptions::read_write(view, owner).publication(MountPublication::Manual)
+    })
     .await?;
     let path_budget = WorkBudget {
         bytes_copied: 0,

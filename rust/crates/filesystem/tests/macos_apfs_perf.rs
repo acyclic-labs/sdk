@@ -211,12 +211,11 @@ async fn report_apfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
     materialization.materialized_view = Some(acyclic_fs::NativeViewBaseline::recording(&store));
     let working_set = lazy
         .prepare_native_working_set(
-            native_access::options(
-                lazy.workspace(),
-                acyclic_fs::MountOptions::read_write()
+            native_access::options(lazy.workspace(), |view, owner| {
+                acyclic_fs::MountOptions::read_write(view, owner)
                     .publication(acyclic_fs::MountPublication::Manual)
-                    .subdirectory("/hot"),
-            )
+                    .subdirectory("/hot")
+            })
             .await?,
             &materialization,
             WorkBudget::UNBOUNDED,

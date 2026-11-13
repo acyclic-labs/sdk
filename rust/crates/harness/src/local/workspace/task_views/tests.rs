@@ -316,11 +316,7 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
     let options = read_only
         .mount_options(read_only.view().workspace())
         .await?;
-    let access = options
-        .require_access_view()
-        .map_err(storage)?
-        .current()
-        .map_err(storage)?;
+    let access = options.access_view().current().map_err(storage)?;
     let now = harness.clock.now_unix_millis() / 1000;
     assert!(
         access

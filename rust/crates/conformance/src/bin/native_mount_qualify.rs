@@ -13,10 +13,9 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use acyclic_fs::kernel::FileMetadata;
-use acyclic_fs::model::{Lifecycle, VolumeConfig};
 use acyclic_fs::{
-    Fs, LocalOptions, MountOptions, NativeMountKind, TransactionCommit,
-    native_mount::NativeMountRecoveryOwner, probe_native_mount,
+    Fs, LocalOptions, NativeMountKind, TransactionCommit, native_mount::NativeMountRecoveryOwner,
+    probe_native_mount,
 };
 use acyclic_native_runtime::{ProcessCommand, ProcessStdio, ProcessTree};
 use bytes::Bytes;

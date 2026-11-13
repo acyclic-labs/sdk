@@ -5,7 +5,7 @@ pub(super) fn require_selection(
     generation: GenerationId,
 ) -> Result<(), MountLifecycleError> {
     if options
-        .require_access_view()?
+        .access_view()
         .current()
         .map_err(|_| MountLifecycleError::NativePolicy("access view is unavailable"))?
         .data_generation()
@@ -46,11 +46,13 @@ pub enum MountPublication {
     Manual,
 }
 
-/// Explicit customer mount configuration.
+/// Explicit customer mount configuration bound to authenticated authority.
+/// Constructors require both the current view and the owner that refreshes it.
+/// Admission still verifies their volume, generation and authority against the workspace.
 #[derive(Clone)]
 pub struct MountOptions {
-    pub(crate) access_view: Option<Arc<crate::access::AccessView>>,
-    pub(crate) access_refresh: Option<Arc<dyn super::super::NativeAccessOwner>>,
+    pub(crate) access_view: Arc<crate::access::AccessView>,
+    pub(crate) access_refresh: Arc<dyn super::super::NativeAccessOwner>,
     pub(crate) writable: bool,
     pub(crate) subdirectory: std::borrow::Cow<'static, str>,
     pub(crate) publication: MountPublication,
@@ -84,7 +86,7 @@ impl MountOptions {
         &self,
     ) -> Result<crate::model::GenerationSelector, MountLifecycleError> {
         let view = self
-            .require_access_view()?
+            .access_view()
             .current()
             .map_err(|_| MountLifecycleError::NativePolicy("access view is unavailable"))?;
         Ok(if self.writable {
@@ -99,14 +101,8 @@ impl MountOptions {
 
     /// Bound policy/capability owner for preparation and inspection. Native
     /// operations additionally fence this view against current persisted policy.
-    pub fn require_access_view(
-        &self,
-    ) -> Result<&Arc<crate::access::AccessView>, MountLifecycleError> {
-        self.access_view
-            .as_ref()
-            .ok_or(MountLifecycleError::NativePolicy(
-                "native mounts require an authenticated policy and capability view",
-            ))
+    pub fn access_view(&self) -> &Arc<crate::access::AccessView> {
+        &self.access_view
     }
 
     /// Original allowance admitted with the authenticated policy owner.
@@ -145,12 +141,16 @@ impl MountOptions {
         Ok(work)
     }
 
-    /// Creates a writable tracking-safe sparse mount with close/fsync publication.
+    /// Creates writable tracking-safe sparse options with close/fsync publication,
+    /// retaining the authenticated view and its selection owner.
     #[must_use]
-    pub fn read_write() -> Self {
+    pub fn read_write(
+        access_view: Arc<crate::access::AccessView>,
+        access_refresh: Arc<dyn super::super::NativeAccessOwner>,
+    ) -> Self {
         Self {
-            access_view: None,
-            access_refresh: None,
+            access_view,
+            access_refresh,
             writable: true,
             subdirectory: std::borrow::Cow::Borrowed("/"),
             publication: MountPublication::CloseAndSync,
@@ -162,21 +162,6 @@ impl MountOptions {
         }
     }
 
-    /// Bind policy intersected with the authenticated caller's capability.
-    /// Mount admission rejects options without this binding.
-    #[must_use]
-    pub fn access_view(mut self, view: Arc<crate::access::AccessView>) -> Self {
-        self.access_view = Some(view);
-        self
-    }
-
-    /// Reload the authenticated view when the persisted policy fence changes.
-    #[must_use]
-    pub fn access_refresh(mut self, refresh: Arc<dyn super::super::NativeAccessOwner>) -> Self {
-        self.access_refresh = Some(refresh);
-        self
-    }
-
     /// Narrow the projection to read-only while retaining its authenticated access owner.
     #[must_use]
     pub fn restrict_to_read_only(mut self) -> Self {
@@ -184,14 +169,18 @@ impl MountOptions {
         self
     }
 
-    /// Creates a read-only mount. Head projections advance only on explicit
-    /// refresh; an authenticated exact-generation selection stays immutable.
+    /// Creates read-only options bound to an authenticated view and selection owner.
+    /// Head projections advance only on explicit refresh; an authenticated
+    /// exact-generation selection stays immutable.
     #[must_use]
-    pub fn read_only() -> Self {
+    pub fn read_only(
+        access_view: Arc<crate::access::AccessView>,
+        access_refresh: Arc<dyn super::super::NativeAccessOwner>,
+    ) -> Self {
         Self {
             writable: false,
             publication: MountPublication::Manual,
-            ..Self::read_write()
+            ..Self::read_write(access_view, access_refresh)
         }
     }
 

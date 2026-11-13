@@ -125,13 +125,19 @@ pub(super) fn crash_child(root: PathBuf, mount: PathBuf) -> Result<(), Failure> 
     runtime.block_on(async move {
         fs::create_dir_all(&root)?;
         let engine = Fs::local(LocalOptions::new(root.join("store"))).await?;
-        let workspace = unbounded!(
-            engine,
-            create_workspace_with_config("crash-owner", VolumeConfig::native(Lifecycle::Durable),)
-        )?;
+        let workspace =
+            acyclic_harness::filesystem::local_owner_workspace(&engine, "crash-owner").await?;
         workspace.write_text("/alive.txt", "alive").await?;
         let _mount = workspace
-            .mount(&mount, MountOptions::read_write())
+            .mount(
+                &mount,
+                acyclic_harness::filesystem::local_owner_mount_options(
+                    &workspace,
+                    "mount-qualification",
+                    true,
+                )
+                .await?,
+            )
             .await
             .map_err(stop_failed_mount)?;
         #[cfg(windows)]
@@ -167,7 +173,15 @@ async fn verify_remounted_workspace(crash_root: &Path, mount: &Path) -> Result<(
     }
     eprintln!("qualification phase: remounting the original ProjFS destination");
     let resumed = workspace
-        .mount(mount, MountOptions::read_write())
+        .mount(
+            mount,
+            acyclic_harness::filesystem::local_owner_mount_options(
+                &workspace,
+                "mount-qualification",
+                true,
+            )
+            .await?,
+        )
         .await
         .map_err(stop_failed_mount)?;
     eprintln!("qualification phase: reading durable ProjFS content");

@@ -100,7 +100,15 @@ where
     let destination = root.join("handoff-mount");
     fs::create_dir(&destination)?;
     let remount = workspace
-        .mount(&destination, MountOptions::read_write())
+        .mount(
+            &destination,
+            acyclic_harness::filesystem::local_owner_mount_options(
+                &workspace,
+                "mount-qualification",
+                true,
+            )
+            .await?,
+        )
         .await
         .map_err(stop_failed_mount)?;
     if fs::read(destination.join("nested/created.txt"))? != b"created-v2" {

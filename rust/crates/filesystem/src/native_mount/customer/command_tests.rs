@@ -39,10 +39,9 @@ async fn publish_command(
     let destination = tempfile::tempdir()?;
     let working = original
         .prepare_native_working_set(
-            &super::tests::fixture_options(
-                &workspace,
-                MountOptions::read_write().publication(MountPublication::Manual),
-            )
+            &super::tests::fixture_options(&workspace, |view, owner| {
+                MountOptions::read_write(view, owner).publication(MountPublication::Manual)
+            })
             .await?,
             &recording_options(destination.path()),
             crate::WorkBudget::UNBOUNDED,
@@ -164,25 +163,13 @@ async fn view_completion_unmount_and_abandon_retire_only_their_view()
     let root = tempfile::tempdir()
         .inspect_err(|error| eprintln!("view temporary directory: {error:?}"))?;
     let admission = Arc::new(crate::hold_root(root.path())?);
-    let options = super::tests::fixture_options(
-        &workspace,
-        MountOptions::read_write()
+    let options = super::tests::fixture_options(&workspace, |view, owner| {
+        MountOptions::read_write(view, owner)
             .publication(MountPublication::Manual)
-            .view_root(admission.clone()),
-    )
+            .view_root(admission.clone())
+    })
     .await?;
     let retained = workspace.mount_view(options.clone()).await?;
-    // A startup that fails after issuance leaves nothing behind: the view's
-    // issuance owns its directory from creation, not from a successful mount.
-    let listed = || {
-        std::fs::read_dir(root.path())
-            .inspect_err(|error| eprintln!("view admission directory listing: {error:?}"))
-            .map(Iterator::count)
-    };
-    let before = listed()?;
-    let unauthorized = MountOptions::read_write().view_root(admission);
-    assert!(workspace.mount_view(unauthorized).await.is_err());
-    assert_eq!(listed()?, before);
     let completed = workspace.mount_view(options.clone()).await?;
     assert_eq!(retained.path().parent(), completed.path().parent());
     std::fs::write(retained.path().join("still-live.txt"), b"retained")

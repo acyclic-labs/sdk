@@ -148,7 +148,7 @@ enum ReadCeiling {
 async fn readonly_import(bytes: &[u8], flow: Preparation, ceiling: ReadCeiling) -> TestResult {
     use acyclic_fs::demand::native::NativeDemandSource;
     use acyclic_fs::{
-        LazyWorkspace, MemoryLazyWorkspaceStore, MountOptions, MountPublication, PublicationPermit,
+        LazyWorkspace, MemoryLazyWorkspaceStore, MountPublication, PublicationPermit,
     };
     initialize()?;
     let source = tempfile::tempdir()?;
@@ -251,28 +251,8 @@ async fn readonly_import(bytes: &[u8], flow: Preparation, ceiling: ReadCeiling) 
         .publication(MountPublication::Manual)
         .subdirectory("/hot");
     // The owner's actual ledger is retained by its options.
-    let view = options.require_access_view()?.clone();
+    let view = options.access_view().clone();
     assert_eq!(view.current()?.data_generation(), Some(original));
-    let plain = MountOptions::read_only()
-        .access_view(view.clone())
-        .publication(MountPublication::Manual)
-        .subdirectory("/hot");
-    let expected = "materialization requires the authenticated selection owner";
-    assert!(matches!(
-        lazy.prepare_native_working_set(
-            plain,
-            &acyclic_fs::MaterializeOptions::native(destination.path()),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-            PublicationPermit::Unrestricted,
-        )
-        .await,
-        Err(acyclic_fs::MountLifecycleError::NativePolicy(reason)) if reason == expected
-    ));
-    assert_eq!(
-        lazy.workspace().head(&work, &cancellation).await?.id(),
-        original
-    );
     let metadata = tempfile::tempdir()?;
     let store = acyclic_fs::LocalCoreStateStore::new(metadata.path());
     let mut materialization = acyclic_fs::MaterializeOptions::native(destination.path());

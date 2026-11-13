@@ -36,7 +36,10 @@ pub async fn options<
     O: AsyncObjectStore + Send + Sync + 'static,
 >(
     workspace: &Workspace<A, O>,
-    options: MountOptions,
+    configure: impl FnOnce(
+        Arc<AccessView>,
+        Arc<dyn acyclic_fs::native_mount::NativeAccessOwner>,
+    ) -> MountOptions,
 ) -> Result<MountOptions, Box<dyn std::error::Error>> {
     let cancel = CancellationToken::new();
     let mut head = workspace
@@ -49,11 +52,12 @@ pub async fn options<
         .await?
         .value;
     let view = checkout_view(&mut head).await?;
-    Ok(options
-        .access_view(view)
-        .access_refresh(Arc::new(SelectionOwner {
+    Ok(configure(
+        view,
+        Arc::new(SelectionOwner {
             workspace: workspace.clone(),
-        })))
+        }),
+    ))
 }
 
 /// One explicit fixture authority for both workspace and raw-checkout mounts.
@@ -145,7 +149,7 @@ where
         acyclic_fs::NativeMountError,
     > {
         acyclic_fs::native_mount::NativeMountCallbackFuture::new(work, || async move {
-            let options = options(&self.workspace, MountOptions::read_only())
+            let options = options(&self.workspace, MountOptions::read_only)
                 .await
                 .map_err(|_| acyclic_fs::MountSourceError::AccessDenied)?;
             Ok(options)
@@ -161,9 +165,8 @@ pub async fn manual_mount_options<
 >(
     workspace: &Workspace<A, O>,
 ) -> Result<MountOptions, Box<dyn std::error::Error>> {
-    options(
-        workspace,
-        MountOptions::read_write().publication(acyclic_fs::MountPublication::Manual),
-    )
+    options(workspace, |view, owner| {
+        MountOptions::read_write(view, owner).publication(acyclic_fs::MountPublication::Manual)
+    })
     .await
 }

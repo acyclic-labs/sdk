@@ -87,7 +87,7 @@ async fn mounted_workflow(
     let mount = lazy
         .mount(
             view.path(),
-            native_access::options(lazy.workspace(), MountOptions::read_write()).await?,
+            native_access::options(lazy.workspace(), MountOptions::read_write).await?,
         )
         .await?;
     let mounted = (|| {
@@ -197,7 +197,7 @@ async fn qualify_linux_lazy_source_promotion() -> Result<(), Box<dyn std::error:
     let mount = lazy
         .mount(
             view.path(),
-            native_access::options(lazy.workspace(), MountOptions::read_write()).await?,
+            native_access::options(lazy.workspace(), MountOptions::read_write).await?,
         )
         .await
         .map_err(|error| format!("mount lazy source: {error}"))?;
@@ -295,7 +295,7 @@ async fn qualify_linux_write_unlink_visibility() -> Result<(), Box<dyn std::erro
     let mount = lazy
         .mount(
             view.path(),
-            native_access::options(lazy.workspace(), MountOptions::read_write()).await?,
+            native_access::options(lazy.workspace(), MountOptions::read_write).await?,
         )
         .await?;
     let result = async {
@@ -387,7 +387,7 @@ async fn qualify_linux_open_hardlink_unlink() -> Result<(), Box<dyn std::error::
     let mount = lazy
         .mount(
             view.path(),
-            native_access::options(lazy.workspace(), MountOptions::read_write()).await?,
+            native_access::options(lazy.workspace(), MountOptions::read_write).await?,
         )
         .await?;
     let result = async {
@@ -459,7 +459,7 @@ async fn qualify_linux_ancestor_whiteout() -> Result<(), Box<dyn std::error::Err
     let mount = lazy
         .mount(
             view.path(),
-            native_access::options(lazy.workspace(), MountOptions::read_write()).await?,
+            native_access::options(lazy.workspace(), MountOptions::read_write).await?,
         )
         .await?;
     let result = async {
@@ -511,7 +511,7 @@ async fn qualify_linux_source_rename_visibility() -> Result<(), Box<dyn std::err
     let mount = lazy
         .mount(
             view.path(),
-            native_access::options(lazy.workspace(), MountOptions::read_write()).await?,
+            native_access::options(lazy.workspace(), MountOptions::read_write).await?,
         )
         .await?;
     let result = async {
@@ -641,7 +641,7 @@ async fn report_linux_lazy_mount_read_costs() -> Result<(), Box<dyn std::error::
     let mount = lazy
         .mount(
             view.path(),
-            native_access::options(lazy.workspace(), MountOptions::read_write()).await?,
+            native_access::options(lazy.workspace(), MountOptions::read_write).await?,
         )
         .await?;
     let mount_us = started.elapsed().as_micros();
@@ -854,12 +854,11 @@ async fn report_linux_working_set_costs() -> Result<(), Box<dyn std::error::Erro
     materialization.materialized_view = Some(acyclic_fs::NativeViewBaseline::recording(&store));
     let working_set = lazy
         .prepare_native_working_set(
-            native_access::options(
-                lazy.workspace(),
-                acyclic_fs::MountOptions::read_write()
+            native_access::options(lazy.workspace(), |view, owner| {
+                acyclic_fs::MountOptions::read_write(view, owner)
                     .publication(acyclic_fs::MountPublication::Manual)
-                    .subdirectory("/hot"),
-            )
+                    .subdirectory("/hot")
+            })
             .await?,
             &materialization,
             WorkBudget::UNBOUNDED,

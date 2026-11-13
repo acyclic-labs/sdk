@@ -49,7 +49,7 @@ impl<'a> AdmittedSelection<'a> {
             return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
         }
         let previous = options
-            .require_access_view()?
+            .access_view()
             .current()
             .map_err(|_| MountLifecycleError::NativePolicy("access view is unavailable"))?;
         require_volume(
@@ -132,7 +132,7 @@ impl<'a> AdmittedSelection<'a> {
     {
         self.require_checkout(&checkout)?;
         let config = checkout.volume_config();
-        let access = self.binding.require_access_view()?;
+        let access = self.binding.access_view();
         options::require_selection(&self.binding, checkout.generation_id())?;
         let shared =
             SharedCheckout::with_publication_meter(checkout, self.options.publication, work)?;
@@ -149,7 +149,7 @@ impl<'a> AdmittedSelection<'a> {
             self.options.native_original.as_ref(),
         )?
         .with_access_view(Arc::clone(access))?;
-        let source = source.with_access_refresh(self.binding.access_refresh.clone());
+        let source = source.with_access_refresh(Some(self.binding.access_refresh.clone()));
         let source = match self.options.callback_guard.as_ref() {
             Some(guard) => source.with_native_callback_guard(guard.clone()),
             None => source,
@@ -258,19 +258,14 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    let owner = options
-        .access_refresh
-        .as_ref()
-        .ok_or(MountLifecycleError::NativePolicy(
-            "materialization requires the authenticated selection owner",
-        ))?;
+    let owner = &options.access_refresh;
     let binding = owner.select(generation, work)?.await?;
     let view = binding
-        .require_access_view()?
+        .access_view()
         .current()
         .map_err(|_| MountLifecycleError::NativePolicy("access view is unavailable"))?;
     let previous = options
-        .require_access_view()?
+        .access_view()
         .current()
         .map_err(|_| MountLifecycleError::NativePolicy("access view is unavailable"))?;
     require_volume(&view, workspace.id().volume_id(), workspace.volume_config())?;
@@ -423,12 +418,13 @@ mod tests {
             .await?
             .value;
         let mount =
-            super::super::tests::fixture_options(&workspace, MountOptions::read_only()).await?;
+            super::super::tests::fixture_options(&workspace, MountOptions::read_only).await?;
         let owner = Arc::new(DuringAuthorization {
             workspace: workspace.clone(),
-            inner: mount.access_refresh.clone().expect("fixture owner"),
+            inner: mount.access_refresh.clone(),
         });
-        let mount = mount.access_refresh(owner.clone());
+        let mut mount = mount;
+        mount.access_refresh = owner.clone();
         let generation = workspace.head(&work, &cancel).await?;
         if late_admission {
             owner.select(generation.id(), &work)?.await?;

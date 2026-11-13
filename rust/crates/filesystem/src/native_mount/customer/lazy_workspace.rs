@@ -16,7 +16,6 @@ where
         cancellation: &crate::CancellationToken,
         permit: PublicationPermit,
     ) -> Result<NativeWorkingSet<A, O>, MountLifecycleError> {
-        mount.require_access_view()?;
         if mount.publication != MountPublication::Manual {
             return Err(MountLifecycleError::NativePolicy(
                 "prepared native working sets require manual publication",

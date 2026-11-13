@@ -42,7 +42,7 @@ mod tests {
             .value
             .workspace();
         let options = options(&workspace).await?;
-        let view = options.require_access_view()?.current()?;
+        let view = options.access_view().current()?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs();
@@ -79,10 +79,6 @@ mod tests {
             )
             .await?;
         drop(prepared);
-        assert!(
-            MountOptions::read_write().require_access_view().is_err(),
-            "negative control must reject the former unbound options"
-        );
         Ok(())
     }
 }

@@ -337,11 +337,7 @@ async fn task_mount_options_require_and_retain_the_authenticated_volume_owner() 
     let options = workspace
         .mount_options(workspace.view().workspace())
         .await?;
-    let view = options
-        .require_access_view()
-        .map_err(storage)?
-        .current()
-        .map_err(storage)?;
+    let view = options.access_view().current().map_err(storage)?;
     assert_eq!(
         view.volume(),
         uuid::Uuid::from_bytes(workspace.view().workspace().id().volume_id().into_bytes())

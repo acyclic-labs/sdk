@@ -25,10 +25,8 @@ pub(super) async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
     fs::create_dir(&mount_path)?;
     fs::write(root.path().join("outside-guard"), b"outside-safe")?;
     let engine = Fs::local(LocalOptions::new(&store)).await?;
-    let workspace = unbounded!(
-        engine,
-        create_workspace_with_config("native-matrix", VolumeConfig::native(Lifecycle::Durable),)
-    )?;
+    let workspace =
+        acyclic_harness::filesystem::local_owner_workspace(&engine, "native-matrix").await?;
     let mut transaction = unbounded!(
         workspace,
         begin_transaction(acyclic_fs::IdempotencyKey::new())
@@ -137,7 +135,15 @@ pub(super) async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
         )?)
     };
     let mount = workspace
-        .mount(&mount_path, MountOptions::read_write())
+        .mount(
+            &mount_path,
+            acyclic_harness::filesystem::local_owner_mount_options(
+                &workspace,
+                "mount-qualification",
+                true,
+            )
+            .await?,
+        )
         .await
         .map_err(stop_failed_mount)?;
     watcher.watch(&mount_path)?;

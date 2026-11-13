@@ -44,20 +44,18 @@ async fn denied_roots(surface: Surface, bypass: bool, suffix: &str) -> TestResul
     workspace.write_text(&format!("/{file}"), "secret").await?;
     // Bind while permitted, then publish revocation. Cached authority is not a
     // substitute for the verified owner's current selection.
-    let base = fixture_options(
-        workspace,
-        MountOptions::read_write().publication(MountPublication::Manual),
-    )
+    let base = fixture_options(workspace, |view, owner| {
+        MountOptions::read_write(view, owner).publication(MountPublication::Manual)
+    })
     .await?;
     let mut edit = super::super::tests::pending_policy(workspace, &work, DENIED).await?;
     super::super::tests::publish(&mut edit, &work).await?;
     let destination = tempfile::tempdir()?;
     for base in [
         base,
-        fixture_options(
-            workspace,
-            MountOptions::read_write().publication(MountPublication::Manual),
-        )
+        fixture_options(workspace, |view, owner| {
+            MountOptions::read_write(view, owner).publication(MountPublication::Manual)
+        })
         .await?,
     ] {
         let mut results = Vec::new();
@@ -180,7 +178,7 @@ async fn root_admission_preserves_list_only_sparse_mounts() -> TestResult {
     let policy = serde_json::to_vec(&policy)?;
     let mut edit = super::super::tests::pending_policy(&workspace, &work, &policy).await?;
     super::super::tests::publish(&mut edit, &work).await?;
-    let options = fixture_options(&workspace, MountOptions::read_write()).await?;
+    let options = fixture_options(&workspace, MountOptions::read_write).await?;
     let generation = head(&workspace, &work).await?;
     let admitted = AdmittedRoot::admit(&options, &workspace, generation, &work).await?;
     let checkout = workspace
@@ -222,7 +220,7 @@ async fn tracking_cut(bypass: bool, sensitive: bool, advances: u8) -> TestResult
             .await?;
     super::super::tests::publish(&mut edit, &work).await?;
     let selected = head(&workspace, &work).await?;
-    let options = fixture_options(&workspace, MountOptions::read_write()).await?;
+    let options = fixture_options(&workspace, MountOptions::read_write).await?;
     // This publication is deliberately permitted by the policy lease: policy
     // itself is unchanged, but a Head-only decision no longer covers selected.
     for index in 0..advances {
@@ -231,15 +229,10 @@ async fn tracking_cut(bypass: bool, sensitive: bool, advances: u8) -> TestResult
             .await?;
     }
     let result = if bypass {
-        let binding = options
-            .access_refresh
-            .as_ref()
-            .unwrap()
-            .select(selected, &work)?
-            .await?;
+        let binding = options.access_refresh.select(selected, &work)?.await?;
         assert!(
             binding
-                .require_access_view()?
+                .access_view()
                 .current()?
                 .decide(Action::List, "", 0)
                 .allowed

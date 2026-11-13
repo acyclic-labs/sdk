@@ -218,12 +218,10 @@ where
         _custody: io.into_native_custody(retained)?,
     });
     Ok((if writable {
-        acyclic_fs::MountOptions::read_write()
+        acyclic_fs::MountOptions::read_write(view, refresh.clone())
     } else {
-        acyclic_fs::MountOptions::read_only()
+        acyclic_fs::MountOptions::read_only(view, refresh.clone())
     })
-    .access_view(view)
-    .access_refresh(refresh.clone())
     .native_context(work, Some(refresh), Some(work)))
 }
 
@@ -388,7 +386,7 @@ mod workload_tests {
             ceiling: None,
             generation: Some(generation),
             writable: false,
-            view: options.require_access_view()?.clone(),
+            view: options.access_view().clone(),
             _custody: work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?,
         };
         refresh.check(&work)?.await?;

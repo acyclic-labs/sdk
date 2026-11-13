@@ -75,7 +75,7 @@ fn scratch_mount_owner() -> TestResult {
             .value
             .workspace();
         let options =
-            fixture_access::options(&workspace, acyclic_fs::MountOptions::read_write()).await?;
+            fixture_access::options(&workspace, acyclic_fs::MountOptions::read_write).await?;
         let checkout = workspace
             .checkout(
                 GenerationSelector::Head,
@@ -95,7 +95,7 @@ fn scratch_mount_owner() -> TestResult {
                 Arc::new(acyclic_fs::SharedCheckout::new(checkout)),
                 config,
             )?
-            .with_access_view(Arc::clone(options.require_access_view()?))?,
+            .with_access_view(Arc::clone(options.access_view()))?,
         );
         let _mount = acyclic_fs::mount_native_over_existing(
             acyclic_fs::NativeMountRequest {

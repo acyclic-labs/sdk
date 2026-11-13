@@ -213,8 +213,7 @@ mod tests {
             .mount_options(&workspace, None, "", true, &work)
             .await?;
         let view = options
-            .require_access_view()
-            .map_err(|error| Error::Invalid(error.to_string()))?
+            .access_view()
             .current()
             .map_err(|error| Error::Invalid(error.to_string()))?;
         let now = crate::filesystem::access::access_now()?;
@@ -271,8 +270,7 @@ mod tests {
                 .mount_options(&workspace, Some(&volume), root, false, &work)
                 .await?;
             let view = options
-                .require_access_view()
-                .map_err(|e| Error::Invalid(e.to_string()))?
+                .access_view()
                 .current()
                 .map_err(|e| Error::Invalid(e.to_string()))?;
             assert!(
@@ -418,8 +416,7 @@ mod tests {
         guard.check_write(&work)?.await?;
         assert!(
             bootstrap
-                .require_access_view()
-                .map_err(|e| Error::Invalid(e.to_string()))?
+                .access_view()
                 .current()
                 .map_err(|e| Error::Invalid(e.to_string()))?
                 .decide(acyclic_fs::access::Action::Write, "private/key", now)
