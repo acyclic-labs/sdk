@@ -215,7 +215,9 @@ fn root(agent: AgentId, fresh: Vec<WorkspaceEntry>) -> RootRequest {
 #[tokio::test]
 async fn file_controls_pause_resume_append_steering_and_stop_through_shared_dispatch() -> Result {
     for guest in [false, true] {
-        file_control_journey(guest).await?;
+        for maximum in [None, Some(64 * 1024)] {
+            file_control_journey(guest, maximum).await?;
+        }
     }
     Ok(())
 }
@@ -745,7 +747,7 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
     Ok(())
 }
 
-async fn file_control_journey(guest: bool) -> Result {
+async fn file_control_journey(guest: bool, maximum: Option<u64>) -> Result {
     use acyclic_harness_core::{
         client_files::{ClientFileChange, FileRoot},
         filesystem::{WorkspaceMutation, workspace_ref},
@@ -753,6 +755,8 @@ async fn file_control_journey(guest: bool) -> Result {
     };
     use futures::TryStreamExt as _;
     let stream = Arc::new(MemoryStream::default());
+    let mut options = turns()?;
+    options.limits.maximum_bytes = maximum;
     let bound = Bound::local_root(
         AuthorityRoot::new(
             "agents",
@@ -763,7 +767,7 @@ async fn file_control_journey(guest: bool) -> Result {
             },
         ),
         placement(&stream)?,
-        turns()?,
+        options,
     )?;
     let guest_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let bound = if guest {
@@ -1129,7 +1133,14 @@ async fn file_control_journey(guest: bool) -> Result {
         // per-input capacity. Each new suffix is still one bounded message.
         // The rejected rewrite above must not have replaced its admitted base.
         for number in 7..13 {
-            let delta = format!("{number}{}", "x".repeat(16 * 1024));
+            let delta = format!(
+                "{number}{}",
+                "x".repeat(if maximum.is_none() {
+                    80 * 1024
+                } else {
+                    16 * 1024
+                })
+            );
             steering.push_str(&delta);
             bound
                 .volumes()
@@ -1146,7 +1157,14 @@ async fn file_control_journey(guest: bool) -> Result {
             loop {
                 let record = inbox.try_next().await?.ok_or("inbox producer closed")?;
                 if let InboxRecord::Message(message) = InboxRecord::decode(&record.value)? {
-                    let (bytes, _) = bound.read_file(&agent, &message.body, 0, 64 * 1024).await?;
+                    let (bytes, _) = bound
+                        .read_file(
+                            &agent,
+                            &message.body,
+                            0,
+                            message.body.descriptor().byte_length(),
+                        )
+                        .await?;
                     assert_eq!(
                         serde_json::from_slice::<ModelContent>(&bytes)?,
                         ModelContent::Text(delta)
