@@ -228,18 +228,26 @@ impl MountedVolume {
             .await
             .map_err(|failure| Error::from(failure.error))?
             .value;
-        let fork = workspace
-            .fork::<_, _, acyclic_fs::WorkspaceError>(
-                format!("command-{}", hex::encode(key.into_bytes())),
+        // The fork is all-or-nothing scratch: only its hand-back join is
+        // committed work, and that join flushes eagerly, carrying any earlier
+        // frame of the shared journal with it. Creating or retiring the fork
+        // therefore buys no guarantee from a flush of its own; a fork a crash
+        // leaves behind holds no committed work and is reaped at next open.
+        let stream = workspace.filesystem().stream_provider();
+        let fork = acyclic_stream::deferring_provider_durability(
+            stream.as_ref(),
+            workspace.fork::<_, _, acyclic_fs::WorkspaceError>(
+                format!("{COMMAND_FORK_PREFIX}{}", hex::encode(key.into_bytes())),
                 acyclic_fs::ForkOptions::from_generation(head, key),
                 acyclic_fs::PublicationPermit::Unrestricted,
                 WorkBudget::UNBOUNDED,
                 &cancellation,
                 (),
-            )
-            .await
-            .map_err(|failure| Error::from(failure.error))?
-            .value;
+            ),
+        )
+        .await
+        .map_err(|failure| Error::from(failure.error))?
+        .value;
         let mount = async {
             let options = authority
                 .mount_options(&fork, Some(volume), true, &work)
@@ -268,8 +276,18 @@ impl MountedVolume {
     }
 }
 
+/// Names every command's fork, so a fork a crash left behind is recognised.
+const COMMAND_FORK_PREFIX: &str = "command-";
+
+/// Retires a command fork without a flush of its own: see `command_view`.
 async fn retire_fork(fork: &VolumeWorkspace) {
-    if let Err(error) = fork.delete(acyclic_fs::IdempotencyKey::new()).await {
+    let stream = fork.filesystem().stream_provider();
+    let retired = acyclic_stream::deferring_provider_durability(
+        stream.as_ref(),
+        fork.delete(acyclic_fs::IdempotencyKey::new()),
+    )
+    .await;
+    if let Err(error) = retired {
         tracing::error!(?error, "command volume fork retirement failed");
     }
 }
