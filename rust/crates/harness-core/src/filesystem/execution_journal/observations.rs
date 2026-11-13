@@ -541,7 +541,6 @@ where
                 }
                 return Ok(AppendObservation {
                     accepted,
-                    #[cfg(feature = "research")]
                     sequence: accepted.then_some(*sequence),
                 });
             }
@@ -597,7 +596,6 @@ where
                 drop(retry_hold);
                 return Ok(AppendObservation {
                     accepted: true,
-                    #[cfg(feature = "research")]
                     sequence: Some(sequence),
                 });
             }
@@ -615,7 +613,6 @@ use crate::executor::stock_boundary;
 
 pub(super) struct AppendObservation {
     pub(super) accepted: bool,
-    #[cfg(feature = "research")]
     pub(super) sequence: Option<u64>,
 }
 
@@ -623,7 +620,6 @@ impl AppendObservation {
     fn refused() -> Self {
         Self {
             accepted: false,
-            #[cfg(feature = "research")]
             sequence: None,
         }
     }

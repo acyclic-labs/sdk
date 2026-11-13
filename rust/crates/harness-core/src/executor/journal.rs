@@ -105,6 +105,9 @@ pub enum ProgressPublication<'a> {
     },
 }
 
+/// Original accepted record, or a conditional refusal with no publication.
+pub type RetainedExecutionFuture<'a> =
+    crate::conversation::BoundedContentFuture<'a, Option<acyclic_stream::RetainedRecord>>;
 /// Durable host services available to an executor; policy remains executor-owned.
 pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     /// Select original host interest without opening a follow or allocating on
@@ -324,6 +327,18 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         None
     }
 
+    /// Optional original receipt from the same conditional append. Availability
+    /// is explicit; no tail read may be substituted for publication identity.
+    fn append_retained_if_tail<'a>(
+        &'a self,
+        _operation: OperationId,
+        _expected_tail: u64,
+        _key: &'a str,
+        _event: &'a ExecutionEvent,
+        _io: Option<&'a PreparationIo>,
+    ) -> Option<Result<RetainedExecutionFuture<'a>>> {
+        None
+    }
     /// Appends at the exact operation-scoped journal tail.
     fn append_if_tail<'a>(
         &'a self,

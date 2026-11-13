@@ -542,6 +542,47 @@ where
         Some(self)
     }
 
+    fn append_retained_if_tail<'a>(
+        &'a self,
+        operation: OperationId,
+        expected_tail: u64,
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a PreparationIo>,
+    ) -> Option<Result<crate::executor::RetainedExecutionFuture<'a>>> {
+        Some(crate::conversation::BoundedContentFuture::new(
+            io,
+            || async move {
+                let mut commit = None;
+                let sequence = self
+                    .append_projected(
+                        operation,
+                        Some(expected_tail),
+                        key,
+                        event,
+                        &[],
+                        Some(&mut commit),
+                        io,
+                        |receipt| Ok(receipt.sequence),
+                    )?
+                    .await?;
+                let Some(sequence) = sequence else {
+                    return Ok(None);
+                };
+                let commit_id = commit.ok_or(Error::Indeterminate(operation))?;
+                let path = crate::executor::with_history_io(io, |work| {
+                    crate::distributed::execution_path(operation, work)
+                })?;
+                Ok(Some(acyclic_stream::RetainedRecord {
+                    commit_id,
+                    path,
+                    sequence: sequence
+                        .checked_sub(1)
+                        .ok_or(Error::Indeterminate(operation))?,
+                }))
+            },
+        ))
+    }
     fn append_if_tail<'a>(
         &'a self,
         operation: OperationId,

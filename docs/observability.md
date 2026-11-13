@@ -103,6 +103,14 @@ wait; stream exhaustion without delivery records `Unsettled`. Original errors
 without retained cause evidence stay unfinished. The terminal append is submitted
 without delaying delivery to the original model loop. These shared spans replace
 the separate native-only `provider-event` wait observations.
+Followed tool failures publish `harness.tool_failure` with a typed failed outcome
+referencing the original committed `ToolFailed` observation. The optional journal
+receipt capability uses the same conditional append and returns its original
+commit, path and zero-based sequence; exact retries authenticate that original
+record instead of deriving identity from the current tail. Conditional refusal
+returns no record. Unfollowed failures keep ordinary append and incur no receipt
+lookup. Original receipt confirmation is the extra read that buys durable cause
+identity on an exact retry; there is no second journal or repeated error payload.
 Harness Stream failures use one source-owning `StreamFailure` on ordinary,
 native and WebAssembly paths. Request-boundary classification remains explicit;
 native provenance and admitted allocation custody remain attached. Journal
