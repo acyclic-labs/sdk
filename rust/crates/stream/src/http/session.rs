@@ -64,21 +64,21 @@ pub(super) fn session_endpoint(
         .into_iter()
         .flatten()
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| ConnectError)?;
+        .map_err(ConnectError::caused)?;
     let verifier = Arc::new(
         rustls_platform_verifier::Verifier::new_with_extra_roots(
             roots,
             Arc::new(rustls::crypto::ring::default_provider()),
         )
-        .map_err(|_| ConnectError)?,
+        .map_err(ConnectError::caused)?,
     );
     let mut transport = acyclic_auth::channel::endpoint(endpoint.as_str())
-        .map_err(|_| ConnectError)?
+        .map_err(ConnectError::caused)?
         .tcp_nodelay(true);
     if endpoint.scheme() == "https" {
         transport = transport
             .tls_config_with_verifier(ClientTlsConfig::new(), verifier.clone())
-            .map_err(|_| ConnectError)?;
+            .map_err(ConnectError::caused)?;
     }
     Ok((transport, verifier))
 }
