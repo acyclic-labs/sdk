@@ -89,6 +89,27 @@ mod tests {
         assert_eq!(restored.text.as_deref(), Some("draft"));
         history.resolve(&restored, true);
         assert!(history.failure.is_none());
+        for (index, accepted) in [false, true].into_iter().enumerate() {
+            let request = 10 + index as u64 * 3;
+            history.request(request, "draft".into(), true, None, false);
+            let selected = futures::future::poll_fn(|cx| history.poll(cx)).await?;
+            history.resolve(&selected, true);
+            history.request(
+                request + 1,
+                editor.text().into(),
+                true,
+                Some(String::new()),
+                true,
+            );
+            let searched = futures::future::poll_fn(|cx| history.poll(cx)).await?;
+            assert_eq!(searched.text.as_deref(), Some(original));
+            history.resolve(&searched, true);
+            history.finish_search(accepted);
+            history.request(request + 2, editor.text().into(), false, None, false);
+            let restored = futures::future::poll_fn(|cx| history.poll(cx)).await?;
+            assert_eq!(restored.text.as_deref(), Some("draft"));
+            history.resolve(&restored, true);
+        }
         Ok(())
     }
 }
@@ -101,6 +122,7 @@ struct Navigation {
 
 pub(super) struct History {
     conversation: Arc<Conversation>,
+    saved: Option<Box<Self>>,
     source: Option<PromptHistory>,
     loading: Option<BoxFuture<'static, Loaded>>,
     messages: Vec<String>,
@@ -118,6 +140,7 @@ impl History {
     pub fn new(conversation: Arc<Conversation>) -> Self {
         Self {
             conversation,
+            saved: None,
             source: None,
             loading: None,
             messages: Vec::new(),
@@ -133,6 +156,9 @@ impl History {
     }
 
     pub fn invalidate(&mut self) {
+        if let Some(original) = &mut self.saved {
+            original.invalidate();
+        }
         self.stale = true;
         if self.cursor.is_none() {
             self.refresh();
@@ -156,6 +182,12 @@ impl History {
         search: Option<String>,
         restart: bool,
     ) {
+        if search.is_some() && self.saved.is_none() {
+            let conversation = Arc::clone(&self.conversation);
+            let mut original = std::mem::replace(self, Self::new(conversation));
+            original.pending.clear();
+            self.saved = Some(Box::new(original));
+        }
         // Keep an active navigation pinned to its cut. Once it returns to the
         // draft, or a new search starts, open the event-invalidated fresh cut.
         if restart || (self.stale && self.cursor.is_none()) {
@@ -175,6 +207,19 @@ impl History {
             expected,
             previous,
         });
+    }
+
+    pub fn finish_search(&mut self, accepted: bool) {
+        let Some(original) = self.saved.take() else {
+            return;
+        };
+        if accepted {
+            self.draft = original.draft;
+            self.search = None;
+            self.pending.clear();
+        } else {
+            *self = *original;
+        }
     }
 
     pub fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<Reply, String>> {
