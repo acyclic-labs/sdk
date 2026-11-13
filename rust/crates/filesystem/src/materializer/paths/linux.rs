@@ -118,6 +118,11 @@ mod tests {
     fn readonly_bind_entries_refuse_layout_before_publication() {
         const CHILD: &str = "ACYCLIC_MOUNT_LAYOUT_CHILD";
         if std::env::var_os(CHILD).is_none() {
+            let test = concat!(
+                module_path!(),
+                "::readonly_bind_entries_refuse_layout_before_publication"
+            );
+            let test = test.split_once("::").map_or(test, |(_, path)| path);
             let output = std::process::Command::new("unshare")
                 .args([
                     "--user",
@@ -128,14 +133,7 @@ mod tests {
                     "--",
                 ])
                 .arg(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    concat!(
-                        module_path!(),
-                        "::readonly_bind_entries_refuse_layout_before_publication"
-                    ),
-                    "--nocapture",
-                ])
+                .args(["--exact", test, "--test-threads=1", "--nocapture"])
                 .env(CHILD, "1")
                 .output()
                 .unwrap();
@@ -144,6 +142,10 @@ mod tests {
                 "namespace child failed: {}{}",
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "namespace child executed no test"
             );
             return;
         }
