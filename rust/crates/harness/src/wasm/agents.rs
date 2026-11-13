@@ -621,7 +621,14 @@ impl WasmAgents {
             registry
                 .model
                 .as_ref()
-                .map(|model| format!("{}/{}", model.0.provider, model.0.name)),
+                .map(|model| {
+                    crate::templates::root_model(
+                        &format!("{}/{}", model.0.provider, model.0.name),
+                        registry.models.as_deref(),
+                    )
+                })
+                .transpose()
+                .map_err(js_error)?,
         );
         // Both spawn entrances use the same admitted template reader.
         let agents = Arc::new(if options.children {

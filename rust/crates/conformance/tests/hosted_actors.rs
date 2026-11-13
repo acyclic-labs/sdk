@@ -11,7 +11,7 @@ use acyclic_harness::{
     core::{AggregateKind, Authority, AuthorityRoot},
     filesystem::{PRIVATE_VOLUME, TurnLimits},
     hosting::{Placement, RootRequest, VerifiedCaller},
-    model::{Model, ModelDispatch, ModelProvider, PreparedModelRequest},
+    model::{ModelDispatch, ModelProvider, PreparedModelRequest},
     resources::ProviderRef,
     server::{self, Actors, Execution, ServerConfig},
 };
@@ -210,10 +210,8 @@ fn composition_at(
         ),
         Execution {
             models: None,
-            model: (
-                Model::new("conformance".into(), "scripted".into(), "1".into())?,
-                model,
-            ),
+            // The scripted provider serves any model; it binds the root role's.
+            model: (acyclic_harness::templates::root_role_model("1")?, model),
             limits: Limits::default(),
             turns: TurnLimits {
                 maximum_bytes: Some(1 << 20),

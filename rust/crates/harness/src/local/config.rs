@@ -186,13 +186,10 @@ impl LocalHarnessConfig {
     ) -> Result<Self> {
         let Some((models, selection)) = self.models.take() else {
             if let Some((model, _)) = &self.model {
-                let role = crate::templates::root()?.model;
-                let fixed = format!("{}/{}", model.provider, model.name);
-                if crate::templates::resolve_model(role.as_deref(), Some(&fixed))
-                    != Some(fixed.as_str())
-                {
-                    return Err(Error::Invalid("configured role model differs from the fixed binding; use LocalHarnessConfig::resolving with a catalog that resolves the role model".into()));
-                }
+                let binding = format!("{}/{}", model.provider, model.name);
+                crate::templates::root_model(&binding, None).map_err(|error| {
+                    Error::Invalid(format!("{error}; use LocalHarnessConfig::resolving"))
+                })?;
             }
             return Ok(self);
         };

@@ -178,10 +178,8 @@ async fn nested_orchestrator_keeps_question_authority_and_worker_attempt_is_a_to
     // input before spawning again, rather than sharing a racing script cursor.
     super::agents::settled(&harness, &root).await?;
     let all_requests = provider.requests();
-    let requests: Vec<_> = all_requests
-        .iter()
-        .filter(|request| request.model.name == "morph-dsv41flash")
-        .collect();
+    // The worker settles before its parent wakes: its two requests come first.
+    let requests: Vec<_> = all_requests.iter().take(2).collect();
     assert_eq!(requests.len(), 2);
     assert!(
         requests
@@ -208,8 +206,21 @@ async fn nested_orchestrator_keeps_question_authority_and_worker_attempt_is_a_to
             .iter()
             .any(|tool| tool.name == "ask_question")
     );
-    assert_eq!(requests[0].model.name, "morph-dsv41flash");
-    assert_eq!(requests[child_request].model.name, "morph-kimik31");
+    // Each role's own model is admitted with its creation.
+    let (agents, _) = harness.agents().await?;
+    for (agent, model) in [
+        (&worker, "morph/morph-dsv41flash"),
+        (&child, "morph/morph-kimik31"),
+    ] {
+        let state = agents
+            .state(agent)
+            .await
+            .map_err(|e| Error::Invalid(e.to_string()))?;
+        assert_eq!(
+            state.profile.and_then(|profile| profile.model).as_deref(),
+            Some(model)
+        );
+    }
     Ok(())
 }
 #[tokio::test]

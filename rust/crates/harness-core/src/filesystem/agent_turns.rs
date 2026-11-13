@@ -574,8 +574,12 @@ pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
     }
 
     /// Root model selected by this composition, pinned at root creation.
-    fn model_selection(&self) -> Option<String> {
-        None
+    ///
+    /// # Errors
+    /// When this composition cannot bind the model the root role selects
+    /// (see [`crate::templates::root_model`]).
+    fn model_selection(&self) -> Result<Option<String>> {
+        Ok(None)
     }
 
     /// Publishes each bound workspace before the original turn becomes terminal.
