@@ -93,6 +93,134 @@ fn events() -> Vec<ModelEvent> {
 }
 
 #[tokio::test]
+async fn committed_archive_fences_dispatch_before_its_actor_consumes_the_control() -> Result<()> {
+    use crate::agent::{ForkAdopted, IntentId, Sender, Submitted};
+    use acyclic_actors::{
+        addressing::ActorReference,
+        local::{Creation, Store},
+    };
+    for archive_first in [false, true] {
+        let (journal, _issuer) = test_support::journal().await?;
+        let operation = OperationId::new();
+        let id = crate::agent::AgentId::from_bytes([81; 16]);
+        let agent = crate::agent::AgentPath::root(&id);
+        let actor = ActorReference::new(b"account", b"agents", id.as_str().as_bytes())
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let store = Store::new(
+            journal.stream.clone(),
+            acyclic_stream::StreamPath::new("archive-test/actors")?,
+        );
+        let actor_path = store
+            .path(&actor)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let mut creation = crate::agent::create_root(
+            &IntentId::try_from("create").map_err(|error| Error::Invalid(error.to_string()))?,
+            ForkAdopted {
+                agent: id,
+                parent: None,
+                profile: None,
+                forked_at: 0,
+                conversation_tail: 0,
+                checkpoint: None,
+                volumes: Vec::new(),
+                brief: None,
+                policy: None,
+            },
+        )
+        .map_err(|error| Error::Invalid(error.to_string()))?
+        .request;
+        creation.effects.push(
+            store
+                .create(None, &actor, Creation::default())
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+        );
+        assert!(matches!(
+            crate::agent::submit(journal.stream.as_ref(), creation)
+                .await
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            Submitted::Committed(_)
+        ));
+        let journal = journal
+            .with_agent_events(agent.clone(), operation, 0, true)
+            .with_actor_admission(Some(actor_path.clone()));
+        journal
+            .append(
+                operation,
+                "started",
+                &ExecutionEvent::Started {
+                    request_digest: [1; 32],
+                },
+                None,
+            )?
+            .await?;
+        let prepared = request()?;
+        let request =
+            crate::test_support::stage_model_request(&journal, operation, "request", &prepared)
+                .await?;
+        let dispatch = ExecutionEvent::ModelStarted {
+            step: 0,
+            purpose: ModelPurpose::Response,
+            request_digest: prepared.request_digest(),
+            request: request.clone(),
+            context: None,
+        };
+        let archive = async || -> Result<()> {
+            let commit = crate::agent::archive(
+                &agent,
+                &Sender::User {
+                    principal: "owner".into(),
+                },
+                &IntentId::try_from("archive")
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+            )
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+            assert!(matches!(
+                crate::agent::submit(journal.stream.as_ref(), commit)
+                    .await
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+                Submitted::Committed(_)
+            ));
+            Ok(())
+        };
+        if archive_first {
+            archive().await?;
+        }
+        let first = journal
+            .append(operation, "model:0:started", &dispatch, None)?
+            .await;
+        if archive_first {
+            assert!(matches!(first, Err(Error::ExecutionControlled(control))
+                if control.action == crate::supervision::Action::Stop));
+        } else {
+            first?;
+            archive().await?;
+            // An accepted dispatch can replay after closure without new work.
+            journal
+                .append(operation, "model:0:started", &dispatch, None)?
+                .await?;
+        }
+        // The actor has not consumed even its adoption. Archive must fence paid
+        // admission without depending on a later runtime delivery/checkpoint.
+        assert_eq!(journal.stream.tail(actor_path).await?, 1);
+        let tool = ExecutionEvent::ToolStarted {
+            step: 0,
+            call_id: "after-archive".into(),
+            invocation: request,
+            publication: None,
+        };
+        assert!(
+            matches!(journal.append(operation, "tool:after-archive", &tool, None)?.await,
+            Err(Error::ExecutionControlled(control)) if control.action == crate::supervision::Action::Stop)
+        );
+        assert_eq!(
+            journal.records(operation, 0, 8, None).await?.len(),
+            1 + usize::from(!archive_first)
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn resumed_exhausted_reservation_refuses_new_dispatch_but_keeps_original_replay() -> Result<()>
 {
     use crate::supervision::{Action, Kind, Policy, Reservation, RunAdmission, RunAdmissionSource};
