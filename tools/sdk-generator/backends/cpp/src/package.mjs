@@ -30,7 +30,7 @@ export function readPackage(args) {
     ...approved.manifest.families.flatMap(family => [".pb.h", ".pb.cc", ".grpc.pb.h", ".grpc.pb.cc"].map(suffix =>
       (suffix.endsWith(".h") ? "include/" : "src/") + family.source.slice(0, -6) + suffix))]);
   verifyPackageOutputs(receipt.outputs, receipt.output_sha256, required, "unsafe, duplicate or unexpected C++ package output");
-  const { compressed, payload } = readDeclaredTarGzip(args.package, args.sha256, receipt.output_sha256, 64 * 1024 * 1024);
+  const { compressed, payload } = readDeclaredTarGzip(args.package, args.sha256, receipt.output_sha256, { maxExpandedBytes: 64 * 1024 * 1024 });
   if (Object.entries(templates).some(([name, bytes]) => !payload.get(name).equals(bytes)) || !payload.get("authority/rust-authority.json").equals(approved.bytes)) throw new Error("package metadata differs from maintained inputs");
   return { payload, receipt, receiptBytes, approved, archiveBytes: compressed };
 }

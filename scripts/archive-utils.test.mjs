@@ -10,6 +10,25 @@ import { copyWasmArtifacts, preserveWasmArtifacts, tarEntries, wasmArtifactFiles
 
 const seed = readFileSync(new URL("./test-support/archive-corpus/native-ustar.tar", import.meta.url));
 
+test("declared archives enforce only the caller's compressed and expanded bounds", () => {
+  const directory = mkdtempSync(join(tmpdir(), "declared-archive-bounds-"));
+  const path = join(directory, "input.tar.gz");
+  try {
+    const flat = gunzipSync(readFileSync(new URL("./test-support/archive-corpus/native-flat.tar.gz", import.meta.url)));
+    // Valid TAR padding and stored DEFLATE blocks exceed small compressed caps
+    // without depending on randomness or the compressibility of member bytes.
+    const expanded = Buffer.concat([flat, Buffer.alloc(17 * 1024 * 1024)]);
+    const compressed = gzipSync(expanded, { level: 0 });
+    const hash = bytes => createHash("sha256").update(bytes).digest("hex");
+    const digest = hash(compressed);
+    const files = Object.fromEntries([...tarEntries(flat)].map(entry => [entry.path, hash(entry.body)]));
+    assert.notEqual(fuzzDeclared(compressed, path, files, digest, expanded.length), false);
+    assert.notEqual(fuzzDeclared(compressed, path, files, digest, expanded.length, compressed.length), false);
+    assert.equal(fuzzDeclared(compressed, path, files, digest, expanded.length, compressed.length - 1), false);
+    assert.equal(fuzzDeclared(compressed, path, files, digest, expanded.length - 1), false);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test("artifact inventory matches real file writes and refuses aliases before replacing output", async () => {
   const temporary = mkdtempSync(join(tmpdir(), "wasm-artifact-tree-"));
   const source = join(temporary, "source"), output = join(temporary, "output");
@@ -234,7 +253,7 @@ test("native gzip corpus exercises actual file admission and both byte bounds", 
       fuzzGzip(bytes, path, seed.length);
     }
     for (const removed of [
-      'if (size <= 0 || size > maxArchiveBytes) throw new Error("archive exceeds its size bound");',
+      'if (size <= 0 || (maxArchiveBytes !== undefined && size > maxArchiveBytes)) throw new Error("archive exceeds its size bound");',
       'if (expanded.length > maxExpandedBytes) throw new Error("archive expands beyond its size bound");',
     ]) {
       const mutant = await planted(removed);

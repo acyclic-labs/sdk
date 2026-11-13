@@ -9,7 +9,7 @@ export function sha256(payload) {
 
 export function readBoundedGzip(path, maxArchiveBytes, maxExpandedBytes) {
   const size = statSync(path).size;
-  if (size <= 0 || size > maxArchiveBytes) throw new Error("archive exceeds its size bound");
+  if (size <= 0 || (maxArchiveBytes !== undefined && size > maxArchiveBytes)) throw new Error("archive exceeds its size bound");
   const compressed = readFileSync(path);
   if (compressed.length !== size) throw new Error("archive changed while it was being read");
   const expanded = gunzipSync(compressed, { maxOutputLength: maxExpandedBytes + 1 });
@@ -18,8 +18,8 @@ export function readBoundedGzip(path, maxArchiveBytes, maxExpandedBytes) {
 }
 
 // Package readers admit canonical paths and exact digest inventories before loading archive bytes.
-export function readDeclaredTarGzip(path, expectedDigest, files, maxExpandedBytes) {
-  const { compressed, expanded } = readBoundedGzip(path, 16 * 1024 * 1024, maxExpandedBytes);
+export function readDeclaredTarGzip(path, expectedDigest, files, { maxArchiveBytes, maxExpandedBytes }) {
+  const { compressed, expanded } = readBoundedGzip(path, maxArchiveBytes, maxExpandedBytes);
   if (sha256(compressed) !== expectedDigest) throw new Error("archive digest differs");
   const payload = new Map();
   for (const entry of tarEntries(expanded)) {
