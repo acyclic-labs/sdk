@@ -1487,7 +1487,7 @@ struct InputStager<'a, P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     volumes: &'a Arc<Host<P, O>>,
     authority: &'a super::AgentAuthority<'a>,
     volume: &'a VolumeRef,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
 }
 
 impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> InputStager<'_, P, O> {
@@ -1533,7 +1533,10 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Inp
                 )
             }
         };
-        if payload.is_some_and(|(bytes, _)| bytes.len() as u64 > self.maximum_bytes) {
+        if payload.is_some_and(|(bytes, _)| {
+            self.maximum_bytes
+                .is_some_and(|maximum| bytes.len() as u64 > maximum)
+        }) {
             return Err(turn(crate::Error::tool_rejected(
                 "submitted input exceeds the selected message capacity",
             )));
