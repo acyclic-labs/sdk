@@ -25,7 +25,12 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
     for (answer, reserved) in [(true, 0), (false, 0), (true, MAX_QUEUED + 2)] {
         let path = AgentPath::root(&id(226));
         let stream = Arc::new(MemoryStream::default());
-        let (filesystem, binding) = private_in(&stream, &path).await?;
+        let (filesystem, binding) = private_in(&stream, &path).await.map_err(|error| {
+            format!(
+                "wait case answer={answer} reserved={reserved} line {}: {error}",
+                line!()
+            )
+        })?;
         let mut turns = vec![
             ScriptedTurn::Text("reply body".into()),
             wait("first-input", (reserved == 0).then_some(10)),
@@ -76,9 +81,28 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
         )?;
         let mut adoption = adopted(path.id());
         adoption.volumes = vec![binding];
-        host.create(&intent("input-waits"), adoption).await?;
-        deliver(&host, &path, requested("make-body", &path)).await?;
-        let body = answer_entry(&*stream, &path).await?;
+        host.create(&intent("input-waits"), adoption)
+            .await
+            .map_err(|error| {
+                format!(
+                    "wait case answer={answer} reserved={reserved} line {}: {error}",
+                    line!()
+                )
+            })?;
+        deliver(&host, &path, requested("make-body", &path))
+            .await
+            .map_err(|error| {
+                format!(
+                    "wait case answer={answer} reserved={reserved} line {}: {error}",
+                    line!()
+                )
+            })?;
+        let body = answer_entry(&*stream, &path).await.map_err(|error| {
+            format!(
+                "wait case answer={answer} reserved={reserved} line {}: {error}",
+                line!()
+            )
+        })?;
         host.send(
             &path,
             &super::super::user(),
@@ -93,8 +117,21 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
                 }),
             },
         )
-        .await?;
-        let first = deliver(&host, &path, requested("start-input-waits", &path)).await?;
+        .await
+        .map_err(|error| {
+            format!(
+                "wait case answer={answer} reserved={reserved} line {}: {error}",
+                line!()
+            )
+        })?;
+        let first = deliver(&host, &path, requested("start-input-waits", &path))
+            .await
+            .map_err(|error| {
+                format!(
+                    "wait case answer={answer} reserved={reserved} line {}: {error}",
+                    line!()
+                )
+            })?;
         assert_eq!(model.requests().len(), 2);
         assert_eq!(
             first.phase,
@@ -121,7 +158,13 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
                 }),
             },
         )
-        .await?;
+        .await
+        .map_err(|error| {
+            format!(
+                "wait case answer={answer} reserved={reserved} line {}: {error}",
+                line!()
+            )
+        })?;
         let message = |name| {
             InboxRecord::Message(Message {
                 from: super::super::user(),
@@ -141,7 +184,13 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
                         id: intent(&format!("independent-before-reply-{index}")),
                     }),
                 )
-                .await?;
+                .await
+                .map_err(|error| {
+                    format!(
+                        "wait case answer={answer} reserved={reserved} line {}: {error}",
+                        line!()
+                    )
+                })?;
             }
             host.send(
                 &path,
@@ -154,8 +203,19 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
                     attachments: None,
                 }),
             )
-            .await?;
-            host.drain(&path).await?;
+            .await
+            .map_err(|error| {
+                format!(
+                    "wait case answer={answer} reserved={reserved} line {}: {error}",
+                    line!()
+                )
+            })?;
+            host.drain(&path).await.map_err(|error| {
+                format!(
+                    "wait case answer={answer} reserved={reserved} line {}: {error}",
+                    line!()
+                )
+            })?;
             assert_eq!(
                 model.requests().len(),
                 2,
@@ -164,12 +224,28 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
         }
         let Delivered::Committed { inbox } = host
             .send(&path, &super::super::user(), &message("first-reply"))
-            .await?
+            .await
+            .map_err(|error| {
+                format!(
+                    "wait case answer={answer} reserved={reserved} line {}: {error}",
+                    line!()
+                )
+            })?
         else {
             return Err("reply was not committed".into());
         };
-        host.drain(&path).await?;
-        let mut second = host.state(&path).await?;
+        host.drain(&path).await.map_err(|error| {
+            format!(
+                "wait case answer={answer} reserved={reserved} line {}: {error}",
+                line!()
+            )
+        })?;
+        let mut second = host.state(&path).await.map_err(|error| {
+            format!(
+                "wait case answer={answer} reserved={reserved} line {}: {error}",
+                line!()
+            )
+        })?;
         assert_eq!(
             second.phase,
             Phase::Waiting {
@@ -191,7 +267,11 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
                 &intent("first-reply"),
                 inbox
             )
-            .await?,
+            .await
+            .map_err(|error| format!(
+                "wait case answer={answer} reserved={reserved} line {}: {error}",
+                line!()
+            ))?,
             Reply::Pending
         ));
         assert!(
@@ -202,20 +282,45 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
             second.turn.as_ref().map(|turn| turn.inbox),
             first.turn.as_ref().map(|turn| turn.inbox)
         );
-        host.drain(&path).await?;
+        host.drain(&path).await.map_err(|error| {
+            format!(
+                "wait case answer={answer} reserved={reserved} line {}: {error}",
+                line!()
+            )
+        })?;
         assert_eq!(
             model.requests().len(),
             3,
             "draining without new input released an input wait"
         );
         control.advance_to(119)?;
-        host.drain(&path).await?;
-        assert_eq!(host.state(&path).await?.phase, second.phase);
+        host.drain(&path).await.map_err(|error| {
+            format!(
+                "wait case answer={answer} reserved={reserved} line {}: {error}",
+                line!()
+            )
+        })?;
+        assert_eq!(
+            host.state(&path)
+                .await
+                .map_err(|error| format!(
+                    "wait case answer={answer} reserved={reserved} line {}: {error}",
+                    line!()
+                ))?
+                .phase,
+            second.phase
+        );
         assert_eq!(model.requests().len(), 3);
         let second_inbox = if answer {
             let Delivered::Committed { inbox } = host
                 .send(&path, &super::super::user(), &message("second-reply"))
-                .await?
+                .await
+                .map_err(|error| {
+                    format!(
+                        "wait case answer={answer} reserved={reserved} line {}: {error}",
+                        line!()
+                    )
+                })?
             else {
                 return Err("second reply was not committed".into());
             };
@@ -224,8 +329,18 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
             control.advance_to(120)?;
             None
         };
-        host.drain(&path).await?;
-        let mut settled = host.state(&path).await?;
+        host.drain(&path).await.map_err(|error| {
+            format!(
+                "wait case answer={answer} reserved={reserved} line {}: {error}",
+                line!()
+            )
+        })?;
+        let mut settled = host.state(&path).await.map_err(|error| {
+            format!(
+                "wait case answer={answer} reserved={reserved} line {}: {error}",
+                line!()
+            )
+        })?;
         assert!(matches!(
             reply(
                 &*stream,
@@ -234,7 +349,11 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
                 &intent("first-reply"),
                 inbox
             )
-            .await?,
+            .await
+            .map_err(|error| format!(
+                "wait case answer={answer} reserved={reserved} line {}: {error}",
+                line!()
+            ))?,
             Reply::Answered { sequence: 1, .. }
         ));
         assert_eq!(settled.phase, Phase::Idle);
