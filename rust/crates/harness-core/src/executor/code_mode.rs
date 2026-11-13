@@ -382,12 +382,16 @@ impl StockExecution<'_> {
                             },
                         };
                         let version = if ok {
+                            // Native spellings and module calls retain the same
+                            // registered capability and immutable file codec.
+                            let name = if call.module {
+                                call.name.value.strip_prefix("acyclic.").unwrap_or("")
+                            } else {
+                                &call.name.value
+                            };
+                            let capability = self.stock.tools.capability(name, self.io)?;
                             crate::tool::files::result_version(
-                                if call.module {
-                                    call.name.value.strip_prefix("acyclic.").unwrap_or("")
-                                } else {
-                                    ""
-                                },
+                                capability.map_or("", |tool| tool.definition.name.as_str()),
                                 &value,
                                 self.native_work(),
                             )?

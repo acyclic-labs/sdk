@@ -1,0 +1,44 @@
+{
+  "prompt": "Read and conditionally update the file through code.",
+  "seed": {
+    "versioned.txt": "first\n"
+  },
+  "turns": [
+    [
+      {
+        "arguments": {
+          "code": "import {read} from 'acyclic';\nconst path = 'versioned.txt';\nconst first = await tools.read({path, selection:{kind:'text'}});\nif (typeof first.version !== 'string' || !first.version) throw new Error('read omitted its version');\nconst moduleFile = await read(path);\nconst written = await tools.write({path, content:'second\\n', ifVersion:first.version});\nif (typeof written.version !== 'string' || !written.version) throw new Error('write omitted its version');\nconst current = await tools.read({path, selection:{kind:'text'}});\nconst pinned = await tools.read({path, version:first.version, selection:{kind:'text'}});\nlet staleRefused = false;\ntry { await tools.write({path, content:'must not publish\\n', ifVersion:first.version}); }\ncatch (error) { staleRefused = error.class === 'conflict'; }\nif (!staleRefused) throw new Error('stale version published');\nawait tools.write({path, content:'final\\n', ifVersion:written.version});\nexport default {sameCodec:first.version === moduleFile.version, changed:written.version !== first.version, current:current.version === written.version, pinned:pinned.text === 'first\\n', staleRefused};"
+        },
+        "name": "code",
+        "kind": "tool_call",
+        "call_id": "program",
+        "type": "event"
+      },
+      {
+        "kind": "completed",
+        "metadata": null,
+        "type": "event"
+      }
+    ],
+    "done"
+  ],
+  "expect": {
+    "files": {
+      "versioned.txt": "final\n"
+    },
+    "results": {
+      "program": {
+        "content": {
+          "value": {
+            "pinned": true,
+            "current": true,
+            "staleRefused": true,
+            "changed": true,
+            "sameCodec": true
+          },
+          "kind": "json"
+        }
+      }
+    }
+  }
+}

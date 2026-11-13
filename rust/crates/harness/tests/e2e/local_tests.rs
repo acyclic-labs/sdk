@@ -129,6 +129,27 @@ async fn read_family_rejects_a_valid_but_wrong_selected_range() -> crate::TestRe
 }
 
 #[tokio::test]
+async fn code_file_versions_reject_the_original_missing_token_shape() -> crate::TestResult {
+    let root = acyclic_test_support::source_path("rust/crates/harness").join("tests/scenarios");
+    let mut broken =
+        super::scenario::load_value(&root, &root.join("default-tools/code/file-versions.json"))?;
+    let code = broken["turns"][0][0]["arguments"]["code"]
+        .as_str()
+        .ok_or("file-version program is missing")?;
+    broken["turns"][0][0]["arguments"]["code"] = code
+        .replace(
+            "if (typeof first.version",
+            "delete first.version; if (typeof first.version",
+        )
+        .into();
+    let error = super::drivers::run(broken)
+        .await
+        .expect_err("missing read version passed the real conditional-publication scenario");
+    assert!(error.to_string().contains("model tool result"), "{error}");
+    Ok(())
+}
+
+#[tokio::test]
 async fn bash_family_rejects_corrupted_stdout_with_the_same_persisted_bytes() -> crate::TestResult {
     reject_changed_command(
         "default-tools/bash/stdout.json",
