@@ -6,16 +6,16 @@ use super::*;
 use crate::config::{self, AdmissionStatus, AgentConfig, Sampling};
 use crate::conversation::{ContentAccess, ContentGrant};
 use crate::layers::{Layer, is_off};
+use crate::model::ResolvedModel;
 
 /// The settings in force for a session.
 pub(super) struct Settings {
-    pub(super) model: (Model, Arc<dyn ModelProvider>),
+    pub(super) model: Arc<ResolvedModel>,
     pub(super) sampling: Option<Sampling>,
 }
 
 /// Resolves a model selection the settings name.
-pub(super) type Resolve<'a> =
-    Option<&'a (dyn Fn(&str) -> Result<(Model, Arc<dyn ModelProvider>)> + Sync)>;
+pub(super) type Resolve<'a> = Option<&'a (dyn Fn(&str) -> Result<Arc<ResolvedModel>> + Sync)>;
 
 /// What a session's settings are read from and recorded in.
 pub(super) struct Volumes<'a> {
@@ -195,7 +195,7 @@ impl config::Tree for Tree<'_> {
 pub(super) async fn admit(
     tree: &Tree<'_>,
     agent: AgentId,
-    started: Option<(Model, Arc<dyn ModelProvider>)>,
+    started: Option<Arc<ResolvedModel>>,
     resolve: Resolve<'_>,
     base_model: Option<&str>,
     clock: &dyn acyclic_stream::UnixMillisClock,
@@ -516,13 +516,13 @@ impl From<Error> for Refused {
 async fn settle(
     layers: &[Layer<'_>],
     tree: &dyn config::Tree,
-    started: Option<(Model, Arc<dyn ModelProvider>)>,
+    started: Option<Arc<ResolvedModel>>,
     resolve: Resolve<'_>,
     base_model: Option<&str>,
 ) -> std::result::Result<Settings, Refused> {
     let selection = started
         .as_ref()
-        .map(|(model, _)| format!("{}/{}", model.provider, model.name));
+        .map(|model| format!("{}/{}", model.0.provider, model.0.name));
     let base = base_model.or(selection.as_deref()).ok_or_else(|| {
         Refused::Operation(Error::Invalid("startup model selection is absent".into()))
     })?;
@@ -1000,7 +1000,14 @@ mod tests {
                 prefix,
                 &mut None,
             )?;
-            let result = settle(&layers, &tree, Some(harness.agent()?.clone()), None, None).await;
+            let result = settle(
+                &layers,
+                &tree,
+                Some(Arc::new(ResolvedModel::new(harness.agent()?.clone()))),
+                None,
+                None,
+            )
+            .await;
             match (prefix, result) {
                 ("", Ok(settings)) => assert_eq!(
                     settings.sampling.and_then(|sampling| sampling.temperature),
@@ -1090,15 +1097,17 @@ mod tests {
             !enabled.rules.is_empty(),
             "plugin admission refreshed its pinned home generation"
         );
+        let admitted_model = Arc::new(ResolvedModel::new(harness.agent()?.clone()));
         let settings = admit(
             &replayed,
             harness.root,
-            Some(harness.agent()?.clone()),
+            Some(Arc::clone(&admitted_model)),
             None,
             None,
             clock,
         )
         .await?;
+        assert!(Arc::ptr_eq(&settings.model, &admitted_model));
         assert_eq!(
             settings.sampling.and_then(|sampling| sampling.temperature),
             Some(0.25),
@@ -1119,12 +1128,13 @@ mod tests {
         let settings = admit(
             &current,
             harness.root,
-            Some(harness.agent()?.clone()),
+            Some(Arc::clone(&admitted_model)),
             None,
             None,
             clock,
         )
         .await?;
+        assert!(Arc::ptr_eq(&settings.model, &admitted_model));
         assert_eq!(
             settings.sampling.and_then(|sampling| sampling.temperature),
             Some(0.75)

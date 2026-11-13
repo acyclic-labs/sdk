@@ -339,7 +339,10 @@ async fn issuer_settings_share_one_cut_across_selection_admission_and_imports() 
     let denied = super::super::agent_settings::admit(
         &tree,
         harness.root,
-        harness.agent.clone(),
+        harness
+            .agent
+            .clone()
+            .map(|binding| Arc::new(crate::model::ResolvedModel::new(binding))),
         None,
         None,
         harness.clock.as_ref(),
@@ -1080,7 +1083,10 @@ async fn home_agent_settings_apply_or_refuse_the_original_version() -> Result<()
         let result = super::super::agent_settings::admit(
             &tree,
             harness.root,
-            harness.agent.clone(),
+            harness
+                .agent
+                .clone()
+                .map(|binding| Arc::new(crate::model::ResolvedModel::new(binding))),
             None,
             None,
             harness.clock.as_ref(),

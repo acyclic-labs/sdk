@@ -666,7 +666,11 @@ impl Opening {
         .await?;
         // `agent.ts` selects the model and its sampling as the session starts.
         let (agent, sampling) = if self.config.has_model() {
-            let started = self.config.model.clone();
+            let started = self
+                .config
+                .model
+                .clone()
+                .map(|binding| Arc::new(crate::model::ResolvedModel::new(binding)));
             #[cfg(not(any(test, not(target_arch = "wasm32"))))]
             let settings_tree =
                 agent_settings::Tree::pinned(&volumes, home_generation.clone(), None)?;
@@ -674,10 +678,10 @@ impl Opening {
             let resolver = self
                 .models
                 .as_deref()
-                .map(|models| move |selection: &str| models.resolve(selection));
+                .map(|models| move |selection: &str| models.resolve_shared(selection));
             #[cfg(any(test, not(target_arch = "wasm32")))]
             let resolve = resolver.as_ref().map(|resolve| {
-                resolve as &(dyn Fn(&str) -> Result<(Model, Arc<dyn ModelProvider>)> + Sync)
+                resolve as &(dyn Fn(&str) -> Result<Arc<crate::model::ResolvedModel>> + Sync)
             });
             #[cfg(not(any(test, not(target_arch = "wasm32"))))]
             let resolve = None;
@@ -696,7 +700,10 @@ impl Opening {
                 &settings.model.0,
                 settings.model.1.as_ref(),
             )?;
-            (Some(settings.model), settings.sampling)
+            (
+                Some((settings.model.0.clone(), Arc::clone(&settings.model.1))),
+                settings.sampling,
+            )
         } else {
             (None, None)
         };
