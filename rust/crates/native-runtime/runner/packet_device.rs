@@ -57,6 +57,10 @@ struct Session {
     output: Option<Packet>,
 }
 
+// Both supported Linux architectures have pages of at least 4096 bytes.
+// Client funding owns one whole page for this fixed metadata mapping.
+const _: () = assert!(core::mem::size_of::<Session>() <= 4096);
+
 impl Session {
     fn new(control: Fd) -> Result<*mut Self, Errno> {
         let base = sys::map(core::mem::size_of::<Self>())?.cast::<Self>();
@@ -136,7 +140,6 @@ impl Session {
             return Err(Errno(sys::EINVAL));
         }
         match u32::from_ne_bytes(body[8..12].try_into().map_err(|_| Errno(sys::EINVAL))?) {
-            1 => self.mounted = true,
             2 => {}
             3 => self.waiting_helper = true,
             _ => return Err(Errno(sys::EINVAL)),

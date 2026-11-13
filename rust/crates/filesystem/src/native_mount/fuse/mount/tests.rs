@@ -8,6 +8,43 @@ std::thread_local! {
     static FORCE_FORK: Cell<bool> = const { Cell::new(false) };
     static FORGET_PENDING: Cell<bool> = const { Cell::new(false) };
     static OLD_UNMOUNT: Cell<bool> = const { Cell::new(false) };
+    static IN_PROCESS: Cell<bool> = const { Cell::new(false) };
+}
+pub(super) fn in_process() -> bool {
+    IN_PROCESS.get()
+}
+
+pub(in crate::native_mount::fuse) fn with_in_process<T>(operation: impl FnOnce() -> T) -> T {
+    let _restore = Restore(&IN_PROCESS, IN_PROCESS.replace(true));
+    operation()
+}
+
+pub(super) fn mount_in_process(
+    path: &Path,
+    writable: bool,
+    file: &File,
+    mode: u32,
+) -> io::Result<()> {
+    let options = format!(
+        "fd={},rootmode={mode:o},user_id={},group_id={},default_permissions",
+        file.as_raw_fd(),
+        nix::unistd::getuid(),
+        nix::unistd::getgid()
+    );
+    let mut flags = nix::mount::MsFlags::MS_NODEV
+        | nix::mount::MsFlags::MS_NOSUID
+        | nix::mount::MsFlags::MS_NOATIME;
+    if !writable {
+        flags |= nix::mount::MsFlags::MS_RDONLY;
+    }
+    nix::mount::mount(
+        Some("acyclic-fs"),
+        path,
+        Some("fuse"),
+        flags,
+        Some(options.as_str()),
+    )
+    .map_err(Into::into)
 }
 pub(super) fn forget_pending() -> bool {
     FORGET_PENDING.get()
