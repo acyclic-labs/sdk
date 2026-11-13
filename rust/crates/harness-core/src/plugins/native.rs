@@ -216,18 +216,21 @@ async fn load_enabled(
         value: EnabledData::default(),
         custody,
     };
-    loaded.absorb(
-        value
-            .work()
-            .map(|work| {
-                work.claim(
-                    std::mem::size_of::<EnabledData>() as u64,
-                    1,
-                    acyclic_fs::WorkCounters::UNCHARGED,
-                )
-            })
-            .transpose()?,
-    )?;
+    loaded
+        .absorb(
+            value
+                .work()
+                .map(|work| {
+                    work.claim(
+                        std::mem::size_of::<EnabledData>() as u64,
+                        1,
+                        acyclic_fs::WorkCounters::UNCHARGED,
+                    )
+                })
+                .transpose()
+                .map_err(|cause| LoadFailure::Operational(cause.into()))?,
+        )
+        .map_err(LoadFailure::Operational)?;
     for (name, entry) in &enabled {
         if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
             return Err(invalid(format!("{name:?} is not a plugin folder name")).into());
@@ -260,7 +263,7 @@ async fn load_enabled(
             .value
             .record::<PluginManifest>()
             .map_err(LoadFailure::decoding)?;
-        loaded.absorb(custody)?;
+        loaded.absorb(custody).map_err(LoadFailure::Operational)?;
         if manifest.name != *name {
             return Err(invalid(format!("{path} names {:?}", manifest.name)).into());
         }
