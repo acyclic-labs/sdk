@@ -3379,6 +3379,39 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
         return Err(Error::Invalid("spawn was not delivered".into()));
     };
     let entries = settled(&harness, &child).await?;
+    let (agents, _) = harness.agents().await?;
+    let inherited_policy = agents
+        .state(&child)
+        .await
+        .map_err(agent)?
+        .policy
+        .ok_or_else(|| Error::Invalid("child policy missing".into()))?;
+    let original_policy = agents
+        .state(&root)
+        .await
+        .map_err(agent)?
+        .policy
+        .ok_or_else(|| Error::Invalid("parent policy missing".into()))?;
+    assert_eq!(inherited_policy, original_policy);
+    assert_eq!(
+        inherited_policy.volume(),
+        &crate::conversation::journal_volume(harness.project.provider().clone(), &root.id())?
+    );
+    // An exact file grant does not turn host-only policy into model content.
+    let guest = super::selected_reader(&harness, [&inherited_policy])?;
+    let denied = async {
+        guest
+            .read(
+                &inherited_policy,
+                inherited_policy.descriptor().byte_length(),
+                None,
+                None,
+            )?
+            .await
+    }
+    .await
+    .expect_err("a task read its inherited host policy");
+    assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
     let request = provider
         .request(0)
         .ok_or_else(|| Error::NotFound("child request".into()))?;
