@@ -1191,7 +1191,8 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     );
     while failed.next().await?.is_some() {}
     assert_eq!(
-        $11,
+        failed.active().len(),
+        1,
         "unretained failure fabricated settlement"
     );
     assert!(
