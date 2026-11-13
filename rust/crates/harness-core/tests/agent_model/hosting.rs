@@ -1402,7 +1402,33 @@ async fn create_root_preparation_and_intent_replay_are_exact() -> Result {
         files.files["status/session-directory.json"].is_none(),
         "ordinary binding advertised an uninitialized directory"
     );
-    assert!(files.cut.queries.is_empty());
+    assert_eq!(files.cut.queries.len(), 1);
+    assert_eq!(files.cut.queries.values().next(), Some(&0));
+    let watched_paths = [
+        "attachment.txt".to_owned(),
+        "status/session-directory.json".to_owned(),
+    ];
+    let watching = bound.files(
+        &created,
+        acyclic_harness_core::client_files::FileRoot::Private {},
+        &watched_paths,
+        Some(&files.cut),
+    );
+    tokio::pin!(watching);
+    assert!(futures::poll!(&mut watching).is_pending());
+    bound.initialize_sessions().await?;
+    let initialized = watching.await?;
+    let directory = initialized.files["status/session-directory.json"]
+        .as_ref()
+        .ok_or("initialization did not wake the pending directory file watch")?;
+    assert!(matches!(
+        directory.source,
+        acyclic_harness_core::client_files::FileSource::Query { .. }
+    ));
+    assert_eq!(
+        initialized.cut.generation, files.cut.generation,
+        "directory initialization changed the authored private filesystem"
+    );
     let attached = files.files["attachment.txt"]
         .as_ref()
         .and_then(|file| file.original())
