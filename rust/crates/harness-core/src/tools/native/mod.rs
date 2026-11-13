@@ -138,13 +138,23 @@ pub fn definitions(profile: NativeToolProfile) -> Result<Vec<ToolDefinition>> {
         .collect()
 }
 
+/// Decode fields directly into their final owners without an intermediate
+/// object map and allocated field names for each public declaration.
+#[derive(serde::Deserialize)]
+struct Declaration {
+    name: String,
+    description: String,
+    #[serde(rename = "parametersJsonSchema")]
+    input_schema: Value,
+}
+
 /// Decode the mapping and public declaration together. Binding consumes this
 /// iterator directly, so it neither reparses the mapping nor collects a second
 /// vector of definitions before constructing the executable declarations.
 fn decoded(
     profile: NativeToolProfile,
 ) -> Result<impl Iterator<Item = Result<(crate::profile::ToolRevision, ToolDefinition)>>> {
-    let source: Vec<Value> = serde_json::from_str(declarations(profile))
+    let source: Vec<Declaration> = serde_json::from_str(declarations(profile))
         .map_err(|error| Error::Invalid(error.to_string()))?;
     let revisions = profile.tools()?;
     if revisions.len() != source.len() {
@@ -152,29 +162,22 @@ fn decoded(
             "native profile layer and public declarations differ".into(),
         ));
     }
-    Ok(revisions
-        .into_iter()
-        .zip(source)
-        .map(|(revision, mut entry)| {
-            let name = take_string(&mut entry, "name")?;
-            if name != revision.variant {
-                return Err(Error::Invalid(
-                    "native declaration order differs from its profile layer".into(),
-                ));
-            }
-            let definition = ToolDefinition {
-                name,
-                revision: revision.revision.clone(),
-                description: take_string(&mut entry, "description")?,
-                input_schema: entry
-                    .get_mut("parametersJsonSchema")
-                    .map(Value::take)
-                    .ok_or_else(|| Error::Invalid("native input contract is absent".into()))?,
-                output_schema: Value::Bool(true),
-                projection_schema: Value::Bool(true),
-            };
-            Ok((revision, definition))
-        }))
+    Ok(revisions.into_iter().zip(source).map(|(revision, entry)| {
+        if entry.name != revision.variant {
+            return Err(Error::Invalid(
+                "native declaration order differs from its profile layer".into(),
+            ));
+        }
+        let definition = ToolDefinition {
+            name: entry.name,
+            revision: revision.revision.clone(),
+            description: entry.description,
+            input_schema: entry.input_schema,
+            output_schema: Value::Bool(true),
+            projection_schema: Value::Bool(true),
+        };
+        Ok((revision, definition))
+    }))
 }
 
 /// One mapped declaration: its capability, the variant that runs it when
@@ -327,11 +330,4 @@ impl NativeTools {
 /// As [`NativeTools::new`] and [`NativeTools::bind`].
 pub fn bind(tools: &mut ToolRegistry, profile: NativeToolProfile) -> Result<()> {
     NativeTools::new(profile)?.bind(tools)
-}
-
-fn take_string(value: &mut Value, key: &str) -> Result<String> {
-    match value.get_mut(key).map(Value::take) {
-        Some(Value::String(text)) => Ok(text),
-        _ => Err(Error::Invalid("native declaration string is absent".into())),
-    }
 }
