@@ -465,6 +465,15 @@ mod tests {
             .await?,
         );
         let conversation = Conversation::open(harness.connect().await?);
+        let loaded = load(
+            conversation.clone(),
+            conversation.clone(),
+            8,
+            Source::Diff(None),
+            Arc::new(acyclic_harness::executor::ModelPrices::default()),
+        )
+        .await?;
+        assert!(loaded.context.diff.is_some(), "the real diff query lost its admitted presentation");
         let retained = Arc::new(tokio::sync::Mutex::new(
             conversation
                 .diff_query(

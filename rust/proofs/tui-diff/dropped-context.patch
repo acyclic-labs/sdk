@@ -1,0 +1,12 @@
+diff --git a/plugin/src/runner/view/query.rs b/plugin/src/runner/view/query.rs
+--- a/plugin/src/runner/view/query.rs
++++ b/plugin/src/runner/view/query.rs
+@@ -170,7 +170,7 @@ pub(super) async fn load(
+             .with_context(Context::default()))
+         }
+ 
+-        Source::Diff(cursor) => diff::query(conversation, rows, cursor, None).await,
++        Source::Diff(cursor) => diff::query(conversation, rows, cursor, None).await.map(|page| page.with_context(Context::default())),
+         Source::AgentDiff(agent, cursor) => {
+             let selected = if cursor.is_none() {
+                 root.select(agent.clone()).await?

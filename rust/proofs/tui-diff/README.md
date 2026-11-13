@@ -20,3 +20,11 @@ The same tests check literal untrusted filenames, narrow/wide geometry, light
 and dark themes, monochrome fallback, hunk selection and fold/reveal without
 losing Unicode text. Source paging and cursor ownership stay with the existing
 query implementation; rendering never fetches another page.
+
+`dropped-context.patch` reproduces the original consumer bug: the real diff
+query's returned presentation is overwritten with default metadata. It must
+fail `runner::view::query::tests::query_controller_retains_reads_coalesces_turns_and_ends_on_original_events`
+in the `acyclic-plugin` library. That regression now opens the real local
+harness and consumes an actual diff query before exercising the retained
+cursor controller. Require its assertion about lost admitted presentation,
+not a compiler, setup or producer failure.
