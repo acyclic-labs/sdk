@@ -84,6 +84,15 @@ impl<'a> Tree<'a> {
             || &retained.cut.home.0 != volumes.home
             || &retained.cut.seed.0 != volumes.seed.0
             || &retained.cut.seed.1 != volumes.seed.1
+            || retained
+                .cut
+                .configuration
+                .iter()
+                .zip(volumes.configuration)
+                .any(|(selected, original)| {
+                    selected.as_ref().map(|layer| &layer.volume)
+                        != original.as_ref().map(|layer| &layer.volume)
+                })
         {
             let reason = "retained settings cut has another version or original owner";
             #[cfg(not(target_arch = "wasm32"))]

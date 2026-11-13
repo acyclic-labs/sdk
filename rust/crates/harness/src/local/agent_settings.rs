@@ -1182,6 +1182,68 @@ mod tests {
             settings.sampling.and_then(|sampling| sampling.temperature),
             Some(0.75)
         );
+        for present in [false, true] {
+            let configuration = std::array::from_fn(|_| {
+                present.then(|| crate::layers::PinnedLayer {
+                    volume: harness.scratch.clone(),
+                    generation: original.generation.clone(),
+                })
+            });
+            let selected = Volumes {
+                configuration: &configuration,
+                ..volumes
+            };
+            let operation = crate::OperationId::new();
+            let pinned = Tree::for_step(&selected, journal.as_ref(), operation, 0, None).await?;
+            let advanced = std::array::from_fn(|_| {
+                present.then(|| crate::layers::PinnedLayer {
+                    volume: harness.scratch.clone(),
+                    generation: current.generation.clone(),
+                })
+            });
+            let rebound = Volumes {
+                configuration: &advanced,
+                ..selected
+            };
+            let replayed = Tree::for_step(&rebound, journal.as_ref(), operation, 0, None).await?;
+            assert_eq!(pinned.cut()?, replayed.cut()?);
+            let reference = journal
+                .staged_ref(operation, "settings:0:sources", None)?
+                .await?
+                .unwrap();
+            let bytes = journal.load(&reference, None)?.await?;
+            let recorded: serde_json::Value = serde_json::from_slice(&bytes).map_err(storage)?;
+            for index in 0..configuration.len() {
+                let foreign = crate::layers::PinnedLayer {
+                    volume: harness.seed.0.clone(),
+                    generation: harness.seed.1.clone(),
+                };
+                let mut replacements = vec![serde_json::to_value(foreign).map_err(storage)?];
+                if present {
+                    replacements.push(serde_json::Value::Null);
+                }
+                for replacement in replacements {
+                    let mut forged = recorded.clone();
+                    forged["configuration"][index] = replacement;
+                    let bytes = serde_json::to_vec(&forged).map_err(storage)?;
+                    let operation = crate::OperationId::new();
+                    journal
+                        .stage(
+                            operation,
+                            "settings:0:sources",
+                            &bytes,
+                            "application/json",
+                            None,
+                        )?
+                        .await?;
+                    let error = Tree::for_step(&selected, journal.as_ref(), operation, 0, None)
+                        .await
+                        .err()
+                        .expect("replay must retain every original issuer owner");
+                    assert_eq!(error.code(), crate::wire::ErrorCode::Storage);
+                }
+            }
+        }
         Ok(())
     }
 }
