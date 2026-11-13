@@ -563,17 +563,17 @@ fn an_open_drops_the_size_of_any_version_it_does_not_read() -> Result<(), Box<dy
         file.resize_with_meter(7, work)
     })?;
     // The kernel still holds the empty size; the open is answered with the
-    // new version and that size is dropped before the reply, so the kernel
-    // asks for attributes again before it reads through the handle.
-    crate::native_mount::fuse::core::DROPPED_ATTRIBUTES.with_borrow_mut(Vec::clear);
+    // new version and queues attribute invalidation for the notifier. Sending
+    // the notification inside this request would depend on the kernel's locks.
     let handle = {
         let _names = core.names().map_err(std::io::Error::from_raw_os_error)?;
         projection.open_node(inode, libc::O_RDONLY, &work)?.0
     };
     assert!(
-        crate::native_mount::fuse::core::DROPPED_ATTRIBUTES
-            .with_borrow(|dropped| dropped.contains(&inode)),
-        "an open of a newer version left the kernel's size in place"
+        core.state_to_finish().invalidation.deferred.iter().any(|item| {
+            matches!(item, KernelCacheItem::Attributes { inode: queued, .. } if *queued == inode)
+        }),
+        "an open of a newer version lost its attribute invalidation"
     );
     assert_eq!(
         projection

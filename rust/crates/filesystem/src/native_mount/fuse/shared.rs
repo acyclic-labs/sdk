@@ -35,7 +35,6 @@ pub(super) fn view_root_inode(serial: u64) -> u64 {
 pub(super) struct SharedViews {
     pub(super) views: Arc<NamedViews<Vec<u8>, FuseProjection>>,
     pub(super) root_attr: FileAttr,
-    notifier: OnceLock<CacheNotifier>,
     pending: Mutex<PendingInvalidations>,
     invalidation: Condvar,
     #[cfg(test)]
@@ -44,8 +43,13 @@ pub(super) struct SharedViews {
 
 #[derive(Default)]
 struct PendingInvalidations {
-    ready: ReadyViews<()>,
+    ready: ReadyViews<PendingInvalidation>,
     stopping: bool,
+}
+
+enum PendingInvalidation {
+    View,
+    RetiredName(Vec<u8>),
 }
 
 /// Wakes the shared invalidator for one view; held by that view's core.
@@ -69,22 +73,32 @@ impl SharedWake {
         }
     }
 
-    fn retire(&self) {
+    fn retire(&self, views: &SharedViews, name: Vec<u8>) {
         self.queued.store(true, Ordering::Release);
-        if let Some(views) = self.views.upgrade() {
-            views
-                .pending
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .ready
-                .remove(self.serial);
+        let mut pending = views.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        if pending.stopping {
+            pending.ready.remove(self.serial);
+        } else if let Some(work) = pending.ready.get_mut(self.serial) {
+            *work = PendingInvalidation::RetiredName(name);
+            pending.ready.schedule(self.serial);
+            drop(pending);
+            views.invalidation.notify_one();
         }
     }
 }
 
 impl Drop for SharedWake {
     fn drop(&mut self) {
-        self.retire();
+        if let Some(views) = self.views.upgrade() {
+            let mut pending = views.pending.lock().unwrap_or_else(PoisonError::into_inner);
+            // A queued retirement owns this record until its notifier takes it.
+            if matches!(
+                pending.ready.get_mut(self.serial),
+                Some(PendingInvalidation::View)
+            ) {
+                pending.ready.remove(self.serial);
+            }
+        }
     }
 }
 
@@ -116,12 +130,9 @@ impl SharedViewEntry {
             return false;
         };
         if let Some(wake) = core.shared_wake.get() {
-            wake.retire();
-        }
-        if let Some(notifier) = self.views.notifier.get() {
-            // The kernel may still cache the name. A late lookup of it now
-            // misses, and a late request on its inodes answers ESTALE.
-            let _ = notifier.inval_entry(ROOT_INODE, &name);
+            // Retire admission before queueing the name. The existing notifier
+            // owns the physical write; a request/cleanup caller never does.
+            wake.retire(&self.views, name);
         }
         true
     }
@@ -155,16 +166,11 @@ impl SharedViews {
                 blksize: 4096,
                 flags: 0,
             },
-            notifier: OnceLock::new(),
             pending: Mutex::new(PendingInvalidations::default()),
             invalidation: Condvar::new(),
             #[cfg(test)]
             retirement_thread: OnceLock::new(),
         })
-    }
-
-    pub(super) fn set_notifier(&self, notifier: CacheNotifier) {
-        let _ = self.notifier.set(notifier);
     }
 
     /// Lists a view named `name` in the root. `build` receives the view's
@@ -180,14 +186,11 @@ impl SharedViews {
         let mut built = None;
         let view = self.views.insert(name.to_vec(), |serial| {
             let core = build(serial * VIEW_INODE_SPAN)?;
-            if let Some(notifier) = self.notifier.get() {
-                let _ = core.notifier.set(notifier.clone());
-            }
             self.pending
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .ready
-                .insert(serial, ());
+                .insert(serial, PendingInvalidation::View);
             core.shared_wake
                 .set(Arc::new(SharedWake {
                     views: Arc::downgrade(self),
@@ -247,14 +250,20 @@ impl SharedViews {
 /// pass at a time, until the session stops.
 pub(super) fn run_shared_invalidator(views: &SharedViews, notifier: &CacheNotifier) {
     loop {
-        let serial = {
+        let next = {
             let mut pending = views.pending.lock().unwrap_or_else(PoisonError::into_inner);
             loop {
                 if pending.stopping {
                     return;
                 }
                 if let Some((serial, _)) = pending.ready.pop() {
-                    break serial;
+                    if matches!(
+                        pending.ready.get_mut(serial),
+                        Some(PendingInvalidation::RetiredName(_))
+                    ) {
+                        break pending.ready.remove(serial).map(|work| (serial, work));
+                    }
+                    break Some((serial, PendingInvalidation::View));
                 }
                 pending = views
                     .invalidation
@@ -262,6 +271,11 @@ pub(super) fn run_shared_invalidator(views: &SharedViews, notifier: &CacheNotifi
                     .unwrap_or_else(PoisonError::into_inner);
             }
         };
+        let Some((serial, work)) = next else { continue };
+        if let PendingInvalidation::RetiredName(name) = work {
+            let _ = notifier.inval_entry(ROOT_INODE, &name);
+            continue;
+        }
         let Some(view) = views.views.enter(serial) else {
             continue;
         };

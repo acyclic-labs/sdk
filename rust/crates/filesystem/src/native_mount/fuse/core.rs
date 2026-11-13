@@ -14,14 +14,6 @@ pub(super) struct FuseHandlerReports {
     pub(super) first_fatal: Option<(NativeMountError, WorkCounters)>,
 }
 
-#[cfg(test)]
-thread_local! {
-    /// Inodes whose attributes this thread's state guards dropped, so a test
-    /// without a kernel sees each invalidation as it is delivered.
-    pub(super) static DROPPED_ATTRIBUTES: std::cell::RefCell<Vec<u64>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
 pub(super) struct StateGuard<'a> {
     state: Option<RankedGuard<'a, ProjectionState>>,
     core: &'a ProjectionCore,
@@ -49,9 +41,10 @@ impl std::ops::DerefMut for StateGuard<'_> {
 impl StateGuard<'_> {
     #[track_caller]
     pub(super) fn wait(mut self, condition: &RankedCondvar) -> Result<Self, NativeMountError> {
-        let Some(state) = self.state.take() else {
+        let Some(mut state) = self.state.take() else {
             unreachable!("the guard owns its lock until drop");
         };
+        state.queue_superseded_attributes();
         self.core.invalidation.notify_all();
         if let Some(wake) = self.core.shared_wake.get()
             && state.invalidation_wanted()
@@ -74,17 +67,13 @@ impl Drop for StateGuard<'_> {
         let Some(mut state) = self.state.take() else {
             return;
         };
-        let mut superseded = std::mem::take(&mut state.superseded_attributes);
+        state.queue_superseded_attributes();
         let wake = self
             .core
             .shared_wake
             .get()
             .filter(|_| state.invalidation_wanted());
         drop(state);
-        #[cfg(test)]
-        DROPPED_ATTRIBUTES.with_borrow_mut(|dropped| {
-            dropped.extend(superseded.iter().map(|(inode, _)| *inode));
-        });
         #[cfg(all(test, loom))]
         let notify = !invalidation::model_checking::omit_guard_notification();
         #[cfg(not(all(test, loom)))]
@@ -95,21 +84,8 @@ impl Drop for StateGuard<'_> {
         if let Some(wake) = wake {
             wake.wake();
         }
-        // Closing the projection retires these unpublished reservations. It
-        // must not start another device write while joining a failed transport.
-        if !self.core.stopping.load(Ordering::Acquire)
-            && let Some(notifier) = self.core.notifier.get()
-        {
-            for (inode, credit) in superseded.iter_mut() {
-                // Drop only attributes, so this never waits for kernel pages or requests.
-                let _ = notifier.inval_attributes(*inode);
-                credit.record_deferred(WorkCounters {
-                    backend_write_operations: 1,
-                    items_examined: 1,
-                    ..WorkCounters::UNCHARGED
-                });
-            }
-        }
+        #[cfg(all(test, loom))]
+        invalidation::model_checking::after_guard_drop();
     }
 }
 
@@ -123,7 +99,6 @@ pub(super) struct ProjectionCore {
     pub(super) state: RankedMutex<ProjectionState, VIEW>,
     pub(super) names: RwLock<()>,
     pub(super) invalidation: RankedCondvar,
-    pub(super) notifier: OnceLock<CacheNotifier>,
     pub(super) stopping: AtomicBool,
     pub(super) origin: ViewOrigin,
     pub(super) startup_meter: Mutex<NativeMountMeterActivation>,
@@ -199,7 +174,6 @@ impl ProjectionCore {
             state: RankedMutex::new(state),
             names: RwLock::new(()),
             invalidation: RankedCondvar::new(),
-            notifier: OnceLock::new(),
             stopping: AtomicBool::new(false),
             origin: ViewOrigin::new(),
             startup_meter: Mutex::new(NativeMountMeterActivation::default()),
