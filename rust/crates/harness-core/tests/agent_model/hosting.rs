@@ -909,30 +909,33 @@ async fn file_control_journey(guest: bool, maximum: Option<u64>) -> Result {
         let interrupt_handler = native.clone();
         let manifest = wire::decode_manifest(&wire::encode_manifest(native.manifest()))?;
         let calls = guest_calls.clone();
-        bound.hosting(Arc::new(wire::Remote::new(
-            manifest,
-            move |bytes, cancellation| -> GuestFuture<'static, Vec<u8>> {
-                let native = native.clone();
-                let calls = calls.clone();
-                Box::pin(async move {
-                    let (delivery, checkpoint) = wire::decode_delivery(&bytes)?;
-                    assert!(
-                        !delivery.actor.id().starts_with("file-controls-"),
-                        "host-owned control crossed the guest boundary"
-                    );
-                    calls.fetch_add(1, Ordering::SeqCst);
-                    wire::encode_transition(
-                        &native
-                            .on_record(delivery, checkpoint.as_ref(), cancellation)
-                            .await?,
-                    )
-                })
-            },
-            move |query| -> GuestFuture<'static, bool> {
-                let handler = interrupt_handler.clone();
-                Box::pin(async move { wire::accepts_interrupt(handler.as_ref(), &query).await })
-            },
-        )))?
+        bound.hosting(
+            acyclic_actors::guest::Requests::default(),
+            Arc::new(wire::Remote::new(
+                manifest,
+                move |bytes, cancellation| -> GuestFuture<'static, Vec<u8>> {
+                    let native = native.clone();
+                    let calls = calls.clone();
+                    Box::pin(async move {
+                        let (delivery, checkpoint) = wire::decode_delivery(&bytes)?;
+                        assert!(
+                            !delivery.actor.id().starts_with("file-controls-"),
+                            "host-owned control crossed the guest boundary"
+                        );
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        wire::encode_transition(
+                            &native
+                                .on_record(delivery, checkpoint.as_ref(), cancellation)
+                                .await?,
+                        )
+                    })
+                },
+                move |query| -> GuestFuture<'static, bool> {
+                    let handler = interrupt_handler.clone();
+                    Box::pin(async move { wire::accepts_interrupt(handler.as_ref(), &query).await })
+                },
+            )),
+        )?
     } else {
         bound
     };
@@ -1662,25 +1665,28 @@ async fn guest_spawn_creates_host_controls_with_original_child_and_volume_public
     );
     let manifest = wire::decode_manifest(&wire::encode_manifest(guest.manifest()))?;
     let interrupt_handler = guest.clone();
-    let bound = bound.hosting(Arc::new(wire::Remote::new(
-        manifest,
-        move |bytes, cancellation| -> GuestFuture<'static, Vec<u8>> {
-            let guest = guest.clone();
-            Box::pin(async move {
-                let (delivery, checkpoint) = wire::decode_delivery(&bytes)?;
-                assert!(!delivery.actor.id().starts_with("file-controls-"));
-                wire::encode_transition(
-                    &guest
-                        .on_record(delivery, checkpoint.as_ref(), cancellation)
-                        .await?,
-                )
-            })
-        },
-        move |query| -> GuestFuture<'static, bool> {
-            let handler = interrupt_handler.clone();
-            Box::pin(async move { wire::accepts_interrupt(handler.as_ref(), &query).await })
-        },
-    )))?;
+    let bound = bound.hosting(
+        acyclic_actors::guest::Requests::default(),
+        Arc::new(wire::Remote::new(
+            manifest,
+            move |bytes, cancellation| -> GuestFuture<'static, Vec<u8>> {
+                let guest = guest.clone();
+                Box::pin(async move {
+                    let (delivery, checkpoint) = wire::decode_delivery(&bytes)?;
+                    assert!(!delivery.actor.id().starts_with("file-controls-"));
+                    wire::encode_transition(
+                        &guest
+                            .on_record(delivery, checkpoint.as_ref(), cancellation)
+                            .await?,
+                    )
+                })
+            },
+            move |query| -> GuestFuture<'static, bool> {
+                let handler = interrupt_handler.clone();
+                Box::pin(async move { wire::accepts_interrupt(handler.as_ref(), &query).await })
+            },
+        )),
+    )?;
     let RootSubmission::Created(root) = bound
         .create_root(
             &intent("guest-parent"),

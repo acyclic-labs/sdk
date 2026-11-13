@@ -208,7 +208,7 @@ pub(crate) use keys::{content_path, map_error};
 pub use keys::{filesystem_key, workspace_ref};
 pub(in crate::filesystem) use metadata::read_file_annotation;
 pub(in crate::filesystem) use publication::decode_content_metadata;
-pub(in crate::filesystem) use reads::{read_generation, read_generation_if_present};
+pub(in crate::filesystem) use reads::read_generation;
 
 use crate::executor::stock_boundary;
 
