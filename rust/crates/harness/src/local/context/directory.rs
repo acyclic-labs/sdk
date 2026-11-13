@@ -24,12 +24,6 @@ fn entries(page: Vec<crate::context::DiscoveryEntry>) -> Vec<PrivateDirectoryEnt
         .collect()
 }
 
-fn skill_names(
-    snapshot: &crate::context::SkillSnapshot,
-) -> std::slice::Iter<'_, crate::context::SkillMetadata> {
-    snapshot.iter()
-}
-
 impl LocalHarness {
     async fn skill_directory_source(
         self: &Arc<Self>,
@@ -59,13 +53,19 @@ impl LocalHarness {
             )?
             .await?;
         Ok(Box::pin(async_stream::try_stream! {
-            let mut names = snapshots.iter().flat_map(skill_names).peekable();
-            while names.peek().is_some() {
-                let mut entries = Vec::new();
-                for skill in names.by_ref().take(rows as usize) {
+            let mut remaining = snapshots.iter().map(|snapshot| snapshot.len()).sum::<usize>();
+            let (mut source, mut offset) = (0, 0);
+            while remaining != 0 {
+                let mut entries = Vec::with_capacity((rows as usize).min(remaining));
+                while entries.len() < rows as usize && remaining != 0 {
+                    let snapshot = snapshots.get(source).ok_or_else(|| Error::Storage("skill source cursor escaped its selection".into()))?;
+                    if offset == snapshot.len() { source += 1; offset = 0; continue; }
+                    let skill = snapshot.get(offset).ok_or_else(|| Error::Storage("skill name cursor escaped its source".into()))?;
                     entries.push(PrivateDirectoryEntry { name: skill.name.clone(), kind: PrivateDirectoryEntryKind::File });
+                    offset += 1;
+                    remaining -= 1;
                 }
-                yield acyclic_harness_client::DirectoryQueryPage { entries, has_more: names.peek().is_some() };
+                yield acyclic_harness_client::DirectoryQueryPage { entries, has_more: remaining != 0 };
             }
         }))
     }
