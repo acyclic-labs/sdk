@@ -279,7 +279,15 @@ async fn parent_and_fork_expose_original_machine_results_through_session_files()
         )
         .await??;
         eprintln!("parent result: original conversation and tool-output publication");
-        let parent = observe(&client, &server, &root, 1).await?;
+        let parent = observe(&client, &server, &root, 1, 0).await?;
+        // A fork replays this prefix before publishing its own result.
+        let inherited = server
+            .bound()
+            .agents()
+            .provider()
+            .tail(root.conversation()?)
+            .await?;
+        assert!(inherited > 0, "fork must retain the parent's conversation");
         eprintln!("fork spawn: original parent Actor settlement");
         let Ok(AgentReply::Spawned { agent: child, .. }) = call(
             &client,
@@ -296,7 +304,7 @@ async fn parent_and_fork_expose_original_machine_results_through_session_files()
             return Err("fork was not admitted".into());
         };
         eprintln!("fork result: original conversation and tool-output publication");
-        let fork = observe(&client, &server, &child, 2).await?;
+        let fork = observe(&client, &server, &child, 2, inherited).await?;
         assert_ne!(
             parent["execution"]["volume"]["id"],
             fork["execution"]["volume"]["id"]
@@ -356,6 +364,7 @@ async fn observe(
     server: &Arc<Server<Counted<MemoryStream>, LogicalObjectStore<acyclic_objects::MemoryObjects>>>,
     agent: &AgentPath,
     credential_id: u32,
+    conversation_from: u64,
 ) -> Result<serde_json::Value> {
     use acyclic_harness_client::ReadTarget;
     let bound = server.bound();
@@ -404,7 +413,10 @@ async fn observe(
             ..Default::default()
         })
         .await?;
-    let followed = bound.agents().follow_conversation(agent, 0).await;
+    let followed = bound
+        .agents()
+        .follow_conversation(agent, conversation_from)
+        .await;
     if followed.is_err() {
         eprintln!(
             "{agent}: original output producer phase {:?}",
