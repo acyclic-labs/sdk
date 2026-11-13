@@ -42,12 +42,13 @@ pub struct MechanismTotals {
     pub cancelled: u128,
     /// Paired spans that returned or dropped without observing settlement.
     pub unsettled: u128,
+    /// Count above the caller's mechanism threshold, unknown without a policy.
+    pub outliers: Option<u128>,
     /// Largest observed same-domain duration and its original start publication.
     pub longest: Option<(u64, RetainedRecord)>,
 }
 
-/// One new query observation. Consumers can filter durations using their own
-/// outlier policy without retaining a second copy of the trace history.
+/// One new query observation, using the caller's explicit outlier policy.
 #[derive(Debug)]
 pub enum Observation {
     /// A start was admitted; its context is available from `active`.
@@ -67,6 +68,9 @@ pub enum Observation {
         finish: RetainedRecord,
         /// Difference of timestamps in this identity's single clock domain.
         elapsed_ns: u64,
+        /// Whether elapsed time exceeds this mechanism's configured threshold;
+        /// unknown when the caller supplied no threshold for this mechanism.
+        outlier: Option<bool>,
         /// Reported terminal byte count, without estimation.
         bytes: Option<u64>,
         /// Original terminal outcome and any failure evidence.
@@ -132,6 +136,7 @@ pub struct TraceQuery<S> {
     records: S,
     active: BTreeMap<SpanId, ActiveSpan>,
     totals: BTreeMap<Mechanism, MechanismTotals>,
+    thresholds_ns: BTreeMap<Mechanism, u64>,
     sequence: Option<u64>,
     active_waits: usize,
     missing_guarantees: u128,
@@ -141,11 +146,14 @@ pub struct TraceQuery<S> {
 impl<S> TraceQuery<S> {
     /// Select exactly the records the caller already authorized and opened.
     /// No history is read until `next` is requested.
-    pub fn new(records: S) -> Self {
+    /// Outlier thresholds are caller policy, not implicit SDK constants. An
+    /// absent mechanism threshold preserves unknown classification.
+    pub fn new(records: S, thresholds_ns: BTreeMap<Mechanism, u64>) -> Self {
         Self {
             records,
             active: BTreeMap::new(),
             totals: BTreeMap::new(),
+            thresholds_ns,
             sequence: None,
             active_waits: 0,
             missing_guarantees: 0,
@@ -254,9 +262,16 @@ impl<S: Stream<Item = Result<Record, StreamError>> + Unpin> TraceQuery<S> {
                         .remove(&id)
                         .expect("start was observed without yielding");
                     self.active_waits -= usize::from(start.mechanism == Mechanism::Wait);
+                    let outlier = self
+                        .thresholds_ns
+                        .get(&start.mechanism)
+                        .map(|threshold| elapsed_ns > *threshold);
                     let total = self.totals.entry(start.mechanism).or_default();
                     total.completed += 1;
                     total.elapsed_ns += u128::from(elapsed_ns);
+                    if let Some(outlier) = outlier {
+                        total.outliers = Some(total.outliers.unwrap_or(0) + u128::from(outlier));
+                    }
                     match bytes {
                         Some(bytes) => total.known_bytes += u128::from(bytes),
                         None => total.unknown_bytes += 1,
@@ -279,6 +294,7 @@ impl<S: Stream<Item = Result<Record, StreamError>> + Unpin> TraceQuery<S> {
                         start,
                         finish: evidence,
                         elapsed_ns,
+                        outlier,
                         bytes,
                         result,
                     }
