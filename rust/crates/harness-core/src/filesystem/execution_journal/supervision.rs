@@ -346,17 +346,15 @@ where
             return Ok(Some(projection));
         }
         let _error_hold;
+        let mut background_started = false;
         let error = match event {
             ExecutionEvent::ToolFailed { reason, cause, .. } => Some(encode(&(reason, cause), io)?),
             ExecutionEvent::ToolCompleted { result, .. } if invocation.name == "shell" => {
                 let (result, _result_hold) =
                     crate::executor::load_json::<crate::tool::ToolResult>(self, result, io).await?;
                 let value = &result.value;
-                if value.get("background").and_then(serde_json::Value::as_bool) == Some(true) {
-                    // The original result file, not the launch receipt, ends
-                    // the job's existing quiet watch.
-                    return Ok(None);
-                }
+                background_started =
+                    value.get("background").and_then(serde_json::Value::as_bool) == Some(true);
                 let failed = value.get("success").and_then(serde_json::Value::as_bool)
                     == Some(false)
                     || value
@@ -398,7 +396,7 @@ where
                 policy,
             )
             .await?;
-        if policy.quiet_ms.is_some() {
+        if policy.quiet_ms.is_some() && !background_started {
             self.tool_job_projection(
                 &mut projection,
                 crate::supervision::tool_jobs::Record {

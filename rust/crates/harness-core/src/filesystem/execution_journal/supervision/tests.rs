@@ -444,9 +444,10 @@ async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_o
                 0,
                 call_id.clone(),
                 "shell".into(),
-                serde_json::json!({"command":command,"yield_time_ms":index+1,"max_output_tokens":100+index,"background":true}),
+                serde_json::json!({"command":command,"yield_time_ms":index+1,"max_output_tokens":100+index,"background":index!=0}),
                 None,
             )?;
+            let original_call = invocation.operation_id;
             let invocation = crate::executor::stage_json(
                 &journal,
                 operation,
@@ -469,45 +470,13 @@ async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_o
             journal
                 .append(operation, &format!("check-{index}"), &started, None)?
                 .await?;
-            let result = crate::executor::stage_json(
-                &journal,
-                operation,
-                &format!("launch-{index}"),
-                &crate::tool::ToolResult {
-                    value: serde_json::json!({"background":true}),
-                },
-                None,
-            )
-            .await?;
-            let projection = crate::executor::stage_json(
-                &journal,
-                operation,
-                &format!("launch-view-{index}"),
-                &serde_json::json!({"text":"launched"}),
-                None,
-            )
-            .await?;
-            journal
-                .append(
-                    operation,
-                    &format!("launched-{index}"),
-                    &ExecutionEvent::ToolCompleted {
-                        step: 0,
-                        call_id,
-                        result,
-                        projection,
-                        record_kind: None,
-                    },
-                    None,
-                )?
-                .await?;
             // The original ToolStarted producer, not a hand-authored jobs
             // record, must retain the scheduler's configured clock domain.
             let mut jobs = stream
                 .read(acyclic_stream::ReadRequest {
                     path: crate::supervision::tool_jobs::path(&agent)?,
                     from: index as u64,
-                    limit: 2,
+                    limit: 1,
                     key: None,
                     at_least: Default::default(),
                 })
@@ -525,10 +494,62 @@ async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_o
                     ..
                 }
             ));
-            assert!(
-                futures::TryStreamExt::try_next(&mut jobs).await?.is_none(),
-                "launch receipt retired the original quiet watch"
-            );
+            if index == 0 {
+                let started_result = crate::tool::ToolResult {
+                    value: serde_json::json!({"background":true,"output_directory":"original-job"}),
+                };
+                let result = crate::executor::stage_json(
+                    &journal,
+                    operation,
+                    "background-start-result",
+                    &started_result,
+                    None,
+                )
+                .await?;
+                let projection = crate::executor::stage_json(
+                    &journal,
+                    operation,
+                    "background-start-projection",
+                    &serde_json::json!({}),
+                    None,
+                )
+                .await?;
+                journal
+                    .append(
+                        operation,
+                        "background-start-completed",
+                        &ExecutionEvent::ToolCompleted {
+                            step: 0,
+                            call_id: call_id.clone(),
+                            result,
+                            projection,
+                            record_kind: None,
+                        },
+                        None,
+                    )?
+                    .await?;
+                use acyclic_stream::StreamProviderExt as _;
+                let (latest, _) = stream
+                    .latest_fenced(
+                        crate::supervision::tool_jobs::path(&agent)?,
+                        Some(original_call.into_bytes().to_vec().into()),
+                        Default::default(),
+                    )
+                    .await?;
+                let latest: crate::supervision::tool_jobs::Record = serde_json::from_slice(
+                    &latest
+                        .ok_or_else(|| Error::Invalid("background job missing".into()))?
+                        .value,
+                )
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+                assert!(
+                    matches!(
+                        latest.event,
+                        crate::supervision::tool_jobs::Event::Started { .. }
+                    ),
+                    "background start receipt retired quiet supervision"
+                );
+            }
             // Exact original replay is one admission, even after its decision.
             journal
                 .append(operation, &format!("check-{index}"), &started, None)?

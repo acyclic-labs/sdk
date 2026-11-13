@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 pub(super) const PREFIX: &str = "tool-quiet-";
 pub(super) const ACTIVITY: &str = "job-output";
-pub(super) const RESULT: &str = "job-result";
+pub(super) const COMPLETED: &str = "job-completed";
 pub(super) const LIFECYCLE: &str = "job-lifecycle";
 pub(super) const CLOSED: &str = "job-closed";
 
@@ -33,7 +33,7 @@ struct State {
 fn codec() -> CodecIdentity {
     CodecIdentity {
         name: tool_jobs::CODEC.into(),
-        version: "1".into(),
+        version: "2".into(),
     }
 }
 
@@ -43,7 +43,7 @@ fn state(checkpoint: Option<&Checkpoint>) -> Result<State, Error> {
         .ok_or(Error::Record("quiet checkpoint codec"))?;
     let state: State =
         serde_json::from_slice(&checkpoint.bytes).map_err(|_| Error::Record("quiet checkpoint"))?;
-    if state.version != 1 {
+    if state.version != 2 {
         return Err(Error::Record("quiet checkpoint version"));
     }
     Ok(state)
@@ -60,16 +60,16 @@ fn checkpoint(state: &State) -> Result<Checkpoint, Error> {
 
 pub(super) fn key(id: &str, checkpoint: Option<&Checkpoint>) -> Result<Option<Bytes>, Error> {
     match id {
-        RESULT => {
-            let state = state(checkpoint)?;
-            Ok(Some(
-                crate::runtime::tool_output_path(state.execution, state.call, "result.json").into(),
-            ))
-        }
         ACTIVITY => {
             let state = state(checkpoint)?;
             Ok(Some(
                 crate::runtime::tool_output_activity_path(state.execution, state.call).into(),
+            ))
+        }
+        COMPLETED => {
+            let state = state(checkpoint)?;
+            Ok(Some(
+                crate::runtime::tool_output_completion_path(state.execution, state.call).into(),
             ))
         }
         LIFECYCLE => Ok(Some(Bytes::copy_from_slice(
@@ -117,7 +117,7 @@ pub(super) fn create<P: AuthorityProvider + ?Sized>(
     }
     let actor = actor(within, job.call)?;
     let state = State {
-        version: 1,
+        version: 2,
         agent: agent.clone(),
         run,
         execution,
@@ -144,7 +144,7 @@ pub(super) fn create<P: AuthorityProvider + ?Sized>(
             },
         ),
         (
-            RESULT.into(),
+            COMPLETED.into(),
             Subscription {
                 path: output,
                 cursor: 0,
@@ -234,16 +234,18 @@ pub(super) async fn transition<P: AuthorityProvider + ?Sized>(
     if !retired {
         let source = delivery
             .subscriptions
-            .get(RESULT)
-            .ok_or(Error::Record("quiet result subscription"))?;
-        retired = latest(
-            store,
-            source.path.clone(),
-            key(RESULT, original)?,
-            &mut effects,
-        )
-        .await?
-        .is_some();
+            .get(COMPLETED)
+            .ok_or(Error::Record("quiet completion subscription"))?
+            .path
+            .clone();
+        if let Some(record) = latest(store, source, key(COMPLETED, original)?, &mut effects).await?
+        {
+            let context = acyclic_stream::changes_context(&record.value, &record.headers)
+                .map_err(Error::Stream)?
+                .ok_or(Error::Record("quiet completion publication"))?;
+            acyclic_fs::PublicationContext::from_bytes(context).map_err(Error::Stream)?;
+            retired = true;
+        }
     }
     if !retired {
         let source = delivery

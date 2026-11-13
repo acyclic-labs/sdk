@@ -88,7 +88,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
             CLOSED,
             JOBS,
             super::quiet::ACTIVITY,
-            super::quiet::RESULT,
+            super::quiet::COMPLETED,
             super::quiet::LIFECYCLE,
             super::quiet::CLOSED,
         ]
@@ -566,7 +566,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Han
     ) -> Result<Option<Bytes>, GuestError> {
         if [
             super::quiet::ACTIVITY,
-            super::quiet::RESULT,
+            super::quiet::COMPLETED,
             super::quiet::LIFECYCLE,
             super::quiet::CLOSED,
         ]

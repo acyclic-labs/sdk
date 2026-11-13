@@ -445,7 +445,8 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
             self.0.load(Ordering::SeqCst)
         }
     }
-    for finish in [0, 1, 2, 3] {
+    for completion in [0, 1, 2, 3] {
+        let finish = completion != 0;
         let commit_clock = Arc::new(CommitClock(AtomicU64::new(100)));
         let stream = Arc::new(MemoryStream::new_with_clock(
             MemoryLimits::default(),
@@ -505,7 +506,7 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
         ];
         keys.sort_unstable();
         let started = serde_json::json!({"version":1,"call":call,"event":{
-            "kind":"started","run":run,"execution":execution,"quiet_ms":if finish == 3 { u64::MAX } else { 10 },
+            "kind":"started","run":run,"execution":execution,"quiet_ms":if completion == 3 { u64::MAX } else { 10 },
             "action":Action::Pause,"at_ms":100,"source":{"stream":format!("{agent}/execution"),"sequence":0}
         }});
         stream
@@ -551,7 +552,7 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
             .runtime()
             .delivery_failure(&bound.agents().actor(&agent)?)?;
         let exercise = async {
-            if finish == 3 {
+            if completion == 3 {
                 let failure = agent_failure.await;
                 assert!(
                     failure.to_string().contains("quiet deadline overflow"),
@@ -579,6 +580,21 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
                         path: path.clone(),
                         expected: None,
                         text: Some(cursor.clone()),
+                    }],
+                )
+                .await?;
+            bound.agents().runtime().complete().await?;
+            let completed_path =
+                acyclic_harness_core::runtime::tool_output_completion_path(execution, call);
+            bound
+                .publish_files(
+                    &agent,
+                    FileRoot::Private {},
+                    OperationId::from_bytes([238; 16]),
+                    &[ClientFileChange {
+                        path: completed_path.clone(),
+                        expected: None,
+                        text: Some("{}".into()),
                     }],
                 )
                 .await?;
@@ -616,6 +632,31 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
                 65_536,
                 None,
             )?;
+            // A different call publishes into the same host journal. Neither
+            // its output nor its completion may deliver to this quiet actor.
+            let before_unrelated = stream.tail(store.path(&actor)?).await?;
+            let other_call = OperationId::from_bytes([240; 16]);
+            for unrelated in [
+                acyclic_harness_core::runtime::tool_output_activity_path(execution, other_call),
+                acyclic_harness_core::runtime::tool_output_completion_path(execution, other_call),
+            ] {
+                publisher
+                    .stage_once(
+                        OperationId::new(),
+                        &unrelated,
+                        b"{}",
+                        "application/json",
+                        "unrelated.json",
+                        ContentAccess::default(),
+                    )?
+                    .await?;
+            }
+            bound.agents().runtime().complete().await?;
+            assert_eq!(
+                stream.tail(store.path(&actor)?).await?,
+                before_unrelated,
+                "unrelated journal output woke the quiet actor",
+            );
             publisher
                 .stage_once(
                     OperationId::from_bytes([236; 16]),
@@ -635,28 +676,38 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
                 queries.read_signal(Kind::Stuck).await?.is_none(),
                 "old alarm ignored fresh output"
             );
-            if finish == 1 {
+            if completion == 1 {
                 // Completion may be committed while its delivery is still queued.
                 stream.append(AppendRequest { path: jobs.clone(), records: vec![AppendRecord {
                     value: serde_json::to_vec(&serde_json::json!({"version":1,"call":call,"event":{"kind":"finished"}}))?.into(),
                     headers: RecordHeaders::new(vec![call.into_bytes().to_vec().into()], vec![])?,
                 }], if_tail: None, idempotency_key: IdempotencyKey::new("quiet-finish")? }).await?;
-            }
-            if finish == 2 {
+            } else if completion == 2 {
+                let completed =
+                    serde_json::to_vec(&acyclic_harness_core::runtime::ToolOutputCompletion {
+                        version: 1,
+                        turn: execution,
+                        call,
+                    })?;
                 publisher
                     .stage_once(
                         OperationId::from_bytes([239; 16]),
-                        &acyclic_harness_core::runtime::tool_output_path(
-                            execution,
-                            call,
-                            "result.json",
-                        ),
-                        b"{\"success\":true,\"exit_code\":0}",
+                        &completed_path,
+                        &completed,
                         "application/json",
-                        "result.json",
+                        "completed.json",
                         ContentAccess::default(),
                     )?
                     .await?;
+                bound.agents().runtime().complete().await?;
+                let physical = store.load(&actor).await?;
+                let physical = physical
+                    .state()
+                    .ok_or("quiet actor missing after completion")?;
+                assert!(
+                    physical.paused() && physical.alarm().deadline_unix_ms().is_none(),
+                    "physical completion did not retire quiet supervision",
+                );
             }
             // B starts after A's tool admission; A's later pause still owns resume.
             let independent = OperationId::from_bytes([237; 16]);
@@ -688,7 +739,7 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
                 Some(independent)
             );
             time.advance_to(115)?;
-            if finish != 0 {
+            if finish {
                 wait(&mut states, None, true).await?;
                 assert!(
                     queries.read_signal(Kind::Stuck).await?.is_none(),
@@ -835,7 +886,7 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
             Ok::<_, Box<dyn std::error::Error>>(())
         };
         tokio::select! {
-            result = bound.agents().run(|actor, error| { if finish != 3 { panic!("quiet actor {actor:?}: {error}"); } }) => match result {
+            result = bound.agents().run(|actor, error| { if completion != 3 { panic!("quiet actor {actor:?}: {error}"); } }) => match result {
                 Err(error) => return Err(error.into()), Ok(never) => match never {},
             },
             result = exercise => result?,

@@ -29,7 +29,10 @@ mod tools;
 pub use tools::*;
 mod tool_output;
 pub use output::tool_output_path;
-pub use tool_output::{ToolOutputActivity, ToolOutputLog, tool_output_activity_path};
+pub use tool_output::{
+    ToolOutputActivity, ToolOutputCompletion, ToolOutputLog, tool_output_activity_path,
+    tool_output_completion_path,
+};
 mod task_context;
 pub use task_context::*;
 mod content_read;
