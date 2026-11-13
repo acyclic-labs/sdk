@@ -879,15 +879,6 @@ async fn read_generation_optional<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     path: &str,
     maximum: Option<u64>,
     io: &PreparationIo,
-) -> Result<Option<acyclic_stream::OwnedBytes>> {
-    read_generation_optional(generation, path, maximum, io, Into::into).await
-}
-
-async fn read_generation_optional<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    generation: &acyclic_fs::Generation<A, O>,
-    path: &str,
-    maximum: Option<u64>,
-    io: &PreparationIo,
     classify: fn(Error) -> Error,
 ) -> Result<Option<acyclic_stream::OwnedBytes>> {
     io.remaining()?;
