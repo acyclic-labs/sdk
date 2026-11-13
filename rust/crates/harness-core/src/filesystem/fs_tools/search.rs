@@ -179,7 +179,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
                     "sequence": found.record.sequence,
                     "commit": hex::encode(found.record.commit_id.as_bytes()),
                     "origin": found.record.origin.as_str(),
-                    "file": found.source,
+                    "file": found.source.as_deref(),
                 })
             })
             .collect::<Vec<_>>();

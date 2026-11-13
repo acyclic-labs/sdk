@@ -952,7 +952,6 @@ where
                     },
                 )
                 .await;
-            drop(cursor);
 
             drop(grant);
             drop(grant_custody);

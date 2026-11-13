@@ -260,6 +260,7 @@ impl FileCursor {
             position.offset,
             &self.pattern,
             bytes.as_slice(),
+            None,
         )? {
             Window::Match(offset) => matches.push(FileMatch { file, offset }),
             Window::More(offset) => {

@@ -102,7 +102,7 @@ impl<'a, P: StreamProvider + ?Sized> Access<'a, P> {
         let mut value = Vec::new();
         self.io(value
             .try_reserve_exact(length)
-            .map_err(std::io::Error::other))?;
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::OutOfMemory)))?;
         Ok(value)
     }
 

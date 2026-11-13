@@ -48,6 +48,12 @@ observer failures remain distinct from semantic provider failures. A linked
 matcher implements `Matcher::native_step` with original output custody; the
 default refuses instead of invoking ordinary matching.
 
+`ContentMatcher::with_native_work` binds linked-file inspection to that exact
+invocation and its current reader authority. A matched `FileRef` retains its
+original decoder custody independently of the result page. Matching selects one
+reference and its successor without materializing a second reference list;
+progress is a versioned fixed-width position rather than serialized file data.
+
 Mounted files use the same literal query and work budget:
 
 ```text
