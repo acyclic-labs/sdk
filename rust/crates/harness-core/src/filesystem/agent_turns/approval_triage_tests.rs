@@ -32,6 +32,18 @@ type Binding = crate::filesystem::hosting::Bound<
     acyclic_fs::LogicalObjectStore<acyclic_objects::MemoryObjects>,
 >;
 
+fn original_models(provider: Arc<dyn ModelProvider>) -> Arc<ModelResolver> {
+    Arc::new(ModelResolver::new("test/reviewer", move |selection| {
+        let (name, model) = selection
+            .split_once('/')
+            .ok_or_else(|| Error::Invalid("expected provider/model selection".into()))?;
+        Ok((
+            Model::new(name.into(), model.into(), "1".into())?,
+            provider.clone(),
+        ))
+    }))
+}
+
 async fn family(
     verdicts: impl IntoIterator<Item = &'static str>,
 ) -> TestResult<(
@@ -63,19 +75,7 @@ async fn family(
         Arc::new(NoWorkerContext),
     );
     // The original root template may select a role model over the host fallback.
-    let selected_provider: Arc<dyn ModelProvider> = reviewer.clone();
-    let executors = executors.with_models(Arc::new(ModelResolver::new(
-        "test/reviewer",
-        move |selection| {
-            let (provider, name) = selection
-                .split_once('/')
-                .ok_or_else(|| Error::Invalid("expected provider/model selection".into()))?;
-            Ok((
-                Model::new(provider.into(), name.into(), "1".into())?,
-                selected_provider.clone(),
-            ))
-        },
-    )));
+    let executors = executors.with_models(original_models(reviewer.clone()));
     let (bound, parent, children) = family_with(Arc::new(executors)).await?;
     Ok((bound, parent, children, reviewer))
 }
@@ -726,7 +726,8 @@ async fn child_approval_pauses_and_resumes_its_original_operation_after_parent_r
         ToolRegistry::default(),
         (Limits::default(), None::<crate::context::CompactionPolicy>),
         Arc::new(NoWorkerContext),
-    );
+    )
+    .with_models(original_models(reviewer.clone()));
     let (bound, parent, children) = family_with(Arc::new(Executors {
         review,
         calls: calls.clone(),
