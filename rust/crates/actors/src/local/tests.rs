@@ -127,6 +127,7 @@ async fn indexed_delivery_requires_original_cursor_and_source_key() -> TestResul
             .is_err()
     );
     let delivery = crate::guest::Delivery {
+        request: crate::guest::RequestId::new(1),
         actor: address,
         epoch: 1,
         trigger,
