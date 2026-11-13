@@ -157,6 +157,13 @@ transition and observes the original mutex acquisition; it returns the original
 guard without extending it through a diagnostic wait. The SDK value observation
 helper shares the same admission and terminal implementation as result observation,
 so infallible mechanisms need no invented error or parallel recorder.
+Application-owned Session delivery observes its original decision fence as
+`stream.application_decision_wait`. Its existing completion channel retains the
+original accepted decision boolean: a reconnect-fenced `false` is `Unsettled`,
+not a successful replay advance. Abandoned delivery carries a typed original
+cause, and a lost completion producer retains its actual receive error. Cancelled
+waits leave the receiver and application checkpoint intact; the trace never
+substitutes receive credit for a consumer decision.
 A registry-bound producer also carries its own admitted lease count. The final
 lease retires new inherited child observations even when the original request
 still retains its recorder or another agent remains followed. This is an inline
