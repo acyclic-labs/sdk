@@ -52,7 +52,12 @@ async fn handler_failure_transition_consumes_only_decided_work() -> TestResult {
             error: error.clone(),
             failures: AtomicUsize::new(0),
         });
-        let runtime = Runtime::new(store, handler.clone(), Arc::new(SystemClock));
+        let runtime = Runtime::new(
+            crate::guest::Requests::default(),
+            store,
+            handler.clone(),
+            Arc::new(SystemClock),
+        );
         runtime.track(address.clone())?;
         let result = runtime.drain_actor(&address).await;
         let snapshot = runtime.store().load(&address).await?;
