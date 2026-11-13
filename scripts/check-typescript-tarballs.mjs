@@ -40,6 +40,8 @@ for (const entry of packageEntries) {
 }
 
 export const representativeExports = {
+  "@acyclic-labs/auth": "credentialProvider",
+  "@acyclic-labs/core": "deadlineSignal",
   "@acyclic-labs/actors": "ActorsClient",
   "@acyclic-labs/fs": "openBrowserFs",
   "@acyclic-labs/harness": "PreparedAgentCommand",
@@ -104,6 +106,17 @@ for (const [name, exportName] of Object.entries(expected)) {
   }
 }
 const checks = {
+  "@acyclic-labs/auth": async (m) =>
+    await m.credentialProvider({ token: "tarball-credential" })() === "tarball-credential",
+  "@acyclic-labs/core": async (m) => {
+    const events = [];
+    const deadline = m.deadlineSignal(undefined, () => new Error("expired"));
+    try {
+      const result = await m.observed({ onOperation: event => events.push(event) },
+        "core", "import", async () => 7);
+      return result === 7 && events.length === 1 && events[0].ok && !deadline.signal.aborted;
+    } finally { deadline.cleanup(); }
+  },
   "@acyclic-labs/actors": (m) => {
     if (typeof m.ActorsClient !== "function" || typeof m.DeploymentRequestSchema !== "object") return false;
     new m.ActorsClient({ endpoint: "https://actors.example.test", token: "tarball-smoke" });
