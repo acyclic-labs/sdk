@@ -211,6 +211,79 @@ fn capacity() -> Arc<Capacity> {
 }
 
 #[test]
+fn one_models_retry_after_does_not_gate_another_models_http() -> Result<()> {
+    use acyclic_harness_core::model::ModelEvent;
+
+    paused().block_on(async {
+        let transport = capacity();
+        let fixture = crate::tests::provider_with(
+            Adapter::Chat,
+            "https://provider.test/v1",
+            transport.clone(),
+        );
+        let mut specification = fixture.config.as_ref().clone();
+        specification.models = ["limited", "independent"]
+            .into_iter()
+            .map(|name| {
+                (
+                    name.into(),
+                    crate::ModelSpec {
+                        tool_profile: None,
+                        thinking_levels: false,
+                        max_context_tokens: None,
+                        capacity: fixture.capacity,
+                        features: Default::default(),
+                    },
+                )
+            })
+            .collect();
+        let mut registry = crate::Registry::with_transport(
+            crate::Credentials::explicit(std::collections::BTreeMap::from([(
+                "fixture".into(),
+                "key".into(),
+            )])),
+            transport.clone(),
+        );
+        registry.register("fixture".into(), specification)?;
+        let limited = registry.resolve("fixture/limited")?;
+        let peer = registry.resolve("fixture/limited")?;
+        let independent = registry.resolve("fixture/independent")?;
+        // Existing provider work refuses the first model's real HTTP request.
+        *transport.active.lock().unwrap() = CAPACITY;
+        let (request, dispatch) = crate::tests::request(&limited)?;
+        let mut refused = limited.generate(&request, dispatch);
+        assert!(matches!(
+            refused.next().now_or_never(),
+            Some(Some(Ok(ModelEvent::Wait(ModelWait::Started { .. }))))
+        ));
+        *transport.active.lock().unwrap() = 0;
+        let (peer_request, peer_dispatch) = crate::tests::request(&peer)?;
+        let mut queued = peer.generate(&peer_request, peer_dispatch);
+        // Separate selections of the same model still share its cooldown.
+        assert!(matches!(
+            queued.next().now_or_never(),
+            Some(Some(Ok(ModelEvent::Wait(ModelWait::AdmissionStarted {
+                cause: ModelAdmissionCause::Cooldown { until }
+            })))) if until == RETRY_AFTER
+        ));
+        assert!(queued.next().now_or_never().is_none());
+        let (other_request, other_dispatch) = crate::tests::request(&independent)?;
+        let mut other = independent.generate(&other_request, other_dispatch);
+        assert!(other.next().now_or_never().is_none());
+        // The other model reached HTTP immediately; only its body is pending.
+        // Omitting the model from the key instead yields AdmissionStarted here.
+        assert_eq!(
+            *transport.log.lock().unwrap(),
+            [(Duration::ZERO, 429), (Duration::ZERO, 200)]
+        );
+        assert_eq!(transport.now(), Duration::ZERO);
+        drop((other, queued, refused));
+        assert_eq!(*transport.active.lock().unwrap(), 0);
+        Ok(())
+    })
+}
+
+#[test]
 fn a_cooldown_outlives_every_permit_and_waiter_of_its_endpoint() {
     paused().block_on(async {
         let transport = capacity();

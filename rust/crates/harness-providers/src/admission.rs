@@ -1,7 +1,7 @@
-//! One admission per provider endpoint, shared by every request of one registry.
+//! One admission per model at each provider endpoint, shared by one registry.
 //!
-//! A 429 with a provider delay closes the endpoint for every caller until exactly
-//! that instant, and waiters are admitted in arrival order when it opens. In-flight
+//! A 429 with a provider delay closes that model's bucket until exactly that
+//! instant, and waiters are admitted in arrival order when it opens. In-flight
 //! requests are bounded by credit: unbounded until the endpoint refuses one, then the
 //! number the provider was serving when it refused. Credit grows by one after each
 //! full credit of accepted requests, so a probe above the learned bound costs at most
@@ -19,8 +19,8 @@ use std::{
     time::Duration,
 };
 
-/// The endpoint gates of one registry, keyed by provider, base URL and credential.
-/// An endpoint retains its gate while anyone holds it or it carries provider-taught
+/// The model gates of one registry, keyed by provider, base URL, model and credential.
+/// A bucket retains its gate while anyone holds it or it carries provider-taught
 /// state (a pending cooldown or learned credit), so that state outlives its permits.
 #[derive(Default)]
 pub(crate) struct Endpoints(Mutex<HashMap<[u8; 32], Arc<Gate>>>);
@@ -29,7 +29,11 @@ impl Endpoints {
     fn gate(&self, provider: &ResolvedModel) -> Arc<Gate> {
         let mut identity = blake3::Hasher::new();
         identity.update(b"acyclic.provider-admission.v1\0");
-        for part in [provider.model.provider.as_str(), &provider.config.base_url] {
+        for part in [
+            provider.model.provider.as_str(),
+            &provider.config.base_url,
+            provider.model.name.as_str(),
+        ] {
             identity.update(&(part.len() as u64).to_le_bytes());
             identity.update(part.as_bytes());
         }
