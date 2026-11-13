@@ -180,20 +180,43 @@ impl LocalCoreStateStore {
                         .as_ref()
                         .expect("bound native work")
                         .work();
-                    let mut paths = namespace.content_record(T::FAMILY, &T::address(id))?;
-                    with_lock(&mut paths, |paths| {
-                        if let Some(existing) = read_published::<T>(paths)? {
-                            work.charge(crate::WorkCounters {
-                                items_examined: 1,
-                                ..Default::default()
-                            })?;
-                            if existing.0 != owned.value {
-                                return Err(LocalCoreStateStoreError::Integrity);
-                            }
-                        } else {
-                            write_journaled(paths, &owned.value)?;
+                    let paths = namespace.content_record(T::FAMILY, &T::address(id))?;
+                    let mut encoded = LogBuffer {
+                        bytes: Vec::new(),
+                        allocation: Some(work.claim(0, 0, crate::WorkCounters::UNCHARGED)?),
+                    };
+                    serde_json::to_writer(&mut encoded, &owned.value)?;
+                    // Immutable records need atomic no-replace publication,
+                    // not exclusion between unrelated content addresses.
+                    let mut original = work.clone();
+                    let mut publish = || -> Result<(), crate::DemandError> {
+                        let root =
+                            crate::native_host::HostRoot::open(&namespace.root, &mut original)?
+                                .create_directories(
+                                    Path::new(T::FAMILY),
+                                    crate::NativeDurability::Durable,
+                                    &mut original,
+                                )?;
+                        let leaf = paths
+                            .current
+                            .file_name()
+                            .ok_or(crate::DemandError::InvalidRequest)?;
+                        root.publish_immutable(
+                            Path::new(leaf),
+                            &encoded.bytes,
+                            crate::NativeDurability::Durable,
+                            &mut original,
+                        )
+                    };
+                    publish().map_err(|error| match error {
+                        crate::DemandError::Io(error)
+                            if error.kind() == std::io::ErrorKind::InvalidData =>
+                        {
+                            LocalCoreStateStoreError::Integrity
                         }
-                        Ok(())
+                        error => LocalCoreStateStoreError::from(
+                            crate::NativeTreeMaterializationError::from(error),
+                        ),
                     })
                 })
                 .await?;
