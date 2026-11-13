@@ -20,19 +20,42 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
         .map_err(|()| GitCompatError::InvalidState)?
         .clone();
     if state.bisect.is_some()
-        && !matches!(
-            &command,
+        && !match &command {
             GitCommand::Status
-                | GitCommand::Diff { .. }
-                | GitCommand::Log { .. }
-                | GitCommand::Show { .. }
-                | GitCommand::RevParse { .. }
-                | GitCommand::SymbolicRef { .. }
-                | GitCommand::MergeBase { .. }
-                | GitCommand::LsFiles
-                | GitCommand::CheckIgnore { .. }
-                | GitCommand::Bisect { .. }
-        )
+            | GitCommand::Diff { .. }
+            | GitCommand::Log { .. }
+            | GitCommand::Show { .. }
+            | GitCommand::RevParse { .. }
+            | GitCommand::SymbolicRef { .. }
+            | GitCommand::MergeBase { .. }
+            | GitCommand::LsFiles
+            | GitCommand::CheckIgnore { .. }
+            | GitCommand::Branch { create: None }
+            | GitCommand::Tag { name: None, .. }
+            | GitCommand::Blame { .. }
+            | GitCommand::Grep { .. }
+            | GitCommand::Archive { .. }
+            | GitCommand::Clean { dry_run: true }
+            | GitCommand::Bisect { .. } => true,
+            GitCommand::Add { .. }
+            | GitCommand::Commit { .. }
+            | GitCommand::Branch { create: Some(_) }
+            | GitCommand::Switch { .. }
+            | GitCommand::Restore { .. }
+            | GitCommand::Reset { .. }
+            | GitCommand::Merge { .. }
+            | GitCommand::MergeContinue
+            | GitCommand::MergeAbort
+            | GitCommand::Discard { .. }
+            | GitCommand::Rebase { .. }
+            | GitCommand::StashPush
+            | GitCommand::StashPop
+            | GitCommand::CherryPick { .. }
+            | GitCommand::Revert { .. }
+            | GitCommand::Tag { name: Some(_), .. }
+            | GitCommand::Clean { dry_run: false }
+            | GitCommand::Apply { .. } => false,
+        }
     {
         return Err(GitCompatError::InvalidCommand(
             "finish with 'git bisect reset' before changing history".to_owned(),

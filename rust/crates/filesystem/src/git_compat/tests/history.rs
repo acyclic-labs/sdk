@@ -628,6 +628,57 @@ async fn bisect_uses_durable_first_parent_generation_checkouts() {
     assert_eq!(started.current, Some(commits[2]));
     assert_eq!(started.remaining, 3);
 
+    for command in [
+        GitCommand::Branch { create: None },
+        GitCommand::Tag {
+            name: None,
+            target: None,
+            delete: false,
+        },
+        GitCommand::Blame {
+            path: "tracked.txt".to_owned(),
+        },
+        GitCommand::Grep {
+            pattern: "text".to_owned(),
+            path: None,
+        },
+        GitCommand::Archive { object: None },
+        GitCommand::Clean { dry_run: true },
+    ] {
+        repository
+            .execute(command, tree(3))
+            .await
+            .expect("inspect during bisect");
+    }
+    for command in [
+        GitCommand::Branch {
+            create: Some("other".to_owned()),
+        },
+        GitCommand::Tag {
+            name: Some("tag".to_owned()),
+            target: None,
+            delete: false,
+        },
+        GitCommand::Tag {
+            name: Some("tag".to_owned()),
+            target: None,
+            delete: true,
+        },
+        GitCommand::Clean { dry_run: false },
+    ] {
+        assert!(matches!(
+            repository.execute(command, tree(3)).await,
+            Err(GitCompatError::InvalidCommand(_))
+        ));
+    }
+    assert!(
+        repository
+            .pending_transition()
+            .await
+            .expect("state")
+            .is_none()
+    );
+
     let GitCommandOutput::Bisect(narrowed) = repository
         .run(
             GitCommand::Bisect {
