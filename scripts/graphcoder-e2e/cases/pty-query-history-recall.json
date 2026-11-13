@@ -1,0 +1,23 @@
+{
+  "id": "pty-query-history-recall",
+  "workspace": {"kind": "plain", "files": {}},
+  "model": {"steps": [
+    {"when": {"user": "original recalled prompt"}, "text": ["HISTORY_FIRST_REPLY"]},
+    {"text": ["none"]},
+    {"when": {"user": "original recalled prompt"}, "text": ["HISTORY_RECALLED_REPLY"]},
+    {"text": ["none"]}
+  ]},
+  "inputs": [
+    {"mode": "pty", "actions": [
+      {"when": {"contains": ["GraphCoder"], "cursor": true}, "prompt": "original recalled prompt"},
+      {"when": {"contains": ["HISTORY_FIRST_REPLY", "○"]}, "detach": true}
+    ]},
+    {"mode": "pty", "resume": true, "actions": [
+      {"when": {"contains": ["GraphCoder", "HISTORY_FIRST_REPLY", "○"], "cursor": true}, "send": "UNSUBMITTED_DRAFT"},
+      {"when": {"contains": ["UNSUBMITTED_DRAFT"], "cursor": true}, "send": "\u001b[H\u001b[A"},
+      {"when": {"contains": ["original recalled prompt", "○"], "absent": ["UNSUBMITTED_DRAFT"], "cursor": true}, "send": "\r"},
+      {"when": {"contains": ["HISTORY_RECALLED_REPLY", "○"]}, "detach": true}
+    ]}
+  ],
+  "assert": {"requests": 4}
+}
