@@ -568,9 +568,9 @@ async fn a_transfer_deadline_is_the_callers_alone() -> TestResult {
             .as_ref(),
         b"slow"
     );
-    client(&replica).with_transfer_timeout(MAX_DEADLINE)?;
+    client(&replica).with_transfer_timeout(MAX_TIMEOUT)?;
     // Negative controls: no deadline, and one the protocol cannot carry.
-    for refused in [Duration::ZERO, MAX_DEADLINE + Duration::from_secs(3600)] {
+    for refused in [Duration::ZERO, MAX_TIMEOUT + Duration::from_secs(3600)] {
         assert!(matches!(
             client(&replica).with_transfer_timeout(refused),
             Err(ConnectError::InvalidConfiguration)

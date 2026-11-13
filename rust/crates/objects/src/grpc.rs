@@ -1,10 +1,10 @@
 //! Authenticated gRPC client and account-resolving service adapter.
 use crate::convert;
-use crate::operation::MAX_DEADLINE;
 use crate::{
     Blobs, ByteRange, Collection, Deletion, Digest, Error, Head, Manifest, Object, Page, Put,
     Retained, RootId, Usage, wire,
 };
+use acyclic_auth::channel::MAX_TIMEOUT;
 pub use acyclic_auth::credential::CredentialProvider;
 use acyclic_stream::query_sync::Arc as RevisionArc;
 use acyclic_stream::wire_codec::{cut_from_wire, revision_from_wire, revision_to_wire};
@@ -85,7 +85,7 @@ impl GrpcObjects {
         mut self,
         timeout: std::time::Duration,
     ) -> Result<Self, ConnectError> {
-        if timeout.is_zero() || timeout > MAX_DEADLINE {
+        if timeout.is_zero() || timeout > MAX_TIMEOUT {
             return Err(ConnectError::InvalidConfiguration);
         }
         self.transfer_timeout = Some(timeout);
@@ -291,10 +291,9 @@ macro_rules! call {
     ($self:ident, $rpc:ident, $value:expr, $timeout:expr, $floor:expr) => {{
         let floor: Option<&RevisionCut> = $floor;
         let timeout = $timeout;
-        let deadline = crate::operation::deadline($self.context.as_ref(), timeout)?;
         let budget = match &$self.context {
-            Some(context) => acyclic_auth::channel::Budget::Operation { context, deadline },
-            None => acyclic_auth::channel::Budget::Deadline(deadline),
+            Some(context) => acyclic_auth::channel::Budget::Operation(context),
+            None => acyclic_auth::channel::Budget::Deadline(crate::operation::deadline(timeout)?),
         };
         let response = acyclic_auth::channel::call(
             $self.channel.clone(),

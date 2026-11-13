@@ -168,14 +168,27 @@ async fn tonic_dispatch_waits_for_its_owner_and_releases_cancelled_admission() {
 #[derive(Clone, PartialEq, prost::Message)]
 struct Empty {}
 
-struct StopDuringAdmission {
+struct AdmissionClock(std::sync::atomic::AtomicU64);
+impl acyclic_auth::operation::Clock for AdmissionClock {
+    fn now_unix_millis(&self) -> Result<u64, acyclic_auth::operation::Stopped> {
+        Ok(self.0.load(std::sync::atomic::Ordering::SeqCst))
+    }
+    fn expires_at(
+        &self,
+        _: u64,
+    ) -> Result<acyclic_auth::operation::StopFuture, acyclic_auth::operation::Stopped> {
+        panic!("transport must retain the original deadline registration")
+    }
+}
+
+struct ChangeDuringAdmission {
     lease: ResolvedCredential,
     first: std::sync::atomic::AtomicBool,
-    cancel: Mutex<Option<oneshot::Sender<()>>>,
+    change: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     release: Mutex<Option<oneshot::Receiver<()>>>,
 }
 
-impl CredentialRequest for StopDuringAdmission {
+impl CredentialRequest for ChangeDuringAdmission {
     fn token(&self) -> &str {
         self.lease.as_str()
     }
@@ -186,17 +199,17 @@ impl CredentialRequest for StopDuringAdmission {
         if self.first.swap(false, std::sync::atomic::Ordering::SeqCst) {
             return self.lease.check();
         }
-        let cancel = self.cancel.lock().unwrap().take().unwrap();
+        let change = self.change.lock().unwrap().take().unwrap();
         let release = self.release.lock().unwrap().take();
         let lease = self.lease.clone();
         match release {
             Some(release) => CredentialAction::Pending(Box::pin(async move {
                 release.await.map_err(|_| CredentialError::Invalid)?;
-                cancel.send(()).unwrap();
+                change();
                 lease.check().await
             })),
             None => {
-                cancel.send(()).unwrap();
+                change();
                 lease.check()
             }
         }
@@ -210,61 +223,87 @@ impl CredentialRequest for StopDuringAdmission {
 async fn a_credential_owner_cannot_stop_then_admit_native_dispatch() {
     use acyclic_auth::operation::{Context, Stopped};
     use tonic::codegen::Service;
-    for deferred in [false, true] {
-        let cache = CredentialCache::new(
-            |_| async { CredentialSnapshot::new("synthetic".into(), [1; 32].into(), 100) },
-            || CredentialValidity {
-                now_unix_seconds: 1,
-                revision: Some([1; 32].into()),
-            },
-        );
-        let original = cache.resolve().await.unwrap();
-        let watch = cache.watch().unwrap();
-        let (cancel, cancelled) = oneshot::channel();
-        let context = Context::new(u64::MAX, std::future::pending(), async {
-            let _ = cancelled.await;
-        });
-        let (release, released) = oneshot::channel();
-        let lease = ResolvedCredential::from_custodian(StopDuringAdmission {
-            lease: CredentialProvider::from(cache.clone())
-                .resolve()
-                .await
-                .unwrap(),
-            first: std::sync::atomic::AtomicBool::new(true),
-            cancel: Mutex::new(Some(cancel)),
-            release: Mutex::new(deferred.then_some(released)),
-        })
-        .await
-        .unwrap();
-        let mut channel =
-            channel::guard(Endpoint::from_static("https://fixture.invalid").connect_lazy())
-                .with_context(Some(context));
-        futures::future::poll_fn(|cx| channel.poll_ready(cx))
+    for mode in ["cancel", "clock-expiry"] {
+        for deferred in [false, true] {
+            let cache = CredentialCache::new(
+                |_| async { CredentialSnapshot::new("synthetic".into(), [1; 32].into(), 100) },
+                || CredentialValidity {
+                    now_unix_seconds: 1,
+                    revision: Some([1; 32].into()),
+                },
+            );
+            let original = cache.resolve().await.unwrap();
+            let watch = cache.watch().unwrap();
+            let (context, change): (Context, Box<dyn FnOnce() + Send>) = if mode == "cancel" {
+                let (cancel, cancelled) = oneshot::channel();
+                (
+                    Context::new(u64::MAX, std::future::pending(), async {
+                        let _ = cancelled.await;
+                    }),
+                    Box::new(move || {
+                        cancel.send(()).unwrap();
+                    }),
+                )
+            } else {
+                let clock = Arc::new(AdmissionClock(std::sync::atomic::AtomicU64::new(1)));
+                (
+                    Context::from_clock(2, std::future::pending(), clock.clone()),
+                    Box::new(move || clock.0.store(2, std::sync::atomic::Ordering::SeqCst)),
+                )
+            };
+            let (release, released) = oneshot::channel();
+            let lease = ResolvedCredential::from_custodian(ChangeDuringAdmission {
+                lease: CredentialProvider::from(cache.clone())
+                    .resolve()
+                    .await
+                    .unwrap(),
+                first: std::sync::atomic::AtomicBool::new(true),
+                change: Mutex::new(Some(change)),
+                release: Mutex::new(deferred.then_some(released)),
+            })
             .await
             .unwrap();
-        let mut request = tonic::codegen::http::Request::new(tonic::body::Body::empty());
-        request.extensions_mut().insert(lease);
-        let mut dispatch = Box::pin(channel.call(request));
-        if deferred {
-            assert!(dispatch.as_mut().now_or_never().is_none());
-            release.send(()).unwrap();
+            let mut channel =
+                channel::guard(Endpoint::from_static("https://fixture.invalid").connect_lazy())
+                    .with_context(Some(context));
+            futures::future::poll_fn(|cx| channel.poll_ready(cx))
+                .await
+                .unwrap();
+            let mut request = tonic::codegen::http::Request::new(tonic::body::Body::empty());
+            request.extensions_mut().insert(lease);
+            let mut dispatch = Box::pin(channel.call(request));
+            if deferred {
+                assert!(dispatch.as_mut().now_or_never().is_none());
+                release.send(()).unwrap();
+            }
+            let error = dispatch
+                .now_or_never()
+                .expect("owner stop must refuse before transport dispatch")
+                .unwrap_err();
+            assert_eq!(
+                error.code(),
+                if mode == "cancel" {
+                    Code::Cancelled
+                } else {
+                    Code::DeadlineExceeded
+                }
+            );
+            assert_eq!(
+                std::error::Error::source(&error)
+                    .unwrap()
+                    .downcast_ref::<Stopped>(),
+                Some(&if mode == "cancel" {
+                    Stopped::Cancelled
+                } else {
+                    Stopped::Deadline
+                })
+            );
+            assert!(
+                watch.now_or_never().is_none(),
+                "local cancellation cannot reject a valid lease"
+            );
+            cache.check(&original).unwrap();
         }
-        let error = dispatch
-            .now_or_never()
-            .expect("owner stop must refuse before transport dispatch")
-            .unwrap_err();
-        assert_eq!(error.code(), Code::Cancelled);
-        assert_eq!(
-            std::error::Error::source(&error)
-                .unwrap()
-                .downcast_ref::<Stopped>(),
-            Some(&Stopped::Cancelled)
-        );
-        assert!(
-            watch.now_or_never().is_none(),
-            "local cancellation cannot reject a valid lease"
-        );
-        cache.check(&original).unwrap();
     }
 }
 
@@ -346,10 +385,7 @@ async fn successful_reply_requires_the_original_credential_to_remain_current() {
         let call = channel::call(
             Endpoint::from_static("https://fixture.invalid").connect_lazy(),
             &provider,
-            channel::Budget::Operation {
-                context: &context,
-                deadline: None,
-            },
+            channel::Budget::Operation(&context),
             (),
             move |_, request| async move {
                 assert!(!request.metadata().contains_key("grpc-timeout"));

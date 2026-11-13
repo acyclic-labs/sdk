@@ -9,6 +9,7 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
+    time::Duration,
 };
 use tonic::{
     Request, Response, Status,
@@ -62,9 +63,25 @@ fn stopped_status(reason: crate::operation::Stopped) -> Status {
     status
 }
 
-fn check_context(context: Option<&crate::operation::Context>) -> Result<(), Status> {
+fn admit_context(
+    context: Option<&crate::operation::Context>,
+    request: &mut http::Request<Body>,
+) -> Result<(), Status> {
     if let Some(context) = context {
-        context.check().map_err(stopped_status)?;
+        let remaining = match context.remaining() {
+            Ok(remaining) => Some(remaining),
+            Err(crate::operation::BudgetError::ClockUnavailable) => None,
+            Err(crate::operation::BudgetError::Stopped(reason)) => {
+                return Err(stopped_status(reason));
+            }
+        };
+        // Move the existing metadata through tonic's formatter without copying
+        // headers or implementing a second gRPC timeout representation.
+        let mut metadata = Request::new(());
+        *metadata.metadata_mut() =
+            tonic::metadata::MetadataMap::from_headers(std::mem::take(request.headers_mut()));
+        set_timeout(&mut metadata, remaining)?;
+        *request.headers_mut() = metadata.into_parts().0.into_headers();
     }
     Ok(())
 }
@@ -129,8 +146,8 @@ impl Future for CredentialDispatch {
                     let result = futures::ready!(check.as_mut().poll(cx));
                     self.0 = match result {
                         Ok(()) => {
-                            let request = request.take().expect("admission owns request");
-                            match check_context(context.as_ref()) {
+                            let mut request = request.take().expect("admission owns request");
+                            match admit_context(context.as_ref(), &mut request) {
                                 Ok(()) => Dispatch::Transport(channel.call(request)),
                                 Err(error) => Dispatch::Refused(std::future::ready(Err(error))),
                             }
@@ -161,7 +178,7 @@ impl Service<http::Request<Body>> for CredentialChannel {
         self.channel.poll_ready(cx).map_err(transport_error)
     }
 
-    fn call(&mut self, request: http::Request<Body>) -> Self::Future {
+    fn call(&mut self, mut request: http::Request<Body>) -> Self::Future {
         if let Some(lease) = request.extensions().get::<ResolvedCredential>() {
             match lease.check() {
                 CredentialAction::Ready(result) => {
@@ -185,7 +202,7 @@ impl Service<http::Request<Body>> for CredentialChannel {
                 }
             }
         }
-        if let Err(error) = check_context(self.context.as_ref()) {
+        if let Err(error) = admit_context(self.context.as_ref(), &mut request) {
             return CredentialDispatch(Dispatch::Refused(std::future::ready(Err(error))));
         }
         CredentialDispatch(Dispatch::Transport(self.channel.call(request)))
@@ -251,19 +268,15 @@ pub async fn connect(
 pub enum Budget<'a> {
     /// Optional caller-selected deadline covering refresh, readiness and the response.
     Deadline(Option<tokio::time::Instant>),
-    /// The original operation event and its projected wire deadline.
-    Operation {
-        /// Caller-owned stop event shared with every other stage.
-        context: &'a crate::operation::Context,
-        /// Original absolute deadline projected to the native clock.
-        deadline: Option<tokio::time::Instant>,
-    },
+    /// Original stop event and clock. Event-only owners send no relative timeout.
+    Operation(&'a crate::operation::Context),
 }
 
 impl Budget<'_> {
-    fn deadline(self) -> Option<tokio::time::Instant> {
+    fn request<T>(self, body: T, lease: &ResolvedCredential) -> Result<Request<T>, Status> {
         match self {
-            Self::Deadline(deadline) | Self::Operation { deadline, .. } => deadline,
+            Self::Deadline(deadline) => request(body, lease, deadline),
+            Self::Operation(_) => retained_request(body, lease),
         }
     }
 
@@ -286,7 +299,7 @@ impl Budget<'_> {
                 result
             }
             Self::Deadline(None) => work.await,
-            Self::Operation { context, .. } => context.run(work).await.map_err(stopped_status)?,
+            Self::Operation(context) => context.run(work).await.map_err(stopped_status)?,
         }
     }
 }
@@ -306,16 +319,15 @@ where
     F: FnOnce(CredentialChannel, Request<T>) -> Fut,
     Fut: Future<Output = Result<Response<U>, Status>>,
 {
-    let deadline = budget.deadline();
     budget
         .run(async {
             let lease = credential.resolve().await.map_err(credential_error)?;
-            if let Budget::Operation { context, .. } = budget {
+            if let Budget::Operation(context) = budget {
                 context.check().map_err(stopped_status)?;
             }
-            let request = request(body, &lease, deadline)?;
+            let request = budget.request(body, &lease)?;
             let context = match budget {
-                Budget::Operation { context, .. } => Some(context.clone()),
+                Budget::Operation(context) => Some(context.clone()),
                 Budget::Deadline(_) => None,
             };
             let response = dispatch(guard(channel).with_context(context), request).await;
@@ -349,10 +361,24 @@ pub fn request<T>(
         })
         .transpose()?;
     let mut request = retained_request(body, lease)?;
+    set_timeout(&mut request, remaining)?;
+    Ok(request)
+}
+
+/// Largest duration carried by the gRPC timeout field: eight digits of hours.
+pub const MAX_TIMEOUT: Duration = Duration::from_secs(99_999_999 * 3600);
+
+fn set_timeout<T>(request: &mut Request<T>, remaining: Option<Duration>) -> Result<(), Status> {
+    if remaining.is_some_and(|remaining| remaining > MAX_TIMEOUT) {
+        return Err(Status::invalid_argument(
+            "timeout exceeds the gRPC wire format",
+        ));
+    }
+    request.metadata_mut().remove("grpc-timeout");
     if let Some(remaining) = remaining {
         request.set_timeout(remaining);
     }
-    Ok(request)
+    Ok(())
 }
 
 /// Retain the original credential on a streaming request whose lifetime is
