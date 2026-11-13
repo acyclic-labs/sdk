@@ -43,8 +43,9 @@ test("one guest heap admits distinct Machines for two actors and re-admits every
   const providers = WasmAgentProviders.memory(fixture.options);
   const guest = AgentGuest.open(providers, fixture.options, fixture.owner, fixture.registry);
   expect(admitted).toEqual([]);
-  const openHost = () => WasmAgentServer.open(providers, fixture.options, fixture.owner, fixture.registry, authority, {
-    manifest: guest.manifest(), async onRecord(bytes, signal, interrupt) {
+  const openHost = (interrupt = true) => {
+    const callbacks = {
+    manifest: guest.manifest(), async onRecord(bytes: Uint8Array, signal: AbortSignal, interrupt: AbortSignal) {
       const delivery = codec.decodeDelivery(bytes);
       const actor = Array.from(delivery.actor).join(",");
       if (!machines.has(actor)) machines.set(actor, machines.size + 1);
@@ -52,8 +53,12 @@ test("one guest heap admits distinct Machines for two actors and re-admits every
       deliveries++;
       try { return await guest.onRecord(bytes, signal, interrupt); }
       finally { attempts.delete(delivery.request); }
-    }, acceptsInterrupt: (query, signal) => guest.acceptsInterrupt(query, signal), policy: () => true, admitted: async () => {},
-  });
+    }, acceptsInterrupt: (query: Uint8Array, signal: AbortSignal) => guest.acceptsInterrupt(query, signal), policy: () => true, admitted: async () => {},
+    };
+    if (!interrupt) Reflect.deleteProperty(callbacks, "acceptsInterrupt");
+    return WasmAgentServer.open(providers, fixture.options, fixture.owner, fixture.registry, authority, callbacks);
+  };
+  expect(() => openHost(false)).toThrow();
   const firstHost = openHost(), secondHost = openHost();
   try {
     const first = await firstHost.create("first"), second = await secondHost.create("second");
