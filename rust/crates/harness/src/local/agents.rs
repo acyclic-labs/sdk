@@ -9,7 +9,6 @@ use crate::{
     agent::{
         AgentHost, AgentPath, AgentState, IntentId, WorkspaceEntry, WorkspaceRole, WorkspaceTable,
     },
-    conversation::{ContentAccess, ContentPublisher},
     executor::{Executor, StockExecutor},
     filesystem::{
         FilesystemTurnHost, HOME_VOLUME, PRIVATE_VOLUME, Tasks, TurnAuthority, TurnContext,
