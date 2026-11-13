@@ -500,11 +500,6 @@ impl PreparedPublish {
             },
         }
     }
-    /// The request, including the actor's own Head/Absent condition.
-    pub const fn request(&self) -> &CommitRequest {
-        &self.request
-    }
-
     /// Recompute after a definite refusal of only foreign guards. The runtime
     /// compares refusal observations and stops if the same guard refuses again.
     pub fn revalidate_foreign_conflicts(&mut self) -> Result<(), Error> {
