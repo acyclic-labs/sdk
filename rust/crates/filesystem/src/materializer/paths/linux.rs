@@ -28,21 +28,32 @@ fn mount_id(
     Ok(stat.stx_mnt_id)
 }
 
-fn mounted_below(row: &[u8], root: &[u8]) -> Result<bool, NativeTreeMaterializationError> {
-    let field = row.split(|byte| *byte == b' ').nth(4).ok_or_else(|| {
+fn mount_entry(row: &[u8], root: &[u8]) -> Result<(u64, bool), NativeTreeMaterializationError> {
+    let mut fields = row.split(|byte| *byte == b' ');
+    let identity = fields.next().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "missing mount identity")
+    })?;
+    let identity = std::str::from_utf8(identity)
+        .map_err(std::io::Error::other)?
+        .parse::<u64>()
+        .map_err(std::io::Error::other)?;
+    let field = fields.nth(3).ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidData, "malformed mountinfo row")
     })?;
     let mut decoded = acyclic_native_runtime::resources::mountinfo_path_bytes(field);
     for byte in root {
         if decoded.next() != Some(*byte) {
-            return Ok(false);
+            return Ok((identity, false));
         }
     }
-    Ok(if root == b"/" {
-        decoded.next().is_some()
-    } else {
-        decoded.next() == Some(b'/')
-    })
+    Ok((
+        identity,
+        if root == b"/" {
+            decoded.next().is_some()
+        } else {
+            decoded.next() == Some(b'/')
+        },
+    ))
 }
 
 /// Device identity cannot distinguish bind mounts. Inspect namespace topology,
@@ -53,7 +64,8 @@ pub(super) fn validate_mounts(
     operation: &HostRoot,
     work: &NativeMaterializationWork,
 ) -> Result<(), NativeTreeMaterializationError> {
-    if mount_id(root, work)? != mount_id(operation, work)? {
+    let identity = mount_id(root, work)?;
+    if identity != mount_id(operation, work)? {
         return Err(NativeTreeMaterializationError::MountBoundary);
     }
     let read = WorkCounters {
@@ -66,6 +78,7 @@ pub(super) fn validate_mounts(
     let mut file = native.attempt_io(read, || std::fs::File::open("/proc/self/mountinfo"))?;
     let mut allocation = work.claim(0, 0, WorkCounters::UNCHARGED)?;
     let mut row = Vec::new();
+    let mut witnessed = false;
     let mut chunk = [0_u8; 8192];
     loop {
         work.admit(WorkCounters {
@@ -83,7 +96,16 @@ pub(super) fn validate_mounts(
             ..WorkCounters::UNCHARGED
         })?;
         if count == 0 {
-            if !row.is_empty() && mounted_below(&row, path.as_os_str().as_bytes())? {
+            // A complete namespace snapshot must contain the held root's
+            // mount. Absence or truncation is not a proof of safe topology.
+            if !row.is_empty() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "incomplete mountinfo row",
+                )
+                .into());
+            }
+            if !witnessed {
                 return Err(NativeTreeMaterializationError::MountBoundary);
             }
             return Ok(());
@@ -101,7 +123,9 @@ pub(super) fn validate_mounts(
             })?;
             row.extend_from_slice(part);
             if row.last() == Some(&b'\n') {
-                if mounted_below(&row, path.as_os_str().as_bytes())? {
+                let (mount, below) = mount_entry(&row, path.as_os_str().as_bytes())?;
+                witnessed |= mount == identity;
+                if below {
                     return Err(NativeTreeMaterializationError::MountBoundary);
                 }
                 row.clear();
@@ -174,6 +198,30 @@ mod tests {
         let stop = crate::CancellationToken::new();
         let work = NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &stop).unwrap();
         validate_native_preparation_location(&root, &state, &work).unwrap();
+        let sibling = directory.path().join("checkout-other");
+        std::fs::create_dir(&sibling).unwrap();
+        command(
+            "mount",
+            &["--bind".as_ref(), source.as_os_str(), sibling.as_os_str()],
+        );
+        command(
+            "mount",
+            &[
+                "-o".as_ref(),
+                "remount,bind,ro".as_ref(),
+                sibling.as_os_str(),
+            ],
+        );
+        // A sibling mount is not below this checkout, even when its path
+        // shares the same byte prefix. Its own mount still differs from state.
+        let allowed = validate_native_preparation_location(&root, &state, &work);
+        let refused = validate_native_preparation_location(&sibling, &state, &work);
+        command("umount", &[sibling.as_os_str()]);
+        allowed.unwrap();
+        assert!(
+            matches!(refused, Err(NativeTreeMaterializationError::MountBoundary)),
+            "{refused:?}"
+        );
         // A nested bind must be found from mount topology too: never recursively
         // scan source content, or only compare the two directory device ids.
         for relative in ["entry", "nested/entry"] {
