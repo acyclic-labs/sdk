@@ -705,8 +705,8 @@ mod tests {
                 }),
             ])
         }
-        let admitted = Arc::new(Mutex::new(Vec::new()));
-        let observed = admitted.clone();
+        let turn_admissions = Arc::new(Mutex::new(Vec::new()));
+        let observed = turn_admissions.clone();
         let provider = Arc::new_cyclic(|weak: &std::sync::Weak<ScriptedModelProvider>| {
             let weak = weak.clone();
             ScriptedModelProvider::new(["first", "independent input", "done"].map(response))
@@ -984,7 +984,7 @@ mod tests {
             Settlement::Reply(Reply::Answered { .. }),
         ));
         let accepted = provider.request_count();
-        let admitted = admitted.lock().unwrap();
+        let admitted = turn_admissions.lock().unwrap();
         assert_eq!(admitted.len(), 3, "expected A, B, and A's continuation");
         let first = provider.request(admitted[0].1).unwrap();
         let second = provider.request(admitted[2].1).unwrap();
