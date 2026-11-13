@@ -705,6 +705,42 @@ mod replay_tests {
         }
         assert!(child, "ready work lost its diagnostic start or terminal");
         assert_eq!(trace.tail().await?, 4);
+        // The original start consumes the one configured record reservation.
+        // Failed child admission must not issue a detached terminal append.
+        let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let refused = Stream::new(
+            Arc::new(Gapped {
+                inner: MemoryStream::new(MemoryLimits {
+                    records: Some(1),
+                    ..Default::default()
+                }),
+                missing: u64::MAX,
+                extra_records: 0,
+                inspect_on_write: false,
+                pause_at: usize::MAX,
+                pause_write: Some(writes.clone()),
+                resume_write: None,
+            }),
+            "trace",
+        )?;
+        let recorder = Arc::new(Recorder::new(refused.clone(), [27; 16]));
+        let root = recorder
+            .start(
+                "request",
+                Mechanism::ToolCall,
+                None,
+                Some("original_request"),
+            )
+            .await?
+            .into_owned();
+        assert_eq!(root.within(data.head()).await?, original);
+        assert_eq!(
+            writes.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "failed start attempted a detached terminal append"
+        );
+        assert_eq!(refused.tail().await?, 1);
+        drop(root);
         Ok(())
     }
     #[cfg(feature = "serde")]
@@ -781,6 +817,94 @@ mod replay_tests {
         assert_eq!(trace.tail().await?, 6);
         Ok(())
     }
+    #[cfg(feature = "serde")]
+    #[tokio::test]
+    async fn cancelled_inherited_wait_retains_pending_start_and_original_follow()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::trace::{Mechanism, Observation, Outcome, Recorder, Request, TraceQuery};
+        let (release, resume) = futures::channel::oneshot::channel::<()>();
+        let trace = Stream::new(
+            Arc::new(Gapped {
+                inner: MemoryStream::default(),
+                missing: u64::MAX,
+                extra_records: 0,
+                inspect_on_write: false,
+                pause_at: 1,
+                pause_write: Some(Arc::new(std::sync::atomic::AtomicUsize::new(0))),
+                resume_write: Some(std::sync::Mutex::new(Some(resume))),
+            }),
+            "trace",
+        )?;
+        let data = Stream::new(Arc::new(MemoryStream::default()), "data")?;
+        data.append("before", IdempotencyKey::unique()).await?;
+        let mut records = data.follow(1, Default::default()).await?;
+        let recorder = Arc::new(Recorder::new(trace.clone(), [26; 16]));
+        let root = recorder
+            .start(
+                "request",
+                Mechanism::ToolCall,
+                None,
+                Some("original_request"),
+            )
+            .await?
+            .into_owned();
+        let parent = root.id();
+        let mut waiting = Box::pin(root.within(crate::trace::observe_value(
+            Request {
+                name: "original.follow",
+                mechanism: Mechanism::Wait,
+                parent: None,
+                guarantee: Some("original_record_delivery"),
+            },
+            records.next(),
+            |_| None,
+        )));
+        assert!(futures::poll!(&mut waiting).is_pending());
+        drop(waiting);
+        let _terminal = root.finish_submitted(None, Outcome::Succeeded)?;
+        data.append("after", IdempotencyKey::unique()).await?;
+        assert_eq!(
+            records
+                .try_next()
+                .await?
+                .ok_or("original follow lost delivery")?
+                .value
+                .as_ref(),
+            b"after"
+        );
+        release
+            .send(())
+            .map_err(|_| "cancelled observer withdrew the original start")?;
+        let mut query = TraceQuery::new(
+            trace.follow(0, Default::default()).await?,
+            Default::default(),
+        );
+        let mut completed = 0;
+        let mut unsettled = false;
+        while completed < 2 {
+            if let Some(Observation::Completed {
+                start,
+                result,
+                bytes,
+                ..
+            }) = query.next().await?
+            {
+                completed += 1;
+                if start.name == "original.follow" {
+                    assert_eq!(start.parent, Some(parent));
+                    assert_eq!(start.guarantee.as_deref(), Some("original_record_delivery"));
+                    assert_eq!(result, Outcome::Unsettled);
+                    assert_eq!(bytes, None);
+                    unsettled = true;
+                }
+            }
+        }
+        assert!(unsettled);
+        assert_eq!(query.totals()[&Mechanism::Wait].unsettled, 1);
+        assert_eq!(trace.tail().await?, 4);
+        Ok(())
+    }
+
     #[cfg(all(feature = "serde", not(target_arch = "wasm32")))]
     #[test]
     fn dropped_owned_span_uses_original_executor_outside_runtime_scope()
