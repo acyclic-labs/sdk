@@ -247,6 +247,7 @@ impl NodeActor {
                     }],
                 ),
                 state.presence()?,
+                paths.relay_creation(node)?,
                 store.activation(&actor),
             ],
         })

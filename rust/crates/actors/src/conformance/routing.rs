@@ -117,7 +117,10 @@ pub async fn storage<P: StreamProvider + ?Sized>(
     )?;
     let create = CommitRequest {
         deadline_unix_millis: None,
-        effects: vec![placement.effect(&paths).map_err(violation)?],
+        effects: vec![
+            placement.effect(&paths).map_err(violation)?,
+            paths.relay_creation(&placement.node).map_err(violation)?,
+        ],
         idempotency_key: key(&root, "place")?,
     };
     let first = provider.commit(create.clone()).await.map_err(Error::from)?;
@@ -265,10 +268,10 @@ pub async fn storage<P: StreamProvider + ?Sized>(
     )?;
     let records = values(provider, paths.relay(&placement.node).map_err(Error::from)?).await?;
     require(
-        records.len() == 1,
+        records.len() == 2 && records[0].value.is_empty(),
         "relay retry duplicated the original intent",
     )?;
-    let restored = Envelope::decode(records[0].value.clone()).map_err(violation)?;
+    let restored = Envelope::decode(records[1].value.clone()).map_err(violation)?;
     require(
         restored == envelope,
         "relay altered the original ordinary-delivery request",
@@ -299,7 +302,8 @@ pub async fn storage<P: StreamProvider + ?Sized>(
             paths.relay_cursor(&placement.node).map_err(Error::from)?,
         )
         .await?
-        .is_empty(),
+        .len()
+            == 1,
         "failed delivery advanced the durable relay cursor",
     )?;
     drain_one(
@@ -307,7 +311,7 @@ pub async fn storage<P: StreamProvider + ?Sized>(
         &paths,
         &placement.node,
         &restored.request.idempotency_key,
-        0,
+        1,
     )
     .await?;
     let inbox = StreamPath::new(format!("{root}/recipient-inbox")).map_err(Error::from)?;
@@ -338,7 +342,7 @@ pub async fn storage<P: StreamProvider + ?Sized>(
         &paths,
         &placement.node,
         &following.request.idempotency_key,
-        1,
+        2,
     )
     .await?;
     let inputs = values(provider, inbox).await?;

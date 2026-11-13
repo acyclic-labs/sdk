@@ -85,6 +85,13 @@ impl Paths {
         StreamPath::new(format!("{}/ack", self.relay(node)?))
     }
 
+    /// Create an empty relay and its cursor in the node's enrollment commit.
+    /// The cursor skips the initialization record, so a live node can follow
+    /// before the first message without probing a nonexistent path.
+    pub fn relay_creation(&self, node: &NodeId) -> Result<CommitEffect, Error> {
+        drain::creation(self, node)
+    }
+
     /// One node's socket-driven presence, shared by all its session rows.
     pub fn presence(&self, node: &NodeId) -> Result<StreamPath, StreamError> {
         self.child("presence", node.as_bytes())
@@ -233,7 +240,7 @@ impl Envelope {
         Ok(CommitRequest {
             deadline_unix_millis: None,
             effects: vec![CommitEffect::hard(
-                Vec::new(),
+                vec![CommitCondition::Present { path: path.clone() }],
                 vec![CommitMutation::Append {
                     path,
                     records: vec![self.encode().into()],

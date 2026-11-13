@@ -17,6 +17,38 @@ struct Cursor {
     next: u64,
 }
 
+pub(super) fn creation(paths: &Paths, node: &NodeId) -> Result<CommitEffect, Error> {
+    let relay = paths.relay(node)?;
+    let cursor = paths.relay_cursor(node)?;
+    Ok(CommitEffect::hard(
+        vec![
+            CommitCondition::Absent {
+                path: relay.clone(),
+            },
+            CommitCondition::Absent {
+                path: cursor.clone(),
+            },
+        ],
+        vec![
+            CommitMutation::Append {
+                path: relay,
+                records: vec![bytes::Bytes::new().into()],
+            },
+            CommitMutation::Append {
+                path: cursor,
+                records: vec![
+                    Cursor {
+                        version: 1,
+                        next: 1,
+                    }
+                    .encode_to_vec()
+                    .into(),
+                ],
+            },
+        ],
+    ))
+}
+
 /// Drain this node's relay on its already authenticated account provider.
 /// The caller owns this future for the lifetime of its accepted NodeLink;
 /// dropping it closes the one follow. Reopening starts at the committed cursor.
@@ -45,12 +77,8 @@ where
             if cursor.version != 1 || cursor.next == 0 {
                 return Err(Error::InvalidRecord);
             }
-            (
-                cursor.next,
-                record.sequence.checked_add(1).ok_or(Error::InvalidRecord)?,
-            )
+            (cursor.next, head.tail)
         }
-        Err(error) if error.category() == StreamError::NotFound => (0, 0),
         Err(error) => return Err(error.into()),
     };
     let mut records =
