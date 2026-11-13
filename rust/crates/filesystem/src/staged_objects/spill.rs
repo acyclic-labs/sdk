@@ -171,43 +171,6 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             .await
             .map_err(crate::async_storage::object_error)?;
         self.spill_locked(&mut spill, work).await?;
-        let targets = {
-            let index = self.index();
-            if index.spill_end <= MAXIMUM_SPILL_BYTES {
-                return Ok(());
-            }
-            let mut bytes = 0_u64;
-            let mut count = 0;
-            for staged in index.objects.values() {
-                work.accounting()
-                    .charge_items(1)
-                    .map_err(crate::async_storage::object_error)?;
-                if let Staged::Spilled { length, .. } = staged {
-                    if count != 0 && bytes.saturating_add(*length) > MAXIMUM_DRAIN_BYTES {
-                        break;
-                    }
-                    bytes = bytes.saturating_add(*length);
-                    count += 1;
-                }
-            }
-            let mut targets = Retained::allocate(count, &mut work.accounting())
-                .map_err(crate::async_storage::object_error)?;
-            for (&id, staged) in &index.objects {
-                if targets.value.len() == count {
-                    break;
-                }
-                work.accounting()
-                    .charge_items(1)
-                    .map_err(crate::async_storage::object_error)?;
-                if matches!(staged, Staged::Spilled { .. }) {
-                    targets.value.push(id);
-                }
-            }
-            targets
-        };
-
-        self.drain_locked(&mut spill, &unswept, &targets.value, work)
-            .await?;
         Ok(())
     }
 }

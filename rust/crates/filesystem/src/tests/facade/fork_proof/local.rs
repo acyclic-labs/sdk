@@ -300,6 +300,12 @@ fn fork_then_crash_child() -> Result<(), Box<dyn Error>> {
                 (fork, Some(custody))
             };
             fork.write_text("/fork", FORK_ONLY).await?;
+            // Distinct chunks cross the resident staging window and exercise
+            // the OS-owned private spill, rather than only process memory.
+            let spill = (0..12 * 1_024 * 1_024_u64)
+                .map(|offset| (offset.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 32) as u8)
+                .collect::<Vec<_>>();
+            fork.write("/spill", spill.into()).await?;
             assert_eq!(
                 fork.read("/fork", 64, B, &cancel).await?.value.as_ref(),
                 FORK_ONLY.as_bytes()
@@ -334,6 +340,16 @@ fn an_ephemeral_fork_leaves_nothing_after_its_owner_crashes() -> Result<(), Box<
             String::from_utf8_lossy(&output.stderr)
         );
         let baseline: u64 = std::fs::read_to_string(directory.path().join("baseline"))?.parse()?;
+        assert!(
+            std::fs::read_dir(directory.path())?.all(|entry| {
+                !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".acyclic-staging-")
+            }),
+            "a crashed owner left a named staging file"
+        );
         let stored = std::fs::metadata(directory.path().join("objects/log"))?.len();
         if durable {
             assert!(stored > baseline, "the durable fork stored no objects");

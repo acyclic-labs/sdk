@@ -160,7 +160,8 @@ async fn advance_spill_past_bound<S>(store: &StagedObjects<S>) -> std::io::Resul
             .expect("unmetered fixture control construction cannot fail")
             .await?;
     }
-    store.index_mut().spill_end += MAXIMUM_SPILL_BYTES;
+    // Cross the deleted 1 GiB eager-drain threshold without allocating its gap.
+    store.index_mut().spill_end += 1_024 * 1_024 * 1_024;
     Ok(())
 }
 

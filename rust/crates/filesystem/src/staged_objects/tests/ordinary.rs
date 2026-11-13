@@ -400,7 +400,10 @@ async fn overflow_spills_privately_until_the_publication_drain()
             ]))
         })
         .collect::<Vec<_>>();
-    for (object_id, bytes) in &objects {
+    for (index, (object_id, bytes)) in objects.iter().enumerate() {
+        if index == count * 2 / 3 {
+            advance_spill_past_bound(&store).await?;
+        }
         {
             let __object_args = (*object_id, bytes.clone(), WorkBudget::UNBOUNDED, &token);
             let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
@@ -465,165 +468,6 @@ async fn overflow_spills_privately_until_the_publication_drain()
     drop(store);
     drop(provider);
     assert!(reopen_contains(directory.path(), &identities).await?);
-    Ok(())
-}
-
-#[tokio::test]
-async fn spill_relief_retains_original_work_cancellation_and_refusal()
--> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
-    let provider = Arc::new(
-        acyclic_objects::local::LocalObjects::open(
-            directory.path().join("objects"),
-            acyclic_objects::local::LocalObjectsLimits::default(),
-            None,
-        )
-        .await?,
-    );
-    let gate = Arc::new(tokio::sync::Mutex::new(()));
-    let store = StagedObjects::open(
-        PausedStore {
-            inner: LogicalObjectStore::new(Arc::clone(&provider)),
-            gate: Arc::clone(&gate),
-            pause_writes: true,
-            first: std::sync::atomic::AtomicBool::new(false),
-            paused: tokio::sync::Notify::new(),
-            stored: std::sync::atomic::AtomicUsize::new(0),
-        },
-        directory.path().to_owned(),
-    );
-    let token = CancellationToken::new();
-    let body_bytes = 256 * 1_024;
-    let window = usize::try_from(MAXIMUM_RESIDENT_BYTES)? / body_bytes;
-    let objects = (0..8 * window)
-        .map(|index| {
-            blob(OwnedBytes::from(vec![
-                u8::try_from(index % 251).unwrap_or(0);
-                body_bytes
-            ]))
-        })
-        .collect::<Vec<_>>();
-    let (early, late) = objects.split_at(3 * window);
-    for (object_id, bytes) in early {
-        {
-            let __object_args = (*object_id, bytes.clone(), WorkBudget::UNBOUNDED, &token);
-            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-            let __object_result = store
-                .put(__object_args.0, __object_args.1, &mut __object_work)
-                .await;
-            __object_work.receipt(__object_result)
-        }?;
-    }
-    assert!(store.index().spilled_objects > 0);
-    // Stand in for a spill file that has grown past its bound.
-    advance_spill_past_bound(&store).await?;
-
-    let private = store.index().spilled_objects;
-    let collecting = store.collection.begin().await;
-    let (sweep, _) = collecting.sweepable(Vec::new()).await;
-    for counter in ["items_examined", "allocation_operations"] {
-        let mut budget = crate::performance::BOUNDARY_BUDGET;
-        if counter == "items_examined" {
-            budget.items_examined = 0;
-        } else {
-            budget.allocation_operations = 0;
-        }
-        let mut refused = AuthorityWork::new(budget, &token);
-        let mut relief = Box::pin(store.relieve_window(&mut refused));
-        let std::task::Poll::Ready(result) = futures::poll!(relief.as_mut()) else {
-            panic!("exhausted spill selection waited for collection admission");
-        };
-        assert!(matches!(
-            result,
-            Err(ObjectStoreError::Work(crate::WorkError::BudgetExceeded {
-                counter: refused_counter,
-                ..
-            })) if refused_counter == counter
-        ));
-        drop(relief);
-        assert_eq!(refused.spent().backend_read_operations, 0);
-        assert_eq!(refused.spent().backend_write_operations, 0);
-        assert_eq!(store.index().spilled_objects, private);
-        assert_eq!(store.inner().stored.load(Ordering::Relaxed), 0);
-    }
-    drop(sweep);
-
-    let mut denied = AuthorityWork::new(
-        WorkBudget {
-            backend_read_operations: 0,
-            ..crate::performance::BOUNDARY_BUDGET
-        },
-        &token,
-    );
-    assert!(matches!(
-        store.relieve_window(&mut denied).await,
-        Err(ObjectStoreError::Work(_))
-    ));
-    assert_eq!(denied.spent().backend_read_operations, 0);
-    assert_eq!(denied.spent().backend_write_operations, 0);
-    assert!(store.index().spilled_objects > 0);
-
-    let cancelled = CancellationToken::new();
-    let mut stopped = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &cancelled);
-    let held = gate.lock_owned().await;
-    let spilled = store.index().spilled_objects;
-    store.inner().first.store(true, Ordering::Relaxed);
-    let drained = {
-        let drain = store.relieve_window(&mut stopped);
-        tokio::pin!(drain);
-        tokio::select! {
-            result = &mut drain => panic!("drain ended before its provider write: {result:?}"),
-            () = store.inner().paused.notified() => {}
-        }
-        cancelled.cancel();
-        drop(held);
-        drain.await
-    };
-    assert!(matches!(drained, Err(ObjectStoreError::Cancelled)));
-    assert!(stopped.spent().backend_read_operations > 0);
-    assert_eq!(stopped.spent().backend_write_operations, 0);
-    assert_eq!(store.index().spilled_objects, spilled);
-
-    let mut admission = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &token);
-    for (object_id, bytes) in late {
-        store.put(*object_id, bytes.clone(), &mut admission).await?;
-    }
-    assert!(admission.spent().backend_read_operations > 0);
-    assert!(admission.spent().backend_write_operations > 0);
-    let durable = {
-        let mut durable = 0;
-        for (object_id, _) in early {
-            if store
-                .inner()
-                .contains(
-                    *object_id,
-                    &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &token),
-                )
-                .await?
-            {
-                durable += 1;
-            }
-        }
-        durable
-    };
-    assert!(durable > 0, "the drain steps made spilled objects durable");
-    assert!(
-        store.index().spill_end <= MAXIMUM_SPILL_BYTES,
-        "the steps emptied and reused the spill file"
-    );
-    for (object_id, bytes) in &objects {
-        let read = {
-            let __object_args = (*object_id, u64::MAX, WorkBudget::UNBOUNDED, &token);
-            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-            let __object_result = store
-                .read(__object_args.0, __object_args.1, &mut __object_work)
-                .await;
-            __object_work.receipt(__object_result)
-        }?;
-        assert_eq!(&read.value.bytes, bytes);
-    }
-    drop(store);
-    drop(provider);
     Ok(())
 }
 
