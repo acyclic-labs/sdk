@@ -951,6 +951,13 @@ impl ToolExecutor for AgentTool {
             return Ok(None);
         };
         Ok(input.timeout_ms.map(|timeout| {
+            // The actor has already ordered an accepted input before its alarm.
+            // Preparation may expire while reopening that selected invocation;
+            // retain the input identity even when no observations can be read.
+            let reason = match self.release(invocation.operation_id) {
+                Some(reason @ crate::agent::WaitReason::Input { .. }) => reason,
+                _ => crate::agent::WaitReason::Deadline,
+            };
             let unsettled: Vec<_> = input
                 .agents
                 .iter()
@@ -962,7 +969,7 @@ impl ToolExecutor for AgentTool {
                     value: json!({
                         "settled": [], "unsettled": unsettled, "sent": [],
                         "unobserved_sent": input.sent,
-                        "reason": {"kind": "deadline"}
+                        "reason": reason
                     }),
                 },
             )

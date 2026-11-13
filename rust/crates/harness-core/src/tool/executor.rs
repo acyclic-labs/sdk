@@ -71,7 +71,8 @@ pub type ToolPreparationFuture<'a> =
 /// Replaceable execution behavior for a tool.
 pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     /// Bounds reversible preparation from the original durable call start.
-    /// The result reports expiry without claiming that unobserved work settled.
+    /// The result preserves any already-selected release, without claiming that
+    /// unobserved work settled; otherwise it reports expiry.
     /// The shared executor drops preparation when the host clock reaches it.
     fn preparation_timeout(
         &self,

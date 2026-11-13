@@ -6,6 +6,39 @@ use acyclic_harness_core::{
     model::{ModelEvent, ToolCall},
     test_support::ScriptedEvent,
 };
+use std::sync::{
+    Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+
+struct DelayedInput<D> {
+    original: D,
+    control: Arc<Mutex<acyclic_actors::local::ClockControl>>,
+    delay: AtomicBool,
+}
+
+impl<D: TurnDriver> TurnDriver for DelayedInput<D> {
+    fn step<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        cursor: u64,
+        input: Option<Queued>,
+        cancellation: acyclic_actors::guest::CancellationToken,
+    ) -> TurnFuture<'a> {
+        if matches!(
+            agent
+                .wait_resume
+                .as_ref()
+                .and_then(|resume| resume.reason.as_ref()),
+            Some(WaitReason::Input { .. })
+        ) && self.delay.swap(false, Ordering::SeqCst)
+        {
+            // Input won at 100; opening its resumed turn finishes after 110.
+            self.control.lock().unwrap().advance_to(111).unwrap();
+        }
+        self.original.step(agent, cursor, input, cancellation)
+    }
+}
 
 fn wait(id: &str, timeout: Option<u64>) -> ScriptedTurn {
     ScriptedTurn::Events(vec![
@@ -22,9 +55,15 @@ fn wait(id: &str, timeout: Option<u64>) -> ScriptedTurn {
 
 #[tokio::test]
 async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() -> Result {
-    for (answer, reserved) in [(true, 0), (false, 0), (true, MAX_QUEUED + 2)] {
+    for (answer, reserved, delayed) in [
+        (true, 0, false),
+        (false, 0, false),
+        (true, MAX_QUEUED + 2, false),
+        (true, 0, true),
+    ] {
         let path = AgentPath::root(&id(226));
-        let (clock, mut control) = acyclic_actors::local::ControlledClock::new(100);
+        let (clock, control) = acyclic_actors::local::ControlledClock::new(100);
+        let control = Arc::new(Mutex::new(control));
         let clock = Arc::new(clock);
         let stream = Arc::new(MemoryStream::new_with_clock(
             Default::default(),
@@ -78,7 +117,11 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
         .with_clock(clock.clone());
         let host = AgentHost::with_spawn_volumes(
             stream.clone(),
-            ExecutorDriver::new(turn_host),
+            DelayedInput {
+                original: ExecutorDriver::new(turn_host),
+                control: control.clone(),
+                delay: AtomicBool::new(delayed),
+            },
             within(),
             acyclic_actors::domain::ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             clock,
@@ -193,7 +236,7 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
         assert_eq!(
             second.phase,
             Phase::Waiting {
-                deadline_unix_ms: Some(120),
+                deadline_unix_ms: Some(if delayed { 131 } else { 120 }),
                 input: true
             }
         );
@@ -228,7 +271,10 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
             4,
             "draining without new input released an input wait"
         );
-        control.advance_to(119)?;
+        control
+            .lock()
+            .unwrap()
+            .advance_to(if delayed { 130 } else { 119 })?;
         host.drain(&path).await?;
         assert_eq!(host.state(&path).await?.phase, second.phase);
         assert_eq!(model.requests().len(), 4);
@@ -241,7 +287,7 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
             };
             Some(inbox)
         } else {
-            control.advance_to(120)?;
+            control.lock().unwrap().advance_to(120)?;
             None
         };
         host.drain(&path).await?;
