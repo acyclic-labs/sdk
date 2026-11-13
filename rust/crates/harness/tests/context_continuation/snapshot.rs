@@ -273,6 +273,13 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
         .verify(&projection_bytes, &mut None)?;
     let projection_wire: serde_json::Value = serde_json::from_slice(&projection_bytes)
         .map_err(|error| Error::Invalid(error.to_string()))?;
+    let projection_request: FileRef = serde_json::from_value(
+        projection_wire
+            .get("request")
+            .cloned()
+            .ok_or_else(|| Error::Invalid("prepared projection has no request".into()))?,
+    )
+    .map_err(|error| Error::Invalid(error.to_string()))?;
     let projection_wire = projection_wire
         .get("projection")
         .ok_or_else(|| Error::Invalid("prepared projection has no versioned body".into()))?;
@@ -304,14 +311,8 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
     let prepared_request =
         acyclic_harness::executor::load_model_request(journal.as_ref(), dispatched, limits, None)
             .await?;
-    assert_eq!(
-        projection_wire
-            .get("context")
-            .and_then(|context| context.get("messages"))
-            .ok_or_else(|| Error::Invalid("prepared projection has no messages".into()))?,
-        &serde_json::to_value(&prepared_request.request().messages)
-            .map_err(|error| Error::Invalid(error.to_string()))?
-    );
+    assert_eq!(&projection_request, dispatched);
+    assert_eq!(prepared_request.request().messages, composed.messages);
     {
         let requests = model.requests();
         assert_eq!(requests.len(), 1);
