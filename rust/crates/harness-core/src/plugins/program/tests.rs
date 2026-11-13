@@ -480,9 +480,133 @@ async fn hook_bindings_retain_source_and_executable_credit_through_canonical_adm
 
 #[tokio::test]
 async fn tool_and_hook_programs_use_the_existing_runner_and_owner_check() -> Result<()> {
+    use acyclic_native_runtime::{
+        CaptureHandler, CaptureRequest, CaptureSchedule, LaunchFailure, OwnedCaptureInput,
+        ProcessCommand, ProcessInput, ProcessOutput, ProcessStdio,
+    };
+
+    struct Owner(bool);
+    impl CaptureHandler for Owner {
+        fn check(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn observe(&mut self, _: ProcessOutput<'_>) -> std::io::Result<ProcessInput> {
+            Ok(ProcessInput::default())
+        }
+        fn retired(&mut self, completed: bool) {
+            self.0 = completed;
+        }
+    }
+
+    acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
+    let expected = "script ' 🦀‘’‚‛";
+    let fields = serde_json::json!({
+        "text": "$(touch injected); ' \" \\ \n 🦀‘’‚‛",
+        "nested": [null, true, {"value": 17}],
+    });
     for root in ["tools/count", "hooks/count"] {
-        let tree = Files::program(root);
+        let mut tree = Files::program(root);
+        tree.files.insert(
+            format!("{root}/main.sh"),
+            "cat > input.json\nprintf '%s' \"script ' 🦀‘’‚‛\" > receipt".into(),
+        );
+        tree.files.insert(format!("{root}/main.ps1"), r#"param()
+$data = [Console]::In.ReadToEnd()
+$encoding = [Text.UTF8Encoding]::new($false)
+[IO.File]::WriteAllText((Join-Path (Get-Location) 'input.json'), $data, $encoding)
+[IO.File]::WriteAllText((Join-Path (Get-Location) 'receipt'), "script ' 🦀‘’‚‛", $encoding)
+[IO.File]::WriteAllText((Join-Path (Get-Location) 'version'), [string]$PSVersionTable.PSVersion.Major, $encoding)
+"#.into());
         let loaded = load_program(&tree, root).await?;
+        let workspace = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let registry = crate::tools::defaults()?;
+        if root.starts_with("tools/") {
+            let shell = Arc::clone(registry.get_shared("shell", None, None)?.unwrap());
+            let tool = load_program(&tree, root).await?.bind(shell)?;
+            let invocation = crate::tool::ToolInvocation {
+                operation_id: crate::OperationId::new(),
+                call_id: "authored-input".into(),
+                name: "count".into(),
+                arguments: fields.clone(),
+            };
+            let canonical = tool.executor.canonical(&invocation, None)?.unwrap();
+            let input: crate::tools::ShellInput =
+                serde_json::from_value(canonical.invocation.arguments)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+            let (program, mut argv, stdin) =
+                input.command.prepare(&crate::tools::shell::PLATFORM)?;
+            let program = program.expect("authored source uses executable argv");
+            let program = if cfg!(windows) {
+                // PowerShell 5 is supported even when the host normally selects
+                // PowerShell 7. Start from a legacy console page deterministically.
+                let source = argv.pop().unwrap();
+                argv.push(format!(
+                    "[Console]::InputEncoding = [Text.Encoding]::GetEncoding(437); {source}"
+                ));
+                "powershell.exe".to_owned()
+            } else {
+                program
+            };
+            let mut command = ProcessCommand::new(program);
+            command
+                .args(argv)
+                .current_dir(workspace.path())
+                .stdin(ProcessStdio::piped())
+                .stdout(ProcessStdio::piped())
+                .stderr(ProcessStdio::piped());
+            let capture = CaptureRequest {
+                command,
+                custody: None,
+                execution_grant: None,
+                input: Some(OwnedCaptureInput::Literal(
+                    stdin.expect("arguments are separate JSON stdin"),
+                )),
+                schedule: CaptureSchedule::Unbounded,
+                maximum_output_bytes: None,
+            }
+            .capture(Owner(false))
+            .await
+            .map_err(|failure| match failure {
+                LaunchFailure::Refused { failure, .. } => Error::process_io(failure.error),
+                LaunchFailure::Control { error, .. }
+                | LaunchFailure::Indeterminate { error, .. } => Error::process_io(error),
+            })?;
+            let outcome = capture.await.map_err(Error::process_io)?;
+            assert!(
+                outcome.handler.0,
+                "authored process did not retire its original capture"
+            );
+            let output = outcome
+                .result
+                .map_err(|failure| Error::process_io(failure.error))?;
+            assert!(
+                output.status.success(),
+                "authored source failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                std::fs::read(workspace.path().join("receipt")).map_err(Error::process_io)?,
+                expected.as_bytes()
+            );
+            let received: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(workspace.path().join("input.json")).map_err(Error::process_io)?,
+            )
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+            assert_eq!(
+                received, fields,
+                "native authored input changed encoding or argument meaning"
+            );
+            if cfg!(windows) {
+                assert_eq!(
+                    std::fs::read(workspace.path().join("version")).map_err(Error::process_io)?,
+                    b"5"
+                );
+                std::fs::remove_file(workspace.path().join("version"))
+                    .map_err(Error::process_io)?;
+            }
+            std::fs::remove_file(workspace.path().join("receipt")).map_err(Error::process_io)?;
+            std::fs::remove_file(workspace.path().join("input.json")).map_err(Error::process_io)?;
+        }
         let mut hooks = Hooks::default();
         hooks.add_rules(vec![HookRule {
             on: HookEvent::Stop,
@@ -493,9 +617,6 @@ async fn tool_and_hook_programs_use_the_existing_runner_and_owner_check() -> Res
                 failure: HookFailure::Block,
             }],
         }])?;
-        let workspace = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-        let fields = serde_json::json!({});
-        let registry = ToolRegistry::default();
         let refused = hooks
             .run_checked(
                 HookEvent::Stop,
@@ -517,6 +638,7 @@ async fn tool_and_hook_programs_use_the_existing_runner_and_owner_check() -> Res
             .await?;
         assert!(!refused.diagnostics.is_empty());
         assert!(!workspace.path().join("receipt").exists());
+        assert!(!workspace.path().join("input.json").exists());
         hooks
             .run(
                 HookEvent::Stop,
@@ -527,14 +649,19 @@ async fn tool_and_hook_programs_use_the_existing_runner_and_owner_check() -> Res
             )
             .await?;
         assert_eq!(
-            std::fs::read(workspace.path().join("receipt"))
-                .map_err(|error| Error::Storage(error.to_string()))?,
-            b"done"
+            std::fs::read(workspace.path().join("receipt")).map_err(Error::process_io)?,
+            expected.as_bytes()
         );
+        let received: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(workspace.path().join("input.json")).map_err(Error::process_io)?,
+        )
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(received["text"], fields["text"]);
+        assert_eq!(received["nested"], fields["nested"]);
+        assert!(!workspace.path().join("injected").exists());
     }
     Ok(())
 }
-
 #[tokio::test]
 async fn invalid_programs_never_resolve_an_escaping_or_foreign_entry() -> Result<()> {
     for replacement in [
