@@ -5,6 +5,9 @@ use acyclic_actors::{addressing::ActorReference, route};
 pub(super) mod notices;
 pub use notices::{PeerRejectionRoute, PeerResultRoute};
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;
+
 pub(super) const OUTBOX: &str = "acyclic.actors.route.outbox.v1";
 pub(super) const SOURCE_INTENT: &str = "acyclic.actors.route.source-intent.v1";
 pub(super) const ADMISSION: &str = "acyclic.harness.peer-admission.v1";
@@ -154,10 +157,93 @@ impl<'a> PeerRoute<'a> {
         if host.actor(&self.recipient)? != self.envelope.to {
             return Err(Error::Record("peer route belongs to another actor host"));
         }
-        self.admission
-            .recipient
-            .validate(host.provider().as_ref(), &self.recipient)
+        let inbox = self.recipient.inbox()?;
+        let mut known_present = false;
+        let delivered = loop {
+            let retained = self
+                .admission
+                .recipient
+                .retained(host.provider().as_ref(), &self.recipient)
+                .await;
+            match retained {
+                Ok(true) => match host
+                    .deliver(&self.recipient, self.delivery_request(receipt)?)
+                    .await
+                {
+                    Ok(delivered) => break delivered,
+                    Err(Error::Stream(cause))
+                        if cause.category() == acyclic_stream::StreamError::IdempotencyMismatch => {
+                    }
+                    Err(cause) => return Err(cause),
+                },
+                Ok(false) if !known_present => (),
+                Ok(false) => return Err(Error::Record("peer membership record is missing")),
+                Err(cause @ (Error::Record(_) | Error::UnsupportedRecordVersion(_))) => {
+                    // A root created after a retained absence may have a
+                    // different initial membership commit. Recover only an
+                    // already-spent original intent; invalid fresh witnesses
+                    // must not publish a refusal for a present root.
+                    if host
+                        .provider()
+                        .inspect_idempotency(self.envelope.request.idempotency_key.clone())
+                        .await
+                        .map_err(Error::Stream)?
+                        .is_none()
+                    {
+                        return Err(cause);
+                    }
+                }
+                Err(cause) => return Err(cause),
+            }
+            match self
+                .deliver_absent(host, routing, receipt, self.delivery_request(receipt)?)
+                .await
+            {
+                Err(Error::Actor(cause))
+                    if matches!(&*cause,
+                        acyclic_actors::local::Error::PreconditionChanged(conflicts)
+                        if conflicts.iter().any(|conflict| matches!(conflict,
+                            acyclic_stream::CommitConflict::Exists { path } if path == &inbox
+                        ))
+                    ) =>
+                {
+                    // The conditional result, not a timer or readiness
+                    // probe, proves creation won this race. Revalidate the
+                    // now-present root; a still-missing witness is invalid.
+                    known_present = true;
+                }
+                outcome => return outcome,
+            }
+        };
+        if delivered == super::Delivered::Closed {
+            // The drain may acknowledge only after the return publication is
+            // durable. A crash between these commits replays the retained
+            // refusal and this same result intent, never a new delivery.
+            let result = self.result(
+                routing.node.clone(),
+                receipt,
+                super::SentReplyStatus::Dropped,
+            )?;
+            let outcome = super::submit(
+                host.provider().as_ref(),
+                acyclic_stream::CommitRequest {
+                    deadline_unix_millis: None,
+                    idempotency_key: result.request.idempotency_key.clone(),
+                    effects: vec![result.outbox_effect(&routing.paths).map_err(error)?],
+                },
+            )
             .await?;
+            if !matches!(outcome, super::Submitted::Committed(_)) {
+                return Err(Error::Record("peer refusal result was not published"));
+            }
+        }
+        Ok(delivered)
+    }
+
+    fn delivery_request(
+        &self,
+        receipt: &route::RelayReceipt,
+    ) -> Result<acyclic_stream::CommitRequest, Error> {
         let mut request = self.envelope.request.clone();
         let acyclic_stream::CommitMutation::Append { records, .. } =
             &mut request.effects[0].mutations[0]
@@ -185,29 +271,47 @@ impl<'a> PeerRoute<'a> {
         // skipped append. A crash before routing its Notice cannot later turn
         // that refusal into delivery after the user rejoins.
         request.effects[0].soft = true;
-        let delivered = host.deliver(&self.recipient, request).await?;
-        if delivered == super::Delivered::Closed {
-            // The drain may acknowledge only after the return publication is
-            // durable. A crash between these commits replays the retained
-            // refusal and this same result intent, never a new delivery.
-            let result = self.result(
-                routing.node.clone(),
-                receipt,
-                super::SentReplyStatus::Dropped,
-            )?;
-            let outcome = super::submit(
-                host.provider().as_ref(),
-                acyclic_stream::CommitRequest {
-                    deadline_unix_millis: None,
-                    idempotency_key: result.request.idempotency_key.clone(),
-                    effects: vec![result.outbox_effect(&routing.paths).map_err(error)?],
-                },
-            )
-            .await?;
-            if !matches!(outcome, super::Submitted::Committed(_)) {
-                return Err(Error::Record("peer refusal result was not published"));
+        Ok(request)
+    }
+
+    async fn deliver_absent<P: crate::store::JournalProvider + ?Sized + 'static>(
+        &self,
+        host: &super::AgentHost<P>,
+        routing: &Routing,
+        receipt: &route::RelayReceipt,
+        request: acyclic_stream::CommitRequest,
+    ) -> Result<super::Delivered, Error> {
+        let request = self.absent_request(routing, receipt, request)?;
+        match host.deliver(&self.recipient, request).await? {
+            super::Delivered::Closed => Ok(super::Delivered::Closed),
+            super::Delivered::Committed { .. } => {
+                Err(Error::Record("absent peer accepted inbox input"))
             }
         }
-        Ok(delivered)
+    }
+    fn absent_request(
+        &self,
+        routing: &Routing,
+        receipt: &route::RelayReceipt,
+        mut request: acyclic_stream::CommitRequest,
+    ) -> Result<acyclic_stream::CommitRequest, Error> {
+        let result = self.result(
+            routing.node.clone(),
+            receipt,
+            super::SentReplyStatus::Dropped,
+        )?;
+        // The ordinary Present{inbox} effect is skipped under this hard absence
+        // fence. Its original intent and return Notice commit together, so a
+        // later creation cannot revive it or require a second refusal ledger.
+        request.effects.push(acyclic_stream::CommitEffect::hard(
+            vec![acyclic_stream::CommitCondition::Absent {
+                path: self.recipient.inbox()?,
+            }],
+            Vec::new(),
+        ));
+        request
+            .effects
+            .push(result.outbox_effect(&routing.paths).map_err(error)?);
+        Ok(request)
     }
 }

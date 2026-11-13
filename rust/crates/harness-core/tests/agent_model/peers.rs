@@ -4,6 +4,193 @@ use acyclic_harness_core::Capabilities;
 use proptest::prelude::*;
 
 #[tokio::test]
+async fn absent_recipient_refusal_and_notice_share_the_original_commit() -> Result {
+    use acyclic_actors::{
+        addressing::ActorReference,
+        route::{self, NodeId, Paths},
+    };
+    use std::sync::Arc;
+    for delivery in [MessageDelivery::Steer, MessageDelivery::FollowUp] {
+        let source = MemoryStream::default();
+        let account = MemoryStream::default();
+        let destination = Arc::new(MemoryStream::default());
+        let sender = create(&source, id(70)).await?;
+        let recipient = create(&source, id(71)).await?;
+        let within = ActorReference::new(b"account", b"agents", sender.id().as_str().as_bytes())?;
+        let sending = Routing {
+            paths: Paths::new(StreamPath::new("routing")?),
+            node: NodeId::new(b"source")?,
+        };
+        let receiving = Routing {
+            paths: sending.paths.clone(),
+            node: NodeId::new(b"destination")?,
+        };
+        let admission = session_peer_admission(
+            &source,
+            &Capabilities::new([SEND_PEER]),
+            &sender,
+            &recipient,
+        )
+        .await?
+        .ok_or("admission missing")?;
+        let state = AgentState::adopted(sender.clone(), &adopted(sender.id()))?;
+        let step = Step {
+            outs: effect_outs(
+                &state,
+                vec![TurnEffect::Send {
+                    peer: Some(admission),
+                    delivery,
+                    to: recipient.clone(),
+                    id: intent("original"),
+                    re: None,
+                    body: Box::new(super::driver::file("message.md")?),
+                    attachments: None,
+                }],
+            ),
+            state,
+            status: None,
+            alarm: Alarm::Clear,
+        };
+        submit(
+            &source,
+            sending.lower(
+                &within,
+                &BTreeSet::from([recipient.clone()]),
+                &step,
+                1,
+                intent_key("source-step", &[])?,
+            )?,
+        )
+        .await?;
+        let publication = source
+            .record_at(sending.paths.outbox(&sending.node)?, 0)
+            .await?
+            .ok_or("source missing")?;
+        let original = route::Publication::decode(&publication.value)?.delivery()?;
+        original
+            .publish_relay(&account, &sending.paths, &receiving.node, Vec::new())
+            .await?;
+        let admitted = account
+            .record_at(sending.paths.relay(&receiving.node)?, 0)
+            .await?
+            .ok_or("relay missing")?;
+        let receipt = route::RelayReceipt {
+            commit_id: admitted.commit_id,
+            sequence: admitted.sequence,
+        };
+        let peer = PeerRoute::parse(&original)?;
+        let host = AgentHost::new(
+            destination.clone(),
+            Scripted(Mutex::new(VecDeque::new())),
+            within.clone(),
+            acyclic_actors::domain::ActorLimits::default(),
+            Arc::new(acyclic_actors::local::SystemClock),
+        )?;
+        assert_eq!(
+            peer.deliver(&host, &receiving, &receipt).await?,
+            Delivered::Closed
+        );
+        assert!(
+            matches!(
+                destination.tail(recipient.inbox()?).await,
+                Err(StreamError::NotFound)
+            ),
+            "refusal must not create an inbox"
+        );
+        let notice = destination
+            .record_at(receiving.paths.outbox(&receiving.node)?, 0)
+            .await?
+            .ok_or("refusal Notice missing")?;
+        let retained = destination
+            .inspect_idempotency(original.request.idempotency_key.clone())
+            .await?
+            .ok_or("original refusal missing")?;
+        let acyclic_stream::IdempotencyOutcome::Commit(committed) = retained.outcome else {
+            return Err("refusal was not committed".into());
+        };
+        assert_eq!(
+            committed.commit_id, notice.commit_id,
+            "the return Notice and original refusal must be one publication"
+        );
+        assert!(committed.mutations.iter().all(|mutation| matches!(mutation,
+            acyclic_stream::CommittedMutation::Append(append) if append.path == receiving.paths.outbox(&receiving.node).expect("valid outbox")
+        )), "a skipped input must not publish an inbox or activation");
+        let result = route::Publication::decode(&notice.value)?.delivery()?;
+        PeerResultRoute::parse(&result)?
+            .verify_original(&account, &sending.paths)
+            .await?;
+        assert_eq!(
+            peer.deliver(&host, &receiving, &receipt).await?,
+            Delivered::Closed
+        );
+
+        // A new root at the same address has a different creation commit. It
+        // cannot revive the old intent, even though its membership is enabled.
+        let created = create_root(&intent("later-creation"), adopted(recipient.id()))?;
+        submit(destination.as_ref(), created.request.clone()).await?;
+        assert_eq!(
+            peer.deliver(&host, &receiving, &receipt).await?,
+            Delivered::Closed
+        );
+        assert_eq!(destination.tail(recipient.inbox()?).await?, 1);
+        assert_eq!(
+            destination
+                .tail(receiving.paths.outbox(&receiving.node)?)
+                .await?,
+            1
+        );
+
+        let mut changed = original.clone();
+        let CommitMutation::Append { records, .. } = &mut changed.request.effects[0].mutations[0]
+        else {
+            return Err("message append missing".into());
+        };
+        let mut input = InboxRecord::decode(&records[0].value)?;
+        let (InboxRecord::Message(message) | InboxRecord::FollowUp(message)) = &mut input else {
+            return Err("message missing".into());
+        };
+        message.body = Box::new(super::driver::file("changed.md")?);
+        records[0].value = input.encode()?.into();
+        assert!(
+            PeerRoute::parse(&changed)?
+                .deliver(&host, &receiving, &receipt)
+                .await
+                .is_err(),
+            "changed bytes must not recover the original refusal"
+        );
+
+        // The same invalid witness against a present root, without a retained
+        // absence publication, must fail instead of spending its fresh intent.
+        let present = Arc::new(MemoryStream::default());
+        submit(present.as_ref(), created.request).await?;
+        let present_host = AgentHost::new(
+            present.clone(),
+            Scripted(Mutex::new(VecDeque::new())),
+            within,
+            acyclic_actors::domain::ActorLimits::default(),
+            Arc::new(acyclic_actors::local::SystemClock),
+        )?;
+        assert!(
+            peer.deliver(&present_host, &receiving, &receipt)
+                .await
+                .is_err()
+        );
+        assert!(
+            present
+                .inspect_idempotency(original.request.idempotency_key.clone())
+                .await?
+                .is_none()
+        );
+        assert_eq!(present.tail(recipient.inbox()?).await?, 1);
+        assert!(matches!(
+            present.tail(receiving.paths.outbox(&receiving.node)?).await,
+            Err(StreamError::NotFound)
+        ));
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn account_rejection_settles_only_its_original_owned_send() -> Result {
     use acyclic_actors::{
         addressing::ActorReference,

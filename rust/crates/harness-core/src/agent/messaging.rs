@@ -95,23 +95,41 @@ impl PeerMembershipHead {
         provider: &P,
         root: &AgentPath,
     ) -> Result<(), super::Error> {
+        if !self.retained(provider, root).await? {
+            return Err(super::Error::Record("peer membership record is missing"));
+        }
+        Ok(())
+    }
+
+    /// Absence is distinct from an invalid retained witness. Only an owning
+    /// delivery host can turn absence into a refusal, fenced by inbox absence
+    /// in that same publication; it must never bypass a disabled record.
+    pub(super) async fn retained<P: crate::store::JournalProvider + ?Sized>(
+        &self,
+        provider: &P,
+        root: &AgentPath,
+    ) -> Result<bool, super::Error> {
         use super::AgentRecord as _;
         use acyclic_stream::StreamProviderExt as _;
         let sequence = self
             .tail
             .checked_sub(1)
             .ok_or(super::Error::Record("peer membership head is empty"))?;
-        let record = provider
-            .record_at(root.peer_membership()?, sequence)
+        let path = root.peer_membership()?;
+        let Some(record) = provider
+            .record_at(path.clone(), sequence)
             .await
             .map_err(super::Error::Stream)?
-            .ok_or(super::Error::Record("peer membership record is missing"))?;
-        if record.commit_id.as_bytes() != &self.commit
+        else {
+            return Ok(false);
+        };
+        if record.origin != path
+            || record.commit_id.as_bytes() != &self.commit
             || !PeerMembership::decode(&record.value)?.enabled
         {
             return Err(super::Error::Record("peer membership was not enabled"));
         }
-        Ok(())
+        Ok(true)
     }
 }
 

@@ -968,7 +968,9 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             }
             Submitted::RecipientClosed(_) => Ok(Delivered::Closed),
             Submitted::NoSuchAgent(_) => Err(Error::NoSuchAgent),
-            Submitted::Conflict(_) => Err(Error::Record("inbox commit conflicted")),
+            Submitted::Conflict(conflicts) => Err(actor_error(
+                acyclic_actors::local::Error::PreconditionChanged(conflicts),
+            )),
         }
     }
 }
