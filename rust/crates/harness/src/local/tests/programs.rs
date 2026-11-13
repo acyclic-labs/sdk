@@ -73,6 +73,28 @@ fn echoed(request: &crate::model::ModelRequest, id: &str, expected: &str) -> Res
     Ok(())
 }
 
+async fn started_calls(conversation: &Conversation, inbox: u64) -> Result<Vec<String>> {
+    let mut after = 0;
+    let mut calls = Vec::new();
+    loop {
+        let page = conversation
+            .execution_page(inbox, after, false)
+            .await?
+            .page
+            .ok_or_else(|| Error::Invalid("original program execution page is absent".into()))?;
+        for record in page.items {
+            if let crate::executor::ExecutionEvent::ToolStarted { call_id, .. } = record.event {
+                calls.push(call_id);
+            }
+        }
+        let Some(next) = page.next else {
+            return Ok(calls);
+        };
+        assert!(next > after, "execution page did not advance");
+        after = next;
+    }
+}
+
 #[tokio::test]
 async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell_permissions()
 -> Result<()> {
@@ -351,18 +373,11 @@ async fn authored_programs_wait_for_the_original_shell_approval_before_native_di
         }
     };
     assert_eq!(provider.request_count(), first + 1);
-    let page = conversation.execution_page(inbox, 0, false).await?;
-    let mut started = 0;
-    for record in page.page.iter().flat_map(|page| &page.items) {
-        if let crate::executor::ExecutionEvent::ToolStarted { call_id, .. } = &record.event {
-            started += 1;
-            assert_eq!(
-                call_id, "approved-program-call",
-                "inner native shell started before approval"
-            );
-        }
-    }
-    assert_eq!(started, 1, "original outer code start is absent");
+    assert_eq!(
+        started_calls(&conversation, inbox).await?,
+        ["approved-program-call"],
+        "inner native shell started before approval"
+    );
     let pending = conversation
         .pending_approval(&id)
         .await?
@@ -384,6 +399,14 @@ async fn authored_programs_wait_for_the_original_shell_approval_before_native_di
     assert!(entry.outcome.is_completed(), "{:?}", entry.outcome);
     assert!(conversation.pending_approval(&id).await?.is_none());
     assert_eq!(provider.request_count(), first + 2);
+    let starts = started_calls(&conversation, inbox).await?;
+    assert_eq!(
+        starts.len(),
+        2,
+        "original code and native call must start once each"
+    );
+    assert_eq!(starts[0], "approved-program-call");
+    assert_ne!(starts[1], starts[0]);
     echoed(
         &provider.request(first + 1).unwrap(),
         "approved-program-call",
