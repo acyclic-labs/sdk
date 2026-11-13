@@ -203,6 +203,16 @@ mod tests {
             );
         }
         assert_eq!(explicit.transport(), EndpointTransport::Tls);
+        assert_eq!(
+            resolve_connection_options(
+                Some("https://example.com/prefix"),
+                Some("key"),
+                None,
+                None
+            )?
+            .endpoint(),
+            "https://example.com/prefix"
+        );
         for endpoint in [
             "http://example.com",
             "http://10.0.0.1",
@@ -213,6 +223,8 @@ mod tests {
             "https://",
             "https://user:key@example.com",
             "https://example.com/#fragment",
+            "\nhttps://example.com",
+            "https://example.com/a\tb",
         ] {
             assert_eq!(
                 resolve_connection_options(
