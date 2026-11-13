@@ -6,7 +6,7 @@
 pub struct InputPreview {
     /// UTF-8 prefix, ending at a complete scalar boundary.
     pub text: String,
-    /// Complete original message length, before display truncation.
+    /// Complete original human text length, before display truncation.
     pub bytes: u64,
 }
 
@@ -17,16 +17,19 @@ pub enum InputSelection {
     Latest,
     /// Every own unsettled message, newest first, in credited UTF-8 ranges.
     Pending,
+    /// Every original human prompt in this session, newest first, excluding inherited records.
+    History,
 }
 
 /// One credited source step, including work that disclosed no message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InputPreviewStep {
-    /// One source record was consumed without selecting a message.
+    /// One bounded source-work step, including a filtered record or a
+    /// structured envelope chunk, was consumed without selecting a message.
     Progress,
-    /// One contiguous range of an original unsettled message. The complete
+    /// One contiguous range of an original selected message. The complete
     /// original length is in `preview.bytes`; no file identity consumes credit.
-    Pending {
+    MessageRange {
         /// Original inbox sequence, retained through settlement.
         inbox: u64,
         /// Byte offset in the original message.

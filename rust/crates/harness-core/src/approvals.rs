@@ -31,6 +31,7 @@ pub use agent::{
 };
 mod automatic;
 pub use automatic::automatic_review as automatic_agent_review;
+pub(crate) use automatic::review_model;
 
 mod selectors;
 pub use selectors::ApprovalSelector;

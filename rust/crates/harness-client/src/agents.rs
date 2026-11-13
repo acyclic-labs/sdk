@@ -397,7 +397,7 @@ impl AgentClient {
         &self.session
     }
 
-    /// Select filtered filesystem/tool output on the same fold, credential and
+    /// Select filesystem output or an additional stream on the same fold, credential and
     /// total interest budget as conversation/status. No second read loop.
     pub fn open_resource(
         &mut self,

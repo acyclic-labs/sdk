@@ -23,6 +23,7 @@ impl QueryProjection {
             Self::Diff(DiffProjection::Summary) => 1,
             Self::Input(InputSelection::Latest) => 2,
             Self::Input(InputSelection::Pending) => 3,
+            Self::Input(InputSelection::History) => 4,
         };
         let mut bytes = Vec::with_capacity(invocation.len() + 2);
         bytes.extend_from_slice(&[1, kind]);
@@ -40,6 +41,7 @@ impl QueryProjection {
             [1, 1] => Self::Diff(DiffProjection::Summary),
             [1, 2] => Self::Input(InputSelection::Latest),
             [1, 3] => Self::Input(InputSelection::Pending),
+            [1, 4] => Self::Input(InputSelection::History),
             _ => return Err(CommandError::Invalid),
         };
         Ok((projection, &bytes[2..]))

@@ -464,7 +464,7 @@ impl WireSession {
     ) -> (RetainedView, Subscription) {
         let followed = match &interest {
             Interest::Stream(path) => Some(path.clone()),
-            Interest::Resource(_) => None,
+            Interest::Resource(resource) => wire_codec::session::stream_path(resource).ok(),
         };
         let filtered = subscription.filter.is_some()
             || matches!(
@@ -824,8 +824,8 @@ fn validate_subscription(
 
 const FS_RESOURCE: &str = "fs:/";
 
-/// A filesystem follow requests every record of its `fs:/` resource; unlike
-/// a stream follow it may carry a key filter selecting a subtree.
+/// An additional resource uses the same fold as selected agent streams.
+/// Filesystem resources may select a subtree; Streams retain their original path.
 fn validate_resource_subscription(
     subscription: &wire::SessionSubscription,
 ) -> Result<(&str, u64), WireSessionError> {
@@ -833,11 +833,13 @@ fn validate_resource_subscription(
     let Some(wire::session_subscription::Kind::Follow(follow)) = &subscription.kind else {
         return Err(WireSessionError::InvalidSubscription);
     };
-    if follow.delivery != wire::SessionDelivery::All as i32
-        || subscription.channel.is_some()
-        || !follow.resource.starts_with(FS_RESOURCE)
-    {
+    if follow.delivery != wire::SessionDelivery::All as i32 || subscription.channel.is_some() {
         return Err(WireSessionError::InvalidSubscription);
+    }
+    if !follow.resource.starts_with(FS_RESOURCE) {
+        let path =
+            wire_codec::session::stream_path(&follow.resource).map_err(WireSessionError::Stream)?;
+        validate_subscription(&path, subscription)?;
     }
     let resume = subscription
         .resume

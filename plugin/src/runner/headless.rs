@@ -1211,7 +1211,7 @@ pub(super) async fn jsonl(
             }
         };
         match event {
-            None | Some(Event::Delta) => {}
+            None | Some(Event::Delta | Event::Input { .. }) => {}
             Some(Event::Turn(entry)) => {
                 let inbox = entry
                     .goal
