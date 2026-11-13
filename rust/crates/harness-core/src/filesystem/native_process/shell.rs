@@ -174,7 +174,12 @@ pub fn workspace_environment<T>(
         .map(|(_, root, _)| {
             acyclic_fs::hold_root(root)
                 .and_then(|root| {
-                    root.create_directories(Path::new("tmp"), acyclic_fs::NativeDurability::Durable)
+                    // This is a disposable projection. The ordinary volume
+                    // publication owns persistence after the process completes.
+                    root.create_directories(
+                        Path::new("tmp"),
+                        acyclic_fs::NativeDurability::Visibility,
+                    )
                 })
                 .map_err(|error| Error::Storage(error.to_string()))
         })
