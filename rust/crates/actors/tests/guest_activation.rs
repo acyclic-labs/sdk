@@ -673,6 +673,7 @@ async fn strict_wire_record_matches_typescript_guest() -> Result<(), Box<dyn std
     };
     let transition = Transition {
         response: Some(payload),
+        pause: false,
         checkpoint: activation.checkpoint().await?,
         alarm: AlarmChange::Keep,
         effects: Vec::new(),
