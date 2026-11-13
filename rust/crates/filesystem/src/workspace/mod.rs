@@ -91,7 +91,7 @@ pub use diff::{ChangeSet, ChangedPath};
 pub(crate) use errors::workspace_bounded_error;
 pub use errors::{WorkspaceError, WorkspaceNameError};
 pub use extents::{WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceExtentSpan};
-pub use fork_options::ForkOptions;
+pub use fork_options::{EphemeralFork, ForkOptions};
 pub use generation::Generation;
 pub use handle::Workspace;
 #[cfg(all(not(loom), any(test, feature = "fuzzing")))]

@@ -14,6 +14,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for Observed<S> {
         requires_child_first_publication,
         maximum_reference_bytes,
         prepare_hashed,
+        restore_hashed,
         put_hashed,
         read_many,
         contains,

@@ -166,7 +166,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         checkout: &mut crate::Checkout<A, O>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        let generation = checkout.generation_id();
+        let generation = self.checkout.authorization_generation(checkout)?;
         if let Some(selected) = permissions.data_generation() {
             return if selected == generation {
                 Ok(())
@@ -187,60 +187,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         &self,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Arc<crate::access::PathTrie>, MountSourceError> {
-        let published = self
-            .access_view
-            .as_ref()
-            .ok_or(MountSourceError::AccessDenied)?;
-        let mut view = published
-            .current()
-            .map_err(|_| MountSourceError::AccessDenied)?;
-        let mut head = self
-            .checkout
-            .volume
-            .checkout(
-                crate::model::GenerationSelector::Head,
-                crate::model::CheckoutMode::read_only_pinned(),
-                work,
-                work.cancellation(),
-            )
-            .await?;
-        let mut revision = head
-            .access_policy_revision(work, work.cancellation())
-            .await?;
-        let expired = if let Some(expiry) = view.valid_until() {
-            access_time(&self.runtime.clock)? >= expiry
-        } else {
-            false
-        };
-        if !view.matches_policy_revision(head.generation_id(), revision) || expired {
-            let refresh = self
-                .access_refresh
+        policy_snapshot(
+            &self.checkout,
+            self.access_view
                 .as_ref()
-                .ok_or(MountSourceError::AccessDenied)?;
-            // Authentication and compilation run outside every checkout/view lock.
-            let future = refresh.check(work).map_err(publication_error)?;
-            publication_result(future.await)?;
-            view = published
-                .current()
-                .map_err(|_| MountSourceError::AccessDenied)?;
-            head = self
-                .checkout
-                .volume
-                .checkout(
-                    crate::model::GenerationSelector::Head,
-                    crate::model::CheckoutMode::read_only_pinned(),
-                    work,
-                    work.cancellation(),
-                )
-                .await?;
-            revision = head
-                .access_policy_revision(work, work.cancellation())
-                .await?;
-        }
-        if !view.matches_policy_revision(head.generation_id(), revision) {
-            return Err(MountSourceError::AccessDenied);
-        }
-        Ok(view)
+                .ok_or(MountSourceError::AccessDenied)?,
+            self.access_refresh.as_ref(),
+            &self.runtime.clock,
+            &self.cancellation,
+            work,
+        )
+        .await
     }
 
     pub(in crate::native_mount) async fn pin_access(
@@ -426,4 +383,41 @@ pub(in crate::native_mount) fn require_list<'a>(
         return Err(MountSourceError::AccessDenied);
     }
     Ok((access, now))
+}
+
+// The same persisted-policy observation serves ordinary callbacks and command
+// provenance. It does not construct another data checkout just to read policy.
+pub(super) async fn policy_snapshot<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &SharedCheckout<A, O>,
+    published: &Arc<AccessView>,
+    refresh: Option<&Arc<dyn super::super::NativeAccessOwner>>,
+    clock: &super::super::clock::Clock,
+    cancellation: &CancellationToken,
+    work: &crate::NativeMaterializationWork,
+) -> Result<Arc<crate::access::PathTrie>, MountSourceError> {
+    let mut view = published
+        .current()
+        .map_err(|_| MountSourceError::AccessDenied)?;
+    let (mut generation, mut revision) =
+        observe_current_policy(checkout, cancellation, work).await?;
+    let expired = view
+        .valid_until()
+        .is_some_and(|expiry| access_time(clock).map_or(true, |now| now >= expiry));
+    if !view.matches_policy_revision(generation, revision) || expired {
+        let refresh = refresh.ok_or(MountSourceError::AccessDenied)?;
+        let future = refresh.check(work).map_err(publication_error)?;
+        publication_result(future.await)?;
+        view = published
+            .current()
+            .map_err(|_| MountSourceError::AccessDenied)?;
+        (generation, revision) = observe_current_policy(checkout, cancellation, work).await?;
+    }
+    if !view.matches_policy_revision(generation, revision)
+        || view
+            .valid_until()
+            .is_some_and(|expiry| access_time(clock).map_or(true, |now| now >= expiry))
+    {
+        return Err(MountSourceError::AccessDenied);
+    }
+    Ok(view)
 }

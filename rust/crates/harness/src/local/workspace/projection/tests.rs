@@ -157,118 +157,142 @@ fn checkout_then_projection_order_cannot_deadlock() {
     assert!(diagnostic.contains("deadlock; threads ="), "{diagnostic}");
 }
 
-fn scope(slot: &StateArc<AsyncMutex<Option<u8>>>, users: &StateArc<Users>) {
-    let entered = complete(enter(slot, users, async || Ok(7))).unwrap();
-    assert!(
-        complete(lock_owned(slot.clone())).is_some(),
-        "projection retired under a running command"
-    );
-    complete(leave(slot, users, entered, async |slot, retire| {
-        if retire {
-            *slot = None;
-        }
-        Ok(())
-    }))
-    .unwrap();
+// The command hand-back protocol, through production `compare_and_swap`, over
+// a model volume whose head is one generation and one file map. Each command
+// forks the head, writes only its own view, and either hands that view back
+// or discards it. A three-way merge stands in for the filesystem join: a value
+// both sides changed differently becomes a git conflict marker.
+type Files = std::collections::BTreeMap<&'static str, String>;
+
+#[derive(Clone, Default)]
+struct Head {
+    generation: u64,
+    files: Files,
 }
 
-// Initial admission has its own exhaustive model above. Start with one live
-// scope so this model explores only competing admission versus retirement.
-fn scoped_retirement() {
-    let slot = StateArc::new(AsyncMutex::new(None));
-    let users = StateArc::new(Users::default());
-    let entered = complete(enter(&slot, &users, async || Ok(7))).unwrap();
-    let worker = {
-        let (slot, users) = (slot.clone(), users.clone());
-        thread::spawn(move || scope(&slot, &users))
-    };
-    // Finish the other command while this original claim is still live.
-    // The retirement check must observe that overlap directly, rather than
-    // depend on scheduling inside Tokio's uninstrumented lock.
-    joined(worker);
-    complete(leave(&slot, &users, entered, async |slot, retire| {
-        assert!(slot.is_some(), "projection retired under a running command");
-        if retire {
-            *slot = None;
-        }
-        Ok(())
-    }))
-    .unwrap();
-    assert!(
-        complete(lock_owned(slot)).is_none(),
-        "projection outlived its last scope"
-    );
-}
-
-#[test]
-fn the_last_execution_scope_alone_retires_the_projection() {
-    loom::model(scoped_retirement);
-}
-
-fn publication() {
-    let slot = StateArc::new(AsyncMutex::new(None));
-    let users = StateArc::new(Users::default());
-    let a = complete(enter(&slot, &users, async || Ok(0))).unwrap();
-    let b = complete(enter(&slot, &users, async || Ok(0))).unwrap();
-    let mut published = 0;
-    // B already holds its claim when A completes. A must publish even though
-    // B keeps the native namespace attached.
-    complete(leave(&slot, &users, a, async |slot, retire| {
-        published += 1;
-        if retire {
-            *slot = None;
-        }
-        Ok(())
-    }))
-    .unwrap();
-    assert_eq!(published, 1, "successful command skipped publication");
-    assert!(complete(lock_owned(slot.clone())).is_some());
-    complete(leave(&slot, &users, b, async |slot, retire| {
-        published += 1;
-        assert!(retire);
-        *slot = None;
-        Ok(())
-    }))
-    .unwrap();
-    assert_eq!(published, 2);
-}
-
-#[test]
-fn every_completed_command_publishes_before_its_acknowledgement() {
-    loom::model(publication);
-}
-
-fn competing_completions() {
-    let slot = StateArc::new(AsyncMutex::new(None));
-    let users = StateArc::new(Users::default());
-    let a = complete(enter(&slot, &users, async || Ok(7))).unwrap();
-    let b = complete(enter(&slot, &users, async || Ok(7))).unwrap();
-    let published = StateArc::new(Mutex::new(0));
-    let completion = move |slot: StateArc<AsyncMutex<Option<u8>>>,
-                           users: StateArc<Users>,
-                           entered: Entered,
-                           published: StateArc<Mutex<usize>>| {
-        let publish = async |slot: &mut Option<u8>, retire| {
-            assert!(slot.is_some(), "completion lost its unpublished projection");
-            *published.lock().unwrap() += 1;
-            if retire {
-                *slot = None;
-            }
-            Ok(())
+fn merge(base: &Files, ours: &Files, theirs: &Files) -> (Files, Vec<&'static str>) {
+    let mut merged = Files::new();
+    let mut conflicts = Vec::new();
+    let keys: std::collections::BTreeSet<_> = ours.keys().chain(theirs.keys()).copied().collect();
+    for key in keys {
+        let (base, ours, theirs) = (base.get(key), ours.get(key), theirs.get(key));
+        let value = if theirs == base || ours == theirs {
+            ours
+        } else if ours == base {
+            theirs
+        } else {
+            conflicts.push(key);
+            merged.insert(
+                key,
+                format!(
+                    "<<<<<<< ours\n{}\n=======\n{}\n>>>>>>> theirs\n",
+                    ours.map_or("", String::as_str),
+                    theirs.map_or("", String::as_str)
+                ),
+            );
+            continue;
         };
-        complete(leave(&slot, &users, entered, publish)).unwrap();
+        if let Some(value) = value {
+            merged.insert(key, value.clone());
+        }
+    }
+    (merged, conflicts)
+}
+
+// A verified command's hand-back. Returns its acknowledged generation and the
+// paths that now carry conflict markers.
+fn hand_back(volume: &Mutex<Head>, fork: &Head, view: &Files) -> (u64, Vec<&'static str>) {
+    complete(compare_and_swap(move || async move {
+        let target = volume.lock().unwrap().clone();
+        let (files, conflicts) = merge(&fork.files, &target.files, view);
+        let mut head = volume.lock().unwrap();
+        if head.generation != target.generation {
+            return Ok(None);
+        }
+        *head = Head {
+            generation: target.generation + 1,
+            files,
+        };
+        Ok(Some((head.generation, conflicts)))
+    }))
+    .unwrap()
+}
+
+fn command(
+    volume: &Mutex<Head>,
+    writes: &[(&'static str, &'static str)],
+) -> (u64, Vec<&'static str>, Files) {
+    let fork = volume.lock().unwrap().clone();
+    let mut view = fork.files.clone();
+    for (path, value) in writes {
+        view.insert(*path, (*value).to_owned());
+    }
+    let (generation, conflicts) = hand_back(volume, &fork, &view);
+    (generation, conflicts, view)
+}
+
+fn concurrent_hand_backs() {
+    let volume = StateArc::new(Mutex::new(Head::default()));
+    // A command whose caller is lost holds its own view across both other
+    // commands' whole lifetimes. Neither waits for it.
+    let lost = volume.lock().unwrap().clone();
+    let mut lost_view = lost.files.clone();
+    lost_view.insert("lost", "unverified".to_owned());
+    let other = {
+        let volume = volume.clone();
+        thread::spawn(move || command(&volume, &[("b", "b"), ("shared", "b")]))
     };
-    let worker = {
-        let (slot, users, published) = (slot.clone(), users.clone(), published.clone());
-        thread::spawn(move || completion(slot, users, b, published))
-    };
-    completion(slot.clone(), users, a, published.clone());
-    joined(worker);
-    assert_eq!(*published.lock().unwrap(), 2);
-    assert!(complete(lock_owned(slot)).is_none());
+    let a = command(&volume, &[("a", "a"), ("shared", "a")]);
+    let b = joined(other);
+    // Its discard is the drop of its own view: all or nothing, never published.
+    drop(lost_view);
+    let head = volume.lock().unwrap().clone();
+    assert_eq!(head.generation, 2, "a hand-back was lost or duplicated");
+    assert_eq!(
+        head.files.get("a").map(String::as_str),
+        Some("a"),
+        "disjoint write lost"
+    );
+    assert_eq!(
+        head.files.get("b").map(String::as_str),
+        Some("b"),
+        "disjoint write lost"
+    );
+    assert!(
+        !head.files.contains_key("lost"),
+        "unverified view was published"
+    );
+    // Exactly the later hand-back sees the overlap, and reports it with git
+    // markers holding both sides; neither side silently overwrites the other.
+    let (first, second) = if a.0 < b.0 { (&a, &b) } else { (&b, &a) };
+    assert!(first.1.is_empty());
+    assert_eq!(second.1, ["shared"]);
+    let shared = &head.files["shared"];
+    assert!(
+        shared.starts_with(
+            "<<<<<<< ours
+"
+        ) && shared.contains(
+            "
+a
+"
+        ) && shared.contains(
+            "
+b
+"
+        )
+    );
+    // Every acknowledged hand-back's own writes remain in the final head.
+    for (_, _, view) in [&a, &b] {
+        for (path, value) in view {
+            if *path != "shared" {
+                assert_eq!(head.files.get(path), Some(value), "acknowledged write lost");
+            }
+        }
+    }
 }
 
 #[test]
-fn every_completing_worker_retains_its_projection_until_publication() {
-    loom::model(competing_completions);
+fn hand_backs_never_wait_and_never_overwrite() {
+    loom::model(concurrent_hand_backs);
 }

@@ -44,6 +44,37 @@ pub(super) fn resident_read(
 }
 
 impl<S: AsyncObjectStore> StagedObjects<S> {
+    pub(super) async fn read_representation<R: ReadRepresentation>(
+        &self,
+        object_id: ObjectId,
+        maximum: u64,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<ObjectRead, ObjectStoreError> {
+        work.accounting()
+            .check()
+            .map_err(crate::async_storage::object_error)?;
+        let found = self.index().lookup_representation(object_id, R::STORED);
+        let request = ObjectReadRequest {
+            object_id,
+            maximum_bytes: maximum,
+        };
+        match found {
+            Lookup::Resident { bytes, length } => {
+                check_length(length, maximum)?;
+                resident_read(bytes, if R::STORED { u64::MAX } else { maximum }, work)
+            }
+            Lookup::Absent => {
+                in_frame(work.original, || R::read(&self.inner, &request, work)).await
+            }
+            Lookup::Spilled { .. } => {
+                in_frame(work.original, || {
+                    self.read_private::<R>(object_id, maximum, work)
+                })
+                .await
+            }
+        }
+    }
+
     fn read_plan<R: ReadRepresentation>(
         &self,
         requests: &[ObjectReadRequest],
@@ -55,11 +86,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         }
         let mut plan: Option<ReadPlan> = None;
         for (position, request) in requests.iter().enumerate() {
-            let found = if R::reads_plaintext(request.object_id) {
-                index.lookup(request.object_id)
-            } else {
-                Lookup::Absent
-            };
+            let found = index.lookup_representation(request.object_id, R::STORED);
             if plan.is_none() {
                 if matches!(found, Lookup::Absent) {
                     continue;
@@ -73,8 +100,17 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 });
             }
             let entry = match found {
-                Lookup::Resident(bytes) => {
-                    PlannedRead::Ready(resident_read(bytes, request.maximum_bytes, work)?)
+                Lookup::Resident { bytes, length } => {
+                    check_length(length, request.maximum_bytes)?;
+                    PlannedRead::Ready(resident_read(
+                        bytes,
+                        if R::STORED {
+                            u64::MAX
+                        } else {
+                            request.maximum_bytes
+                        },
+                        work,
+                    )?)
                 }
                 // The offset is deliberately discarded. read_private acquires
                 // the existing spill lease before looking it up again.
@@ -153,7 +189,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 PlannedRead::Ready(read) => read,
                 PlannedRead::Private => {
                     in_frame(scope.original, || {
-                        self.read_private(request.object_id, request.maximum_bytes, &mut scope)
+                        self.read_private::<R>(request.object_id, request.maximum_bytes, &mut scope)
                     })
                     .await?
                 }
@@ -187,7 +223,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         ))
     }
 
-    pub(super) async fn read_private(
+    pub(super) async fn read_private<R: ReadRepresentation>(
         &self,
         object_id: ObjectId,
         maximum_bytes: u64,
@@ -199,20 +235,48 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             .wait_for(self.spill_io.read())
             .await
             .map_err(crate::async_storage::object_error)?;
-        let (offset, length) = match self.lookup(object_id) {
-            Lookup::Spilled { offset, length } => (offset, length),
-            Lookup::Resident(bytes) => return resident_read(bytes, maximum_bytes, work),
+        let found = self.index().lookup_representation(object_id, R::STORED);
+        let (offset, length, stored_length) = match found {
+            Lookup::Spilled {
+                offset,
+                length,
+                stored_length,
+            } => (offset, length, stored_length),
+            Lookup::Resident { bytes, length } => {
+                check_length(length, maximum_bytes)?;
+                return resident_read(
+                    bytes,
+                    if R::STORED { u64::MAX } else { maximum_bytes },
+                    work,
+                );
+            }
             Lookup::Absent => {
                 drop(spill_file);
-                return self.inner.read(object_id, maximum_bytes, work).await;
+                return R::read(
+                    &self.inner,
+                    &ObjectReadRequest {
+                        object_id,
+                        maximum_bytes,
+                    },
+                    work,
+                )
+                .await;
             }
         };
         check_length(length, maximum_bytes)?;
-        let object = if let Some(native) = work.original {
+        let physical = ObjectId {
+            digest: object_id
+                .storage
+                .map_or(object_id.digest, |storage| storage.locator),
+            storage: None,
+            ..object_id
+        };
+        let stored = if let Some(native) = work.original {
             read_spilled_native(
                 spill_file.as_ref().ok_or(ObjectStoreError::Corrupt)?,
-                object_id,
+                if R::STORED { physical } else { object_id },
                 offset,
+                stored_length,
                 length,
                 native,
             )
@@ -221,22 +285,33 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             work.accounting()
                 .charge(WorkCounters {
                     backend_read_operations: 1,
-                    object_bytes_read: length,
-                    bytes_hashed: length,
+                    object_bytes_read: stored_length,
                     ..WorkCounters::UNCHARGED
                 })
                 .map_err(crate::async_storage::object_error)?;
             read_spilled(
                 spill_file.as_ref().ok_or(ObjectStoreError::Corrupt)?,
-                &[(object_id, offset, length)],
+                &[(object_id, offset, stored_length)],
             )
             .await?
             .pop()
             .ok_or(ObjectStoreError::Corrupt)?
         };
+        if R::STORED {
+            let object =
+                crate::async_storage::restore_plain(physical, stored, stored_length, work)?;
+            return Ok(ObjectRead {
+                bytes: object.bytes().clone(),
+                retention: ObjectReadRetention::Shared,
+            });
+        }
+        let object = self.inner.restore_hashed(object_id, stored, length, work)?;
         let bytes = object.bytes().clone();
         let mut index = self.index_mut();
-        if index.resident_bytes.saturating_add(length) <= MAXIMUM_RESIDENT_BYTES
+        if index
+            .resident_bytes
+            .saturating_add(super::index::resident_length(&object))
+            <= MAXIMUM_RESIDENT_BYTES
             && matches!(index.objects.get(&object_id), Some(&Staged::Spilled { offset: current, .. }) if current == offset)
         {
             index.insert_resident(object)?;

@@ -14,6 +14,8 @@ struct State {
     hierarchy_version: CommitId,
     retained_allocation: Allocation,
     retained_growth: Arc<RetainedPool>,
+    /// Lease subtrees outside the canonical decision order.
+    ephemeral: Ephemeral,
     #[cfg(not(target_arch = "wasm32"))]
     // Lock order: provider state -> reserved counters; counter release takes no other lock.
     reserved: Arc<crate::query_sync::SyncMutex<(usize, usize)>>,

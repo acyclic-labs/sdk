@@ -7,6 +7,104 @@ use std::sync::atomic::Ordering;
 type MemoryResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 #[tokio::test]
+async fn native_append_replay_cannot_spend_unreserved_write_credit_after_lease_release()
+-> MemoryResult<()> {
+    let provider = MemoryStream::default();
+    let root = path("append-replay-lease")?;
+    let lease = provider.lease_ephemeral(root.clone()).await?;
+    let request = AppendRequest {
+        path: root.clone(),
+        records: vec![OwnedBytes::from_static(b"private").into()],
+        if_tail: None,
+        idempotency_key: IdempotencyKey::unique(),
+    };
+    let original = provider.append(request.clone()).await?;
+    let blocked = provider.publication.lock().await;
+    let mut settling = Box::pin(lease.settle());
+    assert!(futures::poll!(settling.as_mut()).is_pending());
+    let meter = Arc::new(Meter::default());
+    let mut replay =
+        Box::pin(provider.native_write(crate::WriteRequest::Append(request), meter.original()));
+    // Fund the native operation's frames before refusing further allocations.
+    // The cached scalar receipt needs no new allocation or write reservation.
+    meter
+        .limit
+        .store(meter.allocations.load(Ordering::SeqCst), Ordering::SeqCst);
+    // If execution waits for publication, release owns the earlier FIFO turn.
+    // A retained result can instead complete immediately without write credit.
+    let first = futures::poll!(replay.as_mut());
+    drop(blocked);
+    settling.await?;
+    let output = match first {
+        std::task::Poll::Ready(result) => result??,
+        std::task::Poll::Pending => replay.as_mut().await??,
+    };
+    assert_eq!(output.value(), &crate::WriteOutcome::Append(original));
+    assert_eq!(provider.tail(root).await, Err(StreamError::NotFound));
+    assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);
+    assert_eq!(meter.write_bytes.load(Ordering::SeqCst), 0);
+    drop(output);
+    drop(replay);
+    drop(provider);
+    meter.assert_refunded();
+    assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+async fn cancelled_lease_settlement(owned: bool) -> MemoryResult<()> {
+    let provider = MemoryStream::default();
+    let root = path("cancelled-lease")?;
+    let mut lease = provider.lease_ephemeral(root.clone()).await?;
+    provider
+        .append(AppendRequest {
+            path: root.clone(),
+            records: vec![OwnedBytes::from_static(b"private").into()],
+            if_tail: Some(0),
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
+    let mut follow = crate::records_only(
+        provider
+            .follow(crate::FollowRequest::new(root.clone(), 1))
+            .await?,
+    );
+    let owners = Arc::strong_count(&provider.state);
+    let blocked = provider.publication.lock().await;
+    let mut waiting: crate::BoxProviderFuture<'static, Result<(), StreamError>> = if owned {
+        Box::pin(lease.settle())
+    } else {
+        // The former settlement moved release into the cancellable waiter.
+        crate::take_release(&mut lease.release).ok_or("missing lease release")?
+    };
+    assert!(futures::poll!(waiting.as_mut()).is_pending());
+    drop(waiting);
+    // This proves the failed control before waiting for a follow that would
+    // otherwise never wake. The real provider remains blocked on its lock.
+    assert!(
+        Arc::strong_count(&provider.state) >= owners,
+        "cancelled settlement lost its cleanup owner"
+    );
+    drop(blocked);
+    assert!(matches!(
+        follow.next().await,
+        Some(Err(StreamError::NotFound))
+    ));
+    assert_eq!(provider.tail(root).await, Err(StreamError::NotFound));
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_lease_settlement_keeps_cleanup_owned() -> MemoryResult<()> {
+    cancelled_lease_settlement(true).await
+}
+
+#[tokio::test]
+#[should_panic(expected = "cancelled settlement lost its cleanup owner")]
+async fn cancelled_lease_settlement_negative_control_detects_a_lost_release() {
+    cancelled_lease_settlement(false).await.unwrap();
+}
+
+#[tokio::test]
 async fn native_receipt_replay_records_actual_metadata_copies_and_original_refusals()
 -> MemoryResult<()> {
     let provider = MemoryStream::default();
