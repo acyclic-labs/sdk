@@ -222,8 +222,7 @@ pub(crate) async fn spawn_cut(backend: &dyn Backend) -> Result {
     Ok(())
 }
 
-async fn program(backend: &dyn Backend, provider: Arc<Observed>) -> Result<AgentState> {
-    let host = host(backend, provider)?;
+async fn program(host: AgentHost<Observed>) -> Result<AgentState> {
     let root = host.create(&intent("create")?, adopted()).await?;
     host.send(&root, &sender(), &request("once")?).await?;
     drain(&host).await?;
@@ -233,7 +232,7 @@ async fn program(backend: &dyn Backend, provider: Arc<Observed>) -> Result<Agent
 pub(crate) async fn restart(backend: &dyn Backend) -> Result {
     let storage = backend.fresh().await?;
     let provider = Arc::new(Observed::new(storage.open().await?));
-    let expected = program(backend, provider.clone()).await?;
+    let expected = program(host(backend, provider.clone())?).await?;
     let steps = provider.calls();
     drop(provider);
     for at in 0..steps {
@@ -241,12 +240,12 @@ pub(crate) async fn restart(backend: &dyn Backend) -> Result {
             let storage = backend.fresh().await?;
             let provider = Arc::new(Observed::new(storage.open().await?));
             provider.crash_at(at, fault);
-            if program(backend, provider.clone()).await.is_ok() {
+            if program(host(backend, provider.clone())?).await.is_ok() {
                 return Err(format!("crash boundary {at}/{fault:?} was not exercised").into());
             }
             drop(provider);
             let reopened = Arc::new(Observed::new(storage.open().await?));
-            let actual = program(backend, reopened.clone()).await?;
+            let actual = program(host(backend, reopened.clone())?).await?;
             if actual != expected {
                 return Err(format!("reopen diverged at {at}/{fault:?}").into());
             }

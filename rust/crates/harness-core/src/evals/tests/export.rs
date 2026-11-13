@@ -1,7 +1,8 @@
 use super::*;
+use acyclic_fs::model::{CheckoutMode, GenerationSelector};
 use acyclic_fs::{
-    CheckoutMode, ForkOptions, GenerationSelector, LazyWorkspace, Lifecycle,
-    MemoryLazyWorkspaceStore, PublicationPermit, VolumeConfig, VolumeInitialization,
+    ForkOptions, LazyWorkspace, Lifecycle, MemoryLazyWorkspaceStore, PublicationPermit,
+    VolumeConfig, VolumeInitialization,
 };
 
 type Cases = Computed<View<Snapshot>, StreamProvider<MemoryStream>>;
@@ -93,7 +94,7 @@ pub(super) async fn selected_case_export(
         .fork_snapshot(
             "case-witness",
             cut.clone(),
-            IdempotencyKey::unique(),
+            acyclic_fs::IdempotencyKey::new(),
             PublicationPermit::Unrestricted,
             &mut accounting(work),
         )
@@ -110,7 +111,7 @@ pub(super) async fn selected_case_export(
         .workspace()
         .fork::<_, _, acyclic_fs::WorkspaceError>(
             "selected-case",
-            ForkOptions::from_generation(exact.clone(), IdempotencyKey::unique())
+            ForkOptions::from_generation(exact.clone(), acyclic_fs::IdempotencyKey::new())
                 .inherit_paths(vec![selected.clone()]),
             PublicationPermit::Unrestricted,
             WorkBudget::UNBOUNDED,

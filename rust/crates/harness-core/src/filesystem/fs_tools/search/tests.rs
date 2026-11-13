@@ -304,7 +304,7 @@ async fn native_mounted_grep_pins_generation_and_reauthorizes_saved_files() -> R
             "text/plain",
             "decision",
             None,
-            &IdempotencyKey::unique(),
+            &crate::IdempotencyKey::new("original-file")?,
             None,
             Default::default(),
         )
@@ -389,7 +389,7 @@ async fn native_mounted_grep_pins_generation_and_reauthorizes_saved_files() -> R
                         "text/plain",
                         "later",
                         None,
-                        &IdempotencyKey::unique(),
+                        &crate::IdempotencyKey::new(format!("replace-{path}"))?,
                         None,
                         Default::default(),
                     )

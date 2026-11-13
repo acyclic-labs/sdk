@@ -3,8 +3,9 @@
 use super::*;
 use crate::{
     agent::{AgentId, Control, InboxRecord, Phase},
-    conversation::{VolumeClass, VolumeOwner, VolumeRef},
+    conversation::{ContentResidencyVerifier, VolumeClass, VolumeOwner, VolumeRef},
     filesystem::{PRIVATE_VOLUME, TurnAuthority},
+    resources::GenerationRef,
 };
 use acyclic_stream::MemoryStream;
 
@@ -115,7 +116,7 @@ async fn admitted_readers_bind_evaluation_directories_and_reopen_original_privat
             volume,
             "",
             "evals",
-            super::super::DirectoryOptions {
+            crate::filesystem::DirectoryOptions {
                 generation: None,
                 after: None,
                 maximum_entries: 1,
