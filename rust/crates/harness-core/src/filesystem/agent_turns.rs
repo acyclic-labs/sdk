@@ -1102,17 +1102,6 @@ where
             verifier,
             private,
         } = crate::core::until_turn_stopped(stop.clone(), admitted.authority(external)).await?;
-        // The turn's reader and writer take no content bound of their own:
-        // each caller states its bound, and harness-owned records (manifests,
-        // settled outputs, policies) are read at their pinned length, so a
-        // configured file bound limits admitted content, never the turn.
-        let mut reader = FilesystemContentVerifier::new(
-            Arc::clone(&self.host),
-            &verifier,
-            &scope,
-            crate::conversation::MAX_EXACT_JS_INTEGER,
-            None,
-        )?;
         // Open only the committed input envelopes under their original grant.
         // Their validated ordered contents become the selection before deriving
         // the exact-file closure, including files on an ancestor's private volume.
@@ -1144,15 +1133,21 @@ where
                     issuer.issue(None, "agent", &capabilities, scope.agent()),
                 )
                 .await?;
-                reader = FilesystemContentVerifier::new(
-                    Arc::clone(&self.host),
-                    &verifier,
-                    &scope,
-                    crate::conversation::MAX_EXACT_JS_INTEGER,
-                    None,
-                )?;
             }
         }
+        // Authenticate only the final input closure. Envelope expansion above
+        // uses the original host-journal reader, not this workload reader.
+        // The turn's reader and writer take no content bound of their own:
+        // each caller states its bound, and harness-owned records (manifests,
+        // settled outputs, policies) are read at their pinned length, so a
+        // configured file bound limits admitted content, never the turn.
+        let reader = FilesystemContentVerifier::new(
+            Arc::clone(&self.host),
+            &verifier,
+            &scope,
+            crate::conversation::MAX_EXACT_JS_INTEGER,
+            None,
+        )?;
         let writer = FilesystemContentPublisher::new(
             Arc::clone(&self.host),
             private.volume()?,

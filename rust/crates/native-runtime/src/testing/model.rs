@@ -82,38 +82,40 @@ fn native_progress_reporting_races_physical_completion_and_unwind() {
 
 #[test]
 fn accepted_descendants_cannot_escape_cancel_or_lose_the_terminal_wake() {
-    loom::model(|| {
-        let (schedule, _) = Schedule::new();
-        let root = context(&schedule).accept("root");
-        let owned = root.0.clone();
-        let finished = Arc::new(AtomicBool::new(false));
-        let done = finished.clone();
-        let worker = thread::spawn(move || {
-            let child = owned.accept("child");
-            drop(root);
-            // This independent fact precedes the final physical completion.
-            done.store(true, Ordering::SeqCst);
-            drop(child);
-        });
-        schedule.cancel();
-        let flag = Arc::new(WakeFlag(AtomicBool::new(false)));
-        let waker = Waker::from(flag.clone());
-        let mut cx = PollContext::from_waker(&waker);
-        let mut drained = Box::pin(schedule.drained());
-        let pending = match drained.as_mut().poll(&mut cx) {
-            Poll::Pending => true,
-            Poll::Ready(()) => {
-                assert!(
-                    finished.load(Ordering::SeqCst),
-                    "drain escaped accepted work"
-                );
-                false
+    for native_only in [false, true] {
+        loom::model(move || {
+            let (schedule, _) = Schedule::new();
+            let root = context(&schedule).accept(if native_only { "native" } else { "root" });
+            let owned = root.0.clone();
+            let finished = Arc::new(AtomicBool::new(false));
+            let done = finished.clone();
+            let worker = thread::spawn(move || {
+                let child = owned.accept(if native_only { "blocking" } else { "child" });
+                drop(root);
+                // This independent fact precedes the final physical completion.
+                done.store(true, Ordering::SeqCst);
+                drop(child);
+            });
+            schedule.cancel();
+            let flag = Arc::new(WakeFlag(AtomicBool::new(false)));
+            let waker = Waker::from(flag.clone());
+            let mut cx = PollContext::from_waker(&waker);
+            let mut drained = Box::pin(schedule.wait_drained(native_only));
+            let pending = match drained.as_mut().poll(&mut cx) {
+                Poll::Pending => true,
+                Poll::Ready(()) => {
+                    assert!(
+                        finished.load(Ordering::SeqCst),
+                        "drain escaped accepted work"
+                    );
+                    false
+                }
+            };
+            worker.join().unwrap();
+            if pending {
+                assert!(flag.0.load(Ordering::SeqCst), "terminal wake lost");
+                assert!(drained.as_mut().poll(&mut cx).is_ready());
             }
-        };
-        worker.join().unwrap();
-        if pending {
-            assert!(flag.0.load(Ordering::SeqCst), "terminal wake lost");
-            assert!(drained.as_mut().poll(&mut cx).is_ready());
-        }
-    });
+        });
+    }
 }
