@@ -891,6 +891,16 @@ mod tests {
         continuing.await.map_err(failed)?;
         // While A's continuation is held, B's completed actor transition is
         // the committed state. In-flight driver state is not observable here.
+        let committed = bound
+            .agents()
+            .state(conversation.agent())
+            .await
+            .map_err(failed)?;
+        assert_eq!(
+            committed.conversation_tail, 2,
+            "third dispatch did not follow A and B's committed turns: phase={:?}, turn={:?}, admission={:?}",
+            committed.phase, committed.turn, committed.run_admission
+        );
         assert!(
             bound
                 .agents()
@@ -901,16 +911,36 @@ mod tests {
                 .is_none(),
             "independent input inherited another run's admission",
         );
+        // Observe the original producer directly: the run already owns this
+        // client's conversation follow, so a second view must not take its
+        // delivery cursor while the first view's future is suspended.
+        use crate::agent::AgentRecord as _;
+        use acyclic_stream::StreamProvider as _;
+        use futures::TryStreamExt as _;
+        let mut completed = acyclic_stream::records_only(
+            bound
+                .agents()
+                .provider()
+                .follow(acyclic_stream::FollowRequest::new(
+                    conversation.agent().conversation().map_err(failed)?,
+                    committed.conversation_tail,
+                ))
+                .await
+                .map_err(failed)?,
+        );
         finish.send(()).unwrap();
-        // A local drain need not join a turn owned by the serving dispatcher.
-        // Await A's actual committed conversation record instead.
-        let entries = conversation.entries(0, 3).await?;
+        let record = completed
+            .try_next()
+            .await
+            .map_err(failed)?
+            .ok_or_else(|| failed("continuation producer ended"))?;
+        let entry = crate::agent::ConversationEntry::decode(&record.value).map_err(failed)?;
         assert!(
-            matches!(&entries[2].input,
+            matches!(&entry.input,
             crate::agent::TurnInput::Message { from: crate::agent::Sender::Agent { path }, re: Some(owner), .. }
             if path == conversation.agent() && owner.as_str() == operation.to_string()),
             "third dispatch was not A's original continuation: {:?}",
-            entries[2].input
+            entry.input
         );
         let outcome = (&mut run).await;
         assert!(matches!(outcome?, RunOutcome::Goal { goal } if goal.status == GoalStatus::Done));
