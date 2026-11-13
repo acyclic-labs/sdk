@@ -587,7 +587,7 @@ async fn call_output_uses_the_journal_without_granting_tools_its_writer() -> Tes
     let second = log.publish_chunk("stderr/1", b"next").await?;
     assert_eq!(log.publish_chunk("stderr/0", b"observed").await?, chunk);
     let third = log.publish_chunk("stderr/2", b"last").await?;
-    let mut recovered = crate::runtime::ToolOutputLog::new(activity_context);
+    let mut recovered = crate::runtime::ToolOutputLog::new(activity_context.clone());
     assert_eq!(
         recovered.publish_chunk("stderr/0", b"observed").await?,
         chunk
@@ -603,6 +603,25 @@ async fn call_output_uses_the_journal_without_granting_tools_its_writer() -> Tes
         "chunk replay changed the activity cursor"
     );
     assert!(log.publish_chunk("stderr/0", b"replacement").await.is_err());
+    log.finish().await?;
+    let terminal = activity_context
+        .read_output_file_once("completed.json")
+        .await?
+        .ok_or("physical completion missing")?;
+    let completed: crate::runtime::ToolOutputCompletion = serde_json::from_slice(&terminal.1)?;
+    assert_eq!(
+        (completed.turn, completed.call),
+        (turn, context.operation_id())
+    );
+    recovered.finish().await?;
+    assert_eq!(
+        context
+            .read_output_file_once("completed.json")
+            .await?
+            .ok_or("completion replay missing")?,
+        terminal,
+        "completion replay changed its original publication",
+    );
     assert!(
         task.stage_file(
             Some(chunk.volume()),
