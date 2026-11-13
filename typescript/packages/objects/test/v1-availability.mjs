@@ -10,14 +10,14 @@ const failed = code => error => error.code === code;
 // The response body and all frames come from the actual Rust account, not a
 // reimplementation of its event source, protobuf encoder or cursor rules.
 function endpoint(memory, hooks = {}, credentials = { token: "fixture" }) {
-  return new HttpObjectsV1({ endpoint: "http://localhost", timeoutMs: hooks.timeoutMs, ...credentials, fetch: async (_url, init) => {
+  return new HttpObjectsV1({ endpoint: "http://localhost", timeoutMs: hooks.timeoutMs, maximumResponseBytes: hooks.maximumResponseBytes, ...credentials, fetch: async (_url, init) => {
     hooks.opened?.resolve();
     if (hooks.open) await hooks.open;
     const { decode_objects_v1_json } = await import("../generated/wasm/acyclic_objects_wasm.js");
     const input = decode_objects_v1_json("AvailabilityRequest", init.body, 1 << 20);
     const source = memory.open("blobs/availability", input);
     let pending = false, closed = false;
-    const close = () => { if (!closed) { closed = true; source.close(); if (!pending) source.free(); } };
+    const close = () => { if (!closed) { closed = true; source.close(); if (!pending) source.free(); hooks.closed?.resolve(); } };
     init.signal.addEventListener("abort", close, { once: true });
     return new Response(new ReadableStream({
       async pull(controller) {
@@ -116,6 +116,62 @@ test("Objects availability owns opening, catch-up, cursor validation and cancell
       const changed = await selected.changed();
       assert.deepEqual(changed.incarnation, initial.incarnation);
       assert.ok(changed.sequence > initial.sequence);
+    } finally { selected.close(); original.free(); }
+  });
+  await t.test("HTTP enforces caller capacity before accepting an availability cursor", async () => {
+    for (const fragment of [false, true]) {
+      const original = new ObjectsV1Memory();
+      const closed = Promise.withResolvers();
+      try {
+        await assert.rejects(
+          endpoint(original, { fragment, maximumResponseBytes: 1, closed }).availability(digest),
+          failed(ErrorCode.QUOTA_EXCEEDED),
+        );
+        await closed.promise;
+      } finally { original.free(); }
+    }
+  });
+  await t.test("availability capacity bounds each frame rather than an HTTP chunk", async () => {
+    const original = new ObjectsV1Memory();
+    const selected = await endpoint(original, {
+      maximumResponseBytes: 32,
+      frame(body) {
+        assert.ok(body.byteLength <= 32);
+        const chunk = new Uint8Array(body.byteLength * 3);
+        for (let offset = 0; offset < chunk.byteLength; offset += body.byteLength) chunk.set(body, offset);
+        assert.ok(chunk.byteLength > 32);
+        return chunk;
+      },
+    }).availability(digest);
+    try { assert.equal(selected.cursor().incarnation.byteLength, 16); }
+    finally { selected.close(); original.free(); }
+  });
+  await t.test("a later oversized frame cannot advance the accepted cursor", async () => {
+    const original = new ObjectsV1Memory();
+    const body = new Uint8Array([61, 67, 71]);
+    const digest = await blobDigest(body);
+    let initial = true;
+    const selected = await endpoint(original, {
+      fragment: true,
+      maximumResponseBytes: 32,
+      frame(frame) {
+        if (initial) { initial = false; return frame; }
+        // Append a valid unknown field to the real producer's protobuf. Its
+        // semantics remain valid; admission must still count the wire payload.
+        assert.equal(frame[0], frame.byteLength - 1);
+        const payload = new Uint8Array(frame.byteLength - 1 + 67);
+        payload.set(frame.subarray(1));
+        payload.set([0x9a, 0x06, 64], frame.byteLength - 1);
+        assert.ok(payload.byteLength < 128);
+        return new Uint8Array([payload.byteLength, ...payload]);
+      },
+    }).availability(digest);
+    try {
+      const accepted = selected.cursor();
+      const { PutBlobRequestSchema } = await import("@acyclic-labs/objects/proto");
+      await original.invoke("blobs/put", toBinary(PutBlobRequestSchema, create(PutBlobRequestSchema, { digest, body })));
+      await assert.rejects(selected.changed(), failed(ErrorCode.QUOTA_EXCEEDED));
+      assert.deepEqual(selected.cursor(), accepted);
     } finally { selected.close(); original.free(); }
   });
   await t.test("HTTP opening deadline covers an incomplete initial cursor", async t => {
