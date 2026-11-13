@@ -199,23 +199,55 @@ where
             ExecutionEvent::ModelStarted { .. } | ExecutionEvent::ToolStarted { .. }
         ) && let Some(path) = &self.actor_admission
         {
-            // This one point observation buys a strict pause boundary: accepted
+            // This one point observation buys a strict pause/archive boundary: accepted
             // calls may finish, but no new model/tool dispatch can race the
             // actor's admission closure. Keep the original native read owner.
+            let closed = self
+                .agent_events
+                .as_ref()
+                .map(|(agent, ..)| agent.closed())
+                .transpose()
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            let mut paths = Vec::new();
+            crate::executor::stock_vec_push(&mut paths, path.clone(), io)?;
+            if let Some(closed) = &closed {
+                crate::executor::stock_vec_push(&mut paths, closed.clone(), io)?;
+            }
+            let _paths_hold = io
+                .map(|io| {
+                    io.guard_owned((paths.capacity() * std::mem::size_of::<StreamPath>()) as u64)
+                })
+                .transpose()?;
             let observed = crate::store::operations::heads_with_work(
                 &self.stream,
                 acyclic_stream::HeadsRequest {
-                    paths: [path.clone()].into_iter().collect(),
+                    paths: acyclic_stream::HeadSet::from_vec(paths),
                     retained: Default::default(),
                     durable_through: None,
                     projection: acyclic_stream::HeadProjection::History,
                     children: None,
-                    limit: 1,
+                    limit: 1 + u32::from(closed.is_some()),
                     at_least: Default::default(),
                 },
                 &mut work,
             )
             .await?;
+            if let Some(closed) = &closed
+                && let Some(record) = observed
+                    .heads
+                    .get(1)
+                    .and_then(Option::as_ref)
+                    .and_then(|head| head.last.as_ref())
+            {
+                return Err(Error::ExecutionControlled(crate::supervision::Control {
+                    source: crate::supervision::Position {
+                        stream: closed.clone(),
+                        sequence: record.sequence,
+                    },
+                    action: crate::supervision::Action::Stop,
+                    signal: None,
+                }));
+            }
             let head = observed
                 .heads
                 .first()
@@ -236,6 +268,16 @@ where
             }
             let effect = derived
                 .get_or_insert_with(|| acyclic_stream::CommitEffect::hard(Vec::new(), Vec::new()));
+            if let Some(path) = closed {
+                // The archive marker and each newly admitted child's marker
+                // publish with the stop's subtree commit. An unconsumed inbox
+                // control must not admit a new paid dispatch in the meantime.
+                crate::executor::stock_vec_push(
+                    &mut effect.conditions,
+                    CommitCondition::Absent { path },
+                    io,
+                )?;
+            }
             crate::executor::stock_vec_push(
                 &mut effect.conditions,
                 CommitCondition::Head {
