@@ -1212,7 +1212,7 @@ pub(super) async fn jsonl(
         };
         match event {
             None | Some(Event::Delta) => {}
-            Some(Event::Turn(entry)) => {
+            Some(Event::Turn { entry, .. }) => {
                 let inbox = entry
                     .goal
                     .and_then(|run| outstanding.goals.get(&run).copied())
