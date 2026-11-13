@@ -393,7 +393,7 @@ pub(super) fn publish_expired_reply_for_test(
     if old_abort {
         // Exact former policy: a confirmed device rejection is flattened to
         // an I/O error, aborts the connection, and escapes to worker teardown.
-        pending.unique = None;
+        pending.unique.set(None);
         io.publish(&slices).inspect_err(|_| pending.abort())
     } else {
         pending.publish(&slices).map(|_| ())
