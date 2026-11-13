@@ -90,6 +90,13 @@ tool receipt records success, interruption records cancellation, and pending,
 controlled or receipt-less results remain explicitly unsettled. An error without
 retained cause evidence leaves its original start unfinished. Physical subprocess
 and filesystem hops still require their own observations beneath this boundary.
+Fresh model dispatch and provider reconciliation also use the original journal
+admission and owned recording. `harness.provider_call` encloses the original claim,
+provider generation or continuation and event settlement, propagating its parent
+to journal writes. Its start is admitted before a fresh claim; no trace wait is
+inserted between an accepted claim and provider delivery. Completion is submitted
+without awaiting diagnostics, and only an authenticated model completion records
+success. Forced model interventions do not fabricate provider-call spans.
 Harness Stream failures use one source-owning `StreamFailure` on ordinary,
 native and WebAssembly paths. Request-boundary classification remains explicit;
 native provenance and admitted allocation custody remain attached. Journal

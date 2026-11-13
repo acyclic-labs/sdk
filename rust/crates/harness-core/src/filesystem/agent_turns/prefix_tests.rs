@@ -311,3 +311,61 @@ async fn opening_followup_reuses_own_request_and_inherited_child_reads_no_execut
     assert!(parent(&*open.journal, &continued).await?.is_null());
     Ok(())
 }
+
+#[tokio::test]
+async fn provider_attempt_uses_original_agent_trace_and_parented_journal() -> Result<()> {
+    use acyclic_stream::trace::{Mechanism, Observation, Outcome, Registry, TraceQuery};
+    let (host, agent) = fixture().await?;
+    let registry = Registry::new(host.stream.clone());
+    let source = crate::client_files::trace::source(&agent.path)?;
+    let _interest = registry.subscribe(
+        acyclic_stream::StreamPath::new(agent.path.as_str())?,
+        source.clone(),
+    )?;
+    let host = host.with_trace_interest(registry);
+    // Run the original stock executor, private filesystem publisher and durable
+    // journal; only the external model responses are deterministic fixture data.
+    seed(&host, &agent).await?;
+    let traces = acyclic_stream::Stream::new(host.stream.clone(), source.as_str())?;
+    let mut query = TraceQuery::new(
+        traces.follow(0, Default::default()).await?,
+        Default::default(),
+    );
+    let mut provider = None;
+    let mut children = 0;
+    loop {
+        match query.next().await? {
+            Some(Observation::Started { id, .. }) => {
+                let (_, start) = query
+                    .active()
+                    .find(|(candidate, _)| **candidate == id)
+                    .ok_or_else(|| Error::Invalid("admitted trace start missing".into()))?;
+                if start.name == "harness.provider_call" {
+                    assert_eq!(start.mechanism, Mechanism::ProviderCall);
+                    assert_eq!(
+                        start.guarantee.as_deref(),
+                        Some("journaled_model_attempt_settlement")
+                    );
+                    provider = Some(id);
+                } else if provider.is_some() && start.parent == provider {
+                    children += 1;
+                }
+            }
+            Some(Observation::Completed { id, result, .. }) if Some(id) == provider => {
+                assert_eq!(result, Outcome::Succeeded);
+                assert!(
+                    children > 0,
+                    "provider work lost its original journal parent"
+                );
+                break;
+            }
+            None => {
+                return Err(Error::Invalid(
+                    "provider trace ended before settlement".into(),
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
