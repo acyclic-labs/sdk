@@ -116,12 +116,12 @@ impl ToolRegistry {
 
     /// Selects one revision for future model requests.
     pub fn select_model_version(&mut self, name: &str, revision: &str) -> Result<()> {
-        if !self
-            .data
-            .versions
-            .contains_key(&(name.to_owned(), revision.to_owned()))
-        {
+        if self.get_shared(name, Some(revision), None)?.is_none() {
             return Err(Error::NotFound(format!("tool {name}@{revision}")));
+        }
+        if matches!(self.data.selected.get(name), Some(ModelSelection::Revision(selected)) if selected == revision)
+        {
+            return Ok(());
         }
         Arc::make_mut(&mut self.data).selected.insert(
             name.to_owned(),
