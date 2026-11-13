@@ -279,13 +279,10 @@ pub async fn storage<P: StreamProvider + ?Sized>(
         let destination = Placement::read(provider, &paths, &record.to)
             .await?
             .ok_or(crate::route::Error::InvalidRecord)?;
-        match provider
-            .commit(record.relay_request(&paths, &destination.node)?)
-            .await?
-        {
-            CommitOutcome::Committed(_) => Err(StreamError::Unavailable.into()),
-            CommitOutcome::Conflict(_) => Err(crate::route::Error::InvalidRecord),
-        }
+        record
+            .publish_relay(provider, &paths, &destination.node, Vec::new())
+            .await?;
+        Err(StreamError::Unavailable.into())
     })
     .await;
     require(
@@ -308,13 +305,10 @@ pub async fn storage<P: StreamProvider + ?Sized>(
         let destination = Placement::read(provider, &paths, &record.to)
             .await?
             .ok_or(crate::route::Error::InvalidRecord)?;
-        match provider
-            .commit(record.relay_request(&paths, &destination.node)?)
-            .await?
-        {
-            CommitOutcome::Committed(_) => Ok(()),
-            CommitOutcome::Conflict(_) => Err(crate::route::Error::InvalidRecord),
-        }
+        record
+            .publish_relay(provider, &paths, &destination.node, Vec::new())
+            .await?;
+        Ok(())
     });
     until_ack(
         provider,
@@ -362,6 +356,46 @@ pub async fn storage<P: StreamProvider + ?Sized>(
     require(
         provider.commit(relay).await.map_err(Error::from)? == relayed,
         "relay retry changed its receipt",
+    )?;
+    let original = envelope
+        .publish_relay(provider, &paths, &placement.node, Vec::new())
+        .await
+        .map_err(violation)?;
+    let debit = StreamPath::new(format!("{root}/later-storage-debit")).map_err(Error::from)?;
+    let changed_guards = vec![CommitEffect::hard(
+        vec![CommitCondition::Present {
+            path: paths.placement(&envelope.to).map_err(Error::from)?,
+        }],
+        vec![CommitMutation::Append {
+            path: debit.clone(),
+            records: vec!["new debit".into()],
+        }],
+    )];
+    require(
+        envelope
+            .publish_relay(provider, &paths, &placement.node, changed_guards)
+            .await
+            .map_err(violation)?
+            == original,
+        "changed account guards replaced the original relay result",
+    )?;
+    require(
+        values(provider, debit).await?.is_empty(),
+        "recovery applied a new storage debit",
+    )?;
+    require(
+        envelope
+            .publish_relay(provider, &paths, &source, Vec::new())
+            .await
+            .map_err(violation)?
+            == original,
+        "a changed destination published the same intent twice",
+    )?;
+    require(
+        values(provider, paths.relay(&source).map_err(Error::from)?)
+            .await?
+            .is_empty(),
+        "recovery wrote to the newly resolved relay",
     )?;
     let records = values(provider, paths.relay(&placement.node).map_err(Error::from)?).await?;
     require(
@@ -463,6 +497,17 @@ pub async fn storage<P: StreamProvider + ?Sized>(
             Err(StreamError::IdempotencyMismatch)
         ),
         "changed relay bytes reused the original intent",
+    )?;
+    require(
+        matches!(
+            changed
+                .publish_relay(provider, &paths, &placement.node, Vec::new())
+                .await,
+            Err(crate::route::Error::Stream(
+                StreamError::IdempotencyMismatch
+            ))
+        ),
+        "recovered receipt admitted changed original envelope bytes",
     )?;
     Ok(())
 }

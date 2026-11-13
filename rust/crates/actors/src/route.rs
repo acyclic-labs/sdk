@@ -229,7 +229,12 @@ impl Envelope {
         let mut digest = Sha256::new();
         digest.update(b"acyclic.actors.route.relay.v1\0");
         for part in [
-            path.as_str().as_bytes(),
+            paths.0.as_str().as_bytes(),
+            self.to.account().as_bytes(),
+            self.to.namespace().as_bytes(),
+            self.to.id().as_bytes(),
+            self.sender.namespace().as_bytes(),
+            self.sender.id().as_bytes(),
             self.request.idempotency_key.as_bytes(),
         ] {
             digest.update((part.len() as u64).to_le_bytes());
@@ -246,6 +251,97 @@ impl Envelope {
             )],
             idempotency_key: IdempotencyKey::new(digest.finalize().to_vec())?,
         })
+    }
+
+    /// Publish after host admission, joining its membership guards and storage
+    /// debit in the same commit. This grants no authority: the authenticated
+    /// account host must admit the original sender and recipient first.
+    ///
+    /// The returned key and sequence always describe the original relay
+    /// publication. A retry with changed admission guards or routing context
+    /// recovers that receipt through Streams' own retained outcome; changed
+    /// original envelope bytes remain an idempotency mismatch. Exact retries
+    /// and first publication need no inspection or extra journal.
+    pub async fn publish_relay<P: StreamProvider + ?Sized>(
+        &self,
+        provider: &P,
+        paths: &Paths,
+        destination: &NodeId,
+        admission: Vec<CommitEffect>,
+    ) -> Result<(IdempotencyKey, u64), Error> {
+        let prefix = format!("{}/relay/", paths.0);
+        // Admission may debit its own reservation, but may not author or
+        // replace the opaque relay operation whose receipt is returned here.
+        if admission
+            .iter()
+            .flat_map(|effect| &effect.mutations)
+            .any(|mutation| {
+                let path = mutation.path().as_str();
+                path.starts_with(&prefix)
+                    || matches!(mutation, CommitMutation::Fork { .. })
+                        && prefix
+                            .strip_prefix(path)
+                            .is_some_and(|suffix| suffix.starts_with('/'))
+            })
+        {
+            return Err(Error::InvalidRecord);
+        }
+        let mut request = self.relay_request(paths, destination)?;
+        let key = request.idempotency_key.clone();
+        request.effects.extend(admission);
+        match provider.commit(request).await {
+            Ok(acyclic_stream::CommitOutcome::Committed(receipt)) => {
+                let relay = paths.relay(destination)?;
+                let append = receipt
+                    .appends
+                    .iter()
+                    .find(|append| append.path == relay)
+                    .ok_or(Error::InvalidRecord)?;
+                if append.start.checked_add(1) != Some(append.tail) {
+                    return Err(Error::InvalidRecord);
+                }
+                Ok((key, append.start))
+            }
+            Ok(acyclic_stream::CommitOutcome::Conflict(conflicts)) => {
+                Err(crate::local::Error::PreconditionChanged(conflicts).into())
+            }
+            Err(StreamError::IdempotencyMismatch) => {
+                let retained = provider
+                    .inspect_idempotency(key.clone())
+                    .await?
+                    .ok_or(Error::InvalidRecord)?;
+                if retained.idempotency_key != key {
+                    return Err(Error::InvalidRecord);
+                }
+                let acyclic_stream::IdempotencyOutcome::Commit(envelope) = retained.outcome else {
+                    return Err(Error::InvalidRecord);
+                };
+                let mut original = None;
+                for mutation in &envelope.mutations {
+                    let acyclic_stream::CommittedMutation::Append(append) = mutation else {
+                        continue;
+                    };
+                    let Some(node) = append.path.as_str().strip_prefix(&prefix) else {
+                        continue;
+                    };
+                    if node.is_empty() || node.contains('/') {
+                        continue;
+                    }
+                    let [record] = append.records.as_slice() else {
+                        return Err(Error::InvalidRecord);
+                    };
+                    if original.is_some() {
+                        return Err(Error::InvalidRecord);
+                    }
+                    if record.value.as_ref() != self.encode().as_ref() {
+                        return Err(StreamError::IdempotencyMismatch.into());
+                    }
+                    original = Some(append.start);
+                }
+                Ok((key, original.ok_or(Error::InvalidRecord)?))
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Canonical version-one transport record, without any credential material.
