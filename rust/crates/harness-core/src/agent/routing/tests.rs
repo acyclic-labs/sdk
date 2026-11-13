@@ -1,14 +1,199 @@
 //! Original Stream publications prove the absence fence and its negative control.
 use super::*;
 use crate::agent::{
-    AgentId, ForkAdopted, InboxRecord, IntentId, Message, PeerMembershipHead, Sender,
-    create_root_with_peer,
+    AgentId, ForkAdopted, InboxRecord, IntentId, Message, PeerMembershipHead, Sender, SessionPhase,
+    SessionProfile, SessionPublication, SessionRow, create_root_with_peer,
 };
 use crate::conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef};
 use acyclic_stream::{
-    CommitCondition, CommitMutation, CommitOutcome, CommitRequest, MemoryStream, RecordHeaders,
-    StreamPath, StreamProvider as _, StreamProviderExt as _,
+    CommitCondition, CommitEffect, CommitMutation, CommitOutcome, CommitRequest, MemoryStream,
+    RecordHeaders, StreamPath, StreamProvider as _, StreamProviderExt as _,
 };
+
+#[tokio::test]
+async fn account_membership_uses_one_fenced_view_for_both_roots()
+-> Result<(), Box<dyn std::error::Error>> {
+    for remove_sender in [false, true] {
+        let provider = MemoryStream::default();
+        let sender = AgentPath::root(&AgentId::from_bytes([1; 16]));
+        let recipient = AgentPath::root(&AgentId::from_bytes([2; 16]));
+        let witness = PeerMembershipHead {
+            tail: 1,
+            commit: [0; 32],
+        };
+        let envelope = peer_envelope(
+            &sender,
+            &recipient,
+            PeerAdmission {
+                sender: witness.clone(),
+                recipient: witness,
+            },
+        )?;
+        let peer = PeerRoute::parse(&envelope)?;
+        let paths = route::Paths::new(StreamPath::new("routing")?);
+        let destination = route::Placement {
+            actor: envelope.to.clone(),
+            node: route::NodeId::new(b"destination")?,
+        };
+        assert_eq!(
+            peer.account_membership(&provider, None).await?.0,
+            Some(route::Rejection::NoSuchActor)
+        );
+        assert_eq!(
+            peer.account_membership(&provider, Some(&destination))
+                .await?
+                .0,
+            Some(route::Rejection::Closed)
+        );
+        let profile = SessionProfile {
+            phase: SessionPhase::Idle,
+            title: "Session".into(),
+            workspaces: Vec::new(),
+            goal_preview: String::new(),
+        };
+        let publications = [
+            SessionPublication {
+                actor: envelope.sender.clone(),
+                row: SessionRow::new(envelope.source.clone(), profile.clone()),
+                intent: crate::agent::intent_key("sender-row", &[])?,
+            },
+            SessionPublication {
+                actor: envelope.to.clone(),
+                row: SessionRow::new(destination.node.clone(), profile),
+                intent: crate::agent::intent_key("recipient-row", &[])?,
+            },
+        ];
+        assert!(matches!(
+            provider
+                .commit(CommitRequest {
+                    deadline_unix_millis: None,
+                    idempotency_key: crate::agent::intent_key("rows", &[])?,
+                    effects: publications
+                        .iter()
+                        .map(SessionPublication::effect)
+                        .collect::<Result<_, _>>()?,
+                })
+                .await?,
+            CommitOutcome::Committed(_)
+        ));
+        let counted = acyclic_stream::testing::Counted::new(provider.clone());
+        let (reason, guard) = peer
+            .account_membership(&counted, Some(&destination))
+            .await?;
+        assert_eq!(reason, None);
+        assert_eq!(
+            counted
+                .requests()
+                .class(acyclic_stream::testing::RequestClass::Head),
+            1
+        );
+        assert_eq!(counted.requests().control(), 1);
+        assert_eq!(
+            counted.requests().data(),
+            0,
+            "account admission must not load either remote root"
+        );
+        let removed = &publications[usize::from(!remove_sender)];
+        let removal = SessionPublication {
+            actor: removed.actor.clone(),
+            row: removed.row.changed(None)?.ok_or("removal missing")?,
+            intent: crate::agent::intent_key("remove-row", &[])?,
+        };
+        assert!(matches!(
+            provider
+                .commit(CommitRequest {
+                    deadline_unix_millis: None,
+                    idempotency_key: removal.intent.clone(),
+                    effects: vec![removal.effect()?]
+                })
+                .await?,
+            CommitOutcome::Committed(_)
+        ));
+        let mut admission = envelope.relay_request(&paths, &destination.node)?;
+        admission.effects.push(guard);
+        assert!(
+            matches!(
+                provider.commit(admission.clone()).await?,
+                CommitOutcome::Conflict(_)
+            ),
+            "either root's opt-out must fence a previously prepared relay"
+        );
+        assert!(
+            provider
+                .inspect_idempotency(admission.idempotency_key.clone())
+                .await?
+                .is_none()
+        );
+        assert_eq!(
+            peer.account_membership(&provider, Some(&destination))
+                .await?
+                .0,
+            Some(route::Rejection::Closed)
+        );
+        // Removing only the membership guard reproduces relay admission after
+        // opt-out on the same native store.
+        admission.effects.pop().ok_or("guard missing")?;
+        assert!(matches!(
+            provider.commit(admission).await?,
+            CommitOutcome::Committed(_)
+        ));
+        assert_eq!(provider.tail(paths.relay(&destination.node)?).await?, 1);
+        let mut wrong = destination.clone();
+        wrong.node = route::NodeId::new(b"wrong-node")?;
+        assert!(
+            peer.account_membership(&provider, Some(&wrong))
+                .await
+                .is_err()
+        );
+
+        let inherited = MemoryStream::default();
+        let mut copied = publications[1].effect()?;
+        let CommitMutation::Append { path, .. } = &mut copied.mutations[0] else {
+            return Err("row append missing".into());
+        };
+        let original_path = path.clone();
+        let other_path = StreamPath::new("other-row")?;
+        *path = other_path.clone();
+        assert!(matches!(
+            inherited
+                .commit(CommitRequest {
+                    deadline_unix_millis: None,
+                    idempotency_key: crate::agent::intent_key("copy-row", &[])?,
+                    effects: vec![publications[0].effect()?, copied]
+                })
+                .await?,
+            CommitOutcome::Committed(_)
+        ));
+        assert!(matches!(
+            inherited
+                .commit(CommitRequest {
+                    deadline_unix_millis: None,
+                    idempotency_key: crate::agent::intent_key("inherit-row", &[])?,
+                    effects: vec![CommitEffect::hard(
+                        vec![CommitCondition::Absent {
+                            path: original_path.clone()
+                        }],
+                        vec![CommitMutation::Fork {
+                            source: other_path,
+                            destination: original_path,
+                            at_tail: 1,
+                            exclude: Vec::new(),
+                            records: Vec::new()
+                        }]
+                    )]
+                })
+                .await?,
+            CommitOutcome::Committed(_)
+        ));
+        assert!(
+            peer.account_membership(&inherited, Some(&destination))
+                .await
+                .is_err(),
+            "an inherited enabled row must not certify another root's membership"
+        );
+    }
+    Ok(())
+}
 
 #[tokio::test]
 async fn absent_refusal_fences_creation_of_a_disabled_recipient()
@@ -45,63 +230,14 @@ async fn absent_refusal_fences_creation_of_a_disabled_recipient()
         tail: 1,
         commit: *membership.commit_id.as_bytes(),
     };
-    let input = InboxRecord::Message(Message {
-        from: Sender::Agent {
-            path: sender.clone(),
-        },
-        id: IntentId::try_from("message")?,
-        re: None,
-        body: Box::new(FileRef::new(
-            VolumeRef::new(
-                crate::resources::ProviderRef::new(
-                    "test".into(),
-                    "filesystem".into(),
-                    "1".into(),
-                    &mut None,
-                )?,
-                "private".into(),
-                VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(crate::AgentId::from_bytes([2; 16])),
-                &mut None,
-            )?,
-            "message.md".into(),
-            "version-1".into(),
-            FileDescriptor::from_bytes(b"message", "text/plain", &mut None)?,
-            "message.md".into(),
-            &mut None,
-        )?),
-        attachments: None,
-    });
-    let admission = PeerAdmission {
-        sender: witness.clone(),
-        recipient: witness,
-    };
-    let mut request = crate::agent::send(
+    let envelope = peer_envelope(
+        &sender,
         &created.child,
-        &Sender::Agent {
-            path: sender.clone(),
+        PeerAdmission {
+            sender: witness.clone(),
+            recipient: witness,
         },
-        &input,
     )?;
-    let CommitMutation::Append { records, .. } = &mut request.effects[0].mutations[0] else {
-        return Err("inbox append missing".into());
-    };
-    records[0].headers = RecordHeaders::new(
-        Vec::new(),
-        vec![acyclic_stream::Attribute {
-            name: ADMISSION.into(),
-            value: admission.encode()?.into(),
-        }],
-    )?;
-    let actor = |path: &AgentPath| {
-        ActorReference::new(b"account", b"agents", path.id().as_str().as_bytes())
-    };
-    let envelope = route::Envelope {
-        source: route::NodeId::new(b"source")?,
-        sender: actor(&sender)?,
-        to: actor(&created.child)?,
-        request,
-    };
     let peer = PeerRoute::parse(&envelope)?;
     let routing = Routing {
         paths: route::Paths::new(StreamPath::new("routing")?),
@@ -172,4 +308,64 @@ async fn absent_refusal_fences_creation_of_a_disabled_recipient()
         "negative control must admit input to the disabled root"
     );
     Ok(())
+}
+
+fn peer_envelope(
+    sender: &AgentPath,
+    recipient: &AgentPath,
+    admission: PeerAdmission,
+) -> Result<route::Envelope, Box<dyn std::error::Error>> {
+    let input = InboxRecord::Message(Message {
+        from: Sender::Agent {
+            path: sender.clone(),
+        },
+        id: IntentId::try_from("message")?,
+        re: None,
+        body: Box::new(FileRef::new(
+            VolumeRef::new(
+                crate::resources::ProviderRef::new(
+                    "test".into(),
+                    "filesystem".into(),
+                    "1".into(),
+                    &mut None,
+                )?,
+                "private".into(),
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(crate::AgentId::from_bytes([2; 16])),
+                &mut None,
+            )?,
+            "message.md".into(),
+            "version-1".into(),
+            FileDescriptor::from_bytes(b"message", "text/plain", &mut None)?,
+            "message.md".into(),
+            &mut None,
+        )?),
+        attachments: None,
+    });
+    let mut request = crate::agent::send(
+        recipient,
+        &Sender::Agent {
+            path: sender.clone(),
+        },
+        &input,
+    )?;
+    let CommitMutation::Append { records, .. } = &mut request.effects[0].mutations[0] else {
+        return Err("inbox append missing".into());
+    };
+    records[0].headers = RecordHeaders::new(
+        Vec::new(),
+        vec![acyclic_stream::Attribute {
+            name: ADMISSION.into(),
+            value: admission.encode()?.into(),
+        }],
+    )?;
+    let actor = |path: &AgentPath| {
+        ActorReference::new(b"account", b"agents", path.id().as_str().as_bytes())
+    };
+    Ok(route::Envelope {
+        source: route::NodeId::new(b"source")?,
+        sender: actor(sender)?,
+        to: actor(recipient)?,
+        request,
+    })
 }

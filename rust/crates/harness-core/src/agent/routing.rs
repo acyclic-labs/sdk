@@ -4,6 +4,7 @@ use acyclic_actors::{addressing::ActorReference, route};
 
 pub(super) mod notices;
 pub use notices::{PeerRejectionRoute, PeerResultRoute};
+mod account;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
