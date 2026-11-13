@@ -6,6 +6,193 @@ use crate::{
 };
 
 #[tokio::test]
+async fn issuer_layers_preserve_precedence_pins_and_original_read_authority() -> Result<()> {
+    use crate::{
+        AgentId,
+        conversation::VolumeOwner,
+        runtime::{Bindings, ContentBindings, RuntimeScope, ToolContext},
+    };
+    async fn read(
+        task: Arc<crate::runtime::TaskContext>,
+        path: &str,
+    ) -> Result<crate::tool::ToolResult> {
+        let operation = crate::OperationId::new();
+        let context = ToolContext::new(task, operation, "configuration-read")?;
+        crate::tool::files::read()?
+            .executor
+            .execute(
+                crate::tool::ToolInvocation {
+                    operation_id: operation,
+                    call_id: "configuration-read".into(),
+                    name: "read".into(),
+                    arguments: serde_json::json!({"path": path}),
+                },
+                Some(context),
+            )
+            .await
+    }
+    let provider = ProviderRef::new("layers".into(), "filesystem".into(), "1".into(), &mut None)?;
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+    let agent = AgentId::from_bytes([123; 16]);
+    let mut volumes = Vec::new();
+    let mut capabilities = vec!["tool:call:read".to_owned()];
+    for name in crate::layers::ORDER {
+        let volume = VolumeRef::new(
+            provider.clone(),
+            name.into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+            &mut None,
+        )?;
+        host.create_volume(&volume).await?;
+        capabilities.push(volume.directory_read_capability("", &mut None)?);
+        capabilities.push(volume.capability(VolumeOperation::Write, &mut None)?);
+        volumes.push(volume);
+    }
+    let issuer = AuthorityRoot::new(
+        "layers",
+        [123; 32],
+        Authority {
+            kind: AggregateKind::Task,
+            id: "layers".into(),
+        },
+    );
+    let scope = issuer.bootstrap_scope(
+        "layers",
+        &Capabilities::new(capabilities.clone()),
+        Some(agent),
+        &mut None,
+    )?;
+    let verifier = issuer.verifier(&mut None)?;
+    let reader = FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 4096, None)?;
+    let access = crate::conversation::ContentAccess::default();
+    let mut pins = Vec::new();
+    for (index, volume) in volumes.iter().enumerate() {
+        let grant =
+            ContentGrant::verify(&verifier, &scope, volume, VolumeOperation::Write, &mut None)?;
+        for visible in index..6 {
+            let path = format!("selection-{visible}");
+            host.put_content(
+                volume,
+                &grant,
+                &path,
+                crate::layers::ORDER[index].as_bytes(),
+                "text/plain",
+                &path,
+                Some(4096),
+                &IdempotencyKey::new(format!("{index}-{visible}"))?,
+                None,
+                access,
+            )
+            .await?;
+        }
+        if matches!(index, 0 | 4) {
+            host.put_content(
+                volume,
+                &grant,
+                "disabled",
+                if index == 4 { b"off: true" } else { b"seed" },
+                "text/plain",
+                "disabled",
+                Some(4096),
+                &IdempotencyKey::new(format!("disabled-{index}"))?,
+                None,
+                access,
+            )
+            .await?;
+        }
+        let (generation, _hold) = reader
+            .select_private_generation(volume, "", &format!("selection-{index}"), None, access)?
+            .await?;
+        pins.push(crate::layers::PinnedLayer {
+            volume: volume.clone(),
+            generation,
+        });
+    }
+    let binding = ContentBindings {
+        volume: volumes[5].clone(),
+        reader: reader.clone(),
+        writer: Some(FilesystemContentPublisher::new(
+            host.clone(),
+            &volumes[5],
+            &verifier,
+            &scope,
+            4096,
+            None,
+        )?),
+    };
+    let compose = |grants| -> Result<_> {
+        Bindings {
+            content: Some(binding.clone()),
+            seed: Some(pins[0].clone()),
+            configuration: std::array::from_fn(|index| Some(pins[index + 1].clone())),
+            scope: RuntimeScope::new(
+                grants,
+                crate::conversation::Limits {
+                    file_bytes: Some(4096),
+                    render_bytes: Some(4096),
+                    ..Default::default()
+                },
+            )?,
+            ..Bindings::local()
+        }
+        .build()
+    };
+    let harness = compose(Capabilities::new(capabilities.clone()))?;
+    // Workspace rebinding must retain all of the original issuer sources.
+    let harness = harness.with_workspace(None, binding.clone())?;
+    let task = Arc::new(harness.agent_context(&Capabilities::default(), binding.clone())?);
+    for (index, expected) in crate::layers::ORDER.into_iter().enumerate() {
+        let result = read(
+            task.clone(),
+            &format!("volume:///effective/selection-{index}"),
+        )
+        .await?;
+        assert_eq!(result.value["text"], expected);
+    }
+    let suppressed = read(task.clone(), "volume:///effective/disabled").await;
+    assert!(
+        matches!(suppressed, Err(ref error) if error.code() == crate::wire::ErrorCode::NotFound)
+    );
+    let parent = &volumes[4];
+    let grant = ContentGrant::verify(&verifier, &scope, parent, VolumeOperation::Write, &mut None)?;
+    host.put_content(
+        parent,
+        &grant,
+        "selection-4",
+        b"later publication",
+        "text/plain",
+        "selection-4",
+        Some(4096),
+        &IdempotencyKey::new("replace-parent")?,
+        None,
+        access,
+    )
+    .await?;
+    for path in [
+        "volume:///effective/selection-4",
+        "volume:///parent/selection-4",
+    ] {
+        assert_eq!(read(task.clone(), path).await?.value["text"], "parent");
+    }
+    let context = ToolContext::new(task, crate::OperationId::new(), "read-only-source")?;
+    let denied_write = context.tool_write_path_selection("volume:///parent/new", None);
+    assert!(
+        matches!(denied_write, Err(ref error) if error.code() == crate::wire::ErrorCode::Unauthorized)
+    );
+    let parent_read = parent.directory_read_capability("", &mut None)?;
+    let denied = compose(Capabilities::new(
+        capabilities.iter().filter(|grant| **grant != parent_read),
+    ))?;
+    let denied = Arc::new(denied.agent_context(&Capabilities::default(), binding)?);
+    let denied_read = read(denied, "volume:///effective/selection-4").await;
+    assert!(
+        matches!(denied_read, Err(ref error) if error.code() == crate::wire::ErrorCode::Unauthorized)
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn path_wait_observes_publication_without_probing_or_accepting_other_files() -> Result<()> {
     use crate::{AgentId, conversation::VolumeOwner};
     use futures::FutureExt as _;
