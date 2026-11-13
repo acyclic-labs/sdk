@@ -49,15 +49,30 @@ impl NativeAllocation {
     }
     /// Combines capacity with identical accounting attribution.
     pub fn absorb(&mut self, other: &mut Self) -> Result<(), NativeTreeMaterializationError> {
-        if !self.meter.shares_allocation_context(&other.meter) {
+        let bytes = other.bytes;
+        other.transfer_to(self, bytes)
+    }
+    /// Moves already admitted capacity to the same original ledger and resource
+    /// allowance. Both owners remain unchanged on refusal. This performs no
+    /// allocation or new admission, so cancellation does not prevent the move.
+    pub fn transfer_to(
+        &mut self,
+        target: &mut Self,
+        bytes: u64,
+    ) -> Result<(), NativeTreeMaterializationError> {
+        if !self.meter.shares_allocation_context(&target.meter) {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
-        let bytes = self
+        let source = self
             .bytes
-            .checked_add(other.bytes)
+            .checked_sub(bytes)
             .ok_or(crate::WorkError::Overflow)?;
-        self.bytes = bytes;
-        other.bytes = 0;
+        let destination = target
+            .bytes
+            .checked_add(bytes)
+            .ok_or(crate::WorkError::Overflow)?;
+        self.bytes = source;
+        target.bytes = destination;
         Ok(())
     }
     /// Splits admitted capacity.
