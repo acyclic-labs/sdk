@@ -306,7 +306,9 @@ fn serving_reply_codec_preserves_invalid_refusals_and_complete_large_results() -
         return Err("valid large binding reply was refused".into());
     };
     let (decoded_binding, tools) = acyclic_harness_client::AgentBinding::from_reply(&decoded)?;
-    assert_eq!(decoded_binding.binding_bytes(), binding.encode_to_vec());
+    let prepared = decoded_binding.prepare_owned(PreparedCommand::new(&command)?)?;
+    let original = invocation("agents", &command)?;
+    assert_eq!(prepared.invocations(), std::slice::from_ref(&original));
     let Ok(AgentReply::Bound {
         tools: expected, ..
     }) = &large
