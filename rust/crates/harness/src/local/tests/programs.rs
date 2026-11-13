@@ -360,7 +360,6 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
             await write('volume:///home/agent.ts', "export default {model: 'scripted/second', effort: 'low', sampling: {temperature: 0.75}};", 'any');
             export default 'selected';
         "#),
-        ScriptedTurn::Text("stale provider".into()),
     ]).reading_content().with_context_capacity(capacity()));
     let second = Arc::new(
         ScriptedModelProvider::new([])
@@ -609,6 +608,73 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         restored.inbox
     );
     assert_eq!((first.request_count(), second.request_count()), (2, 7));
+    first.extend([
+        ScriptedTurn::Text("first model with high effort".into()),
+        code("return-second", r#"
+            import {write} from 'acyclic';
+            await write('volume:///home/agent.ts', "export default {model: 'scripted/second', effort: null, sampling: {temperature: 0.75}};", 'any');
+            export default 'second';
+        "#),
+        ScriptedTurn::Text("first model default effort".into()),
+    ]);
+    second.extend([
+        code("return-first", r#"
+            import {write} from 'acyclic';
+            await write('volume:///home/agent.ts', "export default {model: 'scripted/test', effort: 'high', sampling: null};", 'any');
+            export default 'first';
+        "#),
+        ScriptedTurn::Text("second model default effort".into()),
+        code("reset-first", r#"
+            import {write} from 'acyclic';
+            await write('volume:///home/agent.ts', "export default {model: 'scripted/test', effort: null, sampling: null};", 'any');
+            export default 'reset';
+        "#),
+    ]);
+    for (identity, prompt, output) in [
+        (
+            "return-first",
+            "Return to the first model with high effort",
+            "first model with high effort",
+        ),
+        (
+            "return-second",
+            "Return to the second model with default effort",
+            "second model default effort",
+        ),
+        (
+            "reset-first",
+            "Return to the first model with default effort",
+            "first model default effort",
+        ),
+    ] {
+        let entry = observed.send(identity, prompt).await?;
+        assert!(entry.outcome.is_completed(), "{:?}", entry.outcome);
+        assert_eq!(observed.conversation.output_text(&entry).await?, output);
+    }
+    let returned = first.request(4).unwrap();
+    assert_eq!(returned.model.name, "test");
+    assert_eq!(returned.sampling.temperature, None);
+    assert_eq!(system_prefix(&returned)?, frozen_prefix);
+    let configuration: Vec<_> = returned
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .filter_map(|part| match part {
+            crate::model::ModelContentPart::Configuration { prefix, effort } => {
+                Some((*prefix, serde_json::to_value(effort).unwrap()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(configuration.len(), 6);
+    assert_ne!(configuration[0], configuration[3]);
+    assert_eq!(configuration[0], configuration[4]);
+    assert_eq!(configuration[3], configuration[5]);
+    assert_eq!(
+        efforts(&returned),
+        ["low", "medium", "low", "high", "medium", "medium"]
+    );
+    assert_eq!((first.request_count(), second.request_count()), (5, 10));
     assert_eq!(
         second_route.model_profile(&model()?)?.unwrap().reasoning(),
         reasoning_baseline
