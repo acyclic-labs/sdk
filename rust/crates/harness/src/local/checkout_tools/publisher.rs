@@ -48,6 +48,74 @@ enum Publication<'a> {
 }
 
 impl CheckoutPublisher {
+    async fn inherited_directory(
+        view: &workspace::View,
+        path: &str,
+        io: Option<&ContentIo>,
+    ) -> Result<bool> {
+        use acyclic_fs::facade::FsWork as _;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+        let mut accounting = match &io {
+            Some(io) => io.accounting(&cancellation),
+            None => budget.accounting(&cancellation),
+        };
+        // Inspect does not author or retain a new source observation. File
+        // destinations include inherited names, not just authored entries.
+        let result = async {
+            match view.inspect(&format!("/{path}"), &mut accounting).await {
+                Ok(lookup) => {
+                    let directory =
+                        lookup.0.stat().kind == acyclic_fs::demand::SourceNodeKind::Directory;
+                    view.retire_lookup(lookup, &mut accounting)
+                        .map_err(storage)?;
+                    Ok(directory)
+                }
+                Err(acyclic_fs::LazyWorkspaceError::NotFound) => Ok(false),
+                Err(error) => Err(storage(error)),
+            }
+        }
+        .await;
+        if let Some(io) = &io {
+            let (result, recorded) = io.finish(result, &accounting);
+            recorded?;
+            result
+        } else {
+            result
+        }
+    }
+
+    async fn original_publication(
+        &self,
+        writer: &Publisher,
+        operation: OperationId,
+        relative: &str,
+        publication: &Publication<'_>,
+        ceiling: Option<&crate::Capabilities>,
+    ) -> Result<Option<FileRef>> {
+        match publication {
+            Publication::Once { .. } => Ok(writer
+                .observe_staged_once(
+                    operation,
+                    None,
+                    self.maximum,
+                    crate::conversation::ContentAccess { ceiling, io: None },
+                )?
+                .await?
+                .0),
+            Publication::Path { .. } => {
+                writer
+                    .observe_staged_path(operation, relative, self.maximum, ceiling)
+                    .await
+            }
+            Publication::Replace(source) => {
+                writer
+                    .observe_staged_at(operation, source, self.maximum, ceiling)
+                    .await
+            }
+        }
+    }
+
     fn selected_workspace(&self, state: &State) -> Result<Arc<LocalWorkspace>> {
         #[cfg(all(test, not(loom)))]
         if tests::PUBLISH_TO_INITIAL_MOUNT.get() {
@@ -123,25 +191,9 @@ impl CheckoutPublisher {
                 |source| source.workspace.workspace(),
             );
             let writer = self.writer_for(&mount.view.volume, workspace)?;
-            let original = match &publication {
-                Publication::Once { .. } => {
-                    writer
-                        .observe_staged_once(
-                            operation,
-                            None,
-                            self.maximum,
-                            crate::conversation::ContentAccess { ceiling, io: None },
-                        )?
-                        .await?
-                        .0
-                }
-                Publication::Path { .. } => {
-                    writer
-                        .observe_staged_path(operation, &relative, self.maximum, ceiling)
-                        .await?
-                }
-                Publication::Replace(_) => unreachable!(),
-            };
+            let original = self
+                .original_publication(&writer, operation, &relative, &publication, ceiling)
+                .await?;
             if original.is_none() {
                 writer
                     .admit_path(
@@ -158,6 +210,31 @@ impl CheckoutPublisher {
                 "local checkout publication",
             )
             .await?;
+            if original.is_none()
+                && mount.view.source.is_none()
+                && Self::inherited_directory(selected, &relative, None).await?
+                && self
+                    .original_publication(&writer, operation, &relative, &publication, ceiling)
+                    .await?
+                    .is_none()
+            {
+                // Recheck authority before reporting a transient source fact.
+                writer
+                    .admit_path(
+                        &relative,
+                        crate::conversation::ContentAccess { ceiling, io: None },
+                    )?
+                    .await?;
+                access::require_volume_access(
+                    workspace,
+                    &mount.view.volume,
+                    &self.tools.signed,
+                    ceiling.unwrap_or(self.tools.signed.capabilities()),
+                    "local checkout publication",
+                )
+                .await?;
+                return Err(Error::Invalid("path is a directory".into()));
+            }
         }
         serialized(&self.tools.state, async |mut state| {
             let physical = self.selected_workspace(&state)?;
@@ -188,11 +265,7 @@ impl CheckoutPublisher {
             let writer = self.writer_for(&mount.view.volume, workspace)?;
             // Recover the original committed generation before capture: a
             // missing physical publication must not become a deletion.
-            let original = match &publication {
-                Publication::Once { .. } => writer.observe_staged_once(operation, None, self.maximum, crate::conversation::ContentAccess { ceiling, io: None })?.await?.0,
-                Publication::Path { .. } => writer.observe_staged_path(operation, &relative, self.maximum, ceiling).await?,
-                Publication::Replace(source) => writer.observe_staged_at(operation, source, self.maximum, ceiling).await?,
-            };
+            let original = self.original_publication(&writer, operation, &relative, &publication, ceiling).await?;
             if original.is_none() {
                 if let Some(native) = native {
                     native.sync().await?;
