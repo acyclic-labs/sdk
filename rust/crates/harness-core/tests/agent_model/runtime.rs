@@ -1314,7 +1314,13 @@ async fn a_foreign_actor_cannot_run_the_agents_committed_input() -> Result {
     let calls = Arc::new(AtomicUsize::new(0));
     let handler = Arc::new(AgentHandler::new(
         store(&provider)?,
-        Observed(calls.clone(), Spawner(AtomicUsize::new(1))),
+        Observed(
+            calls.clone(),
+            Spawner {
+                calls: AtomicUsize::new(1),
+                ..Default::default()
+            },
+        ),
         ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
     )?);
     let host = AgentHost::hosting(
@@ -1559,7 +1565,10 @@ async fn pending_request_host<P: acyclic_harness_core::store::JournalProvider + 
 ) -> Result<(AgentHost<P>, AgentPath, u64)> {
     let host = AgentHost::new(
         provider,
-        Spawner(AtomicUsize::new(1)),
+        Spawner {
+            calls: AtomicUsize::new(1),
+            ..Default::default()
+        },
         ActorReference::new(b"account", b"agents", b"owner")?,
         ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
         Arc::new(SystemClock),
@@ -1748,7 +1757,10 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
     let provider = Arc::new(MemoryStream::default());
     let host = AgentHost::new(
         provider,
-        Spawner(AtomicUsize::new(1)),
+        Spawner {
+            calls: AtomicUsize::new(1),
+            ..Default::default()
+        },
         ActorReference::new(b"account", b"agents", b"owner")?,
         ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
         Arc::new(SystemClock),
@@ -1828,7 +1840,10 @@ async fn topology_spawn_outcomes_remain_original_after_archival() -> Result {
         let provider = Arc::new(super::hosting::Evidence::default());
         let host = AgentHost::new(
             provider.clone(),
-            Spawner(AtomicUsize::new(1)),
+            Spawner {
+                calls: AtomicUsize::new(1),
+                ..Default::default()
+            },
             ActorReference::new(b"account", b"agents", b"owner")?,
             ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             Arc::new(SystemClock),
@@ -1911,7 +1926,10 @@ async fn a_root_crosses_the_former_child_ceiling_with_a_paged_checkpoint() -> Re
     let provider = Arc::new(MemoryStream::default());
     let host = AgentHost::new(
         provider,
-        Spawner(AtomicUsize::new(1)),
+        Spawner {
+            calls: AtomicUsize::new(1),
+            ..Default::default()
+        },
         ActorReference::new(b"account", b"agents", b"owner")?,
         ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
         Arc::new(SystemClock),
