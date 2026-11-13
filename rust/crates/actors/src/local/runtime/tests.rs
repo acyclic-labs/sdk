@@ -787,38 +787,44 @@ async fn placement_observation_tracks_committed_commands_and_runtime_replacement
         let mut create = PreparedPublish::foreign(key("create-placed")?);
         create.join(store.create(None, &address, crate::local::Creation::default())?)?;
         store.submit(create).await?;
-        let runtime = Runtime::new(
+        let runtime = crate::hosting::Host::new(
             Store::new(provider.clone(), root()?),
+            address.clone(),
             Arc::new(Package::new()?),
             Arc::new(SystemClock),
+            Default::default(),
         )
         .with_external_placement();
-        let replacement = Runtime::new(
+        let replacement = crate::hosting::Host::new(
             Store::new(provider.clone(), root()?),
+            address.clone(),
             Arc::new(Package::new()?),
             Arc::new(SystemClock),
+            Default::default(),
         )
         .with_external_placement();
         // A directory reservation that never reaches publication changes no index.
-        assert_eq!(runtime.placement_state(&address).await?, (0, false));
-        assert_eq!(replacement.placement_state(&address).await?, (0, false));
-        runtime.place(address.clone(), 1).await?;
-        assert_eq!(runtime.placement_state(&address).await?, (1, true));
-        assert_eq!(replacement.placement_state(&address).await?, (1, false));
-        replacement.place(address.clone(), 2).await?;
-        assert_eq!(replacement.placement_state(&address).await?, (2, true));
-        assert_eq!(runtime.placement_state(&address).await?, (2, false));
+        assert_eq!(runtime.placement_state().await?, (0, false));
+        assert_eq!(replacement.placement_state().await?, (0, false));
+        runtime.place(1).await?;
+        assert_eq!(runtime.placement_state().await?, (1, true));
+        assert_eq!(replacement.placement_state().await?, (1, false));
+        replacement.place(2).await?;
+        assert_eq!(replacement.placement_state().await?, (2, true));
+        assert_eq!(runtime.placement_state().await?, (2, false));
     }
     let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
-    let restored = Runtime::new(
+    let restored = crate::hosting::Host::new(
         Store::new(provider, root()?),
+        address.clone(),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
+        Default::default(),
     )
     .with_external_placement();
-    assert_eq!(restored.placement_state(&address).await?, (2, false));
-    restored.place(address.clone(), 3).await?;
-    assert_eq!(restored.placement_state(&address).await?, (3, true));
+    assert_eq!(restored.placement_state().await?, (2, false));
+    restored.place(3).await?;
+    assert_eq!(restored.placement_state().await?, (3, true));
     Ok(())
 }
 
