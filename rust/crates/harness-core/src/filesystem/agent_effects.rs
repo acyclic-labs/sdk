@@ -439,7 +439,8 @@ mod tests {
                 .collect();
             let saved = effect("paged")?;
             let bytes = acyclic_stream::OwnedBytes::from(crate::agent::records::seal(&saved)?);
-            let reply = format!("/{}/{own}/0001/reply", super::super::TOOL_OUTPUT);
+            let model_text = super::super::InternalContentClass::ModelText.prefix();
+            let reply = format!("/{model_text}{own}/0000000001/reply");
             let reply_paths: Vec<_> = (0..257)
                 .map(|chunk| format!("{reply}/{chunk:010}"))
                 .collect();
@@ -452,10 +453,10 @@ mod tests {
                     })
                 })
                 .collect();
-            let older = format!("/{}/{own}/0000/reply", super::super::TOOL_OUTPUT);
+            let older = format!("/{model_text}{own}/0000000000/reply");
             let older_path = format!("{older}/0000000000");
-            let empty = format!("/{}/{own}/0002", super::super::TOOL_OUTPUT);
-            let malformed = format!("/{}/{foreign}/0001/reply", super::super::TOOL_OUTPUT);
+            let empty = format!("/{model_text}{own}/0000000002");
+            let malformed = format!("/{model_text}{foreign}/0000000001/reply");
             let malformed_path = format!("{malformed}/0000000000");
             let mut batch: Vec<_> = paths
                 .iter()

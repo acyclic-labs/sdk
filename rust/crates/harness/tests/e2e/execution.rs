@@ -418,9 +418,17 @@ pub(super) async fn normalized_observation(
 ) -> TestResult<Value> {
     let mut value = serde_json::to_value(event)?;
     let decoded = match event {
-        ExecutionEvent::Model { event, .. } => Some(serde_json::from_slice::<Value>(
-            &journal.load(event, None)?.await?,
-        )?),
+        ExecutionEvent::Model { event, .. } => {
+            let bytes = journal.load(event, None)?.await?;
+            event.descriptor().verify(&bytes, &mut None)?;
+            Some(serde_json::to_value(
+                acyclic_harness::executor::decode_model_payload(
+                    event.descriptor().media_type(),
+                    &bytes,
+                    None,
+                )?,
+            )?)
+        }
         ExecutionEvent::ModelInline { event, .. } => Some(serde_json::from_str(event)?),
         _ => None,
     };
@@ -436,9 +444,11 @@ async fn scenario_observations_normalize_inline_and_file_events() -> TestResult 
     use acyclic_harness::executor::ModelPurpose;
     let storage = MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
     let journal = storage.journal();
-    let event = serde_json::to_string(&acyclic_harness::model::ModelEvent::Content {
-        delta: "hello".into(),
-    })?;
+    let event = String::from_utf8(acyclic_harness::contract::canonical_json_bytes(
+        &acyclic_harness::model::ModelEvent::Content {
+            delta: "hello".into(),
+        },
+    )?)?;
     let reference = journal
         .stage(
             OperationId::new(),

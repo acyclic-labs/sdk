@@ -1,46 +1,5 @@
 use super::*;
 
-struct PublishedReplies {
-    volume: VolumeRef,
-    text: Mutex<Vec<u8>>,
-}
-
-impl crate::conversation::ContentPublisher for PublishedReplies {
-    fn volume(&self) -> &VolumeRef {
-        &self.volume
-    }
-
-    fn stage_once<'a>(
-        &'a self,
-        _operation_id: OperationId,
-        path: &'a str,
-        bytes: &'a [u8],
-        media_type: &'a str,
-        display_name: &'a str,
-        access: crate::conversation::ContentAccess<'a, 'a>,
-    ) -> Result<
-        crate::conversation::BoundedContentFuture<
-            'a,
-            (FileRef, Option<crate::conversation::ContentHold<'a>>),
-        >,
-    > {
-        crate::conversation::BoundedContentFuture::new(access.io, || async move {
-            self.text.lock().unwrap().extend_from_slice(bytes);
-            Ok((
-                FileRef::new(
-                    self.volume.clone(),
-                    path.into(),
-                    blake3::hash(bytes).to_hex().to_string(),
-                    FileDescriptor::from_bytes(bytes, media_type, &mut None)?,
-                    display_name.into(),
-                    &mut None,
-                )?,
-                None,
-            ))
-        })
-    }
-}
-
 const NOTICE: &str =
     "What slowed you down or blocked you? Append feedback records; reply none if nothing.";
 
@@ -94,10 +53,6 @@ async fn headless_feedback_retrospective_runs_once_per_settlement_and_preserves_
             }))
             .with_token_counter(fixture_token_count),
         );
-        let published = Arc::new(PublishedReplies {
-            volume: crate::runtime::test_context::private_volume(1)?,
-            text: Mutex::new(Vec::new()),
-        });
         let executor = uncompacted_executor(
             Model::new("test".into(), "feedback".into(), "1".into())?,
             provider.clone(),
@@ -105,8 +60,7 @@ async fn headless_feedback_retrospective_runs_once_per_settlement_and_preserves_
             ToolRegistry::default(),
         )
         .with_plugins(plugins)?;
-        let mut journal = Journal::default();
-        journal.11 = Some(LiveReply::new(published.clone(), "tools/turn".into()));
+        let journal = Journal::default();
         let first = TurnInput {
             max_steps: None,
             operation_id: OperationId::new(),
@@ -137,9 +91,19 @@ async fn headless_feedback_retrospective_runs_once_per_settlement_and_preserves_
                 &journal,
             )
             .await?;
+        let published = journal.1.lock().unwrap();
+        let visible: Vec<_> = published
+            .iter()
+            .filter(|(key, (file, _))| {
+                key.contains(":model-live:")
+                    && file.descriptor().media_type()
+                        == super::super::model_observation::CONTENT_MEDIA
+            })
+            .map(|(_, (_, bytes))| bytes.as_ref())
+            .collect();
         assert_eq!(
-            &*published.text.lock().unwrap(),
-            b"task completetask complete"
+            visible,
+            [b"task complete".as_slice(), b"task complete".as_slice()]
         );
         let requests = provider.requests();
         assert_eq!(requests.len(), 2 * per_settlement);

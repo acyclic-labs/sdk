@@ -119,12 +119,6 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         Ok(None)
     }
 
-    /// Host-owned live output beside this turn's retained tool results.
-    /// Journals without file observation leave live publication disabled.
-    fn live_reply(&self, _operation: OperationId) -> Result<Option<LiveReply>> {
-        Ok(None)
-    }
-
     /// Outstanding original supervision decision, selected by a point query.
     /// This boundary does not own a follower, readiness loop or timer.
     fn supervision(
