@@ -479,8 +479,11 @@ describe("website Stream contract", () => {
     expect(() => projectMemoryResponse("children_page", toBinary(ChildrenPageResponseSchema, create(ChildrenPageResponseSchema, {
       hierarchyVersion: new Uint8Array(32).fill(8), children: [{ path: "runs/b" }, { path: "runs/a" }],
     })))).toThrow();
-    expect(() => projectMemoryResponse("children_page", toBinary(ChildrenPageResponseSchema, create(ChildrenPageResponseSchema, {
+    expect(projectMemoryResponse("children_page", toBinary(ChildrenPageResponseSchema, create(ChildrenPageResponseSchema, {
       hierarchyVersion: new Uint8Array(32).fill(8), children: [{ path: "runs/a" }], nextAfter: "runs/missing",
+    })))).toMatchObject({ nextAfter: "runs/missing" });
+    expect(() => projectMemoryResponse("children_page", toBinary(ChildrenPageResponseSchema, create(ChildrenPageResponseSchema, {
+      hierarchyVersion: new Uint8Array(32).fill(8), children: [{ path: "runs/b" }], nextAfter: "runs/a",
     })))).toThrow();
   });
 
@@ -689,6 +692,11 @@ describe("website Stream contract", () => {
 
     const nullContinuation = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, children: [], nextAfter: null })) });
     await expect(nullContinuation.childrenPage({ parent: "runs", limit: 2 })).resolves.toEqual({ hierarchyVersion: new Uint8Array(32).fill(7), children: [] });
+
+    const hidden = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, children: [], nextAfter: "runs/hidden" })) });
+    await expect(new StreamClient(hidden).childrenPage({ parent: "runs", after: "runs/b", limit: 2 })).resolves.toMatchObject({ children: [], nextAfter: "runs/hidden" });
+    await expect(new StreamClient(hidden).childrenPage({ parent: "runs", after: "runs/hidden", limit: 2 })).rejects.toMatchObject({ code: "invalid_page" });
+    await expect(new StreamClient(hidden).childrenPage({ parent: "other", limit: 2 })).rejects.toMatchObject({ code: "invalid_page" });
 
     const malformed = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, children: [{ path: "runs/b" }], nextAfter: "runs/a" })) });
     await expect(malformed.childrenPage({ parent: "runs", limit: 2 })).rejects.toMatchObject({ code: "invalid_response" });

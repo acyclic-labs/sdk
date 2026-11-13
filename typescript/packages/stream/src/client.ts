@@ -86,7 +86,7 @@ export class StreamClient {
         page.hierarchyVersion.some((byte, index) => byte !== expectedVersion[index])) {
       throw new StreamError("hierarchy_changed", "provider changed hierarchy version during pagination");
     }
-    if (page.children.length > authored.limit || (page.nextAfter !== undefined && page.nextAfter !== page.children.at(-1)?.path)) {
+    if (page.children.length > authored.limit) {
       throw new StreamError("invalid_page", "provider returned an invalid child continuation");
     }
     let previous = authored.after;
@@ -97,6 +97,14 @@ export class StreamClient {
         throw new StreamError("invalid_page", "provider returned non-direct or unordered children");
       }
       previous = child.path;
+    }
+    if (page.nextAfter !== undefined) {
+      validatePathValue(page.nextAfter);
+      if (directParent(page.nextAfter) !== (authored.parent ?? "") ||
+          (authored.after !== undefined && compareStreamPaths(page.nextAfter, authored.after) <= 0) ||
+          (previous !== undefined && compareStreamPaths(page.nextAfter, previous) < 0)) {
+        throw new StreamError("invalid_page", "provider returned an invalid child continuation");
+      }
     }
     return page;
   }

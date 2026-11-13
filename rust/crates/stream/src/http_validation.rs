@@ -149,9 +149,14 @@ fn validate_children_page(value: &Value) -> Result {
         previous = Some(current);
     }
     if let Some(next_after) = item.get("nextAfter").filter(|value| !value.is_null()) {
+        path(next_after)?;
         let next_after = string(next_after)?;
-        if previous != Some(next_after) {
-            return Err("child continuation does not match final child");
+        if previous.is_some_and(|last| {
+            next_after < last
+                || next_after.rsplit_once('/').map(|(parent, _)| parent)
+                    != last.rsplit_once('/').map(|(parent, _)| parent)
+        }) {
+            return Err("child continuation precedes or leaves the visible children");
         }
     }
     Ok(())
@@ -548,10 +553,23 @@ mod tests {
             format!(r#"{{"hierarchyVersion":"{commit_id}","children":[],"nextAfter":null}}"#);
         assert!(super::validate("children/page", &json_fixture(&null_continuation)?).is_ok());
 
-        let wrong_continuation = format!(
+        let hidden_continuation = format!(
             r#"{{"hierarchyVersion":"{commit_id}","children":[{{"path":"runs/a"}}],"nextAfter":"runs/b"}}"#
         );
+        assert!(super::validate("children/page", &json_fixture(&hidden_continuation)?).is_ok());
+        let hidden_page =
+            format!(r#"{{"hierarchyVersion":"{commit_id}","children":[],"nextAfter":"runs/b"}}"#);
+        assert!(super::validate("children/page", &json_fixture(&hidden_page)?).is_ok());
+        let wrong_continuation = format!(
+            r#"{{"hierarchyVersion":"{commit_id}","children":[{{"path":"runs/b"}}],"nextAfter":"runs/a"}}"#
+        );
         assert!(super::validate("children/page", &json_fixture(&wrong_continuation)?).is_err());
+        for cursor in ["elsewhere/z", "runs/b/nested", "runs//invalid"] {
+            let foreign = format!(
+                r#"{{"hierarchyVersion":"{commit_id}","children":[{{"path":"runs/a"}}],"nextAfter":"{cursor}"}}"#
+            );
+            assert!(super::validate("children/page", &json_fixture(&foreign)?).is_err());
+        }
 
         let unordered = format!(
             r#"{{"hierarchyVersion":"{commit_id}","children":[{{"path":"runs/b"}},{{"path":"runs/a"}}]}}"#
