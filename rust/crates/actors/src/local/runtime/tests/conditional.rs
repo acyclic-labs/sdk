@@ -102,6 +102,7 @@ fn runtime_with(
     handler: Arc<dyn Handler>,
 ) -> Result<Runtime<Counted<Interleaved>>, Box<dyn std::error::Error>> {
     Ok(Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::new(Counted::new(Interleaved::default())), root()?),
         handler,
         Arc::new(SystemClock),

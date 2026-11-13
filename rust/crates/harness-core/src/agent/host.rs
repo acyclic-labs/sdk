@@ -130,7 +130,14 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
                 lifecycle.clone(),
             ))),
         };
-        let host = Self::hosting(provider, within, Arc::new(handler), clock, composer)?;
+        let host = Self::hosting(
+            acyclic_actors::guest::Requests::default(),
+            provider,
+            within,
+            Arc::new(handler),
+            clock,
+            composer,
+        )?;
         Ok(match lifecycle {
             Some(lifecycle) => host.with_lifecycle(lifecycle),
             None => host,
@@ -153,7 +160,9 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     /// transition's participant request, as [`SpawnVolumes`] does. The shared
     /// agent composer always owns terminal-fact revalidation, including when
     /// no external participant composer is supplied.
+    /// Bind the guest bridge to a clone of `requests` before opening this host.
     pub fn hosting(
+        requests: acyclic_actors::guest::Requests,
         provider: Arc<P>,
         within: ActorReference,
         handler: Arc<dyn Handler>,
@@ -168,7 +177,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             agents: Agents::new(actor_store(&provider)?),
             // Agents of other bindings may share this stream's actor root;
             // this filter grants no placement or execution authority.
-            runtime: Runtime::new(published, handler, clock).within(&within),
+            runtime: Runtime::new(requests, published, handler, clock).within(&within),
             provider,
             within,
             lifecycle: None,
@@ -185,11 +194,13 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     /// As [`Self::hosting`].
     pub fn rehosted(
         &self,
+        requests: acyclic_actors::guest::Requests,
         handler: Arc<dyn Handler>,
         clock: Arc<dyn Clock>,
         composer: Option<Arc<dyn Composer>>,
     ) -> Result<Self, Error> {
         let mut host = Self::hosting(
+            requests,
             self.provider.clone(),
             self.within.clone(),
             handler,

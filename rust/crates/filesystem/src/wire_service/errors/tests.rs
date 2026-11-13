@@ -142,7 +142,6 @@ fn every_stream_category_survives_the_authority_wrapper() -> Result<(), Box<dyn 
 {
     use acyclic_stream::StreamError as E;
     let cases = [
-        (E::InvalidResponse, Code::DataLoss),
         (E::InvalidPath, Code::InvalidArgument),
         (E::InvalidArgument, Code::InvalidArgument),
         (E::InvalidResponse, Code::DataLoss),

@@ -48,6 +48,7 @@ async fn a_failed_alarm_delivery_waits_for_its_next_event() -> TestResult {
         alarms: AtomicUsize::new(0),
     });
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         Arc::clone(&handler) as Arc<dyn Handler>,
         Arc::new(clock),
@@ -313,6 +314,7 @@ async fn guard_refusals_distinguish_unchanged_observations_from_source_changes()
         let provider = store.provider();
         let seals = Arc::new(AtomicUsize::new(0));
         let runtime = Runtime::new(
+            crate::guest::Requests::default(),
             Store::new(Arc::clone(provider), root()?).with_composer(Arc::new(Guard {
                 refusal,
                 seals: Arc::clone(&seals),
@@ -378,7 +380,7 @@ type Admission = Result<(ActorReference, u64), crate::guest::GuestError>;
 /// that earlier handle, as a task the handler left running would, and its own.
 struct Rebinds {
     joined: Joined,
-    requests: OnceLock<crate::guest::Requests>,
+    requests: crate::guest::Requests,
     handled: std::sync::Mutex<Option<crate::guest::RequestId>>,
     failures: std::sync::Mutex<Vec<(Option<Admission>, Admission)>>,
 }
@@ -408,10 +410,7 @@ impl Handler for Rebinds {
         _failure: String,
     ) -> GuestFuture<'a, Option<Transition>> {
         Box::pin(async move {
-            let requests = self
-                .requests
-                .get()
-                .ok_or_else(|| crate::guest::GuestError::Handler("unbound".into()))?;
+            let requests = &self.requests;
             let escaped = *self
                 .handled
                 .lock()
@@ -437,13 +436,15 @@ impl Handler for Rebinds {
 async fn each_handler_invocation_gets_its_own_capability_binding() -> TestResult {
     let (store, address) = guarded_store().await?;
     let provider = store.provider();
+    let requests = crate::guest::Requests::default();
     let handler = Arc::new(Rebinds {
         joined: Joined(Package::new()?),
-        requests: OnceLock::new(),
+        requests: requests.clone(),
         handled: std::sync::Mutex::new(None),
         failures: std::sync::Mutex::new(Vec::new()),
     });
     let runtime = Runtime::new(
+        requests,
         Store::new(Arc::clone(provider), root()?).with_composer(Arc::new(Guard {
             refusal: Refusal::StaleGuard,
             seals: Arc::new(AtomicUsize::new(0)),
@@ -453,10 +454,6 @@ async fn each_handler_invocation_gets_its_own_capability_binding() -> TestResult
         handler.clone(),
         Arc::new(SystemClock),
     );
-    handler
-        .requests
-        .set(runtime.requests().clone())
-        .map_err(|_| "requests were already bound")?;
     let mut serving = Box::pin(runtime.run(|_, _| {}));
     let completed = observe_while_running(serving.as_mut(), async {
         Ok::<_, Box<dyn std::error::Error>>(runtime.complete().await)
@@ -526,6 +523,7 @@ async fn a_failed_record_does_not_starve_other_ready_subscriptions() -> TestResu
     }
     store.submit(create).await?;
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),

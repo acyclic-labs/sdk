@@ -615,6 +615,7 @@ impl WasmAgents {
             stream, filesystem, ..
         } = providers;
         let agents = AgentHost::hosting(
+            acyclic_actors::guest::Requests::default(),
             stream,
             owner.within()?,
             handler,

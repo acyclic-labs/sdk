@@ -71,6 +71,7 @@ impl LocalSockets {
         let package = SocketPackage::new((self.host)(sockets.clone()))
             .map_err(|_| Error::Invalid("socket package"))?;
         let runtime = Runtime::new(
+            crate::guest::Requests::default(),
             Store::new(Arc::clone(&provider), root()?),
             Arc::new(package),
             Arc::new(SystemClock),

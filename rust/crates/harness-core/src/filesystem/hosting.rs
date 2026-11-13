@@ -476,6 +476,7 @@ where
             None,
         ));
         let agents = AgentHost::hosting(
+            acyclic_actors::guest::Requests::default(),
             stream,
             within.clone(),
             handler.clone(),
@@ -508,11 +509,13 @@ where
     /// of this binding; the guest owns only delivery execution.
     pub fn hosting(
         mut self,
+        requests: acyclic_actors::guest::Requests,
         handler: Arc<dyn acyclic_actors::guest::Handler>,
     ) -> Result<Self, Error> {
         // The guest composes the same spawns as this binding's own handler,
         // and roots keep the creation reader its turns use.
         self.agents = Arc::new(self.agents.rehosted(
+            requests,
             handler.clone(),
             self.clock.clone(),
             Some(self.composer.clone()),
@@ -1383,16 +1386,9 @@ where
             crate::conversation::journal_volume(self.volumes.provider.clone(), &request.agent)
                 .map_err(turn)?;
         authority.authorize_host_volume(&journal).map_err(turn)?;
-        if let TurnAdmission::Admitted { scope, .. } = &self.admission {
-            crate::conversation::ContentGrant::authorize_agent_volume(
-                &self.issuer.verifier(&mut None).map_err(turn)?,
-                scope,
-                crate::AgentId::from_bytes(path.id_bytes()),
-                &journal,
-                crate::conversation::VolumeOperation::Write,
-                &mut None,
-            )
-            .map_err(turn)?;
+        if self.issuer.native().is_none()
+            && let TurnAdmission::Admitted { scope, .. } = &self.admission
+        {
             self.volumes
                 .authorize_volume_creation(scope, &journal)
                 .map_err(turn)?;
