@@ -771,10 +771,13 @@ async fn emit(
 }
 
 /// A terminal failure is versioned like deliveries and results, before exit.
+/// `error_code` is the harness's stable classification of the cause, when the
+/// cause is a harness error, so callers branch on it rather than on wording.
 pub(super) async fn terminal_error(
     output: &mut Output,
     operation: &str,
     error: &str,
+    error_code: Option<&str>,
     step: &str,
     recovery: &Recovery,
 ) -> std::io::Result<()> {
@@ -782,13 +785,12 @@ pub(super) async fn terminal_error(
         writer: output,
         task: acyclic_harness::OperationId::new(),
     };
-    emit(
-        &mut output,
-        &json!({"kind": "error", "code": "execution_failed", "step": step, "error": error,
-        "recovery": recovery}),
-        Some(operation),
-    )
-    .await
+    let mut line = json!({"kind": "error", "code": "execution_failed", "step": step, "error": error,
+        "recovery": recovery});
+    if let Some(error_code) = error_code {
+        line["error_code"] = error_code.into();
+    }
+    emit(&mut output, &line, Some(operation)).await
 }
 
 /// The JSONL stream's outstanding prompts.
@@ -1560,6 +1562,7 @@ mod tests {
                         &mut output,
                         "original-operation",
                         "original output write did not complete",
+                        None,
                         "write_output",
                         &recovery,
                     )

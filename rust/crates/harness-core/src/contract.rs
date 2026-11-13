@@ -533,6 +533,36 @@ pub use errors::{
 mod tests {
     use super::*;
 
+    /// A client wrapper that retains the Streams cause as its source.
+    #[derive(Debug, thiserror::Error)]
+    #[error("agent session failed")]
+    struct Session(#[source] acyclic_stream::StreamError);
+
+    #[test]
+    fn streams_access_refusal_classifies_as_unauthorized_through_the_cause_chain() {
+        use crate::wire::ErrorCode;
+        use acyclic_stream::StreamError;
+        let exchange = |cause| Error::exchange(ExchangeStep::Session, Session(cause));
+        let follow = |source| Error::StreamFollow {
+            resource: "agents/root".into(),
+            source,
+        };
+        assert_eq!(
+            exchange(StreamError::AccessDenied).code(),
+            ErrorCode::Unauthorized
+        );
+        assert_eq!(
+            follow(StreamError::AccessDenied).code(),
+            ErrorCode::Unauthorized
+        );
+        // Negative control: unavailability stays a storage failure.
+        assert_eq!(
+            exchange(StreamError::Unavailable).code(),
+            ErrorCode::Storage
+        );
+        assert_eq!(follow(StreamError::Unavailable).code(), ErrorCode::Storage);
+    }
+
     #[test]
     fn canonical_json_sorts_nested_keys_and_preserves_full_width_integers() -> Result<()> {
         let value = serde_json::json!({

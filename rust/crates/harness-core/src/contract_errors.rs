@@ -646,6 +646,22 @@ fn lazy_has_native_work(source: &acyclic_fs::LazyWorkspaceError) -> bool {
     }
 }
 
+/// Wire classification of a failed Streams follow or client exchange: the
+/// Streams primitive's definitive access refusal, anywhere in the retained
+/// cause chain, is an authorization outcome; every other cause is storage.
+fn transport_error_code(cause: &(dyn std::error::Error + 'static)) -> crate::wire::ErrorCode {
+    let denied = std::iter::successors(Some(cause), |cause| cause.source()).any(|cause| {
+        cause
+            .downcast_ref::<acyclic_stream::StreamError>()
+            .is_some_and(|error| error.code() == acyclic_stream::StreamError::AccessDenied.code())
+    });
+    if denied {
+        crate::wire::ErrorCode::Unauthorized
+    } else {
+        crate::wire::ErrorCode::Storage
+    }
+}
+
 /// Wire classification of a retained Machines cause.
 const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::wire::ErrorCode {
     use crate::wire::ErrorCode;
@@ -899,11 +915,9 @@ impl Error {
                 ErrorCode::InteractionExpired
             }
             Self::InteractionRejected(InteractionRejection::Denied) => ErrorCode::InteractionDenied,
-            Self::Storage(_)
-            | Self::StreamFollow { .. }
-            | Self::Exchange { .. }
-            | Self::Allocation(_)
-            | Self::TaskFailed { .. } => ErrorCode::Storage,
+            Self::StreamFollow { source, .. } => transport_error_code(source),
+            Self::Exchange { source, .. } => transport_error_code(&**source),
+            Self::Storage(_) | Self::Allocation(_) | Self::TaskFailed { .. } => ErrorCode::Storage,
             Self::Process(crate::ProcessError::NotFound { .. }) => ErrorCode::NotFound,
             Self::Process(
                 crate::ProcessError::Io { .. } | crate::ProcessError::PermissionDenied { .. },

@@ -494,7 +494,7 @@ pub enum AgentExchangeError {
     /// Original session admission, authorization, transport or framing failure.
     /// This is not a decoded agent refusal or proof of mutation settlement.
     #[error("agent session failed: {0}")]
-    Session(StreamError),
+    Session(#[source] StreamError),
     /// The prepared command or decoded reply violates the wire contract.
     #[error(transparent)]
     Command(#[from] CommandError),
