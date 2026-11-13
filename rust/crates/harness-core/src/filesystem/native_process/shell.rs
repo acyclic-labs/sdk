@@ -189,14 +189,19 @@ pub fn workspace_environment<T>(
         })
         .transpose()?;
     let home_root = home.map_or(mounts.root.as_path(), |(_, root, _)| root);
-    #[cfg(unix)]
-    if let std::collections::btree_map::Entry::Vacant(home) = environment.entry("HOME".into()) {
-        home.insert(
-            home_root
-                .to_str()
-                .ok_or_else(|| Error::Invalid("sandbox home directory is not UTF-8".into()))?
-                .into(),
-        );
+    for name in [
+        "HOME",
+        #[cfg(windows)]
+        "USERPROFILE",
+    ] {
+        if let std::collections::btree_map::Entry::Vacant(home) = environment.entry(name.into()) {
+            home.insert(
+                home_root
+                    .to_str()
+                    .ok_or_else(|| Error::Invalid("sandbox home directory is not UTF-8".into()))?
+                    .into(),
+            );
+        }
     }
     let temporary = temporary.as_ref().map_or_else(
         || {

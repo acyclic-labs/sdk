@@ -112,7 +112,7 @@ fn invocation(root: &Path) -> Invocation {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 #[tokio::test]
 async fn temporary_files_use_private_home_with_default_and_explicit_grants() -> Result<()> {
     let project = tempfile::tempdir().map_err(Error::process_io)?;
@@ -126,14 +126,23 @@ async fn temporary_files_use_private_home_with_default_and_explicit_grants() -> 
         .expect("private home")
         .1
         .to_path_buf();
+    #[cfg(target_os = "linux")]
     let binding = tempfile::tempdir().map_err(Error::process_io)?;
+    #[cfg(target_os = "linux")]
     let alias = binding.path().join("home");
+    #[cfg(target_os = "linux")]
     std::os::unix::fs::symlink(&home, &alias).map_err(Error::process_io)?;
+    #[cfg(windows)]
+    let alias = home.clone();
     for (name, mount) in mounts.mounts_mut() {
         if name == "volume:///home" {
             mount.native_root = crate::workspace::NativeRoot::Path(alias.clone());
         }
     }
+    #[cfg(target_os = "linux")]
+    let command = r#"test "$HOME" = "$ACYCLIC_VOLUME_HOME" && test "$TMPDIR" = "$HOME/tmp" && printf scratch > "$TMPDIR/receipt""#;
+    #[cfg(windows)]
+    let command = r#"if ($HOME -ne $env:ACYCLIC_VOLUME_HOME -or $env:HOME -ne $env:ACYCLIC_VOLUME_HOME -or $env:USERPROFILE -ne $env:ACYCLIC_VOLUME_HOME -or $env:TMPDIR -ne (Join-Path $HOME 'tmp') -or $env:TEMP -ne $env:TMPDIR -or $env:TMP -ne $env:TMPDIR) { exit 2 }; [System.IO.File]::WriteAllText((Join-Path $env:TMPDIR 'receipt'), 'scratch')"#;
     for explicit in [false, true] {
         let mut native = invocation(&mounts.root);
         if explicit {
@@ -143,7 +152,7 @@ async fn temporary_files_use_private_home_with_default_and_explicit_grants() -> 
         }
         let result = run(
             ShellInput {
-                command: r#"test "$HOME" = "$ACYCLIC_VOLUME_HOME" && test "$TMPDIR" = "$HOME/tmp" && printf scratch > "$TMPDIR/receipt""#.into(),
+                command: command.into(),
                 cwd: None,
                 timeout_ms: None,
                 background: false,
@@ -164,12 +173,15 @@ async fn temporary_files_use_private_home_with_default_and_explicit_grants() -> 
         );
         assert!(!project.path().join("tmp").exists());
     }
-    // Scratch creation must not follow an authored link outside the volume.
-    std::fs::remove_file(home.join("tmp/receipt")).map_err(Error::process_io)?;
-    std::fs::remove_dir(home.join("tmp")).map_err(Error::process_io)?;
-    std::os::unix::fs::symlink(project.path(), home.join("tmp")).map_err(Error::process_io)?;
-    assert!(workspace_environment(&mounts, &mut BTreeMap::new()).is_err());
-    assert!(!project.path().join("receipt").exists());
+    #[cfg(target_os = "linux")]
+    {
+        // Scratch creation must not follow an authored link outside the volume.
+        std::fs::remove_file(home.join("tmp/receipt")).map_err(Error::process_io)?;
+        std::fs::remove_dir(home.join("tmp")).map_err(Error::process_io)?;
+        std::os::unix::fs::symlink(project.path(), home.join("tmp")).map_err(Error::process_io)?;
+        assert!(workspace_environment(&mounts, &mut BTreeMap::new()).is_err());
+        assert!(!project.path().join("receipt").exists());
+    }
     Ok(())
 }
 
