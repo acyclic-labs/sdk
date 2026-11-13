@@ -59,6 +59,8 @@ run() ->
     ok=grpcbox_channel:stop(route_control),
     ok=application:stop(grpcbox),
     scalar_controls(),
+    Streaming=length([ok || {_,_,_,_,Methods}<-Specs, #{output_stream:=true}<-Methods]),
+    io:format("PASS RPC shapes: ~p unary, ~p server streaming~n",[lists:sum(Counts)-Streaming,Streaming]),
     io:format("PASS archive-installed Erlang clients: 23 populated native TCP RPC pairs, independent Rust-descriptor wire vectors, unsigned limits, optional zero, oneofs and two encoding rejections on port ~p~n",[Port]),ok.
 
 admit_vectors(Pb,Service,Path) ->
