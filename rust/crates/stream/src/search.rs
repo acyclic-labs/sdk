@@ -13,11 +13,11 @@ use access::{Access, Held, Owner};
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
-struct Frame {
-    path: StreamPath,
+struct Frame<P = StreamPath> {
+    path: P,
     sequence: u64,
     tail: Option<u64>,
-    after: Option<StreamPath>,
+    after: Option<P>,
     content: Option<Vec<u8>>,
 }
 
@@ -34,6 +34,8 @@ pub struct Cursor {
 
 #[cfg(feature = "serde")]
 mod codec;
+#[cfg(feature = "serde")]
+pub use codec::CursorState;
 
 /// An addressable original record, without a second copy of its provenance.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -186,6 +188,46 @@ impl Cursor {
                 content: None,
             }],
         }
+    }
+
+    /// Select a subtree and literal directly on the original native owner.
+    /// Validation precedes allocation; cancellation and allocation denials keep
+    /// their original IO cause. Dropping the output retires all cursor storage.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new_native(
+        root: &str,
+        pattern: &[u8],
+        meter: &std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<Result<crate::NativeStreamOutput<Self>, StreamError>> {
+        let root = match StreamPath::new_native(root, meter)? {
+            Ok(root) => root,
+            Err(error) => return Ok(Err(error)),
+        };
+        let mut allocation = acyclic_native_runtime::ReadAllocation::empty(meter);
+        let mut copied = crate::native::vector(pattern.len(), meter, &mut allocation)?;
+        meter.admit_codec(0, pattern.len() as u64, 0)?;
+        copied.extend_from_slice(pattern);
+        meter.record_codec(0, pattern.len() as u64, 0)?;
+        let mut frontier = crate::native::vector(1, meter, &mut allocation)?;
+        meter.admit_codec(0, std::mem::size_of::<Frame>() as u64, 0)?;
+        frontier.push(Frame {
+            path: root,
+            sequence: 0,
+            tail: None,
+            after: None,
+            content: None,
+        });
+        meter.record_codec(0, std::mem::size_of::<Frame>() as u64, 0)?;
+        meter.check()?;
+        Ok(Ok(crate::NativeStreamOutput::new(
+            Self {
+                pattern: copied,
+                at: None,
+                matcher: None,
+                frontier,
+            },
+            allocation,
+        )))
     }
 
     /// Read one bounded page through the original provider. Every named read

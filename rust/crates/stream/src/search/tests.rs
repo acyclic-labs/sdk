@@ -57,10 +57,13 @@ async fn native_search_keeps_original_cuts_custody_and_observer_failures()
             vec!["needle child".into()],
         )
         .await?;
-        let cursor = Cursor::new(StreamPath::new("scope")?, b"needle".to_vec());
         let budget = NonZeroU32::new(2).ok_or(StreamError::InvalidArgument)?;
         let meter = Arc::new(crate::test_meter::Meter::default());
+        let cursor = Cursor::new_native("scope", b"needle", &meter.original())??;
+        let cursor_bytes = meter.held.load(Ordering::SeqCst);
+        assert!(cursor_bytes > 0);
         let mut page = cursor
+            .value()
             .native_page(provider.as_ref(), budget, meter.original())
             .await??;
         append(
@@ -69,6 +72,35 @@ async fn native_search_keeps_original_cuts_custody_and_observer_failures()
             vec!["needle later".into()],
         )
         .await?;
+        #[cfg(feature = "serde")]
+        {
+            let continuation = page.value().next.as_ref().ok_or("missing continuation")?;
+            let encoded = serde_json::to_vec(continuation)?;
+            let decoded: CursorState = serde_json::from_slice(&encoded)?;
+            let restored = decoded.to_native(&meter.original())??;
+            assert_eq!(restored.value().selection(), continuation.selection());
+            let actual = restored
+                .value()
+                .native_page(provider.as_ref(), budget, meter.original())
+                .await??;
+            let expected = continuation
+                .native_page(provider.as_ref(), budget, meter.original())
+                .await??;
+            assert_eq!(actual.value().matches, expected.value().matches);
+            assert_eq!(actual.value().work, expected.value().work);
+            drop(actual);
+            drop(expected);
+            drop(restored);
+            let mut invalid = serde_json::from_slice::<serde_json::Value>(&encoded)?;
+            invalid["version"] = serde_json::json!(2);
+            let invalid: CursorState = serde_json::from_value(invalid)?;
+            let before = meter.allocations.load(Ordering::SeqCst);
+            assert!(matches!(
+                invalid.to_native(&meter.original())?,
+                Err(StreamError::InvalidArgument)
+            ));
+            assert_eq!(meter.allocations.load(Ordering::SeqCst), before);
+        }
         let mut found = Vec::new();
         loop {
             assert!(page.value().work <= budget.get());
@@ -96,11 +128,22 @@ async fn native_search_keeps_original_cuts_custody_and_observer_failures()
         );
         assert!(meter.allocations.load(Ordering::SeqCst) > 0);
         drop(page);
-        assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+        assert_eq!(meter.held.load(Ordering::SeqCst), cursor_bytes);
 
         let denied = Arc::new(crate::test_meter::Meter::default());
         denied.deny_allocation.store(true, Ordering::SeqCst);
+        let constructor_error = Cursor::new_native("scope", b"needle", &denied.original())
+            .err()
+            .ok_or("constructor allocation denial disappeared")?;
+        assert!(
+            constructor_error
+                .get_ref()
+                .and_then(|error| error.downcast_ref::<crate::test_meter::NativeDenial>())
+                .is_some()
+        );
+        assert_eq!(denied.held.load(Ordering::SeqCst), 0);
         let error = cursor
+            .value()
             .native_page(provider.as_ref(), budget, denied.original())
             .await
             .err()
@@ -114,6 +157,8 @@ async fn native_search_keeps_original_cuts_custody_and_observer_failures()
         assert_eq!(denied.read_operations.load(Ordering::SeqCst), 0);
         assert_eq!(denied.held.load(Ordering::SeqCst), 0);
 
+        drop(cursor);
+        assert_eq!(meter.held.load(Ordering::SeqCst), 0);
         let cancelled = Arc::new(crate::test_meter::Meter {
             cancel_after_read: 1,
             ..Default::default()
