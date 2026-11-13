@@ -635,19 +635,19 @@ impl ExecutionJournal for Journal {
         operation: OperationId,
         key: &'a str,
         io: Option<&'a PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<FileRef>>> {
         if io.is_some() {
             return Err(Error::Unsupported(
                 "finite test journal lookup is unavailable".into(),
             ));
         }
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            self.1
+            Ok(self
+                .1
                 .lock()
                 .unwrap()
                 .get(&format!("{operation}:{key}"))
-                .map(|(file, _)| file.clone())
-                .ok_or_else(|| Error::NotFound("original staged payload was not published".into()))
+                .map(|(file, _)| file.clone()))
         })
     }
     fn load<'a>(

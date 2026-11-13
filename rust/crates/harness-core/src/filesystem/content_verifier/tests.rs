@@ -142,7 +142,7 @@ async fn issuer_layers_preserve_precedence_pins_and_original_read_authority() ->
     };
     let harness = compose(Capabilities::new(capabilities.clone()))?;
     // Workspace rebinding must retain all of the original issuer sources.
-    let harness = harness.with_workspace(None, binding.clone())?;
+    let harness = harness.with_workspace(None, binding.clone(), binding.clone())?;
     let task = Arc::new(harness.agent_context(&Capabilities::default(), binding.clone())?);
     for (index, expected) in crate::layers::ORDER.into_iter().enumerate() {
         let result = read(

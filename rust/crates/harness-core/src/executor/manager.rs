@@ -75,7 +75,9 @@ impl StockExecution<'_> {
         let key = with_history_io(self.io, |work| {
             preparation_format(format_args!("manager:{step}:part:{part}:window"), work)
         })?;
-        let located = journal.staged_ref(input.operation_id, &key, self.io)?.await?;
+        let located = journal
+            .staged_ref(input.operation_id, &key, self.io)?
+            .await?;
         match located {
             Some(file) => {
                 let selected =
