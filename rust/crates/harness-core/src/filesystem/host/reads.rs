@@ -484,7 +484,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let requested_hold = io.guard_owned(requested.capacity() as u64)?;
         let (stat, recorded) = generation.stat(&requested, io, io.cancellation()).await;
         let stat = io.sdk((Ok::<_, Error>(stat), recorded))?;
-        let stat = stat.map_err(path_read_refusal)?;
+        let stat = stat.map_err(|error| path_read_refusal(error.into()))?;
         let length = match (stat.kind, stat.logical_bytes) {
             (acyclic_fs::kernel::FileKind::Regular, Some(length)) => length,
             _ => {
@@ -895,7 +895,7 @@ async fn read_generation_optional<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     path: &str,
     maximum: Option<u64>,
     io: &PreparationIo,
-    classify: fn(WorkspaceError) -> Error,
+    classify: fn(Error) -> Error,
 ) -> Result<Option<acyclic_stream::OwnedBytes>> {
     io.remaining()?;
     let (result, recorded) = generation.read(path, maximum, io, io.cancellation()).await;
@@ -905,7 +905,7 @@ async fn read_generation_optional<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let result = match result {
         Ok(bytes) => Ok(Some(bytes)),
         Err(WorkspaceError::NotFound) => Ok(None),
-        Err(error) => Err(classify(error)),
+        Err(error) => Err(classify(error.into())),
     };
     result?.map(|bytes| io.retain_read_bytes(bytes)).transpose()
 }

@@ -14,13 +14,6 @@ where
         *self.verified.get_mut() = SummaryCache::default();
     }
 
-    /// Use the original host alarm clock for tool quiet deadlines.
-    #[must_use]
-    pub fn with_clock(mut self, clock: Arc<dyn acyclic_actors::local::Clock>) -> Self {
-        self.clock = clock;
-        self
-    }
-
     pub(crate) fn with_run_admission(
         mut self,
         source: Option<crate::supervision::RunAdmissionSource>,
@@ -184,7 +177,6 @@ where
             agent_approvals: None,
             execution: None,
             agent_events: None,
-            clock: Arc::new(acyclic_actors::local::SystemClock),
             actor_admission: None,
             run_admission: None,
             verified: tokio::sync::Mutex::new(SummaryCache::default()),
@@ -285,7 +277,7 @@ where
         self
     }
 
-    /// Uses the actor owner's clock for reversible preparation deadlines.
+    /// Uses the actor owner's clock for preparation and tool quiet deadlines.
     #[must_use]
     pub fn with_clock(mut self, clock: Arc<dyn acyclic_actors::local::Clock>) -> Self {
         self.clock = Some(clock);

@@ -343,7 +343,13 @@ where
                 )
                 .await?;
             if let Some(quiet_ms) = policy.quiet_ms {
-                let at_ms = self.clock.now_unix_ms();
+                let at_ms = self
+                    .clock
+                    .as_deref()
+                    .ok_or_else(|| {
+                        Error::Unsupported("execution journal has no host clock".into())
+                    })?
+                    .now_unix_ms();
                 self.tool_job_projection(
                     &mut projection,
                     crate::supervision::tool_jobs::Record {
