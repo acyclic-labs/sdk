@@ -41,8 +41,9 @@ impl BoundHook {
         &self.selector.value
     }
 
-    /// The existing tool binding, for ordinary canonical call admission.
-    pub fn binding(&self) -> &crate::tool::Tool {
+    /// The shared immutable tool binding for canonical call admission.
+    /// Retaining this Arc keeps the executable on its original allocation owner.
+    pub fn binding(&self) -> &std::sync::Arc<crate::tool::Tool> {
         &self.binding
     }
 }
