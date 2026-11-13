@@ -32,39 +32,7 @@ impl TurnDriver for Unused {
 async fn unchanged_membership_fences_a_concurrent_opposite_decision()
 -> Result<(), Box<dyn std::error::Error>> {
     for initial in [false, true] {
-        let provider = Arc::new(MemoryStream::default());
-        let host = AgentHost::new(
-            provider.clone(),
-            Unused,
-            ActorReference::new(b"account", b"agents", b"owner")?,
-            ActorLimits::default(),
-            Arc::new(SystemClock),
-        )?
-        .with_root_placement(Some(Routing {
-            paths: Paths::new(StreamPath::new("account/routing")?),
-            node: NodeId::new(b"node")?,
-        }));
-        let created = host.prepare_root_with_peer(
-            &IntentId::try_from("create")?,
-            ForkAdopted {
-                agent: AgentId::from_bytes([1; 16]),
-                parent: None,
-                profile: None,
-                forked_at: 0,
-                conversation_tail: 0,
-                checkpoint: None,
-                volumes: Vec::new(),
-                brief: None,
-                policy: None,
-            },
-            false,
-            initial,
-        )?;
-        let root = created.child;
-        assert!(matches!(
-            provider.commit(created.request).await?,
-            CommitOutcome::Committed(_)
-        ));
+        let (provider, host, root) = root_with_membership(initial).await?;
         let user = Sender::User {
             principal: "owner".into(),
         };
@@ -126,4 +94,137 @@ async fn unchanged_membership_fences_a_concurrent_opposite_decision()
         );
     }
     Ok(())
+}
+
+#[tokio::test]
+async fn rejoining_requires_original_display_metadata() -> Result<(), Box<dyn std::error::Error>> {
+    for inherited in [false, true] {
+        let (provider, host, root) = root_with_membership(false).await?;
+        let path = SessionPublication::row_path(&host.actor(&root)?)?;
+        let original = if inherited {
+            StreamPath::new("other-session-row")?
+        } else {
+            path.clone()
+        };
+        let profile = crate::agent::SessionProfile::project(
+            &crate::agent::Phase::Idle,
+            "Original title".into(),
+            &[],
+            "Original goal",
+            64,
+        );
+        let row = SessionRow::new(NodeId::new(b"node")?, profile.clone());
+        let mut effects = vec![row.effect(original.clone())?];
+        if inherited {
+            effects.push(acyclic_stream::CommitEffect::hard(
+                Vec::new(),
+                vec![CommitMutation::Fork {
+                    source: original.clone(),
+                    destination: path.clone(),
+                    at_tail: None,
+                    exclude: Vec::new(),
+                    records: Vec::new(),
+                }],
+            ));
+        }
+        // Forks select pre-commit history, so publish their source first.
+        for effect in effects {
+            assert!(matches!(
+                provider
+                    .commit(CommitRequest {
+                        deadline_unix_millis: None,
+                        idempotency_key: acyclic_stream::IdempotencyKey::unique(),
+                        effects: vec![effect],
+                    })
+                    .await?,
+                CommitOutcome::Committed(_)
+            ));
+        }
+        let preceding = provider
+            .record_at(path.clone(), 0)
+            .await?
+            .ok_or("row missing")?;
+        assert_eq!(SessionRow::decode(&preceding.value)?, row);
+        assert!(matches!(
+            provider
+                .commit(CommitRequest {
+                    deadline_unix_millis: None,
+                    idempotency_key: acyclic_stream::IdempotencyKey::unique(),
+                    effects: vec![
+                        row.changed(None)?
+                            .ok_or("removal missing")?
+                            .effect(path.clone())?
+                    ],
+                })
+                .await?,
+            CommitOutcome::Committed(_)
+        ));
+        let result = host
+            .set_peer_membership(
+                &root,
+                &Sender::User {
+                    principal: "owner".into(),
+                },
+                &IntentId::try_from("rejoin")?,
+                true,
+            )
+            .await;
+        let head = provider.head(path).await?;
+        let member = provider
+            .head(root.peer_membership()?)
+            .await?
+            .last
+            .ok_or("membership missing")?;
+        if inherited {
+            assert!(result.is_err());
+            assert_eq!(head.tail, 2);
+            assert!(!PeerMembership::decode(&member.value)?.enabled);
+        } else {
+            result?;
+            assert_eq!(head.tail, 3);
+            let current = SessionRow::decode(&head.last.ok_or("rejoined row missing")?.value)?;
+            assert_eq!(current.profile, Some(profile));
+            assert!(PeerMembership::decode(&member.value)?.enabled);
+        }
+    }
+    Ok(())
+}
+
+async fn root_with_membership(
+    initial: bool,
+) -> Result<(Arc<MemoryStream>, AgentHost<MemoryStream>, AgentPath), Box<dyn std::error::Error>> {
+    let provider = Arc::new(MemoryStream::default());
+    let host = AgentHost::new(
+        provider.clone(),
+        Unused,
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        ActorLimits::default(),
+        Arc::new(SystemClock),
+    )?
+    .with_root_placement(Some(Routing {
+        paths: Paths::new(StreamPath::new("account/routing")?),
+        node: NodeId::new(b"node")?,
+    }));
+    let created = host.prepare_root_with_peer(
+        &IntentId::try_from("create")?,
+        ForkAdopted {
+            agent: AgentId::from_bytes([1; 16]),
+            parent: None,
+            profile: None,
+            forked_at: 0,
+            conversation_tail: 0,
+            checkpoint: None,
+            volumes: Vec::new(),
+            brief: None,
+            policy: None,
+        },
+        false,
+        initial,
+    )?;
+    let root = created.child;
+    assert!(matches!(
+        provider.commit(created.request).await?,
+        CommitOutcome::Committed(_)
+    ));
+    Ok((provider, host, root))
 }

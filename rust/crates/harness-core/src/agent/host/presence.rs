@@ -123,8 +123,8 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
                     .await
                     .map_err(Error::Stream)?
                     .ok_or(Error::Record("removed session has no preceding row"))?;
-                let previous = SessionRow::decode(&record.value)?;
-                if previous.node != routing.node || previous.rev.checked_add(1) != Some(row.rev) {
+                let previous = SessionRow::from_record(row_guard.path(), row.rev - 1, &record)?;
+                if previous.node != routing.node {
                     return Err(Error::Record("removed session provenance differs"));
                 }
                 Some(
