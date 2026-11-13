@@ -318,7 +318,7 @@ pub(super) fn shared_invalidation_pass(core: &ProjectionCore, notifier: &impl Ke
 
 fn invalidation_pass(core: &ProjectionCore, notifier: &impl KernelCacheNotifier) {
     #[cfg(all(test, not(loom)))]
-    tests::owner::pause_invalidations(core);
+    super::tests::owner::pause_invalidations(core);
     let mut through = None;
     let result = core.request(|work| {
         let mut items = core.state_to_finish().invalidation.take_deferred()?;
