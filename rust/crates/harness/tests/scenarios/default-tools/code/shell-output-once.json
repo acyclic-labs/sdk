@@ -1,5 +1,6 @@
 {
   "prompt": "Run the command through code and report the result without repeating output.",
+  "seed": { "sentinel.txt": "unchanged\n" },
   "turns": [
     [
       {
@@ -16,7 +17,7 @@
     "done"
   ],
   "expect": {
-    "files": {},
+    "files": { "sentinel.txt": "unchanged\n" },
     "results": {
       "program": {
         "content": {
