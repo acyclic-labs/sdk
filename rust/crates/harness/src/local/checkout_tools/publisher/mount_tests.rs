@@ -652,7 +652,7 @@ async fn check_auxiliary_publication(mounting: crate::local::WorkspaceMounting) 
                         .1
                         .native_root
                         .override_path()
-                        .expect("bound home")
+                        .ok_or_else(|| Error::NotFound("bound home".into()))?
                         .join("note")
                 )
                 .map_err(storage)?,

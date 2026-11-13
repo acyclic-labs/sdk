@@ -104,7 +104,7 @@ fn shell_job_child() {
     if std::fs::exists("shell-job.timeout").unwrap() {
         std::fs::write("retained", b"before-stop").unwrap();
         // The command's own view of the home volume, not the shared destination.
-        let home = std::env::var_os("ACYCLIC_VOLUME_HOME").unwrap();
+        let home = crate::native_environment::variable("ACYCLIC_VOLUME_HOME").unwrap();
         std::fs::write(
             std::path::PathBuf::from(home).join("timeout-retained"),
             b"before-stop",
