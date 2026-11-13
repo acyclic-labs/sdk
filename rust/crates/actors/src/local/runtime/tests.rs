@@ -866,7 +866,7 @@ async fn first_fork_placement_resumes_once_and_preserves_later_pause() -> TestRe
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
     )
-    .with_external_placement();
+    .externally_placed();
     runtime.place_fork(child.clone(), 1).await?;
     assert!(!store.load(&child).await?.state().unwrap().paused());
     runtime.pause(&child, true).await?;
@@ -884,7 +884,7 @@ async fn first_fork_placement_resumes_once_and_preserves_later_pause() -> TestRe
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
     )
-    .with_external_placement();
+    .externally_placed();
     let (index, current) = replacement.placement_state(&child).await?;
     assert!(!current);
     replacement.place_fork(child.clone(), index + 1).await?;
