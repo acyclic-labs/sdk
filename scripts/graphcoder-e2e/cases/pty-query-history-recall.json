@@ -23,5 +23,5 @@
       {"when": {"contains": ["HISTORY_RECALLED_REPLY", "○"]}, "detach": true}
     ]}
   ],
-  "assert": {"requests": 4}
+  "assert": {"requests": 4, "model_absent": ["UNSUBMITTED_DRAFT"]}
 }
