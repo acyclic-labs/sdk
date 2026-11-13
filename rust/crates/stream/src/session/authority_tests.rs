@@ -101,10 +101,16 @@ async fn alarm_producer_loss_terminates_the_original_authorized_session() {
         state.lose_clock();
         let error = lost.await.expect_err("lost producer cannot settle expiry");
         assert_eq!(error.category(), StreamError::Unavailable);
-        assert!(
-            std::iter::successors(error.source(), |source| source.source())
-                .any(|source| source.is::<SourceClosed>())
-        );
+        let mut source = error.source();
+        let mut retained = false;
+        while let Some(cause) = source {
+            if cause.is::<SourceClosed>() {
+                retained = true;
+                break;
+            }
+            source = cause.source();
+        }
+        assert!(retained);
         let mut query = TraceQuery::new(
             trace.follow(0, Default::default()).await.unwrap(),
             Default::default(),
@@ -1160,14 +1166,19 @@ async fn filesystem_context_borrows_its_resource_and_rechecks_current_authority(
             ] {
                 let error = result.expect_err("lost trust cannot authorize disclosure");
                 assert_eq!(error.category(), StreamError::AccessDenied);
-                assert!(
-                    std::iter::successors(error.source(), |source| source.source()).any(
-                        |source| matches!(
-                            source.downcast_ref::<verify::VerifyError>(),
-                            Some(verify::VerifyError::Trust)
-                        )
-                    )
-                );
+                let mut source = error.source();
+                let mut retained = false;
+                while let Some(cause) = source {
+                    if matches!(
+                        cause.downcast_ref::<verify::VerifyError>(),
+                        Some(verify::VerifyError::Trust)
+                    ) {
+                        retained = true;
+                        break;
+                    }
+                    source = cause.source();
+                }
+                assert!(retained);
             }
         }
     }
