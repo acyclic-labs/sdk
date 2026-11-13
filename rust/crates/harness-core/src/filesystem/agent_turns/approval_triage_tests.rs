@@ -27,15 +27,26 @@ impl TurnContext for NoWorkerContext {
     }
 }
 
-#[tokio::test]
-async fn original_parent_page_replays_decisions_and_merges_only_escalations() -> TestResult {
-    let reviewer = Arc::new(ScriptedModelProvider::new(
-        ["allow", "deny", "ask", "ask"].into_iter().map(|verdict| {
+type Binding = crate::filesystem::hosting::Bound<
+    acyclic_stream::MemoryStream,
+    acyclic_fs::LogicalObjectStore<acyclic_objects::MemoryObjects>,
+>;
+
+async fn family(
+    verdicts: impl IntoIterator<Item = &'static str>,
+) -> TestResult<(
+    Binding,
+    AgentPath,
+    Vec<AgentState>,
+    Arc<ScriptedModelProvider>,
+)> {
+    let reviewer = Arc::new(ScriptedModelProvider::new(verdicts.into_iter().map(
+        |verdict| {
             ScriptedTurn::Text(format!(
                 r#"{{"verdict":"{verdict}","reason":"reviewed exact action"}}"#
             ))
-        }),
-    ));
+        },
+    )));
     let executors = StockExecutors::new(
         (
             Model::new("test".into(), "reviewer".into(), "1".into())?,
@@ -81,6 +92,15 @@ async fn original_parent_page_replays_decisions_and_merges_only_escalations() ->
         bound.agents().drain(&child).await?;
         children.push(bound.agents().state(&child).await?);
     }
+    Ok((bound, parent, children, reviewer))
+}
+
+#[tokio::test]
+async fn original_parent_page_replays_decisions_and_merges_only_escalations() -> TestResult {
+    let (bound, parent, children, reviewer) = family(["allow", "deny", "ask", "ask"]).await?;
+    let sender = Sender::User {
+        principal: "human".into(),
+    };
     let turns = bound.turns();
     let parent_state = bound.agents().state(&parent).await?;
     let reference = crate::filesystem::bounded_io::content_workspace(
@@ -345,5 +365,135 @@ async fn original_parent_page_replays_decisions_and_merges_only_escalations() ->
         bound.agents().state(&parent).await?.conversation_tail,
         parent_state.conversation_tail
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn reopening_after_parent_decisions_commits_original_wakes_once() -> TestResult {
+    let (bound, parent, children, reviewer) = family(["allow", "deny"]).await?;
+    let turns = bound.turns();
+    let parent_before = bound.agents().state(&parent).await?;
+    let id = crate::InteractionId::from_bytes([81; 16]);
+    let request_id = crate::agent::IntentId::try_from(crate::approvals::agent_request_id(id))?;
+    let mut delivered = Vec::new();
+    let mut child_tails = Vec::new();
+    for (index, child) in children.iter().enumerate() {
+        let (_, bindings, files) = turns.approval_journal(child).await?;
+        let (policy, _) = turns
+            .approvals(child, bindings.journal.reader.as_ref())
+            .await?;
+        AgentApprovals::new(files, Arc::new(policy))
+            .open(
+                id,
+                &Interaction::Approval {
+                    prompt: format!("action-{index}"),
+                    operation_id: OperationId::from_bytes([u8::try_from(index + 1)?; 16]),
+                    action_digest: [u8::try_from(index + 1)?; 32],
+                    subject: ApprovalSubject::Tool {
+                        route: ApprovalRoute::Policy,
+                        tool: "write".into(),
+                        call_id: "write".into(),
+                        arguments: serde_json::json!({"path":format!("action-{index}")}),
+                        target: None,
+                    },
+                },
+            )
+            .await?;
+        let Delivered::Committed { inbox } = bound
+            .agents()
+            .send(
+                &parent,
+                &Sender::Agent {
+                    path: child.path.clone(),
+                },
+                &InboxRecord::ApprovalRequested(crate::agent::ApprovalRequested {
+                    child: child.path.clone(),
+                    id: request_id.clone(),
+                }),
+            )
+            .await?
+        else {
+            return Err("request did not commit".into());
+        };
+        delivered.push(inbox);
+        child_tails.push(turns.stream.tail(child.path.inbox()?).await?);
+    }
+    let end = delivered[1] + 1;
+    let selected = turns
+        .select_approval_page(&parent_before, delivered[0], end)
+        .await?;
+    let prepared = turns
+        .review_approval_page(&parent_before, &selected)
+        .await?;
+    assert!(prepared.summary.is_none());
+    assert_eq!(prepared.outs.len(), 2);
+    assert_eq!(reviewer.request_count(), 2);
+    // Durable approval files survived, but the actor checkpoint/wakes did not commit.
+    drop(prepared);
+    assert!(
+        !bound
+            .agents()
+            .input_progress(&parent, delivered[0])
+            .await?
+            .settled
+    );
+    for (child, original) in children.iter().zip(&child_tails) {
+        assert_eq!(turns.stream.tail(child.path.inbox()?).await?, *original);
+    }
+    let reopen = || -> TestResult<_> {
+        let handler = crate::agent::AgentHandler::new(
+            crate::agent::actor_store(&turns.stream)?,
+            crate::agent::ExecutorDriver::new(turns.clone()),
+            acyclic_actors::domain::ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        )?
+        .with_close();
+        Ok(bound.agents().rehosted(
+            Arc::new(handler),
+            Arc::new(acyclic_actors::local::SystemClock),
+            None,
+        )?)
+    };
+    let reopened = reopen()?;
+    reopened.drain(&parent).await?;
+    let completed = reopened.state(&parent).await?;
+    assert!(completed.approval_control.is_none());
+    assert_eq!(completed.conversation_tail, parent_before.conversation_tail);
+    for inbox in delivered {
+        assert!(reopened.input_progress(&parent, inbox).await?.settled);
+    }
+    for (child, original) in children.iter().zip(&child_tails) {
+        assert_eq!(turns.stream.tail(child.path.inbox()?).await?, original + 1);
+        let mut records = turns
+            .stream
+            .read(ReadRequest {
+                key: None,
+                path: child.path.inbox()?,
+                from: *original,
+                limit: 1,
+                at_least: Default::default(),
+            })
+            .await?;
+        let record = records
+            .try_next()
+            .await?
+            .ok_or("original child wake is missing")?;
+        assert_eq!(
+            InboxRecord::decode(&record.value)?,
+            InboxRecord::Approval(Approval {
+                id: request_id.clone()
+            })
+        );
+    }
+    // A second runtime opens only committed state; it cannot repeat either effect.
+    let again = reopen()?;
+    again.drain(&parent).await?;
+    assert_eq!(
+        reviewer.request_count(),
+        2,
+        "reopen dispatched another inference"
+    );
+    for (child, original) in children.iter().zip(&child_tails) {
+        assert_eq!(turns.stream.tail(child.path.inbox()?).await?, original + 1);
+    }
     Ok(())
 }
