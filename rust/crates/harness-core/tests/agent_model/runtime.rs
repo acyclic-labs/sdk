@@ -91,6 +91,7 @@ async fn a_same_turn_stop_archives_newly_admitted_children() -> Result {
         assert_eq!(child.closed, stop, "same-turn spawn escaped the stop");
         assert_eq!(parent.open_children.len(), usize::from(!stop));
         if stop {
+            assert!(parent.dropped_before >= 2, "stopped input remained pending");
             assert!(matches!(
                 child.phase,
                 Phase::Done {

@@ -312,7 +312,9 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                 }
             }
             Out::Archive { target, id } => {
-                builder.recipient(target)?;
+                if !builder.created.contains(&target.inbox()?) {
+                    builder.recipient(target)?;
+                }
                 let control = Control {
                     by: sender.clone(),
                     id: id.clone(),
@@ -345,6 +347,19 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
             expected: state.status_tail - 1,
         })?;
         builder.append(path, status.append_record()?);
+    }
+    // The primitive fork carries records for its own destination. Fold hard
+    // records into that mutation rather than emitting a conflicting append.
+    for mutation in &mut builder.forks {
+        if let CommitMutation::Fork {
+            destination,
+            records,
+            ..
+        } = mutation
+            && let Some(appended) = builder.appends.remove(destination)
+        {
+            records.extend(appended);
+        }
     }
     let mut mutations = builder.forks;
     mutations.extend(

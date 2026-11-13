@@ -758,7 +758,15 @@ impl ToolContext {
                 ));
             }
         }
-        if !content.reader.supports_read(volume, io)? {
+        if changes.iter().any(|change| {
+            !matches!(
+                change,
+                crate::conversation::ContentChange::DeleteExpected { .. }
+                    | crate::conversation::ContentChange::DeleteAt { .. }
+                    | crate::conversation::ContentChange::Delete { .. }
+            )
+        }) && !content.reader.supports_read(volume, io)?
+        {
             return Err(crate::executor::stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unsupported,

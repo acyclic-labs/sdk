@@ -387,6 +387,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                         let body = InputStager {
                             volumes: &self.volumes,
                             authority: &journal_authority,
+                            input_authority: Some(&authority),
                             volume: &journal,
                             maximum_bytes: self.maximum_bytes,
                         }

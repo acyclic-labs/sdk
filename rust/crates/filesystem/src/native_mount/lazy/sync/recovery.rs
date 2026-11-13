@@ -43,6 +43,53 @@ where
                 .has_retained_operation()
                 .then(|| checkout.retained_operation_id())
         };
+        if let Some(requested) = publication.operation
+            && (remembered.is_some_and(|(operation, _)| operation != requested)
+                || retained.is_some_and(|operation| operation != requested))
+        {
+            return Err(MountSourceError::Stale.into());
+        }
+        if let Some(operation) = retained {
+            let proof = remembered.and_then(|(_, proof)| proof).or(selected
+                .filter(|(_, _, requested)| *requested == operation)
+                .and(selected_proof));
+            if remembered.is_some_and(|(remembered, _)| remembered != operation)
+                || selected.is_some_and(|(_, _, selected)| selected != operation)
+            {
+                return Err(MountSourceError::Stale.into());
+            }
+            // The operation index retains its generation even when archived
+            // receipt evidence has been collected. Context comes from the
+            // original checkout custody, never a replacement observation.
+            if let Some(generation) = self
+                .lazy
+                .operation_generation(
+                    IdempotencyKey::from_bytes(operation.into_bytes()),
+                    accounting,
+                )
+                .await
+                .map_err(lazy_error)?
+            {
+                return self
+                    .recover_committed_publication(
+                        publication,
+                        accounting,
+                        (
+                            operation,
+                            generation,
+                            proof,
+                            retained,
+                            remembered.map(|(id, _)| id),
+                        ),
+                    )
+                    .await
+                    .map(Some);
+            }
+            return self
+                .recover_retained_publication(publication, accounting, (operation, proof))
+                .await
+                .map(Some);
+        }
         let requested = match publication.operation {
             Some(operation) => self
                 .lazy
@@ -79,12 +126,7 @@ where
                 return Ok(Some(original));
             }
         }
-        if let Some(requested) = publication.operation
-            && (remembered.is_some_and(|(operation, _)| operation != requested)
-                || retained.is_some_and(|operation| operation != requested))
-        {
-            return Err(MountSourceError::Stale.into());
-        }
+
         if publication.operation.is_some()
             && requested.is_none()
             && remembered.is_none()

@@ -8,7 +8,6 @@ pub(crate) fn decode_tool_table(
     io: Option<&PreparationIo>,
     code: crate::wire::ErrorCode,
 ) -> Result<Vec<crate::tool::ToolDefinition>> {
-    #[cfg(not(target_arch = "wasm32"))]
     if let Some(io) = io {
         let (table, hold) = io.decode(
             std::marker::PhantomData::<Vec<crate::tool::ToolDefinition>>,
@@ -18,7 +17,6 @@ pub(crate) fn decode_tool_table(
         hold.into_retained()?;
         return Ok(table);
     }
-    let _ = io;
     serde_json::from_slice(bytes)
         .map_err(|_| Error::from_code(code, "appended tool table is invalid"))
 }

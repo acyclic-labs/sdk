@@ -1372,7 +1372,7 @@ async fn admit(
         state.phase = Phase::Idle;
     }
     if kind == Admit::Archive {
-        begin_archive(&mut state);
+        begin_archive(&mut state, sequence);
     }
     state.closed = admitted.control.closed;
     if admitted.enqueue && matches!(&record, InboxRecord::Notice { notice, .. } if !notice.wakes())
@@ -1741,7 +1741,7 @@ async fn run<T: TurnDriver + ?Sized>(
             target: state.path.clone(),
             id: IntentId::try_from(format!("self-archive:{}", state.path.id()))?,
         });
-        begin_archive(state);
+        begin_archive(state, cursor);
         cascade(state, outs).await?;
         return Ok(());
     }
@@ -1897,11 +1897,12 @@ fn shed(state: &mut AgentState, outs: &mut Vec<Out>, failure: &str) {
     state.phase = Phase::Done { outcome };
 }
 
-fn begin_archive(state: &mut AgentState) {
+fn begin_archive(state: &mut AgentState, through: u64) {
     if !state.closed {
         state.archive_pending.clone_from(&state.open_children);
     }
     state.closed = true;
+    state.drop_before(through);
     state.drop_queue();
     state.pending_notices = None;
     state.turn = None;

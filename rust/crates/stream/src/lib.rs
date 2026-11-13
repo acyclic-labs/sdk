@@ -8,6 +8,8 @@ pub mod authorization;
 pub use authorization::{AUTHORIZATION, StreamMethod};
 pub mod body;
 pub mod completion;
+#[cfg(feature = "serde")]
+pub mod serde_u64;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 acyclic_test_support::counting_allocator!();
 
