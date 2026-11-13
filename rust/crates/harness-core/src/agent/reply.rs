@@ -253,13 +253,28 @@ async fn goal_reply<P: crate::store::JournalProvider + ?Sized>(
     request: ConversationEntry,
     steering: Option<SteeringReply>,
 ) -> Result<Reply, Error> {
+    // An answer can be durable while its original turn still owns workspace
+    // integration. Every observer selects settlement through that same turn.
+    let answered = |sequence, entry: ConversationEntry, origin| {
+        if state
+            .turn
+            .as_ref()
+            .is_some_and(|turn| turn.inbox == entry.inbox)
+        {
+            entry
+                .goal
+                .map_or(Reply::Pending, |run| Reply::Continuing { run })
+        } else {
+            Reply::Answered {
+                sequence,
+                entry,
+                origin,
+                steering,
+            }
+        }
+    };
     let Some(run) = request.goal else {
-        return Ok(Reply::Answered {
-            sequence,
-            entry: request,
-            origin: None,
-            steering,
-        });
+        return Ok(answered(sequence, request, None));
     };
     let pending = || {
         if request.inbox < state.dropped_before || matches!(state.phase, super::Phase::Done { .. })
@@ -300,10 +315,5 @@ async fn goal_reply<P: crate::store::JournalProvider + ?Sized>(
     if completed.sequence < sequence || !entry.continues_goal(&state.path, run) {
         return Err(Error::Record("goal completion names another run"));
     }
-    Ok(Reply::Answered {
-        sequence: completed.sequence,
-        entry,
-        origin: Some(Box::new(request)),
-        steering,
-    })
+    Ok(answered(completed.sequence, entry, Some(Box::new(request))))
 }
