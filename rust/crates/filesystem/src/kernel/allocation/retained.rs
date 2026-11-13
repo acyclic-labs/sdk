@@ -279,6 +279,13 @@ pub struct RetainedAllocation {
     inner: RetainedAllocationInner,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl From<crate::NativeAllocation> for RetainedAllocation {
+    fn from(allocation: crate::NativeAllocation) -> Self {
+        Self::native(allocation)
+    }
+}
+
 enum RetainedAllocationInner {
     Standalone {
         _lease: StandaloneLease,

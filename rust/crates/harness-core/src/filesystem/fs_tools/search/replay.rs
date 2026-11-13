@@ -5,15 +5,32 @@ use crate::executor::{PreparationIo, stock_boundary};
 use crate::wire::ErrorCode;
 use serde::Deserialize;
 
-enum Source {
-    Records(acyclic_stream::StreamPath),
+enum Source<'a> {
+    Records(&'a str),
     Files(
-        crate::context::ContextRoot,
-        String,
+        &'a crate::context::ContextRoot,
+        &'a str,
         crate::tool::ReadPathKind,
     ),
 }
 
+fn file_source(cursor: &crate::search::FileCursor) -> Source<'_> {
+    let (root, path, kind, _) = cursor.selection();
+    Source::Files(root, path, kind)
+}
+
+fn portable_source(cursor: &Selection) -> Result<Source<'_>> {
+    Ok(match cursor {
+        Selection::Records(cursor) => Source::Records(
+            cursor
+                .selection()
+                .ok_or_else(|| invalid(None, "search cursor has no root"))?
+                .0
+                .as_str(),
+        ),
+        Selection::Files(cursor) => file_source(cursor),
+    })
+}
 fn invalid(io: Option<&PreparationIo>, reason: &'static str) -> Error {
     stock_boundary(io, ErrorCode::Invalid, reason)
 }
@@ -45,30 +62,42 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
         }
         #[cfg(not(target_arch = "wasm32"))]
         let work = io.and_then(PreparationIo::original_native_work);
+        let portable;
+        #[cfg(not(target_arch = "wasm32"))]
+        let native;
         #[cfg(not(target_arch = "wasm32"))]
         let source = if let Some(work) = work {
-            let (cursor, _) = self.native_search_selection(
-                command,
-                context,
-                io.ok_or(Error::NativeBoundary {
-                    code: ErrorCode::Storage,
-                    reason: "native replay lacks original accounting",
-                })?,
-                work,
-            )?;
-            Source::Records(
-                cursor
-                    .value()
-                    .selection()
-                    .ok_or_else(|| invalid(io, "search cursor has no root"))?
-                    .0
-                    .clone(),
-            )
+            native = self
+                .native_search_selection(
+                    command,
+                    context,
+                    io.ok_or(Error::NativeBoundary {
+                        code: ErrorCode::Storage,
+                        reason: "native replay lacks original accounting",
+                    })?,
+                    work,
+                )?
+                .0;
+            match &native {
+                native::NativeSelection::Records(cursor) => Source::Records(
+                    cursor
+                        .value()
+                        .selection()
+                        .ok_or_else(|| invalid(io, "search cursor has no root"))?
+                        .0
+                        .as_str(),
+                ),
+                native::NativeSelection::Files(cursor) => file_source(cursor),
+            }
         } else {
-            self.replay_source(command, context)?
+            portable = self.search_selection(command, context)?.0;
+            portable_source(&portable)?
         };
         #[cfg(target_arch = "wasm32")]
-        let source = self.replay_source(command, context)?;
+        let source = {
+            portable = self.search_selection(command, context)?.0;
+            portable_source(&portable)?
+        };
         let rows = result
             .value
             .get("result")
@@ -92,7 +121,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
                         .get("path")
                         .and_then(serde_json::Value::as_str)
                         .ok_or_else(|| invalid(io, "saved search match has no source path"))?;
-                    if !within(root.as_str(), path) {
+                    if !within(root, path) {
                         return Err(stock_boundary(
                             io,
                             ErrorCode::Unauthorized,
@@ -151,11 +180,41 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
                     }
                 }
                 Source::Files(root, path, kind) => {
-                    let found = crate::search::FileMatch::deserialize(row)
-                        .map_err(|_| invalid(io, "invalid saved file match"))?;
+                    let ordinary;
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let retained;
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let found = if let Some(work) = work {
+                        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                            work,
+                            cancellation: work.cancellation(),
+                        };
+                        retained = accounting
+                            .deserialize::<crate::search::FileMatch, _>(row)
+                            .map_err(|error| match error {
+                                acyclic_fs::kernel::MetadataDecodeError::Work(error) => {
+                                    Error::from(error)
+                                }
+                                acyclic_fs::kernel::MetadataDecodeError::Codec(_) => {
+                                    invalid(io, "invalid saved file match")
+                                }
+                            })?;
+                        &*retained
+                    } else {
+                        ordinary = crate::search::FileMatch::deserialize(row)
+                            .map_err(|_| invalid(io, "invalid saved file match"))?;
+                        &ordinary
+                    };
+                    #[cfg(target_arch = "wasm32")]
+                    let found = {
+                        ordinary = crate::search::FileMatch::deserialize(row)
+                            .map_err(|_| invalid(io, "invalid saved file match"))?;
+                        &ordinary
+                    };
                     if found.file.volume != root.volume
                         || !within(path, &found.file.path)
-                        || (*kind == crate::tool::ReadPathKind::File && found.file.path != *path)
+                        || (*kind == crate::tool::ReadPathKind::File
+                            && found.file.path.as_str() != *path)
                     {
                         return Err(stock_boundary(
                             io,
@@ -180,26 +239,6 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
             }
         }
         crate::executor::with_history_io(io, |history| self.verifier.verify(&self.scope, history))
-    }
-
-    fn replay_source(
-        &self,
-        command: &crate::tools::FsCommand,
-        context: &ToolContext,
-    ) -> Result<Source> {
-        Ok(match self.search_selection(command, context)?.0 {
-            Selection::Records(cursor) => Source::Records(
-                cursor
-                    .selection()
-                    .ok_or_else(|| invalid(None, "search cursor has no root"))?
-                    .0
-                    .clone(),
-            ),
-            Selection::Files(cursor) => {
-                let (root, path, kind, _) = cursor.selection();
-                Source::Files(root.clone(), path.to_owned(), kind)
-            }
-        })
     }
 
     async fn recheck_stream(&self, path: &str, io: Option<&PreparationIo>) -> Result<()> {

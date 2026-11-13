@@ -264,7 +264,7 @@ async fn native_file_cursor_preserves_range_custody_and_authority()
         volume: fixture.storage.volume().clone(),
         directory: "decisions".into(),
     };
-    let (cursor, custody) = FileCursor::new_with_native_work(
+    let cursor = FileCursor::new_with_native_work(
         &root,
         "decisions",
         FileRootKind::Directory,
@@ -272,27 +272,24 @@ async fn native_file_cursor_preserves_range_custody_and_authority()
         &work,
     )?;
     let budget = NonZeroU32::new(2).ok_or("invalid test chunk")?;
-    let (first, first_custody) = cursor
+    let first = cursor
         .page_with_native_work(fixture.storage.content_reader(), None, budget, &work)?
         .await?;
     assert!(first.matches.is_empty());
     let next = first.next.as_ref().ok_or("missing file continuation")?;
-    let (denied, denied_custody) = next
+    let denied = next
         .page_with_native_work(fixture.foreign.content_reader(), None, budget, &work)?
         .await?;
     assert!(denied.matches.is_empty());
     drop(denied);
-    drop(denied_custody);
-    let (second, second_custody) = next
+    let second = next
         .page_with_native_work(fixture.storage.content_reader(), None, budget, &work)?
         .await?;
     assert_eq!(second.matches.len(), 1);
     assert_eq!(second.matches[0].offset, 64 * 1024 - 3);
     assert!(second.matches[0].file.matches_content(&fixture.file));
     drop(second);
-    drop(second_custody);
     drop(first);
-    drop(first_custody);
     cancellation.cancel();
     assert!(
         cursor
@@ -300,7 +297,6 @@ async fn native_file_cursor_preserves_range_custody_and_authority()
             .is_err()
     );
     drop(cursor);
-    drop(custody);
     assert_eq!(work.live_allocation_bytes(), baseline);
     Ok(())
 }

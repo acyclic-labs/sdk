@@ -91,7 +91,7 @@ impl FileCursor {
         kind: FileRootKind,
         pattern: &[u8],
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+    ) -> Result<acyclic_fs::kernel::Retained<Self>> {
         let io = PreparationIo::from_native_work(work)?;
         let (root, path, pattern) = crate::executor::with_history_io(Some(&io), |work| {
             crate::wire_codec::CodecQuota::produce(work, |quota| {
@@ -105,11 +105,11 @@ impl FileCursor {
         })?;
         let cursor = Self::new_using(root, path, kind, pattern, Some(&io))?;
         let custody = io.take_native_custody(io.owned_bytes()?)?;
-        Ok((cursor, custody))
+        Ok(acyclic_fs::kernel::RetainedAllocation::from(custody).into_value(cursor))
     }
 
     /// Pages the same search with the original native reader, work and
-    /// cancellation. There is no portable fallback. Drop output before custody.
+    /// cancellation. There is no portable fallback. Output owns its custody.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn page_with_native_work<'a>(
         &'a self,
@@ -117,13 +117,13 @@ impl FileCursor {
         ceiling: Option<&'a Capabilities>,
         budget: NonZeroU32,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_fs::NativeFutureBundle<'a, (FilePage, acyclic_fs::NativeAllocation), Error>>
+    ) -> Result<acyclic_fs::NativeFutureBundle<'a, acyclic_fs::kernel::Retained<FilePage>, Error>>
     {
         acyclic_fs::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             let page = self.page_using(reader, ceiling, budget, Some(&io)).await?;
             let custody = io.take_native_custody(io.owned_bytes()?)?;
-            Ok((page, custody))
+            Ok(acyclic_fs::kernel::RetainedAllocation::from(custody).into_value(page))
         })
     }
 }

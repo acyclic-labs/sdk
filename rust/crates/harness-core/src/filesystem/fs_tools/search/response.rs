@@ -4,9 +4,9 @@ pub(super) struct Reply<T> {
     pub(super) result: T,
 }
 #[derive(Serialize)]
-pub(super) struct SearchResult<'a> {
+pub(super) struct SearchResult<'a, T> {
     pub(super) kind: &'static str,
-    pub(super) matches: Rows<'a>,
+    pub(super) matches: T,
     pub(super) work: u32,
     pub(super) next: Option<&'a str>,
 }

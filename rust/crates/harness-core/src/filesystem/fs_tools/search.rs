@@ -155,13 +155,20 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
                 self.verifier.verify(&self.scope, &mut None)?;
                 let next = page
                     .next
+                    .as_ref()
                     .map(|cursor| serde_json::to_vec(&cursor).map(|bytes| STANDARD.encode(bytes)))
                     .transpose()
                     .map_err(|error| Error::Invalid(error.to_string()))?;
                 return Ok(ToolResult {
-                    value: serde_json::json!({"result": {
-                        "kind": "grep", "matches": page.matches, "work": page.work, "next": next
-                    }}),
+                    value: serde_json::to_value(response::Reply {
+                        result: response::SearchResult {
+                            kind: "grep",
+                            matches: &page.matches,
+                            work: page.work,
+                            next: next.as_deref(),
+                        },
+                    })
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
                 });
             }
         };
