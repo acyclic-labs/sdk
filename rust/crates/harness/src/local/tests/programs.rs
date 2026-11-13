@@ -255,32 +255,84 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
 
 #[tokio::test]
 async fn authored_settings_select_the_next_provider_without_restarting_the_turn() -> Result<()> {
+    use crate::model::{ModelDispatch, ModelStream, NativeToolProfile, PreparedModelRequest};
+
+    struct Native {
+        family: NativeToolProfile,
+        provider: Arc<dyn ModelProvider>,
+    }
+    impl ModelProvider for Native {
+        fn native_tool_profile(&self, _: &Model) -> Result<Option<NativeToolProfile>> {
+            Ok(Some(self.family))
+        }
+        fn bind_content(
+            &self,
+            reader: Arc<dyn ContentResidencyVerifier>,
+            maximum: Option<u64>,
+        ) -> Option<Arc<dyn ModelProvider>> {
+            self.provider.bind_content(reader, maximum).map(|provider| {
+                Arc::new(Self {
+                    family: self.family,
+                    provider,
+                }) as Arc<dyn ModelProvider>
+            })
+        }
+        fn context_capacity(&self, model: &Model) -> Result<crate::context::ModelContextCapacity> {
+            self.provider.context_capacity(model)
+        }
+        fn count_tokens<'a>(
+            &'a self,
+            request: &'a PreparedModelRequest,
+            ceiling: u64,
+        ) -> ModelStream<'a> {
+            self.provider.count_tokens(request, ceiling)
+        }
+        fn generate<'a>(
+            &'a self,
+            request: &'a PreparedModelRequest,
+            dispatch: ModelDispatch,
+        ) -> ModelStream<'a> {
+            self.provider.generate(request, dispatch)
+        }
+    }
+
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     std::fs::create_dir(directory.path().join(".git"))
         .map_err(|error| Error::Storage(error.to_string()))?;
-    let first = scripted([
+    std::fs::write(
+        directory.path().join("source.txt"),
+        "A source retained by the request",
+    )
+    .map_err(|error| Error::Storage(error.to_string()))?;
+    let first = Arc::new(ScriptedModelProvider::new([
         ScriptedTurn::Text("ready".into()),
-        code(
-            "select-settings",
-            r#"
+        code("select-settings", r#"
             import {write} from 'acyclic';
             await write('volume:///home/agent.ts', "export default {model: 'scripted/second', sampling: {temperature: 0.75}};", 'any');
             export default 'selected';
-        "#,
-        ),
+        "#),
         ScriptedTurn::Text("stale provider".into()),
-    ]);
-    let second = scripted([
-        ScriptedTurn::Text("selected provider".into()),
-        ScriptedTurn::Text("inherited provider".into()),
-    ]);
+    ]).reading_content().with_context_capacity(capacity()));
+    let second = Arc::new(
+        ScriptedModelProvider::new([])
+            .reading_content()
+            .with_context_capacity(capacity()),
+    );
+    let first_route: Arc<dyn ModelProvider> = Arc::new(Native {
+        family: NativeToolProfile::Anthropic,
+        provider: first.clone(),
+    });
+    let second_route: Arc<dyn ModelProvider> = Arc::new(Native {
+        family: NativeToolProfile::Openai,
+        provider: second.clone(),
+    });
     let models = Arc::new(crate::model::ModelResolver::new("scripted/test", {
-        let first = Arc::clone(&first);
-        let second = Arc::clone(&second);
+        let first = Arc::clone(&first_route);
+        let second = Arc::clone(&second_route);
         move |selection| {
-            let (name, provider): (_, Arc<dyn ModelProvider>) = match selection {
-                "scripted/test" => ("test", first.clone()),
-                "scripted/second" => ("second", second.clone()),
+            let (name, provider) = match selection {
+                "scripted/test" => ("test", Arc::clone(&first)),
+                "scripted/second" => ("second", Arc::clone(&second)),
                 _ => return Err(Error::NotFound(selection.into())),
             };
             Ok((
@@ -289,10 +341,51 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
             ))
         }
     }));
-    let mut config = checkout_config(directory.path(), (model()?, first.clone()))?;
+    let mut config = checkout_config(directory.path(), (model()?, first_route))?;
     config.model = None;
     config.models = Some((models, None));
     let harness = Arc::new(super::open_scripted(config).await?);
+    let executable = acyclic_native_runtime::platform_shell()
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let mut command = vec![
+        executable
+            .to_str()
+            .ok_or_else(|| Error::Invalid("test shell is not Unicode".into()))?
+            .to_owned(),
+    ];
+    command.extend(
+        crate::tools::shell::PLATFORM
+            .arguments
+            .iter()
+            .map(|argument| (*argument).to_owned()),
+    );
+    command.push(
+        if cfg!(windows) {
+            "[Console]::Out.Write('selected-native')"
+        } else {
+            "printf selected-native"
+        }
+        .to_owned(),
+    );
+    second.extend([
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                "selected-read".into(),
+                "read".into(),
+                json!({"path": "volume:///home/agent.ts"}),
+            ))),
+            ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                "selected-shell".into(),
+                "shell".into(),
+                json!({"command": command}),
+            ))),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: json!({}),
+            }),
+        ]),
+        ScriptedTurn::Text("selected provider".into()),
+        ScriptedTurn::Text("inherited provider".into()),
+    ]);
     let connection = harness.connect().await?;
     let AgentReply::Spawned { agent: worker, .. } = connection
         .execute(&AgentCommand::Spawn {
@@ -310,9 +403,8 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
     assert_eq!(first.request_count(), 1);
     let conversation = Conversation::open(connection.select(worker.clone()).await?);
     let mut observed = ObservedConversation::observe(conversation, None).await?;
-    let entry = observed
-        .send("select-model", "Write and use your model settings")
-        .await?;
+    let prompt = "Write and use your model settings @source.txt";
+    let entry = observed.send("select-model", prompt).await?;
     assert!(entry.outcome.is_completed(), "{:?}", entry.outcome);
     assert_eq!(
         observed.conversation.output_text(&entry).await?,
@@ -323,25 +415,72 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         2,
         "the preceding provider must not run another step"
     );
-    assert_eq!(second.request_count(), 1);
+    assert_eq!(second.request_count(), 2);
     let before = first.request(1).unwrap();
     let after = second.request(0).unwrap();
+    let finished = second.request(1).unwrap();
     assert_eq!(result(&after, "select-settings")?, "selected");
     assert_eq!(after.model.name, "second");
     assert_eq!(after.sampling.temperature, Some(0.75));
+    assert!(
+        after
+            .messages
+            .iter()
+            .any(|message| message.content.file_parts().next().is_some()),
+        "the selected provider must consume retained files"
+    );
     assert_eq!(system_prefix(&before)?, system_prefix(&after)?);
+    assert_eq!(system_prefix(&before)?, system_prefix(&finished)?);
+    let before_shell = before
+        .model_tools()
+        .find(|tool| tool.name == "shell")
+        .unwrap();
+    let after_shell = after
+        .model_tools()
+        .find(|tool| tool.name == "shell")
+        .unwrap();
+    assert_eq!(
+        before_shell.input_schema["properties"]["command"]["type"],
+        "string"
+    );
+    assert_eq!(
+        after_shell.input_schema["properties"]["command"]["type"],
+        "array"
+    );
+    let read = finished
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .find_map(|part| match part {
+            crate::model::ModelContentPart::ToolResult {
+                call_id, content, ..
+            } if call_id == "selected-read" => Some(content),
+            _ => None,
+        });
+    assert!(
+        matches!(
+            read,
+            Some(
+                crate::model::ToolResultContent::Json { .. }
+                    | crate::model::ToolResultContent::Parts { .. }
+            )
+        ),
+        "restored canonical read failed: {read:?}"
+    );
+    let shell = result(&finished, "selected-shell")?;
+    assert_eq!(shell["exit_code"], 0);
+    assert_eq!(shell["stdout"], "selected-native");
     let before = first.dispatches()[1];
     let after = second.dispatches()[0];
     assert_eq!(before.operation_id, after.operation_id);
     assert_eq!((before.step, after.step), (0, 1));
+    assert_eq!(second.dispatches()[1].operation_id, after.operation_id);
+    assert_eq!(second.dispatches()[1].step, 2);
     assert_eq!(
-        observed
-            .conversation
-            .send("select-model", "Write and use your model settings")
-            .await?,
-        entry.inbox,
+        observed.conversation.send("select-model", prompt).await?,
+        entry.inbox
     );
-    assert_eq!((first.request_count(), second.request_count()), (2, 1));
+    assert_eq!((first.request_count(), second.request_count()), (2, 2));
     let AgentReply::Spawned { agent: child, .. } = connection
         .execute(&AgentCommand::Fork {
             continuation: None,
@@ -357,10 +496,10 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         return Err(Error::Invalid("settings fork did not open".into()));
     };
     agents::settled(&harness, &child).await?;
-    assert_eq!((first.request_count(), second.request_count()), (2, 2));
-    let inherited = second.request(1).unwrap();
+    assert_eq!((first.request_count(), second.request_count()), (2, 3));
+    let inherited = second.request(2).unwrap();
     assert_eq!(inherited.model.name, "second");
     assert_eq!(inherited.sampling.temperature, Some(0.75));
-    assert_ne!(second.dispatches()[1].operation_id, after.operation_id);
+    assert_ne!(second.dispatches()[2].operation_id, after.operation_id);
     Ok(())
 }
