@@ -181,8 +181,8 @@ class BenchmarkContracts(unittest.TestCase):
             self.assertNotIn("OPENAI_API_KEY", observed["env"])
             self.assertEqual(observed["env"]["CODEX_HOME"], str(state / "fixture-codex"))
             self.assertEqual(observed["env"]["PATH"], env["PATH"])
-            self.assertEqual(observed["env"]["ACYCLIC_SIGNING_CUSTODY"], "private-file")
-            self.assertEqual(observed["env"]["ACYCLIC_SIGNING_CUSTODY_DIRECTORY"], str(state / "custody"))
+            self.assertEqual(observed["env"].get("ACYCLIC_SIGNING_CUSTODY"), "private-file")
+            self.assertEqual(observed["env"].get("ACYCLIC_SIGNING_CUSTODY_DIRECTORY"), str(state / "custody"))
             if instruction == prompts[0]:
                 # The real shell and OS environment boundary is identical for
                 # readiness, despite a conflicting ambient host selection.
