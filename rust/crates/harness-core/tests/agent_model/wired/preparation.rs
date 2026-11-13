@@ -452,6 +452,9 @@ async fn live_activity(
         selected(&[child], Some(10), None),
         ScriptedTurn::Text("parent observed live progress".into()),
         ScriptedTurn::Text("none".into()),
+        selected(&[child], Some(10), None),
+        ScriptedTurn::Text("parent did not wait on unavailable progress".into()),
+        ScriptedTurn::Text("none".into()),
         ScriptedTurn::Text("none".into()),
         ScriptedTurn::Text("parent observed the eventual completion".into()),
         ScriptedTurn::Text("none".into()),
@@ -505,6 +508,26 @@ async fn live_activity(
             "age_ms": deadline.saturating_sub(at / 1000),
         })
     );
+    assert_eq!(probe.reads.swap(0, Ordering::SeqCst), 2);
+    // Negative control: a released deadline may poll a ready snapshot once,
+    // but cannot wait on a blocked producer to decorate the expired result.
+    let waiting = deliver(host, parent, requested("unavailable-live-child", parent)).await?;
+    let deadline = deadline + 10;
+    assert!(
+        matches!(waiting.phase, Phase::Waiting { deadline_unix_ms: Some(at), .. } if at == deadline)
+    );
+    let (producer, gate) = oneshot::channel();
+    *probe.gate.lock().unwrap() = Some(gate);
+    control.advance_to(deadline)?;
+    host.drain(parent).await?;
+    assert!(
+        producer.send(()).is_err(),
+        "expired observation retained its producer"
+    );
+    let value = result(model);
+    assert_eq!(value["reason"]["kind"], "deadline");
+    assert_eq!(value["unsettled"][0]["phase"], "unknown");
+    assert!(value["unsettled"][0]["progress"].is_null());
     assert_eq!(probe.reads.swap(0, Ordering::SeqCst), 2);
     release
         .send(())
@@ -635,7 +658,7 @@ async fn deadlines(
     assert_eq!(result(model)["reason"]["kind"], "deadline");
     assert_eq!(
         result(model)["unsettled"],
-        serde_json::json!([{ "name": child.as_str(), "phase": "unknown", "progress": null }])
+        serde_json::json!([{ "name": child.as_str(), "phase": "running", "progress": null }])
     );
     control.advance_to(129)?;
     host.drain(parent).await?;
@@ -648,12 +671,12 @@ async fn deadlines(
     assert_eq!(result(model)["reason"]["kind"], "deadline");
     assert_eq!(
         result(model)["unsettled"],
-        serde_json::json!([{ "name": child.as_str(), "phase": "unknown", "progress": null }])
+        serde_json::json!([{ "name": child.as_str(), "phase": "running", "progress": null }])
     );
     assert_eq!(
         probe.reads.swap(0, Ordering::SeqCst),
-        2,
-        "expired waits must not start new observations"
+        4,
+        "each released deadline observes its child once"
     );
     host.drain(child).await?;
     // The parent is idle after its own timeout; the later child settlement

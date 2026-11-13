@@ -950,7 +950,7 @@ impl ToolExecutor for AgentTool {
     fn preparation_timeout(
         &self,
         invocation: &ToolInvocation,
-    ) -> Result<Option<(u64, ToolResult)>> {
+    ) -> Result<Option<crate::tool::PreparationTimeout>> {
         if self.name != "wait" {
             return Ok(None);
         }
@@ -970,16 +970,22 @@ impl ToolExecutor for AgentTool {
                 .iter()
                 .map(|name| json!({"name": name, "phase": "unknown", "progress": null}))
                 .collect();
-            (
-                timeout,
-                ToolResult {
+            crate::tool::PreparationTimeout {
+                timeout_ms: timeout,
+                result: ToolResult {
                     value: json!({
                         "settled": [], "unsettled": unsettled, "sent": [],
                         "unobserved_sent": input.sent,
                         "reason": reason
                     }),
                 },
-            )
+                observe_on_expiry: matches!(
+                    self.release(invocation.operation_id),
+                    Some(
+                        crate::agent::WaitReason::Deadline | crate::agent::WaitReason::Input { .. }
+                    )
+                ),
+            }
         }))
     }
 

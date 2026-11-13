@@ -68,6 +68,18 @@ pub enum ToolPreparation {
 pub type ToolPreparationFuture<'a> =
     crate::conversation::BoundedContentFuture<'a, (ToolPreparation, acyclic_fs::NativeCustody)>;
 
+/// Expiry of reversible preparation under the original durable call start.
+pub struct PreparationTimeout {
+    /// Elapsed milliseconds from that start, never from a resumed delivery.
+    pub timeout_ms: u64,
+    /// Honest fallback when the selected observations are unavailable at expiry.
+    pub result: ToolResult,
+    /// An already released primitive condition may observe immediately ready
+    /// data once before returning the expiry result. A pending observation is
+    /// dropped at the deadline; it cannot extend the wait.
+    pub observe_on_expiry: bool,
+}
+
 /// Replaceable execution behavior for a tool.
 pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     /// Bounds reversible preparation from the original durable call start.
@@ -77,7 +89,7 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     fn preparation_timeout(
         &self,
         _invocation: &ToolInvocation,
-    ) -> Result<Option<(u64, ToolResult)>> {
+    ) -> Result<Option<PreparationTimeout>> {
         Ok(None)
     }
 
