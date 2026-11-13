@@ -163,7 +163,7 @@ impl<S> TraceQuery<S> {
 
     /// Active spans in this selected window; absence of a finish is not failure
     /// or proof of a stuck agent. Iteration is lazy and may be paged by the view.
-    pub fn active(&self) -> impl Iterator<Item = (&SpanId, &ActiveSpan)> {
+    pub fn active(&self) -> impl ExactSizeIterator<Item = (&SpanId, &ActiveSpan)> {
         self.active.iter()
     }
 
@@ -199,19 +199,34 @@ impl<S: Stream<Item = Result<Record, StreamError>> + Unpin> TraceQuery<S> {
             path: record.origin,
             sequence: record.sequence,
         };
-        if self.sequence.is_some_and(|prior| record.sequence <= prior) {
+        self.admit(record.sequence, evidence, record.value.as_ref())
+            .map(Some)
+    }
+}
+
+impl<S> TraceQuery<S> {
+    /// Admit an authorized borrowed row through the same projection as `next`.
+    /// The selected cursor may differ from immutable publication coordinates
+    /// after a fork. Original payload custody remains with the reader.
+    pub fn admit(
+        &mut self,
+        sequence: u64,
+        evidence: RetainedRecord,
+        bytes: &[u8],
+    ) -> Result<Observation, QueryError> {
+        if self.sequence.is_some_and(|prior| sequence <= prior) {
             return Err(QueryError::Invalid {
                 evidence,
                 source: QueryViolation::ReorderedRecord,
             });
         }
-        self.sequence = Some(record.sequence);
+        self.sequence = Some(sequence);
         let TraceRecord::V1(event) =
-            serde_json::from_slice(record.value.as_ref()).map_err(|source| QueryError::Decode {
+            serde_json::from_slice(bytes).map_err(|source| QueryError::Decode {
                 evidence: evidence.clone(),
                 source,
             })?;
-        self.project(event, evidence).map(Some)
+        self.project(event, evidence)
     }
 
     fn start(&mut self, id: SpanId, span: ActiveSpan) -> Result<Observation, QueryError> {

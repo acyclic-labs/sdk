@@ -143,6 +143,8 @@ type ChildLocation = (StreamPath, StreamPath, bool, u32);
 /// Per-stream facts learned from committed history. Bounded with the entries.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Meta {
+    /// Allocated only when a retained projection depends on these facts.
+    custody: Option<std::sync::Arc<()>>,
     /// Highest observed exclusive tail.
     tail: Option<u64>,
     /// Exact immediate inherited cut, including its publication identity.
@@ -525,6 +527,7 @@ impl RecordCache {
             self.remove(&key);
         }
         if let Some(meta) = self.meta.get_mut(stream) {
+            meta.custody = None;
             self.clock += 1;
             meta.observed = self.clock;
             meta.tail = None;
@@ -633,6 +636,14 @@ impl RecordCache {
             .map(|(key, _)| key.clone())
             .chain(self.passed.range(range).map(|(key, _)| key.clone()))
             .collect()
+    }
+
+    pub(super) fn custody(&mut self, stream: &StreamPath) -> std::sync::Weak<()> {
+        std::sync::Arc::downgrade(
+            self.meta_mut(stream)
+                .custody
+                .get_or_insert_with(|| std::sync::Arc::new(())),
+        )
     }
 
     fn meta_mut(&mut self, stream: &StreamPath) -> &mut Meta {
