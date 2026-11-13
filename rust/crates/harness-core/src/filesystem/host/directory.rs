@@ -276,7 +276,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 let bytes = hold.bytes();
                 hold.into_retained()?;
                 let allocation = native.into_native_custody(bytes)?;
-                owner.return_allocation(allocation, bytes)?;
+                io.accept_native_output(&owner, allocation, bytes)?;
                 Ok::<_, Error>(Some((page, bytes)))
             }
             .await;

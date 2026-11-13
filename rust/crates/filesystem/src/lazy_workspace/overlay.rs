@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub(super) struct ShadowRecords {
     pub(super) authored: Option<(FileRecord, crate::WorkspaceMetadata)>,
     pub(super) observed: Option<(
@@ -13,15 +13,16 @@ pub(super) struct ShadowRecords {
 
 impl ShadowRecords {
     pub(super) fn at_source(
-        self,
-        source: SourceReference,
+        &self,
+        source: &SourceReference,
         version: SourceVersion,
     ) -> Option<(FileRecord, crate::WorkspaceMetadata)> {
         self.observed
+            .as_ref()
             .filter(|(original, original_version, _, _)| {
-                *original == source && *original_version == version
+                original == source && *original_version == version
             })
-            .map(|(_, _, record, metadata)| (record, metadata))
+            .map(|(_, _, record, metadata)| (*record, *metadata))
     }
 }
 
@@ -206,7 +207,7 @@ impl<
                             .map(|record| {
                                 decode_shadow_record(&record.content, id, ctx).map(
                                     |(content, metadata)| {
-                                        (record.source, record.version, content, metadata)
+                                        (record.source.clone(), record.version, content, metadata)
                                     },
                                 )
                             })
@@ -256,9 +257,9 @@ impl<
         records: ShadowRecords,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<LazyShadowId, LazyWorkspaceError> {
-        let (durable, count) = match (records.authored, records.observed) {
-            (Some((authored, _)), Some((_, _, observed, _))) => ([authored, observed], 2),
-            (Some((record, _)), None) | (None, Some((_, _, record, _))) => ([record, record], 1),
+        let (durable, count) = match (&records.authored, &records.observed) {
+            (Some((authored, _)), Some((_, _, observed, _))) => ([*authored, *observed], 2),
+            (Some((record, _)), None) | (None, Some((_, _, record, _))) => ([*record, *record], 1),
             (None, None) => return Err(LazyWorkspaceError::OriginalSnapshotUnavailable),
         };
         let hold = accounted!(ctx, |work, cancel| self

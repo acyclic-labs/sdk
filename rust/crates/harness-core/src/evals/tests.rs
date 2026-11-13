@@ -170,7 +170,7 @@ async fn computed_cases_keep_original_decisions_cut_ranges_and_event_delivery() 
     let provider = StreamProvider::new(Arc::clone(&streams), &agent)?;
     let snapshot = provider
         .snapshot(
-            reference.clone(),
+            provider.reference(&mut accounting(&work)).await?,
             ViewQuery::Open(&path("/00000000000000000000.json")),
             &mut accounting(&work),
         )

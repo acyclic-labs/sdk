@@ -146,7 +146,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             drop(sealed);
             let bytes = token.capacity() as u64;
             let allocation = native.into_native_custody(bytes)?;
-            owner.return_allocation(allocation, bytes)?;
+            io.accept_native_output(&owner, allocation, bytes)?;
             Ok::<_, Error>((token, bytes))
         })();
         io.account(|ctx| owner.restore(ctx))?;

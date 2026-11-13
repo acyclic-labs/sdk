@@ -322,14 +322,14 @@ impl<
         // A fresh native link count can fall to one after another alias was
         // unlinked. Its stable identity still belongs to authored data/shadows.
         if node.kind != SourceNodeKind::Directory
-            && (basis.unobserved || node.link_count != Some(1) || frozen.is_some())
+            && (basis.unobserved || node.link_count != Some(1) || basis.retain_pinned_observation)
         {
             let id = self.source_file_id(&node.file_identity, ctx)?;
             let single_source = !basis.unobserved && node.link_count == Some(1);
             let shadow = if single_source {
                 self.shadow_records(state.shadows, id, ctx)
                     .await?
-                    .and_then(|records| records.at_source(source, node.version))
+                    .and_then(|records| records.at_source(&source, node.version))
             } else {
                 let record = accounted!(ctx, |work, cancel| checkout
                     .read_file_record_by_id(id, work, cancel));
@@ -351,7 +351,10 @@ impl<
                         .await?
                         .and_then(|records| {
                             records.authored.or_else(|| {
-                                frozen.and_then(|_| records.at_source(source, node.version))
+                                basis
+                                    .retain_pinned_observation
+                                    .then(|| records.at_source(&source, node.version))
+                                    .flatten()
                             })
                         }),
                     Err(error) => return Err(error),
