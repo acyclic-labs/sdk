@@ -88,9 +88,7 @@ pub fn sender() -> Sender {
 /// File-free input for a host-side scenario. A public client can instead submit
 /// a real message with this same intent; [`Driver`] applies the same oracle.
 pub fn request(id: &str) -> Result<InboxRecord> {
-    Ok(InboxRecord::ApprovalRequested(ApprovalRequested {
-        child: AgentPath::root(&AgentId::from_bytes([1; 16]))
-            .child(&AgentId::from_bytes([2; 16]))?,
+    Ok(InboxRecord::Approval(Approval {
         id: IntentId::try_from(id)?,
     }))
 }
@@ -151,9 +149,7 @@ impl TurnDriver for Driver {
         Box::pin(async move {
             let queued = input.ok_or(Error::Record("missing conformance input"))?;
             let id = match &queued.input {
-                TurnInput::ApprovalRequested { id, .. } | TurnInput::Message { id, .. } => {
-                    id.clone()
-                }
+                TurnInput::Approval { id } | TurnInput::Message { id, .. } => id.clone(),
                 _ => return Err(Error::Record("unexpected conformance input")),
             };
             let mut outs = vec![Out::Conversation(entry(
