@@ -531,6 +531,18 @@ mod tests {
         )?;
         // The publication committed, but its caller has not consumed a result
         // or refreshed its view. Resend the exact retained request.
+        let mut view = super::super::View::default();
+        let mut input = PromptInput::default();
+        let edited = "A command returned no explanation, including its exit status.";
+        view.submit_feedback(&mut writer, &conversation, &mut input, edited)
+            .await;
+        assert_eq!(input.editor.text(), edited);
+        assert!(matches!(view.prompt, Some(super::super::Prompt::Feedback)));
+        assert!(
+            view.notice
+                .as_deref()
+                .is_some_and(|notice| notice.contains("not confirmed"))
+        );
         writer
             .save_feedback(&conversation, "A command returned no explanation.")
             .await?;

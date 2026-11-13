@@ -204,6 +204,28 @@ enum Outcome {
 }
 
 impl View {
+    async fn submit_feedback(
+        &mut self,
+        ui: &mut session::Session,
+        conversation: &Conversation,
+        input: &mut PromptInput,
+        text: &str,
+    ) {
+        match ui.save_feedback(conversation, text).await {
+            Ok(()) => {
+                self.notice = Some(format!(
+                    "Feedback saved to feedback.json ({} this session)",
+                    ui.feedback.len()
+                ));
+            }
+            Err(error) => {
+                self.notice = Some(format!("Feedback save not confirmed: {error}"));
+                self.prompt = Some(Prompt::Feedback);
+                input.editor = Editor::new(text);
+            }
+        }
+    }
+
     async fn cancel(&mut self, conversation: &Conversation) -> Result<(), Failure> {
         self.cancelling = conversation.cancel().await?;
         Ok(())
@@ -1533,21 +1555,8 @@ async fn run_current(
                                 // it takes this answer, never the approval.
                                 match view.prompt.take() {
                                     Some(Prompt::Feedback) => {
-                                        let saved = ui.save_feedback(&conversation, &text).await;
+                                        view.submit_feedback(&mut ui, &conversation, &mut input, &text).await;
                                         files_changed = true;
-                                        match saved {
-                                            Ok(()) => {
-                                                view.notice = Some(format!(
-                                                    "Feedback saved to feedback.json ({} this session)",
-                                                    ui.feedback.len()
-                                                ));
-                                            }
-                                            Err(error) => {
-                                                view.notice = Some(format!("Feedback save not confirmed: {error}"));
-                                                view.prompt = Some(Prompt::Feedback);
-                                                input.editor = Editor::new(&text);
-                                            }
-                                        }
                                         continue;
                                     }
                                     Some(Prompt::StopOrDetach) => {
