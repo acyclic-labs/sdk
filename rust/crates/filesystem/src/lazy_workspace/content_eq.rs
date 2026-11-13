@@ -81,7 +81,7 @@ impl<
         if let (Some(left), Some(right)) = (record(left), record(right)) {
             let cancellation = cancellation(ctx);
             return crate::kernel::records_match_content(
-                &self.workspace.volume.fs.inner.objects,
+                self.workspace.volume.fs.objects(),
                 left,
                 right,
                 crate::kernel::DecodeLimits::for_volume(self.workspace.volume.config),
