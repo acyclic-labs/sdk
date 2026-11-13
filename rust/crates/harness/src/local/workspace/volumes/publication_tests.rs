@@ -295,8 +295,7 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
     std::fs::write(&blocked.destination, b"authored blocker").map_err(storage)?;
     let table = super::super::mounts::owner(
         &mounts.root,
-        &mounts.named(None)?.1.view.volume,
-        None,
+        ("project", &mounts.named(None)?.1.view.volume, None),
         [("home", Arc::clone(scratch)), ("zzz", Arc::clone(&blocked))]
             .map(|(name, source)| (name.to_owned(), mount.view.volume.clone(), Some(source))),
     )?;
@@ -358,8 +357,7 @@ async fn retirement_continues_past_a_volume_a_worker_still_owns() -> Result<()> 
     });
     let table = super::super::mounts::owner(
         &mounts.root,
-        &mounts.named(None)?.1.view.volume,
-        None,
+        ("project", &mounts.named(None)?.1.view.volume, None),
         [("aaa", Arc::clone(&busy)), ("home", Arc::clone(scratch))]
             .map(|(name, source)| (name.to_owned(), mount.view.volume.clone(), Some(source))),
     )?;
@@ -411,8 +409,7 @@ async fn projection_lock_order_ignores_alias_order_and_duplicate_bindings() -> R
     let table = |primary: &Arc<MountedVolume>, named: &Arc<MountedVolume>| {
         super::super::mounts::owner(
             &mounts.root,
-            &mount.view.volume,
-            Some(Arc::clone(primary)),
+            ("project", &mount.view.volume, Some(Arc::clone(primary))),
             [(
                 "home".into(),
                 mount.view.volume.clone(),

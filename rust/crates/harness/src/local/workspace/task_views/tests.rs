@@ -29,17 +29,31 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         &mut None,
     )?;
     harness.files.create_volume(&private_home).await?;
+    let private_ui = VolumeRef::new(
+        harness.scratch.provider().clone(),
+        "selected-private".into(),
+        harness.scratch.class(),
+        crate::conversation::VolumeOwner::Agent(selected_agent),
+        &mut None,
+    )?;
+    harness.files.create_volume(&private_ui).await?;
     let read = shared.capability(crate::conversation::VolumeOperation::Read, &mut None)?;
     let write = shared.capability(crate::conversation::VolumeOperation::Write, &mut None)?;
     let home_read =
         private_home.capability(crate::conversation::VolumeOperation::Read, &mut None)?;
     let home_write =
         private_home.capability(crate::conversation::VolumeOperation::Write, &mut None)?;
+    let private_read =
+        private_ui.capability(crate::conversation::VolumeOperation::Read, &mut None)?;
+    let private_write =
+        private_ui.capability(crate::conversation::VolumeOperation::Write, &mut None)?;
     let grants = crate::Capabilities::new(harness.signed.capabilities().iter().chain([
         read.as_str(),
         write.as_str(),
         home_read.as_str(),
         home_write.as_str(),
+        private_read.as_str(),
+        private_write.as_str(),
     ]));
     let signed = harness
         .root_authority
@@ -50,16 +64,17 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
     session_bindings[0].name = "repository".into();
     session_bindings[1].source = crate::agent::WorkspaceSource::Volume(private_home.clone());
     for (role, name) in [
-        (
-            crate::agent::WorkspaceRole::Private,
-            crate::filesystem::PRIVATE_VOLUME,
-        ),
+        (crate::agent::WorkspaceRole::Private, "display"),
         (crate::agent::WorkspaceRole::Internal, "interaction"),
     ] {
         session_bindings.push(crate::agent::WorkspaceEntry::initial_volume(
             role,
             name.into(),
-            harness.scratch.clone(),
+            if role == crate::agent::WorkspaceRole::Private {
+                private_ui.clone()
+            } else {
+                harness.scratch.clone()
+            },
         ));
     }
     session_bindings
@@ -133,17 +148,21 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
     let home = second.mounts.named(Some(crate::filesystem::HOME_VOLUME))?.1;
     assert_eq!(home.view.volume, private_home);
     assert!(home.native_root.override_path().is_none());
-    for name in [
-        crate::filesystem::PRIVATE_VOLUME,
-        "interaction",
-        "repository",
-    ] {
+    for name in ["interaction", "project", "unknown"] {
         assert!(
             second.mounts.named(Some(name)).is_err(),
             "unexpected auxiliary {name}"
         );
     }
     assert_eq!(second.mounts.named(None)?.1.view.volume, harness.project);
+    assert_eq!(
+        second.mounts.named(Some("repository"))?.1.view.volume,
+        harness.project
+    );
+    let private = second.mounts.named(Some("display"))?.1;
+    assert_eq!(private.view.volume, private_ui);
+    assert!(private.native_root.override_path().is_none());
+    private.check(acyclic_fs::access::Action::Write, "bound-note", 0)?;
     let logical = workspace.context_task_view(
         view().await?,
         &harness.project,
@@ -159,17 +178,31 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
             .volume,
         private_home
     );
-    for name in [
-        crate::filesystem::PRIVATE_VOLUME,
-        "interaction",
-        "repository",
-    ] {
+    for name in ["interaction", "project", "unknown"] {
         assert!(
             logical.mounts.named(Some(name)).is_err(),
             "unexpected auxiliary {name}"
         );
     }
     assert_eq!(logical.mounts.named(None)?.1.view.volume, harness.project);
+    assert_eq!(
+        logical.mounts.named(Some("repository"))?.1.view.volume,
+        harness.project
+    );
+    assert_eq!(
+        logical.mounts.named(Some("display"))?.1.view.volume,
+        private_ui
+    );
+    assert!(matches!(
+        workspace.context_task_view(view().await?, &private_home, &session_bindings, &authority),
+        Err(Error::Unauthorized(_)),
+    ));
+    let remounted = second.mounts_at(&second.path).await?;
+    assert_eq!(
+        remounted.named(Some("repository"))?.1.view.volume,
+        harness.project
+    );
+    assert!(remounted.named(Some("project")).is_err());
     {
         let selected = &second;
         let path = "bound-note";
@@ -214,12 +247,46 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
                 .as_ref(),
             b"selected private home"
         );
-        assert!(
-            selected
-                .mounts
-                .named(Some(crate::filesystem::PRIVATE_VOLUME))
-                .is_err()
+        let (file, _) = crate::conversation::ContentPublisher::stage_once(
+            &publisher,
+            OperationId::new(),
+            "volume:///display/bound-note",
+            b"model-visible private state",
+            "text/plain",
+            path,
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+        assert_eq!(file.volume(), &private_ui);
+        let reference = crate::filesystem::workspace_ref(
+            private_ui.provider().clone(),
+            &private_ui.storage_name(&mut None)?,
+        )?;
+        assert_eq!(
+            harness
+                .files
+                .read(&reference, None, "/bound-note", 64, None)
+                .await?
+                .as_ref(),
+            b"model-visible private state",
         );
+        for name in ["interaction", "project", "unknown"] {
+            let path = format!("volume:///{name}/bound-note");
+            assert!(
+                crate::conversation::ContentPublisher::stage_once(
+                    &publisher,
+                    OperationId::new(),
+                    &path,
+                    b"refused",
+                    "text/plain",
+                    "refused",
+                    crate::conversation::ContentAccess::default(),
+                )?
+                .await
+                .is_err(),
+                "unexpected writable binding {name}"
+            );
+        }
     }
     for selection in [&changed_bindings, &changed_mode] {
         assert!(matches!(

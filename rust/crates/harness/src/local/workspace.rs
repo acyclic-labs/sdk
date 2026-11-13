@@ -172,8 +172,7 @@ impl LocalWorkspace {
         let primary = self.mounts.named(None)?.1;
         let mut mounts = mounts::owner(
             path,
-            &primary.view.volume,
-            None,
+            (&primary.view.name, &primary.view.volume, None),
             self.mounts
                 .mounts()
                 .filter(|(relative, _)| !relative.is_empty())
@@ -228,6 +227,7 @@ impl LocalWorkspace {
         authority: &crate::filesystem::NativeMountAuthority,
         binding: &acyclic_fs::kernel::allocation::RetainedArc<bindings::Binding>,
     ) -> Result<Arc<Mounts>> {
+        let primary = mounts::primary(bindings, project)?;
         // Bind auxiliary volumes outside the sparse projection. Linux's
         // elevated mount helper cannot traverse an owner-only FUSE parent.
         let directory = blake3::Hash::from_bytes(binding.key).to_hex();
@@ -243,8 +243,7 @@ impl LocalWorkspace {
         let native = self.mounting == WorkspaceMounting::Native;
         let mut mounts = mounts::owner(
             root.path(),
-            project,
-            None,
+            (&primary.name, project, None),
             mounts::auxiliary(bindings).map(|(name, volume)| {
                 let source = self
                     .mounts
@@ -480,8 +479,7 @@ pub(super) async fn open(
         .map_err(storage)?;
     let mut mounts = mounts::owner(
         &path,
-        volume,
-        None,
+        ("project", volume, None),
         attach
             .auxiliary()
             .map(|(name, volume)| (name.into(), volume.clone(), None)),

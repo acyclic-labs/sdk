@@ -240,8 +240,11 @@ impl LocalWorkspace {
     ) -> Result<Arc<LocalWorkspace>> {
         let mounts = Arc::new(mounts::owner(
             &self.path,
-            project,
-            None,
+            (
+                mounts::primary(bindings, project)?.name.as_str(),
+                project,
+                None,
+            ),
             mounts::auxiliary(bindings).map(|(name, volume)| (name.clone(), volume.clone(), None)),
         )?);
         Ok(Arc::new(self.unmounted_task_view(view, mounts, authority)))

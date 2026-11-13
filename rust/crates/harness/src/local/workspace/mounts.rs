@@ -2,7 +2,19 @@
 use super::*;
 use acyclic_fs::access::*;
 
-/// The selected task's visible volumes, excluding its primary and control volume.
+/// The selected cwd must retain the primary slot's name and source identity.
+pub(super) fn primary<'a>(
+    bindings: &'a [crate::agent::WorkspaceEntry],
+    volume: &VolumeRef,
+) -> Result<&'a crate::agent::WorkspaceEntry> {
+    crate::agent::WorkspaceTable::primary_in(bindings)
+        .filter(|entry| entry.as_volume() == Some(volume))
+        .ok_or_else(|| {
+            Error::Unauthorized("primary workspace does not match the selected table".into())
+        })
+}
+
+/// The selected task's visible volumes, excluding its primary and internal volume.
 pub(super) fn auxiliary(
     bindings: &[crate::agent::WorkspaceEntry],
 ) -> impl Iterator<Item = (&String, &VolumeRef)> {
@@ -10,21 +22,17 @@ pub(super) fn auxiliary(
     bindings
         .iter()
         .filter(move |binding| {
-            Some(binding.id) != primary
-                && !matches!(
-                    binding.role,
-                    crate::agent::WorkspaceRole::Private | crate::agent::WorkspaceRole::Internal
-                )
+            Some(binding.id) != primary && binding.role != crate::agent::WorkspaceRole::Internal
         })
         .filter_map(|binding| binding.as_volume().map(|volume| (&binding.name, volume)))
 }
 
 pub(super) fn owner<T>(
     root: &Path,
-    volume: &VolumeRef,
-    source: T,
+    primary: (&str, &VolumeRef, T),
     volumes: impl IntoIterator<Item = (String, VolumeRef, T)>,
 ) -> Result<crate::workspace::MountTable<T>> {
+    let (name, volume, source) = primary;
     let principal = Principal {
         kind: PrincipalKind::Agent,
         id: "owner".into(),
@@ -90,7 +98,7 @@ pub(super) fn owner<T>(
             now: 0,
             approvals: 0,
         },
-        view("project".into(), volume.clone(), source),
+        view(name.into(), volume.clone(), source),
         volumes
             .into_iter()
             .map(|(name, volume, source)| view(name, volume, source)),
@@ -114,7 +122,7 @@ mod tests {
             let volume = |name: &str| VolumeRef::new(provider.clone(), name.into(),
                 VolumeClass::Project, VolumeOwner::Project("owner".into()), &mut None).unwrap();
             let root = std::env::current_dir().unwrap();
-            let mut mounts = owner(&root, &volume("project"), sources[0],
+            let mut mounts = owner(&root, ("project", &volume("project"), sources[0]),
                 [("data".into(), volume("data"), sources[1])]).unwrap();
             let before: Vec<_> = mounts.mounts().map(|(path, mount)|
                 (path.to_owned(), mount.view.volume.clone(), mount.mode, mount.view.source)).collect();
