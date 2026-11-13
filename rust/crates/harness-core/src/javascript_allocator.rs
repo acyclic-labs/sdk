@@ -37,14 +37,22 @@ pub(crate) fn transfer<T>(
     target: &mut EngineResult<T>,
 ) -> crate::Result<()> {
     if let Some(custody) = custody {
-        target.absorb(Some(custody.split_off(bytes)?))?;
+        match &mut target.custody {
+            Some(target) => custody.transfer_to(target, bytes)?,
+            None => target.custody = Some(custody.split_off(bytes)?),
+        }
     }
     Ok(())
 }
 impl<T> EngineResult<T> {
     pub(crate) fn absorb(&mut self, mut other: acyclic_fs::NativeCustody) -> crate::Result<()> {
-        if let (Some(custody), Some(other)) = (&mut self.custody, &mut other) {
-            custody.absorb(other)?;
+        if let (Some(custody), Some(incoming)) = (&mut self.custody, &mut other) {
+            if let Err(cause) = custody.absorb(incoming) {
+                return Err(crate::Error::NativeWork {
+                    cause,
+                    custody: other,
+                });
+            }
         } else if self.custody.is_none() {
             self.custody = other;
         }
