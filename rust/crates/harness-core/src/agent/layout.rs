@@ -295,6 +295,15 @@ impl AgentPath {
         stream(&format!("{}/{CLOSED}", self.text))
     }
 
+    /// Canonical addresses from the tree root through this agent, inclusive.
+    /// Borrows the validated ancestry without allocating parent paths.
+    pub fn ancestors(&self) -> impl ExactSizeIterator<Item = &str> + '_ {
+        (0..self.depth + 1).map(|depth| {
+            let end = AGENTS.len() + 1 + ID_HEX + depth * (CHILDREN.len() + 2 + ID_HEX);
+            &self.text[..end]
+        })
+    }
+
     /// Host-owned peer admission for one root, outside every fork destination.
     /// Children neither inherit the record nor acquire account peer reach.
     pub fn peer_membership(&self) -> Result<StreamPath, Error> {
