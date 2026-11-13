@@ -3,6 +3,7 @@ use acyclic_fs::access::{Action, PreparedPath};
 pub(in crate::filesystem) mod cursor;
 #[cfg(not(target_arch = "wasm32"))]
 mod lazy;
+mod remainder;
 
 /// A bounded authorized physical page. Empty entries with `next` are progress.
 #[derive(Debug)]

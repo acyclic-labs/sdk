@@ -10,6 +10,10 @@ fn key(io: &PreparationIo) -> Result<&'static CursorKey> {
         .ok_or_else(|| io.invalid("directory cursor key is unavailable"))
 }
 
+pub(in crate::filesystem) fn payload_encoded_len(bytes: usize) -> Option<usize> {
+    CursorKey::sealed_len(bytes).div_ceil(3).checked_mul(4)
+}
+
 fn context(volume: &VolumeRef, path: &str, io: &PreparationIo) -> Result<[u8; 32]> {
     let identity = volume.identity_digest(u64::MAX, &mut Some(&mut io.history_io()))?;
     let domain = b"acyclic:directory:cursor:v1";
@@ -60,7 +64,7 @@ pub(in crate::filesystem) fn seal<'io>(
 }
 
 /// The same confidential envelope also carries the shared lazy cursor codec.
-pub(super) fn seal_payload<'io>(
+pub(in crate::filesystem) fn seal_payload<'io>(
     volume: &VolumeRef,
     path: &str,
     plain: &[u8],
@@ -97,7 +101,7 @@ pub(super) fn open<'io>(
     decode_authored(provider, plain, io)
 }
 
-pub(super) fn open_payload<'io>(
+pub(in crate::filesystem) fn open_payload<'io>(
     volume: &VolumeRef,
     path: &str,
     token: &str,
