@@ -102,6 +102,11 @@ fn table_with_home(root: PathBuf, home: bool) -> Result<MountTable<Arc<tempfile:
 
 fn invocation(root: &Path) -> Invocation {
     Invocation {
+        // Unix environment-isolation children deliberately cannot discover bash
+        // through PATH. Windows still resolves its own native shell.
+        #[cfg(unix)]
+        executable: PathBuf::from("/bin/bash"),
+        #[cfg(windows)]
         executable: acyclic_native_runtime::platform_shell()
             .expect("native platform shell")
             .to_path_buf(),
