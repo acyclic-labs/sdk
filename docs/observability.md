@@ -97,6 +97,12 @@ to journal writes. Its start is admitted before a fresh claim; no trace wait is
 inserted between an accepted claim and provider delivery. Completion is submitted
 without awaiting diagnostics, and only an authenticated model completion records
 success. Forced model interventions do not fabricate provider-call spans.
+Provider-event suspension uses `harness.provider_event_wait` with the public
+`provider_event_delivery` guarantee. A delivered original event settles that
+wait; stream exhaustion without delivery records `Unsettled`. Original errors
+without retained cause evidence stay unfinished. The terminal append is submitted
+without delaying delivery to the original model loop. These shared spans replace
+the separate native-only `provider-event` wait observations.
 Harness Stream failures use one source-owning `StreamFailure` on ordinary,
 native and WebAssembly paths. Request-boundary classification remains explicit;
 native provenance and admitted allocation custody remain attached. Journal

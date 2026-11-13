@@ -342,6 +342,38 @@ impl StockExecution<'_> {
         .await
     }
 
+    /// Await the original stream event; trace completion cannot delay delivery.
+    async fn wait_provider_event(
+        &self,
+        journal: &dyn ExecutionJournal,
+        event: impl std::future::Future<Output = Option<Result<ModelEvent>>>,
+    ) -> Option<Result<ModelEvent>> {
+        let trace = match journal.trace_request(acyclic_stream::trace::Request {
+            name: "harness.provider_event_wait",
+            mechanism: acyclic_stream::trace::Mechanism::Wait,
+            parent: None,
+            guarantee: Some("provider_event_delivery"),
+        }) {
+            Some(admission) => admission.await.ok(),
+            None => None,
+        };
+        let next = match &trace {
+            Some(recording) => recording.within(event).await,
+            None => event.await,
+        };
+        #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+        if let Some(recording) = trace {
+            let outcome = match &next {
+                Some(Ok(_)) => Some(acyclic_stream::trace::Outcome::Succeeded),
+                None => Some(acyclic_stream::trace::Outcome::Unsettled),
+                Some(Err(_)) => None, // Original retained cause is not yet owned here.
+            };
+            if let Some(outcome) = outcome {
+                let _completion = recording.finish_submitted(None, outcome);
+            }
+        }
+        next
+    }
     async fn prepare_dispatch_step(
         &self,
         journal: &dyn ExecutionJournal,
@@ -639,11 +671,9 @@ impl StockExecution<'_> {
                         (Some(next), _) => next,
                         (None, Some(text)) => {
                             text.flush().await?;
-                            crate::obs::waiting("provider-event", operation_id, stream.next()).await
+                            self.wait_provider_event(journal, stream.next()).await
                         }
-                        (None, None) => {
-                            crate::obs::waiting("provider-event", operation_id, stream.next()).await
-                        }
+                        (None, None) => self.wait_provider_event(journal, stream.next()).await,
                     },
                 };
                 let Some(event) = next else {
