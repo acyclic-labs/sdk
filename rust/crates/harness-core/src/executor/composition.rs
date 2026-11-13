@@ -496,12 +496,14 @@ impl StepBinding {
         }
         {
             let empty = crate::hooks::Hooks::default();
-            let hooks = crate::hooks::bind_rules(
-                self.host_hooks.as_deref().unwrap_or(&empty),
-                &plugins.rules,
-                temporary,
-            )?;
-            executor = executor.with_hooks(Some(hooks));
+            let host = self.host_hooks.as_deref().unwrap_or(&empty);
+            if host.has_execution_hooks() || plugins.rules.has_execution_hooks() {
+                executor = executor.with_hooks(Some(crate::hooks::bind_rules(
+                    host,
+                    &plugins.rules,
+                    temporary,
+                )?));
+            }
             executor.host_hooks = self.host_hooks.clone();
             executor.plugin_set = Some(plugins);
             executor.prompt_block = self

@@ -50,12 +50,11 @@ impl StockExecutor {
         let rules: Hooks = serde_json::from_slice(&bytes)
             .map_err(|error| Error::Invalid(format!("hook configuration: {error}")))?;
         let mut executor = self;
-        let host = Arc::new(rules);
-        let bound = crate::hooks::bind_rules(&host, &plugins.rules, None)?;
-        executor.host_hooks = Some(host);
-        if bound.rules.is_empty() {
+        if rules.is_empty() && plugins.rules.is_empty() {
             return Ok(executor);
         }
+        let bound = crate::hooks::bind_rules(&rules, &plugins.rules, None)?;
+        executor.host_hooks = (!rules.is_empty()).then(|| Arc::new(rules));
         let prompt = prompt_text(context, prompt).await?;
         let context = Arc::new(context.clone());
         let mut stages = Vec::new();
