@@ -3,7 +3,7 @@ use super::{Comparison, ComparisonKind, Mechanism, Outcome, SpanEvent, SpanId, T
 use crate::{AppendOutcome, IdempotencyKey, RetainedRecord, Stream, StreamError, StreamProvider};
 use std::sync::{
     Arc,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 use web_time::Instant;
 
@@ -48,6 +48,7 @@ pub struct Recorder<P: ?Sized> {
     process: [u8; 16],
     origin: Instant,
     next: AtomicU64,
+    demand: Option<AtomicUsize>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -60,6 +61,32 @@ enum RecorderFailure {
     UnexpectedConflict(u64),
 }
 
+impl<P: ?Sized> Recorder<P> {
+    pub(super) fn with_demand(mut self) -> Self {
+        self.demand = Some(AtomicUsize::new(0));
+        self
+    }
+
+    pub(super) fn subscribe_demand(&self) {
+        if let Some(demand) = &self.demand {
+            // The registry increments its checked total first; this owner count
+            // cannot exceed that total, including concurrent subscribe/drop.
+            demand.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    pub(super) fn release_demand(&self) {
+        if let Some(demand) = &self.demand {
+            demand.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+
+    pub(super) fn has_demand(&self) -> bool {
+        self.demand
+            .as_ref()
+            .is_none_or(|demand| demand.load(Ordering::Acquire) != 0)
+    }
+}
 impl<P: StreamProvider + ?Sized> Recorder<P> {
     /// Observe polling of the original future, retaining its output even when
     /// trace publication fails. Disabled interest never evaluates `bytes`.
@@ -153,6 +180,7 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
             process,
             origin: Instant::now(),
             next: AtomicU64::new(0),
+            demand: None,
         }
     }
 

@@ -85,6 +85,10 @@ impl OwnedRecording {
 }
 
 impl<P: StreamProvider + ?Sized> super::context::Producer for super::Recorder<P> {
+    fn enabled(&self) -> bool {
+        self.has_demand()
+    }
+
     fn start(
         self: std::sync::Arc<Self>,
         request: super::Request,

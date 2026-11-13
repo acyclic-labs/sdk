@@ -508,3 +508,70 @@ async fn paged_and_live_queries_preserve_clock_domains_coverage_and_settlement()
     assert_eq!(live.totals()[&Mechanism::Wait].elapsed_ns, 30);
     Ok(())
 }
+
+#[tokio::test]
+async fn last_owner_interest_revokes_inherited_producer_during_original_work()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::trace::{Recorder, Registry};
+    let provider = Arc::new(MemoryStream::default());
+    let data = crate::Stream::new(provider.clone(), "agents/worker/data")?;
+    data.append(b"original".to_vec(), IdempotencyKey::unique())
+        .await?;
+    let original = data.head().await?;
+    let registry = Registry::new(provider.clone());
+    let owner = crate::StreamPath::new("agents/worker")?;
+    let source = crate::StreamPath::new("agents/worker/trace")?;
+    let first = registry.subscribe(owner.clone(), source.clone())?;
+    let last = registry.subscribe(owner, source.clone())?;
+    let _other = registry.subscribe(
+        crate::StreamPath::new("agents/other")?,
+        crate::StreamPath::new("agents/other/trace")?,
+    )?;
+    let recorder: Arc<Recorder<_>> = registry
+        .recorder("agents/worker")?
+        .ok_or("owner interest missing")?;
+    let root = recorder
+        .start(
+            "request",
+            Mechanism::ToolCall,
+            None,
+            Some("original_request"),
+        )
+        .await?;
+    let parent = root.id();
+    let root = root.into_owned();
+    root.within(async {
+        assert_eq!(data.head().await?, original);
+        drop(first);
+        assert_eq!(data.head().await?, original);
+        drop(last);
+        // The unrelated owner remains followed: a global subscriber count is
+        // insufficient to decide whether this retained producer can emit.
+        assert_eq!(data.head().await?, original);
+        Ok::<_, crate::StreamError>(())
+    })
+    .await?;
+    assert!(registry.recorder("agents/worker")?.is_none());
+    assert!(registry.recorder("agents/other")?.is_some());
+    let _completion = root.finish_submitted(None, Outcome::Succeeded)?;
+    let traces = crate::Stream::new(provider, source.as_str())?;
+    let mut query = TraceQuery::new(
+        traces.follow(0, Default::default()).await?,
+        Default::default(),
+    );
+    query.next().await?;
+    for _ in 0..2 {
+        query.next().await?;
+        assert!(
+            matches!(query.next().await?, Some(Observation::Completed { start, .. })
+            if start.name == "stream.head" && start.parent == Some(parent))
+        );
+    }
+    assert!(matches!(query.next().await?, Some(Observation::Completed { id, .. }) if id == parent));
+    assert_eq!(
+        traces.tail().await?,
+        6,
+        "unfollowed owner retained inherited observation work"
+    );
+    Ok(())
+}

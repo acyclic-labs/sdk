@@ -51,14 +51,17 @@ impl<P: StreamProvider + ?Sized> Registry<P> {
         source: StreamPath,
     ) -> Result<Lease<P>, StreamError> {
         let entry = self.0.entries.subscribe_with(owner, || {
-            Arc::new(Recorder::new(
-                Stream {
-                    provider: self.0.provider.clone(),
-                    path: source.clone(),
-                    fork_receipt: None,
-                },
-                crate::new_identity(),
-            ))
+            Arc::new(
+                Recorder::new(
+                    Stream {
+                        provider: self.0.provider.clone(),
+                        path: source.clone(),
+                        fork_receipt: None,
+                    },
+                    crate::new_identity(),
+                )
+                .with_demand(),
+            )
         })?;
         if entry.value().stream.path() != &source {
             return Err(StreamError::InvalidArgument.with_source(SourceMismatch));
@@ -69,6 +72,7 @@ impl<P: StreamProvider + ?Sized> Registry<P> {
                 count.checked_add(1)
             })
             .map_err(|_| StreamError::Capacity.with_source(LeaseOverflow))?;
+        entry.value().subscribe_demand();
         Ok(Lease {
             registry: self.clone(),
             _entry: entry,
@@ -129,6 +133,7 @@ pub struct Lease<P: ?Sized> {
 
 impl<P: ?Sized> Drop for Lease<P> {
     fn drop(&mut self) {
+        self._entry.value().release_demand();
         self.registry.0.leases.fetch_sub(1, Ordering::AcqRel);
     }
 }

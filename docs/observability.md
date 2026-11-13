@@ -128,6 +128,12 @@ without consuming records or estimating delivered bytes. Replay-page spans remai
 the separate delivery boundary and parent these admission spans. Diagnostic
 admission races original work, and completion submission adds no wait after a
 cursor becomes available.
+A registry-bound producer also carries its own admitted lease count. The final
+lease retires new inherited child observations even when the original request
+still retains its recorder or another agent remains followed. This is an inline
+atomic check without a registry lock, allocation or scan; overlapping leases keep
+the same producer active. Already-admitted spans retain their terminal custody.
+Standalone explicitly constructed recorders remain explicit producer capabilities.
 Harness Stream failures use one source-owning `StreamFailure` on ordinary,
 native and WebAssembly paths. Request-boundary classification remains explicit;
 native provenance and admitted allocation custody remain attached. Journal

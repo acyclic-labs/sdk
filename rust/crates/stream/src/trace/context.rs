@@ -4,6 +4,7 @@ use crate::{BoxProviderFuture, ProviderPlatform, StreamError};
 use std::{cell::RefCell, future::Future, sync::Arc};
 
 pub(super) trait Producer: ProviderPlatform {
+    fn enabled(&self) -> bool;
     fn start(
         self: Arc<Self>,
         request: Request,
@@ -27,7 +28,12 @@ pub(super) fn current() -> Option<SpanId> {
 pub(super) fn child(
     mut request: Request,
 ) -> Option<BoxProviderFuture<'static, Result<OwnedRecording, StreamError>>> {
-    let active = CURRENT.with_borrow(Clone::clone)?;
+    let active = CURRENT.with_borrow(|active| {
+        active
+            .as_ref()
+            .filter(|active| active.producer.enabled())
+            .cloned()
+    })?;
     request.parent = request.parent.or(Some(active.id));
     Some(active.producer.start(request))
 }
