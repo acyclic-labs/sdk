@@ -29,7 +29,10 @@ pub enum Event {
     /// caller that does not display it reads nothing.
     Delta,
     /// The optional accepted-input follow advanced through this exclusive cursor.
-    Input { through: u64 },
+    Input {
+        /// Exclusive accepted inbox cursor, without loading message bodies.
+        through: u64,
+    },
 }
 
 /// A live, read-only observation of one agent. Revoking the scope it derives
