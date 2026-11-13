@@ -8,7 +8,7 @@ use crate::tool::Tool;
 
 /// `subject`'s capability: the tool it executes as, else its own name.
 pub(super) fn capability<'a>(subject: &'a str, tool: Option<&'a Tool>) -> &'a str {
-    tool.map(|tool| tool.executor.capability().unwrap_or(tool))
+    tool.map(|tool| tool.executor.capability().map(Arc::as_ref).unwrap_or(tool))
         .map_or(subject, |tool| tool.definition.name.as_str())
 }
 

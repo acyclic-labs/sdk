@@ -18,7 +18,7 @@ impl ToolRegistry {
             },
             _ => self.get(name, None, io)?,
         };
-        Ok(selected.map(|tool| tool.executor.capability().unwrap_or(tool)))
+        Ok(selected.map(|tool| tool.executor.capability().map(Arc::as_ref).unwrap_or(tool)))
     }
 
     pub(crate) fn pin_model_definitions(
