@@ -44,7 +44,7 @@ export function readPackage(args) {
   const required = new Set(["LICENSE", "NOTICE", ...templates.keys(), "authority/rust-authority.json",
     ...[...approved.inputs.keys()].map(name => "authority/" + name), ...expectedModules(approved)]);
   verifyPackageOutputs(receipt.outputs, receipt.output_sha256, required, "unsafe, duplicate or unexpected package output");
-  const { compressed, payload } = readDeclaredTarGzip(args.package, args.sha256, receipt.output_sha256, 64 * 1024 * 1024);
+  const { compressed, payload } = readDeclaredTarGzip(args.package, args.sha256, receipt.output_sha256, { maxExpandedBytes: 64 * 1024 * 1024 });
   for (const [name, bytes] of templates) if (!payload.get(name).equals(bytes)) throw new Error("package metadata differs from maintained template");
   if (!payload.get("authority/rust-authority.json").equals(approved.bytes)) throw new Error("packaged authority manifest differs");
   for (const [name, bytes] of approved.inputs) if (!payload.get("authority/" + name).equals(bytes)) throw new Error("packaged Rust input differs");

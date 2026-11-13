@@ -38,7 +38,7 @@ export function readPackage(args) {
   for (const source of targets) for (const suffix of [".pb.swift", ".grpc.swift"]) {
     if (!names.has("Sources/AcyclicTransport/" + source.slice(0, -6) + suffix)) throw new Error("tested family bindings missing");
   }
-  const { compressed, payload } = readDeclaredTarGzip(args.package, args.sha256, receipt.output_sha256, 128 * 1024 * 1024);
+  const { compressed, payload } = readDeclaredTarGzip(args.package, args.sha256, receipt.output_sha256, { maxExpandedBytes: 128 * 1024 * 1024 });
   if (sha256(payload.get("Package.swift")) !== sha256(readFileSync(join(directory, "../templates/package/Package.swift")))
     || !payload.get("authority/rust-authority.json").equals(approved.bytes)) throw new Error("package metadata differs from maintained inputs");
   return { payload, receipt, receiptBytes, approved, archiveBytes: compressed };

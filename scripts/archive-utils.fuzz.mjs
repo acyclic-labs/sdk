@@ -52,10 +52,10 @@ export function fuzzPayload(data, caseInsensitive) {
 
 // Keep the declared inventory independent of the returned map: every physical
 // member must be delivered once, with the admitted compressed and member bytes.
-export function fuzzDeclared(data, path, files, digest, maxExpandedBytes) {
+export function fuzzDeclared(data, path, files, digest, maxExpandedBytes, maxArchiveBytes) {
   writeFileSync(path, data);
   let result;
-  try { result = readDeclaredTarGzip(path, digest, files, maxExpandedBytes); }
+  try { result = readDeclaredTarGzip(path, digest, files, { maxArchiveBytes, maxExpandedBytes }); }
   catch (error) {
     assert.ok(["Z_DATA_ERROR", "Z_BUF_ERROR", "ERR_BUFFER_TOO_LARGE"].includes(error.code)
       || /^archive (exceeds|expands|digest|payload|member|has|lacks) /.test(error.message)
@@ -64,6 +64,7 @@ export function fuzzDeclared(data, path, files, digest, maxExpandedBytes) {
   }
   const hash = bytes => createHash("sha256").update(bytes).digest("hex");
   assert.equal(hash(data), digest, "compressed bytes must match their admitted digest");
+  assert.ok(maxArchiveBytes === undefined || data.length <= maxArchiveBytes);
   assert.deepEqual(result.compressed, Buffer.from(data));
   const expanded = gunzipSync(data, { maxOutputLength: maxExpandedBytes + 1 });
   assert.ok(expanded.length <= maxExpandedBytes);

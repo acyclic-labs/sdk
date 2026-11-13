@@ -31,7 +31,7 @@ export function readPackage(args) {
     ...[...approved.inputs.keys()].map(name => "authority/" + name),
     ...approved.manifest.families.map(family => "lib/acyclic/" + family.source.slice(0, -6) + ".pb.ex")]);
   verifyPackageOutputs(receipt.outputs, receipt.output_sha256, required, "unsafe, duplicate or unexpected Elixir package output");
-  const { compressed, payload } = readDeclaredTarGzip(args.package, args.sha256, receipt.output_sha256, 64 * 1024 * 1024);
+  const { compressed, payload } = readDeclaredTarGzip(args.package, args.sha256, receipt.output_sha256, { maxExpandedBytes: 64 * 1024 * 1024 });
   if (Object.entries(templates).some(([name, bytes]) => !payload.get(name).equals(bytes)) || !payload.get("authority/rust-authority.json").equals(approved.bytes)) throw new Error("package metadata differs from maintained inputs");
   for (const [name, bytes] of approved.inputs) if (!payload.get("authority/" + name).equals(bytes)) throw new Error("packaged Rust input differs");
   return { payload, receipt, receiptBytes, approved, archiveBytes: compressed };
