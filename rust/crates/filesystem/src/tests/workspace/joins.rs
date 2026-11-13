@@ -358,6 +358,7 @@ async fn common_ancestor_copy_work_grows_with_the_graph_instead_of_insertion_ord
         // unchanged work directly so this bound isolates traversal storage.
         let decoding = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
+        let decoding_baseline = decoding.live_allocation_bytes();
         let mut accounting = KernelAccounting::native(&decoding, &cancellation);
         let (decoded, allocation) = crate::kernel::read_generation_root_with_accounting(
             fs.objects(),
@@ -369,7 +370,7 @@ async fn common_ancestor_copy_work_grows_with_the_graph_instead_of_insertion_ord
         .await?;
         let bytes = (decoded.parents.capacity() * std::mem::size_of::<GenerationId>()) as u64;
         Owned::new(decoded, allocation, bytes).retire(&mut accounting)?;
-        assert_eq!(decoding.live_allocation_bytes(), 0);
+        assert_eq!(decoding.live_allocation_bytes(), decoding_baseline);
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes();
