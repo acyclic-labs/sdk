@@ -967,7 +967,7 @@ async fn draft_step<T: TurnDriver + ?Sized>(
         (Some(state), Wake::Alarm | Wake::Rejected) => state,
         (Some(mut state), Wake::Reply { settled }) => {
             if settled && matches!(state.phase, Phase::Waiting { .. }) {
-                settle_condition(&mut state);
+                settle_condition(&mut state, WaitReason::NeedMet);
             }
             state
         }
@@ -1406,17 +1406,20 @@ async fn settle_awaited(state: &mut AgentState, child: &AgentPath) -> Result<(),
     if !child.is_child_of(&state.path) || !state.awaiting.remove(child).await? {
         return Ok(());
     }
-    settle_condition(state);
+    settle_condition(
+        state,
+        WaitReason::Settlement {
+            child: child.clone(),
+        },
+    );
     Ok(())
 }
 
-fn settle_condition(state: &mut AgentState) {
+fn settle_condition(state: &mut AgentState, reason: WaitReason) {
     state.need = state.need.saturating_sub(1);
     if state.need == 0 {
         if let Some(resume) = &mut state.wait_resume {
-            resume.reason = Some(WaitReason::Settlement {
-                child: child.clone(),
-            });
+            resume.reason = Some(reason);
         }
         let before = control(state);
         let next = kernel::satisfy(before);
