@@ -1916,6 +1916,16 @@ mod tests {
                 _ => panic!("{name} decoded as another operation"),
             }
         }
+        let invalid = include_bytes!("../../../fuzz/corpus/client_files/mismatched-reply-path");
+        let split = invalid
+            .iter()
+            .position(|byte| *byte == 0)
+            .ok_or("negative capture has no reply separator")?;
+        let command = crate::PreparedCommand::decode_whole(&invalid[..split])?;
+        assert!(
+            decode_agent_reply(&invalid[split + 1..], &command).is_err(),
+            "mismatched authored reply path was admitted"
+        );
         Ok(())
     }
 }

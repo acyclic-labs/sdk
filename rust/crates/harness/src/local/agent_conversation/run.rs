@@ -697,26 +697,46 @@ mod tests {
             (intervened, input_released),
             (continued, finishing),
         ]));
-        let provider = Arc::new(
-            ScriptedModelProvider::new(["first", "independent input", "done"].map(|text| {
-                ScriptedTurn::Events(vec![
-                    ScriptedEvent::Event(crate::model::ModelEvent::Content { delta: text.into() }),
-                    ScriptedEvent::Event(crate::model::ModelEvent::Completed {
-                        metadata: serde_json::json!({"usage":{"input_tokens":1,"output_tokens":1}}),
-                    }),
-                ])
-            }))
-            .with_dispatch_observer(move |_| {
-                let selected = gate.lock().unwrap().pop_front();
-                Box::pin(async move {
-                    if let Some((entered, released)) = selected {
-                        let _ = entered.send(());
-                        released.await.map_err(failed)?;
+        fn response(text: &str) -> ScriptedTurn {
+            ScriptedTurn::Events(vec![
+                ScriptedEvent::Event(crate::model::ModelEvent::Content { delta: text.into() }),
+                ScriptedEvent::Event(crate::model::ModelEvent::Completed {
+                    metadata: serde_json::json!({"usage":{"input_tokens":1,"output_tokens":1}}),
+                }),
+            ])
+        }
+        let admitted = Arc::new(Mutex::new(Vec::new()));
+        let observed = admitted.clone();
+        let provider = Arc::new_cyclic(|weak: &std::sync::Weak<ScriptedModelProvider>| {
+            let weak = weak.clone();
+            ScriptedModelProvider::new(["first", "independent input", "done"].map(response))
+                .with_dispatch_observer(move |dispatch| {
+                    let provider = weak.upgrade().expect("live scripted provider");
+                    let index = provider.request_count() - 1;
+                    let request = provider.last_request().expect("original request");
+                    let mut admitted = observed.lock().unwrap();
+                    // Summary requests and later steps belong to an already
+                    // admitted turn. They must not consume the next turn's gate.
+                    if request.summary
+                        || admitted
+                            .iter()
+                            .any(|(operation, _)| *operation == dispatch.operation_id)
+                    {
+                        provider.extend([response("auxiliary response")]);
+                        return Box::pin(async { Ok(()) });
                     }
-                    Ok(())
+                    admitted.push((dispatch.operation_id, index));
+                    drop(admitted);
+                    let selected = gate.lock().unwrap().pop_front();
+                    Box::pin(async move {
+                        if let Some((entered, released)) = selected {
+                            let _ = entered.send(());
+                            released.await.map_err(failed)?;
+                        }
+                        Ok(())
+                    })
                 })
-            }),
-        );
+        });
         let directory = tempfile::tempdir().map_err(failed)?;
         let project = volume(directory.path()).await?;
         let harness = Arc::new(
@@ -964,8 +984,11 @@ mod tests {
             Settlement::Reply(Reply::Answered { .. }),
         ));
         let accepted = provider.request_count();
-        let first = provider.request(0).unwrap();
-        let second = provider.request(2).unwrap();
+        let admitted = admitted.lock().unwrap();
+        assert_eq!(admitted.len(), 3, "expected A, B, and A's continuation");
+        let first = provider.request(admitted[0].1).unwrap();
+        let second = provider.request(admitted[2].1).unwrap();
+        drop(admitted);
         assert!(second.messages.len() >= first.messages.len());
         assert_eq!(
             &second.messages[..first.messages.len()],
