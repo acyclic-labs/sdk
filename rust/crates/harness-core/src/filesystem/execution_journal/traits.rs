@@ -460,7 +460,7 @@ where
                 operation,
                 key,
                 prepared,
-                previous,
+                previous.or(self.preceding_request.as_ref()),
                 &self.verifier,
                 io,
             )

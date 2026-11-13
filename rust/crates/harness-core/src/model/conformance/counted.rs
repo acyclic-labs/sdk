@@ -17,6 +17,14 @@ where
     P: Deref + acyclic_stream::ProviderPlatform,
     P::Target: ModelProvider,
 {
+    fn bind_conversation(
+        &self,
+        conversation: crate::OperationId,
+    ) -> Option<Arc<dyn ModelProvider>> {
+        self.inner().bind_conversation(conversation).map(|bound| {
+            Arc::new(Counted::with_ledger(bound, self.ledger())) as Arc<dyn ModelProvider>
+        })
+    }
     fn bind_content(
         &self,
         reader: Arc<dyn crate::conversation::ContentResidencyVerifier>,

@@ -69,6 +69,8 @@ mod inline_tests;
 mod interactions;
 mod observations;
 mod publication_authorization;
+#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+mod request_prefix_tests;
 #[cfg(not(target_arch = "wasm32"))]
 pub use context_publication::{
     ContextCheckpoint, ContextPublicationReceipt, ContextPublicationRequest,
@@ -122,6 +124,8 @@ pub struct FilesystemExecutionJournal<P: ?Sized, A: 'static, O: 'static> {
     /// The one model context an agent turn may dispatch, built by its turn host
     /// from the agent's own conversation stream; any other selection is refused.
     bound_selection: Option<crate::projection::SelectedModelContext>,
+    /// Original admitted request of the immediately preceding selected turn.
+    preceding_request: Option<FileRef>,
     /// An agent turn's stop signal, followed as the executor's cancellation.
     stop: Option<acyclic_actors::guest::CancellationToken>,
     boundary: Option<Arc<dyn crate::agent::ModelBoundary>>,

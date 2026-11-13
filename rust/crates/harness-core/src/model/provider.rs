@@ -366,6 +366,14 @@ fn unsupported() -> Error {
 
 /// Replaceable streaming model provider.
 pub trait ModelProvider: acyclic_stream::ProviderPlatform {
+    /// Binds transport affinity to one conversation, independently of prompt
+    /// content, model steps and turns. Providers without affinity need no copy.
+    fn bind_conversation(
+        &self,
+        _: crate::OperationId,
+    ) -> Option<std::sync::Arc<dyn ModelProvider>> {
+        None
+    }
     /// Derives an immutable epoch selection from this original provider. The
     /// caller retains the returned model and provider together; the original
     /// selection remains available to other sessions. Admission performs no I/O.

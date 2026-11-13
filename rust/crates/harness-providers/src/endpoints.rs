@@ -18,7 +18,7 @@ fn chat(base_url: String, authentication: Authentication) -> Result<ProviderSpec
         max_event_bytes: None,
         retry: RetrySpec::DEFAULT,
         timeouts: TimeoutSpec::DEFAULT,
-        prompt_cache: crate::PromptCache::Native,
+        prompt_cache: crate::PromptCache::Implicit,
     })
 }
 
@@ -60,6 +60,7 @@ pub fn vertex(project: &str, location: &str) -> Result<ProviderSpec> {
 
 /// Ollama, llama.cpp, vLLM or another server exposing OpenAI Chat Completions.
 /// HTTP is accepted only on loopback, using the same URL validation as every provider.
+/// Cache fields require selecting a supported form in `ProviderSpec::prompt_cache`.
 pub fn local(base_url: &str) -> Result<ProviderSpec> {
     chat(base_url.to_owned(), Authentication::Optional)
 }
@@ -75,4 +76,49 @@ fn component(value: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn compatible_chat_endpoints_add_cache_fields_only_when_selected() {
+        use acyclic_harness_core::model::ModelProvider as _;
+        use futures::TryStreamExt as _;
+
+        let (mut provider, transport) = crate::tests::provider(Adapter::Chat, 200);
+        provider.config = std::sync::Arc::new(local("http://127.0.0.1:1234/v1").unwrap());
+        let (prepared, dispatch) = crate::tests::request(&provider).unwrap();
+        for selection in [
+            None,
+            Some(crate::PromptCache::Native),
+            Some(crate::PromptCache::Routed),
+        ] {
+            if let Some(selection) = selection {
+                std::sync::Arc::make_mut(&mut provider.config).prompt_cache = selection;
+            }
+            provider
+                .generate(&prepared, dispatch)
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+        }
+        let sent = transport.sent.lock().unwrap();
+        let bodies: Vec<serde_json::Value> = sent
+            .iter()
+            .map(|request| serde_json::from_slice(&request.body).unwrap())
+            .collect();
+        assert_eq!(bodies.len(), 3);
+        assert!(bodies[0].get("prompt_cache_key").is_none());
+        assert!(bodies[0].get("cache_control").is_none());
+        assert!(
+            bodies[1]["prompt_cache_key"]
+                .as_str()
+                .is_some_and(|key| !key.is_empty())
+        );
+        assert!(bodies[1].get("cache_control").is_none());
+        assert_eq!(bodies[1]["prompt_cache_key"], bodies[2]["prompt_cache_key"]);
+        assert!(bodies[2].get("cache_control").is_some());
+    }
 }

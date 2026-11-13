@@ -326,11 +326,9 @@ pub(crate) fn body_named<'a>(
                 .ok_or_else(|| invalid("Anthropic Messages requires the model's published maximum output tokens in the catalog"))?;
             fields.insert(Field::MaxTokens, json!(maximum));
             if !system.is_empty() {
-                // One text block holding the prefix breakpoint: Anthropic
-                // renders tools, then system, before every message. Built in
-                // place: `json!` would copy the joined text again.
+                // Built in place: `json!` would copy the joined text again.
+                // The shared cache projector owns any prefix breakpoint.
                 let block = [
-                    ("cache_control".to_owned(), cache::control(provider)),
                     ("text".to_owned(), Value::String(text::join(system, "\n\n"))),
                     ("type".to_owned(), Value::String("text".into())),
                 ];

@@ -134,7 +134,9 @@ fn configuration_pin() {
         Adapter::Anthropic,
         Adapter::Gemini,
     ] {
-        let (provider, _) = crate::tests::provider(family, 200);
+        let (mut provider, _) = crate::tests::provider(family, 200);
+        // This probe deliberately reopens one conversation in each feature build.
+        provider.conversation = acyclic_harness_core::OperationId::from_bytes([1; 16]);
         let (request, _) = crate::tests::request(&provider).unwrap();
         let mut request = request.request().clone();
         request.sampling = ModelSampling {
@@ -220,7 +222,7 @@ proptest! {
                     prop_assert_eq!(actual.pointer(effort), Some(&json!("high")));
                     let mut expected = match family {
                         Adapter::Responses => vec!["model", "stream", "include", "store", "prompt_cache_key", "reasoning"],
-                        Adapter::Chat => vec!["model", "stream", "stream_options", "reasoning_effort"],
+                        Adapter::Chat => vec!["model", "stream", "stream_options", "prompt_cache_key", "reasoning_effort"],
                         Adapter::Anthropic => vec!["model", "stream", "system", "cache_control", "thinking", "output_config"],
                         Adapter::Gemini => vec!["systemInstruction"],
                     };
