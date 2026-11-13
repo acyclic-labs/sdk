@@ -46,6 +46,14 @@ impl crate::conversation::ContentPublisher for VisiblePublisher {
 }
 
 impl ExecutionJournal for HeldJournal {
+    fn acquire_execution<'a>(
+        &'a self,
+        operation: OperationId,
+        io: Option<&PreparationIo>,
+    ) -> Result<ExecutionAttempt<'a>> {
+        self.inner.acquire_execution(operation, io)
+    }
+
     fn cache_identity(&self) -> Option<ExecutionJournalCacheId> {
         self.inner.cache_identity()
     }
