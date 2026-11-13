@@ -27,6 +27,8 @@ pub(crate) struct Observed {
     calls: AtomicUsize,
     commit_count: AtomicUsize,
     capture: Option<Mutex<Capture>>,
+    /// Counts captured commits, so a vector waits on a commit event.
+    captured: tokio::sync::watch::Sender<usize>,
     fault: Mutex<Option<(FaultAt, Fault)>>,
     crash: Mutex<Option<(usize, Fault)>>,
 }
@@ -47,6 +49,7 @@ impl Observed {
             calls: AtomicUsize::new(0),
             commit_count: AtomicUsize::new(0),
             capture: None,
+            captured: tokio::sync::watch::Sender::new(0),
             fault: Mutex::new(None),
             crash: Mutex::new(None),
         }
@@ -85,6 +88,24 @@ impl Observed {
 
     pub fn take_commits(&self) -> Vec<CommitRequest> {
         self.take_capture(|capture| std::mem::take(&mut capture.commits))
+    }
+
+    /// The first captured commit `select` accepts, awaited as commits arrive;
+    /// captured history stays in place.
+    pub async fn committed<T>(&self, select: impl Fn(&CommitRequest) -> Option<T>) -> T {
+        // Subscribe before scanning, so no commit lands unseen in between.
+        let mut captured = self.captured.subscribe();
+        loop {
+            if let Some(found) =
+                self.take_capture(|capture| capture.commits.iter().find_map(&select))
+            {
+                return found;
+            }
+            captured
+                .changed()
+                .await
+                .expect("the commit watch lives as long as its provider");
+        }
     }
 
     pub fn calls(&self) -> usize {
@@ -152,6 +173,7 @@ impl Observed {
             // the original operation count.
             let index = self.commit_count.fetch_add(1, Ordering::SeqCst);
             capture.commits.push(request.clone());
+            self.captured.send_modify(|count| *count += 1);
             index
         } else {
             self.commit_count.fetch_add(1, Ordering::SeqCst)
