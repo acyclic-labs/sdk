@@ -48,7 +48,7 @@ where
     A: StreamProvider + ?Sized,
     R: AsyncFnMut(super::Publication) -> Result<(), Error>,
     F: AsyncFnMut(super::Envelope) -> Result<super::Routed, Error>,
-    D: AsyncFnMut(super::Envelope) -> Result<(), Error>,
+    D: AsyncFnMut(super::RelayRecord) -> Result<(), Error>,
 {
     let outgoing = super::forward(local, paths, node, publish, admit);
     let incoming = super::drain(account, paths, node, deliver);

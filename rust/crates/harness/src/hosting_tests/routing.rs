@@ -5,8 +5,8 @@ use acyclic_actors::route::{
     Placement as RoutePlacement, Routed,
 };
 use acyclic_stream::{
-    CommitEffect, CommitMutation, CommitOutcome, CommitRequest, FollowRequest, IdempotencyKey,
-    StreamPath, StreamProvider as _,
+    CommitCondition, CommitEffect, CommitMutation, CommitOutcome, CommitRequest, FollowRequest,
+    IdempotencyKey, StreamPath, StreamProvider as _,
 };
 use futures::TryStreamExt as _;
 
@@ -668,9 +668,71 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
                 &destination,
                 async |_| Err(route::Error::InvalidRecord),
                 async |_| Err(route::Error::InvalidRecord),
-                async |envelope| match destination_store.commit(envelope.request).await? {
-                    CommitOutcome::Committed(_) => Ok(()),
-                    CommitOutcome::Conflict(_) => Err(route::Error::InvalidRecord),
+                async |record: route::RelayRecord| {
+                    assert_eq!(
+                        record
+                            .receipt
+                            .read(stream.as_ref(), &paths, &destination)
+                            .await?,
+                        record.envelope,
+                    );
+                    assert_eq!(record.receipt.sequence, 0);
+                    let mut changed = *record.receipt.commit_id.as_bytes();
+                    changed[0] ^= 1;
+                    let unrelated = route::RelayReceipt {
+                        commit_id: acyclic_stream::CommitId::from_bytes(changed),
+                        ..record.receipt
+                    };
+                    assert!(
+                        unrelated
+                            .read(stream.as_ref(), &paths, &destination)
+                            .await
+                            .is_err()
+                    );
+                    // A fork preserves the original record's commit and sequence.
+                    // Its copied bytes are not a receipt for the other node.
+                    let other = NodeId::new(b"copied-relay")?;
+                    let copied = paths.relay(&other)?;
+                    assert!(matches!(
+                        stream
+                            .commit(CommitRequest {
+                                deadline_unix_millis: None,
+                                idempotency_key: IdempotencyKey::new(
+                                    b"copy-relay-negative".to_vec()
+                                )?,
+                                effects: vec![CommitEffect::hard(
+                                    vec![CommitCondition::Absent {
+                                        path: copied.clone()
+                                    }],
+                                    vec![CommitMutation::Fork {
+                                        source: paths.relay(&destination)?,
+                                        destination: copied.clone(),
+                                        at_tail: 1,
+                                        exclude: Vec::new(),
+                                        records: Vec::new(),
+                                    }],
+                                )],
+                            })
+                            .await?,
+                        CommitOutcome::Committed(_)
+                    ));
+                    let copied = stream
+                        .record_at(copied, 0)
+                        .await?
+                        .ok_or(route::Error::InvalidRecord)?;
+                    assert_eq!(copied.commit_id, record.receipt.commit_id);
+                    assert_eq!(copied.sequence, record.receipt.sequence);
+                    assert!(
+                        record
+                            .receipt
+                            .read(stream.as_ref(), &paths, &other)
+                            .await
+                            .is_err()
+                    );
+                    match destination_store.commit(record.envelope.request).await? {
+                        CommitOutcome::Committed(_) => Ok(()),
+                        CommitOutcome::Conflict(_) => Err(route::Error::InvalidRecord),
+                    }
                 },
             );
             let pumps = futures::future::try_join(forwarding, receiving);

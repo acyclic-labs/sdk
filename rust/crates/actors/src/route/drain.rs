@@ -1,13 +1,57 @@
 //! One follow per destination, with acknowledgement after ordinary delivery.
 use super::{Envelope, Error, NodeId, Paths, Publication, Routed, account::Reply};
 use acyclic_stream::{
-    CommitCondition, CommitEffect, CommitMutation, CommitOutcome, CommitRequest, FollowRequest,
-    IdempotencyKey, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
+    CommitCondition, CommitEffect, CommitId, CommitMutation, CommitOutcome, CommitRequest,
+    FollowRequest, IdempotencyKey, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
 };
 use futures::TryStreamExt as _;
 use prost::Message as _;
 use sha2::{Digest as _, Sha256};
 use std::convert::Infallible;
+
+/// Original account publication of one relay record. This is a reference to
+/// immutable data, not authority to send a Notice or access another node's relay.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RelayReceipt {
+    /// Content-bound account commit that appended this record.
+    pub commit_id: CommitId,
+    /// Original sequence in the destination node's relay.
+    pub sequence: u64,
+}
+
+impl RelayReceipt {
+    /// Recover exactly this original record with one bounded read. The caller
+    /// must authorize `node` before IO, then validate the returned envelope's
+    /// relationship to its proposed reply or rejection Notice.
+    pub async fn read<P: StreamProvider + ?Sized>(
+        &self,
+        account: &P,
+        paths: &Paths,
+        node: &NodeId,
+    ) -> Result<Envelope, Error> {
+        let relay = paths.relay(node)?;
+        let record = account
+            .record_at(relay.clone(), self.sequence)
+            .await?
+            .ok_or(Error::InvalidRecord)?;
+        if record.sequence != self.sequence
+            || record.commit_id != self.commit_id
+            || record.origin != relay
+        {
+            return Err(Error::InvalidRecord);
+        }
+        Envelope::decode(record.value)
+    }
+}
+
+/// Delivery plus the original account receipt needed to prove a later Notice.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RelayRecord {
+    /// Original ordinary-delivery request, without rewriting its intent or body.
+    pub envelope: Envelope,
+    /// Original relay position, retained across drain restarts and lost acks.
+    pub receipt: RelayReceipt,
+}
 
 #[derive(Clone, PartialEq, prost::Message)]
 struct Cursor {
@@ -63,14 +107,21 @@ pub async fn drain<P, D>(
 ) -> Result<Infallible, Error>
 where
     P: StreamProvider + ?Sized,
-    D: AsyncFnMut(Envelope) -> Result<(), Error>,
+    D: AsyncFnMut(RelayRecord) -> Result<(), Error>,
 {
     consume(
         account,
         paths.relay(node)?,
         paths.relay_cursor(node)?,
-        async |bytes: acyclic_stream::OwnedBytes| {
-            deliver(Envelope::decode(bytes)?).await?;
+        async |record: acyclic_stream::Record| {
+            deliver(RelayRecord {
+                envelope: Envelope::decode(record.value)?,
+                receipt: RelayReceipt {
+                    commit_id: record.commit_id,
+                    sequence: record.sequence,
+                },
+            })
+            .await?;
             Ok(None)
         },
     )
@@ -101,7 +152,7 @@ where
         local,
         paths.outbox(node)?,
         paths.outbox_cursor(node)?,
-        async |bytes: acyclic_stream::OwnedBytes| match Publication::decode(&bytes)? {
+        async |record: acyclic_stream::Record| match Publication::decode(&record.value)? {
             Publication::Delivery(envelope) => {
                 if envelope.source != *node {
                     return Err(Error::InvalidRecord);
@@ -136,7 +187,7 @@ async fn consume<P, D>(
 ) -> Result<Infallible, Error>
 where
     P: StreamProvider + ?Sized,
-    D: AsyncFnMut(acyclic_stream::OwnedBytes) -> Result<Option<Reply>, Error>,
+    D: AsyncFnMut(acyclic_stream::Record) -> Result<Option<Reply>, Error>,
 {
     let (mut next, mut cursor_tail) = match account.head(cursor_path.clone()).await {
         Ok(head) => {
@@ -162,11 +213,12 @@ where
         if record.sequence != next {
             return Err(Error::InvalidRecord);
         }
-        let receipt = deliver(record.value.clone()).await?;
+        let commit_id = record.commit_id;
+        let receipt = deliver(record).await?;
         let following = next.checked_add(1).ok_or(Error::InvalidRecord)?;
         let mut key = Sha256::new();
         key.update(b"acyclic.actors.route.ack.v1\0");
-        for part in [cursor_path.as_str().as_bytes(), record.commit_id.as_bytes()] {
+        for part in [cursor_path.as_str().as_bytes(), commit_id.as_bytes()] {
             key.update((part.len() as u64).to_le_bytes());
             key.update(part);
         }

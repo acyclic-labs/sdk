@@ -17,7 +17,23 @@ async fn drain_one<P: StreamProvider + ?Sized>(
     expected: &IdempotencyKey,
     acknowledged: u64,
 ) -> Result<(), Failure> {
-    let drain = crate::route::drain(provider, paths, node, async |envelope| {
+    let drain = crate::route::drain(provider, paths, node, async |record| {
+        if record.receipt.read(provider, paths, node).await? != record.envelope {
+            return Err(crate::route::Error::InvalidRecord);
+        }
+        let mut forged = *record.receipt.commit_id.as_bytes();
+        forged[0] ^= 1;
+        if (crate::route::RelayReceipt {
+            commit_id: acyclic_stream::CommitId::from_bytes(forged),
+            ..record.receipt
+        })
+        .read(provider, paths, node)
+        .await
+        .is_ok()
+        {
+            return Err(crate::route::Error::InvalidRecord);
+        }
+        let envelope = record.envelope;
         if &envelope.request.idempotency_key != expected {
             return Err(crate::route::Error::InvalidRecord);
         }
@@ -550,7 +566,7 @@ pub async fn storage<P: StreamProvider + ?Sized>(
             provider,
             &paths,
             &placement.node,
-            async |envelope| match provider.commit(envelope.request).await? {
+            async |record| match provider.commit(record.envelope.request).await? {
                 CommitOutcome::Committed(_) => Err(StreamError::Unavailable.into()),
                 CommitOutcome::Conflict(_) => Err(crate::route::Error::InvalidRecord),
             },
