@@ -591,7 +591,9 @@ where
 /// context manifest) through the authority's private writer.
 pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
     /// Review an exact action with this agent's original model binding in a
-    /// fresh, tool-free context. `policy` is trusted host-selected policy text,
+    /// fresh, tool-free context. The request source must be its direct child;
+    /// its path binds replay even when different children reuse a request id.
+    /// `policy` is trusted host-selected policy text,
     /// never child request data. The caller retains its immutable source and
     /// authenticates and publishes any resulting decision; a verdict grants
     /// nothing by itself. Hosts without an independent reviewer refuse.
@@ -602,7 +604,7 @@ pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
             &'a dyn crate::executor::ExecutionJournal,
             Option<&'a crate::executor::PreparationIo>,
         ),
-        request: &'a crate::approvals::ApprovalRequest<'a>,
+        request: (&'a AgentPath, &'a crate::approvals::ApprovalRequest<'a>),
         principal: &'a str,
         policy: &'a str,
     ) -> BoxFuture<'a, Result<(crate::approvals::RuleVerdict, Option<String>)>> {

@@ -65,6 +65,7 @@ pub async fn automatic_review(
                 &expected.principal,
                 (model, provider),
                 None,
+                None,
                 limits,
             )
             .await?

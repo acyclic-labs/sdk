@@ -23,6 +23,7 @@ pub(crate) async fn review_model(
     principal: &str,
     binding: (&Model, &Arc<dyn ModelProvider>),
     policy: Option<&str>,
+    source: Option<&crate::agent::AgentPath>,
     limits: Limits,
 ) -> Result<(RuleVerdict, Option<String>)> {
     let (model, provider) = binding;
@@ -75,6 +76,15 @@ pub(crate) async fn review_model(
         crate::executor::preparation_format(format_args!("{}:{principal}", request.id()), work)
     })?;
     let identity = blake3::derive_key("acyclic.approver-model/v1", binding.as_bytes());
+    let identity = match source {
+        Some(source) => {
+            let mut hash = blake3::Hasher::new_derive_key("acyclic.approver-source/v1");
+            hash.update(&identity);
+            hash.update(source.as_str().as_bytes());
+            *hash.finalize().as_bytes()
+        }
+        None => identity,
+    };
     let operation = OperationId::from_bytes(
         *identity
             .first_chunk::<16>()
@@ -232,6 +242,7 @@ mod tests {
                     "reviewer",
                     (&model, &bound),
                     None,
+                    None,
                     limits,
                 )
                 .await;
@@ -301,6 +312,7 @@ mod tests {
                     "reviewer",
                     (&model, &bound),
                     None,
+                    None,
                     limits,
                 )
                 .await;
@@ -336,6 +348,7 @@ mod tests {
                             &changed,
                             "reviewer",
                             (&model, &bound),
+                            None,
                             None,
                             limits
                         )

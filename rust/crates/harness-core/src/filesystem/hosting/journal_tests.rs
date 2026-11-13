@@ -297,9 +297,9 @@ async fn independent_review_uses_selected_model_without_opening_worker_context()
         peers: Default::default(),
         model: Some("test/parent-review".into()),
     });
-    let reviewer = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
-        r#"{"verdict":"ask","reason":"needs parent action"}"#.into(),
-    )]));
+    let reviewer = Arc::new(ScriptedModelProvider::new((0..2).map(|_| {
+        ScriptedTurn::Text(r#"{"verdict":"ask","reason":"needs parent action"}"#.into())
+    })));
     let selected = (
         Model::new("test".into(), "parent-review".into(), "1".into())?,
         {
@@ -335,23 +335,42 @@ async fn independent_review_uses_selected_model_without_opening_worker_context()
     let journal = storage.journal();
     let request =
         ApprovalRequest::new("child-request", br#"{"action":"exact child action"}"#, 4096)?;
-    for _ in 0..2 {
-        assert_eq!(
-            executors
-                .review(
-                    &agent,
-                    (journal.as_ref(), None),
-                    &request,
-                    "parent:fixture",
-                    "TRUSTED_PARENT_POLICY"
-                )
-                .await?,
-            (RuleVerdict::Ask, Some("needs parent action".into()))
-        );
+    assert!(matches!(
+        executors
+            .review(
+                &agent,
+                (journal.as_ref(), None),
+                (&agent.path, &request),
+                "parent:fixture",
+                "TRUSTED_PARENT_POLICY"
+            )
+            .await,
+        Err(crate::Error::Unauthorized(_))
+    ));
+    for source in [AgentId::from_bytes([31; 16]), AgentId::from_bytes([32; 16])] {
+        let child = agent.path.child(&source)?;
+        for _ in 0..2 {
+            assert_eq!(
+                executors
+                    .review(
+                        &agent,
+                        (journal.as_ref(), None),
+                        (&child, &request),
+                        "parent:fixture",
+                        "TRUSTED_PARENT_POLICY"
+                    )
+                    .await?,
+                (RuleVerdict::Ask, Some("needs parent action".into()))
+            );
+        }
     }
     assert_eq!(worker.request_count(), 0);
     let requests = reviewer.requests();
-    assert_eq!(requests.len(), 1, "replay dispatched another review");
+    assert_eq!(
+        requests.len(),
+        2,
+        "child identities collided or replay dispatched another review"
+    );
     assert_eq!(requests[0].model, expected_model);
     assert!(requests[0].tools.is_empty());
     assert!(requests[0].messages.iter().any(|message| {
