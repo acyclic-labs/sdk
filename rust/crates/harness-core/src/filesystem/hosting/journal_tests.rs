@@ -496,9 +496,8 @@ async fn title_events_publish_once_without_losing_file_controls() -> TestResult 
         bound.clock.clone(),
     );
     for (index, title) in ["First", "First", "Second"].into_iter().enumerate() {
-        let expected = bound
-            .agent_files(&root, &["ui/title".into()], None)
-            .await?
+        let files = bound.agent_files(&root, &["ui/title".into()], None).await?;
+        let expected = files
             .files
             .get("ui/title")
             .and_then(Option::as_ref)
@@ -516,9 +515,15 @@ async fn title_events_publish_once_without_losing_file_controls() -> TestResult 
                 text: Some(String::new()),
             });
         }
-        bound
+        let generation = bound
             .publish_agent_files(&root, OperationId::new(), &changes)
             .await?;
+        if index == 1 {
+            assert_ne!(
+                generation, files.cut.generation,
+                "the unchanged-title case must publish a new source generation"
+            );
+        }
         runtime.drain_actor(&control).await?;
         let head = provider.head(row_path.clone()).await?;
         assert_eq!(head.tail, initial + if index == 2 { 2 } else { 1 });
