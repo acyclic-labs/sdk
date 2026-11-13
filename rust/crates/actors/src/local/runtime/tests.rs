@@ -1765,8 +1765,13 @@ async fn placement_and_restart_admit_only_one_publishing_activation() -> TestRes
     publication.join(store.activation(&address)?)?;
     store.submit(publication).await?;
     let handler = Arc::new(Gated::new()?);
-    let restarted = Runtime::new(store, handler.clone(), Arc::new(SystemClock))
-        .with_external_placement(unrequested());
+    let restarted = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        handler.clone(),
+        Arc::new(SystemClock),
+    )
+    .externally_placed();
     restarted.place(address.clone(), 3).await?;
     handler.gate.add_permits(1);
     restarted.drain_actor(&address).await?;
@@ -1784,17 +1789,19 @@ async fn activation_transfer<P: StreamProvider>(provider: Arc<P>) -> TestResult 
     let handler = Arc::new(Gated::new()?);
     let next_handler = Arc::new(Gated::new()?);
     let original = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(provider.clone(), root()?),
         handler.clone(),
         Arc::new(SystemClock),
     )
-    .with_external_placement(unrequested());
+    .externally_placed();
     let replacement = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(provider.clone(), root()?),
         next_handler.clone(),
         Arc::new(SystemClock),
     )
-    .with_external_placement(unrequested());
+    .externally_placed();
     original.place(address.clone(), 1).await?;
     let mut first = Box::pin(original.drain_actor(&address));
     assert!(futures::poll!(first.as_mut()).is_pending());
@@ -2518,10 +2525,4 @@ async fn manifest_limits_bound_handler_time_and_checkpoint_size() -> TestResult 
     assert!(refused(&failures, "checkpoint"), "{failures:?}");
     assert!(published.is_empty());
     Ok(())
-}
-
-/// External placement for tests that place every actor themselves and never
-/// run the dispatcher, so no due work is ever reported.
-fn unrequested() -> Arc<dyn PlacementRequests> {
-    Arc::new(|_: &ActorReference| {})
 }
