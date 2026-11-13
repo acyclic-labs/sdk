@@ -121,6 +121,8 @@ struct Inner {
     pending: Option<(Arc<Snapshot>, PreparedPublish, Option<String>)>,
     /// Conflicts of the last composed-guard refusal since a publication.
     refused: Option<Vec<acyclic_stream::CommitConflict>>,
+    /// This resident actor's interest marker is durable (or not needed).
+    interests_marked: bool,
 }
 
 impl Inner {
@@ -1293,6 +1295,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             if state.deleted() {
                 // Deletion is terminal: nothing is left to deliver or wake.
                 inner.observed = None;
+                self.subscriptions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .release(actor);
                 slot.registration.suspend_alarm();
                 return Ok(true);
             }
@@ -1368,7 +1374,17 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         },
                         Some(record),
                     ),
-                    None => return Ok(true),
+                    None => {
+                        // An idle actor's activation is checkpointed without a
+                        // publication: its interests must be restorable first.
+                        if !inner.interests_marked {
+                            self.store
+                                .persist_interests(actor, state, self.handler.manifest())
+                                .await?;
+                            inner.interests_marked = true;
+                        }
+                        return Ok(true);
+                    }
                 },
             };
             if inner.epoch == 0 {

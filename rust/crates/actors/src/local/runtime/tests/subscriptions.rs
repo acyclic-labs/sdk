@@ -143,6 +143,57 @@ async fn dynamic_interests_share_events_and_restore_original_cursors() -> TestRe
 }
 
 #[tokio::test]
+async fn idle_creation_with_interests_is_restored_after_its_activation_checkpoints() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let (store, actors, observed) = observers(&provider, 1).await?;
+    let shard = store.scheduling_shard(&actors[0]);
+    let runtime = Runtime::new(store, Arc::new(Package::new()?), Arc::new(SystemClock));
+    let mut serving = Box::pin(runtime.run(|_, error| panic!("idle delivery failed: {error}")));
+    observe_while_running(serving.as_mut(), async {
+        runtime.complete().await?;
+        Ok(())
+    })
+    .await?;
+    // No publication ran: the idle pass alone made the interests restorable.
+    assert_eq!(
+        runtime.store().interest_holders(shard, None).await?.0,
+        actors
+    );
+    drop(serving);
+    drop(runtime);
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?),
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    );
+    let mut serving = Box::pin(runtime.run(|_, error| panic!("restored delivery failed: {error}")));
+    observe_while_running(serving.as_mut(), async {
+        runtime.restored().await?;
+        runtime.complete().await?;
+        Ok(())
+    })
+    .await?;
+    // No activation entry: only the restored interest can wake the actor.
+    provider
+        .append(AppendRequest {
+            path: observed,
+            records: vec![Bytes::from_static(b"emit").into()],
+            if_tail: None,
+            idempotency_key: key("observed-after-restart")?,
+        })
+        .await?;
+    observe_while_running(serving.as_mut(), async {
+        state_after(runtime.store(), &actors[0], |state| {
+            state.cursor("observed") == Some(1)
+        })
+        .await?;
+        Ok(())
+    })
+    .await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn source_failure_and_fanout_remain_bounded_and_recover_without_stopping_other_actors()
 -> TestResult {
     let provider = Arc::new(MemoryStream::default());

@@ -14,8 +14,8 @@
 //! from these markers at startup, one paged credit at a time.
 use super::{ActorReference, Error, Store, StreamPath, StreamProvider};
 use acyclic_stream::{
-    ChildrenPageRequest, CommitEffect, CommitMutation, ReadRequest, StreamError,
-    StreamProviderExt as _,
+    ChildrenPageRequest, CommitEffect, CommitMutation, CommitRequest, IdempotencyKey, ReadRequest,
+    StreamError, StreamProviderExt as _,
 };
 use futures::TryStreamExt as _;
 use sha2::{Digest, Sha256};
@@ -315,13 +315,55 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         actor: &ActorReference,
         manifest: &crate::guest::Manifest,
     ) -> Result<(), Error> {
-        if publication.state.as_ref().is_none_or(|state| {
-            state
-                .subscriptions()
-                .keys()
-                .all(|id| manifest.subscriptions.contains(id))
-        }) {
+        let Some(state) = &publication.state else {
             return Ok(());
+        };
+        match self.interest_marker(actor, state, manifest)? {
+            Some(marker) => publication.join_host(marker),
+            None => Ok(()),
+        }
+    }
+
+    /// Persist the marker of an actor that holds guest-added interests but
+    /// was created or resumed without a publication of its own (no input
+    /// yet). Its activation is checkpointed once it goes idle, so without the
+    /// marker a later host could never restore its interests. One soft commit,
+    /// skipped once the marker exists.
+    pub(super) async fn persist_interests(
+        &self,
+        actor: &ActorReference,
+        state: &super::State,
+        manifest: &crate::guest::Manifest,
+    ) -> Result<(), Error> {
+        let Some(marker) = self.interest_marker(actor, state, manifest)? else {
+            return Ok(());
+        };
+        let mut key = b"interests/".to_vec();
+        key.extend(actor.encode());
+        self.provider()
+            .commit(CommitRequest {
+                deadline_unix_millis: None,
+                effects: vec![marker],
+                idempotency_key: IdempotencyKey::new(key)?,
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// The soft marker effect for `actor` when `state` subscribes beyond
+    /// `manifest`.
+    fn interest_marker(
+        &self,
+        actor: &ActorReference,
+        state: &super::State,
+        manifest: &crate::guest::Manifest,
+    ) -> Result<Option<CommitEffect>, Error> {
+        if state
+            .subscriptions()
+            .keys()
+            .all(|id| manifest.subscriptions.contains(id))
+        {
+            return Ok(None);
         }
         let name: String = actor
             .encode()
@@ -332,14 +374,14 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             "{}/{name}",
             self.interests_path(self.scheduling_shard(actor))?
         ))?;
-        publication.join_host(CommitEffect {
+        Ok(Some(CommitEffect {
             conditions: vec![acyclic_stream::CommitCondition::Absent { path: path.clone() }],
             mutations: vec![CommitMutation::Append {
                 path,
                 records: vec![actor.encode().into()],
             }],
             soft: true,
-        })
+        }))
     }
 
     /// One page of `shard`'s interest holders after `after`, and where the
