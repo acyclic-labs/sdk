@@ -68,6 +68,7 @@ mod linux {
                     )
                     .await?,
                 );
+                acyclic_fs::initialize_native_mount_services_async().await?;
                 let owner = HostWorkspaceOwner::new(local)?;
                 let admission = owner.guest_session(config.enrollment, &work).await?;
                 // Bind refuses an existing path; never unlink another server's
