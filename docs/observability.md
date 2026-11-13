@@ -164,6 +164,17 @@ not a successful replay advance. Abandoned delivery carries a typed original
 cause, and a lost completion producer retains its actual receive error. Cancelled
 waits leave the receiver and application checkpoint intact; the trace never
 substitutes receive credit for a consumer decision.
+Submitted diagnostic publications share recorder credit (64 concurrent spans by
+default, configurable with `with_publication_credit`). Each admitted span holds
+one credit from before its start submission through its terminal append's
+completion, including failure. Starts and terminals cannot accumulate tasks
+without first owning that credit. A saturated producer skips observation and
+increments `suppressed_spans`; a nonzero value explicitly means incomplete
+coverage. Original business work remains ready and is never queued behind trace
+IO. These are publication credits, not a history or agent-count limit. The
+suppression counter is currently exposed on the producer; projecting it into the
+stream-backed file query remains necessary before that file can claim complete
+coverage under saturation.
 A registry-bound producer also carries its own admitted lease count. The final
 lease retires new inherited child observations even when the original request
 still retains its recorder or another agent remains followed. This is an inline

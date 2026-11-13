@@ -49,6 +49,8 @@ pub struct Recorder<P: ?Sized> {
     origin: Instant,
     next: AtomicU64,
     demand: Option<AtomicUsize>,
+    publications: Arc<tokio::sync::Semaphore>,
+    suppressed: AtomicU64,
     #[cfg(not(target_arch = "wasm32"))]
     executor: std::sync::OnceLock<tokio::runtime::Handle>,
 }
@@ -57,6 +59,8 @@ pub struct Recorder<P: ?Sized> {
 enum RecorderFailure {
     #[error("trace producer exhausted its span identities")]
     IdentityExhausted,
+    #[error("trace publication credit is occupied; coverage is incomplete")]
+    PublicationCredit,
     #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
     #[error("trace publication has no original executor")]
     ExecutorUnavailable,
@@ -67,6 +71,38 @@ enum RecorderFailure {
 }
 
 impl<P: ?Sized> Recorder<P> {
+    /// Number of spans omitted because their original publication credit was
+    /// occupied. A nonzero value means this producer's coverage is incomplete.
+    pub fn suppressed_spans(&self) -> u64 {
+        self.suppressed.load(Ordering::Acquire)
+    }
+
+    /// Configure simultaneous inherited observation publications. Each credit
+    /// covers one start and its terminal until publication completes; saturation
+    /// suppresses diagnostics rather than delaying original work.
+    pub fn with_publication_credit(
+        mut self,
+        credit: std::num::NonZeroUsize,
+    ) -> Result<Self, StreamError> {
+        if credit.get() > tokio::sync::Semaphore::MAX_PERMITS {
+            return Err(
+                StreamError::InvalidArgument.with_source(RecorderFailure::PublicationCredit)
+            );
+        }
+        self.publications = Arc::new(tokio::sync::Semaphore::new(credit.get()));
+        Ok(self)
+    }
+    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    fn reserve_publication(&self) -> Result<tokio::sync::OwnedSemaphorePermit, StreamError> {
+        self.publications.clone().try_acquire_owned().map_err(|_| {
+            let _ = self
+                .suppressed
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                    Some(count.saturating_add(1))
+                });
+            StreamError::Capacity.with_source(RecorderFailure::PublicationCredit)
+        })
+    }
     pub(super) fn with_demand(mut self) -> Self {
         self.demand = Some(AtomicUsize::new(0));
         self
@@ -201,6 +237,8 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
             origin: Instant::now(),
             next: AtomicU64::new(0),
             demand: None,
+            publications: Arc::new(tokio::sync::Semaphore::new(64)),
+            suppressed: AtomicU64::new(0),
             #[cfg(not(target_arch = "wasm32"))]
             executor: std::sync::OnceLock::new(),
         }
@@ -307,17 +345,18 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
         if !self.terminal_available() {
             return Err(StreamError::Unavailable.with_source(RecorderFailure::ExecutorUnavailable));
         }
+        let credit = self.reserve_publication()?;
         let (id, event) = self.prepare_start(
             request.name,
             request.mechanism,
             request.parent,
             request.guarantee,
         )?;
-        let start = self.publish_submitted(event, None)?;
+        let start = self.publish_submitted(event, None, None)?;
         Ok(Recording {
             recorder: self.clone(),
             id,
-            start: Admission::Submitted(start),
+            start: Admission::Submitted(start, credit),
         })
     }
 
@@ -326,6 +365,7 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
         &self,
         event: SpanEvent,
         before: Option<crate::AppendPending>,
+        credit: Option<tokio::sync::OwnedSemaphorePermit>,
     ) -> Result<crate::AppendPending, StreamError> {
         #[cfg(not(target_arch = "wasm32"))]
         let _executor = self.executor.get().map(tokio::runtime::Handle::enter);
@@ -341,6 +381,7 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
         Ok(crate::AppendPending::submit_task(
             request,
             super::context::disabled(async move {
+                let _credit = credit;
                 if let Some(before) = before {
                     retained_append(&before).await?;
                 }
@@ -354,7 +395,7 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
 enum Admission {
     Retained(RetainedRecord),
     #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
-    Submitted(crate::AppendPending),
+    Submitted(crate::AppendPending, tokio::sync::OwnedSemaphorePermit),
 }
 
 #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
@@ -391,7 +432,7 @@ impl<P: StreamProvider + ?Sized> Recording<P> {
         match &self.start {
             Admission::Retained(start) => Ok(start.clone()),
             #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
-            Admission::Submitted(pending) => retained_append(pending).await,
+            Admission::Submitted(pending, _) => retained_append(pending).await,
         }
     }
 
@@ -441,10 +482,10 @@ impl<P: StreamProvider + ?Sized> Recording<P> {
             bytes,
             result,
         };
-        let before = match self.start {
-            Admission::Retained(_) => None,
-            Admission::Submitted(pending) => Some(pending),
+        let (before, credit) = match self.start {
+            Admission::Retained(_) => (None, self.recorder.reserve_publication()?),
+            Admission::Submitted(pending, credit) => (Some(pending), credit),
         };
-        self.recorder.publish_submitted(event, before)
+        self.recorder.publish_submitted(event, before, Some(credit))
     }
 }

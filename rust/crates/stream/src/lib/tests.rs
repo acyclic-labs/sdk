@@ -905,6 +905,76 @@ mod replay_tests {
         Ok(())
     }
 
+    #[cfg(feature = "serde")]
+    #[tokio::test]
+    async fn stalled_trace_publication_reuses_credit_without_retaining_ready_work()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
+        let (release, resume) = futures::channel::oneshot::channel::<()>();
+        let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let trace = Stream::new(
+            Arc::new(Gapped {
+                inner: MemoryStream::default(),
+                missing: u64::MAX,
+                extra_records: 0,
+                inspect_on_write: false,
+                pause_at: 1,
+                pause_write: Some(writes.clone()),
+                resume_write: Some(std::sync::Mutex::new(Some(resume))),
+            }),
+            "trace",
+        )?;
+        let data = Stream::new(Arc::new(MemoryStream::default()), "data")?;
+        data.append("original", IdempotencyKey::unique()).await?;
+        let original = data.head().await?;
+        let recorder = Arc::new(
+            Recorder::new(trace.clone(), [30; 16])
+                .with_publication_credit(std::num::NonZeroUsize::new(1).ok_or("no credit")?)?,
+        );
+        let root = recorder
+            .start(
+                "request",
+                Mechanism::ToolCall,
+                None,
+                Some("original_request"),
+            )
+            .await?
+            .into_owned();
+        for _ in 0..8 {
+            let mut work = Box::pin(root.within(data.head()));
+            let std::task::Poll::Ready(result) = futures::poll!(&mut work) else {
+                return Err("publication credit delayed ready work".into());
+            };
+            assert_eq!(result?, original);
+        }
+        assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(recorder.suppressed_spans(), 7);
+        release
+            .send(())
+            .map_err(|_| "credited start lost its producer")?;
+        let mut query = TraceQuery::new(
+            trace.follow(0, Default::default()).await?,
+            Default::default(),
+        );
+        loop {
+            if let Some(Observation::Completed { start, result, .. }) = query.next().await? {
+                assert_eq!(start.name, "stream.head");
+                assert_eq!(result, Outcome::Succeeded);
+                break;
+            }
+        }
+        assert_eq!(root.within(data.head()).await?, original);
+        assert_eq!(
+            recorder.suppressed_spans(),
+            7,
+            "completed publication did not return credit"
+        );
+        let terminal = root.finish_submitted(None, Outcome::Succeeded)?;
+        terminal.result().await?.as_ref().map_err(Clone::clone)?;
+        assert_eq!(trace.tail().await?, 6);
+        Ok(())
+    }
+
     #[cfg(all(feature = "serde", not(target_arch = "wasm32")))]
     #[test]
     fn dropped_owned_span_uses_original_executor_outside_runtime_scope()
