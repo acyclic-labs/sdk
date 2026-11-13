@@ -111,7 +111,7 @@ pub(in crate::native_mount) struct SharedFuseView {
 }
 
 /// Starts or joins `root`'s instance without a view of its own.
-pub(super) fn hold(
+pub(in crate::native_mount) fn hold(
     root: &std::path::Path,
 ) -> Result<Arc<dyn std::any::Any + Send + Sync>, NativeMountError> {
     let operation = std::cell::Cell::new("acquire physical shared FUSE root");
