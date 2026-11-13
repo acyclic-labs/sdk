@@ -244,6 +244,7 @@ fn result(
             if failure.cleanup_completed
                 && failure.error.get_ref().is_some_and(|cause| {
                     cause.is::<acyclic_native_runtime::execution::ExecutionIncomplete>()
+                        || cause.is::<acyclic_native_runtime::execution::ExecutionRefusal>()
                 })
             {
                 return Err(Error::process_io(failure.error));
