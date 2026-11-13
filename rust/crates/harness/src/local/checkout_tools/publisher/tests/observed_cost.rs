@@ -64,13 +64,19 @@ async fn independent_agent_views_preserve_concurrent_project_and_home_writes() -
 }
 
 async fn measure_publications(publishers: &[&CheckoutPublisher], layout: &str) -> Result<()> {
+    measure_writer_batch(&publishers[..1], layout).await?;
+    measure_writer_batch(publishers, layout).await
+}
+
+async fn measure_writer_batch(publishers: &[&CheckoutPublisher], layout: &str) -> Result<()> {
+    let count = publishers.len();
     for prefix in ["volume:///home/", ""] {
         let barrier = tokio::sync::Barrier::new(publishers.len());
         let results =
             futures::future::join_all(publishers.iter().enumerate().map(|(index, publisher)| {
                 let barrier = &barrier;
                 async move {
-                    let display = format!("concurrent-{index}.txt");
+                    let display = format!("concurrent-{count}-{index}.txt");
                     let path = format!("{prefix}{display}");
                     let bytes = format!("writer {index}\n");
                     barrier.wait().await;
@@ -106,7 +112,7 @@ async fn measure_publications(publishers: &[&CheckoutPublisher], layout: &str) -
         // Verification begins only after every timed publication has finished,
         // so verification reads cannot contend with the remaining writers.
         for (index, (publisher, (_, file))) in publishers.iter().zip(results).enumerate() {
-            let path = format!("{prefix}concurrent-{index}.txt");
+            let path = format!("{prefix}concurrent-{count}-{index}.txt");
             let bytes = format!("writer {index}\n");
             let (mount, relative) = publisher.tools.workspace.mounts.file(None, &path)?;
             let workspace = mount.view.source.as_ref().map_or_else(
