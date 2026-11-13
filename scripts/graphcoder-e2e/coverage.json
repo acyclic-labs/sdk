@@ -106,6 +106,7 @@
         "pty-checkpoint-rewind",
         "session-fork-at-turn",
         "pty-clear-history",
+        "pty-query-history-recall",
         "pty-cancel-escape",
         "pty-cancel-ctrl-c",
         "pty-cancel-preparation",
