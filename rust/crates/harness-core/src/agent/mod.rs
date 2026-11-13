@@ -55,7 +55,7 @@ mod machine;
 mod names;
 mod notices;
 pub use names::NameIndex;
-pub use notices::{ApprovalSelection, NoticeSelection};
+pub use notices::{ApprovalControl, ApprovalSelection, NoticeSelection};
 pub(crate) mod records;
 mod release;
 mod reply;
@@ -121,8 +121,9 @@ pub use layout::{
 pub use lower::{delivery_key, lower};
 pub use machine::{
     AgentState, Alarm, INADMISSIBLE_EFFECT, MAX_QUEUED, MAX_QUEUED_BYTES, OVERSIZED_STATE, Out,
-    Progress, Queued, SpawnOutcome, SpawnRefusal, Step, TurnDriver, TurnFuture, TurnInput,
-    TurnStep, Until, Wait, WaitReason, WaitResume, Wake, requested_child, step,
+    Progress, Queued, ReviewFuture, ReviewStep, SpawnOutcome, SpawnRefusal, Step, TurnDriver,
+    TurnFuture, TurnInput, TurnStep, Until, Wait, WaitReason, WaitResume, Wake, requested_child,
+    step,
 };
 pub use records::{
     AgentOutcome, AgentRecord, Approval, ApprovalRequested, Cancellation, ChildDone, ChildSettled,

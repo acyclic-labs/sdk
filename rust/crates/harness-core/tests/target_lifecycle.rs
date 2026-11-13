@@ -292,8 +292,7 @@ async fn archive_destroys_the_agents_machines_before_it_closes() -> Result {
         assert!(host.runtime().drain().await.is_empty());
         // The root's first turn (its first input after adoption) spawns `c`.
         let child = root.child(&AgentId::derive(&root.id(), "c"))?;
-        let input = InboxRecord::ApprovalRequested(ApprovalRequested {
-            child: child.clone(),
+        let input = InboxRecord::Approval(Approval {
             id: intent("input"),
         });
         host.send(&root, &user(), &input).await?;
@@ -315,8 +314,7 @@ async fn archive_destroys_the_agents_machines_before_it_closes() -> Result {
             host.send(
                 &root,
                 &user(),
-                &InboxRecord::ApprovalRequested(ApprovalRequested {
-                    child: child.clone(),
+                &InboxRecord::Approval(Approval {
                     id: intent("stop"),
                 }),
             )
@@ -382,7 +380,7 @@ impl TurnDriver for Spawner {
     ) -> TurnFuture<'a> {
         let first =
             agent.path == AgentPath::root(&id(1)) && self.0.fetch_add(1, Ordering::SeqCst) == 0;
-        let stop = matches!(input, Some(Queued { input: TurnInput::ApprovalRequested { id, .. }, .. }) if id.as_str() == "stop");
+        let stop = matches!(input, Some(Queued { input: TurnInput::Approval { id, .. }, .. }) if id.as_str() == "stop");
         Box::pin(async move {
             Ok(TurnStep {
                 checkpoint: None,

@@ -205,13 +205,10 @@ fn executors_with_render_bytes(
     ))
 }
 
-fn requested(id: &str, child: &AgentPath) -> Wake {
+fn requested(id: &str, _child: &AgentPath) -> Wake {
     Wake::Inbox {
         sequence: 1,
-        record: InboxRecord::ApprovalRequested(ApprovalRequested {
-            child: child.clone(),
-            id: intent(id),
-        }),
+        record: InboxRecord::Approval(Approval { id: intent(id) }),
     }
 }
 
@@ -408,10 +405,7 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
                     Some(Queued {
                         steering: false,
                         inbox: 1,
-                        input: TurnInput::ApprovalRequested {
-                            child: parent.clone(),
-                            id: intent("r1"),
-                        },
+                        input: TurnInput::Approval { id: intent("r1") },
                     }),
                     acyclic_actors::guest::CancellationToken::new(),
                 )
@@ -1845,7 +1839,7 @@ async fn a_child_inherits_context_but_retains_its_own_observed_answer_across_tur
         Err(Error::Record("committed conversation entry is missing"))
     ));
     assert!(matches!(answer(&*stream, &child, latest).await?.input,
-        TurnInput::ApprovalRequested { id, .. } if id == intent("c2")));
+        TurnInput::Approval { id } if id == intent("c2")));
     let requests = model.requests();
     assert_eq!(requests.len(), 6);
     assert!(

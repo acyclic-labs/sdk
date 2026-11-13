@@ -205,10 +205,7 @@ pub(crate) fn input(sequence: u64, record: InboxRecord) -> Option<Queued> {
         }) => None,
         InboxRecord::ChildDone(done) => Some(TurnInput::ChildDone { done }),
         InboxRecord::Approval(approval) => Some(TurnInput::Approval { id: approval.id }),
-        InboxRecord::ApprovalRequested(request) => Some(TurnInput::ApprovalRequested {
-            child: request.child,
-            id: request.id,
-        }),
+        InboxRecord::ApprovalRequested(_) => None,
         InboxRecord::Hook(hook) => Some(TurnInput::Hook {
             host: hook.host,
             id: hook.id,

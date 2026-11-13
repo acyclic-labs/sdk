@@ -1248,7 +1248,6 @@ async fn approval_selection_replays_its_policy_before_any_worker_context() -> Re
             Box::pin(async move {
                 Ok(OpenTriage {
                     summary,
-                    consumed: vec![selection.range.start],
                     outs: Vec::new(),
                 })
             })
@@ -1274,7 +1273,7 @@ async fn approval_selection_replays_its_policy_before_any_worker_context() -> Re
             self.worker.open(agent, turn, inbox, cursor, input, stop)
         }
     }
-    for escalated in [false, true] {
+    for (parked, escalated) in [(false, false), (false, true), (true, false), (true, true)] {
         let script = Arc::new(Script {
             progress: Mutex::new(vec![ready()].into()),
             ..Default::default()
@@ -1299,10 +1298,33 @@ async fn approval_selection_replays_its_policy_before_any_worker_context() -> Re
             model_input(&raw).is_err(),
             "raw child asks reached worker projection"
         );
+        let mut initial = AgentState::adopted(path.clone(), &adopted(id(1)))?;
+        if parked {
+            initial = step(
+                &driver,
+                &path,
+                Some(initial),
+                (1, 0),
+                Wake::Inbox {
+                    sequence: 0,
+                    record: request("worker")?.0,
+                },
+                acyclic_actors::guest::CancellationToken::new(),
+            )
+            .await?
+            .state;
+            initial.phase = Phase::Waiting {
+                deadline_unix_ms: Some(100),
+                input: false,
+            };
+        }
+        host.opened.lock().unwrap().clear();
+        let worker_turn = initial.turn.clone();
+        let worker_phase = initial.phase.clone();
         let frozen = step(
             &driver,
             &path,
-            Some(AgentState::adopted(path.clone(), &adopted(id(1)))?),
+            Some(initial),
             (2, 0),
             Wake::Inbox {
                 sequence: 1,
@@ -1360,39 +1382,78 @@ async fn approval_selection_replays_its_policy_before_any_worker_context() -> Re
                 .iter()
                 .any(|out| matches!(out, Out::Conversation(_)))
         );
+        assert_eq!(review.state.turn, worker_turn);
+        assert_eq!(review.state.phase, worker_phase);
+        assert!(review.state.approval_control.is_none());
         if escalated {
-            let mut state = review.state;
-            // Announcement admission and execution are two explicit actor events.
-            for _ in 0..2 {
-                state = step(
+            let notices: Vec<_> = review
+                .outs
+                .iter()
+                .filter_map(|out| match out {
+                    Out::Send {
+                        to,
+                        record: InboxRecord::Notice { .. },
+                    } if to == &path => Some(out),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                notices.len(),
+                1,
+                "escalations must merge into one original input"
+            );
+            let Out::Send { record, .. } = notices[0] else {
+                unreachable!()
+            };
+            let delivered = step(
+                &driver,
+                &path,
+                Some(review.state),
+                (3, 0),
+                Wake::Inbox {
+                    sequence: 2,
+                    record: record.clone(),
+                },
+                acyclic_actors::guest::CancellationToken::new(),
+            )
+            .await?;
+            if parked {
+                assert_eq!(delivered.state.turn, worker_turn);
+                assert_eq!(delivered.state.phase, worker_phase);
+                assert_eq!(delivered.alarm, Alarm::At(100));
+                assert!(host.opened.lock().unwrap().is_empty());
+            } else {
+                let executed = step(
                     &driver,
                     &path,
-                    Some(state),
-                    (2, 0),
+                    Some(delivered.state),
+                    (3, 0),
                     Wake::Alarm,
                     acyclic_actors::guest::CancellationToken::new(),
                 )
-                .await?
-                .state;
+                .await?;
+                assert_eq!(executed.state.conversation_tail, 1);
+                assert_eq!(script.operations.lock().unwrap().len(), 1);
+                let expected = acyclic_harness_core::model::ModelContent::Part(
+                    acyclic_harness_core::model::ModelContentPart::File {
+                        file: summary,
+                        policy: acyclic_harness_core::model::FileProjectionPolicy::BoundedFull,
+                    },
+                );
+                assert!(
+                    host.opened
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .all(|input| input == &expected)
+                );
             }
-            assert_eq!(script.operations.lock().unwrap().len(), 1);
-            assert_eq!(state.conversation_tail, 1);
-            let expected = acyclic_harness_core::model::ModelContent::Part(
-                acyclic_harness_core::model::ModelContentPart::File {
-                    file: summary,
-                    policy: acyclic_harness_core::model::FileProjectionPolicy::BoundedFull,
-                },
-            );
-            assert!(
-                host.opened
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .all(|input| input == &expected)
-            );
         } else {
-            assert!(review.state.turn.is_none());
             assert_eq!(review.state.conversation_tail, 0);
+            assert_eq!(
+                review.alarm,
+                if parked { Alarm::At(100) } else { Alarm::Clear }
+            );
         }
     }
     Ok(())
