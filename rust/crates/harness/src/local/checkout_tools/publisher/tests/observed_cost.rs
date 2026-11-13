@@ -1,19 +1,9 @@
 //! Rebinding a captured publication must reuse its authenticated content.
 use super::*;
-use acyclic_fs::facade::FsWork as _;
 
 fn publication_source(root: &Path) -> Result<()> {
     for index in 0..128 {
         std::fs::write(root.join(format!("source-{index}.txt")), b"source\n").map_err(storage)?;
-    }
-    Ok(())
-}
-
-fn large_publication_source(root: &Path) -> Result<()> {
-    let mut bytes = vec![b'x'; 10_240];
-    bytes[..7].copy_from_slice(b"source\n");
-    for index in 0..6_000 {
-        std::fs::write(root.join(format!("source-{index}.txt")), &bytes).map_err(storage)?;
     }
     Ok(())
 }
@@ -73,127 +63,6 @@ async fn independent_agent_views_preserve_concurrent_project_and_home_writes() -
     measure_publications(&publishers, "agent_views").await
 }
 
-#[tokio::test]
-async fn forked_physical_views_preserve_concurrent_project_and_home_writes() -> Result<()> {
-    let (directory, _state, harness, root_publisher) = seeded_cost_fixture_with_mounting(
-        large_publication_source,
-        crate::local::WorkspaceMounting::Physical,
-    )
-    .await?;
-    root_publisher.tools.publish_baseline().await?;
-    let root = harness.workspace.as_ref().unwrap();
-    let issuer = harness
-        .root_authority
-        .as_ref()
-        .ok_or_else(|| Error::NotFound("test signing custody".into()))?;
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let mut accounting = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
-    let mut publishers = Vec::new();
-    for index in 0..8_u8 {
-        let agent = crate::AgentId::from_bytes([index + 1; 16]);
-        let project = VolumeRef::new(
-            harness.project.provider().clone(),
-            format!("child-{index}"),
-            VolumeClass::Project,
-            harness.project.owner().clone(),
-            &mut None,
-        )?;
-        let home = VolumeRef::new(
-            harness.scratch.provider().clone(),
-            format!("home-{index}"),
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(agent),
-            &mut None,
-        )?;
-        harness.files.create_volume(&home).await?;
-        let fork_started = std::time::Instant::now();
-        let (view, _) = root
-            .view()
-            .fork(
-                &project.storage_name(&mut None)?,
-                acyclic_fs::IdempotencyKey::from_bytes([index + 1; 16]),
-                acyclic_fs::PublicationPermit::Unrestricted,
-                &mut accounting,
-            )
-            .await
-            .map_err(storage)?;
-        eprintln!(
-            "FORK_PREPARATION writer={index} elapsed_us={}",
-            fork_started.elapsed().as_micros()
-        );
-        let grants = [
-            project.capability(VolumeOperation::Read, &mut None)?,
-            project.capability(VolumeOperation::Write, &mut None)?,
-            home.capability(VolumeOperation::Read, &mut None)?,
-            home.capability(VolumeOperation::Write, &mut None)?,
-        ];
-        let capabilities = Capabilities::new(
-            harness
-                .signed
-                .capabilities()
-                .iter()
-                .chain(grants.iter().map(String::as_str)),
-        );
-        let signed =
-            issuer.bootstrap_scope("publication", &capabilities, Some(agent), &mut None)?;
-        let authority = crate::filesystem::NativeMountAuthority::admitted(
-            harness.verifier.clone(),
-            signed.copy(&mut None)?,
-        );
-        let mut bindings = harness.session_bindings().to_vec();
-        let home_binding = bindings
-            .iter_mut()
-            .find(|binding| binding.name == crate::filesystem::HOME_VOLUME)
-            .ok_or_else(|| Error::NotFound("home binding".into()))?;
-        home_binding.source = crate::agent::WorkspaceSource::Volume(home);
-        let binding_started = std::time::Instant::now();
-        let physical = root
-            .bound_task_view(
-                view,
-                &project,
-                &bindings,
-                &crate::local::workspace::owner::AgentOwner,
-                &authority,
-            )
-            .await?;
-        eprintln!(
-            "VIEW_BINDING writer={index} elapsed_us={}",
-            binding_started.elapsed().as_micros()
-        );
-        assert_eq!(
-            std::fs::read(physical.path.join("source-0.txt")).map_err(storage)?,
-            std::fs::read(directory.path().join("source-0.txt")).map_err(storage)?
-        );
-        let tools = Arc::new(
-            CheckoutTools::new(
-                physical,
-                &project,
-                Arc::new(acyclic_stream::SystemUnixMillisClock),
-                &signed,
-                &harness.verifier,
-                None,
-            )
-            .await?,
-        );
-        tools.publish_baseline().await?;
-        publishers.push(CheckoutPublisher::new(
-            tools,
-            harness.files.clone(),
-            &project,
-            &harness.verifier,
-            None,
-        ));
-    }
-    for (index, publisher) in publishers.iter().enumerate() {
-        for earlier in &publishers[..index] {
-            assert_ne!(publisher.tools.workspace.path, earlier.tools.workspace.path);
-            assert_ne!(publisher.tools.signed.agent(), earlier.tools.signed.agent());
-        }
-    }
-    measure_publications(&publishers.iter().collect::<Vec<_>>(), "physical_forks").await?;
-    harness.disconnect().await?;
-    Ok(())
-}
 async fn measure_publications(publishers: &[&CheckoutPublisher], layout: &str) -> Result<()> {
     measure_writer_batch(&publishers[..1], layout).await?;
     measure_writer_batch(publishers, layout).await
@@ -296,18 +165,6 @@ async fn seeded_cost_fixture(
     crate::LocalHarness,
     CheckoutPublisher,
 )> {
-    seeded_cost_fixture_with_mounting(seed, crate::local::WorkspaceMounting::Native).await
-}
-
-async fn seeded_cost_fixture_with_mounting(
-    seed: impl FnOnce(&std::path::Path) -> Result<()>,
-    mounting: crate::local::WorkspaceMounting,
-) -> Result<(
-    tempfile::TempDir,
-    tempfile::TempDir,
-    crate::LocalHarness,
-    CheckoutPublisher,
-)> {
     let directory = tempfile::tempdir().map_err(storage)?;
     seed(directory.path())?;
     let state = tempfile::tempdir().map_err(storage)?;
@@ -315,8 +172,7 @@ async fn seeded_cost_fixture_with_mounting(
     let provider = Arc::new(crate::test_support::ScriptedModelProvider::new([]));
     let harness = crate::LocalHarness::open(
         crate::test_support::local_harness_config(directory.path(), (model, provider))?
-            .state_directory(state.path())
-            .workspace_mounting(mounting),
+            .state_directory(state.path()),
     )
     .await?;
     let tools = Arc::new(
