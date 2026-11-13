@@ -332,7 +332,10 @@ fn differs(
     code != canonical.code
         || message != canonical.message
         || details != canonical.details
-        || metadata.keys().any(|name| product(name, canonical))
+        || metadata.keys().any(|name| {
+            product(name, canonical)
+                && (name != CAUSE_METADATA || reported_cause(metadata).is_none())
+        })
 }
 
 impl std::fmt::Display for Refusal {
