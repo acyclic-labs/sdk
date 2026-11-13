@@ -40,8 +40,6 @@ mod server;
 #[cfg(test)]
 pub(crate) mod tests;
 
-const RETRY_DELAY: Duration = Duration::from_millis(10);
-
 /// Connection configuration failure.
 #[derive(Debug, Error)]
 pub enum ConnectError {
@@ -380,6 +378,7 @@ impl Client {
         ) -> Pin<Box<dyn Future<Output = Result<Response<U>, Status>> + Send>>,
     {
         let mut attempt = 0_u64;
+        let mut backoff = None;
         loop {
             attempt = attempt.saturating_add(1);
             // One span describes one physical RPC attempt.
@@ -425,20 +424,26 @@ impl Client {
                 })
                 .await;
             let error = match result {
-                Ok(response) => return Ok((response.into_inner(), completion)),
+                Ok(response) => {
+                    if attempt > 1 {
+                        tracing::info!(attempt, "stream rpc recovered");
+                    }
+                    return Ok((response.into_inner(), completion));
+                }
                 Err(error) => error,
             };
             completion.status(&error);
             if !retryable(&error) {
                 return Err(status(&error));
             }
-            tracing::warn!(
-                attempt,
-                rpc.code = error.code() as u64,
-                "stream rpc retried"
-            );
+            if attempt == 1 {
+                tracing::warn!(rpc.code = error.code() as u64, "stream rpc recovering");
+            }
             // Backoff follows retryable's captured transient HTTP/2 or I/O failure.
-            tokio::time::sleep(RETRY_DELAY).await;
+            let backoff = backoff.get_or_insert_with(|| {
+                acyclic_auth::operation::Backoff::new(10, 1_000, uuid::Uuid::new_v4().as_fields().0)
+            });
+            tokio::time::sleep(Duration::from_millis(u64::from(backoff.delay_ms()))).await;
         }
     }
 }

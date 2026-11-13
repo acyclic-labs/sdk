@@ -148,6 +148,7 @@ impl Pool {
                 opening: Arc::clone(&progress),
                 future: Box::pin(context.scope(async move {
                     let mut attempt = 0_u32;
+                    let mut backoff = None;
                     let outcome = loop {
                         let result = observation
                             .operation
@@ -181,7 +182,14 @@ impl Pool {
                                     break Err(failure.error);
                                 }
                                 attempt = attempt.saturating_add(1);
-                                executor.sleep(10).await;
+                                let backoff = backoff.get_or_insert_with(|| {
+                                    acyclic_auth::operation::Backoff::new(
+                                        10,
+                                        1_000,
+                                        uuid::Uuid::new_v4().as_fields().0,
+                                    )
+                                });
+                                executor.sleep(backoff.delay_ms()).await;
                                 let retry = Observation::session(attempt);
                                 retry
                                     .operation
