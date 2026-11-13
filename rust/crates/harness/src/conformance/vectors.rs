@@ -89,7 +89,7 @@ pub(crate) async fn outputs(
             match entry.outcome {
                 TurnOutcome::Cancelled => Ok(b"cancelled".to_vec()),
                 TurnOutcome::Completed => match entry.input {
-                    TurnInput::Message { id, .. } | TurnInput::ApprovalRequested { id, .. } => {
+                    TurnInput::Message { id, .. } | TurnInput::Approval { id } => {
                         Ok(id.as_str().as_bytes().to_vec())
                     }
                     _ => Err("unexpected conformance conversation input".into()),
