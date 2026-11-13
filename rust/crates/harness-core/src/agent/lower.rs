@@ -217,7 +217,7 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                 builder.append(
                     crate::supervision::streams::path(path)
                         .map_err(|_| Error::Record("invalid agent event path"))?,
-                    serde_json::to_vec(&crate::supervision::Event {
+                    crate::supervision::streams::lifecycle_record(&crate::supervision::Event {
                         version: 1,
                         agent: path.clone(),
                         run: Some(*run),
