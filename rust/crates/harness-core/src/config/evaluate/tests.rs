@@ -131,6 +131,23 @@ async fn native_evaluation_budget_refusals_keep_their_cause_and_do_not_poison_th
         "the returned view still owns the original cached storage"
     );
     drop(borrowed);
+    let inherited = json!({"model": "m".repeat(65536)});
+    let tight_io = crate::filesystem::PreparationIo::from_native_work(&tight)?;
+    let (inherited, _) = composition::fold(
+        "settings.ts",
+        &[],
+        &Metered(&tight_io),
+        inherited,
+        None,
+        &cache,
+    )
+    .await??;
+    assert!(matches!(
+        inherited.decode::<crate::config::AgentConfig>(),
+        Err(Error::NativeWork { .. })
+    ));
+    drop(inherited);
+    assert_eq!(tight.live_allocation_bytes(), baseline);
     assert!(
         roomy.live_allocation_bytes() < retained,
         "eviction retires cached ownership"

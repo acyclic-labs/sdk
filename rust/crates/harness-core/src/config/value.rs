@@ -101,6 +101,30 @@ impl<T> ConfigValue<T> {
 }
 
 impl ConfigValue {
+    pub(crate) fn record<T: crate::filesystem::PreparationRecord>(
+        &self,
+    ) -> Result<crate::javascript_allocator::EngineResult<T>> {
+        if let Some(work) = &self.work {
+            let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+            let (value, custody) = crate::filesystem::native_decoded(
+                io.value_decode_preparation(&self.data().value, crate::wire::ErrorCode::Invalid)?,
+            )?;
+            return Ok(crate::javascript_allocator::EngineResult {
+                value,
+                custody: Some(custody),
+            });
+        }
+        Ok(crate::javascript_allocator::EngineResult {
+            value: serde::Deserialize::deserialize(&self.data().value)
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            custody: None,
+        })
+    }
+
+    pub(crate) fn work(&self) -> acyclic_fs::NativeWork<'_> {
+        self.work.as_ref()
+    }
+
     /// Decodes an admitted record without detaching its allocation credit.
     /// The target uses this value's original ledger, never a caller replacement.
     pub fn decode<T: crate::filesystem::UploadRecord>(&self) -> Result<ConfigValue<T>> {
