@@ -744,7 +744,8 @@ fn request_operation(
     operation: OperationId,
     action: HostAction,
 ) -> Result<Value> {
-    request_operation_at(registry, &selected_directory(cwd)?, cwd, operation, action)
+    let directory = selected_directory(cwd).map_err(|error| error.for_request(operation))?;
+    request_operation_at(registry, &directory, cwd, operation, action)
 }
 
 fn request_operation_at(
