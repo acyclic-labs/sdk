@@ -100,6 +100,19 @@ impl InstanceState {
             }
         }
     }
+
+    fn finish_detachment(&mut self) -> std::io::Result<bool> {
+        let detached = if let Some(device) = self.device.as_ref() {
+            device.stop();
+            device.wait_detached(&mut self.mount)?
+        } else {
+            self.mount.observe_closed()?
+        };
+        if detached {
+            self.device.take();
+        }
+        Ok(detached)
+    }
 }
 
 /// One view of a shared instance. Dropping it retires the view, and the last
@@ -252,13 +265,22 @@ impl SharedFuseRoot {
             .set(std::thread::current().id());
         self.views.close();
         let state = &mut self.state;
-        let detached = state.detach(&self.path, &self.root);
+        let namespace_detached = state.detach(&self.path, &self.root);
         state.join_worker();
-        state.device.take();
+        // Namespace removal is not a physical receipt. Keep the original
+        // transport/custody on refusal, and leave its fence for recovery.
+        let mut detached = match state.finish_detachment() {
+            Ok(physical_detached) => namespace_detached && physical_detached,
+            Err(error) => {
+                tracing::warn!(%error, "shared FUSE physical retirement refused");
+                false
+            }
+        };
         // A failed ordinary detach must still finish the already admitted
         // action before FileLock's explicit unlock can admit a successor.
         if let Err(error) = state.mount.finish_exit_action() {
             tracing::warn!(%error, "shared FUSE owner-exit cleanup failed");
+            detached = false;
         }
         if let Some(mut guard) = state.guard.take() {
             if detached && let Err(error) = guard.release_cleanup(None) {
@@ -333,5 +355,75 @@ impl SharedFuseView {
     /// Retires the view; the instance stays up while other views hold it.
     pub(super) fn retire(&mut self) -> bool {
         self.entry.retire()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+    #[test]
+    fn missing_physical_receipt_refuses_shared_detachment() -> Result<(), Box<dyn std::error::Error>>
+    {
+        if acyclic_native_runtime::private_file::with_isolated_user_runtime(
+            "native_mount::fuse::shared_instance::tests::missing_physical_receipt_refuses_shared_detachment",
+        )? {
+            return Ok(());
+        }
+        let work = super::super::tests::fuse_fixture_work();
+        let funded = super::super::host_io::fund_device(&work)?;
+        let held_bytes = acyclic_native_runtime::PacketDevice::storage_bytes(funded.capacity)?;
+        let file =
+            rustix::fs::memfd_create(c"shared-retirement-proof", rustix::fs::MemfdFlags::CLOEXEC)?;
+        let device = acyclic_native_runtime::PacketDevice::prepare(
+            std::fs::File::from(file),
+            funded.capacity,
+        )?;
+        let io = Arc::new(super::super::host_io::HostIo::host(
+            super::super::mount::Device::Hosted {
+                device,
+                allocation: funded.allocation,
+                maximum_write: funded.maximum_write,
+            },
+            &work,
+        )?);
+        let host = io.host_id().ok_or("host absent")?;
+        // Bind the original live host's lifetime before signalling it. This
+        // isolated namespace has no other owner's host to disrupt.
+        let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, host, 0) };
+        if pidfd < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let pidfd = unsafe { OwnedFd::from_raw_fd(i32::try_from(pidfd)?) };
+        if unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                pidfd.as_raw_fd(),
+                libc::SIGKILL,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        } < 0
+        {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let mut state = InstanceState {
+            device: Some(Arc::clone(&io)),
+            ..InstanceState::default()
+        };
+        // The former namespace-only observation succeeds, while the real
+        // host has died without publishing its physical closure receipt.
+        assert!(state.mount.observe_closed()?);
+        assert!(state.finish_detachment().is_err());
+        assert!(
+            state.device.is_some(),
+            "a refused retirement must retain original custody"
+        );
+        assert!(
+            work.live_allocation_bytes() >= held_bytes,
+            "missing receipt must retain the original external storage credit"
+        );
+        Ok(())
     }
 }

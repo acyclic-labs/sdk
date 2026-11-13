@@ -75,7 +75,11 @@ fn killed_owner_with_pending_request_retires_without_fusectl()
         let root =
             std::path::PathBuf::from(std::env::var_os(OWNER_ROOT).ok_or("owner root absent")?);
         if case == "controller" {
-            acyclic_native_runtime::private_file::initialize_isolated_user_runtime()?;
+            // SAFETY: the controller is launched below in a fresh private
+            // mount namespace before constructing any native service.
+            unsafe {
+                acyclic_native_runtime::private_file::initialize_isolated_user_runtime()?;
+            }
             return controller(&root);
         }
         return pending_owner(&root, case == "old");
@@ -144,6 +148,8 @@ fn pending_owner(root: &Path, old: bool) -> Result<(), Box<dyn std::error::Error
     } else {
         start()
     }?;
+    // Release source work before session worker joining on all error paths.
+    let release_on_exit = release;
     let devices = std::fs::read_dir("/proc/self/fd")?
         .filter_map(|entry| std::fs::read_link(entry.ok()?.path()).ok())
         .filter(|target| target == Path::new("/dev/fuse"))
@@ -189,7 +195,7 @@ fn pending_owner(root: &Path, old: bool) -> Result<(), Box<dyn std::error::Error
         control.read_exact(&mut go)
     });
     // Error cleanup must release the source before joining its packet workers.
-    drop(release);
+    drop(release_on_exit);
     let _ = request.join();
     let stopped = session.stop();
     io?;

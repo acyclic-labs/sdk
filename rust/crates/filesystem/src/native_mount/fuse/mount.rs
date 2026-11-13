@@ -99,8 +99,8 @@ impl Mount {
             *device = Some(Device::InProcess(file));
             return Ok(());
         }
-        let (capacity, allocation) = super::host_io::fund_device(work)?;
-        let hosted = PacketDevice::prepare(file, capacity)?;
+        let funded = super::host_io::fund_device(work)?;
+        let hosted = PacketDevice::prepare(file, funded.capacity)?;
         match hosted.mount_fuse(
             &directory,
             mode,
@@ -111,8 +111,8 @@ impl Mount {
             Ok(()) => {
                 *device = Some(Device::Hosted {
                     device: hosted,
-                    allocation,
-                    maximum_write: capacity - 4096,
+                    allocation: funded.allocation,
+                    maximum_write: funded.maximum_write,
                 });
                 return Ok(());
             }
@@ -126,7 +126,7 @@ impl Mount {
             }
         }
         drop(hosted);
-        drop(allocation);
+        drop(funded);
         // Only kernel permission refusal requires the unprivileged helper.
         // Replace the still-unused direct cleanup before admitting its mount.
         self.cancel_exit_action().map_err(|error| {
@@ -180,8 +180,8 @@ impl Mount {
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), super::NativeMountError> {
         let (receive, child) = UnixStream::pair()?;
-        let (capacity, allocation) = super::host_io::fund_device(work)?;
-        let hosted = PacketDevice::receive_device(receive, capacity)?;
+        let funded = super::host_io::fund_device(work)?;
+        let hosted = PacketDevice::receive_device(receive, funded.capacity)?;
         let mut diagnostic = File::from(
             rustix::fs::memfd_create(c"acyclic-fusermount", rustix::fs::MemfdFlags::CLOEXEC)
                 .map_err(io::Error::from)?,
@@ -207,8 +207,8 @@ impl Mount {
         if received_device {
             *device = Some(Device::Hosted {
                 device: hosted,
-                allocation,
-                maximum_write: capacity - 4096,
+                allocation: funded.allocation,
+                maximum_write: funded.maximum_write,
             });
             self.phase = MountPhase::Mounted;
         }

@@ -76,7 +76,10 @@ fn concurrent_admission_survives_startup_and_last_owner_retirement()
         );
         return Ok(());
     }
-    crate::private_file::initialize_isolated_user_runtime()?;
+    // SAFETY: the parent launches this child in a fresh private mount namespace.
+    unsafe {
+        crate::private_file::initialize_isolated_user_runtime()?;
+    }
 
     // An attacker can reserve the former public pathname without any access
     // to the user's private root. Actual admission must ignore that entry.

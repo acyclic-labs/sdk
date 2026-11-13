@@ -55,13 +55,16 @@ pub(crate) fn user_home_directory() -> io::Result<PathBuf> {
 
 /// Supply the OS per-user runtime directory inside a fresh user/mount namespace.
 /// Mapping the caller to root does not create its login directory. The fixture
-/// supplies that OS state without modifying or covering the account home.
+/// supplies private runtime and account-home mounts, leaving host contents intact.
 ///
 /// # Errors
-/// Returns the OS mount or directory error. Call only after unsharing the mount
-/// namespace and making propagation private; the tmpfs dies with that namespace.
+/// Returns the OS mount or directory error.
+///
+/// # Safety
+/// The caller must own a fresh mount namespace with private propagation. Both
+/// the runtime and account-home mounts are replaced until that namespace exits.
 #[cfg(any(test, feature = "test-support"))]
-pub fn initialize_isolated_user_runtime() -> io::Result<()> {
+pub unsafe fn initialize_isolated_user_runtime() -> io::Result<()> {
     // SAFETY: all strings are static NUL-terminated storage. The caller owns
     // an isolated mount namespace; this changes no host directory contents.
     if unsafe {
@@ -75,6 +78,27 @@ pub fn initialize_isolated_user_runtime() -> io::Result<()> {
     } < 0
     {
         return Err(io::Error::last_os_error());
+    }
+    // Admission also uses the NSS home independently of environment overrides.
+    // Cover it before any host authority can be created there. A missing home
+    // already excludes that authority and must not be created on the host.
+    let home = user_home_directory()?;
+    if home.is_dir() {
+        let target = std::ffi::CString::new(home.as_os_str().as_bytes())?;
+        // SAFETY: target is owned NUL-terminated storage; the caller's private
+        // mount namespace owns this overmount and its lifetime.
+        if unsafe {
+            libc::mount(
+                c"tmpfs".as_ptr(),
+                target.as_ptr(),
+                c"tmpfs".as_ptr(),
+                libc::MS_NOSUID | libc::MS_NODEV,
+                c"mode=0700".as_ptr().cast(),
+            )
+        } < 0
+        {
+            return Err(io::Error::last_os_error());
+        }
     }
     // /run exists even on minimal hosts that have no login-session subtree.
     // Its new private mount owns this target; never mkdir on the host's /run.
@@ -96,7 +120,11 @@ pub fn initialize_isolated_user_runtime() -> io::Result<()> {
 pub fn with_isolated_user_runtime(test: &str) -> io::Result<bool> {
     const CASE: &str = "ACYCLIC_ISOLATED_USER_RUNTIME_TEST";
     if std::env::var_os(CASE).is_some_and(|case| case == test) {
-        initialize_isolated_user_runtime()?;
+        // SAFETY: this child is launched below by unshare with a fresh mount
+        // namespace and private propagation, before any test body runs.
+        unsafe {
+            initialize_isolated_user_runtime()?;
+        }
         return Ok(false);
     }
     let output = std::process::Command::new("unshare")
@@ -116,7 +144,12 @@ pub fn with_isolated_user_runtime(test: &str) -> io::Result<bool> {
         .args([test, "--exact", "--nocapture"])
         .env(CASE, test)
         .output()?;
-    if !output.status.success() {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !output.status.success()
+        || !stdout
+            .lines()
+            .any(|line| line.starts_with("test result: ok. 1 passed; 0 failed; 0 ignored;"))
+    {
         return Err(io::Error::other(format!(
             "{}\n{}",
             String::from_utf8_lossy(&output.stdout),
@@ -124,4 +157,15 @@ pub fn with_isolated_user_runtime(test: &str) -> io::Result<bool> {
         )));
     }
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn isolated_runtime_refuses_an_unmatched_test_filter() {
+        assert!(
+            super::with_isolated_user_runtime("private_file::linux::tests::no_such_test").is_err(),
+            "a successful child with zero executed tests is not a pass"
+        );
+    }
 }
