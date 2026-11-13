@@ -1616,6 +1616,26 @@ impl ToolContext {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
         let (volume, relative) = self.authorize_tool_path_read(path, io)?;
+        if let Some(generation) = self.layer_generation(volume, None)? {
+            // An immutable cut cannot gain a missing file. Readiness uses the
+            // same original cut and authority as the subsequent content read.
+            let (_, _, retained) = self
+                .read_tool_path_range(
+                    path,
+                    Some(generation),
+                    acyclic_fs::ByteRange {
+                        offset: 0,
+                        length: 0,
+                    },
+                    io,
+                )
+                .await?;
+            #[cfg(not(target_arch = "wasm32"))]
+            let _hold = io.map(|io| io.guard_owned(retained)).transpose()?;
+            #[cfg(target_arch = "wasm32")]
+            let _ = retained;
+            return Ok(());
+        }
         self.task()
             .content_binding(Some(volume))
             .ok_or_else(|| Error::tool_rejected("selected content reader is not bound"))?
