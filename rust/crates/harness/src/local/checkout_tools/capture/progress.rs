@@ -163,7 +163,7 @@ impl CheckoutTools {
                     .await;
             }
             let before = original
-                .predecessor_generation(WorkBudget::UNBOUNDED, &cancellation)
+                .predecessor(WorkBudget::UNBOUNDED, &cancellation)
                 .await
                 .map_err(storage)?
                 .value;
