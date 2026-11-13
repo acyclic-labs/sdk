@@ -23,6 +23,7 @@ pub(super) struct Loaded {
     reads: Vec<ModuleRead>,
     modules: std::result::Result<Vec<(String, Module)>, String>,
     digest: [u8; 32],
+    work: Option<acyclic_fs::NativeMaterializationWork>,
 }
 
 /// A deterministic semantic decision and the exact inputs that produced it.
@@ -90,6 +91,10 @@ pub(super) async fn load(
         reads: observations.reads.unwrap_or_default(),
         modules,
         digest: observations.digest.finalize().into(),
+        work: tree
+            .preparation_io()
+            .and_then(|io| io.original_native_work())
+            .cloned(),
     })
 }
 
@@ -171,12 +176,25 @@ impl Loaded {
         let outcome = match cached {
             Some(outcome) => outcome,
             None => {
+                let allocator =
+                    crate::javascript_allocator::EngineAllocator::new(self.work.as_ref());
+                let failure = allocator.failure();
                 let outcome = self
                     .modules
                     .as_ref()
                     .map_err(Clone::clone)
-                    .and_then(|modules| run(modules, &base, surface))
-                    .map(Arc::new);
+                    .and_then(|modules| run(modules, &base, surface, allocator));
+                // Accounting refusals retain the original operation's typed
+                // cause. They are not semantic module failures and never enter
+                // the settings cache.
+                if let Some(error) = failure
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                {
+                    return Err(error);
+                }
+                let outcome = outcome.map(Arc::new);
                 *cache
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) =
@@ -184,16 +202,20 @@ impl Loaded {
                 outcome
             }
         };
-        let result = outcome
-            .map(|outcome| {
-                let (value, form) = outcome.as_ref().clone();
-                Evaluated {
-                    value,
-                    form,
+        let result = match outcome {
+            Ok(outcome) => {
+                let (value, form) = outcome.as_ref();
+                let value = crate::javascript_allocator::EngineAllocator::new(self.work.as_ref())
+                    .copy_result(&value.value)?;
+                Ok(Evaluated {
+                    value: value.value,
+                    form: *form,
                     digest: self.digest,
-                }
-            })
-            .map_err(|reason| Error::Invalid(format!("{path}: {reason}")));
+                    _custody: value.custody,
+                })
+            }
+            Err(reason) => Err(Error::Invalid(format!("{path}: {reason}"))),
+        };
         Ok(Evaluation {
             identity: key,
             result,

@@ -54,7 +54,8 @@ impl<'a, A, O> Manifest<'a, A, O> {
     }
 
     /// Resolves evaluator imports against this exact cut, using the caller's
-    /// original operation and byte bound. This creates no reader, follower or
+    /// original operation and byte bound. Evaluation, including cached result
+    /// copies, spends that same operation's allocation allowance. This creates no reader, follower or
     /// work root; source reads retain their original filesystem byte owners.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn tree<'m, 'io>(
@@ -84,6 +85,10 @@ pub struct ManifestTree<'m, 'g, 'io, A: 'static, O: 'static> {
 impl<A: acyclic_fs::AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     crate::config::Tree for ManifestTree<'_, '_, '_, A, O>
 {
+    fn preparation_io(&self) -> Option<&crate::filesystem::PreparationIo> {
+        Some(self.io)
+    }
+
     fn read<'a>(
         &'a self,
         path: &'a str,

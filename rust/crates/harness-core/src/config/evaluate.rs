@@ -4,7 +4,7 @@ use super::{Form, Link};
 use crate::{Error, Result, layers::Layer};
 use futures::future::BoxFuture;
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::{
     Arc, Mutex, OnceLock,
     atomic::{AtomicU64, Ordering},
@@ -20,6 +20,11 @@ const FUEL: u64 = 1_000;
 
 /// Files a module may import from the same pinned effective tree and `sys/`.
 pub trait Tree: Send + Sync {
+    /// Original operation accounting, when evaluation belongs to a bounded call.
+    /// This never creates a ledger or changes the tree's read authority.
+    fn preparation_io(&self) -> Option<&crate::filesystem::PreparationIo> {
+        None
+    }
     /// The original owned bytes of `path`, or `None` when no layer holds it.
     /// Module loading borrows this backing through parsing; an adapter must
     /// retain its original allocation owner rather than copy away its custody.
@@ -40,7 +45,7 @@ pub enum Surface {
 }
 
 /// One evaluated module.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug)]
 pub struct Evaluated {
     /// The plain-data result.
     pub value: Value,
@@ -48,6 +53,14 @@ pub struct Evaluated {
     pub form: Form,
     /// blake3 over the module and every module it imports.
     pub digest: [u8; 32],
+    // Result bytes retire before the original caller's allocation credit.
+    pub(crate) _custody: acyclic_fs::NativeCustody,
+}
+
+impl PartialEq for Evaluated {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value && self.form == other.form && self.digest == other.digest
+    }
 }
 
 mod prepared;
@@ -127,7 +140,7 @@ pub async fn compose(
 
 /// The most recently evaluated result or failure. Replacing the entry drops
 /// its ownership instead of retaining every historical agent/revision.
-type Outcome = std::result::Result<Arc<(Value, Form)>, String>;
+type Outcome = std::result::Result<Arc<(crate::javascript_allocator::EngineResult, Form)>, String>;
 type Cache = Mutex<Option<([u8; 32], Outcome)>>;
 
 fn cache() -> &'static Cache {
@@ -334,12 +347,13 @@ fn run(
     modules: &[(String, Module)],
     base: &[u8],
     surface: Surface,
-) -> std::result::Result<(Value, Form), String> {
+    allocator: crate::javascript_allocator::EngineAllocator,
+) -> std::result::Result<(crate::javascript_allocator::EngineResult, Form), String> {
     use rquickjs::{CaughtError, Context, Function, Object, Runtime};
     let engine = |error: rquickjs::Error| error.to_string();
     #[cfg(any(test, feature = "test-support"))]
     model::entered();
-    let runtime = Runtime::new().map_err(engine)?;
+    let runtime = Runtime::new_with_alloc(allocator.clone()).map_err(engine)?;
     runtime.set_memory_limit(crate::executor::ENGINE_MEMORY);
     let fuel = Arc::new(AtomicU64::new(FUEL));
     let remaining = Arc::clone(&fuel);
@@ -374,7 +388,7 @@ fn run(
                 finish.call((module.namespace()?, base, surface == Surface::Data))?;
             let encoded = (
                 result.get::<_, String>("form")?,
-                result.get::<_, String>("json")?,
+                allocator.copy_text(&result.get::<_, rquickjs::String>("json")?)?,
             );
             Ok::<_, rquickjs::Error>(encoded)
         })();
@@ -406,19 +420,9 @@ fn run(
         return Err(format!("exceeded its instruction budget ({FUEL} polls)"));
     }
     let (form, json) = outcome?;
-    let value = crate::executor::json::json_from_slice_bounded(
-        std::marker::PhantomData::<Value>,
-        json.as_bytes(),
-        crate::executor::json::JsonBounds {
-            maximum_bytes: Some(json.len() as u64),
-            maximum_items: None,
-            maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
-        },
-        None,
-        Some(&crate::executor::json::JsonValueSchema::Root),
-        &mut |_| Ok(()),
-    )
-    .map_err(|error| error.to_string())?;
+    let value = allocator
+        .decode_result(json.value.as_bytes())
+        .map_err(|error| error.to_string())?;
     let form = if form == "function" {
         Form::Function
     } else {
