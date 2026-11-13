@@ -48,7 +48,7 @@ pub use usage_query::UsageQuery;
 /// with its phase. Frontends can paint through this cut before acknowledging it.
 #[derive(Clone, Debug)]
 pub struct InputSettlement {
-    /// Exclusive conversation tail at the captured settlement.
+    /// Exclusive conversation tail at the captured actor checkpoint.
     pub conversation: u64,
     /// Phase at that same actor checkpoint.
     pub phase: Phase,
@@ -667,7 +667,7 @@ impl Conversation {
     /// # Errors
     /// Session, host or decoding failures.
     pub async fn phase(&self) -> Result<Phase> {
-        Ok(self.settlement(false).await?.2)
+        Ok(self.current_settlement().await?.phase)
     }
 
     /// Reads all of `target` on `agent`, one bounded range at a time.
@@ -847,7 +847,21 @@ impl Conversation {
     /// paused work. Inputs arriving later do not extend the captured fence.
     /// Dropping the request cancels observation without changing the agent.
     pub async fn wait_current_input(&self) -> Result<InputSettlement> {
-        let (conversation, _, phase) = self.settlement(true).await?;
+        self.input_settlement(true).await
+    }
+
+    /// Current phase and the conversation frontier from the same actor
+    /// checkpoint, without waiting for unfinished inputs. A frontend must
+    /// project that prefix before treating a terminal phase as final.
+    ///
+    /// # Errors
+    /// Session, host or decoding failures.
+    pub async fn current_settlement(&self) -> Result<InputSettlement> {
+        self.input_settlement(false).await
+    }
+
+    async fn input_settlement(&self, wait: bool) -> Result<InputSettlement> {
+        let (conversation, _, phase) = self.settlement(wait).await?;
         Ok(InputSettlement {
             conversation,
             phase,
@@ -989,10 +1003,15 @@ impl Conversation {
             .map(|(observer, _)| observer)
     }
 
-    /// Opens the same observation with its authoritative initial phase. A
+    /// Opens the same observation with its authoritative initial phase and
+    /// the conversation frontier committed at that same checkpoint. A
     /// reattached client can accept control input before the first follow
-    /// delivery without mistaking an unknown phase for an idle agent.
-    pub async fn observe_with_phase(&self, from: Option<u64>) -> Result<(super::Observer, Phase)> {
+    /// delivery without mistaking an unknown phase for an idle agent; a
+    /// terminal phase can wait until its announced prefix is projected.
+    pub async fn observe_with_phase(
+        &self,
+        from: Option<u64>,
+    ) -> Result<(super::Observer, InputSettlement)> {
         self.open_observation(from, false).await
     }
 
@@ -1000,7 +1019,7 @@ impl Conversation {
         &self,
         from: Option<u64>,
         replay_status: bool,
-    ) -> Result<(super::Observer, Phase)> {
+    ) -> Result<(super::Observer, InputSettlement)> {
         let (settled, statuses, phase) = self.settlement(false).await?;
         let from = from.unwrap_or(settled);
         let observer = if replay_status {
@@ -1008,7 +1027,13 @@ impl Conversation {
         } else {
             super::Observer::open_at_phase(&self.connection, from, statuses)?
         };
-        Ok((observer, phase))
+        Ok((
+            observer,
+            InputSettlement {
+                conversation: settled,
+                phase,
+            },
+        ))
     }
 
     /// The settled entries at conversation sequences `from..to`, every one

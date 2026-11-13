@@ -8,7 +8,9 @@
 //! streaming answer is the observer's delta projection, rewrapped alone.
 use acyclic_harness::local::{
     Event, LiveKind,
-    agent_conversation::{Conversation, PreparedHistoryAction, UsageQuery, checkpoint},
+    agent_conversation::{
+        Conversation, InputSettlement, PreparedHistoryAction, UsageQuery, checkpoint,
+    },
 };
 use acyclic_harness::{
     agent::{
@@ -281,6 +283,9 @@ struct View {
     /// Original immutable namespace shared with settled entries and history.
     reply_source: Option<String>,
     phase: Option<Phase>,
+    /// A terminal phase waits on its own committed conversation prefix.
+    /// The latest phase supersedes earlier states from that same source.
+    pending_phase: Option<(u64, Phase)>,
     /// The terminal phase dominates any older turn replayed after attachment.
     /// Retain its bounded diagnostic page for the process exit reason.
     phase_failure: Option<String>,
@@ -325,6 +330,7 @@ impl View {
     /// own unsettled sends cover only the moment before their status commits.
     fn busy(&self) -> bool {
         self.phase.as_ref().is_some_and(Phase::in_turn)
+            || self.pending_phase.is_some()
             || !self.pending.is_empty()
             || !self.checkpoints.is_empty()
     }
@@ -381,6 +387,31 @@ impl View {
             return Err("Review the complete approval action before deciding (PgDn: more)");
         }
         Ok(Some((id.clone(), binding.clone(), verdict)))
+    }
+
+    async fn observe_phase(
+        &mut self,
+        conversation: &Conversation,
+        snapshot: InputSettlement,
+        seen: u64,
+    ) -> Result<(), Failure> {
+        if matches!(snapshot.phase, Phase::Done { .. }) && snapshot.conversation > seen {
+            self.pending_phase = Some((snapshot.conversation, snapshot.phase));
+            return Ok(());
+        }
+        self.pending_phase = None;
+        self.restore_phase(conversation, snapshot.phase).await
+    }
+
+    async fn release_phase(
+        &mut self,
+        conversation: &Conversation,
+        seen: u64,
+    ) -> Result<(), Failure> {
+        if let Some((_, phase)) = self.pending_phase.take_if(|(through, _)| *through <= seen) {
+            self.restore_phase(conversation, phase).await?;
+        }
+        Ok(())
     }
 
     async fn restore_phase(
@@ -446,6 +477,18 @@ impl View {
     /// Applies `event`; `seen` is the next conversation sequence the
     /// observer has not returned.
     async fn apply(
+        &mut self,
+        conversation: &Conversation,
+        event: Event,
+        seen: u64,
+    ) -> Result<(), Failure> {
+        self.apply_event(conversation, event, seen).await?;
+        self.release_phase(conversation, seen).await?;
+        self.stop(seen);
+        Ok(())
+    }
+
+    async fn apply_event(
         &mut self,
         conversation: &Conversation,
         event: Event,
@@ -522,7 +565,6 @@ impl View {
                     self.cancelling = None;
                 }
                 self.ring = true;
-                self.stop(seen);
             }
             Event::Delta => return Ok(()),
             Event::Status(status) => {
@@ -560,8 +602,15 @@ impl View {
                     }
                 }
                 self.pending_dirty = true;
-                self.restore_phase(conversation, status.phase).await?;
-                self.stop(seen);
+                self.observe_phase(
+                    conversation,
+                    InputSettlement {
+                        conversation: status.conversation,
+                        phase: status.phase,
+                    },
+                    seen,
+                )
+                .await?;
             }
         }
         Ok(())
@@ -671,8 +720,10 @@ impl View {
             self.transcript.push(BlockKind::Prompt, &prompt);
         }
         if !self.reply.is_empty() {
-            self.transcript
-                .push(BlockKind::Answer, &std::mem::take(&mut self.reply));
+            self.transcript.append_source(
+                self.reply_source.as_deref(),
+                [(BlockKind::Answer, std::mem::take(&mut self.reply))],
+            );
         }
         self.reply_source = None;
         self.pending_dirty = true;
@@ -1002,7 +1053,8 @@ async fn run_current(
         floor: if resume { 0 } else { events.seen() },
         ..View::default()
     };
-    view.restore_phase(&conversation, phase).await?;
+    view.observe_phase(&conversation, phase, events.seen())
+        .await?;
     if view.busy() {
         view.pending = conversation.pending_inputs().await?;
     }
@@ -1406,7 +1458,7 @@ async fn run_current(
                     // Another client can start a turn while this view is idle.
                     // Refresh once when its live output becomes visible.
                     if !view.busy() && !events.live().1.is_empty() {
-                        view.restore_phase(&conversation, conversation.phase().await?).await?;
+                        view.observe_phase(&conversation, conversation.current_settlement().await?, events.seen()).await?;
                     }
                 }
                 // Only a turn this view waited on rings; a reopened
@@ -1503,7 +1555,7 @@ async fn run_current(
                                 let session = session::Session::open(&selected).await?;
                                 let title = selected.agent_file_previews(vec!["ui/title".into()], None, acyclic_harness::client::MAX_READ_BYTES).await?;
                                 let mut view = View { title: session::title(&title), top: events.seen(), floor: 0, pending_dirty: true, tail_dirty: true, ..View::default() };
-                                view.restore_phase(&selected, phase).await?;
+                                view.observe_phase(&selected, phase, events.seen()).await?;
                                 if view.busy() {
                                     view.pending = selected.pending_inputs().await?;
                                 }
@@ -1829,7 +1881,7 @@ async fn run_current(
                                 // turn yet; a cached idle phase cannot discard
                                 // an explicit interrupt of accepted input.
                                 if !view.busy() {
-                                    view.restore_phase(&conversation, conversation.phase().await?).await?;
+                                    view.observe_phase(&conversation, conversation.current_settlement().await?, events.seen()).await?;
                                 }
                                 if view.busy() {
                                     view.cancel(&conversation).await?;
@@ -2242,6 +2294,95 @@ mod tests {
                     .collect::<Vec<_>>(),
                 once,
                 "settlement and older-page replay duplicated an inherited source",
+            );
+        }
+
+        // A terminal snapshot and its already committed conversation records
+        // use separate follows. Finalizing the phase must wait for its own
+        // cut, so a partial preview never becomes a second anonymous answer.
+        let snapshot = forked.current_settlement().await?;
+        let last = snapshot
+            .conversation
+            .checked_sub(1)
+            .ok_or("no saved turn")?;
+        let entry = forked.entries(last, snapshot.conversation).await?.remove(0);
+        let saved = forked.turn_at(last, &entry).await?;
+        let saved_source = entry.tool_results.clone().ok_or("no native source")?;
+        let failure = "terminal failure after the original conversation cut";
+        for snapshot_first in [false, true] {
+            let mut attached = View {
+                phase: (!snapshot_first).then_some(Phase::Running),
+                pending: vec![(entry.inbox, saved.prompt.clone().ok_or("no prompt")?)],
+                pending_dirty: true,
+                tail_dirty: true,
+                ..View::default()
+            };
+            attached.prepend(older(Arc::clone(&forked), 0, 0, last).await?);
+            let terminal = InputSettlement {
+                conversation: snapshot.conversation,
+                phase: Phase::Done {
+                    outcome: AgentOutcome::Failed {
+                        message: failure.into(),
+                    },
+                },
+            };
+            let partial = saved
+                .answer
+                .strip_suffix('y')
+                .ok_or("unexpected scripted answer")?;
+            if snapshot_first {
+                attached.reply = partial.to_owned();
+                attached.reply_source = Some(saved_source.clone());
+                attached.rows(120);
+                attached
+                    .observe_phase(&forked, terminal.clone(), last)
+                    .await?;
+                assert!(attached.phase.is_none());
+                assert!(attached.busy());
+                assert!(
+                    !attached
+                        .rows(120)
+                        .iter()
+                        .any(|line| line.to_string().contains(failure))
+                );
+            }
+            attached
+                .apply(&forked, Event::Turn(entry.clone()), snapshot.conversation)
+                .await?;
+            if !snapshot_first {
+                // A delayed preview may still be cached even though its
+                // source is already loaded and suppressed by the renderer.
+                attached.reply = saved.answer.clone();
+                attached.reply_source = Some(saved_source.clone());
+                attached.tail_dirty = true;
+                attached.rows(120);
+                attached
+                    .observe_phase(&forked, terminal, snapshot.conversation)
+                    .await?;
+            }
+            let rows = attached
+                .rows(120)
+                .iter()
+                .map(Line::to_string)
+                .collect::<Vec<_>>();
+            assert_eq!(rows.iter().filter(|row| row.contains(partial)).count(), 1);
+            assert_eq!(
+                rows.iter()
+                    .filter(|row| row.contains(&saved.answer))
+                    .count(),
+                1
+            );
+            assert_eq!(rows.iter().filter(|row| row.contains(failure)).count(), 1);
+            assert!(matches!(attached.phase, Some(Phase::Done { .. })));
+            assert!(!attached.busy());
+            let answer_at = rows
+                .iter()
+                .position(|row| row.contains(&saved.answer))
+                .unwrap();
+            let failure_at = rows.iter().position(|row| row.contains(failure)).unwrap();
+            assert!(
+                answer_at < failure_at,
+                "terminal failure preceded its committed answer"
             );
         }
 

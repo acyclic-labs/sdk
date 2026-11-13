@@ -4939,7 +4939,7 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
         .await?;
     let (mut queued_events, phase) = queued.observe_with_phase(Some(1)).await?;
     assert!(
-        phase.in_turn(),
+        phase.phase.in_turn(),
         "unread adoption must not hide accepted work from cancellation"
     );
     assert_eq!(queued.cancel().await?, Some(inbox));
