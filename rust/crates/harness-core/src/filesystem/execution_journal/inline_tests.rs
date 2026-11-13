@@ -1166,7 +1166,8 @@ async fn terminal_usage_case(
     let cut = queries.checkpoint().await?.unwrap();
     assert_eq!(cut.state.through, 2, "output replay counted twice");
     assert_eq!(
-        cut.state.tokens.measured, 27,
+        cut.state.tokens.measured,
+        expected_tokens.unwrap_or(0),
         "output duplicated the original usage"
     );
     assert_eq!(cut.source.sequence, 3);
