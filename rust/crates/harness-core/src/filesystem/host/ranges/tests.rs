@@ -505,7 +505,7 @@ async fn private_metadata_does_not_materialize_file_bodies() -> Result<()> {
             &read,
             file.path(),
             None,
-            1,
+            Some(1),
             crate::conversation::ContentAccess {
                 ceiling: None,
                 io: Some(&denied_io),
