@@ -128,18 +128,14 @@ pub(super) fn journal_content(
     })
 }
 
-/// Inspect the immutable text bodies delivered through the real content reader.
-pub(super) async fn request_text(
+/// Reads precisely the immutable references a fixture selected, without host custody.
+pub(super) fn selected_reader<'a>(
     harness: &LocalHarness,
-    request: &crate::model::ModelRequest,
-) -> Result<String> {
-    // Requests may name inherited inputs and a child's tool results. Inspect
-    // exactly their immutable descriptors, rather than the root's volumes.
-    let grants = request
-        .messages
-        .iter()
-        .flat_map(|message| message.content.file_parts())
-        .map(|(file, _)| file.read_capability(&mut None))
+    files: impl IntoIterator<Item = &'a crate::conversation::FileRef>,
+) -> Result<Arc<dyn ContentResidencyVerifier>> {
+    let grants = files
+        .into_iter()
+        .map(|file| file.read_capability(&mut None))
         .collect::<Result<Vec<_>>>()?;
     let scope = harness
         .root_authority
@@ -157,6 +153,21 @@ pub(super) async fn request_text(
         &scope,
         harness.limits.file_bytes,
         None,
+    )?;
+    Ok(reader)
+}
+/// Inspect the immutable text bodies delivered through the real content reader.
+pub(super) async fn request_text(
+    harness: &LocalHarness,
+    request: &crate::model::ModelRequest,
+) -> Result<String> {
+    let reader = selected_reader(
+        harness,
+        request
+            .messages
+            .iter()
+            .flat_map(|message| message.content.file_parts())
+            .map(|(file, _)| file),
     )?;
     let mut text = String::new();
     for message in &request.messages {

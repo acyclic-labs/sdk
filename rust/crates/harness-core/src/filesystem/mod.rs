@@ -119,6 +119,7 @@ pub use config::{FilesystemJournalBinding, WorkspaceMutation, WorkspaceObservati
 pub(crate) mod host;
 pub(crate) use host::content_path;
 pub(crate) use host::map_error;
+pub use host::reads::media_type::captured as captured_media_type;
 use host::*;
 pub use host::{FilesystemHost, VolumeImportPlan, filesystem_key, workspace_ref};
 pub(crate) mod access;

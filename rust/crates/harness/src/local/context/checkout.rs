@@ -172,17 +172,17 @@ impl LocalHarness {
 }
 
 impl LocalHarness {
-    /// Copies each file `text` mentions, at one snapshot of the selected
-    /// checkout view, onto the root's private volume under the checkout
-    /// context's read authority and the harness's file byte bound. Returns
-    /// their directory below `base`: it is addressed by every copied path and
-    /// its bytes, so it only ever holds one consistent set of copies.
+    /// Copies selected checkout files at one snapshot through the host input
+    /// publisher. Native source authorization is checked before capture and
+    /// after publication, under the original checkout admission and byte bound.
     pub(super) async fn capture_checkout_mentions(
         &self,
         workspace: &LocalWorkspace,
         text: &str,
         base: &str,
-    ) -> Result<String> {
+        publisher: &dyn ContentPublisher,
+        operation: OperationId,
+    ) -> Result<crate::conversation::ContentChanges> {
         let (selected, pending) = workspace.selected_view().await?;
         if let Some((operation, _)) = pending {
             return Err(Error::Indeterminate(OperationId::from_bytes(
@@ -227,7 +227,9 @@ impl LocalHarness {
             }
             copies.insert(path.to_owned(), chunk.bytes);
         }
-        let directory = self.publish_mention_copies(base, copies).await?;
+        let copies = self
+            .publish_mention_copies(base, copies, publisher, operation)
+            .await?;
         // The copies disclose only what the authority still admits.
         self.authorize_checkout_context(
             workspace,
@@ -236,7 +238,7 @@ impl LocalHarness {
             (&self.verifier, &self.signed),
         )
         .await?;
-        Ok(directory)
+        Ok(copies)
     }
 }
 

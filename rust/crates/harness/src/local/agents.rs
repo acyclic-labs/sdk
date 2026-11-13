@@ -135,10 +135,11 @@ impl crate::hosting::Platform for LocalUser {
 
     fn attachments<'a>(
         &'a self,
+        agent: &'a AgentPath,
         key: &'a [u8],
         text: Option<&'a str>,
     ) -> BoxProviderFuture<'a, Result<Option<crate::conversation::FileRef>>> {
-        Box::pin(async move { self.harness()?.prompt_attachments(key, text).await })
+        Box::pin(async move { self.harness()?.prompt_attachments(agent, key, text).await })
     }
 
     #[cfg(any(test, not(target_arch = "wasm32")))]

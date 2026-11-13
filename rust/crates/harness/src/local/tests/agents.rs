@@ -2258,7 +2258,7 @@ async fn listed(
     harness: &LocalHarness,
     manifest: &crate::conversation::FileRef,
 ) -> Result<Vec<crate::conversation::FileRef>> {
-    let reader = harness.client_reader()?;
+    let reader = super::selected_reader(harness, [manifest])?;
     let bytes = reader
         .read(manifest, manifest.descriptor().byte_length(), None, None)?
         .await?;
@@ -2445,11 +2445,16 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
     .await?;
     let checkout = harness.workspace.as_ref().expect("checkout").path.clone();
     let mut observed = ObservedConversation::open(&harness).await?;
+    let root = observed.conversation.agent().clone();
     let prompt = "inspect @mention.txt and @pixel.png then @mention.txt again";
     // A capture for one message replays its pinned manifest exactly.
-    let first = harness.prompt_attachments(b"direct", Some(prompt)).await?;
+    let first = harness
+        .prompt_attachments(&root, b"direct", Some(prompt))
+        .await?;
     assert_eq!(
-        harness.prompt_attachments(b"direct", Some(prompt)).await?,
+        harness
+            .prompt_attachments(&root, b"direct", Some(prompt))
+            .await?,
         first
     );
     let inbox = observed.conversation.send("mention", prompt).await?;
@@ -2460,9 +2465,11 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
         "the real mention must reach and settle its model request"
     );
     let client = observed.conversation;
-    // Later publications on the private volume leave a replay unchanged.
+    // Later publications leave the pinned journal manifest unchanged.
     assert_eq!(
-        harness.prompt_attachments(b"direct", Some(prompt)).await?,
+        harness
+            .prompt_attachments(&root, b"direct", Some(prompt))
+            .await?,
         first
     );
     let TurnInput::Message {
@@ -2476,9 +2483,14 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
         ));
     };
     // Each mentioned file attaches once, in first-mention order, pinned.
-    let reader = harness.client_reader()?;
+    let files = listed(&harness, manifest).await?;
+    let journal =
+        crate::conversation::journal_volume(harness.project.provider().clone(), &root.id())?;
+    assert_eq!(manifest.volume(), &journal);
+    assert!(files.iter().all(|file| file.volume() == &journal));
+    let reader = super::selected_reader(&harness, &files)?;
     let mut read = Vec::new();
-    for file in listed(&harness, manifest).await? {
+    for file in files {
         read.push((
             file.path()
                 .rsplit('/')
@@ -2538,19 +2550,112 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
     std::fs::write(checkout.join("mention.txt"), "CHANGED\n").map_err(agent)?;
     std::fs::remove_file(checkout.join("pixel.png")).map_err(agent)?;
     assert_eq!(
-        harness.prompt_attachments(b"direct", Some(prompt)).await?,
+        harness
+            .prompt_attachments(&root, b"direct", Some(prompt))
+            .await?,
         first
     );
     assert_eq!(client.send("mention", prompt).await?, inbox);
     // A new message sees the files as they are now.
     let fresh = harness
-        .prompt_attachments(b"fresh", Some("inspect @mention.txt"))
+        .prompt_attachments(&root, b"fresh", Some("inspect @mention.txt"))
         .await?
         .expect("a manifest");
     let fresh = listed(&harness, &fresh).await?;
+    assert!(
+        async { reader.read(&fresh[0], 1 << 20, None, None)?.await }
+            .await
+            .is_err(),
+        "selected attachments granted an unrelated journal input"
+    );
+    let reader = super::selected_reader(&harness, &fresh)?;
     assert_eq!(
         reader.read(&fresh[0], 1 << 20, None, None)?.await?.to_vec(),
         b"CHANGED\n"
+    );
+    // No partial manifest is delivered when one member is absent.
+    assert!(
+        harness
+            .prompt_attachments(&root, b"missing-member", Some("@mention.txt @absent.txt"))
+            .await
+            .is_err()
+    );
+    // Recover a committed copy whose acknowledgement was lost before its
+    // manifest. The source has vanished, so a reread cannot pass this control.
+    use crate::conversation::{ContentAccess, ContentChange};
+    let key = b"copy-ack-lost";
+    let text = "@vanished.txt";
+    let base = format!(
+        "inputs/mentions/{}/{}",
+        blake3::hash(key),
+        blake3::hash(text.as_bytes())
+    );
+    let destination = format!(
+        "{base}/{}",
+        super::super::context::copy_name("vanished.txt")
+    );
+    let operation =
+        super::super::context::publication_operation(b"acyclic.local.mention-copies/v1\0", key);
+    let publisher = harness
+        .agents
+        .get()
+        .expect("hosted")
+        .server
+        .bound()
+        .input_publisher(&root, None)
+        .await
+        .map_err(agent)?;
+    publisher
+        .stage_changes(
+            publisher.volume(),
+            operation,
+            &[ContentChange::CreateAbsent {
+                path: &destination,
+                bytes: b"pinned before interruption",
+                media_type: "text/plain",
+                display_name: destination.rsplit('/').next().unwrap(),
+            }],
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert!(!checkout.join("vanished.txt").exists());
+    let recovered = harness
+        .prompt_attachments(&root, key, Some(text))
+        .await?
+        .expect("recovered manifest");
+    let recovered_files = listed(&harness, &recovered).await?;
+    let reader = super::selected_reader(&harness, &recovered_files)?;
+    assert_eq!(
+        reader
+            .read(&recovered_files[0], 1024, None, None)?
+            .await?
+            .as_ref(),
+        b"pinned before interruption"
+    );
+    // A different source cannot reuse an unfinished copy operation.
+    let conflicting = b"changed-before-manifest";
+    let conflict_operation = super::super::context::publication_operation(
+        b"acyclic.local.mention-copies/v1\0",
+        conflicting,
+    );
+    publisher
+        .stage_changes(
+            publisher.volume(),
+            conflict_operation,
+            &[ContentChange::CreateAbsent {
+                path: "inputs/mentions/other-source/file",
+                bytes: b"unselected",
+                media_type: "text/plain",
+                display_name: "file",
+            }],
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert!(
+        harness
+            .prompt_attachments(&root, conflicting, Some("@mention.txt"))
+            .await
+            .is_err()
     );
     Ok(())
 }
@@ -3438,9 +3543,8 @@ async fn project_mentions_keep_their_volume_and_bounded_copy_paths() -> Result<(
             "the prompt started no attached message turn".into(),
         ));
     };
-    // Every member lives beside its manifest on the private volume, inside
-    // the directory a forked child is granted with the manifest; none stays
-    // on the project volume a child does not inherit.
+    // Every selected member lives beside its manifest on the host journal;
+    // none stays on the project volume a child does not inherit.
     let (base, _) = manifest
         .path()
         .rsplit_once('/')
@@ -3508,7 +3612,7 @@ async fn project_mentions_keep_their_volume_and_bounded_copy_paths() -> Result<(
     let listed = listed(&harness, manifest).await?;
     assert_eq!(listed.len(), 2);
     assert_eq!(listed[0].path().len(), listed[1].path().len());
-    let reader = harness.client_reader()?;
+    let reader = super::selected_reader(&harness, &listed)?;
     for (file, text) in listed.iter().zip(["short\n", "long\n"]) {
         let bytes = reader
             .read(file, file.descriptor().byte_length(), None, None)?
@@ -3614,6 +3718,35 @@ async fn a_small_file_bound_never_fails_a_turn_on_its_lists() -> Result<()> {
         .map(|message| attached(&message.content))
         .collect::<Vec<_>>();
     assert_eq!(replayed, vec![MENTIONS + 1, 1]);
+    // Each file fits on its own; their combined bytes must still be denied.
+    harness
+        .files
+        .apply(
+            &workspace,
+            None,
+            &[
+                crate::filesystem::WorkspaceMutation::PutFile {
+                    path: "/bound-a.txt".into(),
+                    bytes: acyclic_stream::OwnedBytes::from(vec![b'a'; 600]),
+                },
+                crate::filesystem::WorkspaceMutation::PutFile {
+                    path: "/bound-b.txt".into(),
+                    bytes: acyclic_stream::OwnedBytes::from(vec![b'b'; 600]),
+                },
+            ],
+            &crate::contract::IdempotencyKey::new("combined-mention-bound")?,
+        )
+        .await?;
+    assert!(
+        harness
+            .prompt_attachments(
+                client.conversation.agent(),
+                b"combined-denied",
+                Some("@bound-a.txt @bound-b.txt")
+            )
+            .await
+            .is_err()
+    );
     Ok(())
 }
 

@@ -1172,6 +1172,39 @@ where
         self.agents.child_profile(parent, role).await
     }
 
+    /// Binds the host publisher of an existing agent's immutable inputs.
+    /// Source reads retain their original authority; this publisher grants no
+    /// authority to read a source or to write through the agent's task scope.
+    ///
+    /// # Errors
+    /// A foreign path, missing agent, refused admission or journal failure.
+    pub async fn input_publisher(
+        &self,
+        agent: &AgentPath,
+        maximum_bytes: Option<u64>,
+    ) -> Result<Arc<FilesystemContentPublisher<StreamAuthorityStore<P>, O>>, Error> {
+        self.admit_path(agent)?;
+        let state = self.agents.state(agent).await?;
+        self.input_publisher_for_state(&state, maximum_bytes).await
+    }
+
+    async fn input_publisher_for_state(
+        &self,
+        state: &crate::agent::AgentState,
+        maximum_bytes: Option<u64>,
+    ) -> Result<Arc<FilesystemContentPublisher<StreamAuthorityStore<P>, O>>, Error> {
+        let (journal, authority) = self.turns.journal_authority(state).await.map_err(turn)?;
+        FilesystemContentPublisher::new(
+            Arc::clone(&self.volumes),
+            &journal,
+            &authority.verifier,
+            &authority.scope,
+            maximum_bytes,
+            None,
+        )
+        .map_err(turn)
+    }
+
     /// Stages `text` once on `agent`'s journal volume under the agent's
     /// admitted authority, keyed by the agent, the input `kind`, its sender
     /// and `intent`. The original source binds the request before expansion;

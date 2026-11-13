@@ -467,7 +467,7 @@ impl LocalHarness {
 impl LocalHarness {
     /// The attachment manifest of the files a prompt's `@` mentions name,
     /// pinned as it is sent: a checkout's mentioned files are captured at one
-    /// snapshot onto the root's private volume, a volume project's are read
+    /// snapshot onto the recipient's journal, a volume project's are read
     /// at its current generation. Each resolves and projects through the one
     /// mention path. `key` is the message's own identity: the manifest is
     /// staged once for it, beside its copies, so a resend replays it exactly
@@ -475,6 +475,7 @@ impl LocalHarness {
     /// reference however many files it names.
     pub(super) async fn prompt_attachments(
         &self,
+        agent: &crate::agent::AgentPath,
         key: &[u8],
         text: Option<&str>,
     ) -> Result<Option<FileRef>> {
@@ -486,8 +487,16 @@ impl LocalHarness {
         }
         // The manifest's own encoding bounds it: it lists files already
         // admitted under the content bounds, so it takes no content bound.
-        let publisher = self.input_publisher_with_limit(None)?;
-        let operation = publication_operation(b"acyclic.local.mention-manifest/v1\0", key);
+        let publisher = self
+            .agents
+            .get()
+            .ok_or_else(|| Error::Unsupported("local agents are not hosted".into()))?
+            .server
+            .bound()
+            .input_publisher(agent, None)
+            .await
+            .map_err(|error| Error::Turn(Box::new(error)))?;
+        let operation = publication_operation(b"acyclic.local.mention-manifest/v2\0", key);
         if let Some(manifest) = self.observe_manifest(operation, &*publisher).await? {
             return Ok(Some(manifest));
         }
@@ -496,9 +505,21 @@ impl LocalHarness {
             return Ok(None);
         };
         let reader = self.client_reader()?;
-        let base = format!("inputs/mentions/{}", blake3::hash(key));
+        if self
+            .limits
+            .file_bytes
+            .is_some_and(|maximum| maximum == 0 || text.len() as u64 > maximum)
+        {
+            return Err(Error::Invalid("mention input exceeds byte bound".into()));
+        }
+        let base = format!(
+            "inputs/mentions/{}/{}",
+            blake3::hash(key),
+            blake3::hash(text.as_bytes())
+        );
+        let copies_operation = publication_operation(b"acyclic.local.mention-copies/v1\0", key);
         let items = self
-            .resolve_attachments(&base, text, &*reader)
+            .resolve_attachments(&base, text, &*reader, &*publisher, copies_operation)
             .await?
             .into_iter()
             .map(|file| crate::conversation::Attachment { file, label: None })
@@ -547,28 +568,102 @@ impl LocalHarness {
         base: &str,
         text: &str,
         reader: &dyn ContentResidencyVerifier,
+        publisher: &dyn ContentPublisher,
+        operation: OperationId,
     ) -> Result<Vec<FileRef>> {
-        // Mentioned files are copied beside the manifest on the private
-        // volume, which every fork of the agent inherits: a child forks a
-        // volume project, so the original project would not carry them.
-        let root = match self.checkout_mentions(base, text).await? {
-            Some(root) => root,
-            None => self.project_mentions(base, text, reader).await?,
+        use crate::conversation::ContentAccess;
+        // A dropped acknowledgement after the copies committed must not read
+        // changed or deleted source files on recovery.
+        let copies = match publisher
+            .observe_changes(
+                publisher.volume(),
+                operation,
+                None,
+                ContentAccess::default(),
+            )?
+            .await?
+            .0
+        {
+            Some(copies) => copies,
+            None => {
+                match self
+                    .checkout_mentions(base, text, publisher, operation)
+                    .await?
+                {
+                    Some(copies) => copies,
+                    None => {
+                        let copies = self.project_mention_copies(text, reader).await?;
+                        self.publish_mention_copies(base, copies, publisher, operation)
+                            .await?
+                    }
+                }
+            }
         };
-        self.resolve_at(&root, text, reader, |path| {
-            format!("{}/{}", root.directory, copy_name(path))
-        })
-        .await
+        let mut files = copies
+            .files()
+            .map(|file| (file.path().to_owned(), file.clone()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let mut selected = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for (_, _, path) in crate::client::file_mention_paths(text)? {
+            if seen.insert(path) {
+                selected.push(
+                    files
+                        .remove(&format!("{base}/{}", copy_name(path)))
+                        .ok_or_else(|| {
+                            Error::Conflict("mention publication has another source".into())
+                        })?,
+                );
+            }
+        }
+        if !files.is_empty() {
+            return Err(Error::Conflict(
+                "mention publication has another selection".into(),
+            ));
+        }
+        Ok(selected)
     }
 
-    /// A volume project's mentioned files, read at its head and copied onto
-    /// the root's private volume below `base`: their root.
-    async fn project_mentions(
+    /// Publishes the complete selected set in one authenticated journal commit.
+    async fn publish_mention_copies(
         &self,
         base: &str,
+        copies: std::collections::BTreeMap<String, acyclic_stream::OwnedBytes>,
+        publisher: &dyn ContentPublisher,
+        operation: OperationId,
+    ) -> Result<crate::conversation::ContentChanges> {
+        use crate::conversation::{ContentAccess, ContentChange};
+        let paths = copies
+            .keys()
+            .map(|path| format!("{base}/{}", copy_name(path)))
+            .collect::<Vec<_>>();
+        let changes = copies
+            .iter()
+            .zip(&paths)
+            .map(|((_, bytes), path)| ContentChange::CreateAbsent {
+                path,
+                bytes: bytes.as_ref(),
+                media_type: crate::filesystem::captured_media_type(bytes.as_ref()),
+                display_name: path.rsplit('/').next().unwrap_or(path),
+            })
+            .collect::<Vec<_>>();
+        Ok(publisher
+            .stage_changes(
+                publisher.volume(),
+                operation,
+                &changes,
+                ContentAccess::default(),
+            )?
+            .await?
+            .0)
+    }
+    /// Reads a volume project's mentioned files at one immutable generation.
+    /// Publication uses the host input writer; source authority stays here.
+    async fn project_mention_copies(
+        &self,
         text: &str,
         reader: &dyn ContentResidencyVerifier,
-    ) -> Result<crate::context::ContextRoot> {
+    ) -> Result<std::collections::BTreeMap<String, acyclic_stream::OwnedBytes>> {
         let project = crate::context::ContextRoot {
             volume: self.project.clone(),
             directory: String::new(),
@@ -581,59 +676,8 @@ impl LocalHarness {
                 .await?;
             copies.insert(file.path().trim_start_matches('/').to_owned(), bytes);
         }
-        Ok(crate::context::ContextRoot {
-            volume: self.journal.clone(),
-            directory: self.publish_mention_copies(base, copies).await?,
-        })
+        Ok(copies)
     }
-
-    /// Publishes mentioned files' `copies` by path into one content-addressed
-    /// directory below `base` on the private volume and names it. Each copy
-    /// is named by [`copy_name`], so its path has the same length however
-    /// long the mentioned path is.
-    async fn publish_mention_copies(
-        &self,
-        base: &str,
-        copies: std::collections::BTreeMap<String, acyclic_stream::OwnedBytes>,
-    ) -> Result<String> {
-        let mut address = blake3::Hasher::new();
-        for (path, bytes) in &copies {
-            address.update(&(path.len() as u64).to_le_bytes());
-            address.update(path.as_bytes());
-            address.update(blake3::hash(bytes.as_ref()).as_bytes());
-        }
-        let directory = format!("{base}/{}", address.finalize());
-        // Every copy lands in one generation of the private volume, so a
-        // prompt costs one commit however many files it mentions. A retry
-        // of the same bytes replays that generation.
-        let mut mutations = Vec::with_capacity(copies.len() + 1);
-        mutations.push(crate::filesystem::WorkspaceMutation::CreateDirectory {
-            path: format!("/{directory}"),
-        });
-        mutations.extend(copies.into_iter().map(|(path, bytes)| {
-            crate::filesystem::WorkspaceMutation::PutFile {
-                path: format!("/{directory}/{}", copy_name(&path)),
-                bytes,
-            }
-        }));
-        let journal = crate::filesystem::workspace_ref(
-            self.journal.provider().clone(),
-            &self.journal.storage_name(&mut None)?,
-        )?;
-        self.files
-            .apply(
-                &journal,
-                None,
-                &mutations,
-                &crate::contract::IdempotencyKey::new(format!(
-                    "mention-copies-{}",
-                    blake3::hash(directory.as_bytes())
-                ))?,
-            )
-            .await?;
-        Ok(directory)
-    }
-
     /// The files `text` mentions, resolved at the head of `root`'s volume,
     /// in mention order.
     async fn resolve_at(
@@ -685,32 +729,30 @@ pub(in crate::local) fn copy_name(path: &str) -> String {
 }
 
 impl LocalHarness {
-    /// A checkout's mentioned files, copied onto the root's private volume
-    /// below the message's `base` directory: their root.
+    /// Captures mentioned checkout files under their original native admission.
     #[cfg(any(test, not(target_arch = "wasm32")))]
     async fn checkout_mentions(
         &self,
         base: &str,
         text: &str,
-    ) -> Result<Option<crate::context::ContextRoot>> {
+        publisher: &dyn ContentPublisher,
+        operation: OperationId,
+    ) -> Result<Option<crate::conversation::ContentChanges>> {
         let Some(workspace) = &self.workspace else {
             return Ok(None);
         };
-        let directory = self
-            .capture_checkout_mentions(workspace, text, base)
-            .await?;
-        Ok(Some(crate::context::ContextRoot {
-            volume: self.journal.clone(),
-            directory,
-        }))
+        self.capture_checkout_mentions(workspace, text, base, publisher, operation)
+            .await
+            .map(Some)
     }
-
     #[cfg(not(any(test, not(target_arch = "wasm32"))))]
     async fn checkout_mentions(
         &self,
         _: &str,
         _: &str,
-    ) -> Result<Option<crate::context::ContextRoot>> {
+        _: &dyn ContentPublisher,
+        _: OperationId,
+    ) -> Result<Option<crate::conversation::ContentChanges>> {
         Ok(None)
     }
 }
