@@ -110,8 +110,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     }
 
     /// Resolves a host-owned immutable publication, then uses the same selected
-    /// range reader as execution payloads. Only the internal owner may choose
-    /// this path; no delegated directory grant can reach internal storage.
+    /// range reader as execution payloads. The original grant and persisted
+    /// journal policy protect execution state independently of path spelling.
     pub(crate) async fn read_internal_range(
         &self,
         volume: &VolumeRef,

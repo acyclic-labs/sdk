@@ -777,10 +777,17 @@ where
                         == &crate::conversation::VolumeOwner::Agent(
                             crate::AgentId::from_bytes(agent.id_bytes()),
                         )
-                    && crate::conversation::is_inherited_context_path(file.path()) =>
+                    && [
+                        super::InternalContentClass::Conversation,
+                        super::InternalContentClass::ToolOutput,
+                    ]
+                    .iter()
+                    .any(|class| class.contains_path(file.path())) =>
             {
-                // The selected session owns these published conversation files;
-                // other journal families and other roots require their original proof.
+                // Only the host's published output families admit an unsequenced
+                // journal reference. Pending inputs still require the committed
+                // conversation proof above, even though their bytes are staged.
+                self.volumes.file_generation(file, None).map_err(turn)?;
                 std::slice::from_ref(file)
             }
             (None, file) => file.map_or(&[][..], |file| state.adoption_grant(file)),

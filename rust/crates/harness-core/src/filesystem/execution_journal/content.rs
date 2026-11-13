@@ -471,15 +471,6 @@ where
             if reference.volume().class() == VolumeClass::AgentPrivate
                 && reference.volume().owner() != self.volume.owner()
             {
-                if crate::conversation::is_internal_path(reference.path())
-                    && !crate::conversation::is_inherited_context_path(reference.path())
-                {
-                    return Err(canonical_boundary(
-                        Some(io),
-                        crate::wire::ErrorCode::Unauthorized,
-                        "internal storage file is not public content",
-                    ));
-                }
                 // Another agent's file: the one shared read check.
                 let mut work = io.history_io();
                 ContentGrant::verify_read_with_work(

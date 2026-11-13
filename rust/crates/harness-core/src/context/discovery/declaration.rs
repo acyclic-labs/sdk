@@ -24,13 +24,6 @@ impl ContextRoot {
         }
         // Validation checks the declaration, not a derived authorization label.
         // Hashing and allocating that label belongs at the grant boundary.
-        if crate::conversation::is_internal_path(&self.directory) {
-            return Err(discovery_error(
-                work,
-                crate::wire::ErrorCode::Invalid,
-                "internal storage paths cannot be delegated",
-            ));
-        }
         Ok(())
     }
 }
@@ -290,7 +283,6 @@ impl PinnedContextPath {
                     .path
                     .strip_prefix(&self.root.directory)
                     .is_some_and(|tail| tail.starts_with('/')))
-            || crate::conversation::is_internal_path(&self.path)
         {
             return Err(discovery_error(
                 work,

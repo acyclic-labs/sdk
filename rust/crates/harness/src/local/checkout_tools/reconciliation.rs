@@ -55,17 +55,21 @@ fn update(
     Ok(revision)
 }
 
-pub(in crate::local) async fn recover<F, Fut>(
-    workspace: &LocalWorkspace,
-    view: &workspace::View,
-    before_effect: &F,
-) -> Result<bool>
+pub(in crate::local) fn recover<'a, F, Fut>(
+    workspace: &'a LocalWorkspace,
+    view: &'a workspace::View,
+    before_effect: &'a F,
+) -> impl Future<Output = Result<bool>> + Send + 'a
 where
     F: Fn() -> Fut + Send + Sync,
-    Fut: Future<Output = Result<()>> + Send,
+    Fut: Future<Output = Result<()>> + Send + 'a,
 {
-    let (_, pending) = workspace.checkout_selection().await?;
-    recover_pending(workspace, view, pending, before_effect).await
+    // Prove the producer's Send contract here rather than expanding native
+    // storage auto-traits inside each caller's already-bounded future.
+    async move {
+        let (_, pending) = workspace.checkout_selection().await?;
+        recover_pending(workspace, view, pending, before_effect).await
+    }
 }
 
 pub(in crate::local) fn recover_pending<'a, F, Fut>(

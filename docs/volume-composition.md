@@ -60,6 +60,29 @@ and inner JSON pointers, not recursive descriptor guessing. Source checkpoints
 are recovery data, not automatically delegated launch-file authority.
 
 
+## Authored path authority
+
+The stock standalone and hosted turn constructors bind execution records and
+published outputs to the agent's separate `journal` volume, outside its authored
+workspace table. Its persisted filesystem policy requires the verified
+`role:harness-host` claim (`HARNESS_HOST`), matched by the `harness-host` policy
+role, to write records or read private execution payloads. Published
+output remains readable with its original signed file, directory, structured
+filesystem or volume grant. Authored UI files remain on the owner-private volume,
+with that volume's own grants and policy. Custom trusted embeddings that construct
+a journal directly supply its volume, authority and persisted policy themselves;
+a path name cannot make an unprotected volume private.
+
+Trusted journal publishers also check the requested content family against its
+canonical prefix through `InternalContentClass::require_path`. This confines host
+publication; it does not reserve those names on authored volumes.
+
+Names such as `.system`, `tools/.results`, `.volumes`, `.home-seed-v1`, `.acyclic-sdk`
+and `turns/.canonical` are ordinary authored paths. Reading, editing, delegation,
+listing, file mentions and diffs apply the original authority, directory boundary
+and persisted policy without hiding these names. Native preparation and harness
+state remain outside the workspace.
+
 ## Validation scope
 
 | Invariant | Production mechanism | Assumptions | Verification and evidence |

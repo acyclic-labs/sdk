@@ -85,14 +85,6 @@ impl FileTool {
             crate::tool::ReadPathKind::File
                 .validate_address(path, history)
                 .map_err(Error::tool_input)?;
-            if crate::conversation::is_internal_path(path) {
-                return Err(crate::store::guarded_boundary(
-                    history,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "file tools cannot access internal storage",
-                )
-                .tool_input());
-            }
             Ok(())
         })
     }

@@ -45,13 +45,15 @@ pub enum WorkspaceMutation {
     },
 }
 
-/// Reserved host-owned file families.
+/// Publication families within the host-owned journal.
 #[derive(Clone, Copy)]
 pub(crate) enum InternalContentClass {
     Interaction,
     Execution,
     /// The original validated tool result, readable through tool-output observation.
     ToolResult,
+    /// Files and streams published by the tool-output writer.
+    ToolOutput,
     /// Settled turn outputs, inherited by an agent's forks.
     Conversation,
 }
@@ -62,27 +64,19 @@ impl InternalContentClass {
         path: &str,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        let permitted = match class {
-            Some(class) => path.starts_with(class.prefix()),
-            None => {
-                !crate::conversation::is_internal_path(path)
-                    && path != "tools/.results"
-                    && !path.starts_with(Self::ToolResult.prefix())
-            }
-        };
-        if permitted {
+        if class.is_none_or(|class| class.contains_path(path)) {
             Ok(())
         } else {
             Err(crate::executor::stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
-                if class.is_some() {
-                    "content path is outside its authorized storage class"
-                } else {
-                    "internal storage paths are reserved"
-                },
+                "content path is outside its authorized storage class",
             ))
         }
+    }
+
+    pub(in crate::filesystem) fn contains_path(self, path: &str) -> bool {
+        path.starts_with(self.prefix())
     }
 
     pub(in crate::filesystem) fn prefix(self) -> &'static str {
@@ -90,6 +84,7 @@ impl InternalContentClass {
             Self::Interaction => ".system/interactions/",
             Self::Execution => ".system/execution/",
             Self::ToolResult => "tools/.results/",
+            Self::ToolOutput => "tools/",
             Self::Conversation => ".system/inherited-conversation/",
         }
     }

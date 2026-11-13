@@ -2,7 +2,7 @@
 use super::FilesystemHost;
 use crate::{
     Error, IdempotencyKey, Result,
-    conversation::{ContentGrant, FileRef, VolumeOperation, is_internal_path},
+    conversation::{ContentGrant, FileRef, VolumeOperation},
     tool::edit::{allocation, replace, validate_edit_bound},
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
@@ -31,11 +31,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
     ) -> Result<FileRef> {
         validate_edit_bound(maximum_bytes)?;
         source.validate(&mut None)?;
-        if is_internal_path(source.path()) {
-            return Err(Error::Unauthorized(
-                "internal storage is not editable content".into(),
-            ));
-        }
         write.require(source.volume(), VolumeOperation::Write, None)?;
         let bytes = self.read_content(source, read, maximum_bytes, None).await?;
         let text = std::str::from_utf8(&bytes)

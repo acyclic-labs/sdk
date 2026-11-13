@@ -253,6 +253,15 @@ async fn owner_private_directory_is_lazy_paged_and_generation_pinned() -> Result
             "one.txt",
         )
         .await?;
+    storage
+        .stage(
+            OperationId::new(),
+            ".system/private",
+            b"authored",
+            "text/plain",
+            "private",
+        )
+        .await?;
     let (generation, root) = storage.list_private_directory("", None, None, 8).await?;
     assert!(root.entries.iter().any(|entry| {
         entry
@@ -266,7 +275,7 @@ async fn owner_private_directory_is_lazy_paged_and_generation_pinned() -> Result
             .as_deref()
             == Some("notes")
     }));
-    assert!(!root.entries.iter().any(|entry| {
+    assert!(root.entries.iter().any(|entry| {
         entry
             .name
             .unicode_text(

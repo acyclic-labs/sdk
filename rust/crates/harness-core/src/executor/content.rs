@@ -35,20 +35,14 @@ pub async fn verify_model_contents_with_summary_authorization<
     let result = async {
         for content in contents.clone() {
             for (file, binding) in content.file_bindings() {
-                let granted = match scope {
-                    Some(scope) => with_history_io(io, |work| {
-                        crate::runtime::read_granted_with_work(scope.grants(), file, work)
-                    })?,
-                    None => true,
-                };
-                if (!granted
-                    || (scope.is_none() && crate::conversation::is_internal_path(file.path())))
-                    && SUMMARIES
-                    && binding.is_none()
-                    && journal.authenticate_summary(file, io)?.await?
+                if SUMMARIES && binding.is_none() && journal.authenticate_summary(file, io)?.await?
                 {
                     stock_vec_push(&mut summaries, file, io)?;
-                } else if !granted {
+                } else if let Some(scope) = scope
+                    && !with_history_io(io, |work| {
+                        crate::runtime::read_granted_with_work(scope.grants(), file, work)
+                    })?
+                {
                     return Err(stock_boundary(
                         io,
                         crate::wire::ErrorCode::Unauthorized,

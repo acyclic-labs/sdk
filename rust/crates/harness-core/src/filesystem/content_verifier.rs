@@ -1019,32 +1019,17 @@ pub(in crate::filesystem) fn require_file_read(
     io: &PreparationIo,
 ) -> Result<()> {
     reference.validate(&mut Some(&mut io.history_io()))?;
-    let internal = crate::conversation::is_internal_path(reference.path());
-    let inherited = crate::conversation::is_inherited_context_path(reference.path());
-    let internal_owner = reference.path().starts_with(".system/") && !inherited;
-    if internal && !inherited && !internal_owner {
-        return Err(stock_boundary(
-            Some(io),
-            crate::wire::ErrorCode::Unauthorized,
-            "internal storage file is not public content",
-        ));
-    }
-    // The one shared read decision; an owner's internal file needs its
-    // whole-volume grant.
+    // The one shared read decision; persisted volume policy governs its files.
     match crate::core::file_read_grant(
         scope.capabilities(),
         reference,
         &mut Some(&mut io.history_io()),
     )? {
-        Some(crate::core::ReadGrant::Volume) => return Ok(()),
-        Some(_) if internal_owner => {
-            return Err(stock_boundary(
-                Some(io),
-                crate::wire::ErrorCode::Unauthorized,
-                "volume operation is not granted",
-            ));
-        }
-        Some(crate::core::ReadGrant::Exact | crate::core::ReadGrant::Structured) => return Ok(()),
+        Some(
+            crate::core::ReadGrant::Volume
+            | crate::core::ReadGrant::Exact
+            | crate::core::ReadGrant::Structured,
+        ) => return Ok(()),
         Some(crate::core::ReadGrant::Directory(_)) if scope.agent().is_some() => return Ok(()),
         Some(crate::core::ReadGrant::Directory(_)) | None => {}
     }

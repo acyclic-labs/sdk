@@ -1,6 +1,6 @@
 use super::*;
 
-/// Tool output directory on an agent's private volume.
+/// Tool output directory on the selected volume.
 pub const TOOL_OUTPUT: &str = "tools";
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FilesystemHost<A, O> {

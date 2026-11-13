@@ -278,13 +278,6 @@ impl VolumeRef {
         if !prefix.is_empty() {
             validate_content_path(prefix, work)?;
         }
-        if is_internal_path(prefix) {
-            return Err(conversation_error(
-                work,
-                crate::wire::ErrorCode::Invalid,
-                "internal storage paths cannot be delegated",
-            ));
-        }
         content_label(
             acyclic_fs::access::DIRECTORY_READ_PREFIX,
             self.directory_digest(
@@ -438,11 +431,6 @@ impl ContentGrant {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
         file.validate(work)?;
-        if is_internal_path(file.path()) && !is_inherited_context_path(file.path()) {
-            return Err(Error::Unauthorized(
-                "internal storage file is not public content".into(),
-            ));
-        }
         let grant = Self::build(verifier, scope, work, |scope, quota| {
             let exact = || {
                 let FileRef {
@@ -634,13 +622,6 @@ impl ContentGrant {
             if !prefix.is_empty() {
                 validate_content_path(prefix, quota.work())?;
             }
-            if is_internal_path(prefix) {
-                return Err(conversation_error(
-                    quota.work(),
-                    crate::wire::ErrorCode::Invalid,
-                    "internal storage paths cannot be delegated",
-                ));
-            }
             let structured = volume.provider().family() == "filesystem"
                 && crate::core::filesystem_scope_label(scope.capabilities(), quota.work())?
                     .is_some();
@@ -729,9 +710,10 @@ impl ContentGrant {
                         file.display_name(),
                     )
                 })
-            || self.directory_prefix.as_deref().is_some_and(|prefix| {
-                is_internal_path(file.path()) || !path_below(file.path(), prefix)
-            })
+            || self
+                .directory_prefix
+                .as_deref()
+                .is_some_and(|prefix| !path_below(file.path(), prefix))
         {
             return Err(content_error(
                 io,
@@ -755,7 +737,6 @@ impl ContentGrant {
         }
         if self.volume != *volume
             || self.operation != VolumeOperation::Read
-            || is_internal_path(prefix)
             || !self
                 .directory_prefix
                 .as_deref()
@@ -769,16 +750,6 @@ impl ContentGrant {
         }
         Ok(())
     }
-}
-
-#[doc(hidden)]
-pub fn is_internal_path(path: &str) -> bool {
-    path == ".system" || path.starts_with(".system/")
-}
-
-#[doc(hidden)]
-pub fn is_inherited_context_path(path: &str) -> bool {
-    path.starts_with(".system/inherited-conversation/")
 }
 
 fn path_below(path: &str, prefix: &str) -> bool {

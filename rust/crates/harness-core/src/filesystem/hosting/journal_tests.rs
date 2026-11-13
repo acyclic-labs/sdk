@@ -221,6 +221,16 @@ async fn call_output_uses_the_journal_without_granting_tools_its_writer() -> Tes
         context.task().read_file(&file, None).await?.as_ref(),
         b"retained"
     );
+    assert_eq!(bound.read_file(&root, &file, 0, 8).await?.0, b"retained");
+    let mut repinned = file.copy(&mut None)?;
+    repinned.pin_version(hex::encode(turn.into_bytes()), &mut None)?;
+    let rejected = bound
+        .read_file(&root, &repinned, 0, 8)
+        .await
+        .expect_err("operation identity is not a filesystem generation");
+    assert!(matches!(rejected, Error::Turn(cause)
+        if matches!(&*cause, crate::Error::Invalid(reason)
+            if reason == "file version is not a canonical Filesystem generation")));
     // A later model call reads the advertised address through the ordinary
     // path/range/directory readers, without receiving the host's publisher.
     let reader = ToolContext::new(task.clone(), OperationId::new(), "read")?;
@@ -285,6 +295,12 @@ async fn call_output_uses_the_journal_without_granting_tools_its_writer() -> Tes
         )
         .await?;
     assert!(reader.read_file(&hidden_input, None).await.is_err());
+    let denied = bound
+        .read_file(&root, &hidden_input, 0, 8)
+        .await
+        .expect_err("uncommitted input must not acquire a generic file grant");
+    assert!(matches!(denied, Error::Turn(cause)
+        if cause.code() == crate::wire::ErrorCode::Unauthorized));
     for hidden in [hidden_input.path(), ".system/effects/hidden"] {
         assert!(
             reader

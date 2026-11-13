@@ -40,16 +40,10 @@ fn owned_bytes(page: &DirectoryPage) -> Result<u64> {
     )
 }
 
-fn visible(parent: PreparedPath<'_>, name: &LogicalName, root: bool, now: u64) -> bool {
-    let internal = root
-        && match name.encoding() {
-            NameEncoding::Utf8 | NameEncoding::PosixBytes => name.as_bytes() == b".system",
-            NameEncoding::WindowsUtf16Le => name.as_bytes() == b".\0s\0y\0s\0t\0e\0m\0",
-        };
-    !internal
-        && parent
-            .child_name(name)
-            .is_ok_and(|path| path.decide(Action::List, now).allowed)
+fn visible(parent: PreparedPath<'_>, name: &LogicalName, now: u64) -> bool {
+    parent
+        .child_name(name)
+        .is_ok_and(|path| path.decide(Action::List, now).allowed)
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
@@ -260,8 +254,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 ..Default::default()
             })?;
             let now = super::super::access::access_now()?;
-            let (removed, successor) =
-                filter_page(&mut page, parent, data_parent, request.path.is_empty(), now);
+            let (removed, successor) = filter_page(&mut page, parent, data_parent, now);
             page_hold.substitute(page_bytes - removed)?;
             if page.entries.is_empty() && page.has_more {
                 let name = successor
@@ -296,15 +289,14 @@ fn filter_page(
     page: &mut DirectoryPage,
     parent: PreparedPath<'_>,
     data_parent: Option<PreparedPath<'_>>,
-    root: bool,
     now: u64,
 ) -> (u64, Option<LogicalName>) {
     // Keep the physical successor by moving its name, never copying it.
     let last = page.entries.pop();
     let mut removed = 0;
     page.entries.retain(|entry| {
-        let keep = visible(parent, &entry.name, root, now)
-            && data_parent.is_none_or(|parent| visible(parent, &entry.name, root, now));
+        let keep = visible(parent, &entry.name, now)
+            && data_parent.is_none_or(|parent| visible(parent, &entry.name, now));
         if !keep {
             removed += entry.name.logical_owned_bytes();
         }
@@ -312,8 +304,8 @@ fn filter_page(
     });
     let mut successor = None;
     if let Some(last) = last {
-        if visible(parent, &last.name, root, now)
-            && data_parent.is_none_or(|parent| visible(parent, &last.name, root, now))
+        if visible(parent, &last.name, now)
+            && data_parent.is_none_or(|parent| visible(parent, &last.name, now))
         {
             page.entries.push(last);
         } else if page.entries.is_empty() && page.has_more {

@@ -65,12 +65,11 @@ pub(crate) enum ReadGrant<'p> {
     Volume,
     /// One file by its exact version.
     Exact,
-    /// Every path under this (public) directory prefix.
+    /// Every path under this directory prefix, subject to persisted policy.
     Directory(&'p str),
 }
 
-/// The grant that admits reading `file`, if any. Internal-path policy stays
-/// with the caller.
+/// The original whole-volume, exact-file, directory or structured grant for `file`, if any.
 pub(crate) fn file_read_grant<'f>(
     grants: &crate::Capabilities,
     file: &'f crate::conversation::FileRef,
@@ -79,21 +78,14 @@ pub(crate) fn file_read_grant<'f>(
     if contains_content_grant_with_work(grants, file, acyclic_fs::access::FILE_READ_PREFIX, work)? {
         return Ok(Some(ReadGrant::Exact));
     }
-    let grant = directory_read_grant(
+    directory_read_grant(
         grants,
         file.volume(),
         file.path()
             .rsplit_once('/')
             .map_or("", |(parent, _)| parent),
         work,
-    )?;
-    // A directory grant covers public paths only; an internal file (the
-    // inherited conversation included) is read by its exact version, its
-    // whole volume, or a structured scope.
-    Ok(grant.filter(|grant| {
-        !matches!(grant, ReadGrant::Directory(_))
-            || !crate::conversation::is_internal_path(file.path())
-    }))
+    )
 }
 
 /// The grant that admits reading every path under `path` of `volume`, if any.
@@ -123,13 +115,7 @@ pub(crate) fn directory_read_grant<'p>(
         )
         .chain((!path.is_empty()).then_some(path))
     {
-        if !crate::conversation::is_internal_path(prefix)
-            && contains_content_grant_with_work(
-                grants,
-                &(volume, prefix),
-                DIRECTORY_READ_PREFIX,
-                work,
-            )?
+        if contains_content_grant_with_work(grants, &(volume, prefix), DIRECTORY_READ_PREFIX, work)?
         {
             return Ok(Some(ReadGrant::Directory(prefix)));
         }

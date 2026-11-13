@@ -526,22 +526,6 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
     assert_ne!(discovered.version(), second.version());
     assert_eq!(discovered.path(), second.path());
     assert_eq!(discovered.descriptor(), second.descriptor());
-    assert!(
-        host.put_content(
-            &volume,
-            &write,
-            ".system/forged.json",
-            b"bad",
-            "application/json",
-            "forged.json",
-            Some(16),
-            &IdempotencyKey::new("internal-write")?,
-            None,
-            crate::conversation::ContentAccess::default()
-        )
-        .await
-        .is_err()
-    );
     let empty = host
         .put_content(
             &volume,

@@ -78,13 +78,11 @@ impl PathSelectionView<'_> {
         self.volume.validate(work)?;
         self.generation.validate(work)?;
         validate_content_path(self.path, work)?;
-        if self.generation.as_resource().provider() != self.volume.provider()
-            || is_internal_path(self.path)
-        {
+        if self.generation.as_resource().provider() != self.volume.provider() {
             return Err(conversation_error(
                 work,
                 crate::wire::ErrorCode::Invalid,
-                "path selection belongs to another provider or an internal path",
+                "path selection belongs to another provider",
             ));
         }
         Ok(())

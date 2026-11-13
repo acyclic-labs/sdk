@@ -653,7 +653,6 @@ impl ToolContext {
                     .limits()
                     .path_bytes
                     .is_some_and(|maximum| change.path().len() > maximum.get())
-                    || crate::conversation::is_internal_path(change.path())
                 {
                     return Err(Error::tool_rejected(
                         "conditional path exceeds original task admission",
@@ -997,7 +996,6 @@ impl ToolContext {
                 .limits()
                 .path_bytes
                 .is_some_and(|maximum| path.len() > maximum.get())
-                || crate::conversation::is_internal_path(path)
             {
                 return Err(crate::store::guarded_boundary(
                     history,
@@ -1297,14 +1295,12 @@ impl ToolContext {
         crate::executor::with_history_io(io, |history| {
             crate::conversation::validate_content_path(&relative, history)
                 .map_err(Error::tool_input)?;
-            if crate::conversation::is_internal_path(&relative)
-                || !crate::core::directory_read_granted_with_work(
-                    self.effective_scope().grants(),
-                    volume,
-                    relative.rsplit_once('/').map_or("", |(parent, _)| parent),
-                    history,
-                )?
-            {
+            if !crate::core::directory_read_granted_with_work(
+                self.effective_scope().grants(),
+                volume,
+                relative.rsplit_once('/').map_or("", |(parent, _)| parent),
+                history,
+            )? {
                 return Err(crate::store::guarded_boundary(
                     history,
                     crate::wire::ErrorCode::Unauthorized,

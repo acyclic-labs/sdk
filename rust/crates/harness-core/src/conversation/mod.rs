@@ -285,9 +285,7 @@ pub use volumes::{
     journal_volume, private_volume,
 };
 #[doc(hidden)]
-pub use volumes::{
-    contains_content_label, content_label, is_inherited_context_path, is_internal_path,
-};
+pub use volumes::{contains_content_label, content_label};
 #[cfg(test)]
 mod tests;
 

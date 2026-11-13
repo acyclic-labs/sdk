@@ -83,51 +83,41 @@ fn owner_bound_private_write_rejects_an_attached_agent_with_a_copied_capability(
         issuer.delegate_private_file_read(&scope, attached, "attached-read", &exact_file)?;
     assert_eq!(delegated.agent(), Some(attached));
     ContentGrant::verify_read(&issuer.verifier(&mut None)?, &delegated, &exact_file)?;
-    let internal = file(owner, ".system/execution/state.json")?;
-    assert!(matches!(
-        ContentGrant::verify_read(&issuer.verifier(&mut None)?, &scope, &internal),
-        Err(Error::Unauthorized(_))
-    ));
-    let internal_exact = issuer.bootstrap_scope(
-        "internal-exact",
-        &crate::Capabilities::new([internal.read_capability(&mut None)?]),
+    let authored = file(owner, ".system/execution/state.json")?;
+    ContentGrant::verify_read(&issuer.verifier(&mut None)?, &scope, &authored)?;
+    let authored_exact = issuer.bootstrap_scope(
+        "authored-exact",
+        &crate::Capabilities::new([authored.read_capability(&mut None)?]),
         Some(owner),
         &mut None,
     )?;
-    assert!(matches!(
-        ContentGrant::verify_read(&issuer.verifier(&mut None)?, &internal_exact, &internal),
-        Err(Error::Unauthorized(_))
-    ));
-    assert!(matches!(
-        issuer.delegate_private_file_read(&scope, attached, "internal", &internal),
-        Err(Error::Unauthorized(_))
-    ));
-    let inherited_context = file(owner, ".system/inherited-conversation/prefix.json")?;
-    ContentGrant::verify_read(&issuer.verifier(&mut None)?, &scope, &inherited_context)?;
+    ContentGrant::verify_read(&issuer.verifier(&mut None)?, &authored_exact, &authored)?;
+    let delegated = issuer.delegate_private_file_read(&scope, attached, "authored", &authored)?;
+    ContentGrant::verify_read(&issuer.verifier(&mut None)?, &delegated, &authored)?;
     let directory = issuer.delegate_private_directory_read(
         &scope,
         attached,
         "attached-directory",
         &private,
-        "scratch",
+        ".system",
     )?;
     let directory_grant = ContentGrant::verify_directory_read(
         &issuer.verifier(&mut None)?,
         &directory,
         &private,
-        "scratch",
+        ".system",
         &mut None,
     )?;
-    directory_grant.require_directory_path(&private, "scratch/deeper", None)?;
-    directory_grant.require_file_read(&exact_file, None)?;
+    directory_grant.require_directory_path(&private, ".system/execution", None)?;
+    directory_grant.require_file_read(&authored, None)?;
     assert!(
         directory_grant
-            .require_directory_path(&private, "scratchpad", None)
+            .require_directory_path(&private, ".systematic", None)
             .is_err()
     );
     assert!(
         directory_grant
-            .require_directory_path(&private, ".system", None)
+            .require_directory_path(&private, "scratch", None)
             .is_err()
     );
     assert!(

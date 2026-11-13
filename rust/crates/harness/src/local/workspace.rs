@@ -274,20 +274,26 @@ impl LocalWorkspace {
         );
         Ok((tools, Arc::new(publisher)))
     }
-    pub(super) async fn checkout_selection(
+    pub(super) fn checkout_selection(
         &self,
-    ) -> Result<(
-        acyclic_fs::WorkspaceId,
-        Option<checkout_tools::reconciliation::Pending>,
-    )> {
+    ) -> impl std::future::Future<
+        Output = Result<(
+            acyclic_fs::WorkspaceId,
+            Option<checkout_tools::reconciliation::Pending>,
+        )>,
+    > + Send
+    + '_ {
         #[cfg(all(test, not(loom)))]
-        self.selection_reads
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let selection_reads = &self.selection_reads;
         let root = self.view.workspace().id();
-        acyclic_fs::GitCompatRepository::new(root, self.store.clone())
-            .checkout_selection()
-            .await
-            .map_err(storage)
+        let repository = acyclic_fs::GitCompatRepository::new(root, self.store.clone());
+        // Selection needs only the repository handle, not the workspace's
+        // recursive binding graph, while its store read is suspended.
+        async move {
+            #[cfg(all(test, not(loom)))]
+            selection_reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            repository.checkout_selection().await.map_err(storage)
+        }
     }
 
     pub(super) async fn selected_view(

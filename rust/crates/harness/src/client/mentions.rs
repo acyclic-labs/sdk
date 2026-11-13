@@ -12,7 +12,7 @@ pub use crate::command_request::FileMention;
 
 /// Resolves whitespace-delimited `@path` and `@"path with spaces"` at one revision.
 /// Email addresses, escaped `\@` and embedded `@` are ordinary text. Paths are
-/// relative to the declared root; absolute, parent and internal paths are rejected
+/// relative to the declared root; absolute and parent paths are rejected
 /// by the existing context validator. Repeated paths read once. The caller's byte
 /// limit bounds the input and the combined unique file bodies independently.
 pub async fn resolve_file_mentions(
@@ -105,11 +105,6 @@ pub(crate) fn file_mention_paths(input: &str) -> Result<Vec<(usize, usize, &str)
             return Err(Error::Invalid("file mention must end at whitespace".into()));
         }
         crate::conversation::validate_content_path(path, &mut None)?;
-        if crate::conversation::is_internal_path(path) {
-            return Err(Error::Invalid(
-                "file mention targets internal content".into(),
-            ));
-        }
         result.push((start, end, path));
         offset = end;
     }

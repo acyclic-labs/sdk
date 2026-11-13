@@ -238,7 +238,6 @@ fn authorize_actions<'a>(
                 .limits()
                 .path_bytes
                 .is_some_and(|maximum| relative.len() > maximum.get())
-                || crate::conversation::is_internal_path(&relative)
             {
                 return Err(Error::tool_rejected(
                     "patch path exceeds its original public admission",

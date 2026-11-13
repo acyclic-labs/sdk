@@ -60,3 +60,6 @@ a v5 owner retains the earlier journal policy.
 Finish or discard that recovery using its original runtime before
 starting fresh. A former recovery basename in a workspace with current state
 is an ordinary authored name; admission never probes or filters it.
+
+The journal and authored-volume authority boundaries are described in
+[volume composition](volume-composition.md#authored-path-authority).

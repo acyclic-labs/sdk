@@ -73,11 +73,6 @@ impl<'a> ScopeDerivation<'a> {
             }
             Self::PrivateFileRead { file, reader } => {
                 file.validate(&mut None)?;
-                if is_internal_path(file.path()) {
-                    return Err(Error::Unauthorized(
-                        "internal storage files cannot be delegated".into(),
-                    ));
-                }
                 Self::owner_read(parent, file.volume())?;
                 Ok((
                     Cow::Owned(Capabilities::new([file.read_capability(&mut None)?])),

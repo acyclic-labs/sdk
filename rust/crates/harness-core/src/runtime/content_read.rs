@@ -300,14 +300,12 @@ impl TaskContext {
             volume.validate(history)?;
             crate::tool::ReadPathKind::Directory.validate(path, history)?;
             crate::tool::ReadPathKind::Directory.validate(granted_prefix, history)?;
-            if crate::conversation::is_internal_path(path)
-                || !crate::core::directory_read_granted_with_work(
-                    scope.grants(),
-                    volume,
-                    granted_prefix,
-                    history,
-                )?
-            {
+            if !crate::core::directory_read_granted_with_work(
+                scope.grants(),
+                volume,
+                granted_prefix,
+                history,
+            )? {
                 return Err(content_error(
                     io,
                     ErrorCode::Unauthorized,
@@ -354,13 +352,11 @@ impl TaskContext {
             ));
         }
         for entry in &page.entries {
-            if (path.is_empty() && entry.name == ".system")
-                || after.is_some_and(|cursor| entry.name.as_bytes() <= cursor.as_bytes())
-            {
+            if after.is_some_and(|cursor| entry.name.as_bytes() <= cursor.as_bytes()) {
                 return Err(content_error(
                     io,
                     ErrorCode::Conflict,
-                    "private directory provider returned a forbidden name",
+                    "private directory provider did not advance its cursor",
                 ));
             }
         }
@@ -453,9 +449,8 @@ impl TaskContext {
         path: &str,
     ) -> Result<()> {
         volume.validate(&mut None)?;
-        if crate::conversation::is_internal_path(path)
-            || (!path.is_empty()
-                && crate::conversation::validate_content_path(path, &mut None).is_err())
+        if (!path.is_empty()
+            && crate::conversation::validate_content_path(path, &mut None).is_err())
             || (!granted_prefix.is_empty()
                 && crate::conversation::validate_content_path(granted_prefix, &mut None).is_err())
         {

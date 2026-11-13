@@ -4,7 +4,7 @@ use crate::store::history::HistoryIo;
 use crate::wire_codec::CodecQuota;
 use crate::{
     AgentId, Capabilities, Error, Result,
-    conversation::{FileRef, VolumeOperation, VolumeOwner, is_internal_path},
+    conversation::{FileRef, VolumeOperation, VolumeOwner},
 };
 #[cfg(test)]
 use crate::{

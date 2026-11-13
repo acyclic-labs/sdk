@@ -580,6 +580,7 @@ impl PublicationCase<'_> {
         workspace: &WorkspaceRef,
         path: &str,
         key: &IdempotencyKey,
+        class: Option<InternalContentClass>,
     ) -> Result<()> {
         let cancellation = acyclic_fs::CancellationToken::new();
         let io = PreparationIo::for_unmeasured(&cancellation)?;
@@ -622,7 +623,7 @@ impl PublicationCase<'_> {
             )
             .is_err()
         );
-        if !crate::conversation::is_internal_path(path) {
+        if class.is_none() {
             assert!(
                 io.sdk(selected.stat("/.system", &io, &cancellation).await)
                     .is_err()
@@ -701,7 +702,8 @@ impl PublicationCase<'_> {
         );
         let key = IdempotencyKey::new(format!("first-{path}"))?;
         let original = self.put(&path, b"original", &key, class).await?;
-        self.original_evidence(workspace, &path, &key).await?;
+        self.original_evidence(workspace, &path, &key, class)
+            .await?;
         self.put(
             &path,
             b"replacement",

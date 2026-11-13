@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { Processes } from "./graphcoder-e2e/process.mjs";
 import { environment, scratchDirectory } from "./graphcoder-e2e/scratch.mjs";
 
@@ -15,6 +15,8 @@ const root = scratchDirectory("graphcoder-workspace-state-");
 const processes = new Processes(), settings = join(root, "settings");
 const env = environment(settings);
 const captures = [];
+const authoredPaths = [".system/execution/note.txt", "tools/.results/proof.txt", ".volumes/data/entry.txt", ".home-seed-v1", ".acyclic-sdk/state.txt", "turns/.canonical"];
+const mentionPath = authoredPaths[0], mentionText = `WORKSPACE_NOTE_${randomUUID()}\n`;
 let passed = false, active, rejectFailure;
 const failed = new Promise((_, reject) => { rejectFailure = reject; });
 failed.catch(() => {});
@@ -47,6 +49,24 @@ async function git(cwd, args) {
   return result.stdout;
 }
 
+function seed(workspace) {
+  for (const path of ["tracked.txt", ...authoredPaths]) {
+    const file = join(workspace, path);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, path === mentionPath ? mentionText : "original\n");
+  }
+}
+
+// Detect new host state even beneath an already-authored dot directory.
+function workspaceEntries(workspace, prefix = "") {
+  return readdirSync(join(workspace, prefix)).sort().flatMap(name => {
+    const path = prefix ? `${prefix}/${name}` : name;
+    const entry = lstatSync(join(workspace, path)), directory = entry.isDirectory();
+    const type = directory ? "directory" : entry.isSymbolicLink() ? "symlink" : entry.isFile() ? "file" : "other";
+    return [{ path, type }, ...(directory && path !== ".git" ? workspaceEntries(workspace, path) : [])];
+  });
+}
+
 const server = createServer(async (request, response) => {
   try {
     let bytes = ""; for await (const chunk of request) bytes += chunk;
@@ -56,16 +76,25 @@ const server = createServer(async (request, response) => {
     const step = active.requests++;
     response.setHeader("content-type", "text/event-stream");
     if (step === 0) {
+      assert.ok(JSON.stringify(body.input).includes(mentionText.trimEnd()), "resolved mention content missing from the first model request");
       const expected = active.git;
       const code = `
 const edited = await tools.shell({command:"printf 'model edit\\n' > tracked.txt; printf '%040000d' 0"});
 if (!edited.success || !edited.spill) throw Error(JSON.stringify(edited));
 async function readAll(path) { let page=await tools.read({path}); const source=page.file.authored??page.file.content; const version=page.file.authored?'authored-path-v2:'+JSON.stringify({volume:source.volume,path:source.path,generation:source.generation}):JSON.stringify(source); const length=page.file.authored?source.byte_length:source.descriptor.byte_length; let text=page.text; while(page.page?.next!=null) { const start=page.page.next; page=await tools.read({path,version,range:{start,end:length}}); if(page.page?.next!=null && page.page.next<=start) throw Error('private file page did not advance'); text+=page.text; } return text; }
 if ((await readAll(edited.spill)) !== '0'.repeat(40000)) throw Error('overflow not readable through filesystem tools');
+for (const path of ${JSON.stringify(authoredPaths)}) {
+  const original = path === ${JSON.stringify(mentionPath)} ? ${JSON.stringify(mentionText)} : 'original' + String.fromCharCode(10), changed = 'authored edit' + String.fromCharCode(10);
+  if ((await readAll(path)) !== original) throw Error('authored path not readable: ' + path);
+  await tools.edit({path, old_text: original, new_text: changed});
+  if ((await readAll(path)) !== changed) throw Error('authored edit not readable: ' + path);
+}
 const status = await tools.shell({command:"git status --porcelain=v1 --untracked-files=all"});
 const diff = await tools.shell({command:"git diff -- tracked.txt"});
 if (${expected}) {
-  if (!status.success || status.stdout.trim() !== 'M tracked.txt') throw Error('unclean status: '+JSON.stringify(status));
+  const expected = ['tracked.txt', ...${JSON.stringify(authoredPaths)}].map(path => 'M ' + path).sort();
+  const observed = status.stdout.split(String.fromCharCode(10)).filter(Boolean).map(line => line.trim()).sort();
+  if (!status.success || JSON.stringify(observed) !== JSON.stringify(expected)) throw Error('unclean status: '+JSON.stringify(status));
   if (!diff.success || !diff.stdout.includes('-original') || !diff.stdout.includes('+model edit')) throw Error('missing real diff: '+JSON.stringify(diff));
 } else {
   if (status.success || diff.success || !status.stderr.includes('not a git repository')) throw Error('plain directory Git boundary: '+JSON.stringify({status,diff}));
@@ -99,13 +128,14 @@ let gitDirectory;
 try {
   const source = join(root, "source"); mkdirSync(source);
   await git(source, ["init", "-q"]);
-  writeFileSync(join(source, "tracked.txt"), "original\n");
-  await git(source, ["add", "tracked.txt"]);
+  seed(source);
+  await git(source, ["add", "-f", "--", "tracked.txt", ...authoredPaths]);
   await git(source, ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "original"]);
   for (const repository of [true, false]) {
     const workspace = join(root, repository ? "clone" : "plain");
     if (repository) await git(root, ["clone", source, workspace]);
-    else { mkdirSync(workspace); writeFileSync(join(workspace, "tracked.txt"), "original\n"); }
+    else { mkdirSync(workspace); seed(workspace); }
+    const entries = workspaceEntries(workspace);
     let before;
     if (repository) {
       gitDirectory = join(workspace, ".git"); before = metadata(gitDirectory, false);
@@ -115,15 +145,17 @@ try {
     const result = await Promise.race([failed, processes.run(binary, ["--default-config", "--workspace", workspace,
       "--workspace-mounting", "physical", "--host-state-directory", join(root, repository ? "clone-state" : "plain-state"),
       "--settings-root", settings, "--catalog", catalog, "--model", "morph/morph-kimik31", "--no-compaction", "--operation", randomUUID(),
-      "-p", "Edit tracked.txt, then inspect the workspace with real git through shell."], { env, cwd: workspace })]);
+      "-p", "Edit tracked.txt and @.system/execution/note.txt then inspect the workspace with real git through shell."], { env, cwd: workspace })]);
     captures.push({ repository, ...result });
     assert.equal(result.code, 0, result.stderr + result.stdout.slice(-4000));
-    assert.equal(active.requests, 3, "one shell sequence, task answer and stock feedback settlement");
+    assert.equal(active.requests, 3, "one tool batch, task answer and stock feedback settlement");
     assert.ok(result.stdout.includes("WORKSPACE_STATE_DONE"));
     assert.equal(readFileSync(join(workspace, "tracked.txt"), "utf8"), "model edit\n");
-    assert.deepEqual(readdirSync(workspace).sort(), repository ? [".git", "tracked.txt"] : ["tracked.txt"]);
+    for (const path of authoredPaths) assert.equal(readFileSync(join(workspace, path), "utf8"), "authored edit\n", path);
+    assert.deepEqual(workspaceEntries(workspace), entries);
     if (repository) {
-      assert.equal((await git(workspace, ["status", "--porcelain=v1", "--untracked-files=all"])).trim(), "M tracked.txt");
+      const status = await git(workspace, ["status", "--porcelain=v1", "--untracked-files=all"]);
+      assert.deepEqual(status.split("\n").filter(Boolean).map(line => line.trim()).sort(), ["tracked.txt", ...authoredPaths].map(path => `M ${path}`).sort());
       assert.deepEqual(metadata(gitDirectory), before);
     }
   }
@@ -138,4 +170,4 @@ try {
   if (passed) removeFixture(root);
   else console.error(`WORKSPACE_STATE_FAILURE_FIXTURE ${root}`);
 }
-console.log("PASS read-only stock Git clone and non-Git workspace: edits only, external harness state");
+console.log("PASS read-only stock Git clone and non-Git workspace: ordinary authored names, edits only, external harness state");

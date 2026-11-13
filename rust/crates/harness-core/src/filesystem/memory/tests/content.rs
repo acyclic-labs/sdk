@@ -820,36 +820,35 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let path_io = crate::filesystem::PreparationIo::from_native_work(&path_work)?;
     let path_prefix = path_work.receipt();
-    for path in ["../outside", ".system/private"] {
-        let rejection = storage
-            .host
-            .put_content(
-                &storage.volume,
-                &write,
-                path,
-                b"never",
-                "text/plain",
-                "never",
-                Some(1024),
-                &key,
-                None,
-                crate::conversation::ContentAccess {
-                    ceiling: None,
-                    io: Some(&path_io),
-                },
-            )
-            .await;
-        assert!(
-            matches!(
-                rejection,
-                Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid,
-                    ..
-                })
-            ),
-            "{path}: {rejection:?}"
-        );
-    }
+    let path = "../outside";
+    let rejection = storage
+        .host
+        .put_content(
+            &storage.volume,
+            &write,
+            path,
+            b"never",
+            "text/plain",
+            "never",
+            Some(1024),
+            &key,
+            None,
+            crate::conversation::ContentAccess {
+                ceiling: None,
+                io: Some(&path_io),
+            },
+        )
+        .await;
+    assert!(
+        matches!(
+            rejection,
+            Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                ..
+            })
+        ),
+        "{path}: {rejection:?}"
+    );
     assert!(matches!(
         storage
             .host
@@ -857,7 +856,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
                 &storage.volume,
                 &write,
                 &key,
-                ".system/private",
+                "../outside",
                 Some(1024),
                 crate::conversation::ContentAccess {
                     ceiling: None,
@@ -885,7 +884,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
         .put_content(
             &storage.volume,
             &write,
-            "turns/.canonical",
+            ".system/private",
             b"original",
             "application/json",
             "original.json",
@@ -899,12 +898,62 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
         )
         .await?;
     let staged_hold = io.take_native_custody(staged.logical_owned_bytes()?)?;
+    // Exercise ordinary authored-name delegation independently of the staged
+    // content fixture's oversized-display-name boundary.
+    {
+        let delegated = storage.issuer.delegate_private_directory_read(
+            &storage.scope,
+            AgentId::new(),
+            "authored-system-reader",
+            &storage.volume,
+            ".system",
+        )?;
+        let delegated_reader = crate::filesystem::FilesystemContentVerifier::new(
+            storage.host.clone(),
+            &storage.verifier(),
+            &delegated,
+            1024,
+            None,
+        )?;
+        assert_eq!(
+            delegated_reader
+                .read_file(&staged, 1024, None, None)
+                .await?
+                .as_ref(),
+            b"original"
+        );
+        let (outside, _outside_hold) = storage
+            .publisher
+            .stage_once(
+                OperationId::new(),
+                "scratch/outside",
+                b"outside",
+                "text/plain",
+                "outside",
+                crate::conversation::ContentAccess::default(),
+            )?
+            .await?;
+        let Err(denied) = delegated_reader.read_file(&outside, 1024, None, None).await else {
+            panic!("delegated directory read escaped its prefix");
+        };
+        assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+        assert!(
+            ContentGrant::verify(
+                &storage.verifier(),
+                &delegated,
+                &storage.volume,
+                VolumeOperation::Write,
+                &mut None,
+            )
+            .is_err()
+        );
+    }
     storage
         .host
         .put_content(
             &storage.volume,
             &write,
-            "turns/.canonical",
+            ".system/private",
             b"later",
             "text/plain",
             "later.txt",
@@ -920,7 +969,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
             &storage.volume,
             &write,
             &key,
-            "turns/.canonical",
+            ".system/private",
             Some(1024),
             crate::conversation::ContentAccess {
                 ceiling: None,
@@ -944,7 +993,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
             .put_content(
                 &storage.volume,
                 &write,
-                "turns/.canonical",
+                ".system/private",
                 b"original",
                 "text/plain",
                 "changed.txt",
@@ -984,7 +1033,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
                 &storage.volume,
                 &write,
                 &IdempotencyKey::new("proven-absent-operation")?,
-                "turns/.canonical",
+                ".system/private",
                 Some(1024),
                 crate::conversation::ContentAccess {
                     ceiling: None,
@@ -1013,7 +1062,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
                 &storage.volume,
                 &write,
                 &key,
-                "turns/.canonical",
+                ".system/private",
                 Some(1024),
                 crate::conversation::ContentAccess {
                     ceiling: None,

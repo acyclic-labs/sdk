@@ -13,7 +13,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// the consumer compares those only within its content allowance, retaining
     /// an explicit omission when it cannot establish equality. A path is disclosed only
     /// when `grant` and each owner's current policy let the caller list it at
-    /// the generation that holds it; internal paths never are.
+    /// the generation that holds it, independently of path spelling.
     pub async fn diff_publication(
         &self,
         volume: &VolumeRef,
@@ -138,10 +138,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 yield paths;
                 continue;
             };
-            if crate::conversation::is_internal_path(&path) {
-                yield paths;
-                continue;
-            }
             for (index, ((root, _), (before, after))) in roots.iter().zip(&selections).enumerate() {
                 if !(root.directory.is_empty()
                     || path == root.directory
@@ -199,8 +195,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .all(|action| selection.allows(action, path, now))
         };
         let listed = paths.into_iter().all(|(path, kind)| {
-            !crate::conversation::is_internal_path(path)
-                && (kind == DiffKind::Added || discloses(&before, path))
+            (kind == DiffKind::Added || discloses(&before, path))
                 && (kind == DiffKind::Removed || discloses(&after, path))
         });
         before.require_current(&io).await?;
