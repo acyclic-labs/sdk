@@ -149,9 +149,10 @@ fn validate_children_page(value: &Value) -> Result {
         previous = Some(current);
     }
     if let Some(next_after) = item.get("nextAfter").filter(|value| !value.is_null()) {
+        path(next_after)?;
         let next_after = string(next_after)?;
-        if previous != Some(next_after) {
-            return Err("child continuation does not match final child");
+        if previous.is_some_and(|last| next_after < last) {
+            return Err("child continuation precedes final child");
         }
     }
     Ok(())
@@ -548,10 +549,10 @@ mod tests {
             format!(r#"{{"hierarchyVersion":"{commit_id}","children":[],"nextAfter":null}}"#);
         assert!(super::validate("children/page", &json_fixture(&null_continuation)?).is_ok());
 
-        let wrong_continuation = format!(
+        let hidden_continuation = format!(
             r#"{{"hierarchyVersion":"{commit_id}","children":[{{"path":"runs/a"}}],"nextAfter":"runs/b"}}"#
         );
-        assert!(super::validate("children/page", &json_fixture(&wrong_continuation)?).is_err());
+        assert!(super::validate("children/page", &json_fixture(&hidden_continuation)?).is_ok());
 
         let unordered = format!(
             r#"{{"hierarchyVersion":"{commit_id}","children":[{{"path":"runs/b"}},{{"path":"runs/a"}}]}}"#

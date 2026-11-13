@@ -493,8 +493,30 @@ describe("website Stream contract", () => {
       hierarchyVersion: new Uint8Array(32).fill(8), children: [{ path: "runs/b" }, { path: "runs/a" }],
     })))).toThrow();
     expect(() => projectMemoryResponse("children_page", toBinary(ChildrenPageResponseSchema, create(ChildrenPageResponseSchema, {
-      hierarchyVersion: new Uint8Array(32).fill(8), children: [{ path: "runs/a" }], nextAfter: "runs/missing",
+      hierarchyVersion: new Uint8Array(32).fill(8), children: [{ path: "runs/a" }], nextAfter: "runs/0",
     })))).toThrow();
+
+    const selection = { parent: "runs", after: "runs/0", hierarchyVersion: new Uint8Array(32).fill(8), limit: 2 };
+    const response = toBinary(ChildrenPageResponseSchema, create(ChildrenPageResponseSchema, {
+      hierarchyVersion: selection.hierarchyVersion, children: [{ path: "runs/a" }, { path: "runs/b" }], nextAfter: "runs/hidden",
+    }));
+    const request = (value: typeof selection) => toBinary(ChildrenPageRequestSchema, create(ChildrenPageRequestSchema, value));
+    expect(projectMemoryResponse("children_page", response, request(selection))).toMatchObject({ nextAfter: "runs/hidden" });
+    for (const changed of [
+      { ...selection, parent: "other" },
+      { ...selection, after: "runs/a" },
+      { ...selection, hierarchyVersion: new Uint8Array(32).fill(9) },
+      { ...selection, limit: 1 },
+    ]) {
+      expect(() => projectMemoryResponse("children_page", response, request(changed))).toThrow();
+    }
+    const tail = toBinary(ChildrenPageResponseSchema, create(ChildrenPageResponseSchema, {
+      hierarchyVersion: selection.hierarchyVersion, children: [{ path: "runs/a", tail: 0n }],
+    }));
+    expect(() => projectMemoryResponse("children_page", tail, request(selection))).toThrow();
+    expect(projectMemoryResponse("children_page", tail, toBinary(ChildrenPageRequestSchema, create(ChildrenPageRequestSchema, {
+      ...selection, tailStream: "status",
+    })))).toMatchObject({ children: [{ path: "runs/a", tail: 0n }] });
   });
 
   test("projects committed envelopes larger than the bounded request size", () => {
@@ -702,6 +724,23 @@ describe("website Stream contract", () => {
 
     const nullContinuation = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, children: [], nextAfter: null })) });
     await expect(nullContinuation.childrenPage({ parent: "runs", limit: 2 })).resolves.toEqual({ hierarchyVersion: new Uint8Array(32).fill(7), children: [] });
+
+    const hidden = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, children: [], nextAfter: "runs/hidden" })) });
+    await expect(new StreamClient(hidden).childrenPage({ parent: "runs", after: "runs/b", limit: 2 })).resolves.toMatchObject({ children: [], nextAfter: "runs/hidden" });
+    await expect(hidden.childrenPage({ parent: "runs", after: "runs/hidden", limit: 2 })).rejects.toMatchObject({ code: "invalid_response" });
+    await expect(hidden.childrenPage({ parent: "other", limit: 2 })).rejects.toMatchObject({ code: "invalid_response" });
+
+    for (const children of [
+      [{ path: "foreign/b" }],
+      [{ path: "runs/a" }],
+      [{ path: "runs/b" }, { path: "runs/c" }],
+      [{ path: "runs/b", tail: "0" }],
+    ]) {
+      const unsolicited = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, children })) });
+      await expect(unsolicited.childrenPage({ parent: "runs", after: "runs/a", hierarchyVersion: new Uint8Array(32).fill(7), limit: 1 })).rejects.toMatchObject({ code: "invalid_response" });
+    }
+    const changedVersion = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, children: [] })) });
+    await expect(changedVersion.childrenPage({ parent: "runs", hierarchyVersion: new Uint8Array(32).fill(8), limit: 1 })).rejects.toMatchObject({ code: "invalid_response" });
 
     const malformed = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, children: [{ path: "runs/b" }], nextAfter: "runs/a" })) });
     await expect(malformed.childrenPage({ parent: "runs", limit: 2 })).rejects.toMatchObject({ code: "invalid_response" });

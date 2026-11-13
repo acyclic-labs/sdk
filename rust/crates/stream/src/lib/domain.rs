@@ -579,7 +579,7 @@ pub struct ChildrenPage {
     pub hierarchy_version: CommitId,
     /// Ordered direct children, at most the requested limit.
     pub children: Vec<Child>,
-    /// Last returned path if another page exists.
+    /// Continuation fence if another page exists; it may name an unauthorized child.
     pub next_after: Option<StreamPath>,
 }
 

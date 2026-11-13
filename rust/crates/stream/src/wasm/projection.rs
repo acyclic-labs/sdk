@@ -105,10 +105,34 @@ pub fn decode_http_response(
     http::decode(route, &value, followed.as_deref()).map_err(JsValue::from_str)
 }
 
-/// Decode one unary memory-provider response from canonical protobuf bytes
+/// Decode one unary provider response from canonical protobuf bytes. Children
+/// adapters supply the original request to bind selection before projection.
 #[wasm_bindgen(js_name = projectMemoryResponse, unchecked_return_type = "unknown")]
-pub fn project_memory_response(operation: &str, input: &[u8]) -> Result<JsValue, JsValue> {
+pub fn project_memory_response(
+    operation: &str,
+    input: &[u8],
+    children_request: Option<Vec<u8>>,
+) -> Result<JsValue, JsValue> {
+    if let Some(request) = children_request {
+        if operation != "children_page" {
+            return Err(js_error(StreamError::InvalidArgument));
+        }
+        validate_children_page(&request, input)?;
+    }
     http::decode_wire_response(operation, input).map_err(JsValue::from_str)
+}
+
+/// Bind a children response to its original request using the native contract.
+#[wasm_bindgen(js_name = validateChildrenPage)]
+pub fn validate_children_page(request: &[u8], response: &[u8]) -> Result<(), JsValue> {
+    check_command_size(request)?;
+    let request = decode::<wire::ChildrenPageRequest>(request)?;
+    let request = wire_codec::children_page_from_wire(request).map_err(js_error)?;
+    let response = wire::ChildrenPageResponse::decode(response)
+        .map_err(|_| js_error(StreamError::InvalidResponse))?;
+    let page = wire_codec::children_page_from_response(response)
+        .map_err(|_| js_error(StreamError::InvalidResponse))?;
+    page.validate_for(&request).map_err(js_error)
 }
 
 /// Decode one `ReadResponse` frame's fields to its encoded `RecordBatch`.
