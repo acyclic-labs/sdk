@@ -2353,12 +2353,21 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
         let (workspace, home) = (workspace.clone(), home.clone());
         let state = directory.path().join("state");
         async move {
-            let config = super::checkout_config(&workspace, (super::model()?, provider))?
-                .state_directory(state)
-                .settings(
-                    crate::native_settings::SettingsConfig::new(&workspace, &home)
-                        .codex_home(home.join(".codex")),
-                );
+            let temporary_homes =
+                crate::native_settings::test_support::temporary_home_allocations();
+            let config = crate::test_support::local_harness_config_with_settings(
+                &workspace,
+                (super::model()?, provider),
+                crate::native_settings::SettingsConfig::new(&workspace, &home)
+                    .codex_home(home.join(".codex")),
+            )
+            .compaction(crate::context::CompactionPolicy::Disabled)
+            .state_directory(state);
+            assert_eq!(
+                crate::native_settings::test_support::temporary_home_allocations(),
+                temporary_homes,
+                "explicit replayed-hook settings allocated an unused temporary home"
+            );
             Ok::<_, Error>(Arc::new(super::open_scripted(config).await?))
         }
     };
