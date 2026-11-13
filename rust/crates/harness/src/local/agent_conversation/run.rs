@@ -882,6 +882,18 @@ mod tests {
             result = &mut run => panic!("run ended before the independent input: {result:?}"),
             result = intervening => result.map_err(failed)?,
         }
+        // Opening a turn commits its original input and admission before
+        // dispatch. Inspect B while B's own provider call is held.
+        let independent = bound
+            .agents()
+            .state(conversation.agent())
+            .await
+            .map_err(failed)?;
+        assert_eq!(independent.conversation_tail, 1);
+        assert!(
+            independent.run_admission.is_none(),
+            "independent input inherited another run's admission",
+        );
         // B is an independent user turn, not a second unattended goal loop.
         // Complete the shared goal before B settles; A already queued its continuation.
         let goal = conversation
@@ -909,8 +921,8 @@ mod tests {
         // Goal completion may wake the run observer before the already queued
         // A continuation dispatches. Observe the host's actual admission here.
         continuing.await.map_err(failed)?;
-        // While A's continuation is held, B's completed actor transition is
-        // the committed state. In-flight driver state is not observable here.
+        // A's opening checkpoint is already committed before its provider
+        // dispatch. B's completed entry precedes it in the same conversation.
         let committed = bound
             .agents()
             .state(conversation.agent())
@@ -921,19 +933,12 @@ mod tests {
             "third dispatch did not follow A and B's committed turns: phase={:?}, turn={:?}, admission={:?}",
             committed.phase, committed.turn, committed.run_admission
         );
-        assert!(
-            bound
-                .agents()
-                .state(conversation.agent())
-                .await
-                .map_err(failed)?
-                .run_admission
-                .is_none(),
-            "independent input inherited another run's admission",
+        assert_eq!(
+            committed.run_admission,
+            Some(operation),
+            "continuation opened without its original owner admission",
         );
-        // Observe the original producer directly: the run already owns this
-        // client's conversation follow, so a second view must not take its
-        // delivery cursor while the first view's future is suspended.
+        // Follow the original producer while the client run observer is held.
         use crate::agent::AgentRecord as _;
         use acyclic_stream::StreamProvider as _;
         use futures::TryStreamExt as _;
