@@ -82,6 +82,11 @@ async fn a_same_turn_stop_archives_newly_admitted_children() -> Result {
         .await?;
         let failures = host.runtime().drain().await;
         assert!(failures.is_empty(), "{failures:?}");
+        // Finite drain only runs tracked actors. The child's creation and
+        // archive wake are committed by the parent; explicitly host that new
+        // actor, as activation discovery does in the serving runtime.
+        host.drain(&child).await?;
+        host.drain(&root).await?;
         let parent = host.state(&root).await?;
         let child = host
             .state(&child)
