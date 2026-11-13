@@ -1,7 +1,11 @@
 use super::*;
 
 fn archive_path(name: &str, bytes: &[u8]) -> String {
-    format!("inputs/context/{}/{name}", blake3::hash(bytes))
+    format!(
+        "{}/{}/{name}",
+        ContextEpoch::INSTRUCTIONS_DIRECTORY,
+        blake3::hash(bytes)
+    )
 }
 
 impl LocalHarness {
@@ -59,7 +63,7 @@ impl LocalHarness {
         // Bound archive paths before asking the source for instruction bodies.
         if names.iter().any(|name| {
             self.limits.path_bytes.is_some_and(|maximum| {
-                "inputs/context/".len() + 64 + 1 + name.len() > maximum.get()
+                ContextEpoch::INSTRUCTIONS_DIRECTORY.len() + 1 + 64 + 1 + name.len() > maximum.get()
             })
         }) {
             return Err(Error::Invalid(
@@ -300,7 +304,8 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<crate::model::ProjectInstruction>>>
     {
         Box::pin(async move {
-            let archive_length = "inputs/context/".len() + 64 + 1 + path.len();
+            let archive_length =
+                ContextEpoch::INSTRUCTIONS_DIRECTORY.len() + 1 + 64 + 1 + path.len();
             if self
                 .harness
                 .limits
@@ -423,6 +428,15 @@ mod tests {
             &mut None,
         )?
         .capability(crate::conversation::VolumeOperation::Read, &mut None)?;
+        let journal = VolumeRef::new(
+            volume.provider().clone(),
+            "journal".to_owned(),
+            crate::conversation::VolumeClass::AgentPrivate,
+            crate::conversation::VolumeOwner::Agent(harness.root),
+            &mut None,
+        )?;
+        let published =
+            journal.directory_read_capability(ContextEpoch::INSTRUCTIONS_DIRECTORY, &mut None)?;
         for (grants, admitted) in [
             (Capabilities::new([read.as_str()]), true),
             (Capabilities::new(["model:generate"]), false),
@@ -431,7 +445,7 @@ mod tests {
         ] {
             let scope = issuer.bootstrap_scope(
                 "context-test",
-                &grants,
+                &Capabilities::new(grants.iter().chain([published.as_str()])),
                 harness.signed.agent(),
                 &mut None,
             )?;
@@ -468,7 +482,13 @@ mod tests {
         .map_err(storage)?;
         harness.signed = issuer.bootstrap_scope(
             "context-test",
-            &Capabilities::new(harness.signed.capabilities().iter().chain([label.as_str()])),
+            &Capabilities::new(
+                harness
+                    .signed
+                    .capabilities()
+                    .iter()
+                    .chain([label.as_str(), published.as_str()]),
+            ),
             harness.signed.agent(),
             &mut None,
         )?;

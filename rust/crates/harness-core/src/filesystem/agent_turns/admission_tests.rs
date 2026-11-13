@@ -485,6 +485,20 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             4096,
             None,
         )?;
+        let unselected = host
+            .put_content(
+                &journal,
+                &control_grant,
+                "inputs/skills/unselected/SKILL.md",
+                b"unselected skill body",
+                "text/markdown",
+                "SKILL.md",
+                file_bytes,
+                &crate::IdempotencyKey::new("unselected-skill-body")?,
+                None,
+                Default::default(),
+            )
+            .await?;
         let turn = OperationId::from_bytes([207; 16]);
         let other_turn = OperationId::from_bytes([208; 16]);
         let mut turn_files = Vec::new();
@@ -514,17 +528,42 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             FilesystemContentVerifier::new(host.clone(), &task.verifier, &task.scope, 4096, None)?;
         assert_eq!(
             task_reader
+                .read(&archived, 4096, None, None)?
+                .await?
+                .as_ref(),
+            b"original checkout guidance"
+        );
+        assert_eq!(
+            task_reader
                 .read(&turn_files[0], 4096, None, None)?
                 .await?
                 .as_ref(),
             b"admitted steering"
         );
-        for file in [&turn_files[1], &manifest] {
+        for file in [&turn_files[1], &manifest, &unselected] {
             let denied = async { task_reader.read(file, 4096, None, None)?.await }
                 .await
                 .expect_err("a turn input route granted another turn or host controls");
             assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
         }
+        let listing = async {
+            task_reader
+                .list_private_directory(
+                    &journal,
+                    crate::context::ContextEpoch::INSTRUCTIONS_DIRECTORY,
+                    crate::context::ContextEpoch::INSTRUCTIONS_DIRECTORY,
+                    crate::filesystem::DirectoryOptions {
+                        generation: None,
+                        after: None,
+                        maximum_entries: 1,
+                        ceiling: None,
+                    },
+                )
+                .await
+        }
+        .await
+        .expect_err("captured instruction reads granted journal listing");
+        assert_eq!(listing.code(), crate::wire::ErrorCode::Unauthorized);
         assert_eq!(
             ContentGrant::verify(
                 &task.verifier,

@@ -109,7 +109,6 @@ impl LocalHarness {
         agent: &'a crate::agent::AgentState,
         binding: &'a Binding<'a>,
         publisher: &'a dyn ContentPublisher,
-        epoch_publisher: &'a dyn ContentPublisher,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ContextEpoch>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             let mut tools = self.declared_tools()?;
@@ -122,7 +121,7 @@ impl LocalHarness {
                 tools.retain(|tool| tool.name != "spawn");
             }
             let operation = ContextEpoch::operation(agent.path.as_str(), agent.checkpoint)?;
-            ContextEpoch::open(epoch_publisher, operation, self.limits, || {
+            ContextEpoch::open(publisher, operation, self.limits, || {
                 self.live_manifest(binding, publisher, tools)
             })
             .await
@@ -142,7 +141,6 @@ impl LocalHarness {
         agent: &crate::agent::AgentState,
         epoch: &ContextEpoch,
         binding: &Binding<'_>,
-        publisher: &dyn ContentPublisher,
         delivery: &crate::runtime::ContentBindings,
     ) -> Result<Option<u64>> {
         let Some(hosted) = self.agents.get() else {
@@ -152,7 +150,9 @@ impl LocalHarness {
             .writer
             .as_deref()
             .ok_or_else(|| Error::Invalid("agent turn has no journal writer".into()))?;
-        let live = self.live_manifest(binding, publisher, Vec::new()).await?;
+        let live = self
+            .live_manifest(binding, delivery_writer, Vec::new())
+            .await?;
         let cached = self
             .told
             .lock()
@@ -820,13 +820,12 @@ mod tests {
     #[test]
     fn context_boundaries_retain_only_owned_polling_handles() {
         let manifest = retained_operation_bytes(
-            |(local, agent, binding, publisher, epoch_publisher): (
+            |(local, agent, binding, publisher): (
                 &'static LocalHarness,
                 &'static crate::agent::AgentState,
                 &'static Binding<'static>,
                 &'static dyn ContentPublisher,
-                &'static dyn ContentPublisher,
-            )| local.context_epoch(agent, binding, publisher, epoch_publisher),
+            )| local.context_epoch(agent, binding, publisher),
         );
         #[cfg(not(target_arch = "wasm32"))]
         let catalog = retained_operation_bytes(

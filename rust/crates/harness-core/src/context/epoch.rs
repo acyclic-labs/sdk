@@ -20,6 +20,10 @@ pub struct ContextEpoch {
 }
 
 impl ContextEpoch {
+    /// Published captured instruction bodies, readable by their executing agent.
+    /// Epoch manifests and configuration records remain outside this directory.
+    pub const INSTRUCTIONS_DIRECTORY: &str = "inputs/context";
+
     /// The staged identity of `agent`'s epoch that begins at its context
     /// `checkpoint` (`None`: session start). Live tool edits append notices;
     /// only a different checkpoint starts a new prefix.

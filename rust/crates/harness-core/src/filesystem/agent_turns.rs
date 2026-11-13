@@ -280,6 +280,14 @@ impl<'v> AdmittedAgent<'v> {
                             &format!("{TURN_INPUTS}/{turn}"),
                             &mut None,
                         )?);
+                        // Captured instructions are immutable published input,
+                        // including snapshots retained across checkpoints. This
+                        // read route excludes manifests, configuration and other
+                        // input categories; it grants neither listing nor writes.
+                        grants.push(self.journal.directory_read_capability(
+                            crate::context::ContextEpoch::INSTRUCTIONS_DIRECTORY,
+                            &mut None,
+                        )?);
                     }
                     let grants = Capabilities::new(grants);
                     let scope = self

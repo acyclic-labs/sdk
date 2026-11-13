@@ -295,11 +295,6 @@ impl TurnContext for LocalContext {
                 .0
                 .upgrade()
                 .ok_or_else(|| Error::Unsupported("local harness is closed".into()))?;
-            let writer = authority
-                .content
-                .writer
-                .as_ref()
-                .ok_or_else(|| Error::Invalid("agent turn has no private writer".into()))?;
             let bindings = local
                 .turn_bindings(
                     agent,
@@ -312,16 +307,12 @@ impl TurnContext for LocalContext {
                 .journal
                 .output_content(turn)?
                 .ok_or_else(|| Error::Invalid("agent turn has no journal content".into()))?;
+            let writer = journal_content
+                .writer
+                .as_deref()
+                .ok_or_else(|| Error::Invalid("agent turn has no journal writer".into()))?;
             let epoch = local
-                .context_epoch(
-                    agent,
-                    &bindings.context,
-                    &**writer,
-                    journal_content
-                        .writer
-                        .as_deref()
-                        .ok_or_else(|| Error::Invalid("agent turn has no journal writer".into()))?,
-                )?
+                .context_epoch(agent, &bindings.context, writer)?
                 .await?;
             let executor = executor
                 .with_context_epoch(
@@ -346,13 +337,7 @@ impl TurnContext for LocalContext {
             // Before the turn's first request: the step-0 boundary appends
             // what changed since the epoch froze.
             let through = local
-                .announce_changes(
-                    agent,
-                    &epoch,
-                    &bindings.context,
-                    &**writer,
-                    &journal_content,
-                )
+                .announce_changes(agent, &epoch, &bindings.context, &journal_content)
                 .await?;
             if let Some(through) = through {
                 authority
@@ -362,15 +347,7 @@ impl TurnContext for LocalContext {
                     .include_prepared_sources(turn, through)?;
             }
             #[cfg(any(test, not(target_arch = "wasm32")))]
-            let hooks = local
-                .turn_hooks(
-                    turn,
-                    journal_content
-                        .writer
-                        .as_deref()
-                        .ok_or_else(|| Error::Invalid("agent turn has no journal writer".into()))?,
-                )
-                .await?;
+            let hooks = local.turn_hooks(turn, writer).await?;
             let (executor, context) =
                 Tasks::bind(&bindings.harness, executor, agent, turn, authority)?;
             // SessionStart runs once per agent, keyed by the agent itself, so

@@ -5330,6 +5330,31 @@ async fn an_instruction_edit_appends_a_notice_and_keeps_the_cached_prefix() -> R
             .ok_or_else(|| Error::NotFound(format!("model request {index}")))
     };
     let (first, second) = (request(0)?, request(1)?);
+    let journal =
+        crate::conversation::journal_volume(harness.project.provider().clone(), &root.id())?;
+    let captured = first
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .filter_map(|part| match part {
+            crate::model::ModelContentPart::File {
+                file,
+                policy: crate::model::FileProjectionPolicy::ProjectInstructions(_),
+            } => Some(file),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !captured.is_empty(),
+        "instruction input was not captured as a file"
+    );
+    for file in &captured {
+        assert_eq!(file.volume(), &journal);
+        assert!(file.path().starts_with(&format!(
+            "{}/",
+            crate::context::ContextEpoch::INSTRUCTIONS_DIRECTORY
+        )));
+    }
     let prefix = |request: &crate::model::ModelRequest| {
         let system = request
             .messages
