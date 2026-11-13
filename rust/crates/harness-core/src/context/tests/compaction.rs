@@ -110,7 +110,10 @@ fn compaction_preserves_instructions_current_input_and_complete_exchanges() -> R
     ];
     assert_eq!(mandatory_messages(&configured, 8, &mut None)?, expected);
     let (mut retained, proof) = compact(&configured, 5, 8)?;
-    assert_eq!(retained.messages.get(1..), Some(expected.as_slice()));
+    // The leading instructions stay the header and the summary follows them,
+    // so a compacted request keeps the cached system prefix.
+    assert_eq!(retained.messages.first(), expected.first());
+    assert_eq!(retained.messages.get(2..), expected.get(1..));
     validate_compaction(&proof, &configured, &retained, None)?;
     // An unchanged final effort does not justify deleting an earlier admitted
     // transition: the original ordered context remains the replay contract.
@@ -163,7 +166,7 @@ fn compaction_preserves_instructions_current_input_and_complete_exchanges() -> R
     );
     let (first, _) = compact(&plain, 3, 4)?;
     let (again, _) = compact(&first, 3, first.messages.len())?;
-    assert_eq!(again.messages[1], source.messages[0]);
+    assert_eq!(again.messages[0], source.messages[0]);
     assert_eq!(again.messages.last(), source.messages.last());
     let mut trailing = source.clone();
     trailing.messages.swap(4, 5);

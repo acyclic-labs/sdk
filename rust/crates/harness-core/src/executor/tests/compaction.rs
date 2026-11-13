@@ -367,17 +367,17 @@ fn capacity_rewrite_publishes_its_own_context_occupancy() -> Result<()> {
             output_capacity
         );
         assert_eq!(response.messages.len(), 3);
-        let ModelContent::Part(ModelContentPart::File { file, .. }) = &response.messages[0].content
+        assert_eq!(
+            response.messages[0].content,
+            ModelContent::Text("keep".into())
+        );
+        let ModelContent::Part(ModelContentPart::File { file, .. }) = &response.messages[1].content
         else {
-            panic!("the selected summary opens the request");
+            panic!("the selected summary follows the leading system message");
         };
         assert_eq!(
             runtime.block_on(journal.load(file, None)?)?.as_ref(),
             b"MANAGED_SUMMARY"
-        );
-        assert_eq!(
-            response.messages[1].content,
-            ModelContent::Text("keep".into())
         );
         assert_eq!(
             response.messages.last().map(|message| &message.content),
