@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness-core/src/supervision/streams.rs b/rust/crates/harness-core/src/supervision/streams.rs
+--- a/rust/crates/harness-core/src/supervision/streams.rs
++++ b/rust/crates/harness-core/src/supervision/streams.rs
+@@ -290,7 +290,7 @@
+ }
+ 
+-fn pending_key(turn: u64) -> [u8; 32] {
+-    super::signature(b"pending-native-turn", &[&turn.to_be_bytes()])
++fn pending_key(_turn: u64) -> [u8; 32] {
++    super::signature(b"pending-native-turn", &[&0u64.to_be_bytes()])
+ }
+ 
+ fn capture_key(turn: u64, call: OperationId) -> [u8; 32] {

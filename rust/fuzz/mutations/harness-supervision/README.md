@@ -192,3 +192,20 @@ copies use `RevisionCut::native_clone`, sharing the existing admitted vector
 copy implementation and retaining its guard through the original request.
 The regression also checks healthy cut-copy custody/refund and denied cut-copy
 admission. New test/mutant execution remains pending.
+
+The real Streams schedule regression
+`supervision::streams::tests::late_native_completions_keep_original_turns_and_latched_controls`
+settles a spending turn while its native measurement remains pending, then
+settles a later spending turn without a pending producer of its own. An older
+pending call must not exempt that later turn from no-progress. Four schedules
+place changed/unchanged physical completion before or after the later settlement.
+They retain original progress identity, exact stop cause, idempotent completion
+and delayed-start refusal. Physical completion does not retroactively recount
+the earlier logical settlement or clear the later stop.
+`native-pending-turn.patch` shares the pending counter across turns and must
+fail at `another turn's pending measurement bypassed no-progress settlement`.
+`native-late-stop.patch` forgets the prior action and must fail at
+`late native completion cleared a latched stop`. Apply independently, require
+the unchanged regression's exact assertion, reverse and require that regression
+to pass again. Execution remains pending. This query-boundary proof is separate
+from qualification of native process completion through the shipping binary.
