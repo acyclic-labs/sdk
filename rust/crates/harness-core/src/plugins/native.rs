@@ -1,4 +1,5 @@
 use super::after::{self, AfterHook};
+use crate::executor::{stock_string_copy, stock_vec_push};
 use crate::{
     Error, Result,
     config::{self, Surface, Tree},
@@ -6,7 +7,33 @@ use crate::{
     layers::Layer,
 };
 use serde_json::Value;
-use std::collections::BTreeMap;
+
+fn text(
+    args: std::fmt::Arguments<'_>,
+    io: Option<&crate::filesystem::PreparationIo>,
+) -> Result<String> {
+    crate::executor::with_history_io(io, |work| crate::executor::preparation_format(args, work))
+}
+
+fn settings_text(value: &Value, io: Option<&crate::filesystem::PreparationIo>) -> Result<String> {
+    let bytes = match io {
+        Some(io) => io.encode_vec(value, None, true)?,
+        None => crate::executor::json::canonical_json_bytes_bounded(
+            value,
+            crate::executor::json::JsonBounds {
+                maximum_bytes: None,
+                maximum_items: None,
+                maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
+            },
+            None,
+            &mut |_| Ok(()),
+        )?,
+    };
+    String::from_utf8(bytes).map_err(|_| Error::NativeBoundary {
+        code: crate::wire::ErrorCode::Invalid,
+        reason: "encoded plugin settings are not UTF-8",
+    })
+}
 
 /// The one manifest: `volume:///home/plugins.ts`.
 pub const MANIFEST: &str = "plugins.ts";
@@ -184,18 +211,19 @@ async fn read_hook(
     tree: &dyn Tree,
     identity: Option<&mut blake3::Hasher>,
     hook: String,
+    io: Option<&crate::filesystem::PreparationIo>,
 ) -> std::result::Result<Option<(String, String)>, LoadFailure> {
     let bytes = tree.read(&hook).await.map_err(LoadFailure::Operational)?;
     observe(identity, &hook, bytes.as_deref());
     bytes
         .map(|bytes| {
-            std::str::from_utf8(&bytes)
-                .map(str::to_owned)
-                .map_err(|_| Error::Invalid(format!("{MANIFEST}: {hook} is not UTF-8")))
+            let script = std::str::from_utf8(&bytes).map_err(|_| {
+                LoadFailure::Semantic(Error::Invalid(format!("{MANIFEST}: {hook} is not UTF-8")))
+            })?;
+            stock_string_copy(script, io).map_err(LoadFailure::Operational)
         })
         .transpose()
         .map(|script| script.map(|script| (hook, script)))
-        .map_err(Into::into)
 }
 
 async fn load_enabled(
@@ -205,17 +233,17 @@ async fn load_enabled(
     mut identity: Option<&mut blake3::Hasher>,
 ) -> std::result::Result<Enabled, LoadFailure> {
     let invalid = |reason: String| Error::Invalid(format!("{MANIFEST}: {reason}"));
-    let crate::javascript_allocator::EngineResult {
-        value: Plugins(entries),
-        custody,
-    } = value.record().map_err(LoadFailure::decoding)?;
-    let enabled: BTreeMap<_, _> = entries
-        .into_iter()
-        .filter(|(_, entry)| entry.enabled)
-        .collect();
+    let lowering = value
+        .work()
+        .map(crate::filesystem::PreparationIo::from_native_work)
+        .transpose()
+        .map_err(LoadFailure::Operational)?;
+    let io = lowering.as_ref();
+    let selection = value.record::<Plugins>().map_err(LoadFailure::decoding)?;
+    let entries = &selection.value.0;
     let mut loaded = crate::javascript_allocator::EngineResult {
         value: EnabledData::default(),
-        custody,
+        custody: None,
     };
     loaded
         .absorb(
@@ -232,7 +260,7 @@ async fn load_enabled(
                 .map_err(|cause| LoadFailure::Operational(cause.into()))?,
         )
         .map_err(LoadFailure::Operational)?;
-    for (name, entry) in &enabled {
+    for (name, entry) in entries.iter().filter(|(_, entry)| entry.enabled) {
         if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
             return Err(invalid(format!("{name:?} is not a plugin folder name")).into());
         }
@@ -242,8 +270,8 @@ async fn load_enabled(
             ))
             .into());
         }
-        let root = format!("plugins/{name}/");
-        let path = format!("{root}plugin.ts");
+        let root = text(format_args!("plugins/{name}/"), io).map_err(LoadFailure::Operational)?;
+        let path = text(format_args!("{root}plugin.ts"), io).map_err(LoadFailure::Operational)?;
         let source = tree.read(&path).await.map_err(LoadFailure::Operational)?;
         let Some(source) = source else {
             observe(identity.as_deref_mut(), &path, None);
@@ -258,7 +286,7 @@ async fn load_enabled(
         }
         let manifest = manifest.into_result()?;
         let crate::javascript_allocator::EngineResult {
-            value: manifest,
+            value: mut manifest,
             custody,
         } = manifest
             .value
@@ -271,7 +299,7 @@ async fn load_enabled(
         if let Some(missing) = manifest
             .requires
             .iter()
-            .find(|required| !enabled.contains_key(*required))
+            .find(|required| !entries.get(*required).is_some_and(|entry| entry.enabled))
         {
             return Err(invalid(format!("{name} requires {missing}, which is not enabled")).into());
         }
@@ -288,8 +316,10 @@ async fn load_enabled(
             if source.path != "live/agents/self/status.json" || source.from != Start::Now {
                 return Err(invalid(format!("{root}hooks/after-{name}: after-hooks require a supported original publication source")).into());
             }
-            let hook = format!("{root}hooks/after-{name}.ts");
-            let (hook, code) = read_hook(tree, identity.as_deref_mut(), hook.clone())
+            let hook = text(format_args!("{root}hooks/after-{name}.ts"), io)
+                .map_err(LoadFailure::Operational)?;
+            let copied_hook = stock_string_copy(&hook, io).map_err(LoadFailure::Operational)?;
+            let (hook, code) = read_hook(tree, identity.as_deref_mut(), copied_hook, io)
                 .await?
                 .ok_or_else(|| invalid(format!("after-hooks module {hook} does not exist")))?;
             let prepared = config::prepare(&hook, code.as_bytes(), tree)
@@ -302,20 +332,28 @@ async fn load_enabled(
             }
             let hook_identity = evaluation.identity();
             let evaluated = evaluation.into_result().map_err(LoadFailure::Semantic)?;
-            loaded
-                .value
-                .after
-                .push(AfterHook::new(evaluated, hook_identity).map_err(LoadFailure::decoding)?);
+            stock_vec_push(
+                &mut loaded.value.after,
+                AfterHook::new(evaluated, hook_identity).map_err(LoadFailure::decoding)?,
+                io,
+            )
+            .map_err(LoadFailure::Operational)?;
         }
-        loaded.value.descriptions.push(manifest.description);
-        let settings = String::from_utf8(crate::contract::canonical_json_bytes(settings)?)
-            .map_err(|error| invalid(error.to_string()))?;
+        let settings = settings_text(settings, io).map_err(LoadFailure::Operational)?;
+        stock_vec_push(&mut loaded.value.descriptions, manifest.description, io)
+            .map_err(LoadFailure::Operational)?;
         for event in Event::ALL {
-            let path = |form: &str| format!("{root}hooks/before-{}.{form}", event.name());
+            let path = |form: &str| {
+                text(
+                    format_args!("{root}hooks/before-{}.{form}", event.name()),
+                    io,
+                )
+                .map_err(LoadFailure::Operational)
+            };
             let (ts, sh, ps1) = (
-                read_hook(tree, identity.as_deref_mut(), path("ts")).await?,
-                read_hook(tree, identity.as_deref_mut(), path("sh")).await?,
-                read_hook(tree, identity.as_deref_mut(), path("ps1")).await?,
+                read_hook(tree, identity.as_deref_mut(), path("ts")?, io).await?,
+                read_hook(tree, identity.as_deref_mut(), path("sh")?, io).await?,
+                read_hook(tree, identity.as_deref_mut(), path("ps1")?, io).await?,
             );
             if let Some((hook, _)) = &ts {
                 return Err(invalid(format!(
@@ -336,11 +374,15 @@ async fn load_enabled(
             };
             let hook = HookSpec {
                 run: HookRun::Plugin {
-                    instance: format!("{enabler}:{MANIFEST}#{name}:hooks/before-{}", event.name()),
+                    instance: text(
+                        format_args!("{enabler}:{MANIFEST}#{name}:hooks/before-{}", event.name()),
+                        io,
+                    )
+                    .map_err(LoadFailure::Operational)?,
                     sh: sh.map(|(_, script)| script),
                     ps1: ps1.map(|(_, script)| script),
-                    config: settings.clone(),
-                    matcher: manifest.matcher.get(&event).cloned(),
+                    config: stock_string_copy(&settings, io).map_err(LoadFailure::Operational)?,
+                    matcher: manifest.matcher.remove(&event),
                 },
                 // A hook holds only its own request; it has no deadline.
                 timeout_ms: None,
@@ -358,7 +400,18 @@ async fn load_enabled(
                     invalid(format!("{root}hooks/before-{}: {error}", event.name()))
                 })?;
         }
-        loaded.value.names.push(name.clone());
+        let name = stock_string_copy(name, io).map_err(LoadFailure::Operational)?;
+        stock_vec_push(&mut loaded.value.names, name, io).map_err(LoadFailure::Operational)?;
+    }
+    if let Some(lowering) = lowering {
+        let retained = lowering.owned_bytes().map_err(LoadFailure::Operational)?;
+        loaded
+            .absorb(Some(
+                lowering
+                    .into_native_custody(retained)
+                    .map_err(LoadFailure::Operational)?,
+            ))
+            .map_err(LoadFailure::Operational)?;
     }
     if let Some(mut custody) = loaded.custody.take() {
         let work = custody.work();
