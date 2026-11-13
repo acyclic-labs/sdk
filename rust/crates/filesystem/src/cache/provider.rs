@@ -5,6 +5,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
         requires_child_first_publication,
         maximum_reference_bytes,
         prepare_hashed,
+        restore_hashed,
         put_stored,
         read_many_stored,
         read_stored,

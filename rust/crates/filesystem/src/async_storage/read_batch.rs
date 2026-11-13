@@ -13,6 +13,7 @@ pub fn read_many_sequential<S: AsyncObjectStore + ?Sized>(
 // Select the provider future before forming the batch state machine. The
 // decoded path must not also contain the stored representation's read path.
 pub(crate) trait ReadRepresentation {
+    const STORED: bool = false;
     fn reads_plaintext(id: ObjectId) -> bool;
 
     fn read_many<S: AsyncObjectStore + ?Sized>(
@@ -55,6 +56,7 @@ impl ReadRepresentation for Decoded {
     }
 }
 impl ReadRepresentation for Stored {
+    const STORED: bool = true;
     fn reads_plaintext(id: ObjectId) -> bool {
         id.storage.is_none()
     }

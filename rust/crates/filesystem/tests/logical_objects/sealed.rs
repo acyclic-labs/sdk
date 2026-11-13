@@ -75,6 +75,142 @@ impl ObjectSealer for Envelope {
 }
 
 #[tokio::test]
+async fn sealed_spills_stay_private_until_explicit_publication()
+-> Result<(), Box<dyn std::error::Error>> {
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let directory = tempfile::tempdir()?;
+    let cancellation = CancellationToken::new();
+    let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let durable = LogicalObjectStore::new(Arc::new(acyclic_objects::MemoryObjects::memory()))
+        .with_sealer(Envelope {
+            lineage: FileId::from_bytes([94; 16]),
+            generation: GenerationId::new(Digest::from_bytes([95; 32])),
+        });
+    let staged = acyclic_fs::staged_objects::StagedObjects::open(
+        durable.clone(),
+        directory.path().to_path_buf(),
+    );
+    let mut work = AuthorityWork::native(&original, &cancellation);
+    let payload = OwnedBytes::from(vec![47; 5 * 1024 * 1024]);
+    let object = staged
+        .prepare_hashed(
+            HashedObject::new(ObjectKind::BlobChunk, payload.clone()),
+            &mut work,
+        )
+        .await?;
+    let id = object.object_id();
+    let stored = object.stored_bytes().clone();
+    staged.put_hashed(object, &mut work).await?;
+    assert!(
+        !durable.contains(id, &mut work).await?,
+        "sealed staging leaked into durable storage"
+    );
+    assert_eq!(
+        staged
+            .read(id, payload.len() as u64, &mut work)
+            .await?
+            .bytes,
+        payload
+    );
+    assert_eq!(
+        staged
+            .read_stored(id, payload.len() as u64, &mut work)
+            .await?
+            .bytes,
+        stored
+    );
+    // Importing exact stored bytes must use the same private admission path.
+    staged.put_stored(id, stored, &mut work).await?;
+    assert!(
+        !durable.contains(id, &mut work).await?,
+        "stored-byte import published private data"
+    );
+    let hold = staged
+        .flush_before_publish(
+            acyclic_fs::PublicationScope {
+                objects: &[id],
+                proven_at: staged.collection_sweeps(),
+            },
+            &mut work,
+        )
+        .await?;
+    assert!(
+        durable.contains(id, &mut work).await?,
+        "visibility oracle missed explicit publication"
+    );
+    assert_eq!(
+        durable
+            .read(id, payload.len() as u64, &mut work)
+            .await?
+            .bytes,
+        payload
+    );
+    drop(hold);
+    Ok(())
+}
+#[tokio::test]
+async fn sealed_reconstruction_preserves_association_without_publication()
+-> Result<(), Box<dyn std::error::Error>> {
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let provider = Arc::new(acyclic_objects::MemoryObjects::memory());
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let logical = LogicalObjectStore::new(provider.clone()).with_sealer(Envelope {
+        lineage: FileId::from_bytes([91; 16]),
+        generation: GenerationId::new(Digest::from_bytes([92; 32])),
+    });
+    // The erased and cache adapters must preserve the same reconstruction
+    // mechanism; falling back to plaintext verification rejects this seal.
+    let store = acyclic_fs::cache::CachedObjectStore::with_default_options(logical);
+    let erased: &dyn acyclic_fs::async_storage::DynObjectStore = &store;
+    let mut context = AuthorityWork::native(&original, &cancellation);
+    let object = erased
+        .prepare_hashed(
+            HashedObject::new(
+                ObjectKind::BlobChunk,
+                OwnedBytes::from_static(b"private sealed data"),
+            ),
+            &mut context,
+        )
+        .await?;
+    let id = object.object_id();
+    let stored = object.stored_bytes().clone();
+    let hashed = context.spent().bytes_hashed;
+    let restored = erased.restore_hashed(id, stored.clone(), object.length(), &mut context)?;
+    assert_eq!(restored, object);
+    assert_eq!(
+        context.spent().bytes_hashed - hashed,
+        stored.len() as u64 + object.length(),
+        "each representation must be authenticated exactly once",
+    );
+    assert!(
+        !erased.contains(id, &mut context).await?,
+        "reconstruction published data"
+    );
+    let mut foreign = id;
+    foreign.storage.as_mut().ok_or("missing seal")?.root_file_id = FileId::from_bytes([93; 16]);
+    assert!(
+        matches!(
+            erased.restore_hashed(foreign, stored.clone(), object.length(), &mut context),
+            Err(ObjectStoreError::Corrupt),
+        ),
+        "same CAS bytes were accepted under a foreign lineage"
+    );
+    assert!(matches!(
+        erased.restore_hashed(id, stored, object.length() - 1, &mut context),
+        Err(ObjectStoreError::TooLarge { .. }),
+    ));
+    erased.put_hashed(restored, &mut context).await?;
+    assert!(
+        erased.contains(id, &mut context).await?,
+        "durable visibility oracle missed explicit publication"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn required_sealing_refuses_every_unprepared_write_before_provider_dispatch()
 -> Result<(), Box<dyn std::error::Error>> {
     acyclic_native_runtime::initialize_native_io_services()?;

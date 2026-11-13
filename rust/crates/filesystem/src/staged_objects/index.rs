@@ -15,10 +15,17 @@ pub(super) enum Staged {
     Spilled {
         offset: u64,
         length: u64,
+        stored_length: u64,
     },
 }
 
 impl Staged {
+    pub(super) fn stored_length(&self) -> u64 {
+        match self {
+            Self::Resident { object, .. } => byte_length(object.stored_bytes()),
+            Self::Spilled { stored_length, .. } => *stored_length,
+        }
+    }
     pub(super) fn length(&self) -> u64 {
         match self {
             Self::Resident { object, .. } => object.length(),
@@ -27,11 +34,28 @@ impl Staged {
     }
 }
 
+pub(super) fn resident_length(object: &HashedObject) -> u64 {
+    object
+        .length()
+        .saturating_add(if object.object_id().storage.is_some() {
+            byte_length(object.stored_bytes())
+        } else {
+            0
+        })
+}
+
 /// Where one object is staged, as one read finds it.
 pub(super) enum Lookup {
     Absent,
-    Resident(OwnedBytes),
-    Spilled { offset: u64, length: u64 },
+    Resident {
+        bytes: OwnedBytes,
+        length: u64,
+    },
+    Spilled {
+        offset: u64,
+        length: u64,
+        stored_length: u64,
+    },
 }
 
 /// Hashes an [`ObjectId`] by folding the words it writes: its digest is
@@ -86,15 +110,35 @@ pub(super) struct Index {
 
 impl Index {
     pub(super) fn lookup(&self, object_id: ObjectId) -> Lookup {
+        self.lookup_representation(object_id, false)
+    }
+
+    pub(super) fn lookup_representation(&self, object_id: ObjectId, stored: bool) -> Lookup {
         match self.objects.get(&object_id) {
             None => Lookup::Absent,
             Some(Staged::Resident {
                 object, referenced, ..
             }) => {
                 referenced.store(true, Ordering::Relaxed);
-                Lookup::Resident(object.bytes().clone())
+                Lookup::Resident {
+                    bytes: if stored {
+                        object.stored_bytes()
+                    } else {
+                        object.bytes()
+                    }
+                    .clone(),
+                    length: object.length(),
+                }
             }
-            Some(&Staged::Spilled { offset, length }) => Lookup::Spilled { offset, length },
+            Some(&Staged::Spilled {
+                offset,
+                length,
+                stored_length,
+            }) => Lookup::Spilled {
+                offset,
+                length,
+                stored_length,
+            },
         }
     }
 
@@ -121,7 +165,7 @@ impl Index {
         self.next_incarnation = next;
         let order = self.next_order;
         self.next_order += 1;
-        self.resident_bytes = self.resident_bytes.saturating_add(object.length());
+        self.resident_bytes = self.resident_bytes.saturating_add(resident_length(&object));
         self.order.insert(order, object_id);
         if let Some(Staged::Spilled { .. }) = self.objects.insert(
             object_id,
@@ -162,8 +206,8 @@ impl Index {
                 self.order.insert(*order, object_id);
                 continue;
             }
-            spilled = spilled.saturating_add(object.length());
-            victims.push((object_id, object.bytes().clone()));
+            spilled = spilled.saturating_add(resident_length(object));
+            victims.push((object_id, object.stored_bytes().clone()));
         }
         // The caller owns the preallocated vector and its native custody.
     }
@@ -173,13 +217,24 @@ impl Index {
     /// spill file exclusively.
     pub(super) fn mark_spilled(&mut self, victims: &[(ObjectId, OwnedBytes)], mut offset: u64) {
         for (object_id, bytes) in victims {
-            let length = byte_length(bytes);
+            let stored_length = byte_length(bytes);
             if let Some(staged) = self.objects.get_mut(object_id) {
-                *staged = Staged::Spilled { offset, length };
+                let length = staged.length();
+                let resident = match staged {
+                    Staged::Resident { object, .. } => resident_length(object),
+                    Staged::Spilled { .. } => {
+                        unreachable!("selected spill victim remains resident")
+                    }
+                };
+                *staged = Staged::Spilled {
+                    offset,
+                    length,
+                    stored_length,
+                };
                 self.spilled_objects += 1;
-                self.resident_bytes = self.resident_bytes.saturating_sub(length);
+                self.resident_bytes = self.resident_bytes.saturating_sub(resident);
             }
-            offset = offset.saturating_add(length);
+            offset = offset.saturating_add(stored_length);
         }
         self.spill_end = offset;
     }
@@ -199,7 +254,7 @@ impl Index {
         match self.objects.remove(&object_id) {
             Some(Staged::Resident { object, order, .. }) => {
                 self.order.remove(&order);
-                self.resident_bytes = self.resident_bytes.saturating_sub(object.length());
+                self.resident_bytes = self.resident_bytes.saturating_sub(resident_length(&object));
             }
             Some(Staged::Spilled { .. }) => self.spilled_objects -= 1,
             None => {}

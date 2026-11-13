@@ -175,7 +175,7 @@ async fn native_flush_caller_cancellation_refuses_before_admission()
             }
         );
         assert_eq!(original.live_allocation_bytes(), baseline);
-        assert!(matches!(store.lookup(id), Lookup::Resident(_)));
+        assert!(matches!(store.lookup(id), Lookup::Resident { .. }));
     }
     drop(sweep);
     drop(collecting);
@@ -231,7 +231,7 @@ async fn native_flush_exact_closure_preserves_intrinsic_alias_without_readoption
         before.allocation_operations
     );
     let alias = match store.lookup(object_id) {
-        Lookup::Resident(bytes) => bytes,
+        Lookup::Resident { bytes, .. } => bytes,
         _ => return Err("native admission did not remain resident".into()),
     };
     assert_eq!(alias.as_ptr(), bytes.as_ptr());
@@ -466,7 +466,7 @@ async fn spill_denial_precedes_physical_write_and_restores_victims()
     // A refused spill leaves no spill file, so it holds no descriptor.
     assert!(spill_file.is_none());
     for id in &ids {
-        assert!(matches!(store.lookup(*id), Lookup::Resident(_)));
+        assert!(matches!(store.lookup(*id), Lookup::Resident { .. }));
     }
     let work = NativeMaterializationWork::new(native_write_budget(), &token)
         .map_err(|(error, _)| error)?;
@@ -521,6 +521,7 @@ impl AsyncObjectStore for CancelAfterNativePut {
         requires_child_first_publication,
         maximum_reference_bytes,
         prepare_hashed,
+        restore_hashed,
         put,
         read,
         read_many,

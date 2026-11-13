@@ -46,6 +46,7 @@ pub use owned_group::{OwnedAuthorityGroup, OwnedAuthorityGuard, OwnedAuthorityTa
 mod policy;
 pub use policy::{PolicyCut, PolicyOwner};
 mod objects;
+pub(crate) use objects::restore_plain;
 pub use objects::{AsyncObjectStore, PublicationScope};
 mod erased_objects;
 pub use erased_objects::{DynObjectStore, SharedObjectStore, shared_objects};
