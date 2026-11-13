@@ -1460,7 +1460,9 @@ async fn failed_child_keeps_siblings_and_the_served_session_alive() -> Result<()
                             Vec::new(),
                             vec![acyclic_stream::CommitMutation::Append {
                                 path: child.inbox().map_err(agent)?,
-                                records: vec![bytes::Bytes::from_static(b"invalid-agent-record")],
+                                records: vec![
+                                    bytes::Bytes::from_static(b"invalid-agent-record").into(),
+                                ],
                             }],
                         ),
                         store.activation(&actor),
