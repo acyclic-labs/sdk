@@ -104,6 +104,7 @@ pub(crate) struct ModelCallUsage<'a> {
     /// Sampling from the original pinned request.
     pub sampling: crate::model::ModelSampling,
     pub tokens: ModelTokenUsage,
+    pub complete_input_tokens: Option<u64>,
     pub started_at: Option<u64>,
     pub completed_at: Option<u64>,
     /// Dispatch through receipt of the terminal event, including original
@@ -151,6 +152,9 @@ pub struct ModelUsageRecord {
     pub sampling: Option<crate::model::ModelSampling>,
     /// Provider-reported counters with missing values preserved.
     pub tokens: ModelTokenUsage,
+    /// Complete input reported by the admitted adapter, independently of the
+    /// raw billing counters. Absent observations stay unknown.
+    pub complete_input_tokens: Option<u64>,
     /// Wall time at live provider dispatch, in Unix nanoseconds, with the
     /// shared wall clock's millisecond resolution. Unknown after recovery or
     /// when that observation cannot be represented as u64 nanoseconds.
@@ -255,6 +259,10 @@ pub(super) fn validate_metadata(
         || record.provider.is_empty()
         || record.model.is_empty()
         || record.tokens != ModelTokenUsage::reported(metadata)
+        || record
+            .complete_input_tokens
+            .zip(record.tokens.input)
+            .is_some_and(|(complete, raw)| complete < raw)
         || record
             .cache
             .is_some_and(|cache| Some(cache) != ModelCacheObservation::reported(metadata))
@@ -408,6 +416,7 @@ pub(super) async fn project_record(
                 agent_path: Some(agent_path.to_owned()),
                 sampling: Some(request.sampling),
                 tokens: ModelTokenUsage::default(),
+                complete_input_tokens: None,
                 started_at: None,
                 completed_at: None,
                 latency_ns: None,

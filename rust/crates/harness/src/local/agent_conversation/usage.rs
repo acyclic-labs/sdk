@@ -129,6 +129,7 @@ mod tests {
                     } else {
                         Default::default()
                     },
+                    complete_input_tokens: None,
                     started_at: None,
                     completed_at: None,
                     latency_ns: None,

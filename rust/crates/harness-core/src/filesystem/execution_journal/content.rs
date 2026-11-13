@@ -337,7 +337,7 @@ where
         operation: OperationId,
         event: &ExecutionEvent,
         io: Option<&PreparationIo>,
-    ) -> Result<(Option<ModelEvent>, Option<u64>)> {
+    ) -> Result<(Option<ModelEvent>, Option<u64>, Option<u64>)> {
         #[cfg(not(target_arch = "wasm32"))]
         let recheck = io
             .and_then(PreparationIo::original_native_work)
@@ -483,6 +483,7 @@ where
                 }
             }
             let mut usd_nanos = None;
+            let mut tokens = None;
             if let ExecutionEvent::Model {
                 step,
                 purpose,
@@ -514,6 +515,11 @@ where
                     })?,
                     io,
                 )?;
+                tokens = record
+                    .0
+                    .complete_input_tokens
+                    .zip(record.0.tokens.output)
+                    .and_then(|(input, output)| input.checked_add(output));
                 let price = self.run_admission.as_ref().and_then(|admission| {
                     admission
                         .value
@@ -534,11 +540,11 @@ where
                     .estimated_cost
                     .token_nano_units;
             }
-            Ok((model, usd_nanos))
+            Ok((model, usd_nanos, tokens))
         }
         .await;
         #[cfg(not(target_arch = "wasm32"))]
-        if let (Ok((model, _)), Some(recheck), Some(io)) = (&result, recheck, io) {
+        if let (Ok((model, _, _)), Some(recheck), Some(io)) = (&result, recheck, io) {
             let held = model
                 .as_ref()
                 .map_or(Ok(0), ModelEvent::logical_owned_bytes)?;
