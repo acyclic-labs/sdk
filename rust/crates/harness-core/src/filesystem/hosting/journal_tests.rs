@@ -572,6 +572,30 @@ async fn call_output_uses_the_journal_without_granting_tools_its_writer() -> Tes
             .0,
         b"streamed"
     );
+    let mut activity_context = context.clone();
+    activity_context.output_activity = true;
+    let mut log = crate::runtime::ToolOutputLog::new(activity_context);
+    let chunk = log.publish_chunk("stderr/0", b"observed").await?;
+    assert_eq!(chunk.volume(), file.volume());
+    let activity_path = crate::runtime::tool_output_activity_path(turn, context.operation_id());
+    let (_, bytes, _) = reader
+        .read_tool_path(&format!("volume:///output/{activity_path}"), None, None)
+        .await?;
+    let activity: crate::runtime::ToolOutputActivity = serde_json::from_slice(&bytes)?;
+    assert_eq!(activity.through, 1);
+    assert!(log.publish_chunk("stderr/0", b"replacement").await.is_err());
+    assert!(
+        task.stage_file(
+            Some(chunk.volume()),
+            OperationId::new(),
+            &activity_path,
+            b"forged",
+            "application/json",
+            "activity.json",
+        )
+        .await
+        .is_err()
+    );
     Ok(())
 }
 
