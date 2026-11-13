@@ -6,7 +6,7 @@
 use super::*;
 use acyclic_native_runtime::fuse_protocol;
 
-pub(super) use fuse_protocol::{INPUT_HEADER, OUTPUT_HEADER};
+pub(super) use fuse_protocol::OUTPUT_HEADER;
 
 pub(super) struct PacketRequest<'a> {
     pub(super) opcode: u32,
