@@ -55,12 +55,12 @@ pub(crate) async fn review_model(
     if let Some(update) = profile.and_then(|profile| profile.configuration_update(None)) {
         crate::executor::stock_vec_push(&mut messages, update, io)?;
     }
-    let source = Context {
+    let context = Context {
         messages,
         ..Context::default()
     };
     let pipeline = ContextPipeline::from_source(
-        source,
+        context,
         "approval-review",
         match policy {
             Some(policy) => crate::executor::stock_string_copy(
