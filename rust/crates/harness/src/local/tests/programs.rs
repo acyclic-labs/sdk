@@ -660,9 +660,7 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         .iter()
         .flat_map(|message| message.content.parts())
         .filter_map(|part| match part {
-            crate::model::ModelContentPart::Configuration { prefix, effort } => {
-                Some((*prefix, serde_json::to_value(effort).unwrap()))
-            }
+            crate::model::ModelContentPart::Configuration { prefix, .. } => Some(*prefix),
             _ => None,
         })
         .collect();
