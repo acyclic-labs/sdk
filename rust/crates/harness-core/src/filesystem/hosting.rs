@@ -52,6 +52,7 @@ mod client_files;
 mod controls;
 mod input_preview;
 mod journal;
+pub(super) mod policy;
 mod quiet;
 mod run_admission;
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -92,8 +93,8 @@ pub struct RootRequest {
     pub retained: Vec<WorkspaceEntry>,
     /// Task brief, already staged, if any.
     pub brief: Option<FileRef>,
-    /// Approval policy file, if any.
-    pub policy: Option<FileRef>,
+    /// Approval policy, published in the root journal's initial generation.
+    pub policy: Option<crate::approvals::ApprovalPolicy>,
 }
 
 /// A prepared root: the one sealed commit creating its fresh volumes, its
@@ -118,6 +119,7 @@ impl Prepared {
         host: &Host<P, O>,
         Spawn { child, request }: Spawn,
         fresh: &[WorkspaceEntry],
+        policy: Option<crate::approvals::ApprovalPolicy>,
     ) -> Result<Self, Error>
     where
         P: AuthorityProvider + ?Sized + 'static,
@@ -127,23 +129,48 @@ impl Prepared {
         let cancellation = CancellationToken::new();
         let journal = crate::conversation::journal_volume(host.provider.clone(), &child.id())
             .map_err(turn)?;
+        let policy = policy
+            .map(policy::RootPolicySeed::new)
+            .transpose()
+            .map_err(turn)?;
         let mut creations = Vec::with_capacity(fresh.len() + 1);
-        for volume in fresh
-            .iter()
-            .filter_map(WorkspaceEntry::as_volume)
-            .chain(std::iter::once(&journal))
-        {
+        for volume in fresh.iter().filter_map(WorkspaceEntry::as_volume) {
             creations.push(host.volume_create_spec(volume).map_err(turn)?);
         }
+        let mut journal_creation: acyclic_fs::CreateSpec<'_> =
+            host.volume_create_spec(&journal).map_err(turn)?;
+        if let Some(policy) = &policy {
+            journal_creation.creation = acyclic_fs::CreationOperation::populated(
+                journal_creation.creation.operation_id,
+                policy.files(),
+            );
+        }
+        creations.push(journal_creation);
         let mut commit = FilesystemCommit::new(request);
-        fs.prepare_create_many(
-            &creations,
-            &mut commit,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map_err(|failure| turn(super::map_error(failure.error)))?;
+        let created = fs
+            .prepare_create_many(
+                &creations,
+                &mut commit,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|failure| turn(super::map_error(failure.error)))?
+            .value;
+        if let Some(policy) = &policy {
+            let generation = created
+                .last()
+                .ok_or(Error::Record("root journal creation is missing"))?
+                .generation;
+            policy.bind(
+                commit
+                    .request_mut()
+                    .ok_or(Error::Record("root creation was already sealed"))?,
+                &child,
+                &journal,
+                generation,
+            )?;
+        }
         fs.seal_commit(&mut commit, WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|failure| turn(failure.error.into()))?;
         Ok(Self { child, commit })
@@ -1405,6 +1432,18 @@ where
 
     /// Validates a proposed root before placement or storage IO.
     pub fn admit_root(&self, request: &RootRequest) -> Result<(), Error> {
+        if let Some(policy) = &request.policy {
+            policy.bind().map_err(turn)?;
+        }
+        if let (Some(policy), Some(maximum)) = (&request.policy, self.maximum_bytes) {
+            let bytes = crate::contract::canonical_json_bytes(policy)
+                .map_err(|error| turn(crate::Error::Invalid(error.to_string())))?;
+            if bytes.len() as u64 > maximum {
+                return Err(turn(crate::Error::Invalid(
+                    "root policy exceeds the file byte bound".into(),
+                )));
+            }
+        }
         let path = AgentPath::root(&request.agent);
         let private = request
             .fresh
@@ -1533,7 +1572,7 @@ where
                 checkpoint: None,
                 volumes,
                 brief,
-                policy,
+                policy: None,
             },
             questions.unwrap_or(self.turns.question_plugin()),
             peer,
@@ -1541,7 +1580,7 @@ where
         if indexed {
             self.index_session(&child, &mut request)?;
         }
-        Prepared::prepare(&self.volumes, Spawn { child, request }, &fresh).await
+        Prepared::prepare(&self.volumes, Spawn { child, request }, &fresh, policy).await
     }
 
     /// Submits `prepared` once and settles it: committed, the root is hosted;

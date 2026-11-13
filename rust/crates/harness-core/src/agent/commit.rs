@@ -230,6 +230,50 @@ pub struct Spawn {
     pub request: CommitRequest,
 }
 
+/// Binds a prepared root input after its volume generation is known, before
+/// sealing the shared creation. Only the root's original adoption can change;
+/// actor state, indexed headers and every other contribution stay intact.
+pub(crate) fn bind_root_policy(
+    request: &mut CommitRequest,
+    child: &AgentPath,
+    policy: crate::conversation::FileRef,
+) -> Result<(), Error> {
+    if child.parent().is_some() {
+        return Err(Error::Record("a root policy requires a root adoption"));
+    }
+    let inbox = child.inbox()?;
+    let mut target = None;
+    for effect in &mut request.effects {
+        for mutation in &mut effect.mutations {
+            let records = match mutation {
+                CommitMutation::Append { path, records } if path == &inbox => records,
+                CommitMutation::Fork {
+                    destination,
+                    records,
+                    ..
+                } if destination == &inbox => records,
+                _ => continue,
+            };
+            if target.replace(records).is_some() {
+                return Err(Error::Record("root creation has multiple adoption writes"));
+            }
+        }
+    }
+    let records = target.ok_or(Error::Record("root creation has no adoption"))?;
+    let [record] = records.as_mut_slice() else {
+        return Err(Error::Record("root creation has another adoption batch"));
+    };
+    let InboxRecord::ForkAdopted(mut adopted) = InboxRecord::decode(record.value.as_ref())? else {
+        return Err(Error::Record("root creation has another first record"));
+    };
+    if adopted.agent != child.id() || adopted.parent.is_some() || adopted.policy.is_some() {
+        return Err(Error::Record("root creation has another policy binding"));
+    }
+    adopted.policy = Some(policy);
+    record.value = InboxRecord::ForkAdopted(adopted).encode()?.into();
+    Ok(())
+}
+
 /// Forks `parent`'s subtree to its new child at inbox prefix `at_tail`.
 ///
 /// `at_tail` is the parent's consumed inbox cursor, so the child's first delivery

@@ -240,7 +240,8 @@ pub use facade::{
     StagedContent, Volume, VolumeInitialization,
 };
 pub use facade::{
-    CreateSpec, ForkSpec, ForkedGeneration, PublishSpec, RestoreSpec, TransactionSpec,
+    CreateSpec, CreatedGeneration, ForkSpec, ForkedGeneration, PublishSpec, RestoreSpec,
+    TransactionSpec,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use facade::{

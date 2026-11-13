@@ -97,7 +97,7 @@ impl crate::hosting::Platform for LocalUser {
     ) -> BoxProviderFuture<'_, Result<crate::hosting::RootRequest>> {
         Box::pin(async move {
             let local = self.harness()?;
-            let policy = local.root_policy(&agent).await?;
+            let policy = local.preset.approval_policy.clone();
             Ok(crate::hosting::RootRequest {
                 peer: true,
                 agent,
@@ -1012,35 +1012,6 @@ impl LocalHarness {
         ))
     }
 
-    /// The configured approval policy, staged once on the root's private
-    /// volume: the root agent's tools run under it.
-    async fn root_policy(
-        &self,
-        root: &crate::agent::AgentId,
-    ) -> Result<crate::conversation::FileRef> {
-        let policy = crate::contract::canonical_json_bytes(&self.preset.approval_policy)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        let mut hasher = blake3::Hasher::new_derive_key("acyclic.local.agent.policy.v1");
-        hasher.update(root.as_str().as_bytes());
-        hasher.update(&[0]);
-        hasher.update(&policy);
-        let mut bytes = [0; 16];
-        hasher.finalize_xof().fill(&mut bytes);
-        let operation = OperationId::from_bytes(bytes);
-        Ok(self
-            .input_publisher_with_limit(self.limits.file_bytes)?
-            .stage_once(
-                operation,
-                &format!("inputs/{operation}.json"),
-                &policy,
-                "application/json",
-                "policy",
-                ContentAccess::default(),
-            )?
-            .await?
-            .0)
-    }
-
     // Hosting is initialized once by the original cell. Erase its future here
     // so every connection holds a pointer instead of the entire startup chain.
     fn host_agents(self: &Arc<Self>) -> BoxProviderFuture<'_, Result<Hosted>> {
@@ -1134,7 +1105,7 @@ impl LocalHarness {
         // another policy would refuse the reopen.
         let existing = AgentPath::root(&id);
         let root = async {
-            let configured = self.root_policy(&id).await?;
+            let configured = self.preset.approval_policy.clone();
             let server = match bound.agents().state(&existing).await {
                 Ok(state) => {
                     if state
@@ -1146,7 +1117,14 @@ impl LocalHarness {
                         return Err(Error::Invalid("this session has another topology; start with a fresh --host-state-directory".into()));
                     }
                     self.require_shared_binding(&state)?;
-                    if state.policy.as_ref() != Some(&configured) {
+                    let bytes = crate::contract::canonical_json_bytes(&configured)
+                        .map_err(|error| Error::Invalid(error.to_string()))?;
+                    let descriptor = crate::conversation::FileDescriptor::from_bytes(
+                        &bytes,
+                        "application/json",
+                        &mut None,
+                    )?;
+                    if state.policy.as_ref().map(|file| file.descriptor()) != Some(&descriptor) {
                         tracing::warn!(
                             "the configured approval policy differs from the one this workspace's \
                              root agent was created with; the agent keeps its original policy"

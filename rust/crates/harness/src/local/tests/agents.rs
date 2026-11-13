@@ -4697,6 +4697,32 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
     assert!(branch.parent().is_none());
     assert_ne!(&branch, root);
     let state = agents.state(&branch).await.map_err(agent)?;
+    let policy = state
+        .policy
+        .as_ref()
+        .ok_or_else(|| Error::Invalid("branch policy missing".into()))?;
+    let journal = crate::conversation::journal_volume(project.provider().clone(), &branch.id())?;
+    assert_eq!(policy.volume(), &journal);
+    let journal_content = super::journal_content(&harness, &branch)?;
+    let bytes = journal_content
+        .reader
+        .read(policy, policy.descriptor().byte_length(), None, None)?
+        .await?;
+    assert_eq!(
+        serde_json::from_slice::<crate::approvals::ApprovalPolicy>(&bytes).map_err(agent)?,
+        harness.preset.approval_policy
+    );
+    let source_policy = agents
+        .state(root)
+        .await
+        .map_err(agent)?
+        .policy
+        .ok_or_else(|| Error::Invalid("source policy missing".into()))?;
+    assert_ne!(
+        source_policy.volume(),
+        policy.volume(),
+        "branch retained its source's policy location"
+    );
     assert_eq!(state.conversation_tail, 1);
     assert!(state.open_children.is_empty());
     let actor = crate::agent::actor_store(agents.provider())

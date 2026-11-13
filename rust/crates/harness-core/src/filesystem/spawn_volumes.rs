@@ -417,6 +417,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
         child: &'a AgentPath,
         history: Option<&'a crate::agent::HistorySelection>,
         request: CommitRequest,
+        policy: Option<crate::approvals::ApprovalPolicy>,
     ) -> BoxProviderFuture<'a, Result<FilesystemCommit, GuestError>> {
         Box::pin(async move {
             let (_, planned) = planned_bindings(child, &source.volumes, history).map_err(guest)?;
@@ -426,6 +427,10 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
                 planned,
                 companions: Vec::new(),
                 journals: vec![child.clone()],
+                root_policy: policy
+                    .map(super::hosting::policy::RootPolicySeed::new)
+                    .transpose()
+                    .map_err(guest)?,
                 parent: source.path.clone(),
                 history: None,
                 commit: None,
@@ -495,6 +500,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Com
                     planned,
                     companions,
                     journals,
+                    root_policy: None,
                     parent: parent.path.clone(),
                     history: self.requested.history.then_some((parent, next)),
                     commit: None,
@@ -527,6 +533,7 @@ struct SpawnFork<P: ?Sized + 'static, O: 'static> {
     planned: Vec<Planned>,
     companions: Vec<acyclic_stream::CommitEffect>,
     journals: Vec<AgentPath>,
+    root_policy: Option<super::hosting::policy::RootPolicySeed>,
     parent: AgentPath,
     history: Option<(AgentState, AgentState)>,
     commit: Option<FilesystemCommit>,
@@ -668,11 +675,20 @@ where
                 }),
             }
         }
+        let journal_creations_start = creations.len();
         for child in &self.journals {
             let journal =
                 crate::conversation::journal_volume(self.host.provider.clone(), &child.id())
                     .map_err(guest)?;
-            creations.push(self.host.volume_create_spec(&journal).map_err(guest)?);
+            let mut creation: CreateSpec<'_> =
+                self.host.volume_create_spec(&journal).map_err(guest)?;
+            if let Some(policy) = &self.root_policy {
+                creation.creation = acyclic_fs::CreationOperation::populated(
+                    creation.creation.operation_id,
+                    policy.files(),
+                );
+            }
+            creations.push(creation);
         }
         let mut commit = FilesystemCommit::new(request);
         if let Some((parent, next)) = &self.history {
@@ -702,14 +718,38 @@ where
                 .map_err(|failure| crate::Error::guest(failure.error))?;
             }
         }
-        fs.prepare_create_many(
-            &creations,
-            &mut commit,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map_err(|failure| crate::Error::guest(failure.error))?;
+        let created = fs
+            .prepare_create_many(
+                &creations,
+                &mut commit,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|failure| crate::Error::guest(failure.error))?
+            .value;
+        if let Some(policy) = &self.root_policy {
+            let [child] = self.journals.as_slice() else {
+                return Err(guest("root policy requires exactly one root journal"));
+            };
+            let generation = created
+                .get(journal_creations_start)
+                .ok_or_else(|| guest("root journal creation is missing"))?
+                .generation;
+            let journal =
+                crate::conversation::journal_volume(self.host.provider.clone(), &child.id())
+                    .map_err(crate::Error::guest)?;
+            policy
+                .bind(
+                    commit
+                        .request_mut()
+                        .ok_or_else(|| guest("root creation is sealed"))?,
+                    child,
+                    &journal,
+                    generation,
+                )
+                .map_err(crate::Error::guest)?;
+        }
         fs.seal_commit(&mut commit, WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|failure| crate::Error::guest(failure.error))?;
         Ok(commit)

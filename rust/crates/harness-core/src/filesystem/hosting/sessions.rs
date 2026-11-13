@@ -379,7 +379,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
             checkpoint: None,
             volumes: root.fresh,
             brief: root.brief,
-            policy: root.policy,
+            policy: None,
         };
         let Spawn { child, mut request } = match (at, saved.as_ref()) {
             (Some(at), Some(saved)) => self
@@ -395,7 +395,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         self.index_session(&child, &mut request)?;
         let commit = self
             .spawns
-            .root_volumes(&source, &child, history.as_ref(), request)
+            .root_volumes(&source, &child, history.as_ref(), request, root.policy)
             .await
             .map_err(|error| {
                 turn(crate::Error::Invalid(format!(

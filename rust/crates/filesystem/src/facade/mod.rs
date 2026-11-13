@@ -142,7 +142,8 @@ mod rename_bindings;
 pub(crate) use extents::seek_record_extent_with_accounting;
 mod composition;
 pub use composition::{
-    CreateSpec, ForkSpec, ForkedGeneration, PublishSpec, RestoreSpec, TransactionSpec,
+    CreateSpec, CreatedGeneration, ForkSpec, ForkedGeneration, PublishSpec, RestoreSpec,
+    TransactionSpec,
 };
 mod fork;
 mod fs;
