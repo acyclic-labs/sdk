@@ -9,7 +9,7 @@ use acyclic_harness::{
     },
     model::{Model, ModelContent},
     native_settings::SettingsConfig,
-    test_support::{ScriptedModelProvider, ScriptedTurn},
+    test_support::{ScriptedModelProvider, ScriptedTurn, local_harness_config},
 };
 use std::{path::Path, sync::Arc};
 
@@ -26,14 +26,14 @@ fn config(
     state: &Path,
     provider: Arc<ScriptedModelProvider>,
 ) -> TestResult<LocalHarnessConfig> {
-    Ok(LocalHarnessConfig::new(
+    Ok(local_harness_config(
         root,
         (
             Model::new("scripted".into(), "test".into(), "1".into())?,
             provider,
         ),
-    )
-    .hermetic()
+    )?
+    .feedback_plugin(false)
     .state_directory(state)
     .without_default_tools()
     .compaction(CompactionPolicy::Disabled)
@@ -263,11 +263,8 @@ async fn lazy_skill_source_survives_reopen_and_retains_materialized_bytes() -> T
     let state = super::local_workspace::temporary()?;
     let body = "---\nname: greet2\ndescription: Greet formally\n---\nRetained body";
     write(root.path(), ".agents/skills/greet2/SKILL.md", body)?;
-    write(
-        root.path(),
-        ".agents/skills/unread/SKILL.md",
-        "---\nname: unread\ndescription: Load later\n---\nOriginal body",
-    )?;
+    let captured_body = "---\nname: unread\ndescription: Load later\n---\nOriginal body";
+    write(root.path(), ".agents/skills/unread/SKILL.md", captured_body)?;
     let model = provider(1);
     let harness = open(config(
         root.path(),
@@ -294,7 +291,10 @@ async fn lazy_skill_source_survives_reopen_and_retains_materialized_bytes() -> T
         ".agents/skills/unread/SKILL.md",
         "replacement body",
     )?;
-    assert!(unread.source.read(reader.as_ref(), 4096).await.is_err());
+    // Catalog capture can retain the complete storage chunk of a small file.
+    // Even before an explicit body read, it must preserve those original bytes.
+    let (_, bytes) = unread.source.read(reader.as_ref(), 4096).await?;
+    assert_eq!(bytes.as_ref(), captured_body.as_bytes());
     let (_, bytes) = retained.source.read(reader.as_ref(), 4096).await?;
     assert_eq!(bytes.as_ref(), body.as_bytes());
     write(
