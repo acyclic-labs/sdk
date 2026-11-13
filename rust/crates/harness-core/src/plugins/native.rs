@@ -1,5 +1,6 @@
 use super::after::{self, AfterHook};
-use crate::executor::{stock_string_copy, stock_vec_push};
+use crate::executor::{stock_retire_text, stock_string_copy, stock_vec_push};
+use crate::filesystem::UploadRecord as _;
 use crate::{
     Error, Result,
     config::{self, Surface, Tree},
@@ -210,9 +211,9 @@ fn observe(identity: Option<&mut blake3::Hasher>, path: &str, bytes: Option<&[u8
 async fn read_hook(
     tree: &dyn Tree,
     identity: Option<&mut blake3::Hasher>,
-    hook: String,
+    hook: &str,
     io: Option<&crate::filesystem::PreparationIo>,
-) -> std::result::Result<Option<(String, String)>, LoadFailure> {
+) -> std::result::Result<Option<String>, LoadFailure> {
     let bytes = tree.read(&hook).await.map_err(LoadFailure::Operational)?;
     observe(identity, &hook, bytes.as_deref());
     bytes
@@ -223,7 +224,6 @@ async fn read_hook(
             stock_string_copy(script, io).map_err(LoadFailure::Operational)
         })
         .transpose()
-        .map(|script| script.map(|script| (hook, script)))
 }
 
 async fn load_enabled(
@@ -285,18 +285,15 @@ async fn load_enabled(
             identity.update(&manifest.identity());
         }
         let manifest = manifest.into_result()?;
-        let crate::javascript_allocator::EngineResult {
-            value: mut manifest,
-            custody,
-        } = manifest
+        let mut manifest = manifest
             .value
             .record::<PluginManifest>()
             .map_err(LoadFailure::decoding)?;
-        loaded.absorb(custody).map_err(LoadFailure::Operational)?;
-        if manifest.name != *name {
-            return Err(invalid(format!("{path} names {:?}", manifest.name)).into());
+        if manifest.value.name != *name {
+            return Err(invalid(format!("{path} names {:?}", manifest.value.name)).into());
         }
         if let Some(missing) = manifest
+            .value
             .requires
             .iter()
             .find(|required| !entries.get(*required).is_some_and(|entry| entry.enabled))
@@ -307,9 +304,9 @@ async fn load_enabled(
         let settings = entry
             .config
             .as_ref()
-            .or(manifest.defaults.as_ref())
+            .or(manifest.value.defaults.as_ref())
             .unwrap_or(&empty);
-        for (name, source) in &manifest.after {
+        for (name, source) in &manifest.value.after {
             if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
                 return Err(invalid("after-hooks require one canonical hook name".into()).into());
             }
@@ -318,13 +315,14 @@ async fn load_enabled(
             }
             let hook = text(format_args!("{root}hooks/after-{name}.ts"), io)
                 .map_err(LoadFailure::Operational)?;
-            let copied_hook = stock_string_copy(&hook, io).map_err(LoadFailure::Operational)?;
-            let (hook, code) = read_hook(tree, identity.as_deref_mut(), copied_hook, io)
+            let code = read_hook(tree, identity.as_deref_mut(), &hook, io)
                 .await?
                 .ok_or_else(|| invalid(format!("after-hooks module {hook} does not exist")))?;
             let prepared = config::prepare(&hook, code.as_bytes(), tree)
                 .await
                 .map_err(LoadFailure::Operational)?;
+            stock_retire_text(code, io).map_err(LoadFailure::Operational)?;
+            stock_retire_text(hook, io).map_err(LoadFailure::Operational)?;
             let evaluation =
                 after::evaluate(&prepared, settings).map_err(LoadFailure::Operational)?;
             if let Some(identity) = identity.as_deref_mut() {
@@ -339,9 +337,19 @@ async fn load_enabled(
             )
             .map_err(LoadFailure::Operational)?;
         }
-        let settings = settings_text(settings, io).map_err(LoadFailure::Operational)?;
-        stock_vec_push(&mut loaded.value.descriptions, manifest.description, io)
+        // Reparent only the payload that leaves the decoded manifest. Its
+        // remaining fields and admission retire with the original record.
+        let description_bytes = manifest.value.description.capacity() as u64;
+        crate::javascript_allocator::transfer(
+            &mut manifest.custody,
+            description_bytes,
+            &mut loaded,
+        )
+        .map_err(LoadFailure::Operational)?;
+        let description = std::mem::take(&mut manifest.value.description);
+        stock_vec_push(&mut loaded.value.descriptions, description, io)
             .map_err(LoadFailure::Operational)?;
+        let encoded_settings = once_cell::unsync::OnceCell::new();
         for event in Event::ALL {
             let path = |form: &str| {
                 text(
@@ -350,16 +358,21 @@ async fn load_enabled(
                 )
                 .map_err(LoadFailure::Operational)
             };
+            let paths = [path("ts")?, path("sh")?, path("ps1")?];
             let (ts, sh, ps1) = (
-                read_hook(tree, identity.as_deref_mut(), path("ts")?, io).await?,
-                read_hook(tree, identity.as_deref_mut(), path("sh")?, io).await?,
-                read_hook(tree, identity.as_deref_mut(), path("ps1")?, io).await?,
+                read_hook(tree, identity.as_deref_mut(), &paths[0], io).await?,
+                read_hook(tree, identity.as_deref_mut(), &paths[1], io).await?,
+                read_hook(tree, identity.as_deref_mut(), &paths[2], io).await?,
             );
-            if let Some((hook, _)) = &ts {
+            if ts.is_some() {
                 return Err(invalid(format!(
-                    "{hook}: TypeScript hooks do not run on this host yet"
+                    "{}: TypeScript hooks do not run on this host yet",
+                    paths[0]
                 ))
                 .into());
+            }
+            for path in paths {
+                stock_retire_text(path, io).map_err(LoadFailure::Operational)?;
             }
             if sh.is_none() && ps1.is_none() {
                 continue;
@@ -372,6 +385,22 @@ async fn load_enabled(
                 ))
                 .into());
             };
+            let settings = encoded_settings
+                .get_or_try_init(|| settings_text(settings, io))
+                .map_err(LoadFailure::Operational)?;
+            let matcher_bytes = manifest
+                .value
+                .matcher
+                .get(&event)
+                .map_or(Ok(0), |matcher| matcher.logical_owned_bytes())
+                .map_err(LoadFailure::Operational)?;
+            crate::javascript_allocator::transfer(
+                &mut manifest.custody,
+                matcher_bytes,
+                &mut loaded,
+            )
+            .map_err(LoadFailure::Operational)?;
+            let matcher = manifest.value.matcher.remove(&event);
             let hook = HookSpec {
                 run: HookRun::Plugin {
                     instance: text(
@@ -379,10 +408,10 @@ async fn load_enabled(
                         io,
                     )
                     .map_err(LoadFailure::Operational)?,
-                    sh: sh.map(|(_, script)| script),
-                    ps1: ps1.map(|(_, script)| script),
+                    sh,
+                    ps1,
                     config: stock_string_copy(&settings, io).map_err(LoadFailure::Operational)?,
-                    matcher: manifest.matcher.remove(&event),
+                    matcher,
                 },
                 // A hook holds only its own request; it has no deadline.
                 timeout_ms: None,
@@ -400,6 +429,11 @@ async fn load_enabled(
                     error => LoadFailure::decoding(error),
                 })?;
         }
+        if let Some(settings) = encoded_settings.into_inner() {
+            stock_retire_text(settings, io).map_err(LoadFailure::Operational)?;
+        }
+        stock_retire_text(path, io).map_err(LoadFailure::Operational)?;
+        stock_retire_text(root, io).map_err(LoadFailure::Operational)?;
         let name = stock_string_copy(name, io).map_err(LoadFailure::Operational)?;
         stock_vec_push(&mut loaded.value.names, name, io).map_err(LoadFailure::Operational)?;
     }
