@@ -44,6 +44,12 @@ unbounded. Validation commands are owner selected; commands match exact original
 Alerts continue execution. The default repeated-failure action escalates from an
 alert to a pause; validation loops, output loops and exhausted capacity pause.
 
+Repetition signatures retain a shell's exact source or literal argv, working
+directory, requested target, lifetime and originally admitted execution target.
+Different execution inputs do not become one repeated check or failure. Output
+capture and return scheduling (`max_output_tokens`, `yield_time_ms`, `background`)
+do not change that identity. No shell parsing or quote normalisation is used.
+
 One original HOME publication admits `GOAL.md`, `control/supervision.json` and
 `runs/<operation>.json`. Its retained receipt selects the original goal and policy.
 Later file edits cannot replace that policy or reset its accounting. Reusing
@@ -114,6 +120,14 @@ their original journal publication on the agent and every ancestor remaining
 open, even before archive delivery reaches a descendant. A stop of another
 branch leaves admission open. Accepted dispatches retain their exact replay.
 
+Pause also fences new model and tool dispatches in descendants, using the
+original actor records from the tree root through the dispatching agent. A
+descendant waiting on an ancestor's pause retains its turn and subscribes after
+that original pause record. It arms no retry alarm and does not acquire a
+separate child-owned pause. A later ancestor publication wakes it to recheck
+admission; resume therefore works across actor restart and across a resume that
+races subscription installation. A paused sibling does not close this branch.
+
 The first request of a new turn captures one original inbox cut and includes
 steering already committed there. A request whose input was already frozen
 replays its exact original cut; later steering waits for its next boundary.
@@ -158,3 +172,11 @@ only from the process environment, using the provider's normal credential slot
 (for example, `MORPH_API_KEY` for catalog id `morph`). Keys do not enter guest
 environments, agent files or streams. Standard transient HTTP backpressure
 retains the shared transport's Retry-After handling.
+
+An inherited pause and its reopening are indexed on the child's own original
+run. Reopening is committed before the retained turn continues into external IO.
+Recovery uses that run's latest admission or settlement record, so it retains a
+current pause and skips an older pause after resume or completion. It reads no
+ancestor stream and does not create a child-owned control decision. Completion
+and output for quiet alarms are selected at one original output head; a racing
+append changes that one publication fence and re-evaluates the alarm.

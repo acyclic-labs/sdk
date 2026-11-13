@@ -1,0 +1,12 @@
+--- a/rust/crates/harness-core/src/filesystem/execution_journal/indexed_publication.rs
++++ b/rust/crates/harness-core/src/filesystem/execution_journal/indexed_publication.rs
+@@ -111,6 +111,9 @@
+                     signal: None,
+                 }));
+             }
++            if self.actor_admissions.last() != Some(path) {
++                continue;
++            }
+             crate::executor::stock_vec_push(
+                 &mut effect.conditions,
+                 CommitCondition::Head {

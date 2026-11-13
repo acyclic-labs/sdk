@@ -221,30 +221,19 @@ pub trait StreamProviderExt: StreamProvider {
     ) -> impl Future<Output = Result<Option<Record>, StreamError>> + ProviderTask {
         async move {
             use futures::StreamExt as _;
-            if before == 0 {
-                return Ok(None);
-            }
             #[cfg(feature = "serde")]
             let diagnostic = crate::trace::is_source(&path);
+            let Some((mut selection, request)) = LatestRead::new(path, key, before, at_least)
+            else {
+                return Ok(None);
+            };
             let work = async move {
-                let mut selector = key.map(|key| ReadKeySeek::latest(key, before));
-                let mut from = if selector.is_some() { 0 } else { before - 1 };
-                let mut records = self
-                    .read(ReadRequest {
-                        key: selector.clone(),
-                        path,
-                        from,
-                        limit: 1,
-                        at_least,
-                    })
-                    .await?;
+                let mut records = self.read(request).await?;
                 let record = records.next().await.transpose()?;
                 if let Some(record) = &record {
-                    if record.sequence >= before {
+                    selection.validate(record)?;
+                    if records.next().await.transpose()?.is_some() {
                         return Err(StreamError::InvalidResponse);
-                    }
-                    if let Some(selector) = &mut selector {
-                        selector.advance(&mut from, record.sequence, record.headers.keys())?;
                     }
                 }
                 Ok(record)
@@ -286,6 +275,22 @@ pub trait StreamProviderExt: StreamProvider {
         key: Option<Bytes>,
         at_least: RevisionCut,
     ) -> impl Future<Output = Result<(Option<Record>, CommitCondition), StreamError>> + ProviderTask
+    {
+        async move {
+            let ([record], condition) = self.latest_many_fenced(path, [key], at_least).await?;
+            Ok((record, condition))
+        }
+    }
+
+    /// Select indexed keys at one captured head, sharing its publication fence.
+    /// Appends between the point reads cannot mix source cuts; publication
+    /// against a changed head returns the ordinary condition conflict.
+    fn latest_many_fenced<const N: usize>(
+        &self,
+        path: StreamPath,
+        keys: [Option<Bytes>; N],
+        at_least: RevisionCut,
+    ) -> impl Future<Output = Result<([Option<Record>; N], CommitCondition), StreamError>> + ProviderTask
     {
         async move {
             let request = HeadsRequest {
@@ -330,10 +335,18 @@ pub trait StreamProviderExt: StreamProvider {
                 ),
                 None => (0, CommitCondition::Absent { path: path.clone() }),
             };
-            let record = self
-                .latest_before(path, key, before, RevisionCut::of(heads.snapshot))
-                .await?;
-            Ok((record, condition))
+            let mut records = std::array::from_fn(|_| None);
+            for (key, record) in keys.into_iter().zip(&mut records) {
+                *record = self
+                    .latest_before(
+                        path.clone(),
+                        key,
+                        before,
+                        RevisionCut::of(heads.snapshot.clone()),
+                    )
+                    .await?;
+            }
+            Ok((records, condition))
         }
     }
 

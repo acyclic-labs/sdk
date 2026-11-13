@@ -83,6 +83,346 @@ impl acyclic_stream::NativeStreamProvider for ReplayCapacity {}
 
 struct Opening(Mutex<Option<oneshot::Sender<u64>>>);
 
+struct AdmissionWait {
+    provider: Arc<MemoryStream>,
+    source: acyclic_stream::StreamPath,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl TurnDriver for AdmissionWait {
+    fn step<'a>(
+        &'a self,
+        _: &'a AgentState,
+        _: u64,
+        _: Option<Queued>,
+        _: CancellationToken,
+    ) -> TurnFuture<'a> {
+        Box::pin(async move {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let head = self
+                .provider
+                .head(self.source.clone())
+                .await
+                .map_err(Error::Stream)?;
+            let record = head
+                .last
+                .ok_or(Error::Record("original admission missing"))?;
+            let admission = acyclic_actors::local::AdmissionState::from_record(&record.value)
+                .map_err(|error| Error::Actor(Box::new(error)))?;
+            Ok(TurnStep {
+                checkpoint: admission.paused.then(Vec::new),
+                wait: if admission.paused {
+                    Wait::Continue
+                } else {
+                    Wait::Input
+                },
+                drops: None,
+                outs: if admission.paused {
+                    vec![Out::Supervised {
+                        run: crate::OperationId::from_bytes([189; 16]),
+                        control: crate::supervision::Control {
+                            source: crate::supervision::Position {
+                                stream: self.source.clone(),
+                                sequence: record.sequence,
+                            },
+                            action: crate::supervision::Action::Pause,
+                            signal: None,
+                        },
+                    }]
+                } else {
+                    Vec::new()
+                },
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn ancestor_pause_parks_on_its_original_publication_and_resume_survives_handler_restart()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_actors::local::{ControlledClock, Runtime};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    for resume_before_park in [false, true] {
+        let provider = Arc::new(MemoryStream::default());
+        let (clock, _time) = ControlledClock::new(100);
+        let clock = Arc::new(clock);
+        let store = crate::agent::actor_store(&provider)?;
+        let root_id = AgentId::from_bytes([186; 16]);
+        let child_id = AgentId::derive(&root_id, "pause-child");
+        let root = AgentPath::root(&root_id);
+        let path = root.child(&child_id)?;
+        let parent = ActorReference::new(b"account", b"agents", root_id.as_str().as_bytes())?;
+        let actor = ActorReference::new(b"account", b"agents", child_id.as_str().as_bytes())?;
+        let source = store.path(&parent)?;
+        let adopted = ForkAdopted {
+            agent: child_id,
+            parent: Some(root),
+            profile: None,
+            forked_at: 0,
+            conversation_tail: 0,
+            checkpoint: None,
+            volumes: Vec::new(),
+            brief: None,
+            policy: None,
+        };
+        let mut root_adopted = adopted.clone();
+        root_adopted.agent = root_id;
+        root_adopted.parent = None;
+        crate::agent::submit(
+            provider.as_ref(),
+            crate::agent::create_root(&"pause-root".try_into()?, root_adopted)?.request,
+        )
+        .await?;
+        let spawn = crate::agent::spawn(
+            adopted.parent.as_ref().ok_or("parent missing")?,
+            &"pause-child".try_into()?,
+            0,
+            adopted.clone(),
+        )?;
+        assert_eq!(spawn.child, path);
+        crate::agent::submit(provider.as_ref(), spawn.request).await?;
+        let mut state = AgentState::adopted(path.clone(), &adopted)?;
+        state.turn = Some(crate::agent::Progress {
+            inbox: 0,
+            checkpoint: Vec::new(),
+        });
+        state.phase = crate::agent::Phase::Running;
+        let checkpoint =
+            crate::agent::checkpoint::from_encoded(crate::agent::checkpoint::encode(&state)?)?;
+        let subscriptions = BTreeMap::from([(
+            INBOX.into(),
+            Subscription {
+                path: path.inbox()?,
+                cursor: 1,
+            },
+        )]);
+        let CommitOutcome::Committed(_) = provider
+            .commit(acyclic_stream::CommitRequest {
+                deadline_unix_millis: None,
+                effects: vec![
+                    store.create_paused(None, &parent, Creation::default())?,
+                    store.create(
+                        None,
+                        &actor,
+                        Creation {
+                            checkpoint: Some(checkpoint.clone()),
+                            subscriptions,
+                            ..Default::default()
+                        },
+                    )?,
+                    CommitEffect::hard(
+                        vec![acyclic_stream::CommitCondition::Tail {
+                            path: path.inbox()?,
+                            expected: 1,
+                        }],
+                        vec![acyclic_stream::CommitMutation::Append {
+                            path: path.inbox()?,
+                            records: vec![InboxRecord::Awaited.encode()?.into()],
+                        }],
+                    ),
+                ],
+                idempotency_key: acyclic_stream::IdempotencyKey::unique(),
+            })
+            .await?
+        else {
+            return Err("actor creation refused".into());
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let limits = ActorLimits::new(10_000, 1 << 20, 1 << 16)?;
+        let handler = |store| {
+            AgentHandler::new(
+                store,
+                AdmissionWait {
+                    provider: provider.clone(),
+                    source: source.clone(),
+                    calls: calls.clone(),
+                },
+                limits,
+            )
+        };
+        let runtime = Runtime::new(
+            acyclic_actors::guest::Requests::default(),
+            store,
+            Arc::new(handler(crate::agent::actor_store(&provider)?)?),
+            clock.clone(),
+        );
+        runtime.track(actor.clone())?;
+        // A delayed original publication is delivered through the real runtime,
+        // including when resume races the subscription's installation below.
+        if resume_before_park {
+            let store = crate::agent::actor_store(&provider)?;
+            let snapshot = store.load(&actor).await?;
+            let record = provider
+                .read(ReadRequest {
+                    path: path.inbox()?,
+                    from: 1,
+                    limit: 1,
+                    key: None,
+                    at_least: Default::default(),
+                })
+                .await?
+                .try_next()
+                .await?
+                .ok_or("trigger missing")?;
+            let delivery = Delivery {
+                request: acyclic_actors::guest::RequestId::new(1),
+                actor: actor.clone(),
+                epoch: 0,
+                now_unix_ms: 100,
+                trigger: Trigger::Record {
+                    subscription: INBOX.into(),
+                    sequence: 1,
+                },
+                record: Some(record.clone()),
+                subscriptions: SubscriptionCuts::new(
+                    store.path(&actor)?,
+                    record.commit_id,
+                    snapshot
+                        .state()
+                        .ok_or("actor state missing")?
+                        .subscriptions()
+                        .clone(),
+                ),
+            };
+            let transition = handler(crate::agent::actor_store(&provider)?)?
+                .on_record(
+                    delivery.clone(),
+                    Some(&checkpoint),
+                    CancellationToken::new(),
+                )
+                .await?;
+            assert!(
+                !transition.pause,
+                "ancestor pause latched a child-owned pause"
+            );
+            assert!(
+                matches!(transition.alarm, AlarmChange::Clear),
+                "ancestor admission wait armed a retry alarm"
+            );
+            let before = store.load(&parent).await?;
+            store
+                .set_paused(&before, 0, false, acyclic_stream::IdempotencyKey::unique())
+                .await?;
+            store
+                .publish(
+                    &snapshot,
+                    0,
+                    &delivery.trigger,
+                    Some(&record),
+                    transition,
+                    acyclic_stream::IdempotencyKey::unique(),
+                )
+                .await?;
+        } else {
+            runtime.drain_actor(&actor).await?;
+            let store = crate::agent::actor_store(&provider)?;
+            let child = store.load(&actor).await?;
+            let child = child.state().ok_or("parked child missing")?;
+            assert!(
+                !child.paused(),
+                "ancestor pause latched a child-owned pause"
+            );
+            assert!(
+                child.alarm().deadline_unix_ms().is_none(),
+                "ancestor admission wait armed a retry alarm"
+            );
+            let watch = child
+                .subscriptions()
+                .get(ADMISSION_SUBSCRIPTION)
+                .ok_or("ancestor resume subscription missing")?;
+            assert_eq!(watch.path, source);
+            assert_eq!(watch.cursor, 1);
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            let before = store.load(&parent).await?;
+            store
+                .set_paused(&before, 0, false, acyclic_stream::IdempotencyKey::unique())
+                .await?;
+        }
+        // Failure settlement must not turn the same resume delivery into a
+        // successful reopening or continue the original driver.
+        let store = crate::agent::actor_store(&provider)?;
+        let snapshot = store.load(&actor).await?;
+        let original = snapshot.state().ok_or("parked actor missing")?;
+        let record = provider
+            .head(source.clone())
+            .await?
+            .last
+            .ok_or("resume missing")?;
+        let failed = handler(crate::agent::actor_store(&provider)?)?
+            .on_failure(
+                Delivery {
+                    request: acyclic_actors::guest::RequestId::new(2),
+                    actor: actor.clone(),
+                    epoch: 0,
+                    now_unix_ms: 100,
+                    trigger: Trigger::Record {
+                        subscription: ADMISSION_SUBSCRIPTION.into(),
+                        sequence: record.sequence,
+                    },
+                    subscriptions: SubscriptionCuts::new(
+                        store.path(&actor)?,
+                        record.commit_id,
+                        original.subscriptions().clone(),
+                    ),
+                    record: Some(record),
+                },
+                original.checkpoint(),
+                "original ancestor delivery failure".into(),
+            )
+            .await?
+            .ok_or("ancestor failure was not settled")?;
+        let failed_state = checkpoint_state(provider.as_ref(), &failed.checkpoint).await?;
+        assert!(
+            failed_state.turn.is_none(),
+            "ancestor delivery failure reopened its retained turn"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "failure continued the retained driver"
+        );
+        drop(runtime);
+        let store = crate::agent::actor_store(&provider)?;
+        let restored = Runtime::new(
+            acyclic_actors::guest::Requests::default(),
+            store,
+            Arc::new(handler(crate::agent::actor_store(&provider)?)?),
+            clock,
+        );
+        restored.track(actor.clone())?;
+        restored.drain_actor(&actor).await?;
+        let child = crate::agent::actor_store(&provider)?.load(&actor).await?;
+        let child = child.state().ok_or("resumed child missing")?;
+        assert!(!child.paused());
+        assert!(
+            !child.subscriptions().contains_key(ADMISSION_SUBSCRIPTION),
+            "resume left an ancestor subscription behind"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "ancestor resume did not continue the original turn exactly once"
+        );
+        let control = provider
+            .latest(
+                crate::supervision::streams::path(&path)?,
+                crate::supervision::streams::run_control_key(crate::OperationId::from_bytes(
+                    [189; 16],
+                )),
+                Default::default(),
+            )
+            .await?
+            .ok_or("original run reopening is missing")?;
+        let event: crate::supervision::Event = serde_json::from_slice(&control.value)?;
+        assert!(
+            matches!(event.event, crate::supervision::Lifecycle::Resumed {}),
+            "ancestor resume retained a terminal pause in the original run index"
+        );
+        assert_eq!(event.source.stream, source);
+    }
+    Ok(())
+}
+
 impl TurnDriver for Opening {
     fn step<'a>(
         &'a self,

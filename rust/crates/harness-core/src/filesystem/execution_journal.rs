@@ -134,14 +134,15 @@ pub struct FilesystemExecutionJournal<P: ?Sized, A: 'static, O: 'static> {
     preceding_request: Option<FileRef>,
     /// An agent turn's stop signal, followed as the executor's cancellation.
     stop: Option<acyclic_actors::guest::CancellationToken>,
+    clock: Option<Arc<dyn acyclic_actors::local::Clock>>,
     boundary: Option<Arc<dyn crate::agent::ModelBoundary>>,
     /// A native agent's approval files; its interactions never touch the ledger.
     agent_approvals: Option<Arc<crate::approvals::AgentApprovals>>,
     execution: Option<(OperationId, OperationId)>,
     /// Owning agent/run; bound once by the shared turn host, never by a model.
     agent_events: Option<(crate::agent::AgentPath, OperationId, u64, bool)>,
-    clock: Arc<dyn acyclic_actors::local::Clock>,
-    actor_admission: Option<acyclic_stream::StreamPath>,
+    /// Host-authenticated actor state paths from the tree root through this agent.
+    actor_admissions: Vec<acyclic_stream::StreamPath>,
     run_admission: Option<crate::supervision::RunAdmissionSource>,
     verified: tokio::sync::Mutex<SummaryCache>,
     history_read_limits: Option<crate::store::HistoryReadLimits>,

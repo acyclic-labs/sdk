@@ -1,5 +1,54 @@
 # Same-turn subtree stop control
 
+## Original shell execution identity
+
+The existing real journal regressions
+`filesystem::execution_journal::supervision::tests::selected_check_repetitions_ignore_capture_options_but_stay_within_the_original_turn`
+and
+`filesystem::execution_journal::supervision::tests::tool_failures_use_original_invocations_and_do_not_count_distinct_errors`
+retain working directory, lifetime, requested target and the original admitted
+target. They distinguish exact source/argv and nested quoted bytes, while capture
+and return scheduling vary on otherwise identical invocations. The latter also
+includes literal argv with differing capture options. Both use
+`-p acyclic-harness-core --lib --features test-support,acyclic-fs/test-support`.
+
+Run both unchanged regressions before each mutation. Apply
+`shell-command-only.patch` to discard every shell execution input except the
+command, or independently apply `invocation-target-omission.patch` to discard
+only the originally admitted target. Require an assertion containing
+`check merged distinct execution inputs` or
+`failure merged distinct execution inputs`, with `cwd` for the command-only
+mutant and `recorded_target` for the target-omission mutant. A compiler failure
+does not kill a mutant. Reverse each patch and require both unchanged tests to
+pass again. Patch applicability is not execution evidence.
+
+## Same-turn subtree stop
+
+Ancestor pause uses the same original dispatch authority read and atomic fence
+as archive, retaining every actor from root to dispatching agent. Run
+`filesystem::execution_journal::inline_tests::ancestor_pause_fences_original_dispatch_and_resume_without_changing_child_admission`
+(`acyclic-harness-core --lib --features test-support,acyclic-fs/test-support`).
+Eight schedules cover root, parent, self and unrelated sibling; first dispatch
+before/after pause; exact accepted replay; a prepared dispatch racing pause;
+and resume without a new paid intent or a rewritten child pause.
+
+Apply `ancestor-pause-check.patch` independently and require
+`ancestor pause admitted a fresh model dispatch` or
+`ancestor pause admitted a fresh tool dispatch`. Apply
+`ancestor-pause-fence.patch` independently and require
+`ancestor pause did not fence a captured dispatch`. Both use the unchanged
+regression above; reverse each patch and require the original to pass again.
+
+`agent::handler::tests::ancestor_pause_parks_on_its_original_publication_and_resume_survives_handler_restart`
+uses real Actors publications and runtime reconstruction to cover resume both
+before and after subscription installation. The dependency must retain the
+original turn with no retry alarm or child-owned pause, and retire its watch
+after resume. `ancestor-pause-wake.patch` removes the original event binding;
+require `ancestor resume subscription missing` or
+`ancestor resume did not continue the original turn exactly once`, then reverse
+and require the same regression to pass. These recipes require real execution;
+patch applicability alone proves no mutant kill.
+
 Run the original real-runtime regression from the repository root:
 
 ```sh
@@ -234,3 +283,25 @@ zero digest and must fail at `stream-only cut aliased an authored generation`.
 Require that unchanged regression to fail, reverse the patch and require its
 restored pass. Execution remains pending; this source-cut proof is not mounted
 signal-file or native-watch qualification.
+
+## One original quiet output cut
+
+`agent_model::hosting::quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs`
+adds a real stream append between completion and activity selection. The alarm
+must re-evaluate its one changed condition, rearm to the retained output's
+original time, then pause at the new deadline. Existing cases retain completed
+jobs, unrelated output and ordinary quiet work as negative controls.
+`quiet-split-output-heads.patch` restores the independent head observations;
+run that same regression, require failure, reverse the patch and require PASS.
+
+## Recovering the original inherited pause
+
+`local::agent_conversation::run::tests::inherited_pause_recovery_keeps_current_pauses_and_retires_resumed_ones`
+uses the real local host, child creation, file controls and model boundary. It
+requires both initial and recovered current pauses, no paid work while paused,
+a durable child reopening before held model IO, completed recovery without
+another model request, and no invented child owner-control record.
+`recovered-old-pause.patch` removes the original-run supersession check; the
+same regression must fail, then pass after reversing the patch. The existing
+`agent::handler::tests::ancestor_pause_parks_on_its_original_publication_and_resume_survives_handler_restart`
+also requires the original run's resumed record in both registration schedules.

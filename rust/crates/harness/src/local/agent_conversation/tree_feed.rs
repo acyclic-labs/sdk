@@ -63,6 +63,39 @@ impl Connection {
 }
 
 impl SupervisionFeed {
+    /// Latest committed admission or settlement for this original run only.
+    pub async fn run_control(&self, run: crate::OperationId) -> Result<Option<u64>> {
+        let provider = self.0.connection.session.read_provider();
+        use acyclic_stream::StreamProviderExt as _;
+        provider
+            .latest(
+                self.0.root_stream.clone(),
+                crate::supervision::streams::run_control_key(run),
+                Default::default(),
+            )
+            .await
+            .map_err(failed)?
+            .map(|record| {
+                let event: crate::supervision::Event =
+                    serde_json::from_slice(&record.value).map_err(failed)?;
+                if event.version != 1
+                    || event.agent != *self.0.connection.root()
+                    || event.run != Some(run)
+                    || !matches!(
+                        event.event,
+                        crate::supervision::Lifecycle::Paused { .. }
+                            | crate::supervision::Lifecycle::Resumed {}
+                            | crate::supervision::Lifecycle::Stopped { .. }
+                            | crate::supervision::Lifecycle::TurnDone { .. }
+                    )
+                {
+                    return Err(Error::Invalid("invalid original run control source".into()));
+                }
+                Ok(record.sequence)
+            })
+            .transpose()
+    }
+
     /// Point-select the current explicit owner decision, retaining its original
     /// event-stream cursor so a consumer can exclude historical controls.
     pub async fn owner_control(&self) -> Result<Option<(u64, crate::supervision::Event)>> {

@@ -2430,7 +2430,7 @@ where
                 );
                 let journal = journal
                     .with_agent_events(agent.path.clone(), run, inbox, segment == 0 && run == turn)
-                    .with_actor_admission(
+                    .with_actor_admissions(
                         self.actor_root
                             .as_ref()
                             .map(|root| {
@@ -2438,15 +2438,19 @@ where
                                     self.stream.clone(),
                                     root.clone(),
                                 );
-                                crate::agent::Agents::<P>::actor(&self.within, &agent.path.id())
-                                    .and_then(|actor| {
-                                        store.path(&actor).map_err(|error| {
-                                            crate::agent::Error::Actor(Box::new(error))
+                                crate::agent::Agents::<P>::actor_lineage(&self.within, &agent.path)
+                                    .map(|actor| {
+                                        actor.and_then(|actor| {
+                                            store.path(&actor).map_err(|error| {
+                                                crate::agent::Error::Actor(Box::new(error))
+                                            })
                                         })
                                     })
+                                    .collect::<std::result::Result<Vec<_>, crate::agent::Error>>()
                             })
                             .transpose()
-                            .map_err(|error| Error::Invalid(error.to_string()))?,
+                            .map_err(|error| Error::Invalid(error.to_string()))?
+                            .unwrap_or_default(),
                     )
                     .with_model_boundary(Arc::new(boundary))
                     .with_stop(stop)

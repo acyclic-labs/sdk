@@ -9,6 +9,119 @@ mod pages;
 pub(in crate::filesystem) use pages::Contribution;
 pub(super) use pages::contribution_identity;
 
+impl<P, A, O> FilesystemExecutionJournal<P, A, O>
+where
+    P: crate::store::JournalProvider + ?Sized,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    /// Joins every original lineage admission to the producer's dispatch.
+    /// Accepted dispatch replay has already returned before this boundary.
+    pub(super) async fn fence_dispatch(
+        &self,
+        effect: &mut acyclic_stream::CommitEffect,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        let mut observer = io.map(PreparationIo::history_io);
+        let mut work = observer
+            .as_mut()
+            .map(|observer| observer as &mut dyn crate::store::HistoryIo);
+        // One authority cut observes every ancestor actor pause and archive.
+        // These exact paths also fence the original dispatch commit, so
+        // archive delivery/cascade timing cannot admit new paid work.
+        let mut paths = Vec::new();
+        for path in &self.actor_admissions {
+            crate::executor::stock_vec_push(&mut paths, path.clone(), io)?;
+        }
+        let closed_start = paths.len();
+        if let Some((agent, ..)) = &self.agent_events {
+            for ancestor in agent.ancestors() {
+                let mut text = crate::executor::stock_string_copy(ancestor, io)?;
+                crate::executor::stock_string_push(
+                    &mut text,
+                    "/closed",
+                    u64::MAX,
+                    "archive path overflows",
+                    io,
+                )?;
+                let text_hold = io
+                    .map(|io| io.guard_owned(text.capacity() as u64))
+                    .transpose()?;
+                let closed = crate::distributed::stream_path(&text, &mut work)?;
+                drop(text);
+                drop(text_hold);
+                crate::executor::stock_vec_push(&mut paths, closed, io)?;
+            }
+        }
+        let _paths_hold = io
+            .map(|io| io.guard_owned((paths.capacity() * std::mem::size_of::<StreamPath>()) as u64))
+            .transpose()?;
+        let request = acyclic_stream::HeadsRequest {
+            limit: u32::try_from(paths.len()).map_err(|_| invalid(io))?,
+            paths: acyclic_stream::HeadSet::from_vec(paths),
+            retained: Default::default(),
+            durable_through: None,
+            projection: acyclic_stream::HeadProjection::History,
+            children: None,
+            at_least: Default::default(),
+        };
+        let observed =
+            crate::store::operations::heads_with_work(&self.stream, &request, &mut work).await?;
+        for (closed, head) in request.paths[closed_start..]
+            .iter()
+            .zip(&observed.heads[closed_start..])
+        {
+            if let Some(record) = head.as_ref().and_then(|head| head.last.as_ref()) {
+                return Err(Error::ExecutionControlled(crate::supervision::Control {
+                    source: crate::supervision::Position {
+                        stream: closed.clone(),
+                        sequence: record.sequence,
+                    },
+                    action: crate::supervision::Action::Stop,
+                    signal: None,
+                }));
+            }
+        }
+        for path in &request.paths[closed_start..] {
+            crate::executor::stock_vec_push(
+                &mut effect.conditions,
+                CommitCondition::Absent { path: path.clone() },
+                io,
+            )?;
+        }
+        for (path, head) in self
+            .actor_admissions
+            .iter()
+            .zip(&observed.heads[..closed_start])
+        {
+            let head = head.as_ref().ok_or_else(|| invalid(io))?;
+            let record = head.last.as_ref().ok_or_else(|| invalid(io))?;
+            let admission = acyclic_actors::local::AdmissionState::from_record(&record.value)
+                .map_err(|_| invalid(io))?;
+            if admission.paused {
+                return Err(Error::ExecutionControlled(crate::supervision::Control {
+                    source: crate::supervision::Position {
+                        stream: path.clone(),
+                        sequence: record.sequence,
+                    },
+                    action: crate::supervision::Action::Pause,
+                    signal: None,
+                }));
+            }
+            crate::executor::stock_vec_push(
+                &mut effect.conditions,
+                CommitCondition::Head {
+                    path: path.clone(),
+                    expected: head.tail,
+                    commit_id: record.commit_id,
+                },
+                io,
+            )?;
+        }
+        Ok(())
+    }
+}
+
 async fn condition<P: crate::store::JournalProvider + ?Sized>(
     provider: &Arc<P>,
     path: &StreamPath,
@@ -201,105 +314,11 @@ where
         if matches!(
             event,
             ExecutionEvent::ModelStarted { .. } | ExecutionEvent::ToolStarted { .. }
-        ) && (self.actor_admission.is_some() || self.agent_events.is_some())
+        ) && (!self.actor_admissions.is_empty() || self.agent_events.is_some())
         {
-            // One authority cut observes actor pause and every ancestor's archive.
-            // These exact paths also fence the original dispatch commit, so
-            // archive delivery/cascade timing cannot admit new paid work.
-            let mut paths = Vec::new();
-            if let Some(path) = &self.actor_admission {
-                crate::executor::stock_vec_push(&mut paths, path.clone(), io)?;
-            }
-            let closed_start = paths.len();
-            if let Some((agent, ..)) = &self.agent_events {
-                for ancestor in agent.ancestors() {
-                    let mut text = crate::executor::stock_string_copy(ancestor, io)?;
-                    crate::executor::stock_string_push(
-                        &mut text,
-                        "/closed",
-                        u64::MAX,
-                        "archive path overflows",
-                        io,
-                    )?;
-                    let text_hold = io
-                        .map(|io| io.guard_owned(text.capacity() as u64))
-                        .transpose()?;
-                    let closed = crate::distributed::stream_path(&text, &mut work)?;
-                    drop(text);
-                    drop(text_hold);
-                    crate::executor::stock_vec_push(&mut paths, closed, io)?;
-                }
-            }
-            let _paths_hold = io
-                .map(|io| {
-                    io.guard_owned((paths.capacity() * std::mem::size_of::<StreamPath>()) as u64)
-                })
-                .transpose()?;
-            let request = acyclic_stream::HeadsRequest {
-                limit: u32::try_from(paths.len()).map_err(|_| invalid(io))?,
-                paths: acyclic_stream::HeadSet::from_vec(paths),
-                retained: Default::default(),
-                durable_through: None,
-                projection: acyclic_stream::HeadProjection::History,
-                children: None,
-                at_least: Default::default(),
-            };
-            let observed =
-                crate::store::operations::heads_with_work(&self.stream, &request, &mut work)
-                    .await?;
-            for (closed, head) in request.paths[closed_start..]
-                .iter()
-                .zip(&observed.heads[closed_start..])
-            {
-                if let Some(record) = head.as_ref().and_then(|head| head.last.as_ref()) {
-                    return Err(Error::ExecutionControlled(crate::supervision::Control {
-                        source: crate::supervision::Position {
-                            stream: closed.clone(),
-                            sequence: record.sequence,
-                        },
-                        action: crate::supervision::Action::Stop,
-                        signal: None,
-                    }));
-                }
-            }
             let effect = derived
                 .get_or_insert_with(|| acyclic_stream::CommitEffect::hard(Vec::new(), Vec::new()));
-            for path in &request.paths[closed_start..] {
-                crate::executor::stock_vec_push(
-                    &mut effect.conditions,
-                    CommitCondition::Absent { path: path.clone() },
-                    io,
-                )?;
-            }
-            if let Some(path) = &self.actor_admission {
-                let head = observed
-                    .heads
-                    .first()
-                    .and_then(Option::as_ref)
-                    .ok_or_else(|| invalid(io))?;
-                let record = head.last.as_ref().ok_or_else(|| invalid(io))?;
-                let admission = acyclic_actors::local::AdmissionState::from_record(&record.value)
-                    .map_err(|_| invalid(io))?;
-                if admission.paused {
-                    return Err(Error::ExecutionControlled(crate::supervision::Control {
-                        source: crate::supervision::Position {
-                            stream: path.clone(),
-                            sequence: record.sequence,
-                        },
-                        action: crate::supervision::Action::Pause,
-                        signal: None,
-                    }));
-                }
-                crate::executor::stock_vec_push(
-                    &mut effect.conditions,
-                    CommitCondition::Head {
-                        path: path.clone(),
-                        expected: head.tail,
-                        commit_id: record.commit_id,
-                    },
-                    io,
-                )?;
-            }
+            self.fence_dispatch(effect, io).await?;
         }
         if !has_projection
             && matches!(

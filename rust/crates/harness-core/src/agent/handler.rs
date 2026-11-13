@@ -21,7 +21,7 @@ use acyclic_actors::{
     },
     local::{Creation, PreparedPublish, Store, Subscription},
 };
-use acyclic_stream::CommitEffect;
+use acyclic_stream::{CommitEffect, StreamProviderExt as _};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
@@ -35,6 +35,7 @@ pub const INBOX: &str = "inbox";
 mod tests;
 
 const REPLY_SUBSCRIPTION: &str = "reply-v1:";
+const ADMISSION_SUBSCRIPTION: &str = "ancestor-admission-v1";
 
 fn reply_subscription(watch: &super::ReplyWatch) -> Result<String, Error> {
     serde_json::to_string(watch)
@@ -134,6 +135,27 @@ pub(crate) struct Agents<P: crate::store::JournalProvider + ?Sized> {
 }
 
 impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
+    fn ancestor_admission(
+        &self,
+        within: &ActorReference,
+        agent: &AgentPath,
+        source: &acyclic_stream::StreamPath,
+    ) -> Result<bool, Error> {
+        for actor in Agents::<P>::actor_lineage(within, agent).take(agent.depth()) {
+            let actor = actor?;
+            if self
+                .agents
+                .store
+                .path(&actor)
+                .map_err(|error| Error::Actor(Box::new(error)))?
+                == *source
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Handler whose actors live under `store`'s root.
     pub fn new(store: Store<P>, driver: D, limits: ActorLimits) -> Result<Self, GuestError> {
         let digest = blake3::hash(include_str!("handler.rs").as_bytes());
@@ -355,6 +377,26 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         })
     }
 
+    /// Host-scoped actor identities from the root through this agent. This
+    /// walks only the validated ancestry, never children or namespace entries.
+    pub(crate) fn actor_lineage<'a>(
+        within: &'a ActorReference,
+        agent: &'a AgentPath,
+    ) -> impl ExactSizeIterator<Item = Result<ActorReference, Error>> + 'a {
+        agent.ancestors().map(move |ancestor| {
+            let id = ancestor
+                .rsplit('/')
+                .next()
+                .ok_or(Error::Path("agent ancestor has no identity"))?;
+            ActorReference::new(
+                within.account().as_bytes(),
+                within.namespace().as_str().as_bytes(),
+                id.as_bytes(),
+            )
+            .map_err(|_| Error::Path("agent id is not an actor id"))
+        })
+    }
+
     /// The actor of `agent` in `actor`'s account and namespace.
     pub(crate) fn actor(within: &ActorReference, agent: &AgentId) -> Result<ActorReference, Error> {
         ActorReference::new(
@@ -490,6 +532,103 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             }
             (Trigger::Alarm { generation, .. }, None) => {
                 (Wake::Alarm, cut.cursor, format!("alarm:{generation}"))
+            }
+            (
+                Trigger::Record {
+                    subscription,
+                    sequence,
+                },
+                Some(record),
+            ) if subscription == ADMISSION_SUBSCRIPTION => {
+                let bound = delivery
+                    .subscriptions
+                    .get(subscription)
+                    .ok_or(Error::Record("ancestor admission subscription is absent"))?;
+                let state = saved
+                    .as_ref()
+                    .filter(|state| state.turn.is_some())
+                    .ok_or(Error::Record("ancestor admission has no retained turn"))?;
+                if bound.cursor != *sequence
+                    || record.sequence != *sequence
+                    || !self.ancestor_admission(&delivery.actor, &state.path, &bound.path)?
+                {
+                    return Err(Error::Record(
+                        "ancestor admission delivery differs from its wait",
+                    ));
+                }
+                acyclic_actors::local::AdmissionState::from_record(&record.value)
+                    .map_err(|_| Error::Record("ancestor admission record is malformed"))?;
+                let (current, fence) = self
+                    .agents
+                    .store
+                    .provider()
+                    .latest_fenced(bound.path.clone(), None, Default::default())
+                    .await
+                    .map_err(Error::Stream)?;
+                let current = current.ok_or(Error::Record("ancestor admission is missing"))?;
+                let admission = acyclic_actors::local::AdmissionState::from_record(&current.value)
+                    .map_err(|_| Error::Record("ancestor admission record is malformed"))?;
+                if !admission.paused && failure.is_none() {
+                    let original = crate::supervision::Position {
+                        stream: bound.path.clone(),
+                        sequence: bound
+                            .cursor
+                            .checked_sub(1)
+                            .ok_or(Error::Record("ancestor pause cursor is zero"))?,
+                    };
+                    let run = crate::supervision::streams::paused_at(
+                        self.agents.store.provider().as_ref(),
+                        &state.path,
+                        &original,
+                    )
+                    .await
+                    .map_err(|error| Error::Turn(Box::new(error)))?;
+                    let event = crate::supervision::Event {
+                        version: 1,
+                        agent: state.path.clone(),
+                        run: Some(run),
+                        source: crate::supervision::Position {
+                            stream: bound.path.clone(),
+                            sequence: current.sequence,
+                        },
+                        event: crate::supervision::Lifecycle::Resumed {},
+                    };
+                    // Reopening must be visible before the continued model or
+                    // tool can wait on external IO. This one alarm schedules
+                    // the retained turn after that publication; it never polls.
+                    return Ok(Transition {
+                        response: None,
+                        checkpoint: checkpoint
+                            .cloned()
+                            .ok_or(Error::Record("ancestor wait has no checkpoint"))?,
+                        alarm: AlarmChange::Set {
+                            deadline_unix_ms: delivery.now_unix_ms,
+                        },
+                        pause: false,
+                        participant: None,
+                        effects: vec![CommitEffect::hard(
+                            vec![fence],
+                            vec![acyclic_stream::CommitMutation::Append {
+                                path: crate::supervision::streams::path(&state.path)
+                                    .map_err(|_| Error::Record("agent event path"))?,
+                                records: vec![
+                                    crate::supervision::streams::lifecycle_record(&event)
+                                        .map_err(|_| Error::Record("ancestor resume event"))?,
+                                ],
+                            }],
+                        )],
+                        subscriptions: vec![acyclic_actors::guest::SubscriptionChange::Remove {
+                            id: ADMISSION_SUBSCRIPTION.into(),
+                        }],
+                    });
+                }
+                // The original journal rechecks the current authority cut.
+                // A stale paused record must not hide a later owner resume.
+                (
+                    Wake::Alarm,
+                    cut.cursor,
+                    format!("{subscription}:{sequence}"),
+                )
             }
             (
                 Trigger::Record {
@@ -720,7 +859,31 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                     .wake(&Agents::<P>::actor(&delivery.actor, &agent)?)?,
             );
         }
-        let alarm = step.alarm;
+        let mut dependency = None;
+        let mut pause = false;
+        for out in &step.outs {
+            if let Out::Supervised { control, .. } = out
+                && control.action == crate::supervision::Action::Pause
+            {
+                if self.ancestor_admission(
+                    &delivery.actor,
+                    &step.state.path,
+                    &control.source.stream,
+                )? {
+                    dependency = Some(control.source.clone());
+                } else {
+                    pause = true;
+                }
+            }
+        }
+        if pause {
+            dependency = None;
+        }
+        let alarm = if dependency.is_some() {
+            Alarm::Clear
+        } else {
+            step.alarm
+        };
         let replacement = step.outs.iter().rev().find_map(|out| match out {
             Out::AwaitReplies(watches) => Some(watches),
             _ => None,
@@ -729,6 +892,10 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             step.state.turn.is_some() && matches!(step.state.phase, super::Phase::Waiting { .. });
         let mut subscriptions = Vec::new();
         for (id, _) in delivery.subscriptions.iter() {
+            if id == ADMISSION_SUBSCRIPTION {
+                subscriptions
+                    .push(acyclic_actors::guest::SubscriptionChange::Remove { id: id.clone() });
+            }
             if id.starts_with(REPLY_SUBSCRIPTION)
                 && (!waiting || replacement.is_some() || completed_reply.as_ref() == Some(id))
             {
@@ -745,7 +912,18 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 });
             }
         }
-        let pause = step.outs.iter().any(|out| matches!(out, Out::Supervised { control, .. } if control.action == crate::supervision::Action::Pause));
+        if let Some(source) = dependency {
+            subscriptions.push(acyclic_actors::guest::SubscriptionChange::Add {
+                id: ADMISSION_SUBSCRIPTION.into(),
+                path: source.stream,
+                from: Some(
+                    source
+                        .sequence
+                        .checked_add(1)
+                        .ok_or(Error::Record("ancestor admission cursor overflows"))?,
+                ),
+            });
+        }
         Ok(Transition {
             pause,
             response: None,

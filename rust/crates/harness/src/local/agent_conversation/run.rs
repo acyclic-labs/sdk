@@ -195,7 +195,13 @@ impl Conversation {
                     }
                     if event.run.is_some() && run != event.run { continue; }
                     match event.event {
-                        Lifecycle::Paused { signal } => return Ok(RunOutcome::Terminal { action: Action::Pause, signal }),
+                        Lifecycle::Paused { signal } => {
+                            if let Some(run) = event.run
+                                && feed.run_control(run).await?.is_some_and(|through| through > position.sequence) {
+                                continue;
+                            }
+                            return Ok(RunOutcome::Terminal { action: Action::Pause, signal });
+                        }
                         Lifecycle::Stopped { signal } => return Ok(RunOutcome::Terminal { action: Action::Stop, signal }),
                         _ => {}
                     }
@@ -327,6 +333,183 @@ mod tests {
         assert!(
             provider.request(1).is_none(),
             "resume re-dispatched an original model call"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn inherited_pause_recovery_keeps_current_pauses_and_retires_resumed_ones() -> Result<()>
+    {
+        use crate::agent::{Delivered, InboxRecord, IntentId, Sender, SpawnOutcome, SpawnRequest};
+        let (entered, entering) = oneshot::channel();
+        let (release, released) = oneshot::channel();
+        let gate = Mutex::new(Some((entered, released)));
+        let provider = Arc::new(
+            ScriptedModelProvider::new([ScriptedTurn::Text("completed".into())])
+                .with_dispatch_observer(move |_| {
+                    let next = gate.lock().unwrap().take();
+                    Box::pin(async move {
+                        if let Some((entered, released)) = next {
+                            let _ = entered.send(());
+                            released.await.map_err(failed)?;
+                        }
+                        Ok(())
+                    })
+                }),
+        );
+        let directory = tempfile::tempdir().map_err(failed)?;
+        let project = volume(directory.path()).await?;
+        let harness = Arc::new(
+            open_scripted(volume_config(directory.path(), project, provider.clone())?).await?,
+        );
+        let owner = Conversation::open(harness.connect().await?);
+        let (agents, root) = harness.agents().await?;
+        let profile = harness
+            .agents
+            .get()
+            .ok_or_else(unexpected)?
+            .server()
+            .bound()
+            .child_profile(root, "worker")
+            .await
+            .map_err(failed)?;
+        let by = Sender::User {
+            principal: "inherited-pause-recovery".into(),
+        };
+        let spawn = InboxRecord::Spawn(SpawnRequest {
+            by: by.clone(),
+            id: IntentId::try_from("recovery-child").map_err(failed)?,
+            brief: None,
+            profile,
+            history: None,
+        });
+        let Delivered::Committed { inbox } =
+            agents.send(root, &by, &spawn).await.map_err(failed)?
+        else {
+            return Err(unexpected());
+        };
+        let (intent, _) = crate::agent::requested_child(root, inbox).map_err(failed)?;
+        let SpawnOutcome::Spawned { child } =
+            agents.spawned(root, inbox, &intent).await.map_err(failed)?
+        else {
+            return Err(unexpected());
+        };
+        let child = owner.select(child).await?;
+        let mut owner_feed = owner.connection.supervision_own().await?;
+        owner
+            .publish_files(
+                FileRoot::Private {},
+                crate::OperationId::new(),
+                vec![ClientFileChange {
+                    path: "control/pause".into(),
+                    expected: None,
+                    text: Some(String::new()),
+                }],
+            )
+            .await?;
+        loop {
+            if matches!(owner_feed.next().await?.event, Lifecycle::Paused { .. }) {
+                break;
+            }
+        }
+        let operation = crate::OperationId::new();
+        let policy = Policy::default();
+        // Both the first observation and recovery must retain a current pause.
+        for _ in 0..2 {
+            assert!(matches!(
+                child
+                    .run_until_goal(operation, "Finish the objective.", &policy)
+                    .await?,
+                RunOutcome::Terminal {
+                    action: Action::Pause,
+                    signal: None
+                }
+            ));
+            assert!(
+                provider.request(0).is_none(),
+                "ancestor pause admitted paid work"
+            );
+        }
+        assert!(
+            child
+                .connection
+                .supervision_own()
+                .await?
+                .owner_control()
+                .await?
+                .is_none(),
+            "inherited pause invented a child owner control"
+        );
+        let pause = owner
+            .files(FileRoot::Private {}, vec!["control/pause".into()], None)
+            .await?;
+        owner
+            .publish_files(
+                FileRoot::Private {},
+                crate::OperationId::new(),
+                vec![ClientFileChange {
+                    path: "control/pause".into(),
+                    expected: pause.files["control/pause"]
+                        .as_ref()
+                        .and_then(|file| file.original().cloned()),
+                    text: None,
+                }],
+            )
+            .await?;
+        loop {
+            if matches!(owner_feed.next().await?.event, Lifecycle::Resumed {}) {
+                break;
+            }
+        }
+        // Wait for the child's own durable reopening, not a timer or a parent read.
+        let mut child_feed = child.connection.supervision_own().await?;
+        loop {
+            if matches!(child_feed.next().await?.event, Lifecycle::Resumed {}) {
+                break;
+            }
+        }
+        let recovered = child.run_until_goal(operation, "Finish the objective.", &policy);
+        tokio::pin!(recovered);
+        tokio::select! {
+            result = &mut recovered => panic!("recovery returned a historical ancestor pause: {result:?}"),
+            result = entering => result.map_err(failed)?,
+        }
+        let goal = child
+            .files(FileRoot::Home {}, vec!["GOAL.md".into()], None)
+            .await?;
+        child
+            .publish_files(
+                FileRoot::Home {},
+                crate::OperationId::new(),
+                vec![ClientFileChange {
+                    path: "GOAL.md".into(),
+                    expected: goal.files["GOAL.md"]
+                        .as_ref()
+                        .and_then(|file| file.original().cloned()),
+                    text: Some("---\nstatus: done\n---\nFinish the objective.\n".into()),
+                }],
+            )
+            .await?;
+        release.send(()).map_err(|_| unexpected())?;
+        assert!(
+            matches!(recovered.await?, RunOutcome::Goal { goal } if goal.status == GoalStatus::Done)
+        );
+        assert!(
+            matches!(child.run_until_goal(operation, "Finish the objective.", &policy).await?,
+            RunOutcome::Goal { goal } if goal.status == GoalStatus::Done)
+        );
+        assert!(
+            provider.request(1).is_none(),
+            "recovery re-dispatched an original model call"
+        );
+        assert!(
+            child
+                .connection
+                .supervision_own()
+                .await?
+                .owner_control()
+                .await?
+                .is_none()
         );
         Ok(())
     }

@@ -14,13 +14,6 @@ where
         *self.verified.get_mut() = SummaryCache::default();
     }
 
-    /// Use the original host alarm clock for tool quiet and preparation deadlines.
-    #[must_use]
-    pub fn with_clock(mut self, clock: Arc<dyn acyclic_actors::local::Clock>) -> Self {
-        self.clock = clock;
-        self
-    }
-
     pub(crate) fn with_run_admission(
         mut self,
         source: Option<crate::supervision::RunAdmissionSource>,
@@ -45,8 +38,8 @@ where
         self
     }
 
-    pub(crate) fn with_actor_admission(mut self, path: Option<acyclic_stream::StreamPath>) -> Self {
-        self.actor_admission = path;
+    pub(crate) fn with_actor_admissions(mut self, paths: Vec<acyclic_stream::StreamPath>) -> Self {
+        self.actor_admissions = paths;
         self.invalidate_execution_caches();
         self
     }
@@ -179,12 +172,12 @@ where
             bound_selection: None,
             preceding_request: None,
             stop: None,
+            clock: None,
             boundary: None,
             agent_approvals: None,
             execution: None,
             agent_events: None,
-            clock: Arc::new(acyclic_actors::local::SystemClock),
-            actor_admission: None,
+            actor_admissions: Vec::new(),
             run_admission: None,
             verified: tokio::sync::Mutex::new(SummaryCache::default()),
             history_read_limits: None,
@@ -281,6 +274,13 @@ where
     pub fn with_stop(mut self, stop: acyclic_actors::guest::CancellationToken) -> Self {
         self.verifier.bind_checkpoint_stop(&stop);
         self.stop = Some(stop);
+        self
+    }
+
+    /// Uses the actor owner's clock for preparation and tool quiet deadlines.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn acyclic_actors::local::Clock>) -> Self {
+        self.clock = Some(clock);
         self
     }
 

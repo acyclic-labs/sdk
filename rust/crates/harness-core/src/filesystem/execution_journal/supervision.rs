@@ -40,11 +40,12 @@ pub(super) enum Inputs<'a> {
 struct InvocationSignature<'a> {
     name: &'a str,
     arguments: Arguments<'a>,
+    target: Option<&'a str>,
 }
 
 struct Arguments<'a> {
     value: &'a serde_json::Value,
-    command: Option<&'a str>,
+    shell: bool,
 }
 
 impl Serialize for Arguments<'_> {
@@ -52,9 +53,9 @@ impl Serialize for Arguments<'_> {
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
-        // Preserve execution inputs, including cwd, target and lifetime.
-        // Only capture and return-scheduling options leave the check unchanged.
-        if self.command.is_none() {
+        // Preserve execution inputs, including exact source/argv, cwd, target
+        // and lifetime. Only capture and return scheduling leave them unchanged.
+        if !self.shell {
             return self.value.serialize(serializer);
         }
         let Some(arguments) = self.value.as_object() else {
@@ -305,7 +306,7 @@ where
         else {
             return Ok(None);
         };
-        let (invocation, _invocation_hold) = match invocation {
+        let (invocation, target, _invocation_hold) = match invocation {
             Invocation::Published(file) => {
                 let (value, hold) = crate::executor::load_json::<crate::tool::RecordedInvocation>(
                     self,
@@ -313,9 +314,9 @@ where
                     io,
                 )
                 .await?;
-                (Cow::Owned(value.invocation), hold)
+                (Cow::Owned(value.invocation), value.target, hold)
             }
-            Invocation::Proposed(value) => (Cow::Borrowed(value), None),
+            Invocation::Proposed(value) => (Cow::Borrowed(value), None, None),
         };
         let command = (invocation.name == "shell")
             .then(|| {
@@ -331,8 +332,9 @@ where
                 name: &invocation.name,
                 arguments: Arguments {
                     value: &invocation.arguments,
-                    command,
+                    shell: invocation.name == "shell",
                 },
+                target: target.as_deref(),
             },
             io,
         )?;
@@ -356,7 +358,17 @@ where
                 )
                 .await?;
             if let Some(quiet_ms) = policy.quiet_ms {
-                let at_ms = self.clock.now_unix_ms();
+                let at_ms = self
+                    .clock
+                    .as_ref()
+                    .ok_or_else(|| {
+                        crate::executor::stock_boundary(
+                            io,
+                            crate::wire::ErrorCode::Invalid,
+                            "quiet supervision has no original host clock",
+                        )
+                    })?
+                    .now_unix_ms();
                 self.tool_job_projection(
                     &mut projection,
                     crate::supervision::tool_jobs::Record {
