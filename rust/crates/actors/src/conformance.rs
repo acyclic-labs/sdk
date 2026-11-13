@@ -943,6 +943,22 @@ impl<P: StreamProvider + ?Sized> Isolated<P> {
         Ok(actor)
     }
 
+    /// Append `command` to `name`'s inbox with its durable activation.
+    async fn deliver(&self, name: &str, command: &str) -> Result<(), Failure> {
+        let actor = self.actor(name)?;
+        let mut publication = PreparedPublish::foreign(self.key(&format!("{name}/{command}"))?);
+        publication.join(self.store.activation(&actor)?)?;
+        publication.join(CommitEffect::hard(
+            Vec::new(),
+            vec![CommitMutation::Append {
+                path: under(&self.root, &format!("inbox/{name}"))?,
+                records: vec![AppendRecord::from(Bytes::from(command.to_owned()))],
+            }],
+        ))?;
+        self.store.submit(publication).await?;
+        Ok(())
+    }
+
     /// A node of this namespace running [`Package`] on `clock`.
     fn node(&self, clock: std::sync::Arc<dyn Clock>) -> Result<crate::local::Runtime<P>, Failure> {
         Ok(crate::local::Runtime::new(
@@ -1078,15 +1094,24 @@ pub async fn placement<P: StreamProvider + ?Sized>(
         matches!(owner.place(first.clone(), 1).await, Err(Error::Conflict)),
         "a deposed node reused its old command",
     )?;
-    // The deposed node may observe, but it never claims back without a command.
-    owner.drain_actor(&first).await?;
+    // The deposed node may observe new work, but it never claims back or
+    // consumes it without a command.
+    lab.deliver("first", "emit").await?;
     lab.require(
-        lab.state(&first).await?.epoch() == 2,
+        matches!(
+            owner.drain_actor(&first).await,
+            Ok(()) | Err(Error::Conflict)
+        ),
+        "a deposed node failed other than by its fence",
+    )?;
+    let deposed = lab.state(&first).await?;
+    lab.require(
+        deposed.epoch() == 2 && deposed.cursor("inbox") == Some(1),
         "a deposed node claimed back",
     )?;
     other.drain_actor(&first).await?;
     lab.require(
-        lab.published("first").await? == 1 && lab.published("second").await? == 1,
+        lab.published("first").await? == 2 && lab.published("second").await? == 1,
         "fenced nodes did not publish each input exactly once",
     )?;
 

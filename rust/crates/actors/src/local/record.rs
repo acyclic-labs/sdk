@@ -13,8 +13,8 @@ pub const STATE_RECORD_OVERHEAD: usize =
     152 + STATE_FORMAT_V1.len() + 2 + crate::escrow::MAX_RECORD_LEN;
 // The first byte has forbidden protobuf wire type 7: an older unversioned
 // decoder MUST fail rather than discard metadata and subsequently rewrite it.
-// Version 2 keeps funding in its host-owned field. Guest metadata from version
-// 1 cannot be promoted into funding authority by the state reader.
+// Version 1 of the `ACS` domain keeps funding in its host-owned field, so guest
+// metadata is never promoted into funding authority by the state reader.
 const STATE_FORMAT_V1: &[u8] = b"\xffACS\x01";
 /// Framing bytes each subscription adds beyond its id and path, at most.
 pub const SUBSCRIPTION_OVERHEAD: usize = 32;

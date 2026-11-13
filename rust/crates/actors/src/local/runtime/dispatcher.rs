@@ -98,8 +98,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 self.store.activation(actor)
             })
             .collect::<Result<Vec<_>, Error>>()?;
-        let mut publication =
-            store.prepare(&previous, state, Vec::new(), key(&previous, &operation)?)?;
+        let mut publication = store.prepare(
+            &previous,
+            state,
+            Vec::new(),
+            key(&previous, &operation)?,
+            false,
+        )?;
         for effect in carried {
             publication.join_host(effect)?;
         }

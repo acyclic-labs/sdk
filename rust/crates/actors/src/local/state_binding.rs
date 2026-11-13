@@ -356,7 +356,9 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
         self.fenced = true;
         let effects = self.effects(AlarmChange::Keep, None)?;
         let state = self.snapshot.state.take().ok_or(Error::Conflict)?;
-        let mut prepared = self.store.prepare(&self.snapshot, state, Vec::new(), key)?;
+        let mut prepared = self
+            .store
+            .prepare(&self.snapshot, state, Vec::new(), key, false)?;
         for effect in effects {
             prepared.join_host(effect)?;
         }
@@ -380,7 +382,7 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
         mut self,
         trigger: &crate::guest::Trigger,
         delivered: Option<&acyclic_stream::Record>,
-        mut transition: crate::guest::Transition,
+        transition: crate::guest::Transition,
         key: IdempotencyKey,
     ) -> Result<super::PreparedPublish, Error> {
         if self.fenced {

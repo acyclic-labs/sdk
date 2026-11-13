@@ -272,11 +272,21 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
 
     /// Select the stable scheduling partitions assigned by placement before
     /// starting this host. Local single-node hosts own all partitions by
-    /// default. This routing assignment never grants a per-actor epoch.
-    #[must_use]
-    pub fn with_scheduling_shards(mut self, shards: impl IntoIterator<Item = u16>) -> Self {
+    /// default. This routing assignment never grants a per-actor epoch. A
+    /// partition outside the store's count would follow a log no producer
+    /// writes, so it is refused before the dispatcher starts.
+    pub fn with_scheduling_shards(
+        mut self,
+        shards: impl IntoIterator<Item = u16>,
+    ) -> Result<Self, Error> {
+        let count = self.store.scheduling_shards();
         self.scheduling_shards = shards.into_iter().collect();
-        self
+        if self.scheduling_shards.iter().any(|&shard| shard >= count) {
+            return Err(Error::Invalid(
+                "scheduling shard outside the store's partitions",
+            ));
+        }
+        Ok(self)
     }
 
     /// Whether an actor belongs to this runtime's discovery scope.
@@ -1412,8 +1422,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         record: record.clone(),
                         subscriptions,
                     };
-                    let invoked =
-                        |delivery| self.handler.on_failure(delivery, state.checkpoint(), failure);
+                    let invoked = |delivery| {
+                        self.handler
+                            .on_failure(delivery, state.checkpoint(), failure)
+                    };
                     let failure = match self
                         .handled(
                             inner,

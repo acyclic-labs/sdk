@@ -431,7 +431,7 @@ async fn a_replacement_host_fires_alarms_armed_before_the_checkpoint() -> TestRe
             Arc::new(Package::new()?),
             Arc::new(clock) as Arc<dyn Clock>,
         )
-        .with_scheduling_shards([shard]);
+        .with_scheduling_shards([shard])?;
         Ok::<_, Box<dyn std::error::Error>>((runtime, control))
     };
     let (first, _control) = host(100)?;

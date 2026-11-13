@@ -341,7 +341,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             }),
             resolution: 0,
         });
-        let mut prepared = self.prepare(previous, state, Vec::new(), key)?;
+        let mut prepared = self.prepare(previous, state, Vec::new(), key, false)?;
         for effect in [
             acyclic_stream::CommitEffect::hard(
                 vec![CommitCondition::Absent {

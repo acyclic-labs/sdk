@@ -37,7 +37,18 @@ async fn shard_assignment_isolates_wakes_and_checkpoint_progress() -> TestResult
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
     )
-    .with_scheduling_shards([shard]);
+    .with_scheduling_shards([shard])?;
+    assert!(matches!(
+        Runtime::new(
+            Store::new(Arc::clone(&provider), root()?),
+            Arc::new(Package::new()?),
+            Arc::new(SystemClock),
+        )
+        .with_scheduling_shards([store.scheduling_shards()]),
+        Err(Error::Invalid(
+            "scheduling shard outside the store's partitions"
+        ))
+    ));
     host.place(first.clone(), 1).await?;
     assert!(matches!(
         host.place(second.clone(), 1).await,
@@ -53,7 +64,7 @@ async fn shard_assignment_isolates_wakes_and_checkpoint_progress() -> TestResult
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
     )
-    .with_scheduling_shards([shard]);
+    .with_scheduling_shards([shard])?;
     replacement.place(first.clone(), 2).await?;
     assert_eq!(
         replacement.store().activation_record(&first)?.0,
@@ -173,6 +184,66 @@ async fn restart_work_is_independent_of_the_dormant_population() -> TestResult {
         (large.control(), large.data()),
         "restart work grew with dormant actors"
     );
+    Ok(())
+}
+
+/// The target's epoch before and after a fresh host serves one forged
+/// wake for it and one for a never-created actor, and its output count. The
+/// wake is genuine when `input` joins it. A wake entry is only a hint: delivery reads the
+/// actor's own committed state, and only work admits placement.
+async fn after_wake(
+    input: bool,
+) -> Result<(Option<u64>, Option<u64>, usize), Box<dyn std::error::Error>> {
+    let one = std::num::NonZeroU16::MIN;
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one);
+    let target = spawn_with(&store, "forged-target", &[b"emit"]).await?;
+    let host = || {
+        Ok::<_, Box<dyn std::error::Error>>(Runtime::new(
+            Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one),
+            Arc::new(Package::new()?),
+            Arc::new(SystemClock),
+        ))
+    };
+    serve_to_checkpoint(&host()?).await?;
+    let before = store.load(&target).await?.state().map(State::epoch);
+    let ghost = actor("forged-ghost")?;
+    let mut forged = PreparedPublish::foreign(key("forged/wake")?);
+    forged.join(store.activation(&target)?)?;
+    forged.join(store.activation(&ghost)?)?;
+    if input {
+        forged.join(acyclic_stream::CommitEffect::hard(
+            Vec::new(),
+            vec![CommitMutation::Append {
+                path: StreamPath::new("agents/forged-target")?,
+                records: vec![Bytes::from_static(b"emit").into()],
+            }],
+        ))?;
+    }
+    PreparedPublish::settle(&provider.commit(forged.into_request()?).await?)?;
+    serve_to_checkpoint(&host()?).await?;
+    assert!(
+        store.load(&ghost).await?.state().is_none(),
+        "a wake created an actor"
+    );
+    Ok((
+        before,
+        store.load(&target).await?.state().map(State::epoch),
+        records(&*provider, "out/forged-target").await?.len(),
+    ))
+}
+
+/// A wake entry carries no authority: without committed input it claims,
+/// creates and delivers nothing. The control appends real input and must
+/// deliver it through the same wake.
+#[tokio::test]
+async fn a_wake_without_work_claims_and_delivers_nothing() -> TestResult {
+    let (before, after, output) = after_wake(false).await?;
+    assert!(before.is_some());
+    assert_eq!(after, before, "a forged wake moved the fence");
+    assert_eq!(output, 1, "a forged wake delivered");
+    let (_, _, delivered) = after_wake(true).await?;
+    assert_eq!(delivered, 2, "the control's genuine wake must deliver");
     Ok(())
 }
 
@@ -311,7 +382,7 @@ async fn resumed_after_checkpoint(
     let snapshot = store.load(&actor).await?;
     let mut state = snapshot.state().ok_or("missing actor state")?.clone();
     state.paused = false;
-    let mut resume = store.prepare(&snapshot, state, Vec::new(), key("resumed/resume")?)?;
+    let mut resume = store.prepare(&snapshot, state, Vec::new(), key("resumed/resume")?, false)?;
     if forget {
         let shard = store.scheduling_path(store.scheduling_shard(&actor))?;
         resume.request.effects[0]

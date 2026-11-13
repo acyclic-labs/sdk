@@ -1075,10 +1075,12 @@ async fn a_replay_with_nothing_to_deliver_settles_a_dead_owners_participant() ->
         );
         runtime.track(actor.clone())?;
         runtime.drain_actor(&actor).await?;
-        // A read cut cannot know its custody settled: at least once.
+        // A read cut cannot know its custody settled, so the replay settles
+        // it unless a later write already did: that write clears the marker,
+        // so the custody settles exactly once either way.
         assert_eq!(
             counts.committed.load(Ordering::SeqCst),
-            settled + 1,
+            1,
             "paused: {paused}"
         );
         assert_eq!(

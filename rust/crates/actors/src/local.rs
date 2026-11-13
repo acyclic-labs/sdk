@@ -1095,7 +1095,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 if let Some(paused) = paused {
                     state.paused = paused;
                 }
-                let mut prepared = self.prepare(previous, state, Vec::new(), key)?;
+                let mut prepared = self.prepare(previous, state, Vec::new(), key, false)?;
                 for effect in effects {
                     prepared.join_host(effect)?;
                 }
@@ -1127,7 +1127,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     .ok_or(Error::Conflict)?
                     .clone();
                 state.paused = paused;
-                self.submit(self.prepare(previous, state, Vec::new(), key)?)
+                self.submit(self.prepare(previous, state, Vec::new(), key, false)?)
                     .await
             }
         )
@@ -1173,7 +1173,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             custody: false,
             consumed: None,
         };
-        self.prepare(previous, deleted, Vec::new(), key)
+        self.prepare(previous, deleted, Vec::new(), key, false)
     }
 
     /// Atomically publish the checkpoint, consumed cursor, alarm and effects.
@@ -1254,7 +1254,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         let Publication {
             trigger,
             delivered,
-            mut transition,
+            transition,
             key,
         } = publication;
         let named = match trigger {
@@ -1298,8 +1298,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 },
             }),
         };
-        let mut state = next(state, &previous.path, original_alarm, trigger, &transition)?;
-        state.custody = intent.is_some();
+        let state = next(state, &previous.path, original_alarm, trigger, &transition)?;
         // The participant is a request from a possibly untrusted handler:
         // the host composer validates it before any custody exists.
         let composition = match &transition.participant {
@@ -1319,7 +1318,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     )?,
             ),
         };
-        let mut prepared = self.prepare(previous, state, transition.effects, key)?;
+        let mut prepared =
+            self.prepare(previous, state, transition.effects, key, intent.is_some())?;
         for effect in completion {
             prepared.join_host(effect)?;
         }
@@ -1484,13 +1484,19 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         )
     }
 
+    /// The one constructor of every state write. Committed custody is
+    /// settled before the write commits (see [`Self::submit_retained`]), so the
+    /// new state holds custody only when this write composes a participant:
+    /// `composed`, never a copy of the previous state's marker.
     fn prepare(
         &self,
         previous: &Snapshot,
-        state: State,
+        mut state: State,
         effects: Vec<CommitEffect>,
         key: IdempotencyKey,
+        composed: bool,
     ) -> Result<PreparedPublish, Error> {
+        state.custody = composed;
         let (own, created) = match previous.anchor {
             Some(commit_id) => (
                 CommitCondition::Head {
