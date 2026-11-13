@@ -85,8 +85,8 @@ impl<K: Clone + Eq + Hash, C> NamedViews<K, C> {
     }
 
     /// Up to `limit` listed views from serial `first` on, in issue order,
-    /// for a backend whose root listing is synthetic (FUSE's).
-    #[cfg(target_os = "linux")]
+    /// for a backend whose root listing is synthetic (FUSE or NFS).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn listed_from(&self, first: u64, limit: usize) -> Vec<(u64, K)> {
         self.names
             .read()

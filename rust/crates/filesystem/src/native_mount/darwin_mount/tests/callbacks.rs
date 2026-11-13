@@ -181,13 +181,14 @@ fn rejected_allocations_and_copies_leave_source_contents_unchanged() -> TestResu
             }
         };
         let context = callback_context(&source, budget, &crate::CancellationToken::new())?;
+        let target = super::super::requests::CallbackTarget::View(Arc::clone(&context));
         if copying {
             let incoming = b"after";
             assert_eq!(
                 // SAFETY: context, terminated path and input remain alive through the callback.
                 unsafe {
                     acyclic_fs_darwin_mount_write(
-                        Arc::as_ptr(&context) as usize,
+                        &target as *const super::super::requests::CallbackTarget as usize,
                         c"/limited".as_ptr(),
                         0,
                         incoming.as_ptr().cast(),
@@ -366,11 +367,12 @@ fn callback_failure(context: &DarwinMountContext) -> (NativeMountError, WorkCoun
 }
 
 fn getattr(context: &Arc<DarwinMountContext>, path: &CStr) -> c_int {
+    let target = super::super::requests::CallbackTarget::View(Arc::clone(context));
     let mut output = std::mem::MaybeUninit::<NativeStat>::uninit();
     // SAFETY: the context and native input/output remain live through the call.
     unsafe {
         acyclic_fs_darwin_mount_getattr(
-            Arc::as_ptr(context) as usize,
+            &target as *const super::super::requests::CallbackTarget as usize,
             path.as_ptr(),
             0,
             output.as_mut_ptr(),
@@ -379,11 +381,12 @@ fn getattr(context: &Arc<DarwinMountContext>, path: &CStr) -> c_int {
 }
 
 fn create(context: &Arc<DarwinMountContext>, path: &CStr) -> (c_int, u64) {
+    let target = super::super::requests::CallbackTarget::View(Arc::clone(context));
     let mut handle = 0;
     // SAFETY: the context and native path/handle remain live through the call.
     let status = unsafe {
         acyclic_fs_darwin_mount_create(
-            Arc::as_ptr(context) as usize,
+            &target as *const super::super::requests::CallbackTarget as usize,
             path.as_ptr(),
             0o644,
             context.mount_uid,
@@ -410,7 +413,8 @@ fn fsync_keeps_its_open_handle(bypass_handle: bool) -> TestResult {
         0,
         &work,
     )?;
-    let address = &context as *const DarwinMountContext as usize;
+    let target = super::super::requests::CallbackTarget::View(Arc::new(context));
+    let address = &target as *const super::super::requests::CallbackTarget as usize;
     let name = CString::new("/sync-owner")?;
     // SAFETY: the context and terminated path remain live through this call.
     assert_eq!(
@@ -464,7 +468,7 @@ fn view_ids_do_not_alias(substitute_receivers_handle: bool) -> TestResult {
     )?;
     // The same source deliberately supplies identical FileIds to both views,
     // as two forks do. The provider must still issue distinct native ids.
-    let second = test_context(&source, &work)?;
+    let second = Arc::new(test_context(&source, &work)?);
     let file_id = first.lookup(&path, &work)?.node.file_id;
     let first_inode = first.inode(file_id, &work)?;
     let second_inode = second.inode(file_id, &work)?;
@@ -484,6 +488,7 @@ fn view_ids_do_not_alias(substitute_receivers_handle: bool) -> TestResult {
     };
     let first_handle = open(&first)?;
     let second_handle = open(&second)?;
+    let target = super::super::requests::CallbackTarget::View(Arc::clone(&second));
     assert_ne!(first_handle, second_handle);
     let foreign = if substitute_receivers_handle {
         second_handle
@@ -494,7 +499,7 @@ fn view_ids_do_not_alias(substitute_receivers_handle: bool) -> TestResult {
     // handle lookup, and this deliberately foreign id must never find a file.
     let status = unsafe {
         acyclic_fs_darwin_mount_fsync(
-            &second as *const DarwinMountContext as usize,
+            &target as *const super::super::requests::CallbackTarget as usize,
             std::ptr::null(),
             foreign,
         )
@@ -508,7 +513,7 @@ fn view_ids_do_not_alias(substitute_receivers_handle: bool) -> TestResult {
     assert_eq!(
         unsafe {
             acyclic_fs_darwin_mount_fsync(
-                &second as *const DarwinMountContext as usize,
+                &target as *const super::super::requests::CallbackTarget as usize,
                 std::ptr::null(),
                 second_handle,
             )

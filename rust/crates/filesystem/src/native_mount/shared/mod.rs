@@ -29,20 +29,19 @@
 // FUSE sessions drain through their kernel connection instead.
 #[cfg(any(target_os = "macos", windows, test))]
 pub(super) mod callback_gate;
-// Only the shared instances of these OSes are built on the core yet; the
-// macOS NFS adapter plugs into the same modules.
-#[cfg(any(target_os = "linux", windows, loom))]
+// Every native adapter uses the same instance and view ownership core.
+#[cfg(any(target_os = "linux", target_os = "macos", windows, loom))]
 pub(super) mod instances;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(super) mod metering;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(super) mod outcome;
-#[cfg(any(target_os = "linux", windows, loom))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows, loom))]
 pub(super) mod ready;
 mod root;
-#[cfg(any(target_os = "linux", windows, loom))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows, loom))]
 pub(super) mod view_table;
-#[cfg(any(target_os = "linux", windows, loom))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows, loom))]
 pub(super) mod views;
 
 #[cfg(windows)]

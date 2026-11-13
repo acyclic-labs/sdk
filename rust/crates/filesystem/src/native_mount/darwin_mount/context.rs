@@ -31,6 +31,7 @@ pub(super) struct CacheEpochs {
 }
 
 pub(super) struct DarwinMountContext {
+    pub(super) routing: Option<super::shared::ViewRouting>,
     pub(super) source: Arc<dyn MountFilesystem>,
     pub(super) clock: super::super::clock::Clock,
     pub(super) handler_failure: Arc<DarwinOwned<Mutex<DarwinCallbackState>>>,
@@ -117,6 +118,7 @@ impl DarwinMountContext {
             (meter.budget, meter.cancellation().clone())
         };
         Ok(Self {
+            routing: None,
             source,
             clock: super::super::clock::Clock::capture(),
             writable,
@@ -366,6 +368,9 @@ impl DarwinMountContext {
         };
         let mut files = self.files.write().map_err(|_| driver_errno(libc::EIO))?;
         grow_map(&mut files, work)?;
+        if let Some(routing) = &self.routing {
+            routing.opened(handle)?;
+        }
         files.insert(handle, entry);
         Ok(handle)
     }

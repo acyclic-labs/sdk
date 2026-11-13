@@ -60,6 +60,7 @@ mod reclaim;
 pub(in crate::native_mount) use reclaim::reclaim_stale_mounts;
 
 mod context;
+mod shared;
 use context::*;
 
 mod requests;

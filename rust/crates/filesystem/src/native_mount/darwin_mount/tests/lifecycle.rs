@@ -286,7 +286,7 @@ fn actual_sdk_prebirth_interrupt_returns_without_creating_a_namespace() -> TestR
             argc,
             pointers.as_ptr().cast(),
             destination.as_ptr(),
-            Arc::as_ptr(&context) as usize,
+            &context as *const super::super::requests::CallbackTarget as usize,
             report_mounted,
             Arc::as_ptr(&resources).cast_mut().cast(),
             &mut interrupted,
