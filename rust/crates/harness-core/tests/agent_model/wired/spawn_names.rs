@@ -95,10 +95,21 @@ impl acyclic_harness_core::filesystem::TurnContext for ProjectTasks {
         Box::pin(async move {
             let entry = WorkspaceTable::primary_in(&agent.volumes)
                 .ok_or_else(|| acyclic_harness_core::Error::NotFound("project".into()))?;
+            let home = agent
+                .volumes
+                .iter()
+                .find(|binding| binding.role == acyclic_harness_core::agent::WorkspaceRole::Home)
+                .and_then(|binding| binding.as_volume())
+                .ok_or_else(|| acyclic_harness_core::Error::NotFound("home".into()))?;
             let harness = self.harness.with_workspace(
                 None,
                 acyclic_harness_core::runtime::ContentBindings {
                     volume: entry.volume()?.clone(),
+                    reader: authority.content.reader.clone(),
+                    writer: None,
+                },
+                acyclic_harness_core::runtime::ContentBindings {
+                    volume: home.clone(),
                     reader: authority.content.reader.clone(),
                     writer: None,
                 },

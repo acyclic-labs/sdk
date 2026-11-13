@@ -272,7 +272,7 @@ proptest! {
                 current_input_index: Some(2),
                 ..Default::default()
             };
-            let (prefix, _) = crate::context::clone_context(&source, Some(2), &mut None)?;
+            let (prefix, _) = crate::context::clone_context_range(&source, 0..2, &mut None)?;
             let output = journal.stage(input.operation_id, "summary", b"summary", "text/plain", None)?.await?;
             let summary = crate::context::ContextSummary {
                         operation_id: input.operation_id,

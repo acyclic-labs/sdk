@@ -182,7 +182,7 @@ async fn managed_context_preserves_success_and_reduces_total_input_across_follow
         let total = requests.into_iter().try_fold(0_u64, |total, request| {
             let prepared = crate::model::PreparedModelRequest::prepare(
                 request,
-                crate::Limits::default(),
+                crate::conversation::Limits::default(),
                 None,
             )?;
             let count = input_cost(&prepared)?;
