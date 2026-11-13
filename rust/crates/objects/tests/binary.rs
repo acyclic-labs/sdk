@@ -89,7 +89,9 @@ async fn binary_accounts_preserve_original_results_and_observation_ownership()
 
     let body = OwnedBytes::from_static(b"the original selected body with an owned response");
     let digest = Digest::of(&body);
-    let put = first.put(body.clone(), Vec::new()).await?;
+    let put = first
+        .put(acyclic_objects::Sealed::new(body.clone()), Vec::new())
+        .await?;
     assert_eq!(put.verified().unwrap().revision, revision(&observed));
     assert!(revision(&observed).is_some());
 
@@ -117,10 +119,12 @@ async fn binary_accounts_preserve_original_results_and_observation_ownership()
     assert_eq!(first.delete(digest).await?.revision, revision(&observed));
     assert_eq!(first.collect().await?.revision, revision(&observed));
 
-    let original = first.put(body.clone(), Vec::new()).await?;
+    let original = first
+        .put(acyclic_objects::Sealed::new(body.clone()), Vec::new())
+        .await?;
     let other = first
         .put(
-            OwnedBytes::from_static(b"a different real object"),
+            acyclic_objects::Sealed::new(OwnedBytes::from_static(b"a different real object")),
             Vec::new(),
         )
         .await?;

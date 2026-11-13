@@ -99,7 +99,7 @@ impl ContentPublisher for ObjectContentStore {
                 .map(|body| (Digest::sealed(body), body.bytes().len() as u64));
             let outcomes = self
                 .objects
-                .put_batch_sealed(vec![
+                .put_batch(vec![
                     (content, Vec::new()),
                     (record, vec![content_digest]),
                     (intent, vec![record_digest]),

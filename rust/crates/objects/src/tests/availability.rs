@@ -19,7 +19,9 @@ pub(crate) async fn verify(medium: impl Medium + 'static) -> TestResult {
     let other = store.account(b"availability-other")?;
     let body = OwnedBytes::from_static(b"same envelope and version after physical restoration");
     let digest = Digest::of(&body);
-    let original = account.put(body.clone(), Vec::new()).await?;
+    let original = account
+        .put(crate::Sealed::new(body.clone()), Vec::new())
+        .await?;
     let original = original.verified().ok_or("original put was unknown")?;
     let key = payload(&medium, b"availability-repair").await?;
     let stored = medium.inner.read(&key, None).await?.ok_or("real payload")?;
@@ -35,7 +37,7 @@ pub(crate) async fn verify(medium: impl Medium + 'static) -> TestResult {
     );
 
     let (mut reached, release) = medium.park("create", key.clone());
-    let repair = account.put(body.clone(), Vec::new());
+    let repair = account.put(crate::Sealed::new(body.clone()), Vec::new());
     tokio::pin!(repair);
     drive_to_park(repair.as_mut(), &mut reached).await;
     // The physical write is in flight at registration; its acknowledgement
@@ -76,7 +78,7 @@ pub(crate) async fn verify(medium: impl Medium + 'static) -> TestResult {
     assert!(medium.inner.remove(&key).await?);
     let (mut reached, _release) = medium.park("create", key);
     {
-        let repair = account.put(body, Vec::new());
+        let repair = account.put(crate::Sealed::new(body), Vec::new());
         tokio::pin!(repair);
         drive_to_park(repair.as_mut(), &mut reached).await;
         // Dropping the original pending operation cancels its publication owner.
@@ -116,7 +118,7 @@ async fn bounded_refusal_recovers(poison_refusal: bool) -> TestResult {
     for body in [&selected, &filler, &refused] {
         assert!(
             account
-                .put(body.clone(), Vec::new())
+                .put(crate::Sealed::new(body.clone()), Vec::new())
                 .await?
                 .verified()
                 .is_some()
@@ -137,7 +139,7 @@ async fn bounded_refusal_recovers(poison_refusal: bool) -> TestResult {
     for body in [&selected, &filler] {
         assert!(
             account
-                .put(body.clone(), Vec::new())
+                .put(crate::Sealed::new(body.clone()), Vec::new())
                 .await?
                 .verified()
                 .is_some()
@@ -146,7 +148,7 @@ async fn bounded_refusal_recovers(poison_refusal: bool) -> TestResult {
     let mut observation = account.availability(selected_digest).await?;
     let mut retry_observation = account.availability(refused_digest).await?;
     assert!(matches!(
-        account.put(refused.clone(), Vec::new()).await,
+        account.put(crate::Sealed::new(refused.clone()), Vec::new()).await,
         Err(error) if error.code == ErrorCode::Unavailable
     ));
     let keys = medium.list("", None, usize::MAX).await?;
@@ -172,7 +174,9 @@ async fn bounded_refusal_recovers(poison_refusal: bool) -> TestResult {
     // The same Store must retain a live source, including a reopened account.
     let reopened = store.account(b"bounded-repair")?;
     assert!(matches!(
-        reopened.put(refused.clone(), Vec::new()).await?,
+        reopened
+            .put(crate::Sealed::new(refused.clone()), Vec::new())
+            .await?,
         Put::AlreadyExists { .. }
     ));
     retry_observation.changed().await?;
@@ -191,7 +195,9 @@ async fn bounded_refusal_recovers(poison_refusal: bool) -> TestResult {
         .clone();
     assert!(medium.remove(&key).await?);
     assert!(matches!(
-        reopened.put(selected.clone(), Vec::new()).await?,
+        reopened
+            .put(crate::Sealed::new(selected.clone()), Vec::new())
+            .await?,
         Put::AlreadyExists { .. }
     ));
     observation.changed().await?;
@@ -229,7 +235,7 @@ async fn ambiguous_payload_write_still_ends_its_original_observations() -> TestR
     assert!(matches!(
         account
             .put(
-                OwnedBytes::from_static(b"uncertain original payload"),
+                crate::Sealed::new(OwnedBytes::from_static(b"uncertain original payload")),
                 Vec::new()
             )
             .await?,
@@ -249,11 +255,17 @@ async fn negative_control_catalog_watch_misses_bytes_only_repair() {
     let account = Store::new(medium.clone()).account(b"catalog-only").unwrap();
     let body = OwnedBytes::from_static(b"actual unchanged catalog");
     let digest = Digest::of(&body);
-    account.put(body.clone(), Vec::new()).await.unwrap();
+    account
+        .put(crate::Sealed::new(body.clone()), Vec::new())
+        .await
+        .unwrap();
     let before = account.head(digest).await.unwrap().revision;
     let key = payload(&medium, b"catalog-only").await.unwrap();
     medium.inner.remove(&key).await.unwrap();
-    account.put(body, Vec::new()).await.unwrap();
+    account
+        .put(crate::Sealed::new(body), Vec::new())
+        .await
+        .unwrap();
     let after = account.head(digest).await.unwrap().revision;
     assert_ne!(
         before, after,

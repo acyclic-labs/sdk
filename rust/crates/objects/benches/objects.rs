@@ -35,7 +35,7 @@ fn body(index: u64) -> OwnedBytes {
 
 fn put(runtime: &Runtime, blobs: &LocalObjects, index: u64) -> Digest {
     let put = runtime
-        .block_on(blobs.put(body(index), Vec::new()))
+        .block_on(blobs.put(acyclic_objects::Sealed::new(body(index)), Vec::new()))
         .unwrap();
     put.verified().unwrap().digest
 }
@@ -60,7 +60,7 @@ fn put_batch_10(bencher: Bencher) {
         let requests = (0..10)
             .map(|_| {
                 index += 1;
-                (body(index), Vec::new())
+                (acyclic_objects::Sealed::new(body(index)), Vec::new())
             })
             .collect();
         runtime.block_on(blobs.put_batch(requests))
@@ -124,7 +124,10 @@ fn put_durable(bencher: Bencher, length: usize) {
         })
         .bench_local_values(|body| {
             runtime.block_on(async {
-                let digest = blobs.put(body, Vec::new()).await.unwrap();
+                let digest = blobs
+                    .put(acyclic_objects::Sealed::new(body), Vec::new())
+                    .await
+                    .unwrap();
                 blobs.flush(None).await.unwrap();
                 digest
             })
@@ -147,7 +150,10 @@ fn retain_durable(bencher: Bencher, length: usize) {
         })
         .bench_local_values(|body| {
             runtime.block_on(async {
-                let put = blobs.put(body, Vec::new()).await.unwrap();
+                let put = blobs
+                    .put(acyclic_objects::Sealed::new(body), Vec::new())
+                    .await
+                    .unwrap();
                 let digest = put.verified().unwrap().digest;
                 blobs.retain(&root, vec![digest]).await.unwrap()
             })

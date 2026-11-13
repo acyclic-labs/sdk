@@ -110,7 +110,9 @@ async fn published_poison_actor(
     .await?;
     objects
         .put(
-            acyclic_stream::OwnedBytes::copy_from_slice(POISON.trim_end_matches('\n').as_bytes()),
+            acyclic_objects::Sealed::new(acyclic_stream::OwnedBytes::copy_from_slice(
+                POISON.trim_end_matches('\n').as_bytes(),
+            )),
             Vec::new(),
         )
         .await?;

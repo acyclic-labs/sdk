@@ -366,10 +366,7 @@ async fn upload_contract(
             let sealed =
                 acyclic_objects::Sealed::new(acyclic_stream::OwnedBytes::copy_from_slice(body));
             let digest = Digest::sealed(&sealed);
-            let result = objects
-                .put_sealed(sealed, references)
-                .await
-                .map_err(storage)?;
+            let result = objects.put(sealed, references).await.map_err(storage)?;
             assert_eq!(result.verified().map(|value| value.digest), Some(digest));
             references = vec![digest];
         }

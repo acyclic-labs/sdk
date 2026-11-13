@@ -388,7 +388,12 @@ async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
         None,
     )
     .await?;
-    acyclic_objects::Blobs::put(&objects, orphan_bytes, Vec::new()).await?;
+    acyclic_objects::Blobs::put(
+        &objects,
+        acyclic_objects::Sealed::new(orphan_bytes),
+        Vec::new(),
+    )
+    .await?;
     drop(objects);
     let reopened = Fs::local(options).await?;
     let collected = reopened.collect_local_garbage(None, &cancellation).await?;

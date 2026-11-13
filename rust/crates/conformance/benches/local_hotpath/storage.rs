@@ -176,7 +176,9 @@ async fn objects(fixture: &Fixture, samples: usize, rows: &mut Measurements<'_>)
                 ..read(1024)
             },
             serde_json::json!({"digest": expected_digest.to_string()}),
-            fixture.objects.put(body.into(), Vec::new())
+            fixture
+                .objects
+                .put(acyclic_objects::Sealed::new(body.into()), Vec::new())
         )?;
         let digest = put.verified().ok_or("object publication unknown")?.digest;
         if digest != expected_digest {

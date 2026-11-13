@@ -2,8 +2,7 @@
   "grpc": [
     "availability",
     "put",
-    "put_sealed",
-    "put_batch_sealed",
+    "put_batch",
     "put_manifest",
     "get",
     "head",
@@ -18,8 +17,7 @@
   "http": [
     "availability",
     "put",
-    "put_sealed",
-    "put_batch_sealed",
+    "put_batch",
     "put_manifest",
     "get",
     "head",

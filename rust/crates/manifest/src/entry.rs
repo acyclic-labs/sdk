@@ -118,10 +118,10 @@ impl<P: Blobs> EntryStore<P> {
             .into_iter()
             .map(|body| (body, Vec::new()))
             .collect();
-        for result in self.objects.put_batch_sealed(batch).await {
+        for result in self.objects.put_batch(batch).await {
             confirmed(result?)?;
         }
-        let object = confirmed(self.objects.put_sealed(closure, references).await?)?;
+        let object = confirmed(self.objects.put(closure, references).await?)?;
         let retention = self.objects.retain(root, vec![object.digest]).await?;
         Ok(PublishedEntry { object, retention })
     }

@@ -47,7 +47,8 @@ async fn original_context_stops_refresh_and_remains_stopped_across_clones() -> T
                 let _ = cancelled.await;
             },
         ));
-        let mut put = Box::pin(bound.put(b"held".as_slice().into(), Vec::new()));
+        let mut put =
+            Box::pin(bound.put(crate::Sealed::new(b"held".as_slice().into()), Vec::new()));
         futures::select! {
             result = put.as_mut().fuse() => panic!("refresh still held: {result:?}"),
             _ = started.fuse() => {},
@@ -84,7 +85,9 @@ async fn original_context_stops_refresh_and_remains_stopped_across_clones() -> T
         );
         // A new operation on the same channel retains ordinary progress.
         objects.credential = CredentialProvider::new(|| ready(Ok("fixture".into())));
-        objects.put(b"ready".as_slice().into(), Vec::new()).await?;
+        objects
+            .put(crate::Sealed::new(b"ready".as_slice().into()), Vec::new())
+            .await?;
         assert_eq!(replica.pending.lock().unwrap().len(), 1);
     }
     Ok(())
@@ -185,25 +188,10 @@ async fn stopped_context_admits_zero_callbacks_for_any_concurrent_cohort() -> Te
     #[cfg(feature = "test-support")]
     {
         let body: OwnedBytes = b"stopped-before-sealing".as_slice().into();
-        let before = acyclic_stream::hashed_on_this_thread();
-        assert_eq!(
-            stopped
-                .put(body.clone(), Vec::new())
-                .await
-                .unwrap_err()
-                .stopped,
-            Some(Stopped::Deadline)
-        );
-        assert_eq!(acyclic_stream::hashed_on_this_thread(), before);
         let sealed = crate::Sealed::new(body);
-        assert!(acyclic_stream::hashed_on_this_thread() > before);
         let before = acyclic_stream::hashed_on_this_thread();
         assert_eq!(
-            stopped
-                .put_sealed(sealed, Vec::new())
-                .await
-                .unwrap_err()
-                .stopped,
+            stopped.put(sealed, Vec::new()).await.unwrap_err().stopped,
             Some(Stopped::Deadline)
         );
         assert_eq!(acyclic_stream::hashed_on_this_thread(), before);

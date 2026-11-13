@@ -25,7 +25,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut expected = BTreeSet::new();
     for index in 0..count {
         let put = blobs
-            .put(OwnedBytes::from(index.to_le_bytes().to_vec()), Vec::new())
+            .put(
+                acyclic_objects::Sealed::new(OwnedBytes::from(index.to_le_bytes().to_vec())),
+                Vec::new(),
+            )
             .await?;
         expected.insert(put.verified().ok_or("publication outcome unknown")?.digest);
     }

@@ -163,7 +163,9 @@ async fn sealing_preserves_the_epoch_roots_retention() -> Result<(), Box<dyn std
     assert!(hashed() - before < payload.len() as u64);
     // Negative control: a provider receiving raw bytes must hash them.
     let before = hashed();
-    provider.put(payload.clone(), Vec::new()).await?;
+    provider
+        .put(acyclic_objects::Sealed::new(payload.clone()), Vec::new())
+        .await?;
     assert!(hashed() - before >= payload.len() as u64);
     let _second = second
         .flush_before_publish(

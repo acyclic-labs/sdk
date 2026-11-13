@@ -13,7 +13,7 @@ const streamMethods = {
   Head: "heads", Heads: "heads", Tail: "heads", Children: "heads", ChildrenPage: "heads",
   Read: "read", ReadCommit: "read_commit",
 };
-const objectRustMethods = { PutBlobs: "put_batch_sealed" };
+const objectRustMethods = { PutBlobs: "put_batch" };
 const snake = name => name.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
 
 // Rust inventories are emitted from the exact impl or operation macro rustc

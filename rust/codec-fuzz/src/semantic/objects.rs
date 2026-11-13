@@ -207,8 +207,11 @@ fn batch(bytes: &[u8]) {
             verified: verified.clone(),
         });
         let results = ready(client.put_batch(vec![
-            (body(), Vec::new()),
-            (OwnedBytes::from_static(BATCH_BODY), Vec::new()),
+            (acyclic_objects::Sealed::new(body()), Vec::new()),
+            (
+                acyclic_objects::Sealed::new(OwnedBytes::from_static(BATCH_BODY)),
+                Vec::new(),
+            ),
         ]));
         assert_eq!(results.len(), 2, "a batch answers every original member");
         let unavailable = Error::from(wire::ErrorCode::Unavailable);
@@ -412,7 +415,7 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
         "acyclic.objects.v1.PutBlobsResponse" => batch(bytes),
         "acyclic.objects.v1.PutResponse" => {
             compare::<wire::PutResponse, _>(bytes, "blobs/put", |client| {
-                ready(client.put(body(), Vec::new())).inspect(|put| {
+                ready(client.put(acyclic_objects::Sealed::new(body()), Vec::new())).inspect(|put| {
                     let original = wire::PutResponse::decode(bytes)
                         .expect("admitted original publication wire");
                     publication(put, &original, (digest(), BODY.len() as u64));
@@ -697,8 +700,12 @@ fn writer_seeds() -> Result<(Vec<Seed>, AvailabilityCursor), Box<dyn std::error:
         outputs: outputs.clone(),
     });
     let initial = ready(async {
-        client.put(body(), Vec::new()).await?;
-        client.put(body(), Vec::new()).await?;
+        client
+            .put(acyclic_objects::Sealed::new(body()), Vec::new())
+            .await?;
+        client
+            .put(acyclic_objects::Sealed::new(body()), Vec::new())
+            .await?;
         client.put_manifest(manifest()).await?;
         client.get(digest(), ByteRange::FULL, u64::MAX).await?;
         client.head(digest()).await?;
@@ -728,8 +735,11 @@ fn writer_seeds() -> Result<(Vec<Seed>, AvailabilityCursor), Box<dyn std::error:
         let other = BATCH_BODY;
         let batch = client
             .put_batch(vec![
-                (body(), Vec::new()),
-                (OwnedBytes::from_static(other), Vec::new()),
+                (acyclic_objects::Sealed::new(body()), Vec::new()),
+                (
+                    acyclic_objects::Sealed::new(OwnedBytes::from_static(other)),
+                    Vec::new(),
+                ),
             ])
             .await;
         assert_eq!(batch.len(), 2, "original batch answers every member");
@@ -744,10 +754,15 @@ fn writer_seeds() -> Result<(Vec<Seed>, AvailabilityCursor), Box<dyn std::error:
         let batch = client
             .put_batch(vec![
                 (
-                    OwnedBytes::from_static(b"original batch with absent reference"),
+                    acyclic_objects::Sealed::new(OwnedBytes::from_static(
+                        b"original batch with absent reference",
+                    )),
                     vec![Digest::of(b"original absent batch reference")],
                 ),
-                (OwnedBytes::from_static(other), Vec::new()),
+                (
+                    acyclic_objects::Sealed::new(OwnedBytes::from_static(other)),
+                    Vec::new(),
+                ),
             ])
             .await;
         assert_eq!(batch.len(), 2);

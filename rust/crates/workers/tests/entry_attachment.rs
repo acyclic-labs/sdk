@@ -185,10 +185,17 @@ async fn untrusted_descriptor<P: Blobs>(
 ) -> TestResult {
     let missing = Digest::of(b"absent selected module");
     assert!(
-        matches!(provider.put(b"missing closure".to_vec().into(), vec![artifact, missing]).await,
+        matches!(provider.put(acyclic_objects::Sealed::new(b"missing closure".to_vec().into()), vec![artifact, missing]).await,
         Err(error) if error.code == ErrorCode::MissingReference)
     );
-    let replacement = verified(provider.put(CHANGED.to_vec().into(), Vec::new()).await?)?;
+    let replacement = verified(
+        provider
+            .put(
+                acyclic_objects::Sealed::new(CHANGED.to_vec().into()),
+                Vec::new(),
+            )
+            .await?,
+    )?;
     let mut document: serde_json::Value = serde_json::from_slice(descriptor)?;
     let asset = document
         .get_mut("assets")
@@ -199,7 +206,10 @@ async fn untrusted_descriptor<P: Blobs>(
     let encoded: OwnedBytes = serde_json::to_vec(&document)?.into();
     let altered = verified(
         provider
-            .put(encoded.clone(), vec![artifact, replacement.digest])
+            .put(
+                acyclic_objects::Sealed::new(encoded.clone()),
+                vec![artifact, replacement.digest],
+            )
             .await?,
     )?;
     let loaded = store.load(&altered, "production", "agent").await?;
@@ -210,7 +220,11 @@ async fn untrusted_descriptor<P: Blobs>(
     // The same descriptor without actual retention edges cannot be restored.
     // A fresh account avoids reusing the existing immutable envelope's edges.
     let detached = Store::new(MemoryMedium::default()).account(b"detached")?;
-    let detached_ref = verified(detached.put(encoded, Vec::new()).await?)?;
+    let detached_ref = verified(
+        detached
+            .put(acyclic_objects::Sealed::new(encoded), Vec::new())
+            .await?,
+    )?;
     assert!(
         matches!(EntryStore::new(detached).load(&detached_ref, "production", "agent").await,
         Err(Error::Manifest(error)) if error == ManifestError::invalid("entryClosure", "object-references"))

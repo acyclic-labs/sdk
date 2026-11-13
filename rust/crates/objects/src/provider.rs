@@ -295,8 +295,10 @@ pub trait Blobs: acyclic_stream::ProviderPlatform {
         Err(wire::ErrorCode::Unsupported.into())
     }
 
-    /// Stores `body` with envelope `references`, each of which must already exist.
-    async fn put(&self, body: OwnedBytes, references: Vec<Digest>) -> Result<Put, Error>;
+    /// Stores sealed `body` with envelope `references`, each of which must
+    /// already exist. Every provider and wrapper reuses the original seal;
+    /// callers with raw bytes construct it with [`Sealed::new`].
+    async fn put(&self, body: Sealed, references: Vec<Digest>) -> Result<Put, Error>;
 
     /// Stores a manifest after checking every part's length and every edge's existence.
     async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error>;
@@ -304,7 +306,7 @@ pub trait Blobs: acyclic_stream::ProviderPlatform {
     /// Publishes and flushes a blob before acknowledging it. Providers with a
     /// collector must exclude collection for the whole operation.
     async fn put_durable(&self, body: Sealed, references: Vec<Digest>) -> Result<Put, Error> {
-        let put = self.put_sealed(body, references).await?;
+        let put = self.put(body, references).await?;
         flush_put(
             &put,
             |digest| async move { self.flush(Some(&[digest])).await },
@@ -331,7 +333,7 @@ pub trait Blobs: acyclic_stream::ProviderPlatform {
         &self,
         requests: Vec<(Sealed, Vec<Digest>)>,
     ) -> Vec<Result<Put, Error>> {
-        let mut outcomes = self.put_batch_sealed(requests).await;
+        let mut outcomes = self.put_batch(requests).await;
         flush_puts(&mut outcomes, |digests| async move {
             self.flush(Some(&digests)).await
         })
@@ -399,34 +401,15 @@ pub trait Blobs: acyclic_stream::ProviderPlatform {
     }
 
     /// Ordered, individually atomic puts, at most [`BATCH_WINDOW`] in flight.
-    /// A put that references or repeats an earlier put of the batch starts
-    /// only once that put completed, so outcomes never depend on timing.
-    async fn put_batch(&self, requests: Vec<(OwnedBytes, Vec<Digest>)>) -> Vec<Result<Put, Error>> {
-        let sealed = requests
-            .into_iter()
-            .map(|(body, references)| (Sealed::new(body), references))
-            .collect();
-        self.put_batch_sealed(sealed).await
-    }
-
-    /// [`Blobs::put`] of bytes already sealed: a provider that names or
-    /// verifies a blob by its digest reuses the seal's instead of hashing
-    /// again.
-    async fn put_sealed(&self, body: Sealed, references: Vec<Digest>) -> Result<Put, Error> {
-        self.put(body.into_bytes(), references).await
-    }
-
-    /// [`Blobs::put_batch`] of bytes already sealed.
-    async fn put_batch_sealed(
-        &self,
-        requests: Vec<(Sealed, Vec<Digest>)>,
-    ) -> Vec<Result<Put, Error>> {
+    /// A put that references or repeats an earlier member starts only after
+    /// that member completes, so outcomes never depend on timing.
+    async fn put_batch(&self, requests: Vec<(Sealed, Vec<Digest>)>) -> Vec<Result<Put, Error>> {
         let mut results = Vec::with_capacity(requests.len());
         let driven = crate::batch::drive(
             requests.into_iter(),
             BATCH_WINDOW,
             |_| Ok::<_, std::convert::Infallible>(()),
-            |(body, references)| self.put_sealed(body, references),
+            |(body, references)| self.put(body, references),
             |put| results.push(put),
         )
         .await;

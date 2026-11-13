@@ -1,5 +1,6 @@
 //! The shipping HTTP client against canonical dispatch over a real engine.
 use super::*;
+use acyclic_stream::OwnedBytes;
 use axum::{
     body::{Body, Bytes},
     extract::{OriginalUri, State},
@@ -277,7 +278,7 @@ async fn http_put_batch_splits_by_the_reply_budget_and_every_member_commits() ->
         let objects = HttpObjects::new(&gateway.endpoint, "first", maximum, None)?;
         let calls = maximum.map_or(1, |_| MEMBERS.div_ceil(per_call));
         for repeat in 1..=2 {
-            committed(&objects.put_batch_sealed(sealed(&bodies)).await, &bodies)?;
+            committed(&objects.put_batch(sealed(&bodies)).await, &bodies)?;
             assert_eq!(gateway.calls.load(Ordering::SeqCst), repeat * calls);
         }
     }
@@ -294,7 +295,7 @@ async fn http_put_batch_splits_by_the_request_budget_and_large_members_commit() 
     // and the client's budget, though each fits alone.
     let (whole, _) = convert::put_blobs(sealed(&bodies));
     assert!(json::encode("PutBlobsRequest", &whole)?.len() > BUDGET);
-    committed(&objects.put_batch_sealed(sealed(&bodies)).await, &bodies)?;
+    committed(&objects.put_batch(sealed(&bodies)).await, &bodies)?;
     assert_eq!(gateway.calls.load(Ordering::SeqCst), 2);
     Ok(())
 }

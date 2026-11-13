@@ -84,7 +84,7 @@ async fn empty_ranges_preserve_native_presence_without_dispatch()
     let root = tempfile::tempdir()?;
     let account = LocalObjects::open(root.path(), LocalObjectsLimits::default(), None).await?;
     let digest = account
-        .put(bytes(b"original"), Vec::new())
+        .put(crate::Sealed::new(bytes(b"original")), Vec::new())
         .await?
         .verified()
         .ok_or("original put outcome unknown")?
@@ -115,7 +115,7 @@ async fn owned_close_reports_physical_completion_and_failure()
     let account =
         LocalObjects::open(root.path(), LocalObjectsLimits::default(), Some(anchor)).await?;
     let digest = account
-        .put(bytes(b"committed"), Vec::new())
+        .put(crate::Sealed::new(bytes(b"committed")), Vec::new())
         .await?
         .verified()
         .ok_or("committed put outcome unknown")?
@@ -154,7 +154,7 @@ async fn owned_close_reports_physical_completion_and_failure()
     let root = tempfile::tempdir()?;
     let account = LocalObjects::open(root.path(), LocalObjectsLimits::default(), None).await?;
     let digest = account
-        .put(bytes(b"retained"), Vec::new())
+        .put(crate::Sealed::new(bytes(b"retained")), Vec::new())
         .await?
         .verified()
         .ok_or("put outcome unknown")?

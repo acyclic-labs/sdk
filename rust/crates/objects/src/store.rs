@@ -1776,11 +1776,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
         )
     }
 
-    async fn put(&self, body: OwnedBytes, references: Vec<Digest>) -> Result<Put, Error> {
-        self.put_inner(crate::Sealed::new(body), references).await
-    }
-
-    async fn put_sealed(&self, body: crate::Sealed, references: Vec<Digest>) -> Result<Put, Error> {
+    async fn put(&self, body: crate::Sealed, references: Vec<Digest>) -> Result<Put, Error> {
         self.put_inner(body, references).await
     }
 

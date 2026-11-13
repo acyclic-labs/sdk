@@ -207,11 +207,16 @@ async fn refused_writes_preserve_storage() -> TestResult {
         let provider = Arc::new(crate::Store::new(medium.clone()).account(b"write-minimum")?);
         let body = b"original retained bytes";
         let digest = Digest::of(body);
-        provider.put(body.as_slice().into(), Vec::new()).await?;
+        provider
+            .put(crate::Sealed::new(body.as_slice().into()), Vec::new())
+            .await?;
         let root = RootId::new(b"original-root".to_vec())?;
         provider.retain(&root, vec![digest]).await?;
         let deletable = provider
-            .put(b"unretained".as_slice().into(), Vec::new())
+            .put(
+                crate::Sealed::new(b"unretained".as_slice().into()),
+                Vec::new(),
+            )
             .await?;
         provider.flush(None).await?;
         let current = provider
@@ -298,7 +303,9 @@ async fn closed_write_preserves_storage() -> TestResult {
     // no deadline, readiness retry or replacement revision can release it.
     let medium = crate::MemoryMedium::default();
     let provider = Arc::new(crate::Store::new(medium.clone()).account(b"closed-write-minimum")?);
-    let put = provider.put(b"held".as_slice().into(), Vec::new()).await?;
+    let put = provider
+        .put(crate::Sealed::new(b"held".as_slice().into()), Vec::new())
+        .await?;
     provider.flush(None).await?;
     let authority = provider.revisions().await?.expect("original authority");
     let floor = RevisionCut::of(authority.at(authority.current().index + 1));

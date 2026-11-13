@@ -8,7 +8,7 @@ use crate::{
 pub use acyclic_auth::credential::CredentialProvider;
 use acyclic_stream::query_sync::Arc as RevisionArc;
 use acyclic_stream::wire_codec::{cut_from_wire, revision_from_wire, revision_to_wire};
-use acyclic_stream::{OwnedBytes, Revision, RevisionCut, RevisionTracker, StreamError};
+use acyclic_stream::{Revision, RevisionCut, RevisionTracker, StreamError};
 use prost::Message;
 use std::sync::Arc;
 use tonic::{
@@ -318,14 +318,7 @@ impl Blobs for GrpcObjects {
         self.observe_availability(digest).await
     }
 
-    async fn put(&self, body: OwnedBytes, references: Vec<Digest>) -> Result<Put, Error> {
-        if let Some(context) = &self.context {
-            context.check()?;
-        }
-        self.put_sealed(crate::Sealed::new(body), references).await
-    }
-
-    async fn put_sealed(&self, body: crate::Sealed, references: Vec<Digest>) -> Result<Put, Error> {
+    async fn put(&self, body: crate::Sealed, references: Vec<Digest>) -> Result<Put, Error> {
         crate::operation::admit(self.context.as_ref(), async {
             let digest = Digest::sealed(&body);
             let body = body.into_bytes();
@@ -345,7 +338,7 @@ impl Blobs for GrpcObjects {
         .await
     }
 
-    async fn put_batch_sealed(
+    async fn put_batch(
         &self,
         requests: Vec<(crate::Sealed, Vec<Digest>)>,
     ) -> Vec<Result<Put, Error>> {
