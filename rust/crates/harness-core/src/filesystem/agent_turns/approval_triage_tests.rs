@@ -368,13 +368,29 @@ async fn original_parent_page_replays_decisions_and_merges_only_escalations() ->
         turns.limits.maximum_bytes,
         None,
     )?;
-    let bytes = reader
-        .read(&summary, summary.descriptor().byte_length(), None, None)?
-        .await?;
-    let text = std::str::from_utf8(&bytes)?;
-    let path = text
-        .trim_end()
-        .strip_prefix("Child approvals require a decision. Read volume:///private/")
+    let notice = InboxRecord::Notice {
+        id: crate::agent::IntentId::try_from("approval-summary")?,
+        notice: crate::agent::NoticePayload::Waking(Box::new(summary.clone())),
+    };
+    crate::agent::AgentRecord::check(&notice)?;
+    let input = crate::agent::expand_attachments(
+        crate::agent::model_input(&crate::agent::TurnInput::Notice {
+            id: crate::agent::IntentId::try_from("approval-summary")?,
+            notice: Box::new(summary.clone()),
+        })?,
+        &reader,
+    )
+    .await?;
+    let crate::model::ModelContent::Part(crate::model::ModelContentPart::Notices { notices }) =
+        input
+    else {
+        return Err("summary did not expand through the waking-notice decoder".into());
+    };
+    assert_eq!(notices.len(), 1);
+    assert_eq!(notices[0].kind, "approval.required");
+    let path = notices[0].body["path"]
+        .as_str()
+        .and_then(|path| path.strip_prefix("volume:///private/"))
         .ok_or("summary did not name the readable private document")?;
     let volume = parent_state.volumes[0].volume()?;
     let maximum = turns.limits.maximum_bytes.ok_or("missing file credit")?;

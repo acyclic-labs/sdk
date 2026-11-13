@@ -1222,7 +1222,22 @@ async fn approval_selection_replays_its_policy_before_any_worker_context() -> Re
             ..Default::default()
         });
         let original_policy = file("policy-original.md")?;
-        let summary = file("merged-summary.txt")?;
+        let summary_bytes =
+            serde_json::to_vec(&acyclic_harness_core::conversation::wire::Notice {
+                source: "harness".into(),
+                kind: "approval.required".into(),
+                body: serde_json::json!({"path": "volume:///private/attention/action.json"}),
+                wake: true,
+                coalesce_key: None,
+            })?;
+        let summary = FileRef::new(
+            original_policy.volume().clone(),
+            "merged-summary.json".into(),
+            "version-1".into(),
+            FileDescriptor::from_bytes(&summary_bytes, NOTICE_MEDIA_TYPE, &mut None)?,
+            "merged-summary.json".into(),
+            &mut None,
+        )?;
         let host = Arc::new(ControlHost {
             worker: Host(script.clone(), None),
             policy: Mutex::new(original_policy.clone()),
