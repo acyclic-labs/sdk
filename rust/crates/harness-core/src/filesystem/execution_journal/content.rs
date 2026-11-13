@@ -86,9 +86,6 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<(IdempotencyKey, String)> {
         let digest = operation_digest(operation_id, idempotency_key, io)?;
-        let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
-            crate::executor::preparation_format(format_args!("journal-{}", digest.to_hex()), work)
-        })?)?;
         let path = crate::executor::with_history_io(io, |work| {
             // Stock publication binds JSON bytes to the original operation key
             // with one BLAKE3 suffix. The result kind precedes that suffix.
@@ -126,6 +123,16 @@ where
                 work,
             )
         })?;
+        // An upload identity binds its path as well as its bytes. Published
+        // summaries must not reuse the host-private execution upload identity.
+        let namespace = if path.starts_with(InternalContentClass::Summary.prefix()) {
+            "journal-summary-v1"
+        } else {
+            "journal"
+        };
+        let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
+            crate::executor::preparation_format(format_args!("{namespace}-{}", digest.to_hex()), work)
+        })?)?;
         Ok((key, path))
     }
 
