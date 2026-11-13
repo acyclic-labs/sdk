@@ -1,0 +1,16 @@
+diff --git a/rust/crates/filesystem/src/demand/computed.rs b/rust/crates/filesystem/src/demand/computed.rs
+--- a/rust/crates/filesystem/src/demand/computed.rs
++++ b/rust/crates/filesystem/src/demand/computed.rs
+@@ -168,10 +168,8 @@
+         hash.update(&self.view.identity());
+         hash.update(&provider_identity);
+         hash.update(&cut.sequence.to_le_bytes());
+-        hash.update(&[u8::from(cut.generation.is_some())]);
+-        if let Some(generation) = cut.generation {
+-            hash.update(&generation);
+-        }
++        hash.update(&[1]);
++        hash.update(&cut.generation.unwrap_or([0; 32]));
+         for name in names {
+             hash.update(&[name.encoding().tag()]);
+             hash.update(&(name.as_bytes().len() as u64).to_le_bytes());

@@ -30,6 +30,7 @@ struct Provider {
     identity: Arc<AtomicU8>,
     data: Arc<Mutex<BTreeMap<u64, Bytes>>>,
     epoch: Arc<AtomicU64>,
+    generation: Arc<Mutex<Option<[u8; 32]>>>,
     counts: Arc<Counts>,
     sink: Arc<Mutex<Option<Arc<dyn ViewChangeSink<u64>>>>>,
     gate: Arc<Mutex<Option<SnapshotWait>>>,
@@ -43,6 +44,7 @@ impl Provider {
                 Bytes::from_static(b"abcdef"),
             )]))),
             epoch: Arc::new(AtomicU64::new(0)),
+            generation: Arc::default(),
             counts: Arc::default(),
             sink: Arc::default(),
             gate: Arc::default(),
@@ -78,6 +80,7 @@ impl ViewProvider for Provider {
         if source.identity != self.reference().identity {
             return Err(DemandError::StaleSource);
         }
+        let generation = *self.generation.lock().unwrap();
         let gate = self.gate.lock().unwrap().take();
         if let Some(SnapshotWait { entered, released }) = gate {
             entered
@@ -95,7 +98,7 @@ impl ViewProvider for Provider {
         Ok((
             ViewCut {
                 sequence: source.epoch,
-                generation: [0; 32],
+                generation,
             },
             bytes,
         ))
@@ -329,6 +332,73 @@ async fn computed_snapshot_wait_keeps_the_requested_path_cut_and_cancellation() 
             );
         }
     }
+}
+
+#[tokio::test]
+async fn stream_only_computed_cuts_do_not_alias_authored_inputs() {
+    let provider = Provider::new();
+    let view = computed(&provider);
+    let cancel = CancellationToken::new();
+    let source = view.reference();
+    let file = path("/index.md");
+    let initial = view
+        .lookup(source, &file, WorkBudget::UNBOUNDED, &cancel)
+        .await
+        .unwrap()
+        .value
+        .unwrap();
+    let opened = view
+        .open_file(
+            source,
+            &file,
+            initial.version,
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        )
+        .await
+        .unwrap()
+        .value;
+    // The bytes and stream position are identical. Only the original input
+    // domain changes: no authored input versus an explicit authored digest.
+    *provider.generation.lock().unwrap() = Some([0; 32]);
+    let authored = view
+        .lookup(source, &file, WorkBudget::UNBOUNDED, &cancel)
+        .await
+        .unwrap()
+        .value
+        .unwrap();
+    assert_ne!(
+        initial.version, authored.version,
+        "stream-only cut aliased an authored generation"
+    );
+    let page = view
+        .list_page(source, &path("/"), None, 1, WorkBudget::UNBOUNDED, &cancel)
+        .await
+        .unwrap()
+        .value;
+    assert_eq!(page.entries[0].node, authored);
+    assert_eq!(
+        opened.read_range(0, 6, ctx!()).unwrap().bytes.as_ref(),
+        b"abcdef"
+    );
+    assert!(
+        matches!(
+            view.read_range(
+                source,
+                &file,
+                initial.version,
+                0,
+                1,
+                WorkBudget::UNBOUNDED,
+                &cancel,
+            )
+            .await
+            .unwrap_err()
+            .error,
+            DemandError::StaleVersion
+        ),
+        "a changed input domain reused the old computed version"
+    );
 }
 
 #[tokio::test]

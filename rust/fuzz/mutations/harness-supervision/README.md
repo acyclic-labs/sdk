@@ -221,3 +221,16 @@ missing-credential control admits no request. The same persisted-artifact and
 output credential scan is shared with the root/worker configuration regression.
 These are real binary/input controls, not a claim of live service qualification.
 New execution remains pending.
+
+Stream-only computed snapshots have no authored generation; their input domain
+must remain distinct from every explicitly authored generation. In
+`acyclic-fs --lib --features test-support`, run
+`demand::computed_tests::stream_only_computed_cuts_do_not_alias_authored_inputs`.
+It keeps the same bytes, source identity and stream position, changes only the
+authored-input domain, and checks distinct versions, directory/lookup agreement,
+original opened bytes and rejection of the old version. The production mutation
+`computed-generation-domain.patch` normalizes absent generations to an authored
+zero digest and must fail at `stream-only cut aliased an authored generation`.
+Require that unchanged regression to fail, reverse the patch and require its
+restored pass. Execution remains pending; this source-cut proof is not mounted
+signal-file or native-watch qualification.
