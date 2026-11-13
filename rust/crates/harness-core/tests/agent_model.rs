@@ -1607,3 +1607,179 @@ async fn attention_alarm_default_resumes_on_input_or_original_deadline() -> Resu
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn selected_control_inputs_preserve_interleaved_input_across_overflow_and_replay() -> Result {
+    let path = AgentPath::root(&id(1));
+    let mut state = AgentState::adopted(path.clone(), &adopted(id(1)))?;
+    state.phase = Phase::WaitingApproval {
+        id: intent("waiting"),
+        binding: None,
+    };
+    state.turn = Some(Progress {
+        inbox: 0,
+        checkpoint: Vec::new(),
+    });
+    let storage = acyclic_harness_core::filesystem::MemoryHarnessStorage::new(
+        acyclic_harness_core::AgentId::from_bytes([1; 16]),
+        4096,
+    )
+    .await?;
+    let body = storage
+        .stage(
+            acyclic_harness_core::OperationId::new(),
+            "input",
+            b"original user input",
+            "text/plain",
+            "input",
+        )
+        .await?;
+    let record = |sequence: u64| -> Result<InboxRecord> {
+        let id = intent(&format!("input-{sequence}"));
+        Ok(if sequence.is_multiple_of(2) {
+            InboxRecord::ApprovalRequested(ApprovalRequested {
+                child: path.child(&AgentId::from_bytes([2; 16]))?,
+                id,
+            })
+        } else if sequence % 4 == 1 {
+            InboxRecord::Message(Message {
+                from: user(),
+                id,
+                re: None,
+                body: Box::new(body.clone()),
+                attachments: None,
+            })
+        } else {
+            InboxRecord::Hook(Hook {
+                host: "fixture".into(),
+                id,
+                event: Box::new(body.clone()),
+            })
+        })
+    };
+    let parked = script(Vec::new());
+    for sequence in 1..=40 {
+        state = step(
+            &parked,
+            &path,
+            Some(state),
+            (sequence + 1, 0),
+            Wake::Inbox {
+                sequence,
+                record: record(sequence)?,
+            },
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?
+        .state;
+    }
+    assert_eq!(state.overflow, Some(33));
+    let original = state.clone();
+    let selected: Vec<_> = (2..=40).step_by(2).collect();
+    let response = InboxRecord::Approval(Approval {
+        id: intent("waiting"),
+    });
+    let consume = || {
+        script(vec![TurnStep {
+            checkpoint: None,
+            outs: vec![Out::ConsumedInputs(selected.clone())],
+            wait: Wait::Input,
+            drops: None,
+        }])
+    };
+    let after = step(
+        &consume(),
+        &path,
+        Some(state),
+        (42, 0),
+        Wake::Inbox {
+            sequence: 41,
+            record: response.clone(),
+        },
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
+    let replay = step(
+        &consume(),
+        &path,
+        Some(original.clone()),
+        (42, 0),
+        Wake::Inbox {
+            sequence: 41,
+            record: response.clone(),
+        },
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
+    assert_eq!(
+        after.state, replay.state,
+        "replay changed the selected input cut"
+    );
+    let mut state = after.state;
+    let mut overflow = (33..=40)
+        .map(|sequence| Ok((sequence, record(sequence)?)))
+        .collect::<Result<Vec<_>>>()?;
+    overflow.push((41, response.clone()));
+    state.refill(overflow, 42);
+    assert_eq!(
+        state
+            .queued
+            .iter()
+            .map(|input| input.inbox)
+            .collect::<Vec<_>>(),
+        (1..40).step_by(2).collect::<Vec<_>>(),
+        "selected controls consumed user or host input"
+    );
+    assert!(state.queued.iter().all(|input| matches!(
+        input.input,
+        TurnInput::Message { .. } | TurnInput::Hook { .. }
+    )));
+    assert_eq!((state.overflow, state.taken.len()), (None, 0));
+    // A prefix drop is an independent counterexample: it erases the interleaved
+    // user and host inputs instead of retiring only the reviewed controls.
+    let wrong = script(vec![TurnStep {
+        checkpoint: None,
+        outs: Vec::new(),
+        wait: Wait::Input,
+        drops: Some(41),
+    }]);
+    let lost = step(
+        &wrong,
+        &path,
+        Some(original.clone()),
+        (42, 0),
+        Wake::Inbox {
+            sequence: 41,
+            record: response.clone(),
+        },
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
+    assert!(!lost.state.queued.iter().any(|input| input.inbox == 1));
+    // A control cannot claim consumption of an input outside this delivery cut.
+    let future = script(vec![TurnStep {
+        checkpoint: None,
+        outs: vec![Out::ConsumedInputs(vec![42])],
+        wait: Wait::Input,
+        drops: None,
+    }]);
+    let refused = step(
+        &future,
+        &path,
+        Some(original),
+        (42, 0),
+        Wake::Inbox {
+            sequence: 41,
+            record: response,
+        },
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
+    assert!(matches!(
+        refused.state.phase,
+        Phase::Done {
+            outcome: AgentOutcome::Failed { .. }
+        }
+    ));
+    Ok(())
+}
