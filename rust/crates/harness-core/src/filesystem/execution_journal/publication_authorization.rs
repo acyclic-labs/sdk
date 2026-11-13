@@ -41,7 +41,7 @@ where
                         key: &key,
                         expected_path: None,
                         maximum_bytes: Some(super::MAXIMUM_PAYLOAD_BYTES),
-                        internal_class: None,
+                        internal: false,
                         purpose: super::super::PublicationPurpose::Content,
                         scope: &self.scope,
                         ceiling: None,

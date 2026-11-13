@@ -58,7 +58,7 @@ where
                         key: &retry,
                         expected_path: Some(&path),
                         maximum_bytes: Some(super::MAXIMUM_PAYLOAD_BYTES),
-                        internal_class: Some(InternalContentClass::Execution),
+                        internal: true,
                         purpose: super::super::PublicationPurpose::Content,
                         scope: &self.scope,
                         ceiling: None,
