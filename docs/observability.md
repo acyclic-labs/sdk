@@ -81,6 +81,15 @@ returns its original value and records `Unsettled`; an authenticated terminal
 records completion of the lookup, whose result retains the tool outcome. The
 shared owned append publishes these terminals without suspending effect delivery.
 No retained failure cause is fabricated for an unsuccessful lookup.
+The executor's original tool invocation uses the journal's object-safe
+`trace_request` admission. Unfollowed admission returns `None` without a future
+allocation; followed admission transfers the same SDK recording through
+`OwnedRecording`, which delegates to the original terminal producer and per-poll
+parent scope. No provider or tool bytes are serialized for tracing. A successful
+tool receipt records success, interruption records cancellation, and pending,
+controlled or receipt-less results remain explicitly unsettled. An error without
+retained cause evidence leaves its original start unfinished. Physical subprocess
+and filesystem hops still require their own observations beneath this boundary.
 Harness Stream failures use one source-owning `StreamFailure` on ordinary,
 native and WebAssembly paths. Request-boundary classification remains explicit;
 native provenance and admitted allocation custody remain attached. Journal

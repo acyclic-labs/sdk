@@ -107,6 +107,15 @@ pub enum ProgressPublication<'a> {
 
 /// Durable host services available to an executor; policy remains executor-owned.
 pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
+    /// Select original host interest without opening a follow or allocating on
+    /// the no-interest path. Diagnostic admission never controls dispatch.
+    fn trace_request(
+        &self,
+        _request: acyclic_stream::trace::Request,
+    ) -> Option<acyclic_stream::BoxProviderFuture<'_, Result<acyclic_stream::trace::OwnedRecording>>>
+    {
+        None
+    }
     /// Host-owned publication handles for one execution's observable output.
     /// These handles never enter the ordinary model/tool content scope.
     fn output_content(

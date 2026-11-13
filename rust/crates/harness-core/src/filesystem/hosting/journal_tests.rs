@@ -1147,6 +1147,42 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
         settlement.totals()[&acyclic_stream::trace::Mechanism::AuthCheck].unsettled,
         1
     );
+    let invocation_from = traces.tail().await?;
+    let recording = journal
+        .trace_request(acyclic_stream::trace::Request {
+            name: "harness.tool_invocation",
+            mechanism: acyclic_stream::trace::Mechanism::ToolCall,
+            parent: None,
+            guarantee: Some("journaled_tool_effect_settlement"),
+        })
+        .ok_or("followed executor trace admission missing")?
+        .await?;
+    assert_eq!(
+        recording
+            .within(journal.load(&staged, None)?)
+            .await?
+            .as_ref(),
+        b"raw"
+    );
+    let _terminal = recording.finish_submitted(None, acyclic_stream::trace::Outcome::Succeeded)?;
+    let mut invocation = acyclic_stream::trace::TraceQuery::new(
+        traces.follow(invocation_from, Default::default()).await?,
+        Default::default(),
+    );
+    let Some(acyclic_stream::trace::Observation::Started { id: parent, .. }) =
+        invocation.next().await?
+    else {
+        return Err("executor parent span missing".into());
+    };
+    invocation.next().await?;
+    assert!(
+        matches!(invocation.next().await?, Some(acyclic_stream::trace::Observation::Completed { start, .. })
+        if start.name == "harness.private_load" && start.parent == Some(parent))
+    );
+    assert!(
+        matches!(invocation.next().await?, Some(acyclic_stream::trace::Observation::Completed { start, .. })
+        if start.name == "harness.tool_invocation" && start.parent.is_none())
+    );
     assert!(journal.replay(operation, 0, 0, None)?.await.is_err());
     let through = traces.tail().await?;
     let mut failed = acyclic_stream::trace::TraceQuery::new(
@@ -1170,6 +1206,16 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     assert_eq!(
         journal.replay(operation, 0, 1, None)?.await?[0].event,
         event
+    );
+    assert!(
+        journal
+            .trace_request(acyclic_stream::trace::Request {
+                name: "harness.tool_invocation",
+                mechanism: acyclic_stream::trace::Mechanism::ToolCall,
+                parent: None,
+                guarantee: Some("journaled_tool_effect_settlement"),
+            })
+            .is_none()
     );
     assert!(journal.tool_settlement(absent, None)?.await?.is_none());
     let unfollowed = journal

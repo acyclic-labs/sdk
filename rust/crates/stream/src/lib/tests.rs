@@ -484,7 +484,9 @@ mod replay_tests {
             return Err("dispatch handoff fabricated completion".into());
         };
         let mut terminal = traces.follow(1, Default::default()).await?;
-        let pending = recording.finish_submitted(None, Outcome::Succeeded)?;
+        let pending = recording
+            .into_owned()
+            .finish_submitted(None, Outcome::Succeeded)?;
         let retry = pending.request().clone();
         drop(pending);
         release

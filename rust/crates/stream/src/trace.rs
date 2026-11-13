@@ -11,9 +11,13 @@ mod context;
 #[cfg(feature = "serde")]
 mod interest;
 #[cfg(feature = "serde")]
+mod owned;
+#[cfg(feature = "serde")]
 mod recorder;
 #[cfg(feature = "serde")]
 pub use interest::{Lease, Registry};
+#[cfg(feature = "serde")]
+pub use owned::OwnedRecording;
 #[cfg(feature = "serde")]
 pub use recorder::{Observed, Recorder, Recording, Request, Settlement};
 
