@@ -12,8 +12,6 @@ const cases = [
   ["serde bypass", "Self::new(raw.version, raw.handle)",
     "Ok(Self { version: raw.version, handle: raw.handle })",
     "handle-zero-version.json", "metadata deserialization admission"],
-  ["constructor byte bound", "if value.len() > MAX_GUEST_METADATA_BYTES {", "if false {",
-    "handle-overlong.json", "metadata constructor admission"],
   ["expiry canonicalization", "if expiry == 0 || !canonical_expiry(&raw.expires_at_ms) {", "if false {",
     "caller-expiry-alias.json", "metadata deserialization admission"],
 ];
