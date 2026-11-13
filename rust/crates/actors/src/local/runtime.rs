@@ -13,7 +13,6 @@ use acyclic_stream::StreamProviderExt as _;
 mod clock;
 mod completion;
 mod dispatcher;
-mod failure;
 mod interrupt;
 mod limits;
 mod pause;
@@ -47,6 +46,8 @@ use std::{
     },
     task::{Context, Poll, Waker},
 };
+
+mod failure;
 
 struct Slot {
     failure: OnceLock<Arc<failure::Signal>>,
