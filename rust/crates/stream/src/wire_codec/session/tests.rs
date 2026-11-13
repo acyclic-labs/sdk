@@ -43,7 +43,22 @@ fn round_trip(frame: &wire::SessionFrame) -> Result<wire::SessionFrame, prost::D
 
 #[test]
 fn malformed_peer_protobuf_is_a_terminal_response_error() {
-    assert_eq!(decode_frame(&[255]), Err(StreamError::InvalidResponse));
+    use std::error::Error as _;
+    let original = decode_frame(&[255]).unwrap_err();
+    let error = original.clone();
+    drop(original);
+    assert_eq!(error.category(), StreamError::InvalidResponse);
+    assert!(!error.uncertain());
+    assert!(
+        error
+            .source()
+            .unwrap()
+            .source()
+            .unwrap()
+            .downcast_ref::<prost::DecodeError>()
+            .is_some(),
+        "the shared peer decoder must retain the original protobuf failure",
+    );
     let frame = wire::SessionFrame {
         channel_id: 1,
         generation: 1,

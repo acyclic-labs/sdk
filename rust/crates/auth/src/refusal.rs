@@ -149,9 +149,12 @@ fn serialize_metadata<S: serde::Serializer>(
 pub struct Refusal(Arc<Said>);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct Said {
-    cause: Option<Cause>,
-    original: Option<Parts>,
+enum Said {
+    Cause {
+        cause: Cause,
+        original: Option<Parts>,
+    },
+    Status(Parts),
 }
 
 impl Refusal {
@@ -159,8 +162,8 @@ impl Refusal {
     /// status carrying `cause`.
     #[must_use]
     pub fn caused(cause: Cause) -> Self {
-        Self(Arc::new(Said {
-            cause: Some(cause),
+        Self(Arc::new(Said::Cause {
+            cause,
             original: None,
         }))
     }
@@ -230,13 +233,20 @@ impl Refusal {
     }
 
     fn retain(cause: Option<Cause>, original: Option<Parts>) -> Option<Self> {
-        (cause.is_some() || original.is_some()).then(|| Self(Arc::new(Said { cause, original })))
+        match (cause, original) {
+            (Some(cause), original) => Some(Self(Arc::new(Said::Cause { cause, original }))),
+            (None, Some(parts)) => Some(Self(Arc::new(Said::Status(parts)))),
+            (None, None) => None,
+        }
     }
 
     /// The server's attribution, when it reported one.
     #[must_use]
     pub fn cause(&self) -> Option<&Cause> {
-        self.0.cause.as_ref()
+        match self.0.as_ref() {
+            Said::Cause { cause, .. } => Some(cause),
+            Said::Status(_) => None,
+        }
     }
 
     /// Consumes this refusal's attribution, moving its strings when uniquely
@@ -245,8 +255,9 @@ impl Refusal {
     #[must_use]
     pub fn into_cause(self) -> Option<Cause> {
         match Arc::try_unwrap(self.0) {
-            Ok(said) => said.cause,
-            Err(said) => said.cause.clone(),
+            Ok(Said::Cause { cause, .. }) => Some(cause),
+            Ok(Said::Status(_)) => None,
+            Err(said) => Self(said).cause().cloned(),
         }
     }
 
@@ -254,7 +265,10 @@ impl Refusal {
     /// canonical status.
     #[must_use]
     pub fn original(&self) -> Option<&Parts> {
-        self.0.original.as_ref()
+        match self.0.as_ref() {
+            Said::Cause { original, .. } => original.as_ref(),
+            Said::Status(parts) => Some(parts),
+        }
     }
 
     /// The status to emit: a refusal's original parts verbatim, else
@@ -304,5 +318,22 @@ impl std::fmt::Display for Refusal {
             }
         }
         Ok(())
+    }
+}
+
+impl std::fmt::Display for Parts {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "status {} {:?}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for Parts {}
+
+impl std::error::Error for Refusal {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self.0.as_ref() {
+            Said::Cause { cause, .. } => Some(cause),
+            Said::Status(parts) => Some(parts),
+        }
     }
 }
