@@ -1,0 +1,55 @@
+{
+  "prompt": "Run the command through code and report the result without repeating output.",
+  "turns": [
+    [
+      {
+        "type": "event",
+        "kind": "tool_call",
+        "call_id": "program",
+        "name": "code",
+        "arguments": {
+          "code": "const r = await tools.shell({command: \"printf gc253_stdout; printf gc253_stderr >&2\"}); const wire = JSON.stringify(r); export default {exit:r.exit_code, stdout:r.stdout.includes('gc253_stdout'), stderr:r.stderr.includes('gc253_stderr'), stdoutCopies:wire.split('gc253_stdout').length-1, stderrCopies:wire.split('gc253_stderr').length-1, textField:Object.hasOwn(r,'text')};"
+        }
+      },
+      { "type": "event", "kind": "completed", "metadata": null }
+    ],
+    "done"
+  ],
+  "expect": {
+    "files": {},
+    "results": {
+      "program": {
+        "content": {
+          "kind": "json",
+          "value": {
+            "exit": 0,
+            "stdout": true,
+            "stderr": true,
+            "stdoutCopies": 1,
+            "stderrCopies": 1,
+            "textField": false
+          }
+        }
+      }
+    }
+  },
+  "platforms": {
+    "windows": {
+      "turns": [
+        [
+          {
+            "type": "event",
+            "kind": "tool_call",
+            "call_id": "program",
+            "name": "code",
+            "arguments": {
+              "code": "const r = await tools.shell({command: \"[Console]::Out.Write('gc253_stdout'); [Console]::Error.Write('gc253_stderr')\"}); const wire = JSON.stringify(r); export default {exit:r.exit_code, stdout:r.stdout.includes('gc253_stdout'), stderr:r.stderr.includes('gc253_stderr'), stdoutCopies:wire.split('gc253_stdout').length-1, stderrCopies:wire.split('gc253_stderr').length-1, textField:Object.hasOwn(r,'text')};"
+            }
+          },
+          { "type": "event", "kind": "completed", "metadata": null }
+        ],
+        "done"
+      ]
+    }
+  }
+}
