@@ -43,13 +43,21 @@ impl CheckoutTools {
             standard_input: None,
             process_custody: workspace.processes.clone(),
         };
-        let invocation = native_process::shell::prepare(
-            input,
-            &workspace.mounts,
-            invocation,
-            self.clock.now_unix_millis() / 1000,
-            std::time::Instant::now(),
-        )?;
+        let preparation_mounts = Arc::clone(&workspace.mounts);
+        let preparation_control = control.clone();
+        let clock = Arc::clone(&self.clock);
+        let (invocation, (state, files, claims)) =
+            native_process::prepare_with_custody((state, files, claims), move || {
+                preparation_control.check().map_err(Error::process_io)?;
+                native_process::shell::prepare(
+                    input,
+                    &preparation_mounts,
+                    invocation,
+                    clock.now_unix_millis() / 1000,
+                    std::time::Instant::now(),
+                )
+            })
+            .await?;
         control.check().map_err(Error::process_io)?;
         // A dropped turn stops its command; the worker still reaps the tree.
         let _stop = StopOnDrop(control.clone());
