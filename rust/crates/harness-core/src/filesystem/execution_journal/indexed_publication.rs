@@ -179,10 +179,13 @@ where
                 Ok(acyclic_stream::AppendRecord {
                     value: bytes.clone(),
                     headers: supervision::indexed_headers(
-                        [super::super::bounded_io::clone_bytes(
-                            crate::supervision::RUN_KEY,
-                            io,
-                        )?],
+                        [
+                            super::super::bounded_io::clone_bytes(
+                                crate::supervision::streams::CURRENT_RUN_KEY,
+                                io,
+                            )?,
+                            super::super::bounded_io::clone_bytes(crate::supervision::RUN_KEY, io)?,
+                        ],
                         io,
                     )?,
                 })
