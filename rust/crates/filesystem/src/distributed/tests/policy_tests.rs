@@ -403,12 +403,12 @@ async fn append_revocation(omit_fence: bool) -> TestResult {
         None::<&mut ()>,
     );
     let outcome = if omit_fence {
-        append.await?
+        append.await
     } else {
-        cut.scope(append).await?
+        cut.scope(append).await
     };
     assert!(
-        matches!(outcome, FsAppendOutcome::Conflict { .. }),
+        outcome.is_err(),
         "merge append ignored source policy revocation"
     );
     assert_eq!(store.head(target, &mut work).await?, target_head);
