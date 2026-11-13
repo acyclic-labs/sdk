@@ -176,6 +176,50 @@ async fn temporary_files_use_private_home_with_default_and_explicit_grants() -> 
 // Admission failures must preserve their original error class.
 #[cfg(target_os = "linux")]
 #[tokio::test]
+async fn read_only_project_uses_its_writable_volume_for_temporary_files() -> Result<()> {
+    let project = tempfile::tempdir().map_err(Error::process_io)?;
+    let mut mounts = table(project.path().canonicalize().map_err(Error::process_io)?)?;
+    for (name, mount) in mounts.mounts_mut() {
+        if name.is_empty() {
+            mount.mode = MountMode::default();
+        }
+    }
+    let data = mounts
+        .native_mounts()
+        .find(|(name, _, _)| *name == "volume:///data")
+        .expect("writable data projection")
+        .1
+        .to_path_buf();
+    let result = run(
+        ShellInput {
+            command:
+                r#"test "$TMPDIR" = "$ACYCLIC_VOLUME_DATA" && printf scratch > "$TMPDIR/receipt""#
+                    .into(),
+            cwd: None,
+            timeout_ms: None,
+            background: false,
+            target: None,
+        },
+        &mounts,
+        invocation(&mounts.root),
+        1,
+        None,
+        || Ok(()),
+    )
+    .await?
+    .expect("completed shell");
+    assert!(result.success, "{result:?}");
+    assert_eq!(
+        std::fs::read(data.join("receipt")).map_err(Error::process_io)?,
+        b"scratch"
+    );
+    assert!(!project.path().join("receipt").exists());
+    Ok(())
+}
+
+// Admission failures must preserve their original error class.
+#[cfg(target_os = "linux")]
+#[tokio::test]
 async fn shell_admission_does_not_require_a_logical_volume_path() -> Result<()> {
     let temp = tempfile::tempdir().map_err(Error::process_io)?;
     let root = temp.path().join("view");
