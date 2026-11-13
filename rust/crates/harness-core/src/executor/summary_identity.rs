@@ -17,10 +17,12 @@ pub(crate) fn is_output_key(key: &str) -> bool {
     )
 }
 
-// Only published conversation summaries qualify; execution state stays private.
+// Storage class does not confer summary authority. The journal authenticates
+// the complete immutable output through its private provenance receipt.
 pub(crate) fn summary_operation(path: &str) -> Option<OperationId> {
-    let tail = path.strip_prefix(SUMMARY_PREFIX)?;
-    let (operation, name) = tail.split_once('/')?;
+    let tail = path.strip_prefix(".system/")?;
+    let (parent, name) = tail.rsplit_once('/')?;
+    let (_, operation) = parent.rsplit_once('/')?;
     let digest = name.strip_suffix(".json")?;
     if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;
@@ -38,12 +40,14 @@ mod tests {
 
     proptest! {
         #[test]
-        fn published_summary_paths_round_trip(operation in any::<[u8;16]>(), digest in "[a-f0-9]{64}", extra in "[a-z]{1,16}") {
+        fn operation_addressed_summary_paths_round_trip(operation in any::<[u8;16]>(), digest in "[a-f0-9]{64}", extra in "[a-z]{1,16}") {
             let operation = OperationId::from_bytes(operation);
-            let path = format!("{SUMMARY_PREFIX}{operation}/{digest}.json");
-            prop_assert_eq!(summary_operation(&path), Some(operation));
-            for invalid in [format!("{extra}{path}"), format!("{path}/{extra}"), format!("{path}{extra}"), path.replace(".json", ".json/../secret"), format!(".system/execution/{operation}/{digest}.json")] {
-                prop_assert_eq!(summary_operation(&invalid), None);
+            for namespace in [SUMMARY_PREFIX, ".system/execution/", ".system/other/nested/"] {
+                let path = format!("{namespace}{operation}/{digest}.json");
+                prop_assert_eq!(summary_operation(&path), Some(operation));
+                for invalid in [format!("{extra}{path}"), format!("{path}/{extra}"), format!("{path}{extra}"), path.replace(".json", ".json/../secret")] {
+                    prop_assert_eq!(summary_operation(&invalid), None);
+                }
             }
         }
     }
