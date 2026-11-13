@@ -19,6 +19,39 @@ impl StepConfiguration for Configurations {
 #[tokio::test]
 async fn a_step_rebinds_the_complete_provider_configuration_without_restarting_the_turn()
 -> Result<()> {
+    struct Profiled(Arc<ScriptedModelProvider>, crate::model::ModelSampling);
+    impl ModelProvider for Profiled {
+        fn model_profile(&self, _: &Model) -> Result<Option<crate::model::ModelProfileBinding>> {
+            Ok(Some(crate::model::ModelProfileBinding {
+                digest: [71; 32],
+                prefix: [72; 32],
+                reasoning: acyclic_model_render::Reasoning::Effort(
+                    acyclic_model_render::Effort::Medium,
+                ),
+                sampling: self.1,
+                cache: acyclic_model_render::Cache::Automatic,
+                capacity: crate::context::ModelContextCapacity {
+                    context_tokens: 131_072,
+                    output_tokens: Some(4096),
+                },
+                overlay_effort: None,
+            }))
+        }
+        fn generate<'a>(
+            &'a self,
+            request: &'a crate::model::PreparedModelRequest,
+            dispatch: crate::model::ModelDispatch,
+        ) -> crate::model::ModelStream<'a> {
+            self.0.generate(request, dispatch)
+        }
+        fn reconcile<'a>(
+            &'a self,
+            dispatch: crate::model::ModelDispatch,
+            observed: &'a [ModelEvent],
+        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            self.0.reconcile(dispatch, observed)
+        }
+    }
     for instruction in [None, Some("original instruction")] {
         let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
         let journal = storage.journal();
@@ -26,20 +59,49 @@ async fn a_step_rebinds_the_complete_provider_configuration_without_restarting_t
             "change",
             json!({"value": "change configuration"}),
         )])]));
-        let second = Arc::new(ScriptedModelProvider::new([
-            tool_turn([echo_call(
-                "after-change",
-                json!({"value": "use original authority"}),
-            )]),
-            done_turn(),
-        ]));
+        let second = Arc::new(
+            ScriptedModelProvider::new([
+                ScriptedTurn::Events(vec![ScriptedEvent::Error {
+                    error: "exchange interrupted".into(),
+                }]),
+                done_turn(),
+            ])
+            .with_reconciliations([ScriptedReconciliation {
+                orphan: false,
+                observed: vec![],
+                continuation: Some(vec![
+                    echo_call("after-change", json!({"value": "use original authority"})),
+                    ModelEvent::Completed {
+                        metadata: Value::Null,
+                    },
+                ]),
+            }]),
+        );
         let models = crate::model::ModelResolver::new("fixture/first", {
             let first = Arc::clone(&first);
             let second = Arc::clone(&second);
             move |selection| {
                 let (name, provider): (_, Arc<dyn ModelProvider>) = match selection {
-                    "fixture/first" => ("first", first.clone()),
-                    "fixture/second" => ("second", second.clone()),
+                    "fixture/first" => (
+                        "first",
+                        Arc::new(Profiled(
+                            first.clone(),
+                            crate::model::ModelSampling {
+                                temperature: Some(0.1),
+                                ..Default::default()
+                            },
+                        )),
+                    ),
+                    "fixture/second" => (
+                        "second",
+                        Arc::new(Profiled(
+                            second.clone(),
+                            crate::model::ModelSampling {
+                                temperature: Some(0.8),
+                                ..Default::default()
+                            },
+                        )),
+                    ),
                     _ => return Err(Error::NotFound(selection.into())),
                 };
                 Ok((
@@ -88,13 +150,14 @@ async fn a_step_rebinds_the_complete_provider_configuration_without_restarting_t
             })
         };
         let initial = bind("fixture/first", 0.1, instruction)?;
-        let next = bind(
+        let mut next = bind(
             "fixture/second",
             0.8,
             instruction.map(|_| "rewritten instruction"),
         )?
         .without_tool_authority()
         .into_step_binding(None)?;
+        Arc::get_mut(&mut next).unwrap().effort = Some(crate::config::Effort::Low);
         let executor = initial
             .clone()
             .with_step_configuration(Arc::new(Configurations([
@@ -107,6 +170,32 @@ async fn a_step_rebinds_the_complete_provider_configuration_without_restarting_t
             selected_context: None,
             max_steps: None,
         };
+        assert!(
+            executor
+                .execute_progress(input.clone(), journal.as_ref())
+                .await
+                .is_err()
+        );
+        let output = executor
+            .clone()
+            .execute(input.clone(), journal.as_ref())
+            .await?;
+        assert_eq!(
+            output
+                .transcript
+                .iter()
+                .flat_map(|message| message.content.parts())
+                .filter(|part| matches!(
+                    part,
+                    ModelContentPart::Configuration {
+                        effort: acyclic_model_render::Effort::Low,
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(second.reconciliations().len(), 1);
         assert!(matches!(
             executor
                 .execute_progress(input.clone(), journal.as_ref())
