@@ -174,7 +174,6 @@ proptest! {
             (0..15_usize).prop_map(|depth| format!("**/a{}", "/?".repeat(depth))),
         ],
         work in 0..100_001_usize,
-        refusal in prop::option::of(any::<usize>()),
         folded in any::<bool>(),
     ) {
         let (policy, capability) = input(&pattern).map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
@@ -189,39 +188,40 @@ proptest! {
                 admission_count += 1;
                 Ok(())
             }));
-        let refuse_stage = refusal.filter(|_| admission_count != 0)
-            .map_or(0, |cut| 1 + cut % admission_count);
-        let mut remaining = work;
-        let mut reserved = 0;
-        let mut stages = 0;
-        let mut compiled = None;
-        let measured = acyclic_test_support::measure(|| {
-            compiled = Some(PathTrie::compile_with_work(&policy, &caller, resource, context, &capability,
-                &mut remaining, |bytes| {
-                    stages += 1;
-                    if stages == refuse_stage { return Err(InvalidPolicy("unfunded compiler stage")); }
-                    reserved += bytes;
-                    Ok(())
-                }));
-        });
-        prop_assert!(remaining <= work);
-        // Select from actual admission cuts, including those introduced by
-        // pattern compilation and caller binding, rather than a fixed count.
-        if refuse_stage != 0 && stages == refuse_stage {
-            prop_assert!(matches!(compiled.as_ref(), Some(Err(InvalidPolicy("unfunded compiler stage")))));
-            prop_assert_eq!(measured.bytes_current, 0);
-        }
-        prop_assert!(measured.bytes_max <= reserved as u64, "{} live bytes exceed {} reserved for {}", measured.bytes_max, reserved, pattern);
-        if let Some(Ok(trie)) = compiled {
-            prop_assert_eq!(trie.logical_owned_bytes(), measured.bytes_current.cast_unsigned());
-            for path in ["", "a/b", "secrets/key", "Σ/b", "a/x/y/b"] {
-                prop_assert_eq!(trie.decide(Action::Read, path, 10),
-                    decide(&policy, &caller, Action::Read, Resource { path, ..resource }, context, &capability));
-            }
-            let hot = acyclic_test_support::measure(|| {
-                for _ in 0..32 { std::hint::black_box(trie.decide(Action::Read, "secrets/key", 10)); }
+        // Exercise every actual admission cut, including pattern compilation
+        // and caller binding, plus the unmodified compilation at stage zero.
+        for refuse_stage in 0..=admission_count {
+            let mut remaining = work;
+            let mut reserved = 0;
+            let mut stages = 0;
+            let mut compiled = None;
+            let measured = acyclic_test_support::measure(|| {
+                compiled = Some(PathTrie::compile_with_work(&policy, &caller, resource, context, &capability,
+                    &mut remaining, |bytes| {
+                        stages += 1;
+                        if stages == refuse_stage { return Err(InvalidPolicy("unfunded compiler stage")); }
+                        reserved += bytes;
+                        Ok(())
+                    }));
             });
-            prop_assert_eq!(hot.count_total, 0);
+            prop_assert!(remaining <= work);
+            if refuse_stage != 0 {
+                prop_assert_eq!(stages, refuse_stage, "admission cut was not exercised");
+                prop_assert!(matches!(compiled.as_ref(), Some(Err(InvalidPolicy("unfunded compiler stage")))));
+                prop_assert_eq!(measured.bytes_current, 0);
+            }
+            prop_assert!(measured.bytes_max <= reserved as u64, "{} live bytes exceed {} reserved for {}", measured.bytes_max, reserved, pattern);
+            if let Some(Ok(trie)) = compiled {
+                prop_assert_eq!(trie.logical_owned_bytes(), measured.bytes_current.cast_unsigned());
+                for path in ["", "a/b", "secrets/key", "Σ/b", "a/x/y/b"] {
+                    prop_assert_eq!(trie.decide(Action::Read, path, 10),
+                        decide(&policy, &caller, Action::Read, Resource { path, ..resource }, context, &capability));
+                }
+                let hot = acyclic_test_support::measure(|| {
+                    for _ in 0..32 { std::hint::black_box(trie.decide(Action::Read, "secrets/key", 10)); }
+                });
+                prop_assert_eq!(hot.count_total, 0);
+            }
         }
     }
 }
