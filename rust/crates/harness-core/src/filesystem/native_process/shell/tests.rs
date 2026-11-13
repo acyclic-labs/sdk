@@ -116,7 +116,7 @@ fn invocation(root: &Path) -> Invocation {
 #[tokio::test]
 async fn temporary_files_use_private_home_with_default_and_explicit_grants() -> Result<()> {
     let project = tempfile::tempdir().map_err(Error::process_io)?;
-    let mounts = table_with_home(
+    let mut mounts = table_with_home(
         project.path().canonicalize().map_err(Error::process_io)?,
         true,
     )?;
@@ -124,7 +124,16 @@ async fn temporary_files_use_private_home_with_default_and_explicit_grants() -> 
         .native_mounts()
         .find(|(name, _, _)| *name == "volume:///home")
         .expect("private home")
-        .1;
+        .1
+        .to_path_buf();
+    let binding = tempfile::tempdir().map_err(Error::process_io)?;
+    let alias = binding.path().join("home");
+    std::os::unix::fs::symlink(&home, &alias).map_err(Error::process_io)?;
+    for (name, mount) in mounts.mounts_mut() {
+        if name == "volume:///home" {
+            mount.native_root = crate::workspace::NativeRoot::Path(alias.clone());
+        }
+    }
     for explicit in [false, true] {
         let mut native = invocation(&mounts.root);
         if explicit {
