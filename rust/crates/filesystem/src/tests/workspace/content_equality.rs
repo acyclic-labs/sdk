@@ -138,6 +138,11 @@ fn native_range_restoration_compares_bytes_across_payload_layouts() -> Result<()
                     };
                     let equal = unbounded!(current, matches_content(&base, "/large"))?;
                     assert_eq!(equal, replacement == byte);
+                    assert_eq!(
+                        unbounded!(current, content_changed_from(&base))?,
+                        replacement != byte,
+                        "authored progress must compare bytes across native range layouts",
+                    );
                     for prefix in [0, offset, offset + 1, bytes.len() as u64] {
                         assert_eq!(
                             unbounded!(current, matches_content_prefix(&base, "/large", prefix))?,
