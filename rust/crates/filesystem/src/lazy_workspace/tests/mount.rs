@@ -1,5 +1,234 @@
 use super::*;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn discarded_source_promotion_retains_before_images_without_overriding_live_aliases()
+-> Result<(), Box<dyn std::error::Error>> {
+    for linked in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let physical = directory.path().join("file");
+        std::fs::write(&physical, b"original")?;
+        if linked {
+            std::fs::hard_link(&physical, directory.path().join("alias"))?;
+        }
+        let source = native_source(directory.path(), crate::FilesystemProfile::Portable).await;
+        let root = attach(
+            &Fs::memory(),
+            Arc::clone(&source),
+            MemoryLazyWorkspaceStore::default(),
+        )
+        .await?;
+        let cancellation = CancellationToken::new();
+        let mut ctx = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        let promote = async || {
+            let mut local = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+            let mut checkout = root
+                .workspace()
+                .checkout(
+                    crate::model::GenerationSelector::Head,
+                    crate::model::CheckoutMode::tracking_transaction(),
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await?
+                .value;
+            let lookup = root.lookup("/file", &mut local).await?;
+            let id = root
+                .stable_file_id_for_lookup("/file", &lookup.0, &mut local)
+                .await?;
+            root.retire_lookup(lookup, &mut local)?;
+            assert!(
+                root.stage_into_checkout(&mut checkout, "/file", id, 64, &mut local)
+                    .await?
+            );
+            drop(checkout);
+            Ok::<_, Box<dyn std::error::Error>>((id, root.snapshot(&mut local).await?))
+        };
+        let (id, original) = promote().await?;
+        let lookup = root.inspect("/file", &mut ctx).await?;
+        assert!(matches!(lookup.0, LazyLookup::Source { .. }));
+        root.retire_lookup(lookup, &mut ctx)?;
+        std::fs::write(&physical, b"external")?;
+        source.invalidate();
+        assert_eq!(
+            root.read("/file", 64, &mut ctx).await?.bytes.as_ref(),
+            b"external"
+        );
+        let unobserved = root.snapshot(&mut ctx).await?;
+        assert_ne!(unobserved.source, original.source);
+        assert_eq!(unobserved.shadows, original.shadows);
+        assert!(matches!(
+            root.read_file_at_snapshot(unobserved, id, 64, &mut ctx)
+                .await,
+            Err(LazyWorkspaceError::StaleSource)
+        ));
+        if linked {
+            assert_eq!(
+                root.read("/alias", 64, &mut ctx).await?.bytes.as_ref(),
+                b"external"
+            );
+            assert!(matches!(
+                root.read_at_snapshot(original, "/alias", None, 64, &mut ctx)
+                    .await,
+                Err(LazyWorkspaceError::StaleSource)
+            ));
+        }
+        let (bytes, used_source) = root
+            .read_at_snapshot(original, "/file", None, 64, &mut ctx)
+            .await?;
+        assert_eq!(bytes.bytes.as_ref(), b"original");
+        assert!(!used_source);
+        assert_eq!(
+            root.read_file_at_snapshot(original, id, 64, &mut ctx)
+                .await?
+                .bytes
+                .as_ref(),
+            b"original"
+        );
+        let (_, fresh) = promote().await?;
+        assert_eq!(
+            root.read_file_at_snapshot(fresh, id, 64, &mut ctx)
+                .await?
+                .bytes
+                .as_ref(),
+            b"external"
+        );
+        assert_eq!(
+            root.read_at_snapshot(fresh, "/file", None, 64, &mut ctx)
+                .await?
+                .0
+                .bytes
+                .as_ref(),
+            b"external"
+        );
+        assert_eq!(
+            root.read_at_snapshot(original, "/file", None, 64, &mut ctx)
+                .await?
+                .0
+                .bytes
+                .as_ref(),
+            b"original"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn source_before_images_require_their_original_collection_roots_after_restart()
+-> Result<(), Box<dyn std::error::Error>> {
+    for retain_original in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let source_path = directory.path().join("source");
+        std::fs::create_dir(&source_path)?;
+        let physical = source_path.join("file");
+        let original = vec![0x37; 32 * 1024];
+        std::fs::write(&physical, &original)?;
+        let source = native_source(&source_path, crate::FilesystemProfile::Portable).await;
+        let fs_path = directory.path().join("fs");
+        let store = crate::LocalCoreStateStore::new(directory.path().join("state"));
+        let cancellation = CancellationToken::new();
+        let cut;
+        {
+            let fs = Fs::local(crate::LocalOptions::new(&fs_path)).await?;
+            let released = fs
+                .local_root_release_barrier()
+                .ok_or("local release barrier")?;
+            let root = attach(&fs, Arc::clone(&source), store.clone()).await?;
+            let mut ctx = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+            let lookup = root.lookup("/file", &mut ctx).await?;
+            let id = root
+                .stable_file_id_for_lookup("/file", &lookup.0, &mut ctx)
+                .await?;
+            root.retire_lookup(lookup, &mut ctx)?;
+            let mut checkout = root
+                .workspace()
+                .checkout(
+                    crate::model::GenerationSelector::Head,
+                    crate::model::CheckoutMode::tracking_transaction(),
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await?
+                .value;
+            assert!(
+                root.stage_into_checkout(
+                    &mut checkout,
+                    "/file",
+                    id,
+                    original.len() as u64,
+                    &mut ctx
+                )
+                .await?
+            );
+            // This real unpublished payload gives collection reclaimable work.
+            // Neither it nor the source copy-up becomes an authored generation.
+            let orphan = root.namespace_path("/orphan", &mut ctx)?;
+            checkout
+                .apply_authored_transaction(
+                    vec![AuthoredMutation::CreateFile {
+                        file_id: None,
+                        path: orphan.value,
+                        bytes: acyclic_stream::OwnedBytes::from(vec![0x6e; 65_537]),
+                        metadata: FileMetadata::default(),
+                    }],
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await?;
+            crate::kernel::retire_allocation(orphan.allocation, orphan.bytes, &mut ctx)?;
+            drop(checkout);
+            cut = root.snapshot(&mut ctx).await?;
+            assert!(
+                root.workspace()
+                    .generation(
+                        cut.authored_generation,
+                        WorkBudget::UNBOUNDED,
+                        &cancellation
+                    )
+                    .await?
+                    .value
+                    .read("/file", None, WorkBudget::UNBOUNDED, &cancellation)
+                    .await
+                    .is_err()
+            );
+            drop((root, fs));
+            released.released().await;
+        }
+        std::fs::remove_file(&physical)?;
+        source.invalidate();
+        let fs = Fs::local(crate::LocalOptions::new(&fs_path)).await?;
+        let mut ctx = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        let workspace = fs
+            .open_workspace("root", WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value;
+        let root =
+            LazyWorkspace::open(workspace, Arc::clone(&source), store.clone(), &mut ctx).await?;
+        let collected = fs
+            .collect_local_garbage(retain_original.then_some(&store), &cancellation)
+            .await?;
+        assert!(
+            collected.removed > 0,
+            "collection did not reclaim the unpublished control"
+        );
+        let read = root
+            .read_at_snapshot(cut, "/file", None, None, &mut ctx)
+            .await;
+        if retain_original {
+            let (read, used_source) = read?;
+            assert_eq!(read.bytes.as_ref(), original.as_slice());
+            assert!(!used_source);
+        } else {
+            assert!(
+                read.is_err(),
+                "omitting original collection roots retained unavailable source bytes"
+            );
+        }
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn materialization_phase_denial_preserves_the_callers_owned_namespace() {
     let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
@@ -343,18 +572,44 @@ async fn replacement_directory_hides_old_source_children() {
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn mounted_whiteouts_follow_the_original_publication_decision() {
-    let root = attach(
-        &Fs::memory(),
-        Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await
-    .unwrap();
+    let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
+    let store = MemoryLazyWorkspaceStore::default();
+    let root = attach(&Fs::memory(), Arc::clone(&source), store.clone())
+        .await
+        .unwrap();
     for committed in [false, true] {
+        let before = store
+            .load_lazy_workspace(root.workspace().id(), accounting!())
+            .await
+            .unwrap()
+            .unwrap();
+        source.replace(Bytes::from_static(if committed {
+            b"committed"
+        } else {
+            b"aborted"
+        }));
+        let snapshot = root.publication_snapshot(accounting!()).await.unwrap();
+        assert!(matches!(snapshot.context, NativeSnapshotContext::Lazy(cut)
+            if cut.source == source.reference()));
+        assert_eq!(
+            store
+                .load_lazy_workspace(root.workspace().id(), accounting!())
+                .await
+                .unwrap(),
+            Some(before.clone()),
+            "a clean publication must not publish epoch bookkeeping"
+        );
         let key = IdempotencyKey::new();
         root.prepare_mount_removals(&["/file.txt".to_owned()], &[], &[], key, accounting!())
             .await
             .unwrap();
+        let prepared = store
+            .load_lazy_workspace(root.workspace().id(), accounting!())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(prepared.source, source.reference());
+        assert_eq!(prepared.revision, before.revision + 1);
         if committed {
             let mut checkout = root
                 .workspace()
@@ -497,13 +752,15 @@ async fn a_shadowed_identity_keeps_256k_of_content_across_restart() {
     .await
     .unwrap();
     let shadow = root
-        .shadow_record(
+        .shadow_records(
             root.state(accounting!()).await.unwrap().shadows,
             record.file_id,
             accounting!(),
         )
         .await
         .unwrap()
+        .unwrap()
+        .authored
         .unwrap()
         .0;
     let detached = crate::facade::DetachedFile::from_record(

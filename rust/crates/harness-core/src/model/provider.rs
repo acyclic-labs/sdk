@@ -13,6 +13,13 @@ pub enum ModelEvent {
     /// not change model output, call identity or completion, and contains no
     /// remote error text.
     Wait(ModelWait),
+    /// Original request-path span delta. It is journalled without becoming
+    /// model output, reasoning continuity or a completion measurement.
+    Trace {
+        /// The shared stream span format, including its original clock domain.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
+        record: acyclic_stream::trace::TraceRecord,
+    },
     /// Verified token admission, terminating a token-count stream. Generation
     /// streams terminate with `Completed` instead.
     Counted {
@@ -314,6 +321,25 @@ impl ModelEvent {
     pub(crate) fn retained_owned_bytes(&self) -> Result<u64> {
         let payload = match self {
             Self::Restarted | Self::Wait(_) => 0,
+            Self::Trace { record } => match record {
+                acyclic_stream::trace::TraceRecord::V1(
+                    acyclic_stream::trace::SpanEvent::Started {
+                        name, guarantee, ..
+                    },
+                ) => add(
+                    name.capacity() as u64,
+                    guarantee
+                        .as_ref()
+                        .map_or(0, |value| value.capacity() as u64),
+                )?,
+                acyclic_stream::trace::TraceRecord::V1(
+                    acyclic_stream::trace::SpanEvent::Finished {
+                        result: acyclic_stream::trace::Outcome::Failed { cause },
+                        ..
+                    },
+                ) => cause.path.as_str().len() as u64 + 2 * std::mem::size_of::<usize>() as u64,
+                _ => 0,
+            },
             Self::Counted { count } => {
                 (count.message_tokens.capacity() * std::mem::size_of::<u32>()) as u64
             }

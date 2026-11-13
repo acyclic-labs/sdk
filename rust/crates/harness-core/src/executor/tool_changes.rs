@@ -1,6 +1,26 @@
 //! Original-position tool bindings for every tool source.
 use super::*;
 
+/// Decode an appended tool table through its original allocation owner when
+/// present. The portable path has no allocation hold to retain.
+pub(crate) fn decode_tool_table(
+    bytes: &[u8],
+    io: Option<&PreparationIo>,
+    code: crate::wire::ErrorCode,
+) -> Result<Vec<crate::tool::ToolDefinition>> {
+    if let Some(io) = io {
+        let (table, hold) = io.decode(
+            std::marker::PhantomData::<Vec<crate::tool::ToolDefinition>>,
+            bytes,
+            code,
+        )?;
+        hold.into_retained()?;
+        return Ok(table);
+    }
+    serde_json::from_slice(bytes)
+        .map_err(|_| Error::from_code(code, "appended tool table is invalid"))
+}
+
 impl StockExecution<'_> {
     pub(super) fn tools_notice(
         &self,
@@ -186,30 +206,11 @@ impl StockExecution<'_> {
                 .map(Vec::as_slice)
                 .unwrap_or_default()
         } else {
-            #[cfg(not(target_arch = "wasm32"))]
-            let funded = self
-                .io
-                .map(|io| {
-                    io.decode(
-                        std::marker::PhantomData::<Vec<crate::tool::ToolDefinition>>,
-                        previous.as_bytes(),
-                        crate::wire::ErrorCode::Invalid,
-                    )
-                })
-                .transpose()?;
-            #[cfg(target_arch = "wasm32")]
-            let funded: Option<(
-                Vec<crate::tool::ToolDefinition>,
-                crate::conversation::ContentHold<'_>,
-            )> = None;
-            decoded = match funded {
-                Some((table, hold)) => {
-                    hold.into_retained()?;
-                    table
-                }
-                None => serde_json::from_str(&previous)
-                    .map_err(|_| invalid("invalid prior tool notice"))?,
-            };
+            decoded = decode_tool_table(
+                previous.as_bytes(),
+                self.io,
+                crate::wire::ErrorCode::Invalid,
+            )?;
             decoded.as_slice()
         };
         let mut removed = Vec::new();
@@ -335,5 +336,30 @@ impl StockExecution<'_> {
             offset += end;
         }
         Ok(pending)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn appended_tool_tables_obey_portable_preparation_credit() -> Result<()> {
+        let bytes = br#"[{"name":"selected","revision":"v1","description":"original table","input_schema":{},"output_schema":{},"projection_schema":{}}]"#;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::performance::work_budget(100_000, 1_000_000);
+        let io = PreparationIo::from_budget(budget, &cancellation)?;
+        let table = decode_tool_table(bytes, Some(&io), crate::wire::ErrorCode::Invalid)?;
+        assert_eq!(table.len(), 1);
+        assert_eq!(table[0].name, "selected");
+        drop(table);
+        let mut denied = budget;
+        denied.peak_allocation_bytes = 0;
+        let io = PreparationIo::from_budget(denied, &cancellation)?;
+        assert!(
+            decode_tool_table(bytes, Some(&io), crate::wire::ErrorCode::Invalid).is_err(),
+            "appended tool table bypassed supplied portable preparation credit",
+        );
+        Ok(())
     }
 }

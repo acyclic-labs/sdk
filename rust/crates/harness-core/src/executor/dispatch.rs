@@ -583,7 +583,6 @@ impl StockExecution<'_> {
             purpose,
             clock,
         } = call;
-        #[cfg(feature = "research")]
         let mut clock = clock;
         let step = dispatch.step;
         let purpose_key = model_purpose_key(purpose);
@@ -625,7 +624,6 @@ impl StockExecution<'_> {
                         return Err(error);
                     }
                 };
-                #[cfg(feature = "research")]
                 clock.observe(&event);
                 let latency_ns = matches!(event, ModelEvent::Completed { .. })
                     .then(|| clock.elapsed_ns())
@@ -681,11 +679,9 @@ impl StockExecution<'_> {
                             started_at: clock.started_at(),
                             completed_at,
                             latency_ns,
-                            #[cfg(feature = "research")]
                             provider_request_id: metadata["provider_request_id"].as_str(),
                             #[cfg(feature = "research")]
                             system_fingerprint: metadata["system_fingerprint"].as_str(),
-                            #[cfg(feature = "research")]
                             ttft_ns: clock.ttft_ns(),
                             #[cfg(feature = "research")]
                             cache: ModelCacheObservation::reported(metadata),
@@ -718,7 +714,7 @@ impl StockExecution<'_> {
                 let _ = receipt;
                 // Wait facts are durable now; response assembly needs none of them.
                 // Recovery loads its original ordered prefix from the journal.
-                if matches!(event, ModelEvent::Wait(_)) {
+                if matches!(event, ModelEvent::Wait(_) | ModelEvent::Trace { .. }) {
                     stock_retire_event(
                         observed.pop().expect("the committed event is retained"),
                         io,

@@ -81,6 +81,13 @@ pub fn initialize_native_mount_services() -> Result<(), NativeMountError> {
     #[cfg(target_os = "macos")]
     crate::native_mount::darwin_mount::reclaim_stale_mounts()?;
     crate::native_mount::registry::initialize()?;
+    initialize_native_source_services()
+}
+
+/// Initializes shared source callbacks and watches without creating a physical
+/// mount registry. Consumers of lazy volume sources need these services even
+/// when they never project a native mount or use global user state.
+pub fn initialize_native_source_services() -> Result<(), NativeMountError> {
     crate::watch::initialize_native_watch_services()
         .map_err(|error| NativeMountError::Driver(format!("native watch services: {error}")))?;
     CallbackRuntime::create().map(|_| ())

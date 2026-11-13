@@ -6,7 +6,7 @@ pub(in crate::filesystem::execution_journal) fn check(bytes: &[u8]) {
         // original-turn admission remain in verify_checkpoint.
         let encoded = codec::encode(&value, None).expect("admitted checkpoint encodes");
         assert_eq!(encoded.as_ref(), bytes);
-        for version in [b'0', b'3', b'4', b'5', u8::MAX] {
+        for version in [b'0', b'3', b'4', b'5', b'6', b'7', b'8', u8::MAX] {
             let mut header = bytes[..4].to_vec();
             header[3] = version;
             assert_eq!(
@@ -36,6 +36,8 @@ pub(in crate::filesystem::execution_journal) fn seeds() -> Result<Vec<(&'static 
             pending_dispatches: u64::MAX,
             anchor: [4; 32],
             latest_response: None,
+            latest_response_output: false,
+            latest_response_completed: false,
             model_dispatched: false,
         },
         proof: [5; 64],
@@ -51,6 +53,8 @@ pub(in crate::filesystem::execution_journal) fn seeds() -> Result<Vec<(&'static 
                 digest: [6; 32],
             }); 5];
             checkpoint.state.latest_response = Some(u32::MAX);
+            checkpoint.state.latest_response_output = true;
+            checkpoint.state.latest_response_completed = true;
             checkpoint.state.model_dispatched = true;
         }
         let bytes = codec::encode(&checkpoint, None)?;

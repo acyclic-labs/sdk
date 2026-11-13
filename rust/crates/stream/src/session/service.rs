@@ -60,7 +60,7 @@ impl<P: StreamProvider> wire::stream_session_service_server::StreamSessionServic
     ) -> Result<Response<Self::SessionStream>, Status> {
         let incoming = request
             .into_inner()
-            .map(|frame| frame.map_err(|_| StreamError::Unavailable))
+            .map(|frame| frame.map_err(|error| wire_codec::status(&error)))
             .boxed();
         let session = serve_on_with_products::<_, StreamError>(
             Arc::clone(&self.provider),
@@ -75,14 +75,10 @@ impl<P: StreamProvider> wire::stream_session_service_server::StreamSessionServic
                 }) as crate::BoxProviderFuture<'static, ()>
             }),
         )
-        .map_err(|error| Status::invalid_argument(error.code()))?;
+        .map_err(Status::from)?;
         Ok(Response::new(
             session
-                .map(|frame| {
-                    frame
-                        .map(Frame::into_wire)
-                        .map_err(|error| Status::failed_precondition(error.code()))
-                })
+                .map(|frame| frame.map(Frame::into_wire).map_err(Status::from))
                 .boxed(),
         ))
     }

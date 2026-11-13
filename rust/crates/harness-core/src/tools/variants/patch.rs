@@ -111,6 +111,9 @@ impl ApplyPatch {
                 .transpose()?;
             return match observed.0 {
                 Some(files) => {
+                    context
+                        .published_changes(invocation.operation_id, volume, &files, io)
+                        .await?;
                     let encoded = crate::tool::value(&PatchResult { files }, None, work)?;
                     Ok((Some(ToolResult { value: encoded.0 }), encoded.1))
                 }
@@ -189,10 +192,10 @@ impl ApplyPatch {
         let (files, retained) = context
             .stage_tool_changes(invocation.operation_id, volume, &changes, io)
             .await?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let _receipt = io.map(|io| io.take_native_custody(retained)).transpose()?;
-        #[cfg(target_arch = "wasm32")]
-        let _ = retained;
+        let _receipt = io.map(|io| io.guard_owned(retained)).transpose()?;
+        context
+            .published_changes(invocation.operation_id, volume, &files, io)
+            .await?;
         let encoded = crate::tool::value(&PatchResult { files }, None, work)?;
         Ok((Some(ToolResult { value: encoded.0 }), encoded.1))
     }

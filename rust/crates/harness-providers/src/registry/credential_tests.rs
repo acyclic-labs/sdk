@@ -17,12 +17,16 @@ proptest::proptest! {
             proptest::array::uniform3(proptest::option::of(proptest::num::u8::ANY)),
             proptest::bool::ANY, proptest::bool::ANY,
         ), 1..24),
+        environment_only in proptest::bool::ANY,
     ) {
         let state = Arc::new(Mutex::new(([None; 3], false, 0usize)));
         let observed = state.clone();
         let (events, _) = tokio::sync::watch::channel(0);
-        let mut credentials = Credentials::default().with_watch(watched(events.clone()));
+        let mut credentials = if environment_only { Credentials::environment() } else { Credentials::default() }
+            .with_watch(watched(events.clone()));
         credentials.source = Some(Arc::new(move |provider, source| {
+            assert!(!environment_only || source == Source::Environment,
+                "environment-only credentials consulted another source");
             let mut state = observed.lock().unwrap();
             state.2 += 1;
             let index = match source {
@@ -50,7 +54,9 @@ proptest::proptest! {
             };
             if changed {
                 events.send_replace(revision as u64 + 1);
-                expected = if decode_error { Err(()) } else {
+                expected = if environment_only {
+                    Ok(keys[1].map(|key| format!("watched-key-{key}")))
+                } else if decode_error { Err(()) } else {
                     Ok(keys.into_iter().flatten().next().map(|key| format!("watched-key-{key}")))
                 };
             }

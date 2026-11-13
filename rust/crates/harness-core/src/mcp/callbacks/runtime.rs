@@ -176,6 +176,7 @@ impl McpRuntimeCallbacks {
                 }
                 ModelEvent::Restarted
                 | ModelEvent::Wait(_)
+                | ModelEvent::Trace { .. }
                 | ModelEvent::Counted { .. }
                 | ModelEvent::Content { .. }
                 | ModelEvent::TextPart { .. }

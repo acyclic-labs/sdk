@@ -43,12 +43,24 @@ where
                 .has_retained_operation()
                 .then(|| checkout.retained_operation_id())
         };
-        let operation = remembered.map(|(operation, _)| operation);
-        let committed = match operation
-            .or(selected.map(|(_, _, operation)| operation))
-            .or(retained)
-        {
-            Some(operation) => self
+
+        if let Some(operation) = retained.filter(|operation| {
+            publication
+                .operation
+                .is_none_or(|requested| requested == *operation)
+        }) {
+            let proof = remembered.and_then(|(_, proof)| proof).or(selected
+                .filter(|(_, _, requested)| *requested == operation)
+                .and(selected_proof));
+            if remembered.is_some_and(|(remembered, _)| remembered != operation)
+                || selected.is_some_and(|(_, _, selected)| selected != operation)
+            {
+                return Err(MountSourceError::Stale.into());
+            }
+            // The operation index retains its generation even when archived
+            // receipt evidence has been collected. Context comes from the
+            // original checkout custody, never a replacement observation.
+            if let Some(generation) = self
                 .lazy
                 .operation_generation(
                     IdempotencyKey::from_bytes(operation.into_bytes()),
@@ -56,8 +68,101 @@ where
                 )
                 .await
                 .map_err(lazy_error)?
-                .map(|generation| (operation, generation)),
+            {
+                return self
+                    .recover_committed_publication(
+                        publication,
+                        accounting,
+                        (
+                            operation,
+                            generation,
+                            proof,
+                            retained,
+                            remembered.map(|(id, _)| id),
+                        ),
+                    )
+                    .await
+                    .map(Some);
+            }
+            return self
+                .recover_retained_publication(publication, accounting, (operation, proof))
+                .await
+                .map(Some);
+        }
+        let requested = match publication.operation {
+            Some(operation) => self
+                .lazy
+                .original_publication(operation, accounting)
+                .await
+                .map_err(lazy_error)?,
             None => None,
+        };
+        if let Some(original) = requested {
+            if !matches!(original.context, NativeSnapshotContext::Lazy(_)) {
+                return Err(MountSourceError::Stale.into());
+            }
+            let pending = self
+                .lazy
+                .current_binding(
+                    || crate::LazyWorkspaceError::OriginalSnapshotUnavailable,
+                    accounting,
+                )
+                .await
+                .map_err(lazy_error)?
+                .pending_remove
+                .is_some_and(|pending| {
+                    matches!(pending.kind,
+                        crate::lazy_workspace::PendingLazyRemoveKind::Mounted { idempotency_key }
+                        if Some(idempotency_key.operation_id()) == publication.operation)
+                });
+            if remembered.map(|(operation, _)| operation) != publication.operation
+                && retained != publication.operation
+                && !pending
+            {
+                // A settled replay is a point-read of its original receipt.
+                // In particular, do not flush pending later native edits.
+                *publication.acknowledged = Some(original);
+                return Ok(Some(original));
+            }
+        }
+
+        if let Some(requested) = publication.operation
+            && (remembered.is_some_and(|(operation, _)| operation != requested)
+                || retained.is_some_and(|operation| operation != requested))
+        {
+            return Err(MountSourceError::Stale.into());
+        }
+        if publication.operation.is_some()
+            && requested.is_none()
+            && remembered.is_none()
+            && retained.is_none()
+        {
+            return Ok(None);
+        }
+        let operation = remembered
+            .map(|(operation, _)| operation)
+            .or(publication.operation);
+        let committed = if let Some(original) = requested {
+            Some((
+                original.operation().ok_or(MountSourceError::Stale)?,
+                original.generation(),
+            ))
+        } else {
+            match operation
+                .or(selected.map(|(_, _, operation)| operation))
+                .or(retained)
+            {
+                Some(operation) => self
+                    .lazy
+                    .operation_generation(
+                        IdempotencyKey::from_bytes(operation.into_bytes()),
+                        accounting,
+                    )
+                    .await
+                    .map_err(lazy_error)?
+                    .map(|generation| (operation, generation)),
+                None => None,
+            }
         };
         if let Some((operation, generation)) = committed {
             let proof = remembered.and_then(|(_, proof)| proof).or(selected
@@ -78,7 +183,9 @@ where
                 .await
                 .map(Some);
         }
-        if let Some(operation) = operation {
+        if let Some(operation) =
+            operation.filter(|operation| remembered.is_some() || retained == Some(*operation))
+        {
             if retained == Some(operation) {
                 return self
                     .recover_retained_publication(

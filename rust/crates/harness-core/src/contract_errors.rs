@@ -88,7 +88,7 @@ impl HeadlessOutcome {
         if let Error::Cleanup(failure) = error {
             return failure.classification.outcome;
         }
-        if matches!(error, Error::GoalBlocked(_)) {
+        if matches!(error, Error::GoalBlocked(_) | Error::ExecutionControlled(_)) {
             return Self::Blocked;
         }
         match error.code() {
@@ -126,6 +126,10 @@ impl HeadlessOutcome {
 /// Errors shared by harness surfaces.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// An original owner decision closed admission before dispatch. Executors
+    /// yield this control with their checkpoint rather than report a failure.
+    #[error("execution controlled by {:?}", .0.action)]
+    ExecutionControlled(crate::supervision::Control),
     /// An agent primitive failure with its original cause and uncertain request.
     #[error("{0}")]
     Agent(#[source] Box<crate::agent::Error>),
@@ -150,6 +154,12 @@ pub enum Error {
     /// An immutable identity or revision precondition failed.
     #[error("conflict: {0}")]
     Conflict(String),
+    /// Content disagreements projected into working files for explicit repair.
+    #[error("merge conflict: {}. Edit the conflicted paths, then continue the merge", paths.join(", "))]
+    MergeConflict {
+        /// Working paths requiring resolution.
+        paths: Vec<String>,
+    },
     /// The agent host definitively refused a request, which committed
     /// nothing. It reads as the host error's own text, already classified.
     #[error("{0}")]
@@ -746,7 +756,10 @@ impl Error {
             Self::OutputOmitted(_) => ErrorCode::Invalid,
             Self::Cleanup(failure) => failure.classification.code,
             Self::NotFound(_) => ErrorCode::NotFound,
-            Self::Conflict(_) | Self::Refused(_) | Self::ExactEdit(_) => ErrorCode::Conflict,
+            Self::Conflict(_)
+            | Self::Refused(_)
+            | Self::ExactEdit(_)
+            | Self::ExecutionControlled(_) => ErrorCode::Conflict,
             Self::FilesystemAccessConfiguration(_)
             | Self::Unsupported(_)
             | Self::ModelTokenCountUnavailable
@@ -755,6 +768,7 @@ impl Error {
             | Self::MountUnavailable { .. } => ErrorCode::Unsupported,
             Self::Invalid(_) | Self::ModelContextOverflow => ErrorCode::Invalid,
             Self::ToolRejected { code, .. } | Self::Boundary { code, .. } => *code,
+            Self::MergeConflict { .. } => ErrorCode::Conflict,
             Self::Unauthorized(_) => ErrorCode::Unauthorized,
             Self::ModelUnavailable { failure, .. } if failure.retryable() => ErrorCode::Unavailable,
             Self::ModelUnavailable { .. } => ErrorCode::Invalid,
@@ -924,6 +938,37 @@ impl Error {
             )
     }
 
+    /// A known capacity refusal delays accepted input without making its outcome unknown.
+    fn retains_guest_input(&self) -> bool {
+        use acyclic_stream::StreamError;
+        if self.uncertain() {
+            return true;
+        }
+        match self {
+            Self::Agent(source) => match &**source {
+                crate::agent::Error::Stream(source) => {
+                    matches!(source.category(), StreamError::Capacity)
+                }
+                crate::agent::Error::Actor(source) => {
+                    matches!(&**source, acyclic_actors::local::Error::Stream(source) if matches!(source.category(), StreamError::Capacity))
+                }
+                crate::agent::Error::Turn(source) => source.retains_guest_input(),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// Preserve undecided or backpressured host work across the guest boundary.
+    pub(crate) fn guest(error: impl Into<Self>) -> acyclic_actors::guest::GuestError {
+        let error = error.into();
+        if error.retains_guest_input() {
+            acyclic_actors::guest::GuestError::Pending(error.to_string())
+        } else {
+            acyclic_actors::guest::GuestError::Handler(error.to_string())
+        }
+    }
+
     /// A tool's definitive refusal is model feedback. Native accounting and
     /// producer faults remain harness failures even when their wire code is Invalid.
     pub(crate) fn is_tool_failure(&self) -> bool {
@@ -998,7 +1043,7 @@ impl Error {
         }
     }
 
-    /// Native failures must propagate before additional provider or deadline work. The match is
+    /// Native failures and owner controls propagate before additional provider or deadline work. The match is
     /// exhaustive so every new variant is classified on purpose: a semantic failure the task or
     /// model can settle must never default to an accounting failure that strands the turn.
     #[doc(hidden)]
@@ -1009,12 +1054,13 @@ impl Error {
                 _ => false,
             },
             Self::Command(failure) => failure.classification.native_failure,
-            Self::OutputOmitted(_) => true,
+            Self::OutputOmitted(_) | Self::ExecutionControlled(_) => true,
             Self::Cleanup(_) => true,
             Self::ModelContextOverflow
             | Self::ModelTokenCountUnavailable
             | Self::NotFound(_)
             | Self::Conflict(_)
+            | Self::MergeConflict { .. }
             | Self::Refused(_)
             | Self::ExactEdit(_)
             | Self::TaskFailed { .. }

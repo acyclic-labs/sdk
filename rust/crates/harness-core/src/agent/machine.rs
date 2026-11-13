@@ -12,7 +12,7 @@ pub use super::input::{Progress, Queued, TurnInput};
 use super::input::{awaits, input};
 use super::{
     AgentOutcome, AgentPath, ChildDone, ChildSettled, ChildSettlement, ChildWakes, Error,
-    ForkAdopted, InboxRecord, IntentId, Phase, StatusRecord, WorkspaceEntry,
+    ForkAdopted, InboxRecord, IntentId, Phase, Sender, StatusRecord, WorkspaceEntry,
     kernel::{self, Admit, Control, Mode, Pick},
 };
 use crate::conversation::FileRef;
@@ -87,6 +87,9 @@ pub struct AgentState {
     pub volumes: Vec<WorkspaceEntry>,
     /// Approval policy file.
     pub policy: Option<FileRef>,
+    /// Original user submission whose protected file receipt owns the selected
+    /// turn's run. Self-continuations retain it in their original reply identity.
+    pub run_admission: Option<crate::OperationId>,
     /// Identity digest of the brief its adoption named: on a spawned agent,
     /// the one file of its parent's it may read, granted to exactly that
     /// reference.
@@ -260,6 +263,7 @@ impl AgentState {
             profile: adopted.profile.clone(),
             volumes: adopted.volumes.clone(),
             policy: adopted.policy.clone(),
+            run_admission: None,
             brief,
             conversation_tail: adopted.conversation_tail,
             pending_notices: None,
@@ -432,6 +436,17 @@ pub enum Out {
         /// Full original UTF-8 text, moved into the staging boundary.
         text: String,
     },
+    /// A source-owned hard query contribution, committed with this step's
+    /// original outputs and checkpoint. It must preserve the agent's declared
+    /// conversation/status mutations; conditional refusal discards everything.
+    Commit(acyclic_stream::CommitEffect),
+    /// Original policy/file decision, published with this actor checkpoint.
+    Supervised {
+        /// Owning run, preserved across goal continuations.
+        run: crate::OperationId,
+        /// Original decision and source receipt.
+        control: crate::supervision::Control,
+    },
     /// Retain the paused turn's successful, unpublished spawn admissions.
     PendingSpawns(u64),
     /// Replace the waiting turn's reply subscriptions in its actor commit.
@@ -447,6 +462,14 @@ pub enum Out {
     },
     /// Append to this agent's conversation.
     Conversation(Vec<u8>),
+    /// Publish the preceding settled entry on the general event feed in its
+    /// same commit. Opaque custom conversation records remain opaque.
+    TurnDone {
+        /// Original execution identity of the settled turn.
+        turn: crate::OperationId,
+        /// Run preserved across goal self-continuations.
+        run: crate::OperationId,
+    },
     /// Document identities announced by the preceding conversation entry.
     Announced(Vec<(super::AnnouncementKind, [u8; 32])>),
     /// Consume a frozen Notice prefix with its original conversation append.
@@ -670,6 +693,9 @@ pub type TurnFuture<'a> = acyclic_stream::BoxProviderFuture<'a, Result<TurnStep,
 ///
 /// A step may repeat after a crash; anything durable it does outside the returned
 /// effects must be keyed by `(agent, cursor)` so the repeat replays exactly.
+/// A definitively changed foreign read fence also re-enters the step. Accepted
+/// work replays from its original journal; actor-state conflicts still fence
+/// placement, and an identical refused observation never spins.
 pub trait TurnDriver: acyclic_stream::ProviderPlatform {
     /// Runs one step. `input` is `None` when continuing or after an alarm.
     /// `cancellation` is signalled by the actor runtime when a later control
@@ -1220,12 +1246,15 @@ fn finalize_step(
             Out::Diagnostic { .. }
             | Out::InputCancelled { .. }
             | Out::Send { .. }
+            | Out::Commit(_)
             | Out::PeerGuard { .. }
             | Out::PendingSpawns(_)
             | Out::AwaitReplies(_)
             | Out::Steered(_)
             | Out::Archive { .. }
             | Out::Spawn { .. }
+            | Out::TurnDone { .. }
+            | Out::Supervised { .. }
             | Out::GoalCompleted { .. } => {}
         }
     }
@@ -1349,8 +1378,8 @@ async fn admit(
     if admitted.control.mode == Mode::Idle {
         state.phase = Phase::Idle;
     }
-    if kind == Admit::Archive && !state.closed {
-        state.archive_pending.clone_from(&state.open_children);
+    if kind == Admit::Archive {
+        begin_archive(&mut state, sequence);
     }
     state.closed = admitted.control.closed;
     if admitted.enqueue && matches!(&record, InboxRecord::Notice { notice, .. } if !notice.wakes())
@@ -1475,7 +1504,13 @@ fn admissible(out: &Out, path: &AgentPath) -> bool {
                 && super::AgentRecord::check(&closed).is_ok()
                 && super::records::fits_frame(&closed)
         }
-        Out::Checkpoint | Out::Announced(_) | Out::Notices(_) | Out::GoalCompleted { .. } => true,
+        Out::Checkpoint
+        | Out::Announced(_)
+        | Out::Notices(_)
+        | Out::TurnDone { .. }
+        | Out::Supervised { .. }
+        | Out::Commit(_)
+        | Out::GoalCompleted { .. } => true,
         Out::Spawn { volumes, .. } => super::records::check_volumes(volumes.iter()).is_ok(),
     }
 }
@@ -1617,6 +1652,24 @@ async fn run<T: TurnDriver + ?Sized>(
         (Some(turn), _) => Some(turn.inbox),
         (None, input) => input.as_ref().map(|input| input.inbox),
     };
+    if state.turn.is_none() {
+        state.run_admission = input.as_ref().and_then(|queued| {
+            let id = match &queued.input {
+                TurnInput::Message {
+                    from: Sender::User { .. },
+                    id,
+                    ..
+                } => Some(id),
+                TurnInput::Message { re, .. }
+                    if super::goal::continuing(&state.path, &queued.input).is_some() =>
+                {
+                    re.as_ref()
+                }
+                _ => None,
+            }?;
+            crate::OperationId::parse(id.as_str()).ok()
+        });
+    }
     // A turn that fails for good settles as a committed failure, which
     // every observer reads like any other outcome; only an uncertain
     // failure retries the step.
@@ -1702,6 +1755,22 @@ async fn run<T: TurnDriver + ?Sized>(
     let spawned = outs.len();
     outs.extend(turn.outs);
     outs.extend(staged);
+    if matches!(wait, Wait::Done(AgentOutcome::Archived)) {
+        // The same step can admit children before observing a stop. Include
+        // those spawns in the ordinary open-child set before freezing its
+        // archive cascade, just as a wait includes same-step children.
+        apply_spawns(state, outs, spawned).await?;
+        // An executor-driven stop has the same closure, resource release and
+        // descendant cascade as an externally admitted archive. A terminal
+        // label alone must never leave a running child tree behind.
+        outs.push(Out::Archive {
+            target: state.path.clone(),
+            id: IntentId::try_from(format!("self-archive:{}", state.path.id()))?,
+        });
+        begin_archive(state, cursor);
+        cascade(state, outs).await?;
+        return Ok(());
+    }
     let mut awaiting = (super::Children::new(), 0);
     let (wait, approval, outcome) = match wait {
         Wait::Continue => (kernel::Wait::Continue, None, None),
@@ -1864,6 +1933,21 @@ fn shed(state: &mut AgentState, outs: &mut Vec<Out>, failure: &str) {
         outs.extend(report(state, &outcome));
     }
     state.phase = Phase::Done { outcome };
+}
+
+fn begin_archive(state: &mut AgentState, through: u64) {
+    if !state.closed {
+        state.archive_pending.clone_from(&state.open_children);
+    }
+    state.closed = true;
+    state.drop_before(through);
+    state.drop_queue();
+    state.pending_notices = None;
+    state.turn = None;
+    state.awaiting.clear();
+    state.need = 0;
+    state.child_settlements = None;
+    state.reserved_spawns = 0;
 }
 
 /// Archive cascade: bounded fan-out to open children, then one report upward.

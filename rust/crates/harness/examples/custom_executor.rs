@@ -33,6 +33,7 @@ impl Executor for CustomExecutor {
                     ModelEvent::MessageCompleted { text: completed } => text = completed,
                     ModelEvent::Completed { metadata: value } => metadata = Some(value),
                     ModelEvent::Wait(_)
+                    | ModelEvent::Trace { .. }
                     | ModelEvent::Counted { .. }
                     | ModelEvent::TextPart { .. }
                     | ModelEvent::Reasoning { .. }

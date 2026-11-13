@@ -46,7 +46,7 @@ impl From<ForkCutError> for GuestError {
     fn from(error: ForkCutError) -> Self {
         match error {
             ForkCutError::SourceChanged => Self::PreconditionChanged,
-            ForkCutError::Failed(error) => guest(error),
+            ForkCutError::Failed(error) => crate::Error::guest(error),
         }
     }
 }
@@ -55,6 +55,7 @@ impl From<ForkCutError> for GuestError {
 pub struct FilesystemSpawnVolumes<P: ?Sized + 'static, O: 'static> {
     host: Arc<Host<P, O>>,
     cuts: Option<Arc<dyn VolumeResources>>,
+    companions: Option<Arc<dyn crate::agent::Companions>>,
 }
 
 /// Physical resources kept beside logical volumes. One owner prepares each
@@ -85,13 +86,25 @@ impl<P: ?Sized, O> FilesystemSpawnVolumes<P, O> {
     /// provider.
     #[must_use]
     pub fn new(host: Arc<Host<P, O>>) -> Self {
-        Self { host, cuts: None }
+        Self {
+            host,
+            cuts: None,
+            companions: None,
+        }
     }
 
     /// Forks each source at the generation `cuts` chooses.
     #[must_use]
     pub fn with_volume_resources(mut self, cuts: Arc<dyn VolumeResources>) -> Self {
         self.cuts = Some(cuts);
+        self
+    }
+
+    /// Create host-owned companions from the same validated child bindings as
+    /// its volumes. Guests need neither this factory nor its host authority.
+    #[must_use]
+    pub fn with_companions(mut self, companions: Arc<dyn crate::agent::Companions>) -> Self {
+        self.companions = Some(companions);
         self
     }
 }
@@ -381,6 +394,8 @@ where
             return Err(guest("spawn volume request creates nothing"));
         }
         Ok(Box::new(StoredSpawn {
+            actor: actor.clone(),
+            companions: self.companions.clone(),
             host: Arc::clone(&self.host),
             cuts: self.cuts.clone(),
             parent,
@@ -409,6 +424,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
                 host: Arc::clone(&self.host),
                 cuts: self.cuts.clone(),
                 planned,
+                companions: Vec::new(),
                 journals: vec![child.clone()],
                 parent: source.path.clone(),
                 history: None,
@@ -423,6 +439,8 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
 /// The table identity is checked at admission; its contents are read only
 /// when the composition needs the original volume bindings for sealing.
 struct StoredSpawn<P: ?Sized + 'static, O: 'static> {
+    actor: ActorReference,
+    companions: Option<Arc<dyn crate::agent::Companions>>,
     host: Arc<Host<P, O>>,
     cuts: Option<Arc<dyn VolumeResources>>,
     parent: crate::agent::checkpoint::Head,
@@ -448,21 +466,34 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Com
                     .clone()
                     .load(provider.as_ref())
                     .await
-                    .map_err(guest)?;
+                    .map_err(Error::into_guest)?;
                 let next = self
                     .next
                     .clone()
                     .restore(parent.volumes.clone())
                     .map_err(guest)?;
-                let (_, planned, journals) =
+                let (bindings, planned, journals) =
                     children(&parent, &self.requested.children).map_err(guest)?;
                 if journals.is_empty() && !self.requested.history {
                     return Err(guest("spawn volume request creates nothing"));
+                }
+                let mut companions = Vec::new();
+                if let Some(factory) = &self.companions {
+                    for (child, bindings) in journals.iter().zip(&bindings) {
+                        let actor = ActorReference::new(
+                            self.actor.account().as_bytes(),
+                            self.actor.namespace().as_str().as_bytes(),
+                            child.id().as_str().as_bytes(),
+                        )
+                        .map_err(guest)?;
+                        companions.extend(factory.create(&actor, child, bindings).map_err(guest)?);
+                    }
                 }
                 self.fork = Some(SpawnFork {
                     host: self.host.clone(),
                     cuts: self.cuts.clone(),
                     planned,
+                    companions,
                     journals,
                     parent: parent.path.clone(),
                     history: self.requested.history.then_some((parent, next)),
@@ -494,6 +525,7 @@ struct SpawnFork<P: ?Sized + 'static, O: 'static> {
     host: Arc<Host<P, O>>,
     cuts: Option<Arc<dyn VolumeResources>>,
     planned: Vec<Planned>,
+    companions: Vec<acyclic_stream::CommitEffect>,
     journals: Vec<AgentPath>,
     parent: AgentPath,
     history: Option<(AgentState, AgentState)>,
@@ -510,13 +542,27 @@ where
     O: AsyncObjectStore + 'static,
 {
     async fn compose(&self, request: CommitRequest) -> Result<FilesystemCommit, GuestError> {
+        // The original actor and its new companions all append the one
+        // activation log. Use the actor publication's canonical hard-effect
+        // join, rather than introduce overlapping mutation groups.
+        let deadline = request.deadline_unix_millis;
+        let mut joined = acyclic_actors::local::PreparedPublish::foreign(request.idempotency_key);
+        for effect in request
+            .effects
+            .into_iter()
+            .chain(self.companions.iter().cloned())
+        {
+            joined.join(effect).map_err(guest)?;
+        }
+        let mut request = joined.into_request().map_err(guest)?;
+        request.deadline_unix_millis = deadline;
         let fs = &self.host.filesystem;
         let cancellation = CancellationToken::new();
         let text = |volume: &VolumeRef| volume.storage_name(&mut None).map_err(guest);
         let name = |volume: &VolumeRef| -> Result<WorkspaceName, GuestError> {
             WorkspaceName::new(text(volume)?, &WorkBudget::UNBOUNDED, &cancellation)
                 .map(|receipt| receipt.value)
-                .map_err(|failure| guest(failure.error))
+                .map_err(|failure| crate::Error::guest(failure.error))
         };
         let mut heads = Vec::new();
         for planned in &self.planned {
@@ -534,7 +580,7 @@ where
                                 at,
                             )
                             .await
-                            .map_err(guest)?;
+                            .map_err(crate::Error::guest)?;
                             if saved.conversation != selection.conversation
                                 || saved.checkpoint != selection.checkpoint
                             {
@@ -564,7 +610,7 @@ where
                 let workspace = fs
                     .open_workspace(&source_name, WorkBudget::UNBOUNDED, &cancellation)
                     .await
-                    .map_err(|failure| guest(failure.error))?
+                    .map_err(|failure| crate::Error::guest(failure.error))?
                     .value;
                 let selected = saved.as_ref().map(|saved| saved.retained_generation);
                 let cut = match &self.cuts {
@@ -586,14 +632,14 @@ where
                         workspace
                             .generation(cut, WorkBudget::UNBOUNDED, &cancellation)
                             .await
-                            .map_err(|failure| guest(failure.error))?
+                            .map_err(|failure| crate::Error::guest(failure.error))?
                             .value
                     }
                     None => {
                         workspace
                             .head(WorkBudget::UNBOUNDED, &cancellation)
                             .await
-                            .map_err(|failure| guest(failure.error))?
+                            .map_err(|failure| crate::Error::guest(failure.error))?
                             .value
                     }
                 };
@@ -632,17 +678,12 @@ where
         if let Some((parent, next)) = &self.history {
             super::history::capture(fs, parent, next, self.cuts.as_deref(), &mut commit)
                 .await
-                .map_err(|error| match error {
-                    GuestError::Handler(message) => {
-                        guest(format!("capturing turn volume history: {message}"))
-                    }
-                    other => other,
-                })?;
+                .map_err(|error| error.with_context("capturing turn volume history"))?;
         }
         fs.prepare_fork_many(&forks, &mut commit, WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map_err(|failure| {
-                guest(format!("preparing spawned volume forks: {}", failure.error))
+                crate::Error::guest(failure.error).with_context("preparing spawned volume forks")
             })?;
         // Sources read one after another are one consistent cut only if none
         // advanced before the commit applies: each source forked at its head
@@ -658,7 +699,7 @@ where
                     &cancellation,
                 )
                 .await
-                .map_err(|failure| guest(failure.error))?;
+                .map_err(|failure| crate::Error::guest(failure.error))?;
             }
         }
         fs.prepare_create_many(
@@ -668,9 +709,9 @@ where
             &cancellation,
         )
         .await
-        .map_err(|failure| guest(failure.error))?;
+        .map_err(|failure| crate::Error::guest(failure.error))?;
         fs.seal_commit(&mut commit, WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|failure| guest(failure.error))?;
+            .map_err(|failure| crate::Error::guest(failure.error))?;
         Ok(commit)
     }
 }
@@ -723,7 +764,7 @@ where
                         &CancellationToken::new(),
                     )
                     .await
-                    .map_err(|failure| guest(failure.error))?;
+                    .map_err(|failure| crate::Error::guest(failure.error))?;
             }
             Ok(())
         })

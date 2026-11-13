@@ -263,7 +263,8 @@ fn family(
 }
 
 impl ModelPriceRecord {
-    fn validate(&self) -> Result<(), ModelPriceError> {
+    /// Validate an immutable caller-selected price before source admission.
+    pub fn validate(&self) -> Result<(), ModelPriceError> {
         if self.version != 1
             || self.revision.is_empty()
             || self.provider.is_empty()

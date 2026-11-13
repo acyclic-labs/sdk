@@ -106,11 +106,12 @@ pub use commit::{
 };
 pub use driver::{
     COMPACT_INSTRUCTION, ConversationEntry, ExecutorDriver, NOTICE_MEDIA_TYPE, OpenControl,
-    OpenTurn, TurnHost, TurnOutcome, TurnOutputs, USER_INPUT_MEDIA_TYPE, approval_intent,
-    encode_user_input, expand_attachments, model_input, model_input_at, turn_announcements,
-    turn_id, turn_notices, turn_segment,
+    OpenTurn, TurnHost, TurnIdentity, TurnOutcome, TurnOutputs, USER_INPUT_MEDIA_TYPE,
+    approval_intent, encode_user_input, expand_attachments, model_input, model_input_at,
+    turn_announcements, turn_id, turn_notices, turn_segment,
 };
-pub use handler::{AgentHandler, INBOX};
+pub(crate) use handler::Agents;
+pub use handler::{AgentHandler, Companions, INBOX};
 pub use host::{AgentHost, Delivered, InputProgress, actor_store};
 pub use kernel::{CONTINUE_NOW, MAX_FANOUT};
 pub use layout::{
@@ -171,9 +172,18 @@ pub enum Error {
 }
 
 impl Error {
+    /// Preserve undecided host work across the guest boundary.
+    pub(crate) fn into_guest(self) -> acyclic_actors::guest::GuestError {
+        if matches!(self, Self::IncompatibleCheckpointCodec) {
+            acyclic_actors::guest::GuestError::IncompatibleCodec
+        } else {
+            crate::Error::guest(self)
+        }
+    }
     /// Whether the failed work may yet succeed unchanged: a commit whose
-    /// outcome is unknown, or a store that left its outcome undecided however
-    /// that failure is wrapped. Only these retry; every other driver failure
+    /// outcome is unknown, a store that left its outcome undecided, or a handler
+    /// retaining Pending work, however wrapped. Only these retry; every other
+    /// driver failure
     /// settles the agent as failed. A definitive failure inside an opened turn
     /// (executor, model or tool) is no driver failure: it settles only its
     /// turn (see [`TurnOutcome::Failed`]).
@@ -186,6 +196,9 @@ impl Error {
             Self::Actor(error) => match &**error {
                 acyclic_actors::local::Error::Unknown { .. } => true,
                 acyclic_actors::local::Error::Stream(error) => error.uncertain(),
+                acyclic_actors::local::Error::Handler(
+                    acyclic_actors::guest::GuestError::Pending(_),
+                ) => true,
                 _ => false,
             },
             Self::Path(_)
@@ -263,6 +276,22 @@ mod uncertain_tests {
                 .uncertain()
             );
         }
+        assert!(
+            Error::Actor(Box::new(acyclic_actors::local::Error::Handler(
+                acyclic_actors::guest::GuestError::Pending("undecided".into())
+            )))
+            .uncertain()
+        );
+        assert!(
+            !Error::Actor(Box::new(acyclic_actors::local::Error::Handler(
+                acyclic_actors::guest::GuestError::Handler("definitive".into())
+            )))
+            .uncertain()
+        );
+        assert!(matches!(
+            Error::IncompatibleCheckpointCodec.into_guest(),
+            acyclic_actors::guest::GuestError::IncompatibleCodec
+        ));
         // A harness failure is classified by its wire class, whichever
         // variant carries it: a storage failure's outcome is undecided.
         assert!(Error::Turn(Box::new(crate::Error::Storage("unavailable".into()))).uncertain());

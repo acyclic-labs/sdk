@@ -173,17 +173,22 @@ impl Connection {
         exchanged(&self.controls, command).await
     }
 
-    /// Select an existing agent authorized by the same authenticated session.
+    /// Select within this agent subtree, or within an explicitly admitted
+    /// session directory, using the same authenticated caller.
     /// Commands retain the original caller; a native host may enroll read-only
     /// access to the selected child's private output on that same session.
     pub async fn select(&self, agent: AgentPath) -> Result<Self> {
+        // Bind is authorized by the server against the original caller's tree
+        // or directory capability. A selected read-only view is not a change
+        // to that caller's authority, and transport constructors cannot infer
+        // directory authority from their local attachment mode.
         let (controls, tools) = self
             .controls
             .select(agent.clone())
             .await
             .map_err(exchange)?;
         Ok(Self {
-            session: self.session.clone(),
+            session: controls.observation_session(),
             controls: Arc::new(controls),
             root: agent,
             tools,
@@ -408,7 +413,7 @@ impl LocalHarness {
                 .await
                 .map_err(exchange)?;
             Ok(Connection {
-                session: connection.session,
+                session: controls.observation_session(),
                 controls: Arc::new(controls),
                 root: agent,
                 tools,

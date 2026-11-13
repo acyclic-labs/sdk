@@ -34,6 +34,7 @@ pub fn verify_abandoned_reconnect(broken: bool) {
                     abandoned: Arc::clone(&pool.abandoned),
                 },
                 revisions: Arc::default(),
+                credential: 0,
             };
             let prepare = |client: &Client, id| {
                 let progress = Arc::new(Progress::new(0));
@@ -149,6 +150,7 @@ pub fn verify_pool_lifetime(fault: u8) {
                 abandoned: Arc::clone(&pool.abandoned),
             },
             revisions: Arc::default(),
+            credential: 0,
         };
         let prepare = |id| {
             let progress = Arc::new(Progress::new(0));
@@ -262,6 +264,7 @@ pub fn verify_interest_accounting(operations: Vec<(u8, bool)>) {
                 abandoned: Arc::new(gate::Gate::new()),
             },
             revisions: Arc::default(),
+            credential: 0,
         };
         let mut live = BTreeMap::new();
         for &(key, open) in &operations {
@@ -497,6 +500,7 @@ pub fn verify_registration_cancellation(broken: bool) {
                     abandoned: Arc::new(gate::Gate::new()),
                 },
                 revisions: Arc::default(),
+                credential: 0,
             };
             let (_, receiver) = mpsc::channel(2);
             let progress = Arc::new(Progress::new(0));
@@ -597,6 +601,7 @@ pub fn verify_node_dials(fault: u8) {
                     abandoned: Arc::clone(&pool.abandoned),
                 },
                 revisions: Arc::default(),
+                credential: 0,
             };
             let a = client
                 .cursor(1, Arc::clone(&pool.routes[&1].progress), receiver)
@@ -713,6 +718,7 @@ pub fn verify_terminal_cursor_dial(broken: bool) {
                 abandoned: Arc::clone(&pool.abandoned),
             },
             revisions: Arc::default(),
+            credential: 0,
         };
         let a = client
             .cursor(1, Arc::clone(&pool.routes[&1].progress), receiver_a)

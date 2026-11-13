@@ -62,10 +62,18 @@ async fn publish_policy(
     storage: &MemoryHarnessStorage,
     policy: &Policy,
 ) -> Result<()> {
+    publish_volume_policy(fs, &storage.volume, policy).await
+}
+
+async fn publish_volume_policy(
+    fs: &acyclic_fs::MemoryFs,
+    volume: &VolumeRef,
+    policy: &Policy,
+) -> Result<()> {
     let cancel = CancellationToken::new();
     let workspace = fs
         .open_workspace(
-            storage.volume.storage_name(&mut None)?,
+            volume.storage_name(&mut None)?,
             WorkBudget::UNBOUNDED,
             &cancel,
         )
@@ -140,12 +148,24 @@ async fn filesystem_roles_require_signed_scope_and_caller_ceiling() -> Result<()
             })
             .transpose()
             .map_err(|error| Error::Invalid(error.to_string()))?;
+        let inherited = VolumeRef::new(
+            storage.volume.provider().clone(),
+            "role-fork".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+            &mut None,
+        )?;
+        let inherited_capabilities = [
+            inherited.capability(VolumeOperation::Read, &mut None)?,
+            inherited.capability(VolumeOperation::Write, &mut None)?,
+        ];
         let guest_capabilities = Capabilities::new(
             storage
                 .scope
                 .capabilities()
                 .iter()
-                .chain(structured.as_deref()),
+                .chain(structured.as_deref())
+                .chain(inherited_capabilities.iter().map(String::as_str)),
         );
         let capabilities = Capabilities::new(guest_capabilities.iter().chain(["role:control"]));
         let owner = storage.issuer.bootstrap_scope(
@@ -174,18 +194,137 @@ async fn filesystem_roles_require_signed_scope_and_caller_ceiling() -> Result<()
         };
         let owner_directory = directory_read(&owner)?;
         let guest_directory = directory_read(&guest)?;
+        // The project root supplies selection authority; the original graph
+        // proves its descendant is a distinct data-policy owner.
+        let cancel = CancellationToken::new();
+        let root = fs
+            .open_workspace(
+                storage.volume.storage_name(&mut None)?,
+                WorkBudget::UNBOUNDED,
+                &cancel,
+            )
+            .await
+            .map_err(|failure| super::super::super::map_error(failure.error))?
+            .value;
+        let lineage = acyclic_fs::StreamGitCompatStore::new(acyclic_fs::StreamAuthorityStore::new(
+            fs.stream_provider(),
+        ));
+        let graph = acyclic_fs::WorkspaceGraph::new(lineage.clone());
+        graph
+            .register_root(&root, WorkBudget::UNBOUNDED, &cancel)
+            .await
+            .map_err(|failure| Error::Storage(failure.error.to_string()))?;
+        let child = graph
+            .fork(
+                &root,
+                &inherited.storage_name(&mut None)?,
+                acyclic_fs::IdempotencyKey::new(),
+                WorkBudget::UNBOUNDED,
+                &cancel,
+            )
+            .await
+            .map_err(|failure| Error::Storage(failure.error.to_string()))?
+            .value;
+        let foreign_host = FilesystemHost::new(fs.clone(), storage.volume.provider(), None)?
+            .with_project_families(lineage)?;
         let mut restricted: Policy =
             serde_json::from_slice(super::super::super::access::INITIAL_POLICY)
                 .map_err(|error| Error::Invalid(error.to_string()))?;
         restricted.version += 1;
         restricted.layers[0][0].conditions.role = Some("control".into());
-        publish_policy(&fs, &storage, &restricted).await?;
-        let cancel = CancellationToken::new();
+        publish_volume_policy(&fs, &inherited, &restricted).await?;
+        let selected = child
+            .head(WorkBudget::UNBOUNDED, &cancel)
+            .await
+            .map_err(|failure| super::super::super::map_error(failure.error))?
+            .value;
+        let source_generation = foreign_host.generation_ref_id(selected.id(), None)?;
         let budget = FINITE_CONTENT_BUDGET;
         let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancel)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let owned = PreparationIo::from_budget(budget, &cancel)?;
         let original = PreparationIo::from_native_work(&native)?;
+        for io in [None, Some(&owned)] {
+            for path in ["ordinary", "absent"] {
+                let selected = foreign_host
+                    .select_private_generation(
+                        &storage.volume,
+                        &owner_directory,
+                        path,
+                        Some(&source_generation),
+                        crate::conversation::ContentAccess {
+                            ceiling: Some(owner.capabilities()),
+                            io,
+                        },
+                    )
+                    .await?;
+                assert_eq!(selected, source_generation);
+                let stat = foreign_host
+                    .stat_private_path(
+                        &storage.volume,
+                        &owner_directory,
+                        path,
+                        Some(&selected),
+                        crate::conversation::ContentAccess {
+                            ceiling: Some(owner.capabilities()),
+                            io,
+                        },
+                    )
+                    .await?;
+                assert_eq!(stat.is_some(), path == "ordinary");
+                for (grant, ceiling) in [
+                    (&owner_directory, guest.capabilities()),
+                    (&guest_directory, owner.capabilities()),
+                ] {
+                    let access = crate::conversation::ContentAccess {
+                        ceiling: Some(ceiling),
+                        io,
+                    };
+                    let error = foreign_host
+                        .select_private_generation(
+                            &storage.volume,
+                            grant,
+                            path,
+                            Some(&source_generation),
+                            access,
+                        )
+                        .await
+                        .expect_err("inherited generation bypassed caller ceiling");
+                    assert_eq!(error.code(), crate::wire::ErrorCode::Unauthorized);
+                    let error = foreign_host
+                        .stat_private_path(
+                            &storage.volume,
+                            grant,
+                            path,
+                            Some(&selected),
+                            crate::conversation::ContentAccess {
+                                ceiling: Some(ceiling),
+                                io,
+                            },
+                        )
+                        .await
+                        .expect_err("inherited metadata bypassed caller ceiling");
+                    assert_eq!(error.code(), crate::wire::ErrorCode::Unauthorized);
+                }
+            }
+        }
+        let error = foreign_host
+            .select_private_generation(
+                &storage.volume,
+                &owner_directory,
+                "ordinary",
+                Some(&source_generation),
+                crate::conversation::ContentAccess {
+                    ceiling: Some(owner.capabilities()),
+                    io: Some(&original),
+                },
+            )
+            .await
+            .expect_err(
+                "native foreign-project reads bypassed their original unsupported boundary",
+            );
+        assert_eq!(error.code(), crate::wire::ErrorCode::Unsupported);
+        publish_policy(&fs, &storage, &restricted).await?;
         for io in [None, Some(&owned), Some(&original)] {
             assert_eq!(
                 storage

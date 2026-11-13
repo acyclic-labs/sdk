@@ -1,0 +1,12 @@
+--- a/rust/crates/filesystem/src/demand/computed.rs
++++ b/rust/crates/filesystem/src/demand/computed.rs
+@@ -187,9 +187,6 @@
+         ctx.check()?;
+         // Waiting must not rebind an admitted request to a replacement source.
+         // Version hashing also retains the original provider identity.
+-        if self.provider.reference().identity != provider.identity {
+-            return Err(DemandError::StaleSource);
+-        }
+         Ok((provider.identity, cut, snapshot))
+     }
+ 

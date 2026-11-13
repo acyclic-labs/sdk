@@ -33,7 +33,7 @@ export function modelFixture(data, mode = 'complete') {
     return Promise.resolve(new Response(new ReadableStream({start(controller) {
       for (const byte of bytes) controller.enqueue(new Uint8Array([byte]));
       controller.close();
-    }})));
+    }}), {headers: {'x-request-id': 'provider-request'}}));
   };
   return state;
 }
@@ -86,7 +86,12 @@ export function modelRefusalFixture(data, status, code) {
   return state;
 }
 export async function cancelModel(iterator, signal, ready, useReturn) {
-  const pending = iterator.next();
+  const pending = (async () => {
+    for (;;) {
+      const event = await iterator.next();
+      if (event.done || event.value.kind !== 'trace') return event;
+    }
+  })();
   await ready;
   if (useReturn) await iterator.return(); else signal.abort();
   try {
@@ -100,7 +105,7 @@ export async function collectCount(iterator) {
   for await (const event of iterator) {
     if (counted) throw new Error('counter emitted an event after its count');
     if (event.kind === 'counted') counted = event.count;
-    else if (event.kind !== 'wait') throw new Error('counter emitted generation output');
+    else if (event.kind !== 'wait' && event.kind !== 'trace') throw new Error('counter emitted generation output');
   }
   if (!counted) throw new Error('counter ended without its count');
   return counted;
@@ -273,8 +278,29 @@ async fn registry_drives_every_adapter_through_fetch_with_accounting_and_public_
         assert_eq!(field(&fixture, "calls")?.as_f64(), Some(0.0));
         let iterator = prepared.generate(dispatch()?)?;
         let events: Vec<Value> = from_js(JsFuture::from(collect_model(iterator)).await?)?;
-        assert_eq!(events.first().unwrap()["kind"], "content");
-        assert_eq!(events.first().unwrap()["delta"], "hé");
+        assert_eq!(events[0]["kind"], "trace");
+        assert_eq!(events[1]["kind"], "trace");
+        let start: acyclic_stream::trace::TraceRecord =
+            serde_json::from_value(events[0]["record"].clone()).unwrap();
+        let finish: acyclic_stream::trace::TraceRecord =
+            serde_json::from_value(events[1]["record"].clone()).unwrap();
+        let acyclic_stream::trace::TraceRecord::V1(acyclic_stream::trace::SpanEvent::Started {
+            id,
+            at_ns,
+            name,
+            guarantee,
+            ..
+        }) = start
+        else {
+            panic!("missing header span start")
+        };
+        assert_eq!(name, "model.response_headers");
+        assert_eq!(guarantee.as_deref(), Some("receive_response_headers"));
+        assert!(matches!(finish, acyclic_stream::trace::TraceRecord::V1(
+            acyclic_stream::trace::SpanEvent::Finished { id: finished, at_ns: ended, .. }
+        ) if id == finished && ended >= at_ns));
+        assert_eq!(events[2]["kind"], "content");
+        assert_eq!(events[2]["delta"], "hé");
         let call = events
             .iter()
             .find(|event| event["kind"] == "tool_call")
@@ -290,8 +316,16 @@ async fn registry_drives_every_adapter_through_fetch_with_accounting_and_public_
         assert_eq!(call["arguments"], json!({"value":1}));
         assert_eq!(events.last().unwrap()["kind"], "completed");
         assert!(events.last().unwrap()["metadata"]["usage"].is_object());
+        assert_eq!(
+            events.last().unwrap()["metadata"]["provider_request_id"],
+            "provider-request"
+        );
         assert_eq!(field(&fixture, "calls")?.as_f64(), Some(1.0));
         let headers = field(&fixture, "headers")?.dyn_into::<web_sys::Headers>()?;
+        assert_eq!(
+            headers.get("x-client-request-id")?.as_deref(),
+            Some("00000000-0000-4000-8000-000000000001-2")
+        );
         assert_eq!(
             headers
                 .get("anthropic-dangerous-direct-browser-access")?
@@ -304,6 +338,77 @@ async fn registry_drives_every_adapter_through_fetch_with_accounting_and_public_
                 .is_undefined()
         );
     }
+
+    // Exercise the real executor and original journal as a library consumer,
+    // including the browser clock used for durable completion accounting.
+    use acyclic_harness_core::{
+        AgentId, OperationId,
+        context::ContextPipeline,
+        executor::{Executor as _, StockExecutor, TurnInput, usage_page},
+        filesystem::MemoryHarnessStorage,
+        tool::ToolRegistry,
+    };
+    let fixture = model_fixture(
+        concat!(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hé\"},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":3,\"total_tokens\":8}}\n\n",
+            "data: [DONE]\n\n"
+        ),
+        "complete",
+    );
+    let provider = provider(Adapter::Chat, &fixture)?;
+    let executor = StockExecutor::new(
+        provider.provider.model().clone(),
+        provider.provider.clone(),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    )
+    .with_compaction_policy(acyclic_harness_core::context::CompactionPolicy::Disabled);
+    let storage = MemoryHarnessStorage::new(AgentId::new(), None)
+        .await
+        .map_err(error)?;
+    let journal = storage.journal();
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        max_steps: None,
+        input: ModelContent::Text("hello".into()),
+        selected_context: None,
+    };
+    let output = executor
+        .execute(input.clone(), journal.as_ref())
+        .await
+        .map_err(error)?;
+    assert_eq!(output.text, "hé");
+    assert_eq!(
+        executor
+            .execute(input.clone(), journal.as_ref())
+            .await
+            .map_err(error)?,
+        output
+    );
+    assert_eq!(field(&fixture, "calls")?.as_f64(), Some(1.0));
+    let mut after = 0;
+    let mut completed = None;
+    loop {
+        let page = usage_page(journal.as_ref(), input.operation_id, "agent", after)
+            .await
+            .map_err(error)?;
+        for usage in page.items {
+            if usage.completed {
+                assert!(completed.replace(usage).is_none());
+            }
+        }
+        let Some(next) = page.next else { break };
+        after = next;
+    }
+    let completed = completed.expect("the original completed usage is committed");
+    assert_eq!(
+        completed.provider_request_id.as_deref(),
+        Some("provider-request")
+    );
+    let first = completed.ttft_ns.expect("browser first delta has timing");
+    assert!(first <= completed.latency_ns.expect("browser completion has timing"));
     Ok(())
 }
 

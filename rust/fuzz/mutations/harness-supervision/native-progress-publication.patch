@@ -1,0 +1,21 @@
+diff --git a/rust/crates/harness/src/local/checkout_tools.rs b/rust/crates/harness/src/local/checkout_tools.rs
+index a2bfb66c349..5689e2e8655 100644
+--- a/rust/crates/harness/src/local/checkout_tools.rs
++++ b/rust/crates/harness/src/local/checkout_tools.rs
+@@ -461,8 +461,14 @@ impl CheckoutTools {
+             } else {
+                 watcher
+             };
+-            self.finish_native_capture((workspace, view), watcher, context)?
+-                .await?;
++            self.capture(
++                (workspace, view),
++                watcher,
++                invocation.operation_id,
++                1,
++                PublicationPermit::Unrestricted,
++            )?
++            .await?;
+             if let Ok(result) = &result {
+                 files.finish(result).await?;
+             }

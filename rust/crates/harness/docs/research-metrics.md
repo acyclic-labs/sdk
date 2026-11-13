@@ -2,7 +2,9 @@
 
 `research` explicitly enables additional capture in the harness and provider
 adapters. It is off by default. Provider adapters use the core's unified setting;
-ordinary builds omit first-delta timing and HTTP identity capture. Sampling is a
+ordinary builds retain first-delta timing, HTTP request identity and sampling.
+Adapter cache observations and `system_fingerprint` capture require `research`.
+Sampling is a
 normal request contract, independent of research capture: `sampling.temperature`,
 `sampling.top_p` and `sampling.seed` participate in the
 original request digest and survive request continuations and recovery. An absent
@@ -13,14 +15,31 @@ The private per-call JSONL record is version 5, committed with the original
 terminal model observation. Provider counters cover only the attempt that
 completed; `abandoned` counts the restarted attempts before it and the exact
 text and reasoning delta bytes they streamed, so a discarded stream is never
-missing from the step's usage. Research records retain sampling, the requested
-output ceiling, `provider_request_id`, `system_fingerprint` and `ttft_ns`.
-The HTTP request identifier is distinct from the provider's generation `id`.
+missing from the step's usage. Every record retains `provider_request_id` and `ttft_ns`;
+research records also retain adapter cache observations and `system_fingerprint`.
+The HTTP request identifier is distinct from the
+provider's generation `id`. Each attempt sends `x-client-request-id:
+<operation_id>-<step>`, so relay and provider logs join the record.
 TTFT measures dispatch to the first observed nonempty text or reasoning delta,
-including preceding journal backpressure. It remains unknown for a tool-only
+including preceding journal backpressure and the admission and retry waits that
+the journal records separately as `model_wait` observations. It remains unknown for a tool-only
 response, recovery without the original clock, or a platform without that clock.
 Completion never waits for HTTP transport closure. A partial response or an
 unreferenced staged file cannot become a completed usage record.
+
+Each HTTP attempt also emits `model.response_headers` start and finish deltas
+when a monotonic clock is available, using the stream's versioned `TraceRecord`
+schema. Missing clock coordinates remain unknown. These are ordinary model
+observations in the original journal, available before any body delta. They
+name the `receive_response_headers` guarantee and one process-local monotonic
+clock domain; subtract the matching start from its finish for the interval.
+The start follows endpoint admission and precedes transport dispatch, so its
+interval includes journal backpressure while handing off the start. Receiving
+headers finishes the phase even for an HTTP refusal; body parsing and retry
+waits remain separate. A cancelled exchange or a transport failure before
+headers leaves an unfinished start, never a fabricated successful finish.
+Span deltas do not change model output, token counts or TTFT, and recovery
+retains the original deltas rather than assigning recovery-process timestamps.
 
 `metrics-export` separately enables `acyclic_harness::metrics`, an offline
 projection into Arrow IPC streams or uncompressed Parquet. It adds no work to

@@ -107,7 +107,7 @@ pub(crate) fn stock_vec_push<T>(
 }
 
 /// Complete the fallible storage admission before moving a funded value.
-pub(in crate::executor) fn stock_vec_prepare_push<T>(
+pub(crate) fn stock_vec_prepare_push<T>(
     values: &mut Vec<T>,
     io: Option<&PreparationIo>,
 ) -> Result<()> {

@@ -111,13 +111,11 @@ pub(crate) struct ModelCallUsage<'a> {
     /// Unknown for recovered calls and platforms without this clock.
     pub latency_ns: Option<u64>,
     /// Original HTTP request identifier, never inferred from the generation id.
-    #[cfg(feature = "research")]
     pub provider_request_id: Option<&'a str>,
     /// Provider-reported serving fingerprint; absent if unreported.
     #[cfg(feature = "research")]
     pub system_fingerprint: Option<&'a str>,
     /// Dispatch to first nonempty visible or reasoning delta; absent without one.
-    #[cfg(feature = "research")]
     pub ttft_ns: Option<u64>,
     /// Original adapter cache policy and prefix identity, distinct from token hits.
     #[cfg(feature = "research")]
@@ -479,7 +477,9 @@ pub(super) struct CallClock {
     started_millis: Option<u64>,
     #[cfg(not(target_arch = "wasm32"))]
     started: Option<tokio::time::Instant>,
-    #[cfg(feature = "research")]
+    #[cfg(target_arch = "wasm32")]
+    started: Option<std::time::Duration>,
+    first_token_seen: bool,
     first_token_ns: Option<u64>,
 }
 
@@ -487,9 +487,8 @@ impl CallClock {
     pub(super) fn unknown() -> Self {
         Self {
             started_millis: None,
-            #[cfg(not(target_arch = "wasm32"))]
             started: None,
-            #[cfg(feature = "research")]
+            first_token_seen: false,
             first_token_ns: None,
         }
     }
@@ -499,6 +498,10 @@ impl CallClock {
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.started = Some(tokio::time::Instant::now());
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.started = crate::http::browser::monotonic_now();
         }
     }
 
@@ -517,17 +520,16 @@ impl CallClock {
         acyclic_stream::UnixMillisClock::now_unix_millis(&acyclic_stream::SystemUnixMillisClock)
     }
 
-    #[cfg(feature = "research")]
     pub(super) fn observe(&mut self, event: &ModelEvent) {
-        if self.first_token_ns.is_none()
+        if !self.first_token_seen
             && matches!(event,
             ModelEvent::Content { delta } | ModelEvent::Reasoning { delta } if !delta.is_empty())
         {
+            self.first_token_seen = true;
             self.first_token_ns = self.elapsed_ns();
         }
     }
 
-    #[cfg(feature = "research")]
     pub(super) fn ttft_ns(&self) -> Option<u64> {
         self.first_token_ns
     }
@@ -540,7 +542,10 @@ impl CallClock {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            None
+            self.started
+                .zip(crate::http::browser::monotonic_now())
+                .and_then(|(started, now)| now.checked_sub(started))
+                .and_then(|elapsed| u64::try_from(elapsed.as_nanos()).ok())
         }
     }
 }

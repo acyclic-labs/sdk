@@ -132,13 +132,36 @@ pub(crate) async fn records_match_content<S: AsyncObjectStore>(
     cancellation: &CancellationToken,
 ) -> Result<bool, FsError> {
     let mut scratch = accounting.allocation_scope()?;
-    compare(store, left, right, limits, &mut scratch, cancellation).await
+    compare(store, left, right, None, limits, &mut scratch, cancellation).await
+}
+
+pub(crate) async fn records_match_prefix<S: AsyncObjectStore>(
+    store: &S,
+    left: FileRecord,
+    right: FileRecord,
+    bytes: u64,
+    limits: DecodeLimits,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<bool, FsError> {
+    let mut scratch = accounting.allocation_scope()?;
+    compare(
+        store,
+        left,
+        right,
+        Some(bytes),
+        limits,
+        &mut scratch,
+        cancellation,
+    )
+    .await
 }
 
 async fn compare<S: AsyncObjectStore>(
     store: &S,
     left: FileRecord,
     right: FileRecord,
+    prefix: Option<u64>,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -147,34 +170,37 @@ async fn compare<S: AsyncObjectStore>(
     if left.kind != FileKind::Regular || right.kind != FileKind::Regular {
         return Ok(false);
     }
-    if left.payload == right.payload {
-        return Ok(true);
-    }
     let size = |record: FileRecord| match record.payload {
         FilePayload::Regular { logical_bytes, .. } => Ok(logical_bytes),
         FilePayload::InlineRegular(data) => Ok(data.as_bytes().len() as u64),
         _ => Err(FsError::FileRead(FileRangeReadError::NotRegular)),
     };
-    let length = size(left)?;
-    if length != size(right)? {
-        return Ok(false);
+    let left_length = size(left)?;
+    let right_length = size(right)?;
+    let length = match prefix {
+        Some(bytes) if bytes <= left_length && bytes <= right_length => bytes,
+        None if left_length == right_length => left_length,
+        _ => return Ok(false),
+    };
+    if left.payload == right.payload {
+        return Ok(true);
     }
     let mut offset = 0;
     while offset < length {
         accounting.check()?;
         let a = span_at(store, left, offset, limits, accounting, cancellation).await?;
         let b = span_at(store, right, offset, limits, accounting, cancellation).await?;
-        let length = a.length.min(b.length);
-        if let Some(equal) = by_digest(a, b, length) {
+        let span_length = a.length.min(b.length).min(length - offset);
+        if let Some(equal) = by_digest(a, b, span_length) {
             if !equal {
                 return Ok(false);
             }
-            offset += length;
+            offset += span_length;
             continue;
         }
         // Partial chunk comparisons retain at most one admitted range per side,
         // rather than allocating or hashing a whole potentially enormous file.
-        let length = length.min(super::CONTENT_READ_CHUNK_BYTES);
+        let length = span_length.min(super::CONTENT_READ_CHUNK_BYTES);
         if length == 0 {
             return Err(FileRangeReadError::InvalidRange.into());
         }

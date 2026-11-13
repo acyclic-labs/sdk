@@ -15,7 +15,10 @@ use std::sync::{
 
 /// Spawns child `c` on its first turn and idles afterwards.
 #[derive(Default)]
-struct Spawner(AtomicUsize);
+struct Spawner {
+    calls: AtomicUsize,
+    stop: bool,
+}
 
 impl TurnDriver for Spawner {
     fn step<'a>(
@@ -25,7 +28,7 @@ impl TurnDriver for Spawner {
         _input: Option<Queued>,
         _cancellation: acyclic_actors::guest::CancellationToken,
     ) -> TurnFuture<'a> {
-        let first = self.0.fetch_add(1, Ordering::SeqCst) == 0;
+        let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
         Box::pin(async move {
             Ok(TurnStep {
                 checkpoint: None,
@@ -40,11 +43,83 @@ impl TurnDriver for Spawner {
                 } else {
                     Vec::new()
                 },
-                wait: Wait::Input,
+                wait: if first && self.stop {
+                    Wait::Done(AgentOutcome::Archived)
+                } else {
+                    Wait::Input
+                },
                 drops: None,
             })
         })
     }
+}
+
+#[tokio::test]
+async fn a_same_turn_stop_archives_newly_admitted_children() -> Result {
+    for stop in [false, true] {
+        let provider = Arc::new(MemoryStream::default());
+        let host = AgentHost::new(
+            provider.clone(),
+            Spawner {
+                stop,
+                ..Default::default()
+            },
+            ActorReference::new(b"account", b"agents", b"owner")?,
+            ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+            Arc::new(SystemClock),
+        )?;
+        let root = host.create(&intent("create"), adopted(id(1))).await?;
+        assert!(host.runtime().drain().await.is_empty());
+        let child = root.child(&AgentId::derive(&root.id(), "c"))?;
+        host.send(
+            &root,
+            &user(),
+            &InboxRecord::ApprovalRequested(ApprovalRequested {
+                child: child.clone(),
+                id: intent("turn"),
+            }),
+        )
+        .await?;
+        let failures = host.runtime().drain().await;
+        assert!(failures.is_empty(), "{failures:?}");
+        // Admission belongs to the parent's original commit, before the
+        // activation runtime starts consuming the child's records.
+        let admitted = host
+            .state(&child)
+            .await
+            .expect("same-turn child was not admitted and archived");
+        // Finite drain only runs tracked actors. The child's creation and
+        // archive wake are committed by the parent; explicitly host that new
+        // actor, as activation discovery does in the serving runtime.
+        host.drain(&admitted.path).await?;
+        host.drain(&root).await?;
+        let parent = host.state(&root).await?;
+        let child = host
+            .state(&child)
+            .await
+            .expect("same-turn child was not admitted and archived");
+        assert_eq!(parent.closed, stop);
+        let inbox = values(provider.as_ref(), child.path.inbox()?).await?;
+        let inbox: Vec<_> = inbox
+            .iter()
+            .map(|bytes| InboxRecord::decode(bytes))
+            .collect();
+        assert_eq!(
+            child.closed, stop,
+            "same-turn spawn escaped the stop; parent={parent:?}; child={child:?}; inbox={inbox:?}"
+        );
+        assert_eq!(parent.open_children.len(), usize::from(!stop));
+        if stop {
+            assert!(parent.dropped_before >= 2, "stopped input remained pending");
+            assert!(matches!(
+                child.phase,
+                Phase::Done {
+                    outcome: AgentOutcome::Archived
+                }
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn store(provider: &Arc<MemoryStream>) -> Result<Store<MemoryStream>> {
@@ -394,6 +469,7 @@ async fn cancelling_an_injected_input_preserves_the_original_and_later_turns() -
         Controlled(starting),
         ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
     )?);
+    let host_handler = handler.clone();
     let interrupt_handler = handler.clone();
     let remote = wire::Remote::new(
         wire::decode_manifest(&wire::encode_manifest(handler.manifest()))?,
@@ -416,7 +492,11 @@ async fn cancelling_an_injected_input_preserves_the_original_and_later_turns() -
         acyclic_actors::guest::Requests::default(),
         provider.clone(),
         ActorReference::new(b"account", b"agents", b"owner")?,
-        Arc::new(remote),
+        Arc::new(acyclic_actors::guest::HostedHandler::new(
+            host_handler,
+            Arc::new(remote),
+            |_| false,
+        )),
         Arc::new(SystemClock),
         None,
     )?;
@@ -644,14 +724,12 @@ async fn cancelling_during_open_publishes_its_input_and_preserves_queued_work() 
         fn open<'a>(
             &'a self,
             _: &'a AgentState,
-            _: OperationId,
-            inbox: u64,
-            _: u64,
+            identity: acyclic_harness_core::agent::TurnIdentity,
             _: &'a ModelContent,
             stop: CancellationToken,
         ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<OpenTurn>> {
             Box::pin(async move {
-                self.0.send(inbox).expect("opening observer");
+                self.0.send(identity.inbox).expect("opening observer");
                 stop.cancelled().await;
                 Err(acyclic_harness_core::Error::InteractionRejected(
                     acyclic_harness_core::InteractionRejection::Cancelled,
@@ -1255,7 +1333,13 @@ async fn a_foreign_actor_cannot_run_the_agents_committed_input() -> Result {
     let calls = Arc::new(AtomicUsize::new(0));
     let handler = Arc::new(AgentHandler::new(
         store(&provider)?,
-        Observed(calls.clone(), Spawner(AtomicUsize::new(1))),
+        Observed(
+            calls.clone(),
+            Spawner {
+                calls: AtomicUsize::new(1),
+                ..Default::default()
+            },
+        ),
         ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
     )?);
     let host = AgentHost::hosting(
@@ -1500,7 +1584,10 @@ async fn pending_request_host<P: acyclic_harness_core::store::JournalProvider + 
 ) -> Result<(AgentHost<P>, AgentPath, u64)> {
     let host = AgentHost::new(
         provider,
-        Spawner(AtomicUsize::new(1)),
+        Spawner {
+            calls: AtomicUsize::new(1),
+            ..Default::default()
+        },
         ActorReference::new(b"account", b"agents", b"owner")?,
         ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
         Arc::new(SystemClock),
@@ -1689,7 +1776,10 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
     let provider = Arc::new(MemoryStream::default());
     let host = AgentHost::new(
         provider,
-        Spawner(AtomicUsize::new(1)),
+        Spawner {
+            calls: AtomicUsize::new(1),
+            ..Default::default()
+        },
         ActorReference::new(b"account", b"agents", b"owner")?,
         ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
         Arc::new(SystemClock),
@@ -1769,7 +1859,10 @@ async fn topology_spawn_outcomes_remain_original_after_archival() -> Result {
         let provider = Arc::new(super::hosting::Evidence::default());
         let host = AgentHost::new(
             provider.clone(),
-            Spawner(AtomicUsize::new(1)),
+            Spawner {
+                calls: AtomicUsize::new(1),
+                ..Default::default()
+            },
             ActorReference::new(b"account", b"agents", b"owner")?,
             ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             Arc::new(SystemClock),
@@ -1852,7 +1945,10 @@ async fn a_root_crosses_the_former_child_ceiling_with_a_paged_checkpoint() -> Re
     let provider = Arc::new(MemoryStream::default());
     let host = AgentHost::new(
         provider,
-        Spawner(AtomicUsize::new(1)),
+        Spawner {
+            calls: AtomicUsize::new(1),
+            ..Default::default()
+        },
         ActorReference::new(b"account", b"agents", b"owner")?,
         ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
         Arc::new(SystemClock),

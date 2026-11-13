@@ -238,7 +238,9 @@ pub use facade::{
     ResolvedDirectoryEntry, ResolvedDirectoryPage, ResolvedFile, ResolvedFileRangeReadRequest,
     StagedContent, Volume, VolumeInitialization,
 };
-pub use facade::{CreateSpec, ForkSpec, ForkedGeneration, PublishSpec, RestoreSpec};
+pub use facade::{
+    CreateSpec, ForkSpec, ForkedGeneration, PublishSpec, RestoreSpec, TransactionSpec,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub use facade::{
     LocalAuthorityBackend, LocalFs, LocalGarbageCollection, LocalObjectBackend,
@@ -256,14 +258,15 @@ pub use git_compat::{
     GitCommit, GitCommitId, GitCompatError, GitCompatRepository, GitCompatRunError, GitCompatState,
     GitCompatStore, GitDiff, GitDiffCounts, GitDirtyState, GitFilesystemAction,
     GitFilesystemExecutor, GitFilesystemResult, GitGenerationRef, GitGrepMatch, GitGrepResult,
-    GitIgnorePolicy, GitPatchError, GitPathChange, GitPathStatus, GitPendingMutation,
-    GitPendingTransition, GitPublicationRecord, GitRequest, GitRequestUnanswered, GitResetMode,
-    GitStatus, GitTransitionId, GitTreeEntry, GitTreeRef, MemoryGitCompatStore, apply_git_patch,
-    blame_git_generations, canonicalize_git_output_json, canonicalize_git_pending_transition_json,
-    capture_git_compatible_generation, capture_git_compatible_generation_at,
-    capture_git_compatible_generation_incremental, git_compatible_diff, git_compatible_diff_counts,
-    git_generation_with_paths_from, git_merge_resolution, git_restore_paths,
-    git_tracked_paths_after, grep_git_generation, parse_git_public_command, walk_git_tree,
+    GitIgnorePolicy, GitMergeResolution, GitPatchError, GitPathChange, GitPathStatus,
+    GitPendingMutation, GitPendingTransition, GitPublicationRecord, GitRequest,
+    GitRequestUnanswered, GitResetMode, GitStatus, GitTransitionId, GitTreeEntry, GitTreeRef,
+    MemoryGitCompatStore, apply_git_patch, blame_git_generations, canonicalize_git_output_json,
+    canonicalize_git_pending_transition_json, capture_git_compatible_generation,
+    capture_git_compatible_generation_at, capture_git_compatible_generation_incremental,
+    git_compatible_diff, git_compatible_diff_counts, git_generation_with_paths_from,
+    git_merge_resolution, git_restore_paths, git_tracked_paths_after, grep_git_generation,
+    parse_git_public_command, walk_git_tree,
 };
 pub use git_compat::{GitCompatCas, StreamGitCompatStore, StreamGitCompatStoreError};
 
@@ -275,8 +278,9 @@ pub use kernel::{
 pub use lazy_workspace::{
     LazyDirectoryCursor, LazyDirectoryEntry, LazyDirectoryPage, LazyForkOrigin, LazyForkPhase,
     LazyLookup, LazyOverlay, LazyOverlayId, LazyShadow, LazyShadowId, LazySnapshotId,
-    LazySnapshotRef, LazyStat, LazyWorkspace, LazyWorkspaceError, LazyWorkspaceState,
-    LazyWorkspaceStore, MemoryLazyWorkspaceStore, NativePublicationSnapshot, SelectedImportPlan,
+    LazySnapshotRef, LazySourceRecord, LazyStat, LazyStoredRecord, LazyWorkspace,
+    LazyWorkspaceError, LazyWorkspaceState, LazyWorkspaceStore, MemoryLazyWorkspaceStore,
+    NativePublicationSnapshot, SelectedImportPlan,
 };
 pub use lineage::{
     MemoryWorkspaceLineageStore, MemoryWorkspaceLineageStoreError, WorkspaceGraph,
@@ -351,7 +355,8 @@ pub use native_mount::{
     NativeStorageAccelerationEvidence, NativeStorageCapabilities, NativeStorageCapabilityError,
     NativeWorkingSet, SharedCheckout, SharedCheckoutState,
     detach_native_mount_destination_after_crash, initialize_native_mount_services,
-    initialize_native_mount_services_async, materialize_checkout, materialize_checkout_paths,
+    initialize_native_mount_services_async, initialize_native_source_services,
+    initialize_native_source_services_async, materialize_checkout, materialize_checkout_paths,
     mount_native, mount_native_over_existing, native_mount_control_paths,
     prepare_native_mount_start, probe_native_mount, probe_native_storage_accelerations,
     probe_native_storage_capabilities, reclaim_native_mount_destination_fence,

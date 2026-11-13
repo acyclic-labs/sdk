@@ -390,6 +390,11 @@ async fn source_failure_and_fanout_remain_bounded_and_recover_without_stopping_o
         Ok(())
     })
     .await?;
+    let mut failures = actors
+        .iter()
+        .map(|actor| runtime.delivery_failure(actor))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut healthy = runtime.delivery_failure(&actor("unrelated")?)?;
     {
         let mut subscriptions = runtime.subscriptions.lock().unwrap();
         let source = subscriptions
@@ -418,6 +423,21 @@ async fn source_failure_and_fanout_remain_bounded_and_recover_without_stopping_o
     })
     .await?;
     assert_eq!(reported.lock().unwrap().len(), actors.len());
+    for failed in &mut failures {
+        assert!(
+            futures::poll!(failed.as_mut()).is_ready(),
+            "a failed subscription left its actor's waiter pending"
+        );
+    }
+    let mut retained = runtime.delivery_failure(&actors[0])?;
+    assert!(
+        futures::poll!(retained.as_mut()).is_ready(),
+        "a resident actor lost its subscription failure"
+    );
+    assert!(
+        futures::poll!(healthy.as_mut()).is_pending(),
+        "a subscription failure notified an unrelated actor"
+    );
     let unrelated = spawn_with(runtime.store(), "unrelated", &[b"emit"]).await?;
     observe_while_running(serving.as_mut(), async {
         state_after(runtime.store(), &unrelated, |state| {

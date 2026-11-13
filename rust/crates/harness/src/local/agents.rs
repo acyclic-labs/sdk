@@ -585,13 +585,6 @@ impl LocalHarness {
             .completion_target(root, &parent, &parent_project, turn)
             .await?;
         let branch = format!("agents/{}", agent.path.id());
-        acyclic_fs::GitCompatRepository::new(
-            target.workspace.view().workspace().id(),
-            target.workspace.store.clone(),
-        )
-        .register_branch_workspace(branch.clone(), source.workspace_id, None, false)
-        .await
-        .map_err(storage)?;
         target
             .commands()
             .hand_back(

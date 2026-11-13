@@ -25,12 +25,24 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 Trigger::Record {
                     subscription: delivered,
                     sequence,
+                }
+                | Trigger::KeyedRecord {
+                    subscription: delivered,
+                    sequence,
+                    ..
                 } if delivered == id => sequence
                     .checked_add(1)
                     .ok_or(Error::Invalid("interrupt cursor overflow"))?,
                 _ => subscription.cursor,
             };
-            self.open(inner, id, &subscription.path, from).await?;
+            self.open(
+                inner,
+                id,
+                &subscription.path,
+                from,
+                self.handler.subscription_key(id, state.checkpoint())?,
+            )
+            .await?;
         }
         Ok(())
     }
