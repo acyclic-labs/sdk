@@ -152,10 +152,6 @@ async fn pinned_reader_batches_ranges_in_request_order() -> TestResult {
         .resolve_files(&[link_path.clone()], B, &cancel)
         .await?
         .value;
-    let pinned = reader
-        .read_symbolic_link(&link_path, B, &cancel)
-        .await?
-        .value;
     writer
         .apply_authored_transaction(
             vec![
@@ -174,6 +170,10 @@ async fn pinned_reader_batches_ranges_in_request_order() -> TestResult {
             &cancel,
         )
         .await?;
+    let pinned = reader
+        .read_symbolic_link(&link_path, B, &cancel)
+        .await?
+        .value;
     let resolved = links[0]
         .as_ref()
         .unwrap()
