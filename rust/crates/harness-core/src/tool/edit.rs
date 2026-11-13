@@ -3,22 +3,32 @@
 use crate::wire::ErrorCode::{Conflict, Invalid};
 use crate::{Error, Result};
 
+mod nearest;
+
 /// A definitive exact-match refusal from the shared edit engine.
 #[derive(Debug)]
 pub struct EditRejection {
     occurrences: usize,
+    diagnostic: Option<(String, acyclic_fs::NativeCustody)>,
 }
 
 impl EditRejection {
     fn error(occurrences: usize) -> Error {
-        Error::ExactEdit(Self { occurrences })
+        Error::ExactEdit(Self {
+            occurrences,
+            diagnostic: None,
+        })
     }
 }
 
 impl std::fmt::Display for EditRejection {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.occurrences == 0 {
-            formatter.write_str("exact edit text is missing")
+            formatter.write_str("exact edit text is missing")?;
+            if let Some((diagnostic, _)) = &self.diagnostic {
+                write!(formatter, "; {diagnostic}")?;
+            }
+            Ok(())
         } else {
             formatter.write_str("exact edit text is ambiguous")
         }
@@ -331,12 +341,16 @@ fn replace_into(
     charge(work, 0, source.len() as u64)?;
     let (start, count) = if replace_all {
         let mut matches = source.match_indices(old_text);
-        let (start, _) = matches.next().ok_or_else(|| EditRejection::error(0))?;
+        let (start, _) = match matches.next() {
+            Some(found) => found,
+            None => return Err(nearest::rejection(source, old_text, work)?),
+        };
         (start, 1 + matches.count())
     } else {
-        let start = source
-            .find(old_text)
-            .ok_or_else(|| EditRejection::error(0))?;
+        let start = match source.find(old_text) {
+            Some(start) => start,
+            None => return Err(nearest::rejection(source, old_text, work)?),
+        };
         // Unique replacement rejects overlapping matches too. Advancing one
         // complete character preserves UTF-8 and finds every later start.
         let next_start = start + old_text.chars().next().map_or(0, char::len_utf8);
@@ -444,6 +458,8 @@ mod tests {
             let mut custody = allocation(Some(&work), 0)?;
             let result = replace_sequence("one", invalid, 64, &mut custody);
             assert!(result.is_err());
+            // The refusal retains its diagnostic until the caller records it.
+            drop(result);
             // Failure retires its buffers while the original caller keeps
             // the same custody alive for later planning.
             assert_eq!(custody.as_ref().unwrap().bytes(), 0);
