@@ -323,18 +323,100 @@ fn socket() -> io::Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(file) })
 }
 
-fn admission_file() -> io::Result<(File, std::path::PathBuf)> {
+struct Admission {
+    lock: crate::FileLock,
+    path: std::path::PathBuf,
+    identity: (u64, u64),
+    writable: bool,
+}
+
+fn admissions() -> io::Result<Vec<Admission>> {
     use std::os::unix::fs::MetadataExt;
     let namespace =
         |name| std::fs::metadata(format!("/proc/self/ns/{name}")).map(|file| file.ino());
-    let root = crate::private_file::user_home_directory()?;
-    let directory = admission_directory(&root)?;
-    let path = directory.join(format!("{}-{}.lock", namespace("mnt")?, namespace("net")?));
-    // Never unlink this authority inode: replacing it would split the lock.
-    Ok((
-        crate::private_file::open_or_create(&path)?,
-        path.with_extension("sock"),
-    ))
+    let name = format!("{}-{}.lock", namespace("mnt")?, namespace("net")?);
+    let runtime = std::path::PathBuf::from(format!(
+        "/run/user/{}",
+        crate::private_file::effective_user()
+    ));
+    let home = match crate::private_file::user_home_directory() {
+        Ok(home) => Some(home),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let mut admissions: Vec<Admission> = Vec::new();
+    for root in std::iter::once(runtime).chain(home) {
+        let directory = match admission_directory(&root) {
+            Ok(directory) => directory,
+            Err(error) if unavailable(&error) => continue,
+            Err(error) => return Err(error),
+        };
+        let path = directory.join(&name);
+        // Never unlink an authority inode. Even a read-only home can retain
+        // an original live host, so acquire its original lock before fallback.
+        let (file, writable) = match crate::private_file::open_or_create(&path) {
+            Ok(file) => {
+                if file.metadata()?.len() == 0 {
+                    (&file).write_all(&[0])?;
+                }
+                (file, true)
+            }
+            Err(error) if unavailable(&error) => {
+                let file = match crate::private_file::open(&path, false) {
+                    Ok(file) => file,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(error),
+                };
+                // A host is never published before its wake byte exists.
+                if file.metadata()?.len() == 0 {
+                    continue;
+                }
+                (file, false)
+            }
+            Err(error) => return Err(error),
+        };
+        let identity = crate::file_identity(&file)?;
+        let admission = Admission {
+            lock: crate::FileLock::new(file),
+            path: path.with_extension("sock"),
+            identity,
+            writable,
+        };
+        if let Some(old) = admissions.iter_mut().find(|old| old.identity == identity) {
+            if admission.writable && !old.writable {
+                *old = admission;
+            }
+        } else {
+            admissions.push(admission);
+        }
+    }
+    if admissions.is_empty() {
+        return Err(io::Error::other(
+            "mount host requires a trusted writable OS runtime directory or account home",
+        ));
+    }
+    Ok(admissions)
+}
+
+fn unavailable(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::NotFound
+            | io::ErrorKind::PermissionDenied
+            | io::ErrorKind::ReadOnlyFilesystem
+    )
+}
+
+fn with_admissions<T>(
+    admissions: &[Admission],
+    operation: &mut dyn FnMut() -> io::Result<T>,
+) -> io::Result<T> {
+    match admissions.split_first() {
+        Some((first, rest)) => first.lock.with_lock(crate::FileLockMode::Exclusive, || {
+            with_admissions(rest, operation)
+        }),
+        None => operation(),
+    }
 }
 
 fn admission_directory(root: &std::path::Path) -> io::Result<std::path::PathBuf> {
@@ -350,6 +432,11 @@ fn admission_directory(root: &std::path::Path) -> io::Result<std::path::PathBuf>
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     let directory = root.join(".acyclic-mount-host");
+    match crate::private_file::validate_directory(&directory) {
+        Ok(()) => return Ok(directory),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
     match crate::private_file::create_directory(&directory) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -360,7 +447,9 @@ fn admission_directory(root: &std::path::Path) -> io::Result<std::path::PathBuf>
 }
 
 fn admission_events(file: &File) -> io::Result<OwnedFd> {
-    // Explicit unlock is followed by a one-byte modification event. Close
+    // Explicit unlock is followed by a one-byte access event, including on a
+    // read-only filesystem. The initialized wake byte makes vfs_read publish
+    // IN_ACCESS (it does not publish that event for EOF). Close
     // also covers process death. Neither event is a timed readiness recheck.
     // SAFETY: inotify_init1 has no pointer arguments and returns a fresh fd.
     let descriptor = unsafe { libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK) };
@@ -375,7 +464,7 @@ fn admission_events(file: &File) -> io::Result<OwnedFd> {
         libc::inotify_add_watch(
             descriptor.as_raw_fd(),
             path.as_ptr(),
-            libc::IN_CLOSE_WRITE | libc::IN_MODIFY,
+            libc::IN_CLOSE | libc::IN_ACCESS,
         )
     } < 0
     {
@@ -385,91 +474,134 @@ fn admission_events(file: &File) -> io::Result<OwnedFd> {
 }
 
 fn connect() -> io::Result<UnixStream> {
-    let (file, path) = admission_file()?;
+    let admissions = admissions()?;
     #[cfg(test)]
-    BEFORE_ADMISSION.with_borrow_mut(|probe| {
-        if let Some(probe) = probe.take() {
-            probe(&file);
-        }
-    });
+    if let Some(first) = admissions.first() {
+        BEFORE_ADMISSION.with_borrow_mut(|probe| {
+            if let Some(probe) = probe.take() {
+                probe(&first.lock);
+            }
+        });
+    }
     #[cfg(test)]
     if WITHOUT_ADMISSION_LOCK.get() {
-        return connect_locked(&path);
+        return connect_locked(&admissions);
     }
-    let admission = crate::FileLock::new(file);
-    let connected = admission.with_lock(crate::FileLockMode::Exclusive, || connect_locked(&path));
+    // Lock every usable canonical root in fixed runtime/home order. If a
+    // login directory appears while a home-backed host is live, its home lock
+    // still excludes this client and discovery joins the original endpoint.
+    let connected = with_admissions(&admissions, &mut || connect_locked(&admissions));
     // Signal after explicit unlock, not just last-close: an unrelated fork
     // can temporarily retain a duplicate open description across its exec.
-    // No fsync buys a guarantee here; this write is only a kernel watch event.
-    let notified = (&*admission).write_all(&[0]);
+    // Read the initialized byte after unlock: IN_ACCESS is a kernel wake even
+    // on a read-only filesystem, and needs no mutation or durability fsync.
+    use std::os::unix::fs::FileExt;
+    let mut notified = Ok(());
+    for admission in &admissions {
+        if let Err(error) = admission.lock.read_exact_at(&mut [0], 0) {
+            notified = Err(error);
+        }
+    }
     match connected {
         Ok(control) => notified.map(|()| control),
         Err(error) => Err(error),
     }
 }
 
-fn connect_locked(path: &std::path::Path) -> io::Result<UnixStream> {
+fn connect_locked(admissions: &[Admission]) -> io::Result<UnixStream> {
     #[cfg(test)]
     BEFORE_CONNECT.with_borrow_mut(|probe| {
         if let Some(probe) = probe.take() {
             probe();
         }
     });
+    for admission in admissions {
+        if let Some(control) = connect_existing(&admission.path)? {
+            return authenticate(control);
+        }
+    }
+    let admission = admissions
+        .iter()
+        .find(|admission| admission.writable)
+        .ok_or(io::ErrorKind::ReadOnlyFilesystem)?;
+    let path = &admission.path;
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            use std::os::unix::fs::FileTypeExt;
+            if !metadata.file_type().is_socket() {
+                return Err(io::ErrorKind::PermissionDenied.into());
+            }
+            // Every candidate was probed under its original lock. Only the
+            // selected writable endpoint needs its closed inode removed.
+            std::fs::remove_file(path)?;
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
     // Reuse the held-directory IPC adapter, so long account homes need no
     // public abstract name that another user could reserve before this owner.
     let (_directory, socket_path) = crate::ipc::socket_path(path)?;
     let (address, length) = address(&socket_path)?;
-    let mut stream = socket()?;
+    let listener = socket()?;
+    // SAFETY: the held directory and address remain live throughout bind.
+    if unsafe { libc::bind(listener.as_raw_fd(), (&raw const address).cast(), length) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    #[cfg(test)]
+    BEFORE_LISTEN.with_borrow_mut(|probe| {
+        if let Some(probe) = probe.take() {
+            probe();
+        }
+    });
+    // The backlog is kernel backpressure, not a limit on admitted owners.
+    // SAFETY: listener is the fresh bound socket.
+    if unsafe { libc::listen(listener.as_raw_fd(), libc::SOMAXCONN) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // This must be a separate open description, not a duplicate of the
+    // contender's held flock. The event watch precedes its first release.
+    let authority = crate::private_file::open(&path.with_extension("lock"), true)?;
+    let events = admission_events(&authority)?;
+    runner::start_packet_device_host(listener, authority, events)?;
+    let stream = socket()?;
+    // Reconnect only after this call has installed a listening endpoint;
+    // this is a state transition, never a readiness retry.
     // SAFETY: live socket and initialized pathname address.
     if unsafe { libc::connect(stream.as_raw_fd(), (&raw const address).cast(), length) } < 0 {
-        let error = io::Error::last_os_error();
-        #[cfg(test)]
-        if WITHOUT_ADMISSION_LOCK.get() {
-            return Err(error);
-        }
-        match error.raw_os_error() {
-            Some(libc::ENOENT) => {}
-            Some(libc::ECONNREFUSED) => {
-                use std::os::unix::fs::FileTypeExt;
-                // Under the admission lock a refused socket is the original
-                // host's closed endpoint, never a bind-before-listen contender.
-                if !std::fs::symlink_metadata(path)?.file_type().is_socket() {
-                    return Err(io::ErrorKind::PermissionDenied.into());
-                }
-                std::fs::remove_file(path)?;
-            }
-            _ => return Err(error),
-        }
-        let listener = socket()?;
-        // SAFETY: the held directory and address remain live throughout bind.
-        if unsafe { libc::bind(listener.as_raw_fd(), (&raw const address).cast(), length) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        #[cfg(test)]
-        BEFORE_LISTEN.with_borrow_mut(|probe| {
-            if let Some(probe) = probe.take() {
-                probe();
-            }
-        });
-        // The backlog is kernel backpressure, not a limit on admitted owners.
-        // SAFETY: listener is the fresh bound socket.
-        if unsafe { libc::listen(listener.as_raw_fd(), libc::SOMAXCONN) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // This must be a separate open description, not a duplicate of the
-        // contender's held flock. The event watch precedes its first release.
-        let (authority, _) = admission_file()?;
-        let events = admission_events(&authority)?;
-        runner::start_packet_device_host(listener, authority, events)?;
-        stream = socket()?;
-        // Reconnect only after this call has installed a listening endpoint;
-        // this is a state transition, never a readiness retry.
-        // SAFETY: live socket and initialized pathname address.
-        if unsafe { libc::connect(stream.as_raw_fd(), (&raw const address).cast(), length) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
+        return Err(io::Error::last_os_error());
     }
-    let control = UnixStream::from(stream);
+    authenticate(UnixStream::from(stream))
+}
+
+fn connect_existing(path: &std::path::Path) -> io::Result<Option<UnixStream>> {
+    let (_directory, short) = crate::ipc::socket_path(path)?;
+    let (address, length) = address(&short)?;
+    let stream = socket()?;
+    // SAFETY: the held directory and initialized address outlive the call.
+    if unsafe { libc::connect(stream.as_raw_fd(), (&raw const address).cast(), length) } == 0 {
+        return Ok(Some(UnixStream::from(stream)));
+    }
+    let error = io::Error::last_os_error();
+    #[cfg(test)]
+    if WITHOUT_ADMISSION_LOCK.get() {
+        return Err(error);
+    }
+    match error.raw_os_error() {
+        Some(libc::ENOENT) => Ok(None),
+        Some(libc::ECONNREFUSED) => {
+            use std::os::unix::fs::FileTypeExt;
+            // Every candidate authority is held: this is an original host's
+            // closed socket, never a bind-before-listen contender.
+            if !std::fs::symlink_metadata(path)?.file_type().is_socket() {
+                return Err(io::ErrorKind::PermissionDenied.into());
+            }
+            Ok(None)
+        }
+        _ => Err(error),
+    }
+}
+
+fn authenticate(control: UnixStream) -> io::Result<UnixStream> {
     let mut peer: libc::ucred = unsafe { std::mem::zeroed() };
     let mut size = std::mem::size_of_val(&peer) as libc::socklen_t;
     // SAFETY: SO_PEERCRED fills the initialized peer structure.

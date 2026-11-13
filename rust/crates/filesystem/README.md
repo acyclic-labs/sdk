@@ -44,12 +44,14 @@ The host watches a mount-free owner thread through a thread pidfd. Killing an
 owner therefore closes its devices even when another owner thread is blocked in
 a request to its own mount. Admission requires Linux thread-pidfd support and
 refuses unsupported kernels before mounting. Other owners keep their connections;
-the host exits after its last connection retires. A shared admission lock in the
-OS account's home (resolved independently of HOME/XDG or login sessions) makes
-bind/listen/connect and final listener closure one ordered handoff. The endpoint
-is inside that same private directory, with the shared IPC directory-descriptor
-adapter supporting arbitrarily deep home paths. Kernel
-filesystem events wake retirement when a contender releases the lock. There are
+the host exits after its last connection retires. Canonical OS runtime and account
+home directories supply trusted private admission authorities independently of
+HOME/XDG settings. Clients acquire every usable authority in fixed order and join
+any existing host before creating one, so login-directory changes cannot split
+the host. A service without a writable home can use its OS runtime directory;
+read-only existing authorities still retain their original exclusion. Private
+socket endpoints use the shared IPC directory-descriptor adapter for deep paths.
+Kernel access/close events wake retirement after a contender releases its locks. There are
 no timed readiness checks or reconnect loops. Original reply payloads and
 allocation credit remain held until physical device publication, and retirement
 requires an explicit receipt after device closure. A missing receipt is an error,

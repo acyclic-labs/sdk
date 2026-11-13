@@ -53,38 +53,36 @@ pub(crate) fn user_home_directory() -> io::Result<PathBuf> {
     }
 }
 
-/// Supply a private account home inside a test's fresh user/mount namespace.
-/// Mapping the caller to root does not map the host's root-owned home, so the
-/// namespace fixture supplies an empty home without accessing the host's files.
+/// Supply the OS per-user runtime directory inside a fresh user/mount namespace.
+/// Mapping the caller to root does not create its login directory. The fixture
+/// supplies that OS state without modifying or covering the account home.
 ///
 /// # Errors
 /// Returns the OS mount or directory error. Call only after unsharing the mount
 /// namespace and making propagation private; the tmpfs dies with that namespace.
 #[cfg(any(test, feature = "test-support"))]
-pub fn initialize_isolated_user_home() -> io::Result<()> {
-    let root = user_home_directory()?;
-    if root.parent().is_none() {
-        return Err(io::ErrorKind::InvalidInput.into());
-    }
-    let root = std::ffi::CString::new(root.as_os_str().as_bytes())?;
-    // SAFETY: all strings are live NUL-terminated storage. The caller owns
+pub fn initialize_isolated_user_runtime() -> io::Result<()> {
+    // SAFETY: all strings are static NUL-terminated storage. The caller owns
     // an isolated mount namespace; this changes no host directory contents.
     if unsafe {
         libc::mount(
             c"tmpfs".as_ptr(),
-            root.as_ptr(),
+            c"/run/user".as_ptr(),
             c"tmpfs".as_ptr(),
             libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
-            c"mode=0700".as_ptr().cast(),
+            c"mode=0755".as_ptr().cast(),
         )
     } < 0
     {
         return Err(io::Error::last_os_error());
     }
-    Ok(())
+    super::create_directory(&PathBuf::from(format!(
+        "/run/user/{}",
+        super::effective_user()
+    )))
 }
 
-/// Run an exact real-binary test with an isolated, empty OS account home.
+/// Run an exact real-binary test with an isolated OS per-user runtime directory.
 /// Returns `true` to the parent after the child has passed, and `false` in the
 /// prepared child so its test body can run. No caller environment selects the
 /// production service root.
@@ -92,10 +90,10 @@ pub fn initialize_isolated_user_home() -> io::Result<()> {
 /// # Errors
 /// Returns namespace, mount, child-test or executable errors.
 #[cfg(any(test, feature = "test-support"))]
-pub fn with_isolated_user_home(test: &str) -> io::Result<bool> {
-    const CASE: &str = "ACYCLIC_ISOLATED_USER_HOME_TEST";
+pub fn with_isolated_user_runtime(test: &str) -> io::Result<bool> {
+    const CASE: &str = "ACYCLIC_ISOLATED_USER_RUNTIME_TEST";
     if std::env::var_os(CASE).is_some_and(|case| case == test) {
-        initialize_isolated_user_home()?;
+        initialize_isolated_user_runtime()?;
         return Ok(false);
     }
     let output = std::process::Command::new("unshare")
@@ -108,7 +106,10 @@ pub fn with_isolated_user_home(test: &str) -> io::Result<bool> {
             "private",
             "--",
         ])
-        .arg(std::env::current_exe()?)
+        // Preserve the original executable across unshare and any fixture
+        // overmount, including when its pathname lives under /run/user.
+        .arg("/proc/self/fd/0")
+        .stdin(std::fs::File::open("/proc/self/exe")?)
         .args([test, "--exact", "--nocapture"])
         .env(CASE, test)
         .output()?;

@@ -107,7 +107,7 @@ fn publish(
 #[test]
 fn hosted_publication_keeps_original_payload_until_device_write_and_stop_joins_it()
 -> Result<(), Box<dyn std::error::Error>> {
-    if acyclic_native_runtime::private_file::with_isolated_user_home(
+    if acyclic_native_runtime::private_file::with_isolated_user_runtime(
         "native_mount::fuse::host_io::tests::hosted_publication_keeps_original_payload_until_device_write_and_stop_joins_it",
     )? {
         return Ok(());

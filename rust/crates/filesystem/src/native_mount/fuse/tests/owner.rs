@@ -4,7 +4,7 @@ use super::*;
 
 #[test]
 fn current_thread_embedder_writes_through_its_own_view() -> Result<(), Box<dyn std::error::Error>> {
-    if acyclic_native_runtime::private_file::with_isolated_user_home(
+    if acyclic_native_runtime::private_file::with_isolated_user_runtime(
         "native_mount::fuse::tests::owner::current_thread_embedder_writes_through_its_own_view",
     )? {
         return Ok(());
@@ -75,7 +75,7 @@ fn killed_owner_with_pending_request_retires_without_fusectl()
         let root =
             std::path::PathBuf::from(std::env::var_os(OWNER_ROOT).ok_or("owner root absent")?);
         if case == "controller" {
-            acyclic_native_runtime::private_file::initialize_isolated_user_home()?;
+            acyclic_native_runtime::private_file::initialize_isolated_user_runtime()?;
             return controller(&root);
         }
         return pending_owner(&root, case == "old");
@@ -91,7 +91,8 @@ fn killed_owner_with_pending_request_retires_without_fusectl()
             "private",
             "--",
         ])
-        .arg(std::env::current_exe()?)
+        .arg("/proc/self/fd/0")
+        .stdin(std::fs::File::open("/proc/self/exe")?)
         .args([OWNER_TEST, "--exact", "--nocapture"])
         .env(OWNER_CASE, "controller")
         .env(OWNER_ROOT, temporary.path())
@@ -250,7 +251,7 @@ fn controller(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
         // This deadline only fails a broken child protocol; no elapsed time
         // establishes the pending request or supplies a passing observation.
         control.set_read_timeout(Some(Duration::from_secs(5)))?;
-        let child = Command::new(std::env::current_exe()?)
+        let child = Command::new("/proc/self/exe")
             .args([OWNER_TEST, "--exact", "--nocapture"])
             .env(OWNER_CASE, if old { "old" } else { "hosted" })
             .env(OWNER_ROOT, &owner_root)
