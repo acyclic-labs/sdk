@@ -2103,6 +2103,7 @@ agent_controls/invocation-bind-observation-0	103	96559a174de0d73bd974734b62064c5
 agent_controls/actor-response-bind-observation-0	871	f1b120960e0b9719afddd70cd399909ec9d7ee4b4bc466a6c20bf9966e34992c	PreparedCommand/AgentBinding/AgentCall::reply public writers; NUL separates the invocation from its original Actors response
 agent_controls/reply-bind-observation	835	dd9497d80f8a686bc787d7e5099b0b2b4ce783b0f1713de167b30b0d4a821cf6	acyclic_codec_fuzz::agent_controls::seeds via PreparedCommand/AgentBinding/encode_agent_reply; NUL separates command from reply
 agent_controls/json-bind-observation	832	9f3d8cd64ce720593eb232d978eb7fcd9f27c3195d30f573df08a691100c2042	acyclic_codec_fuzz::agent_controls::seeds via PreparedCommand/AgentBinding/encode_agent_reply; NUL separates command from reply
+actor_codecs/transition-paused	647	5f5bfc00a7449830fb158e53053bb9df3455d13643ae5c74524ff465c728be6b	guest::wire::encode_transition
 actor_codecs/invocation-committed-actor-v1	358	cd805e0df4374153150a21ee075621095098af85979ee87bd603965182adf45b	Store::enqueue_invoke original InvocationTicket::record and wire_codec::record_wire
 actor_codecs/call-v2-request	92	42dfd80dca7e1962a667534ab2747b623b1d8af07198bc751be741ac9af4f926	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
 actor_codecs/call-v2-hold	99	dc04f0a1b53681a4af2f96f737a8536aa9b5aba9f0702ab410c70d5adc83d909	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
