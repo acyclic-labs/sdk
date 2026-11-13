@@ -398,6 +398,25 @@ struct QueuedWatchChange {
     allocations: [Option<crate::NativeAllocation>; 2],
 }
 
+/// Publishes one funded hint while the caller owns the watch state.
+fn enqueue_watch_change(
+    sender: &QueueSender<QueuedWatchChange>,
+    queued: &AtomicUsize,
+    state: &mut SharedState,
+    change: QueuedWatchChange,
+) -> bool {
+    match sender.try_send(change) {
+        Ok(()) => {
+            queued.fetch_add(1, Ordering::Release);
+            true
+        }
+        Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
+            state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
+            false
+        }
+    }
+}
+
 impl SharedState {
     const fn new(invalidation: Option<WatchInvalidationReason>) -> Self {
         Self {
@@ -560,14 +579,16 @@ fn invalidate_root_hints<W: crate::demand::SourceDemandReadWork>(
     Ok(())
 }
 
-/// `FSEvents` reports only hints, so a change to the captured tree requires a
-/// rescan. A change beneath an excluded subtree is not part of that tree, and
-/// the fence cookie written there confirms that every earlier change was
-/// delivered: a quiet command never rescans, so it never reads files it did
-/// not touch.
+/// `FSEvents` paths join the same funded hint queue as other native events.
+/// Only lost or unlocated changes invalidate continuity. Excluded changes
+/// remain outside the captured tree, including the observed fence cookie.
 #[cfg(any(target_os = "macos", all(test, unix)))]
 struct RootHints {
     root: PathBuf,
+    profile: FilesystemProfile,
+    limits: VolumeLimits,
+    sender: QueueSender<QueuedWatchChange>,
+    queued: Arc<AtomicUsize>,
     shared: Arc<WatchState>,
     fenced: Arc<Condvar>,
     _root_allocation: Option<crate::NativeAllocation>,
@@ -616,8 +637,14 @@ impl RootHints {
             if state.fence.as_deref().is_some_and(beneath) {
                 cookie = true;
             } else if !state.excluded.iter().any(|excluded| beneath(excluded)) {
-                state.invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
-                self.fenced.notify_all();
+                let Some(relative) = relative else {
+                    state
+                        .invalidation
+                        .get_or_insert(WatchInvalidationReason::NativeRescanRequired);
+                    self.fenced.notify_all();
+                    continue;
+                };
+                self.queue_hint(change, relative, &mut state, work)?;
             }
         }
         if cookie {
@@ -625,6 +652,64 @@ impl RootHints {
             self.fenced.notify_all();
         }
         Ok(())
+    }
+
+    fn queue_hint<W: crate::demand::SourceDemandReadWork>(
+        &self,
+        change: &crate::source_watch::HostChange,
+        relative: &Path,
+        state: &mut SharedState,
+        work: &mut W,
+    ) -> Result<(), crate::demand::DemandError> {
+        use crate::source_watch::HostChange;
+        if state.invalidation.is_some() {
+            return Ok(());
+        }
+        if relative.as_os_str().is_empty()
+            && matches!(change, HostChange::Departed(_) | HostChange::Rebound(_))
+        {
+            state.invalidation = Some(WatchInvalidationReason::RootChanged);
+            self.fenced.notify_all();
+            return Ok(());
+        }
+        let payload = match namespace_hint_with_work(relative, self.profile, self.limits, work) {
+            Ok(payload) => payload,
+            Err(crate::demand::DemandError::InvalidRequest) => {
+                state.invalidation = Some(WatchInvalidationReason::UnrepresentablePath);
+                self.fenced.notify_all();
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
+        let bytes = payload.1;
+        let accepted = (|| {
+            work.started_io(WorkCounters {
+                items_returned: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            let mapped = match change {
+                HostChange::Departed(_) => WatchChange::Removed(payload.0),
+                HostChange::Rebound(_) => WatchChange::Arrived(payload.0),
+                _ if relative.as_os_str().is_empty() => WatchChange::MetadataChanged(payload.0),
+                _ => WatchChange::Modified(payload.0),
+            };
+            if !enqueue_watch_change(
+                &self.sender,
+                &self.queued,
+                state,
+                QueuedWatchChange {
+                    change: mapped,
+                    allocations: [payload.2, None],
+                },
+            ) {
+                self.fenced.notify_all();
+            }
+            Ok::<(), crate::demand::DemandError>(())
+        })();
+        if bytes != 0 {
+            work.release(bytes)?;
+        }
+        accepted
     }
 }
 
@@ -921,14 +1006,7 @@ impl NativeEventDelivery {
                     allocations: [payload.2, None],
                 }
             };
-            match self.sender.try_send(change) {
-                Ok(()) => {
-                    self.queued.fetch_add(1, Ordering::Release);
-                }
-                Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
-                    state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
-                }
-            }
+            enqueue_watch_change(&self.sender, &self.queued, &mut state, change);
             Ok::<(), DemandError>(())
         })();
         if bytes != 0 {
@@ -1355,17 +1433,15 @@ impl WindowsRootSink {
             ..WorkCounters::default()
         })?;
         // The pending half already counted against the queue bound.
-        match self.delivery.sender.try_send(QueuedWatchChange {
-            change: WatchChange::Removed(pending.from),
-            allocations: [pending.allocation, None],
-        }) {
-            Ok(()) => {
-                self.delivery.queued.fetch_add(1, Ordering::Release);
-            }
-            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
-                state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
-            }
-        }
+        enqueue_watch_change(
+            &self.delivery.sender,
+            &self.delivery.queued,
+            state,
+            QueuedWatchChange {
+                change: WatchChange::Removed(pending.from),
+                allocations: [pending.allocation, None],
+            },
+        );
         Ok(())
     }
 
@@ -1513,14 +1589,7 @@ impl WindowsRootSink {
                 allocations: [allocation, None],
             },
         };
-        match self.delivery.sender.try_send(change) {
-            Ok(()) => {
-                self.delivery.queued.fetch_add(1, Ordering::Release);
-            }
-            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
-                state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
-            }
-        }
+        enqueue_watch_change(&self.delivery.sender, &self.delivery.queued, state, change);
         Ok::<(), DemandError>(())
     }
 }
@@ -2099,8 +2168,8 @@ impl NativeWatch {
                 fenced: Arc::clone(&fenced),
             })
         };
-        #[cfg(target_os = "linux")]
-        let linux_sender = sender.clone();
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let native_sender = sender.clone();
         #[cfg(not(windows))]
         let callback = if use_adapter {
             let (context_root, context_allocation) =
@@ -2157,7 +2226,7 @@ impl NativeWatch {
                     limits: options.limits,
                     _root_allocation: event_allocation,
                 },
-                sender: linux_sender,
+                sender: native_sender,
                 shared: Arc::clone(&shared),
                 queued: Arc::clone(&queued),
                 fenced: Arc::clone(&fenced),
@@ -2200,6 +2269,10 @@ impl NativeWatch {
             Self::startup_control(work)?;
             let sink = Arc::new(RootHints {
                 root: hint_root,
+                profile,
+                limits: options.limits,
+                sender: native_sender,
+                queued: Arc::clone(&queued),
                 shared: Arc::clone(&shared),
                 fenced: Arc::clone(&fenced),
                 _root_allocation: hint_allocation,
@@ -4528,17 +4601,16 @@ fn accept_native_event(
         }
     };
     for change in changes {
-        match sender.try_send(QueuedWatchChange {
-            change,
-            allocations: [None, None],
-        }) {
-            Ok(()) => {
-                queued.fetch_add(1, Ordering::Release);
-            }
-            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
-                state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
-                break;
-            }
+        if !enqueue_watch_change(
+            sender,
+            queued,
+            &mut state,
+            QueuedWatchChange {
+                change,
+                allocations: [None, None],
+            },
+        ) {
+            break;
         }
     }
 }

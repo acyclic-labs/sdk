@@ -97,6 +97,10 @@ pub(super) fn change(relative: PathBuf, flags: u32) -> HostChange {
     if relative.as_os_str().is_empty() {
         return if unspecific {
             HostChange::Everything
+        } else if flags & ITEM_REMOVED != 0 {
+            HostChange::Departed(relative)
+        } else if flags & ITEM_RENAMED != 0 {
+            HostChange::Rebound(relative)
         } else {
             HostChange::Altered(relative)
         };

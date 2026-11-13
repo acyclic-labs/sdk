@@ -99,6 +99,9 @@ pub enum SourceError {
     /// Source and workspace histories conflict; reattachment is required.
     #[error("source conflicts with the workspace and must be reattached")]
     Conflict,
+    /// Native continuity was lost before a clean source could be acknowledged.
+    #[error("source requires a rescan: {0:?}")]
+    NeedsRescan(#[source] WatchInvalidationReason),
     /// A retry identity is already bound to another source operation.
     #[error("source operation identity is already bound to another request")]
     IdempotencyConflict,
@@ -325,11 +328,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
         {
             ReconcileOutcome::Clean(generation) => generation,
             ReconcileOutcome::Conflict => return Err(SourceError::Conflict),
-            ReconcileOutcome::NeedsRescan(_) => {
-                return Err(SourceError::Engine(
-                    "source could not reach a clean sealed state".to_owned(),
-                ));
-            }
+            ReconcileOutcome::NeedsRescan(reason) => return Err(SourceError::NeedsRescan(reason)),
         };
         Ok(generation)
     }
@@ -730,10 +729,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 authority_head,
             })),
         };
-        if !matches!(source.rescan().await?, ReconcileOutcome::Clean(_)) {
-            return Err(SourceError::Engine(
-                "initial source baseline did not become clean".to_owned(),
-            ));
+        match source.rescan().await? {
+            ReconcileOutcome::Clean(_) => {}
+            ReconcileOutcome::NeedsRescan(reason) => return Err(SourceError::NeedsRescan(reason)),
+            ReconcileOutcome::Conflict => return Err(SourceError::Conflict),
         }
         Ok(Workspace {
             source: Some(source),
@@ -987,9 +986,9 @@ async fn replay_seal_operation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             publication_closure: None,
         })),
         DurableSourceState::Conflict => Err(SourceError::Conflict),
-        DurableSourceState::NeedsRescan(_) => Err(SourceError::Engine(
-            "source could not reach a clean sealed state".to_owned(),
-        )),
+        DurableSourceState::NeedsRescan(reason) => {
+            Err(SourceError::NeedsRescan(watch_invalidation(reason)))
+        }
         DurableSourceState::Clean | DurableSourceState::PendingCapture => Err(SourceError::Engine(
             "durable seal operation has an invalid terminal state".to_owned(),
         )),

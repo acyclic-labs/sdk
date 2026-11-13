@@ -785,6 +785,14 @@ fn unspecific_events_cover_everything_beneath_their_path() {
         change(root(), ITEM_CREATED | ITEM_IS_DIR),
         HostChange::Altered(root())
     );
+    assert_eq!(
+        change(root(), ITEM_REMOVED | ITEM_IS_DIR),
+        HostChange::Departed(root())
+    );
+    assert_eq!(
+        change(root(), ITEM_RENAMED | ITEM_IS_DIR),
+        HostChange::Rebound(root())
+    );
     assert_eq!(change(name(), 0), HostChange::Rebound(name()));
     assert_eq!(
         change(name(), MUST_SCAN_SUBDIRS),

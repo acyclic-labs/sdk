@@ -45,6 +45,14 @@ fn fixture(
     watch.finish_rescan(rescan)?;
     let hints = RootHints {
         root: watch.root.clone(),
+        profile: watch.profile,
+        limits: VolumeLimits::default(),
+        sender: watch
+            .receiver
+            .get_mut()
+            .map_err(|_| "watch queue poisoned")?
+            .sender_for_test(),
+        queued: Arc::clone(&watch.queued),
         shared: Arc::clone(&watch.shared),
         fenced: Arc::clone(&watch.fenced),
         _root_allocation: None,
@@ -92,6 +100,94 @@ fn deliver(
         &cancellation,
     );
     hints.host_changed(changes, &mut work)
+}
+
+/// Located changes retain their original paths and funding; a continuity
+/// loss or a root rename still refuses every later ordinary hint.
+#[test]
+fn located_hints_keep_original_custody_and_loss_stays_sticky()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, _)| cause)?;
+    let (sender, receiver) =
+        crate::watch_queue::channel(Some(original.claim(0, 0, WorkCounters::UNCHARGED)?));
+    let shared = Arc::new(WatchState::new(SharedState::new(None)));
+    let queued = Arc::new(AtomicUsize::new(0));
+    let hints = RootHints {
+        root: PathBuf::from("/source"),
+        profile: FilesystemProfile::Portable,
+        limits: VolumeLimits::default(),
+        sender,
+        queued: Arc::clone(&queued),
+        shared: Arc::clone(&shared),
+        fenced: Arc::new(Condvar::new()),
+        _root_allocation: None,
+    };
+    let mut work = original.clone();
+    hints.host_changed_with_native_work(
+        &[
+            HostChange::Altered(PathBuf::new()),
+            HostChange::Rebound("value.txt".into()),
+        ],
+        &mut work,
+    )?;
+    assert!(
+        shared
+            .state
+            .lock()
+            .map_err(|_| "watch state poisoned")?
+            .invalidation
+            .is_none()
+    );
+    assert_eq!(queued.load(Ordering::Acquire), 2);
+    let root = receiver.try_recv()?;
+    let file = receiver.try_recv()?;
+    assert!(matches!(root.change, WatchChange::MetadataChanged(path) if path.is_root()));
+    let expected = relative_namespace_path(
+        &hints.root,
+        &hints.root.join("value.txt"),
+        hints.profile,
+        hints.limits,
+    )?;
+    assert_eq!(file.change, WatchChange::Arrived(expected));
+    assert!(
+        file.allocations[0]
+            .as_ref()
+            .is_some_and(|allocation| allocation.bytes() > 0)
+    );
+    queued.fetch_sub(2, Ordering::AcqRel);
+    hints.host_changed_with_native_work(&[HostChange::Everything], &mut work)?;
+    hints.host_changed_with_native_work(&[HostChange::Altered("later".into())], &mut work)?;
+    assert_eq!(
+        shared
+            .state
+            .lock()
+            .map_err(|_| "watch state poisoned")?
+            .invalidation,
+        Some(WatchInvalidationReason::NativeRescanRequired),
+    );
+    assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
+    for root_change in [
+        HostChange::Rebound(PathBuf::new()),
+        HostChange::Departed(PathBuf::new()),
+    ] {
+        shared
+            .state
+            .lock()
+            .map_err(|_| "watch state poisoned")?
+            .invalidation = None;
+        hints.host_changed_with_native_work(&[root_change], &mut work)?;
+        assert_eq!(
+            shared
+                .state
+                .lock()
+                .map_err(|_| "watch state poisoned")?
+                .invalidation,
+            Some(WatchInvalidationReason::RootChanged),
+        );
+    }
+    Ok(())
 }
 
 /// A read-only excluded directory cannot hold a cookie, so the next one

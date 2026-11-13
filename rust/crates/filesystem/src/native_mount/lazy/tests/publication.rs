@@ -1345,10 +1345,12 @@ async fn post_ack_reads_keep_operation_custody_until_real_companion_settlement()
         );
         let view = Arc::new(mounted_native_view_of(lazy, &work).await?);
         let source_path = mounted(&["source-only"]);
-        // Native reads may advance access time. Custody retains the stable
-        // node and exact external content pin, not a frozen host stat record.
-        let pinned_identity =
-            |(lookup, pin): (MountLookup, Option<MountContentPin>)| (lookup.node, pin);
+        // Native reads may advance access time. Every other source fact and
+        // the original content pin must survive the custody fence unchanged.
+        let pinned_identity = |(mut lookup, pin): (MountLookup, Option<MountContentPin>)| {
+            lookup.metadata.accessed_ns = crate::MetadataField::Unavailable;
+            (lookup, pin)
+        };
         let expected_source = view
             .lookup_pinned_with_meter(&source_path, &work)?
             .map(pinned_identity)
@@ -1585,7 +1587,7 @@ async fn post_ack_reads_keep_operation_custody_until_real_companion_settlement()
         let mut expected = [
             (
                 source_path.components()[0].clone(),
-                expected_source.0.file_id,
+                expected_source.0.node.file_id,
             ),
             (
                 authored_path.components()[0].clone(),

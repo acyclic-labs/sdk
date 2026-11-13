@@ -3,9 +3,10 @@
 //! Every accepted change is retained until received. Storage grows geometrically
 //! under its original native allocation guard; a denied allocation leaves the
 //! queue unchanged. Receiver and sender retirement retain standard channel semantics.
+use crate::sync::{Mutex, MutexGuard};
 use std::collections::VecDeque;
 use std::sync::mpsc::{TryRecvError, TrySendError};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, PoisonError};
 
 /// Retained storage beyond this many slots is released when the queue drains.
 const RETAINED_SLOTS: usize = 64;
@@ -104,6 +105,12 @@ impl<T> Drop for QueueSender<T> {
 }
 
 impl<T> QueueReceiver<T> {
+    #[cfg(all(test, unix))]
+    pub(crate) fn sender_for_test(&self) -> QueueSender<T> {
+        self.0.lock().senders += 1;
+        QueueSender(Arc::clone(&self.0))
+    }
+
     /// Removes the oldest queued item.
     pub(crate) fn try_recv(&self) -> Result<T, TryRecvError> {
         let mut state = self.0.lock();
