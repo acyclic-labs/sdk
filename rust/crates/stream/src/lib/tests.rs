@@ -553,27 +553,55 @@ mod indexed_trace_tests {
             trace.follow(0, Default::default()).await?,
             Default::default(),
         );
-        query.next().await?;
-        query.next().await?;
-        assert!(
-            matches!(query.next().await?, Some(Observation::Completed { start, bytes: None, result: Outcome::Succeeded, .. })
-            if start.name == "stream.latest_fence" && start.mechanism == Mechanism::ProviderCall
-                && start.parent == Some(parent)
-                && start.guarantee.as_deref() == Some("original_head_cut_for_optimistic_publication_fence"))
-        );
-        for expected_bytes in [8, 0] {
-            query.next().await?;
-            assert!(
-                matches!(query.next().await?, Some(Observation::Completed { start, bytes, result: Outcome::Succeeded, .. })
-                if start.name == "stream.latest_before" && start.mechanism == Mechanism::ProviderCall
-                    && start.parent == Some(parent)
-                    && start.guarantee.as_deref() == Some("indexed_record_strictly_before_original_cut")
-                    && bytes == Some(expected_bytes))
-            );
+        let mut completed = 0;
+        let mut fence = false;
+        let mut request = false;
+        let mut indexed_bytes = Vec::new();
+        while completed < 4 {
+            let Some(observation) = query.next().await? else {
+                return Err("trace ended before original request hops settled".into());
+            };
+            if let Observation::Completed {
+                id,
+                start,
+                bytes,
+                result,
+                ..
+            } = observation
+            {
+                completed += 1;
+                assert_eq!(result, Outcome::Succeeded);
+                if id == parent {
+                    assert!(!request);
+                    request = true;
+                    continue;
+                }
+                assert_eq!(start.parent, Some(parent));
+                assert_eq!(start.mechanism, Mechanism::ProviderCall);
+                match start.name.as_str() {
+                    "stream.latest_fence" => {
+                        assert!(!fence);
+                        fence = true;
+                        assert_eq!(bytes, None);
+                        assert_eq!(
+                            start.guarantee.as_deref(),
+                            Some("original_head_cut_for_optimistic_publication_fence")
+                        );
+                    }
+                    "stream.latest_before" => {
+                        assert_eq!(
+                            start.guarantee.as_deref(),
+                            Some("indexed_record_strictly_before_original_cut")
+                        );
+                        indexed_bytes.push(bytes);
+                    }
+                    name => panic!("unexpected indexed request hop: {name}"),
+                }
+            }
         }
-        assert!(
-            matches!(query.next().await?, Some(Observation::Completed { id, .. }) if id == parent)
-        );
+        assert!(fence && request);
+        indexed_bytes.sort();
+        assert_eq!(indexed_bytes, [Some(0), Some(8)]);
         assert_eq!(
             trace.tail().await?,
             8,

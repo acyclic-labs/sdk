@@ -49,7 +49,7 @@ pub(super) fn canonical(error: &StreamError) -> Canonical<'static> {
         StreamError::Capacity => (Code::ResourceExhausted, "stream capacity exhausted"),
         StreamError::IdempotencyMismatch => (Code::FailedPrecondition, "idempotency_mismatch"),
         StreamError::PrefixNotRetained => (Code::FailedPrecondition, "prefix_not_retained"),
-        StreamError::Refused(_) => return canonical(&error.category()),
+        StreamError::Refused(_) | StreamError::Caused(_) => return canonical(&error.category()),
         StreamError::Unavailable => (Code::Unavailable, "stream unavailable"),
         StreamError::DeadlineElapsed => (Code::FailedPrecondition, "deadline_elapsed"),
         StreamError::Unsupported => (Code::Unimplemented, "unsupported_capability"),
