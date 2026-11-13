@@ -2618,6 +2618,18 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
     let request = provider.last_request().expect("one model request");
     let context = super::request_text(&harness, &request).await?;
     assert!(context.contains("<cwd>.</cwd>"), "{context}");
+    for (_, root, _) in harness
+        .workspace
+        .as_ref()
+        .expect("checkout")
+        .mounts
+        .native_mounts()
+    {
+        assert!(
+            !context.contains(root.to_string_lossy().as_ref()),
+            "model context advertised a host projection path: {context}"
+        );
+    }
     let ModelContent::Parts(parts) = input_content(&request, body)? else {
         return Err(Error::Conflict("the turn input has no attachments".into()));
     };
