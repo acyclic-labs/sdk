@@ -895,7 +895,10 @@ mod resolver_tests {
         };
         for _ in 0..1000 {
             let config = LocalHarnessConfig::resolving(workspace.path(), Arc::clone(&models), None);
-            assert_eq!(selected(config.resolve(Some(&settings()), true).await?)?, "first");
+            assert_eq!(
+                selected(config.resolve(Some(&settings()), true).await?)?,
+                "first"
+            );
         }
         assert_eq!(constructed.load(Ordering::Relaxed), 1);
         std::fs::write(

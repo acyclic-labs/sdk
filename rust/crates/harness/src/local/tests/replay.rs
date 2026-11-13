@@ -79,7 +79,7 @@ impl ReplayFixture {
         let state = config.resolved_state_directory()?;
         let harness = super::open_scripted(config).await?;
         let owner = directory.path().join("initial-owner");
-        std::fs::copy(state.join("owner.v5"), &owner).map_err(agent)?;
+        std::fs::copy(state.join(super::super::owner::RECORD), &owner).map_err(agent)?;
         harness.disconnect().await?;
         Ok(Self {
             _directory: directory,
@@ -108,7 +108,7 @@ impl ReplayFixture {
             .tool(tool);
         let state = config.resolved_state_directory()?;
         std::fs::create_dir_all(&state).map_err(agent)?;
-        std::fs::copy(&self.owner, state.join("owner.v5")).map_err(agent)?;
+        std::fs::copy(&self.owner, state.join(super::super::owner::RECORD)).map_err(agent)?;
         let harness = Arc::new(super::open_scripted(config).await?);
         let mut client = ObservedConversation::open(&harness).await?;
         for input in inputs {

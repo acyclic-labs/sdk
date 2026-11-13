@@ -44,7 +44,9 @@ async fn reattached_pending_question_is_complete_and_retires_on_settlement() -> 
         settled = original.wait_current_input() => {
             let entries = original.entries(0, original.settled().await?).await?;
             let mut outputs = Vec::new();
-            for entry in &entries { outputs.push(original.output_text(entry).await?); }
+            for (sequence, entry) in entries.iter().enumerate() {
+                outputs.push(original.output_text_at(u64::try_from(sequence).map_err(failed)?, entry).await?);
+            }
             return Err(Error::Invalid(format!("input settled before dispatch: {settled:?}; {outputs:?}")));
         }
     }

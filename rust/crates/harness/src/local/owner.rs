@@ -262,7 +262,7 @@ impl RootWitness {
 /// roots, v1 actor records and host-owned epochs. Refuse earlier owners before
 /// record decoding, credential access or filesystem attachment; never import
 /// task-writable controller records or previously captured opaque metadata.
-const RECORD: &str = "owner.v13";
+pub(super) const RECORD: &str = "owner.v13";
 const OLDER_RECORDS: [&str; 12] = [
     "owner.json",
     "owner.v2",

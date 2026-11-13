@@ -1,1 +1,1 @@
-{"kind":"cancel","agent":"harness/agents/00000000000000000000000000000001","id":"cancel"}
+{"kind":"cancel","input":1,"conversation":0,"agent":"harness/agents/00000000000000000000000000000001","id":"cancel"}
