@@ -372,24 +372,28 @@ where
         let mut background_started = false;
         let error = match event {
             ExecutionEvent::ToolFailed { reason, cause, .. } => Some(encode(&(reason, cause), io)?),
-            ExecutionEvent::ToolCompleted { result, .. } if invocation.name == "shell" => {
+            ExecutionEvent::ToolCompleted { result, .. } => {
                 let (result, _result_hold) =
                     crate::executor::load_json::<crate::tool::ToolResult>(self, result, io).await?;
                 let value = &result.value;
-                background_started = invocation
-                    .arguments
-                    .get("background")
-                    .and_then(serde_json::Value::as_bool)
-                    == Some(true)
+                let shell = invocation.name == "shell";
+                background_started = shell
+                    && invocation
+                        .arguments
+                        .get("background")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true)
                     && value.get("background").and_then(serde_json::Value::as_bool) == Some(true);
-                let failed = value.get("success").and_then(serde_json::Value::as_bool)
-                    == Some(false)
-                    || value
-                        .get("exit_code")
-                        .and_then(serde_json::Value::as_i64)
-                        .is_some_and(|code| code != 0)
+                let failed = shell
+                    && (value.get("success").and_then(serde_json::Value::as_bool) == Some(false)
+                        || value
+                            .get("exit_code")
+                            .and_then(serde_json::Value::as_i64)
+                            .is_some_and(|code| code != 0))
                     || value.get("error").is_some_and(|error| !error.is_null());
-                if failed {
+                if failed && !shell {
+                    Some(encode(&value["error"], io)?)
+                } else if failed {
                     let detail = value
                         .get("error")
                         .filter(|error| !error.is_null())
