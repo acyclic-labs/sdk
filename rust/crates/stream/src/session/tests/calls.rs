@@ -740,7 +740,83 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
         Some(lifetime),
     );
     client.register_credential(0, credential.into())?;
+    #[cfg(feature = "serde")]
+    let (trace, root, parent) = {
+        let trace = crate::Stream::new(Arc::new(MemoryStream::default()), "owner/trace")?;
+        let recorder = Arc::new(crate::trace::Recorder::new(trace.clone(), [41; 16]));
+        let root = recorder
+            .start(
+                "reply_owner",
+                crate::trace::Mechanism::ActorDelivery,
+                None,
+                Some("original_call_request"),
+            )
+            .await?;
+        let parent = root.id();
+        (trace, root.into_owned(), parent)
+    };
+    #[cfg(feature = "serde")]
+    let response = root.within(client.actor_call(&invocation, 0, None)).await?;
+    #[cfg(not(feature = "serde"))]
     let response = client.actor_call(&invocation, 0, None).await?;
+    #[cfg(feature = "serde")]
+    {
+        use crate::trace::{Mechanism, Observation, Outcome, TraceQuery};
+        let terminal = root.finish_submitted(None, Outcome::Succeeded)?;
+        let _receipt = terminal.result().await?;
+        let mut query = TraceQuery::new(
+            trace.read(0, u32::try_from(trace.tail().await?)?).await?,
+            Default::default(),
+        );
+        let mut round_trip = None;
+        let mut copies = Vec::new();
+        let fragments = body.chunks(crate::MAX_RECORD_BYTES).count();
+        while let Some(event) = query.next().await? {
+            if let Observation::Completed {
+                id,
+                start,
+                bytes,
+                result,
+                ..
+            } = event
+            {
+                match start.name.as_str() {
+                    "stream.finite_reply" => {
+                        assert_eq!(start.parent, Some(parent));
+                        assert_eq!(start.mechanism, Mechanism::RoundTrip);
+                        assert_eq!(
+                            start.guarantee.as_deref(),
+                            Some("complete_bounded_reply_on_original_session")
+                        );
+                        assert_eq!(result, Outcome::Succeeded);
+                        assert_eq!(bytes, Some(body.len() as u64));
+                        round_trip = Some(id);
+                    }
+                    "stream.reply_copy" => {
+                        assert_eq!(start.mechanism, Mechanism::Copy);
+                        assert_eq!(
+                            start.guarantee.as_deref(),
+                            Some("contiguous_complete_reply_ownership")
+                        );
+                        assert_eq!(result, Outcome::Succeeded);
+                        copies.push((start.parent, bytes.ok_or("copy size absent")?));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert!(round_trip.is_some());
+        assert_eq!(copies.len(), fragments);
+        assert!(copies.iter().all(|(parent, _)| *parent == round_trip));
+        assert_eq!(
+            copies.iter().map(|(_, bytes)| bytes).sum::<u64>(),
+            body.len() as u64
+        );
+        assert_eq!(
+            query.totals()[&Mechanism::Copy].known_bytes,
+            body.len() as u128
+        );
+    }
     assert_eq!(response.as_ref(), body.as_ref());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 

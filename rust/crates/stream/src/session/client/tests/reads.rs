@@ -873,77 +873,7 @@ async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> Tes
         at_least: Default::default(),
     };
     let expected = provider.heads(request.clone()).await?;
-    #[cfg(feature = "serde")]
-    let (trace, root, parent) = {
-        let trace = crate::Stream::new(Arc::new(MemoryStream::default()), "owner/trace")?;
-        let recorder = Arc::new(crate::trace::Recorder::new(trace.clone(), [41; 16]));
-        let root = recorder
-            .start(
-                "heads_owner",
-                crate::trace::Mechanism::ActorDelivery,
-                None,
-                Some("original_heads_request"),
-            )
-            .await?;
-        let parent = root.id();
-        (trace, root.into_owned(), parent)
-    };
-    #[cfg(feature = "serde")]
-    let actual = root.within(client.heads(request.clone(), 0)).await?;
-    #[cfg(not(feature = "serde"))]
     let actual = client.heads(request.clone(), 0).await?;
-    #[cfg(feature = "serde")]
-    {
-        use crate::trace::{Mechanism, Observation, Outcome, TraceQuery};
-        let mut query = TraceQuery::new(
-            trace.follow(0, Default::default()).await?,
-            Default::default(),
-        );
-        let mut round_trip = None;
-        let mut copy = None;
-        while round_trip.is_none() || copy.is_none() {
-            let Some(event) = query.next().await? else {
-                return Err("diagnostic source ended".into());
-            };
-            if let Observation::Completed {
-                id,
-                start,
-                bytes,
-                result,
-                ..
-            } = event
-            {
-                match start.name.as_str() {
-                    "stream.finite_reply" => {
-                        assert_eq!(start.parent, Some(parent));
-                        assert_eq!(start.mechanism, Mechanism::RoundTrip);
-                        assert_eq!(
-                            start.guarantee.as_deref(),
-                            Some("complete_bounded_reply_on_original_session")
-                        );
-                        assert_eq!(result, Outcome::Succeeded);
-                        round_trip = Some((id, bytes));
-                    }
-                    "stream.reply_copy" => {
-                        assert_eq!(start.mechanism, Mechanism::Copy);
-                        assert_eq!(
-                            start.guarantee.as_deref(),
-                            Some("contiguous_complete_reply_ownership")
-                        );
-                        assert_eq!(result, Outcome::Succeeded);
-                        copy = Some((start.parent, bytes));
-                    }
-                    _ => {}
-                }
-            }
-        }
-        let (round_trip, reply_bytes) = round_trip.ok_or("missing reply span")?;
-        let (copy_parent, copy_bytes) = copy.ok_or("missing copy span")?;
-        assert_eq!(copy_parent, Some(round_trip));
-        assert!(reply_bytes.is_some_and(|bytes| bytes > 0));
-        assert_eq!(copy_bytes, reply_bytes);
-        root.finish_submitted(None, Outcome::Succeeded)?;
-    }
     assert_eq!(actual, expected);
     assert!(actual.heads[1].is_none());
     let mut offsets = request.clone();
