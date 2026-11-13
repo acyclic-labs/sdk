@@ -40,6 +40,19 @@ pub trait TurnContext: acyclic_stream::ProviderPlatform + 'static {
         authority: &'a TurnAuthority,
     ) -> BoxProviderFuture<'a, Result<StockExecutor>>;
 
+    /// Installs a per-step source after canonical turn composition and before
+    /// the initial model's native presentation.
+    /// The source captures canonical tools before native presentation, so a
+    /// later family can build its declarations from the same admitted revisions.
+    /// The running turn retains its original context and authority.
+    fn configure_steps(
+        &self,
+        executor: StockExecutor,
+        _agent: &AgentState,
+        _authority: &TurnAuthority,
+    ) -> Result<StockExecutor> {
+        Ok(executor)
+    }
     /// Workspace exposures and newly discovered instructions for this context.
     fn workspaces<'a>(
         &'a self,
@@ -411,11 +424,7 @@ impl TurnExecutors for StockExecutors {
             // Context preparation may set the final output bound or an explicit
             // policy. Derive automatic budgets only after both are known.
             let executor = executor.with_automatic_compaction()?;
-            // Native declarations run the revisions the prepared manifest pins.
-            let executor = match &native {
-                Some(native) => executor.with_native_tools(native)?,
-                None => executor,
-            };
+
             let executor = if question_allowed {
                 executor
             } else {
@@ -459,6 +468,12 @@ impl TurnExecutors for StockExecutors {
                         None => executor,
                     }
                 }
+                None => executor,
+            };
+            let executor = self.context.configure_steps(executor, agent, authority)?;
+            // Native declarations run the final canonical revisions and ceiling.
+            let executor = match &native {
+                Some(native) => executor.with_native_tools(native)?,
                 None => executor,
             };
             Ok(Arc::new(executor) as Arc<dyn Executor>)
