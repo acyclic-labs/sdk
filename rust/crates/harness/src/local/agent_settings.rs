@@ -45,17 +45,36 @@ mod step_cut;
 
 type SourceFiles = [Option<(crate::conversation::FileRef, acyclic_stream::OwnedBytes)>; 5];
 
+fn model_base(
+    model: &str,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<serde_json::Value> {
+    #[derive(serde::Serialize)]
+    struct Base<'a> {
+        model: &'a str,
+    }
+    let base = Base { model };
+    match io {
+        Some(io) => io.value_json(&base, None),
+        None => serde_json::to_value(base).map_err(|error| Error::Invalid(error.to_string())),
+    }
+}
+
 impl Tree<'_> {
     pub(super) async fn model_selection(&self, base: &str) -> Result<String> {
         let sources = self.sources(config::AGENT).await?;
         let layers = self.layers(config::AGENT, &sources);
-        let (value, _) = config::compose(
+        let input = self
+            .io
+            .map(crate::executor::PreparationIo::scoped)
+            .transpose()?;
+        let value = config::compose_result(
             config::AGENT,
             &layers,
             self,
-            serde_json::json!({"model": base}),
+            model_base(base, input.as_ref())?,
         )
-        .await?;
+        .await??;
         Ok(value.decode::<AgentConfig>()?.into_unbounded()?.model)
     }
 
@@ -520,9 +539,22 @@ async fn settle(
     resolve: Resolve<'_>,
     base_model: Option<&str>,
 ) -> std::result::Result<Settings, Refused> {
+    let input = tree
+        .preparation_io()
+        .map(crate::executor::PreparationIo::scoped)
+        .transpose()?;
     let selection = started
         .as_ref()
-        .map(|model| format!("{}/{}", model.0.provider, model.0.name));
+        .filter(|_| base_model.is_none())
+        .map(|model| {
+            crate::executor::with_history_io(input.as_ref(), |work| {
+                crate::executor::preparation_format(
+                    format_args!("{}/{}", model.0.provider, model.0.name),
+                    work,
+                )
+            })
+        })
+        .transpose()?;
     let base = base_model.or(selection.as_deref()).ok_or_else(|| {
         Refused::Operation(Error::Invalid("startup model selection is absent".into()))
     })?;
@@ -530,7 +562,7 @@ async fn settle(
         config::AGENT,
         layers,
         tree,
-        serde_json::json!({ "model": base }),
+        model_base(base, input.as_ref())?,
     )
     .await?
     .map_err(Refused::evaluated)?;
@@ -559,7 +591,13 @@ async fn settle(
             "replay is chosen when the session starts, not here",
         ));
     }
-    let model = match started.filter(|_| selection.as_deref() == Some(settings.model.as_str())) {
+    let model = match started.filter(|model| {
+        settings
+            .model
+            .strip_prefix(model.0.provider.as_str())
+            .and_then(|name| name.strip_prefix('/'))
+            == Some(model.0.name.as_str())
+    }) {
         Some(started) => started,
         None => {
             let resolve = resolve.ok_or_else(|| {
