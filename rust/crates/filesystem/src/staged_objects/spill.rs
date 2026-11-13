@@ -16,16 +16,22 @@ impl<S> Drop for SpillSelection<'_, S> {
             return;
         }
         let mut index = self.store.index_mut();
-        if index.spilled.is_empty() {
-            *self.spill = None;
+        let retired = if index.spilled.is_empty() {
             index.reset_spill();
-        }
+            self.spill.take()
+        } else {
+            None
+        };
         for (id, _) in self.victims {
             if let Some(Staged::Resident { order, .. }) = index.objects.get(id) {
                 let order = *order;
                 index.order.insert(order, *id);
             }
         }
+        // The original native owner can close its descriptor on retirement.
+        // Finish the in-memory rollback before any host work can run.
+        drop(index);
+        drop(retired);
     }
 }
 
