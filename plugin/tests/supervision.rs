@@ -705,6 +705,52 @@ async fn headless_native_edits_count_progress_but_unchanged_rewrites_do_not() {
 }
 
 #[tokio::test]
+async fn headless_read_only_capture_does_not_reuse_previous_edit_progress() {
+    let fixture = fixture();
+    std::fs::write(fixture.workspace.join("progress.txt"), b"before").unwrap();
+    #[cfg(unix)]
+    let edit = "printf 'after!' > progress.txt; cat progress.txt";
+    #[cfg(windows)]
+    let edit =
+        "Set-Content -NoNewline -Path progress.txt -Value 'after!'; Get-Content -Raw progress.txt";
+    #[cfg(unix)]
+    let read = "cat progress.txt";
+    #[cfg(windows)]
+    let read = "Get-Content -Raw progress.txt";
+    let model = model_responses(fixture._directory.path(), vec![
+        tool_response("shell", json!({"command":edit}), 0),
+        ANSWER.into(),
+        tool_response("shell", json!({"command":read}), 1),
+        ANSWER.into(),
+        tool_response("write", json!({"path":"volume:///home/GOAL.md", "content":"---\nstatus: done\n---\nCompleted the objective\n"}), 2),
+        ANSWER.into(),
+    ], "responses").await;
+    let mut policy = Policy {
+        no_progress_turns: Some(1),
+        ..Default::default()
+    };
+    policy.actions.insert(Kind::NoProgress, Action::Stop);
+    policy.reservation.tokens = Some(10_000);
+    let output = run_goal(&fixture, &model, &policy).await;
+    let requests = model.requests.lock().unwrap().clone();
+    model.close().await;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        output.status.code(),
+        Some(22),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        requests.len(),
+        4,
+        "read-only capture was counted as another edit"
+    );
+    let result: Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(result["result"]["signal"], "no_progress");
+}
+
+#[tokio::test]
 async fn healthy_headless_run_keeps_below_configured_supervision_thresholds() {
     let fixture = fixture();
     let model = model_responses(

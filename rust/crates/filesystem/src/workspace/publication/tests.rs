@@ -64,6 +64,18 @@ async fn exercise_original_publication<
     let publication = publication.value.ok_or("publication disappeared")?;
     assert_eq!(publication.generation().id(), original.id());
     assert_eq!(publication.evidence(), Some(b"original context".as_slice()));
+    let predecessor = publication
+        .predecessor_generation(budget, &cancellation)
+        .await?
+        .value
+        .ok_or("clean publication lost its predecessor")?;
+    assert_eq!(predecessor.id(), original.id());
+    assert!(
+        !original
+            .content_changed_from(&predecessor, budget, &cancellation)
+            .await?
+            .value
+    );
     assert!(
         original
             .stat("/.system", budget, &cancellation)
@@ -74,6 +86,7 @@ async fn exercise_original_publication<
         workspace.head(budget, &cancellation).await?.value.id(),
         current
     );
+    clean_publication_predecessor(&workspace, current, budget, &cancellation).await?;
     // Selected-import recovery supplies its configured bound to this same
     // decoder. Refuse the envelope before decoding or hashing its evidence.
     let mut bounded = KernelAccounting::standalone(budget, &cancellation);
@@ -174,6 +187,62 @@ async fn exercise_original_publication<
         .err()
         .ok_or("cancelled read admitted")?;
     assert_eq!(*failure.work, crate::WorkCounters::default());
+    Ok(())
+}
+
+async fn clean_publication_predecessor<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+>(
+    workspace: &Workspace<A, O>,
+    before: GenerationId,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let key = IdempotencyKey::new();
+    let mut transaction = workspace
+        .begin_transaction(key, budget, cancellation)
+        .await?
+        .value;
+    transaction
+        .commit(
+            Some((
+                crate::Digest::from_bytes([8; 32]),
+                acyclic_stream::OwnedBytes::from_static(b"clean after edit"),
+                crate::PublicationPermit::Unrestricted,
+            )),
+            crate::PublicationPermit::Unrestricted,
+            budget,
+            cancellation,
+            publication_ready,
+        )
+        .await?;
+    workspace
+        .write_text("/later-again", "a later unrelated edit")
+        .await?;
+    let publication = workspace
+        .operation_publication(key, None, budget, cancellation)
+        .await?
+        .value
+        .ok_or("clean receipt missing")?;
+    let predecessor = publication
+        .predecessor_generation(budget, cancellation)
+        .await?
+        .value
+        .ok_or("clean predecessor missing")?;
+    assert_eq!(
+        predecessor.id(),
+        before,
+        "clean receipt borrowed generation ancestry"
+    );
+    assert_eq!(publication.generation().id(), before);
+    assert!(
+        !publication
+            .generation()
+            .content_changed_from(&predecessor, budget, cancellation)
+            .await?
+            .value
+    );
     Ok(())
 }
 
