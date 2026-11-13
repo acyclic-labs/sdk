@@ -87,14 +87,15 @@ async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledge
     let state = tempfile::tempdir().map_err(storage)?;
     let harness = open(root.path(), state.path()).await?;
     let mounts = &harness.workspace().unwrap().mounts;
-    let scratch = mounts.named(Some("home"))?.1.view.source.as_ref().unwrap();
+    let (home, mount) = mounts.named(Some("home"))?;
+    let scratch = mount.view.source.as_ref().unwrap();
     native_scope(mounts, async |claims| {
         // Root checkout bindings carry the same explicit native roots as task
         // aliases, and expose cwd/discovery only while execution projects them.
         let prepared = crate::filesystem::native_process::shell::prepare(
             crate::tools::ShellInput {
                 command: crate::tools::ShellCommand::Source("echo root".into()),
-                cwd: Some(HOME_PATH.into()),
+                cwd: Some(home.into()),
                 timeout_ms: None,
                 background: false,
                 target: None,
