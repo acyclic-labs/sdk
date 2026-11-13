@@ -128,7 +128,9 @@ fn store(provider: &Arc<MemoryStream>) -> Result<Store<MemoryStream>> {
 
 #[tokio::test]
 async fn record_wait_resumes_once_for_existing_and_future_publications() -> Result {
-    use acyclic_stream::{AppendRequest, FollowRequest, StreamProvider as _};
+    use acyclic_stream::{
+        AppendRequest, FollowRequest, StreamProvider as _, StreamProviderExt as _,
+    };
     use futures::TryStreamExt as _;
 
     struct RecordWaiter {
