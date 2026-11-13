@@ -3,19 +3,28 @@ use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex, Notify};
 
-const INSTRUCTION: &str = "You manage this worker's context outside its turns. Decide using the supplied original usage and the work still needed, including the cost of another summary, cache rebuild and repeated cached input, and the latency of attending to a growing history. Do not wait for the context window to fill. Preserve instructions, facts, decisions, constraints, evidence references and unfinished work. Return only JSON with exactly two fields: summary (a concise replacement for the supplied history, or null when keeping it is more economical) and review_at_input_tokens (a positive input-token count at which to reconsider). This is your budget, not the model capacity. When keeping history, choose a count greater than the current reported input. When summarising, choose the next review count for the smaller replacement context. Never remove facts required by ongoing work.";
+const INSTRUCTION: &str = "You manage this worker's context outside its turns. Decide using the supplied original usage and the work still needed, including the cost of another summary, cache rebuild and repeated cached input, and the latency of attending to a growing history. Do not wait for the context window to fill. Preserve instructions, facts, decisions, constraints, evidence references and unfinished work. Return only JSON with exactly three fields: version (1), summary (a concise replacement for the supplied history, or null when keeping it is more economical) and review_at_input_tokens (a positive input-token count below the advertised capacity at which to reconsider). This is your budget, not the model capacity. When keeping history, choose a count greater than the current reported input. When summarising, choose the next review count for the smaller replacement context. Never remove facts required by ongoing work. The validated JSON decision becomes the durable summary; include all retained task information inside summary.";
 
-#[derive(Deserialize)]
+#[derive(Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 struct Decision {
+    version: u32,
     summary: Option<String>,
     review_at_input_tokens: u64,
+}
+
+impl PreparationRecord for Decision {}
+
+#[derive(Clone, Copy, Debug)]
+struct Observation {
+    tokens: ModelTokenUsage,
+    latency_ns: Option<u64>,
 }
 
 struct Job<'a> {
     step: u32,
     source: crate::context::Context,
-    usage: ModelTokenUsage,
+    observation: Observation,
     _hold: Option<crate::conversation::ContentHold<'a>>,
 }
 
@@ -38,12 +47,12 @@ pub(in crate::executor) struct Background<'a> {
     stopped: AtomicBool,
     paused: AtomicBool,
     state: Mutex<State<'a>>,
-    requested: Notify,
+    pub(super) requested: Notify,
     pub(super) completed: Notify,
     stop: Notify,
 }
 
-impl StockExecution<'_> {
+impl<'a> StockExecution<'a> {
     pub(super) async fn with_context_review<T>(
         &self,
         journal: &dyn ExecutionJournal,
@@ -85,22 +94,85 @@ impl StockExecution<'_> {
         if !self.review.enabled.load(Ordering::Acquire) {
             return Ok(());
         }
-        let Some(usage) = events.iter().rev().find_map(|event| match event {
-            ModelEvent::Completed { metadata } => Some(ModelTokenUsage::reported(metadata)),
-            _ => None,
-        }) else {
+        let Some(completion @ ModelEvent::Completed { metadata }) = events
+            .iter()
+            .rev()
+            .find(|event| matches!(event, ModelEvent::Completed { .. }))
+        else {
             return Ok(());
         };
+        let usage = ModelTokenUsage::reported(metadata);
         let Some(input_tokens) = usage.input else {
             return Ok(());
         };
         let mut state = self.review.state.lock().await;
-        if state.active || state.ready.is_some() || input_tokens < state.review_at {
+        if state.active || input_tokens < state.review_at {
+            return Ok(());
+        }
+        // Replayed completions restore their original decision before another
+        // review may be admitted. Timing of the borrowed service is not a
+        // durable scheduler and must not choose a different source on restart.
+        let (_, recorded) = self
+            .model_records(journal, input.operation_id, step, ModelPurpose::Summary)
+            .await?;
+        let completed = recorded.iter().any(|record| {
+            matches!(
+                record.event,
+                ExecutionEvent::Model { usage: Some(_), .. }
+                    | ExecutionEvent::ModelInline { usage: Some(_), .. }
+            )
+        });
+        if state.ready.is_some() && !completed {
+            return Ok(());
+        }
+        if recorded
+            .iter()
+            .any(|record| matches!(record.event, ExecutionEvent::ModelStopped { .. }))
+        {
             return Ok(());
         }
         let crate::context::CompactionPolicy::Capacity(policy) = self.compaction_policy()? else {
             return Ok(());
         };
+        let (_, response) = self
+            .model_records(journal, input.operation_id, step, ModelPurpose::Response)
+            .await?;
+        if response
+            .iter()
+            .any(|record| matches!(record.event, ExecutionEvent::ContextCompacted { .. }))
+        {
+            // This request already selected a smaller working base. Review its
+            // successor, not the superseded history preceding this boundary.
+            return Ok(());
+        }
+        let mut observation = Observation {
+            tokens: usage,
+            latency_ns: None,
+        };
+        if let Some(reference) = response
+            .iter()
+            .rev()
+            .find_map(|record| match &record.event {
+                ExecutionEvent::Model { usage, .. } | ExecutionEvent::ModelInline { usage, .. } => {
+                    usage.as_ref()
+                }
+                _ => None,
+            })
+        {
+            let (original, hold) =
+                load_json::<ModelUsageRecord>(journal, reference, self.io).await?;
+            model_usage::validate(
+                &original,
+                input.operation_id,
+                step,
+                ModelPurpose::Response,
+                completion,
+                self.io,
+            )?;
+            observation.latency_ns = original.latency_ns;
+            drop(original);
+            drop(hold);
+        }
         let (_, base, _) = self.response_base(journal, input, step, prior).await?;
         let budget = with_history_io(self.io, |work| {
             policy.try_projection_budget(&base, None, base.messages.len().saturating_sub(1), work)
@@ -112,12 +184,23 @@ impl StockExecution<'_> {
             crate::context::clone_context(&base, Some(through), work)
         })?;
         let hold = self.io.map(|io| io.guard_owned(bytes)).transpose()?;
-        state.queued = Some(Job {
+        let job = Job {
             step,
             source,
-            usage,
+            observation,
             _hold: hold,
-        });
+        };
+        if completed {
+            drop(state);
+            let mut phase = DispatchPhase::new();
+            let ready = self
+                .evaluate_context_review(journal, input, job.source, step, observation, &mut phase)
+                .await;
+            drop(job._hold);
+            self.review.state.lock().await.ready = Some(ready);
+            return Ok(());
+        }
+        state.queued = Some(job);
         state.active = true;
         drop(state);
         self.review.requested.notify_one();
@@ -134,6 +217,9 @@ impl StockExecution<'_> {
         capacity: crate::context::ModelContextCapacity,
         at_capacity: bool,
     ) -> Result<Option<crate::model::PreparedModelRequest>> {
+        if !self.review.enabled.load(Ordering::Acquire) {
+            return Ok(None);
+        }
         let ready = loop {
             let completed = self.review.completed.notified();
             let mut state = self.review.state.lock().await;
@@ -213,6 +299,92 @@ impl StockExecution<'_> {
         ))
     }
 
+    async fn evaluate_context_review(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        source: crate::context::Context,
+        step: u32,
+        observation: Observation,
+        phase: &mut DispatchPhase,
+    ) -> Result<Option<Receipt<'a>>> {
+        let capacity = self.model_capacity()?;
+        let instruction = with_history_io(self.io, |work| {
+            preparation_format(
+                format_args!(
+                    "{INSTRUCTION}\nSelected model: {}\nCapacity: {}\nOriginal worker observation: {observation:?}\nPrices not supplied are unknown; do not invent prices.",
+                    self.stock.model.name, capacity.context_tokens
+                ),
+                work,
+            )
+        })?;
+        let (summary, text) = self
+            .summarize(
+                journal,
+                Some(input),
+                input.operation_id,
+                step,
+                (source, ModelContent::Text(instruction)),
+                phase,
+            )
+            .await?;
+        let hold = self
+            .io
+            .map(|io| io.guard_owned(summary.output.logical_owned_bytes()?))
+            .transpose()?;
+        let (decision, decision_hold): (Decision, _) = match self.io {
+            Some(io) => io
+                .decode(
+                    std::marker::PhantomData::<Decision>,
+                    text.as_bytes(),
+                    crate::wire::ErrorCode::Invalid,
+                )
+                .map(|(decision, hold)| (decision, Some(hold)))?,
+            None => (
+                crate::contract::json_from_slice(text.as_bytes()).map_err(|_| {
+                    stock_boundary(
+                        self.io,
+                        crate::wire::ErrorCode::Invalid,
+                        "context review returned an invalid decision",
+                    )
+                })?,
+                None,
+            ),
+        };
+        stock_retire_text(text, self.io)?;
+        let valid = decision.version == 1
+            && decision.review_at_input_tokens > 0
+            && decision.review_at_input_tokens < u64::from(capacity.context_tokens)
+            && match &decision.summary {
+                Some(text) => !text.trim().is_empty(),
+                None => decision.review_at_input_tokens > observation.tokens.input.unwrap_or(0),
+            };
+        let (rewrite, next) = (decision.summary.is_some(), decision.review_at_input_tokens);
+        drop(decision);
+        drop(decision_hold);
+        if !valid {
+            drop(summary);
+            drop(hold);
+            return Err(stock_boundary(
+                self.io,
+                crate::wire::ErrorCode::Invalid,
+                "context review must supply a nonempty summary or a future input budget",
+            ));
+        }
+        self.review.state.lock().await.review_at = next;
+        if !rewrite {
+            drop(summary);
+            drop(hold);
+            return Ok(None);
+        }
+        // Reuse the model's original output and provenance. A second copy of
+        // the summary text would add storage and another publication mechanism.
+        Ok(Some(Receipt {
+            summary,
+            _hold: hold,
+        }))
+    }
+
     async fn context_review_service(
         &self,
         journal: &dyn ExecutionJournal,
@@ -232,70 +404,14 @@ impl StockExecution<'_> {
             };
             let step = job.step;
             let mut phase = DispatchPhase::new();
-            let review = async {
-                let instruction = with_history_io(self.io, |work| {
-                    preparation_format(
-                        format_args!(
-                            "{INSTRUCTION}\nSelected model: {}\nOriginal worker usage: {}",
-                            self.stock.model.name,
-                            serde_json::to_string(&job.usage)?
-                        ),
-                        work,
-                    )
-                })?;
-                let (original, text) = self
-                    .summarize(
-                        journal,
-                        Some(input),
-                        input.operation_id,
-                        step,
-                        (job.source, ModelContent::Text(instruction)),
-                        &mut phase,
-                    )
-                    .await?;
-                let decision: Decision = crate::contract::json_from_slice(text.as_bytes())?;
-                stock_retire_text(text, self.io)?;
-                if decision.review_at_input_tokens == 0
-                    || (decision.summary.is_none()
-                        && decision.review_at_input_tokens <= job.usage.input.unwrap_or(0))
-                {
-                    return Err(stock_boundary(
-                        self.io,
-                        crate::wire::ErrorCode::Invalid,
-                        "context review must select a future input budget",
-                    ));
-                }
-                self.review.state.lock().await.review_at = decision.review_at_input_tokens;
-                let Some(text) = decision.summary else {
-                    return Ok(None);
-                };
-                if text.trim().is_empty() {
-                    return Err(stock_boundary(
-                        self.io,
-                        crate::wire::ErrorCode::Invalid,
-                        "context review returned an empty replacement",
-                    ));
-                }
-                let key = with_history_io(self.io, |work| {
-                    preparation_format(format_args!("review:{step}:summary"), work)
-                })?;
-                let summary = self
-                    .publish_summary(
-                        journal,
-                        (input.operation_id, step),
-                        (original.source_messages, original.source_digest),
-                        (&key, text.as_bytes()),
-                    )
-                    .await?;
-                let hold = self
-                    .io
-                    .map(|io| io.guard_owned(summary.output.logical_owned_bytes()?))
-                    .transpose()?;
-                Ok(Some(Receipt {
-                    summary,
-                    _hold: hold,
-                }))
-            };
+            let review = self.evaluate_context_review(
+                journal,
+                input,
+                job.source,
+                step,
+                job.observation,
+                &mut phase,
+            );
             let result = {
                 futures::pin_mut!(review, stopped);
                 match futures::future::select(review, stopped).await {
