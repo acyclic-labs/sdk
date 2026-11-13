@@ -79,11 +79,6 @@ impl Paths {
         StreamPath::new(format!("{}/ack", self.outbox(node)?))
     }
 
-    /// Join source outbox enrollment to the local node's creation commit.
-    pub fn outbox_creation(&self, node: &NodeId) -> Result<CommitEffect, Error> {
-        drain::creation(self.outbox(node)?, self.outbox_cursor(node)?)
-    }
-
     /// The destination node's single account-owned relay.
     pub fn relay(&self, node: &NodeId) -> Result<StreamPath, StreamError> {
         self.child("relay", node.as_bytes())
@@ -93,13 +88,6 @@ impl Paths {
     /// event used by account storage admission; it contains no message body.
     pub fn relay_cursor(&self, node: &NodeId) -> Result<StreamPath, StreamError> {
         StreamPath::new(format!("{}/ack", self.relay(node)?))
-    }
-
-    /// Create an empty relay and its cursor in the node's enrollment commit.
-    /// The cursor skips the initialization record, so a live node can follow
-    /// before the first message without probing a nonexistent path.
-    pub fn relay_creation(&self, node: &NodeId) -> Result<CommitEffect, Error> {
-        drain::creation(self.relay(node)?, self.relay_cursor(node)?)
     }
 
     /// One node's socket-driven presence, shared by all its session rows.
@@ -250,7 +238,7 @@ impl Envelope {
         Ok(CommitRequest {
             deadline_unix_millis: None,
             effects: vec![CommitEffect::hard(
-                vec![CommitCondition::Present { path: path.clone() }],
+                Vec::new(),
                 vec![CommitMutation::Append {
                     path,
                     records: vec![self.encode().into()],
@@ -301,9 +289,7 @@ impl Envelope {
             return Err(Error::InvalidRecord);
         }
         Ok(CommitEffect::hard(
-            vec![CommitCondition::Present {
-                path: paths.outbox(&self.source)?,
-            }],
+            Vec::new(),
             vec![CommitMutation::Append {
                 path: paths.outbox(&self.source)?,
                 records: vec![AppendRecord::from(self.encode())],

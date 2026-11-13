@@ -47,7 +47,10 @@ where
 {
     let mut changes = acyclic_stream::records_only(
         provider
-            .follow(acyclic_stream::FollowRequest::new(cursor, acknowledged))
+            .follow(acyclic_stream::FollowRequest {
+                when_absent: acyclic_stream::WhenAbsent::Wait,
+                ..acyclic_stream::FollowRequest::new(cursor, acknowledged)
+            })
             .await
             .map_err(Error::from)?,
     );
@@ -133,11 +136,7 @@ pub async fn storage<P: StreamProvider + ?Sized>(
     )?;
     let create = CommitRequest {
         deadline_unix_millis: None,
-        effects: vec![
-            placement.effect(&paths).map_err(violation)?,
-            paths.relay_creation(&placement.node).map_err(violation)?,
-            paths.outbox_creation(&source).map_err(violation)?,
-        ],
+        effects: vec![placement.effect(&paths).map_err(violation)?],
         idempotency_key: key(&root, "place")?,
     };
     let first = provider.commit(create.clone()).await.map_err(Error::from)?;
@@ -226,8 +225,7 @@ pub async fn storage<P: StreamProvider + ?Sized>(
     require(
         values(provider, paths.outbox(&source).map_err(Error::from)?)
             .await?
-            .len()
-            == 1,
+            .is_empty(),
         "failed sender step leaked a forwardable message",
     )?;
     publish.effects[1].conditions.clear();
@@ -249,12 +247,10 @@ pub async fn storage<P: StreamProvider + ?Sized>(
     )?;
     let messages = values(provider, paths.outbox(&source).map_err(Error::from)?).await?;
     require(
-        messages.len() == 2
-            && messages[0].value.is_empty()
-            && values(provider, journal).await?.len() == 1,
+        messages.len() == 1 && values(provider, journal).await?.len() == 1,
         "sender retry duplicated an outbox or journal record",
     )?;
-    let retained = Envelope::decode(messages[1].value.clone()).map_err(violation)?;
+    let retained = Envelope::decode(messages[0].value.clone()).map_err(violation)?;
     require(
         retained == envelope,
         "outbox changed original sender, target, key or request bytes",
@@ -302,8 +298,7 @@ pub async fn storage<P: StreamProvider + ?Sized>(
     require(
         values(provider, paths.outbox_cursor(&source).map_err(Error::from)?)
             .await?
-            .len()
-            == 1,
+            .is_empty(),
         "lost account receipt advanced local outbox progress",
     )?;
     let forward = crate::route::forward(provider, &paths, &source, async |record| {
@@ -324,7 +319,7 @@ pub async fn storage<P: StreamProvider + ?Sized>(
     until_ack(
         provider,
         paths.outbox_cursor(&source).map_err(Error::from)?,
-        1,
+        0,
         forward,
     )
     .await?;
@@ -370,10 +365,10 @@ pub async fn storage<P: StreamProvider + ?Sized>(
     )?;
     let records = values(provider, paths.relay(&placement.node).map_err(Error::from)?).await?;
     require(
-        records.len() == 2 && records[0].value.is_empty(),
+        records.len() == 1,
         "relay retry duplicated the original intent",
     )?;
-    let restored = Envelope::decode(records[1].value.clone()).map_err(violation)?;
+    let restored = Envelope::decode(records[0].value.clone()).map_err(violation)?;
     require(
         restored == envelope,
         "relay altered the original ordinary-delivery request",
@@ -404,8 +399,7 @@ pub async fn storage<P: StreamProvider + ?Sized>(
             paths.relay_cursor(&placement.node).map_err(Error::from)?,
         )
         .await?
-        .len()
-            == 1,
+        .is_empty(),
         "failed delivery advanced the durable relay cursor",
     )?;
     drain_one(
@@ -413,7 +407,7 @@ pub async fn storage<P: StreamProvider + ?Sized>(
         &paths,
         &placement.node,
         &restored.request.idempotency_key,
-        1,
+        0,
     )
     .await?;
     let inbox = StreamPath::new(format!("{root}/recipient-inbox")).map_err(Error::from)?;
@@ -444,7 +438,7 @@ pub async fn storage<P: StreamProvider + ?Sized>(
         &paths,
         &placement.node,
         &following.request.idempotency_key,
-        2,
+        1,
     )
     .await?;
     let inputs = values(provider, inbox).await?;

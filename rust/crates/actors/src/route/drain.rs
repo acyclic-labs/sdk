@@ -17,36 +17,6 @@ struct Cursor {
     next: u64,
 }
 
-pub(super) fn creation(relay: StreamPath, cursor: StreamPath) -> Result<CommitEffect, Error> {
-    Ok(CommitEffect::hard(
-        vec![
-            CommitCondition::Absent {
-                path: relay.clone(),
-            },
-            CommitCondition::Absent {
-                path: cursor.clone(),
-            },
-        ],
-        vec![
-            CommitMutation::Append {
-                path: relay,
-                records: vec![bytes::Bytes::new().into()],
-            },
-            CommitMutation::Append {
-                path: cursor,
-                records: vec![
-                    Cursor {
-                        version: 1,
-                        next: 1,
-                    }
-                    .encode_to_vec()
-                    .into(),
-                ],
-            },
-        ],
-    ))
-}
-
 /// Drain this node's relay on its already authenticated account provider.
 /// The caller owns this future for the lifetime of its accepted NodeLink;
 /// dropping it closes the one follow. Reopening starts at the committed cursor.
@@ -123,10 +93,17 @@ where
             }
             (cursor.next, head.tail)
         }
+        Err(error) if error.category() == StreamError::NotFound => (0, 0),
         Err(error) => return Err(error.into()),
     };
-    let mut records =
-        acyclic_stream::records_only(account.follow(FollowRequest::new(relay, next)).await?);
+    let mut records = acyclic_stream::records_only(
+        account
+            .follow(FollowRequest {
+                when_absent: acyclic_stream::WhenAbsent::Wait,
+                ..FollowRequest::new(relay, next)
+            })
+            .await?,
+    );
     while let Some(record) = records.try_next().await? {
         if record.sequence != next {
             return Err(Error::InvalidRecord);
