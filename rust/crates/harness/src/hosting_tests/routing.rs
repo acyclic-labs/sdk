@@ -375,6 +375,11 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
             !NodePresence::decode(&presence.try_next().await?.ok_or("no Close")?.value)?.online
         );
         assert_eq!(local.tail(paths.outbox_cursor(&source)?).await?, 1);
+        assert!(
+            route::receipt(&local, &paths, &source, 0, &message.request.idempotency_key)
+                .await
+                .is_err()
+        );
         route::register(&client, 4, &paths, &registration, 4096).await?;
         assert_eq!(
             RoutePlacement::read(stream.as_ref(), &paths, &message.sender).await?,

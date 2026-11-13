@@ -69,7 +69,7 @@ where
         account,
         paths.relay(node)?,
         paths.relay_cursor(node)?,
-        async |bytes: bytes::Bytes| {
+        async |bytes: acyclic_stream::OwnedBytes| {
             deliver(Envelope::decode(bytes)?).await?;
             Ok(None)
         },
@@ -101,7 +101,7 @@ where
         local,
         paths.outbox(node)?,
         paths.outbox_cursor(node)?,
-        async |bytes: bytes::Bytes| match Publication::decode(&bytes)? {
+        async |bytes: acyclic_stream::OwnedBytes| match Publication::decode(&bytes)? {
             Publication::Delivery(envelope) => {
                 if envelope.source != *node {
                     return Err(Error::InvalidRecord);
@@ -129,7 +129,7 @@ async fn consume<P, D>(
 ) -> Result<Infallible, Error>
 where
     P: StreamProvider + ?Sized,
-    D: AsyncFnMut(bytes::Bytes) -> Result<Option<Reply>, Error>,
+    D: AsyncFnMut(acyclic_stream::OwnedBytes) -> Result<Option<Reply>, Error>,
 {
     let (mut next, mut cursor_tail) = match account.head(cursor_path.clone()).await {
         Ok(head) => {

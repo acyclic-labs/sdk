@@ -4,7 +4,7 @@ use crate::addressing::AccountId;
 use acyclic_auth::authority::PolicyDecision;
 use acyclic_stream::{
     Attribute, CommitEffect, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey,
-    RecordHeaders, StreamError, StreamProvider,
+    RecordHeaders, StreamError, StreamProvider, StreamProviderExt as _,
     session::{CallAuthorization, Client},
 };
 use bytes::Bytes;
@@ -101,7 +101,7 @@ impl Registration {
             Vec::new(),
             vec![Attribute {
                 name: ORIGIN.into(),
-                value: Bytes::copy_from_slice(self.key(paths)?.as_bytes()),
+                value: acyclic_stream::OwnedBytes::copy_from_slice(self.key(paths)?.as_bytes()),
             }],
         )?;
         Ok(effect)
@@ -144,11 +144,9 @@ impl Registration {
         if let Some((placement, record)) =
             Placement::record(provider, paths, &registration.placement.actor).await?
         {
-            let matches_origin = record
-                .headers
-                .attributes()
-                .iter()
-                .any(|attribute| attribute.name == ORIGIN && attribute.value == key.as_bytes());
+            let matches_origin = record.headers.attributes().iter().any(|attribute| {
+                attribute.name == ORIGIN && attribute.value.as_ref() == key.as_bytes()
+            });
             if !matches_origin || placement != registration.placement {
                 return Err(StreamError::AccessDenied.into());
             }
