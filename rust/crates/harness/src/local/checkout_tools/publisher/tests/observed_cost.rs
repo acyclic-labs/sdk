@@ -30,12 +30,31 @@ async fn concurrent_publications_preserve_each_volume_payload() -> Result<()> {
                     .await?;
                 let elapsed = started.elapsed();
                 let (mount, relative) = publisher.tools.workspace.mounts.file(None, &path)?;
-                let native = mount
-                    .native_root
-                    .override_path()
-                    .unwrap_or(&publisher.tools.workspace.path)
-                    .join(relative);
-                assert_eq!(std::fs::read(native).map_err(storage)?, bytes.as_bytes());
+                let workspace = mount.view.source.as_ref().map_or_else(
+                    || publisher.tools.workspace.view().workspace(),
+                    |source| source.workspace.workspace(),
+                );
+                let host = publisher
+                    .files
+                    .for_workspace(&mount.view.volume, workspace.clone())?;
+                let grant = crate::conversation::ContentGrant::verify_directory_read(
+                    &publisher.verifier,
+                    &publisher.tools.signed,
+                    &mount.view.volume,
+                    "",
+                    &mut None,
+                )?;
+                let (_, retained) = host
+                    .read_private_path(
+                        &mount.view.volume,
+                        &grant,
+                        &relative,
+                        None,
+                        64,
+                        Default::default(),
+                    )
+                    .await?;
+                assert_eq!(retained.as_ref(), bytes.as_bytes());
                 assert_eq!(file.descriptor().byte_length(), bytes.len() as u64);
                 Ok::<_, Error>(elapsed)
             }
