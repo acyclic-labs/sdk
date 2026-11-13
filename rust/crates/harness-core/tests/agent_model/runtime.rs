@@ -82,10 +82,16 @@ async fn a_same_turn_stop_archives_newly_admitted_children() -> Result {
         .await?;
         let failures = host.runtime().drain().await;
         assert!(failures.is_empty(), "{failures:?}");
+        // Admission belongs to the parent's original commit, before the
+        // activation runtime starts consuming the child's records.
+        let admitted = host
+            .state(&child)
+            .await
+            .expect("same-turn child was not admitted and archived");
         // Finite drain only runs tracked actors. The child's creation and
         // archive wake are committed by the parent; explicitly host that new
         // actor, as activation discovery does in the serving runtime.
-        host.drain(&child).await?;
+        host.drain(&admitted.path).await?;
         host.drain(&root).await?;
         let parent = host.state(&root).await?;
         let child = host
