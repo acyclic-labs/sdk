@@ -293,7 +293,7 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
             } else {
                 Delivered::Committed { inbox: 1 }
             };
-            let activation = actor_store(&destination)?.activation(&host.actor(&recipient)?);
+            let activation = actor_store(&destination)?.activation(&host.actor(&recipient)?)?;
             let activation_path = activation.mutations[0].path().clone();
             let before_activation = destination.tail(activation_path.clone()).await?;
             assert_eq!(peer.deliver(&host).await?, expected);
