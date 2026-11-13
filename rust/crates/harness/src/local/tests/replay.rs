@@ -153,7 +153,12 @@ async fn a_run_replays_its_source_until_input_changes() -> Result<()> {
         divergences.clone(),
     ));
     let replayed = run(replay.clone(), refused(), &["first", "second"]).await?;
-    assert_eq!(divergences.taken(), []);
+    assert_eq!(
+        divergences.taken(),
+        [],
+        "source requests: {requests:#?}; unmatched requests: {:#?}",
+        live.requests()
+    );
     assert!(live.requests().is_empty());
     assert_eq!(replay.unused(), 0);
     // Same keys, verbatim events (native reasoning included) and the
@@ -263,7 +268,8 @@ async fn a_run_replays_its_source_until_input_changes() -> Result<()> {
 
 #[tokio::test]
 async fn a_failed_tool_call_replays_its_recorded_failure() -> Result<()> {
-    let expected = Arc::new(source(failing("source failure")).await?.0);
+    let (source, requests) = source(failing("source failure")).await?;
+    let expected = Arc::new(source);
     let live = super::scripted([]);
     let divergences = Arc::new(Divergences::default());
     let replay = Arc::new(RecordedModel::new(
@@ -272,7 +278,12 @@ async fn a_failed_tool_call_replays_its_recorded_failure() -> Result<()> {
         divergences.clone(),
     ));
     let replayed = run(replay, refused(), &["first", "second"]).await?;
-    assert_eq!(divergences.taken(), []);
+    assert_eq!(
+        divergences.taken(),
+        [],
+        "source requests: {requests:#?}; unmatched requests: {:#?}",
+        live.requests()
+    );
     assert!(live.requests().is_empty());
     same_answers(&replayed, &expected);
     Ok(())
