@@ -33,6 +33,7 @@ async fn shard_assignment_isolates_wakes_and_checkpoint_progress() -> TestResult
         Ok(0) | Err(StreamError::NotFound)
     ));
     let host = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -60,6 +61,7 @@ async fn shard_assignment_isolates_wakes_and_checkpoint_progress() -> TestResult
     host.advance_dispatcher(&checkpoint, initial, shard, tail, 0, Vec::new())
         .await?;
     let replacement = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -140,6 +142,7 @@ async fn restart_work(
         residents.push(spawn_with(&store, &format!("dormant-{index}"), &[b"emit"]).await?);
     }
     serve_to_checkpoint(&Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -158,6 +161,7 @@ async fn restart_work(
     PreparedPublish::settle(&provider.commit(input.into_request()?).await?)?;
     let counted = Arc::new(Counted::new((*provider).clone()));
     serve_to_checkpoint(&Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&counted), root()?).with_scheduling_shards(one),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -273,6 +277,7 @@ async fn armed_before_start(
         .with_scheduling_shards(std::num::NonZeroU16::MIN);
     let actor = spawn_with(&store, name, commands).await?;
     let earlier = Runtime::new(
+        crate::guest::Requests::default(),
         store.clone(),
         Arc::new(Package::new()?),
         Arc::clone(clock) as Arc<dyn Clock>,
@@ -292,6 +297,7 @@ async fn hibernated_alarms_fire_in_the_running_host() -> TestResult {
     let (provider, store, near) =
         armed_before_start(&clock, "hibernate-near", &[b"set 30000"]).await?;
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         store.clone(),
         Arc::new(Package::new()?),
         Arc::clone(&clock) as Arc<dyn Clock>,
@@ -343,6 +349,7 @@ async fn resumed_after_checkpoint(
     let (provider, store, actor) = armed_before_start(&clock, name, &[command]).await?;
     {
         let host = Runtime::new(
+            crate::guest::Requests::default(),
             store.clone(),
             Arc::new(Package::new()?),
             Arc::clone(&clock) as Arc<dyn Clock>,
@@ -390,7 +397,12 @@ async fn resumed_after_checkpoint(
             .retain(|mutation| CommitMutation::path(mutation) != &shard);
     }
     store.submit(resume).await?;
-    let host = Runtime::new(store, Arc::new(Package::new()?), clock);
+    let host = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        Arc::new(Package::new()?),
+        clock,
+    );
     let mut serving = Box::pin(host.run(|_, error| panic!("delivery failed: {error}")));
     completed(&host, serving.as_mut()).await?;
     Ok(records(provider.as_ref(), &format!("out/{name}")).await?)
@@ -428,7 +440,12 @@ async fn deleting_a_resident_actor_keeps_its_host_completing() -> TestResult {
     let (clock, mut time) = ControlledClock::new(WINDOW_TEN);
     let provider = Arc::new(MemoryStream::default());
     let store = Store::new(Arc::clone(&provider), root()?);
-    let runtime = Runtime::new(store.clone(), Arc::new(Package::new()?), Arc::new(clock));
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store.clone(),
+        Arc::new(Package::new()?),
+        Arc::new(clock),
+    );
     let mut serving = Box::pin(runtime.run(|_, error| panic!("delivery failed: {error}")));
     let doomed = spawn_with(&store, "doomed", &[b"set 60000"]).await?;
     completed(&runtime, serving.as_mut()).await?;
@@ -457,6 +474,7 @@ async fn pause_control_files_an_inherited_alarm_in_the_stores_shard() -> TestRes
     let unconfigured = Store::new(Arc::clone(&provider), root()?);
     let parent = spawn_with(&store, "inherit-parent", &[b"set 600000"]).await?;
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         store.clone(),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -550,6 +568,7 @@ async fn a_poisoned_actor_is_carried_through_checkpoints_and_restart() -> TestRe
     let healthy = spawn_with(&store, "healthy", &[b"emit"]).await?;
     let log = store.scheduling_path(0)?;
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one),
         Arc::new(Poisons {
             package: Package::new()?,
@@ -626,6 +645,7 @@ async fn a_poisoned_actor_is_carried_through_checkpoints_and_restart() -> TestRe
     );
     // A restarted host without the poison replays the carried entry alone.
     serve_to_checkpoint(&Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),

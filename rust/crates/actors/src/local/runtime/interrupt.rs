@@ -150,6 +150,7 @@ mod tests {
             value_prefix: Bytes::from_static(b"stop"),
         });
         let runtime = Runtime::new(
+            crate::guest::Requests::default(),
             Store::new(Arc::clone(&provider), StreamPath::new("interrupt/state")?),
             Arc::new(MultipleInputs { manifest, package }),
             Arc::new(SystemClock),

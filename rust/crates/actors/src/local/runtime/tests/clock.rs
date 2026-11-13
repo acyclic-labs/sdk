@@ -41,6 +41,7 @@ async fn clock_schedule(
     let (clock, mut control) = ControlledClock::new(100);
     let clock = Arc::new(clock);
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
         Arc::clone(&clock) as Arc<dyn Clock>,
@@ -345,6 +346,7 @@ fn running_dispatcher_reports_its_original_clock_retirement() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let store = Store::new(provider.clone(), root()?);
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(provider.clone(), root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -427,6 +429,7 @@ async fn a_replacement_host_fires_alarms_armed_before_the_checkpoint() -> TestRe
     let host = |now| {
         let (clock, control) = ControlledClock::new(now);
         let runtime = Runtime::new(
+            crate::guest::Requests::default(),
             Store::new(Arc::clone(&provider), root()?),
             Arc::new(Package::new()?),
             Arc::new(clock) as Arc<dyn Clock>,
@@ -521,6 +524,7 @@ async fn the_authority_refuses_early_alarm_consumption_and_the_host_rearms() -> 
     let (clock, mut control) = ControlledClock::new(100);
     let clock = Arc::new(clock);
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
         Arc::clone(&clock) as Arc<dyn Clock>,
@@ -580,6 +584,7 @@ async fn a_deferred_alarm_survives_a_crash_after_the_checkpoint() -> TestResult 
     let host = |now| {
         let (clock, control) = ControlledClock::new(now);
         let runtime = Runtime::new(
+            crate::guest::Requests::default(),
             store.clone(),
             Arc::new(Package::new()?),
             Arc::new(clock) as Arc<dyn Clock>,

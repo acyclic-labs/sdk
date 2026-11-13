@@ -279,6 +279,7 @@ async fn placement_finishes_failed_and_cancelled_custody_recovery() -> Result<()
     assert_eq!(counts.committed.load(Ordering::SeqCst), 0);
     let attempts = Arc::new(AtomicUsize::new(0));
     let runtime = super::super::runtime::Runtime::new(
+        crate::guest::Requests::default(),
         store.with_composer(Arc::new(InterruptedRecovery(attempts.clone()))),
         Arc::new(crate::conformance::Package::new()?),
         Arc::new(super::super::runtime::SystemClock),
