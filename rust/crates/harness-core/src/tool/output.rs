@@ -27,9 +27,42 @@ struct SpillRef<'a> {
 #[serde(deny_unknown_fields)]
 struct SpillView<'a> {
     output_spill: SpillRef<'a>,
-    text: &'a str,
+    #[schemars(with = "str")]
+    text: Preview<'a>,
     omitted_bytes: u64,
     omitted_range: super::text::TextRange,
+}
+
+/// Borrow both ends directly. The original bounded encoder admits and owns
+/// the resulting string; no temporary formatted buffer escapes its ledger.
+struct Preview<'a> {
+    source: &'a str,
+    omitted: std::ops::Range<usize>,
+}
+
+impl std::fmt::Display for Preview<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{}{}{}",
+            &self.source[..self.omitted.start],
+            window::notice(
+                (self.omitted.end - self.omitted.start) as u64,
+                self.omitted.start as u64,
+                self.omitted.end as u64
+            ),
+            &self.source[self.omitted.end..]
+        )
+    }
+}
+
+impl Serialize for Preview<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
 }
 
 pub(crate) fn schema() -> Result<Value> {
@@ -302,7 +335,10 @@ fn render(
             path: source.path,
             version: source.version,
         },
-        text: "",
+        text: Preview {
+            source: "",
+            omitted: 0..0,
+        },
         omitted_bytes: u64::MAX,
         omitted_range: super::text::TextRange {
             start: u64::MAX,
@@ -340,8 +376,15 @@ fn render(
     // A multipart preview is JSON inside a text part. Every escaped byte can
     // at most double at the second string boundary.
     let budget = if media.is_some() { budget / 2 } else { budget };
-    let notice_credit = window::notice(u64::MAX, u64::MAX, u64::MAX);
-    let budget = budget.saturating_sub(crate::tools::bounds::escaped_len(&notice_credit) as u64);
+    let notice_credit = crate::executor::with_history_io(io, |history| {
+        crate::executor::json::json_byte_length(
+            &window::notice(u64::MAX, u64::MAX, u64::MAX),
+            None,
+            history,
+        )
+    })?
+    .saturating_sub(2);
+    let budget = budget.saturating_sub(notice_credit);
     let omitted = select_window(
         encoded,
         encoded.len(),
@@ -349,18 +392,15 @@ fn render(
         usize::try_from(budget).unwrap_or(usize::MAX),
     );
     let omitted_bytes = (omitted.end - omitted.start) as u64;
-    let shown = format!(
-        "{}{}{}",
-        &text[..omitted.start],
-        window::notice(omitted_bytes, omitted.start as u64, omitted.end as u64),
-        &text[omitted.end..]
-    );
     let view = SpillView {
         output_spill: SpillRef {
             path: source.path,
             version: source.version,
         },
-        text: &shown,
+        text: Preview {
+            source: text,
+            omitted: omitted.clone(),
+        },
         omitted_bytes,
         omitted_range: super::text::TextRange {
             start: omitted.start as u64,
