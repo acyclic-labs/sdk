@@ -417,6 +417,7 @@ fn run_loop(
         driver.state().control.start_aborted = true;
         -context.record_failure(error, original.receipt())
     });
+    context.close();
     {
         let _state = driver.state();
         driver.provider_exited.store(true, Ordering::Release);
@@ -434,6 +435,9 @@ pub(super) struct DriverExit<'a>(pub(super) &'a DriverSessionResources);
 impl Drop for DriverExit<'_> {
     fn drop(&mut self) {
         let mut state = self.0.state();
+        if let Some((target, _, _)) = &state.resources {
+            target.close();
+        }
         state.loop_finished = true;
         self.0.provider_exited.store(true, Ordering::Release);
         self.0.changed.notify_all();

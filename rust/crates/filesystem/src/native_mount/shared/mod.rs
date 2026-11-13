@@ -36,7 +36,7 @@ pub(super) mod instances;
 pub(super) mod metering;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(super) mod outcome;
-#[cfg(any(target_os = "linux", target_os = "macos", windows, loom))]
+#[cfg(any(target_os = "linux", windows, loom))]
 pub(super) mod ready;
 mod root;
 #[cfg(any(target_os = "linux", target_os = "macos", windows, loom))]

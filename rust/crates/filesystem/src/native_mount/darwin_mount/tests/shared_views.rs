@@ -98,6 +98,13 @@ fn shared_callbacks_keep_their_view(substitute_handle: bool) -> TestResult {
         0
     );
     assert_eq!(views.listed_from(1, 64).len(), 1);
+    views.close();
+    // SAFETY: the retained target and handle remain allocated, but the
+    // provider's closed admission must prevent a pathless callback entering.
+    assert_eq!(
+        unsafe { acyclic_fs_darwin_mount_fsync(address, ptr::null(), second_handle) },
+        -libc::ESTALE
+    );
     Ok(())
 }
 
@@ -142,7 +149,7 @@ fn root_listing_fills_the_native_frame_across_internal_pages() -> TestResult {
     for number in 0..65 {
         owners.push(views.insert(number.to_string().into_bytes(), source.clone(), true, &work)?);
     }
-    let target = CallbackTarget::Shared(views);
+    let target = CallbackTarget::Shared(Arc::clone(&views));
     let address = &target as *const CallbackTarget as usize;
     // SAFETY: the root exposes no named attributes; size probes need no buffer.
     assert_eq!(
@@ -203,6 +210,12 @@ fn root_listing_fills_the_native_frame_across_internal_pages() -> TestResult {
         0
     );
     assert!(output.is_empty(), "resume cookie repeated a listed view");
+    views.close();
+    assert!(views.insert(b"late".to_vec(), source, true, &work).is_err());
+    assert!(
+        views.route(Some(c"/0"), 0).is_err(),
+        "dead provider admitted a callback"
+    );
     Ok(())
 }
 

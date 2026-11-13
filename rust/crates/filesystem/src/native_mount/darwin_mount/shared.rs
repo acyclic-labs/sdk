@@ -32,6 +32,10 @@ pub(super) struct Routed<'a> {
 }
 
 impl SharedViews {
+    pub(super) fn close(&self) {
+        self.names.close_admission();
+    }
+
     pub(super) fn new(destination: &Path, work: &Work) -> Result<Arc<Self>, NativeMountError> {
         let metadata =
             crate::native_host::unix_name(destination.as_os_str(), &mut &*work, |path, work| {

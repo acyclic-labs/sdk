@@ -9,6 +9,12 @@ pub(super) enum CallbackTarget {
 }
 
 impl CallbackTarget {
+    pub(super) fn close(&self) {
+        if let Self::Shared(views) = self {
+            views.close();
+        }
+    }
+
     pub(super) fn view(&self) -> Result<Arc<DarwinMountContext>, NativeMountError> {
         match self {
             Self::View(context) => Ok(Arc::clone(context)),
