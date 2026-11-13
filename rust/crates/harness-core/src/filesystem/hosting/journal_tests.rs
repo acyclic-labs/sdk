@@ -157,6 +157,145 @@ async fn admitted_readers_bind_evaluation_directories_and_reopen_original_privat
 }
 
 #[tokio::test]
+async fn partial_private_pages_resume_the_original_cut_without_skipping_retained_names()
+-> TestResult {
+    use crate::{
+        client_files::ClientFileChange,
+        conversation::{DirectoryQuery, DirectoryTarget},
+    };
+    fn query<'a>(
+        generation: Option<&'a GenerationRef>,
+        after: Option<&'a str>,
+    ) -> DirectoryQuery<'a> {
+        DirectoryQuery {
+            target: DirectoryTarget::Private {},
+            path: "ui",
+            generation,
+            after_generation: None,
+            after_name: after,
+            maximum_entries: 3,
+        }
+    }
+    let (mut bound, root) = binding().await?;
+    let files = ["a", "b", "c"].map(|name| ClientFileChange {
+        path: format!("ui/{name}"),
+        expected: None,
+        text: format!("original {name}"),
+    });
+    bound
+        .publish_agent_files(&root, OperationId::new(), &files)
+        .await?;
+    let first = bound
+        .directory_page_select(&root, query(None, None), |page, estimate| {
+            assert_eq!(page.entries.len(), 3);
+            assert!(estimate(&page.entries[0].name).is_some());
+            Ok(1)
+        })
+        .await?;
+    assert_eq!(first.entries[0].name, "a");
+    let cursor = first.next.as_deref().ok_or("missing retained suffix")?;
+    assert!(cursor.starts_with("page-v1:"));
+    let changed = bound
+        .publish_agent_files(
+            &root,
+            OperationId::new(),
+            &[ClientFileChange {
+                path: "ui/later".into(),
+                expected: None,
+                text: "outside the selected cut".into(),
+            }],
+        )
+        .await?;
+    assert!(
+        bound
+            .directory_page(&root, query(Some(&changed), Some(cursor)))
+            .await
+            .is_err()
+    );
+    assert!(
+        bound
+            .directory_page(
+                &root,
+                DirectoryQuery {
+                    path: "other",
+                    ..query(Some(&first.generation), Some(cursor))
+                }
+            )
+            .await
+            .is_err()
+    );
+    let second = bound
+        .directory_page_select(
+            &root,
+            query(Some(&first.generation), Some(cursor)),
+            |page, _| {
+                assert_eq!(
+                    page.entries
+                        .iter()
+                        .map(|entry| entry.name.as_str())
+                        .collect::<Vec<_>>(),
+                    ["b", "c"]
+                );
+                Ok(1)
+            },
+        )
+        .await?;
+    assert_eq!(second.generation, first.generation);
+    assert_eq!(second.entries[0].name, "b");
+    let third = bound
+        .directory_page(
+            &root,
+            query(Some(&first.generation), second.next.as_deref()),
+        )
+        .await?;
+    assert_eq!(third.generation, first.generation);
+    assert_eq!(
+        third
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>(),
+        ["c"]
+    );
+    assert!(!third.has_more);
+    assert!(third.next.is_none());
+    let state = bound.agents().state(&root).await?;
+    let volume = state.volumes[0].volume()?;
+    let journal = crate::conversation::journal_volume(volume.provider().clone(), &root.id())?;
+    let grants = crate::Capabilities::new([
+        volume.capability(crate::conversation::VolumeOperation::Write, &mut None)?,
+        journal.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
+        journal.capability(crate::conversation::VolumeOperation::Write, &mut None)?,
+    ]);
+    let scope = bound
+        .issuer
+        .issue(
+            None,
+            "attenuated-reader",
+            &grants,
+            Some(crate::AgentId::from_bytes(root.id_bytes())),
+        )
+        .await?;
+    bound.admission = TurnAdmission::Admitted {
+        audience: bound
+            .issuer
+            .native()
+            .ok_or("fixture signing custody")?
+            .audience()
+            .clone(),
+        scope,
+    };
+    assert!(
+        bound
+            .directory_page(&root, query(Some(&first.generation), Some(cursor)))
+            .await
+            .is_err(),
+        "retained names must not survive loss of current read authority"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn tool_result_reads_keep_the_settled_journal_cut() -> TestResult {
     use crate::{agent::TurnHost, executor::ExecutionJournal};
     let (bound, root) = binding().await?;
