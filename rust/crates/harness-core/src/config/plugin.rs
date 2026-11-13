@@ -5,13 +5,13 @@ use std::collections::BTreeMap;
 use ts_rs::TS;
 
 /// The enabled plugins and their settings, decoded from `plugins.ts`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS, crate::HeapLayout)]
 #[serde(transparent)]
 pub struct Plugins(pub BTreeMap<String, PluginEntry>);
 
 /// One `plugins.ts` entry. To change a plugin's code, copy its folder into
 /// `volume:///home/plugins/` under a new name.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS, crate::HeapLayout)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PluginEntry {
     /// Whether the plugin applies.
@@ -28,7 +28,7 @@ pub struct PluginEntry {
 }
 
 /// A plugin folder outside `plugins/`, pinned by its content digest.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS, crate::HeapLayout)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PluginSource {
     /// The folder.
@@ -38,7 +38,7 @@ pub struct PluginSource {
 }
 
 /// `plugins/<name>/plugin.ts`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS, crate::HeapLayout)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PluginManifest {
     /// The folder's name.
@@ -62,7 +62,7 @@ pub struct PluginManifest {
 }
 
 /// The path an after-hook watches.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS, crate::HeapLayout)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AfterSource {
     /// A file, log or directory.
@@ -72,7 +72,7 @@ pub struct AfterSource {
 }
 
 /// Where an after-hook starts reading.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS, crate::HeapLayout)]
 #[serde(rename_all = "camelCase")]
 pub enum Start {
     /// Everything already there, then each change.
@@ -82,7 +82,19 @@ pub enum Start {
 }
 
 /// A request kind a before-hook judges: `hooks/before-<event>`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    TS,
+    crate::HeapLayout,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum Event {
     /// A tool call.
@@ -139,3 +151,6 @@ pub struct RequestMatch {
     #[ts(optional)]
     pub path: Option<String>,
 }
+
+impl crate::filesystem::PreparationRecord for Plugins {}
+impl crate::filesystem::PreparationRecord for PluginManifest {}

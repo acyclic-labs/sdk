@@ -26,8 +26,28 @@ impl Event {
 }
 
 /// The enabled plugin set, lowered to hook rules.
+#[derive(Debug)]
+pub struct Enabled(crate::javascript_allocator::EngineResult<EnabledData>);
+
+impl std::ops::Deref for Enabled {
+    type Target = EnabledData;
+    fn deref(&self) -> &Self::Target {
+        &self.0.value
+    }
+}
+
+impl Default for Enabled {
+    fn default() -> Self {
+        Self(crate::javascript_allocator::EngineResult {
+            value: EnabledData::default(),
+            custody: None,
+        })
+    }
+}
+
+/// Immutable admitted plugin data; its owner retains the original allocation credit.
 #[derive(Debug, Default)]
-pub struct Enabled {
+pub struct EnabledData {
     /// Enabled plugin names, sorted.
     pub names: Vec<String>,
     /// Before-hook rules, in authority order.
@@ -64,7 +84,7 @@ pub async fn load_result(
             Ok(composed) => composed,
             Err(error) => return Ok(Err(error)),
         };
-    match load_enabled(tree, value.into_unbounded()?, enabler, None).await {
+    match load_enabled(tree, value, enabler, None).await {
         Ok(enabled) => Ok(Ok(enabled)),
         Err(LoadFailure::Semantic(error)) => Ok(Err(error)),
         Err(LoadFailure::Operational(error)) => Err(error),
@@ -110,13 +130,11 @@ pub async fn load_decision(
             .await?;
     identity.update(&composition.identity());
     let result = match composition.into_result() {
-        Ok((value, _)) => {
-            match load_enabled(tree, value.into_unbounded()?, enabler, Some(&mut identity)).await {
-                Ok(enabled) => Ok(enabled),
-                Err(LoadFailure::Semantic(error)) => Err(error),
-                Err(LoadFailure::Operational(error)) => return Err(error),
-            }
-        }
+        Ok((value, _)) => match load_enabled(tree, value, enabler, Some(&mut identity)).await {
+            Ok(enabled) => Ok(enabled),
+            Err(LoadFailure::Semantic(error)) => Err(error),
+            Err(LoadFailure::Operational(error)) => return Err(error),
+        },
         Err(error) => Err(error),
     };
     Ok(Decision {
@@ -132,6 +150,18 @@ enum LoadFailure {
     Semantic(Error),
 }
 
+impl LoadFailure {
+    // Only failures produced by the closed record decoder are classified here;
+    // source reads retain their original operational ownership.
+    fn decoding(error: Error) -> Self {
+        match error {
+            error @ (Error::Invalid(_)
+            | Error::NativeJsonAdmission { .. }
+            | Error::NativeJson { .. }) => Self::Semantic(error),
+            error => Self::Operational(error),
+        }
+    }
+}
 impl From<Error> for LoadFailure {
     fn from(error: Error) -> Self {
         Self::Semantic(error)
@@ -169,18 +199,35 @@ async fn read_hook(
 
 async fn load_enabled(
     tree: &dyn Tree,
-    value: Value,
+    value: config::ConfigValue,
     enabler: &str,
     mut identity: Option<&mut blake3::Hasher>,
 ) -> std::result::Result<Enabled, LoadFailure> {
     let invalid = |reason: String| Error::Invalid(format!("{MANIFEST}: {reason}"));
-    let Plugins(entries) =
-        serde_json::from_value(value).map_err(|error| invalid(error.to_string()))?;
+    let crate::javascript_allocator::EngineResult {
+        value: Plugins(entries),
+        custody,
+    } = value.record().map_err(LoadFailure::decoding)?;
     let enabled: BTreeMap<_, _> = entries
         .into_iter()
         .filter(|(_, entry)| entry.enabled)
         .collect();
-    let mut loaded = Enabled::default();
+    let mut loaded = crate::javascript_allocator::EngineResult {
+        value: EnabledData::default(),
+        custody,
+    };
+    loaded.absorb(
+        value
+            .work()
+            .map(|work| {
+                work.claim(
+                    std::mem::size_of::<EnabledData>() as u64,
+                    1,
+                    acyclic_fs::WorkCounters::UNCHARGED,
+                )
+            })
+            .transpose()?,
+    )?;
     for (name, entry) in &enabled {
         if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
             return Err(invalid(format!("{name:?} is not a plugin folder name")).into());
@@ -206,13 +253,14 @@ async fn load_enabled(
             identity.update(&manifest.identity());
         }
         let manifest = manifest.into_result()?;
-        let manifest: PluginManifest = serde_json::from_value(
-            manifest
-                .value
-                .into_unbounded()
-                .map_err(LoadFailure::Operational)?,
-        )
-        .map_err(|error| invalid(format!("{path}: {error}")))?;
+        let crate::javascript_allocator::EngineResult {
+            value: manifest,
+            custody,
+        } = manifest
+            .value
+            .record::<PluginManifest>()
+            .map_err(LoadFailure::decoding)?;
+        loaded.absorb(custody)?;
         if manifest.name != *name {
             return Err(invalid(format!("{path} names {:?}", manifest.name)).into());
         }
@@ -247,9 +295,12 @@ async fn load_enabled(
             if let Some(identity) = identity.as_deref_mut() {
                 identity.update(&evaluation.identity());
             }
-            loaded.after.push(AfterHook::new(evaluation)?);
+            loaded
+                .value
+                .after
+                .push(AfterHook::new(evaluation).map_err(LoadFailure::decoding)?);
         }
-        loaded.descriptions.push(manifest.description);
+        loaded.value.descriptions.push(manifest.description);
         let settings = String::from_utf8(crate::contract::canonical_json_bytes(settings)?)
             .map_err(|error| invalid(error.to_string()))?;
         for event in Event::ALL {
@@ -289,6 +340,7 @@ async fn load_enabled(
                 failure: HookFailure::Block,
             };
             loaded
+                .value
                 .rules
                 .add_rules([HookRule {
                     on: site,
@@ -299,9 +351,9 @@ async fn load_enabled(
                     invalid(format!("{root}hooks/before-{}: {error}", event.name()))
                 })?;
         }
-        loaded.names.push(name.clone());
+        loaded.value.names.push(name.clone());
     }
-    Ok(loaded)
+    Ok(Enabled(loaded))
 }
 
 #[cfg(test)]

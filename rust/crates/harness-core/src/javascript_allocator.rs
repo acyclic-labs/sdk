@@ -32,6 +32,15 @@ pub(crate) struct EngineResult<T = serde_json::Value> {
 }
 
 impl<T> EngineResult<T> {
+    pub(crate) fn absorb(&mut self, mut other: acyclic_fs::NativeCustody) -> crate::Result<()> {
+        if let (Some(custody), Some(other)) = (&mut self.custody, &mut other) {
+            custody.absorb(other)?;
+        } else if self.custody.is_none() {
+            self.custody = other;
+        }
+        Ok(())
+    }
+
     pub(crate) fn share<R>(
         mut self,
         tag: R,
