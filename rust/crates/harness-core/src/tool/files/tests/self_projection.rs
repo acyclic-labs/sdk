@@ -120,7 +120,7 @@ async fn own_ui_requires_explicit_body_and_never_shadows_project_source() -> Res
                             original.read_capability(&mut None)?,
                         ]),
                         Limits {
-                            file_bytes: 4096,
+                            file_bytes: Some(4096),
                             render_bytes: Some(render_bytes),
                             attachments: std::num::NonZeroUsize::new(1),
                             ..Limits::default()
@@ -356,7 +356,7 @@ async fn selected_private_pages_fit_credit_and_preserve_pinned_bytes() -> Result
         let project_content = project.content_bindings();
         let artifact_content = artifacts.content_bindings();
         let limits = Limits {
-            file_bytes: 16384,
+            file_bytes: Some(16384),
             render_bytes: Some(2048),
             attachments: std::num::NonZeroUsize::new(1),
             ..Limits::default()
@@ -374,7 +374,9 @@ async fn selected_private_pages_fit_credit_and_preserve_pinned_bytes() -> Result
                         artifact_content
                             .volume
                             .directory_read_capability("", &mut None)?,
-                        artifacts.write_capability.clone(),
+                        artifact_content
+                            .volume
+                            .capability(crate::conversation::VolumeOperation::Write, &mut None)?,
                         "tool:call:read".into(),
                     ]),
                     limits,
