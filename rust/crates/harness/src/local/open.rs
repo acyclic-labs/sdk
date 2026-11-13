@@ -749,7 +749,7 @@ impl Opening {
             #[cfg(any(test, not(target_arch = "wasm32")))]
             settings: self.settings,
             #[cfg(any(test, not(target_arch = "wasm32")))]
-            plugin_set: Arc::new(plugin_set),
+            plugin_set: plugin_set.into_shared()?,
             limits: self.config.limits,
             compaction: self.compaction_choice,
             #[cfg(not(target_arch = "wasm32"))]

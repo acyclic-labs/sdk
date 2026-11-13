@@ -26,18 +26,17 @@ async fn headless_feedback_retrospective_runs_once_per_settlement_and_preserves_
         let plugins = if retrospective {
             Arc::clone(&seeded)
         } else {
-            Arc::new(
-                crate::plugins::load(
-                    &Seed,
-                    &[crate::layers::Layer {
-                        name: "home",
-                        generation: "test",
-                        bytes: Some(override_source.as_bytes()),
-                    }],
-                    "headless",
-                )
-                .await?,
+            crate::plugins::load(
+                &Seed,
+                &[crate::layers::Layer {
+                    name: "home",
+                    generation: "test",
+                    bytes: Some(override_source.as_bytes()),
+                }],
+                "headless",
             )
+            .await?
+            .into_shared()?
         };
         let per_settlement = if retrospective { 2 } else { 1 };
         let provider = Arc::new(

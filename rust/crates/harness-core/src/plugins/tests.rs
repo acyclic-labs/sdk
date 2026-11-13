@@ -216,6 +216,15 @@ async fn native_plugin_admission_retains_manifest_and_after_hook_ownership() -> 
     }
     let empty = load(&tree, &layers(b"export default {};"), "owner").await?;
     assert!(empty.names.is_empty());
+    let wrapper_bytes =
+        acyclic_fs::NativeMaterializationWork::shared_allocation_bytes::<Enabled>()?
+            - std::mem::size_of::<EnabledData>() as u64;
+    let before_empty_share = work.live_allocation_bytes();
+    let empty = empty.into_shared()?;
+    assert_eq!(
+        work.live_allocation_bytes(),
+        before_empty_share + wrapper_bytes
+    );
     drop(empty);
     let admitted = load_decision(
         &tree,
@@ -239,7 +248,14 @@ async fn native_plugin_admission_retains_manifest_and_after_hook_ownership() -> 
     )
     .await?;
     assert!(work.live_allocation_bytes() >= baseline + 131072);
+    let before_share = work.live_allocation_bytes();
+    let admitted = admitted.into_shared()?;
+    assert_eq!(work.live_allocation_bytes(), before_share + wrapper_bytes);
+    let shared = std::sync::Arc::clone(&admitted);
     drop(admitted);
+    assert_eq!(work.live_allocation_bytes(), before_share + wrapper_bytes);
+    assert_eq!(shared.after[0].settlement().next().unwrap().len(), 65536);
+    drop(shared);
     assert!(work.live_allocation_bytes() >= baseline + 65536);
     drop(after);
     assert!(
