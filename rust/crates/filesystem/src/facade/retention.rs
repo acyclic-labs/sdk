@@ -287,7 +287,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget.finish(result, &accounting)
     }
 
-    pub(super) async fn checkpoint_root_with_accounting(
+    pub(crate) async fn checkpoint_root_with_accounting(
         &self,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,

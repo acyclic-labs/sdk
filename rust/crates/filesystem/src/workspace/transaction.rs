@@ -9,6 +9,32 @@ pub struct Transaction<A: 'static, O: 'static> {
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transaction<A, O> {
+    /// Retains this transaction's exact unpublished candidate for validation or
+    /// contribution to a caller-composed commit. The workspace head is unchanged;
+    /// later transaction writes cannot change the returned immutable snapshot.
+    /// All checkpoint and read work uses the supplied original work source.
+    pub async fn snapshot<W: crate::facade::FsWork>(
+        &self,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<Generation<A, O>, WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = async {
+            let root = self
+                .checkout
+                .checkpoint_root_with_accounting(&mut accounting, cancellation)
+                .await?;
+            self.workspace
+                .observed_generation_accounted(
+                    GenerationSelector::Exact(GenerationId::from_root(root)),
+                    &mut accounting,
+                )
+                .await
+        }
+        .await;
+        work.finish(result, &accounting)
+    }
+
     /// Observe an authorized policy cut as a transaction dependency. A rebase
     /// across a policy edit then conflicts even when the data paths are disjoint.
     /// The caller must recheck the fence's time interval before publication.
