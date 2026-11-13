@@ -97,6 +97,33 @@ async fn native_configuration_reads_preserve_the_original_refusal_class()
         assert!(tree.read("absent.ts").await?.is_none());
         assert!(tree.read("settings.ts/child.ts").await?.is_none());
 
+        // The real six-generation import adapter must also carry the VM's
+        // original allowance. File reads alone cannot fund evaluated results.
+        let constrained =
+            acyclic_fs::NativeMaterializationWork::new(
+                WorkBudget {
+                    peak_allocation_bytes:
+                        acyclic_fs::NativeMaterializationWork::accounting_state_bytes() + 4096,
+                    ..WorkBudget::UNBOUNDED
+                },
+                &cancellation,
+            )
+            .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
+        let constrained_io = PreparationIo::from_native_work(&constrained)?;
+        let refused = crate::config::evaluate(
+            "bounded-settings.ts",
+            b"export default { retained: 'x'.repeat(1048576) };",
+            &manifest.tree(&constrained_io, u64::MAX),
+            &serde_json::Value::Null,
+            crate::config::Surface::Data,
+        )
+        .await
+        .expect_err("manifest evaluation escaped its original allocation allowance");
+        assert!(matches!(refused, crate::Error::NativeWork { .. }));
+        drop(refused);
+        drop(constrained_io);
+        drop(constrained);
+
         assert!(
             io.sdk_if_present(
                 generation
