@@ -195,7 +195,7 @@ pub(in crate::filesystem) use publication::{
 };
 mod content_selection;
 mod diff;
-mod directory;
+pub(in crate::filesystem) mod directory;
 mod family;
 mod keys;
 mod metadata;
@@ -219,7 +219,7 @@ pub(in crate::filesystem) use reads::{read_generation, read_generation_if_presen
 
 use crate::executor::stock_boundary;
 
-pub use directory::DirectoryOptions;
+pub use directory::{AuthorizedDirectoryPage, DirectoryOptions};
 
 impl PublicationDomain {
     fn new(work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<Arc<Self>> {

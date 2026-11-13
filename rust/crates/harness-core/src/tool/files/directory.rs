@@ -35,7 +35,7 @@ pub struct DirectoryEntry {
     pub path: String,
     /// Selected namespace kind.
     pub kind: DirectoryEntryKind,
-    /// Opaque namespace version, also the exclusive continuation cursor.
+    /// Opaque namespace version for reading this entry.
     pub version: String,
 }
 
@@ -48,8 +48,12 @@ pub struct DirectoryEntry {
 pub struct DirectoryReadResult {
     /// Ordered children.
     pub entries: Vec<DirectoryEntry>,
-    /// Continue from the last returned entry's version.
+    /// Whether the bounded physical listing can continue.
     pub has_more: bool,
+    /// Confidential continuation; empty visible pages may still advance.
+    pub next: Option<String>,
+    /// Physical names examined, including names hidden by current policy.
+    pub examined: u32,
 }
 
 /// Canonical results for file and directory selections.
@@ -106,6 +110,8 @@ fn public_parent(path: &str) -> &str {
 struct Page<'a> {
     entries: Vec<Entry<'a>>,
     has_more: bool,
+    next: Option<&'a str>,
+    examined: u32,
 }
 
 #[derive(Serialize)]
@@ -128,39 +134,14 @@ pub(super) async fn read(
 ) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
     validate_input(input, limit, work)?;
     let (volume, path) = context.authorize_tool_directory_read(&input.path, io)?;
-    let selected = after
-        .map(|cursor| version::decode_selection(cursor, work))
-        .transpose()?;
-    let cursor = match &selected {
-        Some((version::SelectedVersion::Authored(selected), _)) => {
-            let (parent, name) = selected
-                .path
-                .rsplit_once('/')
-                .unwrap_or(("", &selected.path));
-            if &selected.volume != volume || parent != path || name.is_empty() {
-                return Err(executor::rejection(
-                    work,
-                    "directory cursor belongs to another selection",
-                ));
-            }
-            Some((&selected.generation, name))
-        }
-        Some(_) => {
-            return Err(executor::rejection(
-                work,
-                "directory cursor requires a namespace selection",
-            ));
-        }
-        None => None,
-    };
     let (page, _page_hold) = context
         .list_tool_directory(
             crate::conversation::DirectoryRead {
                 volume,
                 granted_prefix: &path,
                 path: &path,
-                generation: cursor.map(|c| c.0),
-                after: cursor.map(|c| c.1),
+                generation: None,
+                after,
                 maximum_entries: limit,
             },
             io,
@@ -191,6 +172,8 @@ pub(super) async fn read(
         &Page {
             entries,
             has_more: page.has_more,
+            next: page.next.as_deref(),
+            examined: page.examined,
         },
         context.effective_scope().limits().file_bytes,
         work,
@@ -200,25 +183,24 @@ pub(super) async fn read(
 
 pub(super) fn project(
     input: &ReadFileInput,
-    after: Option<&str>,
+    _after: Option<&str>,
     limit: u32,
     result: &ToolResult,
     work: acyclic_fs::NativeWork<'_>,
 ) -> Result<(Value, acyclic_fs::NativeCustody)> {
     validate_input(input, limit, work)?;
     let (result, _hold) = decode::<DirectoryReadResult>(&result.value, work)?;
-    if result.entries.len() > limit as usize || (result.has_more && result.entries.is_empty()) {
+    if result.examined > limit
+        || result.entries.len() > result.examined as usize
+        || result.has_more != result.next.is_some()
+        || (result.has_more && result.examined == 0)
+    {
         return Err(executor::rejection(
             work,
             "directory result exceeds its selection or cannot advance",
         ));
     }
-    let cursor = after
-        .map(|cursor| version::decode_selection(cursor, work))
-        .transpose()?;
-    let mut previous = cursor
-        .as_ref()
-        .map(|(selected, _)| selected.path().rsplit('/').next().unwrap_or(""));
+    let mut previous: Option<&str> = None;
     for entry in &result.entries {
         if entry.name.is_empty()
             || entry.name.contains('/')

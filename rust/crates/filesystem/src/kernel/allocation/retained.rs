@@ -279,6 +279,13 @@ pub struct RetainedAllocation {
     inner: RetainedAllocationInner,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl From<crate::NativeAllocation> for RetainedAllocation {
+    fn from(allocation: crate::NativeAllocation) -> Self {
+        Self::native(allocation)
+    }
+}
+
 enum RetainedAllocationInner {
     Standalone {
         _lease: StandaloneLease,
@@ -541,6 +548,26 @@ impl<B: AsRef<[u8]> + Send + 'static> Retained<B> {
 }
 
 impl<T> Retained<Vec<T>> {
+    /// Moves one element out while retaining the vector's original capacity
+    /// credit. The same caller admits the move before any element is removed.
+    pub fn pop(
+        &mut self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Option<T>, crate::FsError> {
+        accounting.perform(
+            crate::WorkCounters {
+                items_examined: 1,
+                bytes_copied: if self.value.is_empty() {
+                    0
+                } else {
+                    std::mem::size_of::<T>() as u64
+                },
+                ..crate::WorkCounters::UNCHARGED
+            },
+            || self.value.pop(),
+        )
+    }
+
     /// Admits and allocates a vector on the original ledger.
     pub fn allocate(
         capacity: usize,

@@ -626,32 +626,15 @@ impl DiscoverySource for VolumeDiscovery<'_> {
                 return Ok(None);
             };
             page.validate()?;
-            if page.entries.first().is_some_and(|e| {
-                cursor
-                    .as_ref()
-                    .is_some_and(|c| e.name.as_bytes() <= c.as_bytes())
-            }) {
-                return Err(Error::Storage(
-                    "discovery page violated pinned range".into(),
-                ));
-            }
             if page.generation.as_resource().provider() != self.root.volume.provider() {
                 return Err(Error::Storage(
                     "discovery page returned another provider".into(),
                 ));
             }
-            let next = if page.has_more {
-                page.entries.last().map(|e| e.name.clone())
-            } else {
-                None
-            };
-            if page.has_more && next.is_none() {
-                return Err(Error::Storage("empty discovery continuation".into()));
-            }
+            let next = page.next;
             Ok(Some(DiscoveryPage {
                 revision: page.generation,
-                scanned: u32::try_from(page.entries.len())
-                    .map_err(|_| Error::Invalid("entry count overflow".into()))?,
+                scanned: page.examined,
                 entries: page.entries.into_iter().map(Into::into).collect(),
                 next,
             }))

@@ -14,83 +14,89 @@ impl LocalHarness {
     /// # Errors
     /// A name both a command and a skill define, or that multiple commands
     /// or skills define, is a conflict; an unknown name is not found.
-    pub(in crate::local) async fn resolve_prompt_command(
-        &self,
-        text: &str,
-    ) -> Result<Option<String>> {
-        let Some((name, arguments)) = CommandCatalog::selected(text, None)? else {
-            return Ok(None);
-        };
-        let maximum = self.limits.file_bytes;
-        let paths = prompt_paths(&name).collect::<Vec<_>>();
-        let mut commands = self.project_files(&paths, maximum).await?.into_iter();
-        let command = commands.next();
-        if commands.next().is_some() {
-            return Err(Error::Conflict(format!("duplicate command: {name}")));
-        }
-        let mut skills = self
-            .skills_with_work(None, &mut crate::context::DiscoveryWork::default())
-            .await?
-            .into_iter()
-            .filter(|skill| skill.name.eq_ignore_ascii_case(&name));
-        let skill = skills.next();
-        if skills.next().is_some() {
-            return Err(Error::Conflict(format!("ambiguous skill: {name}")));
-        }
-        let body = match (command, skill) {
-            (Some(_), Some(_)) => {
-                return Err(Error::Conflict(format!("skill/command collision: {name}")));
+    pub(in crate::local) fn resolve_prompt_command<'a>(
+        self: Arc<Self>,
+        text: &'a str,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<String>>> {
+        Box::pin(async move {
+            let Some((name, arguments)) = CommandCatalog::selected(text, None)? else {
+                return Ok(None);
+            };
+            let maximum = self.limits.file_bytes;
+            let paths = prompt_paths(&name).collect::<Vec<_>>();
+            let mut commands = self.project_files(&paths, maximum).await?.into_iter();
+            let command = commands.next();
+            if commands.next().is_some() {
+                return Err(Error::Conflict(format!("duplicate command: {name}")));
             }
-            (Some((_, bytes)), None) => bytes,
-            (None, Some(skill)) => {
-                let message = skill
-                    .invoke(self.context_reader()?.as_ref(), maximum)
-                    .await?;
-                let crate::model::ModelContent::Text(body) = message.content else {
-                    return Err(Error::Invalid("skill body is not text".into()));
-                };
-                body.into_bytes()
+            let mut skills = self
+                .skills_with_work(None, &mut crate::context::DiscoveryWork::default())
+                .await?
+                .into_iter()
+                .filter(|skill| skill.name.eq_ignore_ascii_case(&name));
+            let skill = skills.next();
+            if skills.next().is_some() {
+                return Err(Error::Conflict(format!("ambiguous skill: {name}")));
             }
-            (None, None) => return Err(Error::NotFound(format!("Unknown command: /{name}"))),
-        };
-        CommandCatalog::expand(&body, arguments, maximum).map(Some)
+            let body = match (command, skill) {
+                (Some(_), Some(_)) => {
+                    return Err(Error::Conflict(format!("skill/command collision: {name}")));
+                }
+                (Some((_, bytes)), None) => bytes,
+                (None, Some(skill)) => {
+                    let message = skill
+                        .invoke(self.context_reader()?.as_ref(), maximum)
+                        .await?;
+                    let crate::model::ModelContent::Text(body) = message.content else {
+                        return Err(Error::Invalid("skill body is not text".into()));
+                    };
+                    body.into_bytes()
+                }
+                (None, None) => return Err(Error::NotFound(format!("Unknown command: /{name}"))),
+            };
+            CommandCatalog::expand(&body, arguments, maximum).map(Some)
+        })
     }
 
     /// Each of `paths` present in the project, from the selected checkout
     /// view or the project volume's current generation.
-    async fn project_files(
-        &self,
-        paths: &[String],
+    // Keep the native read's generated state out of every command caller's
+    // future layout. This is the filesystem IO boundary, not a larger stack.
+    fn project_files<'a>(
+        &'a self,
+        paths: &'a [String],
         maximum: Option<u64>,
-    ) -> Result<Vec<(usize, Vec<u8>)>> {
-        #[cfg(any(test, not(target_arch = "wasm32")))]
-        if self.checkout_context
-            && let Some(workspace) = &self.workspace
-        {
-            return self.checkout_files(workspace, paths, maximum).await;
-        }
-        let workspace = crate::filesystem::workspace_ref(
-            self.project.provider().clone(),
-            &self.project.storage_name(&mut None)?,
-        )?;
-        let generation = self.files.resolve(&workspace, None).await?.generation;
-        let reader = self.context_reader()?;
-        let mut found = Vec::new();
-        for (index, path) in paths.iter().enumerate() {
-            let read = reader
-                .read_private_path(
-                    &self.project,
-                    "",
-                    path,
-                    Some(&generation),
-                    maximum,
-                    crate::conversation::ContentAccess::default(),
-                )?
-                .await?;
-            if let Some((_, bytes, _)) = read {
-                found.push((index, bytes.as_ref().to_vec()));
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<Vec<(usize, Vec<u8>)>>> {
+        Box::pin(async move {
+            #[cfg(any(test, not(target_arch = "wasm32")))]
+            if self.checkout_context
+                && let Some(workspace) = &self.workspace
+            {
+                return self.checkout_files(workspace, paths, maximum).await;
             }
-        }
-        Ok(found)
+            let workspace = crate::filesystem::workspace_ref(
+                self.project.provider().clone(),
+                &self.project.storage_name(&mut None)?,
+            )?;
+            let generation = self.files.resolve(&workspace, None).await?.generation;
+            let reader = self.context_reader()?;
+            let mut found = Vec::new();
+            for (index, path) in paths.iter().enumerate() {
+                let read = reader
+                    .read_private_path(
+                        &self.project,
+                        "",
+                        path,
+                        Some(&generation),
+                        maximum,
+                        crate::conversation::ContentAccess::default(),
+                    )?
+                    .await?;
+                if let Some((_, bytes, _)) = read {
+                    found.push((index, bytes.as_ref().to_vec()));
+                }
+            }
+            Ok(found)
+        })
     }
 }

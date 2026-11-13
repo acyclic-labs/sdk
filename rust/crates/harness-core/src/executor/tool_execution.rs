@@ -220,7 +220,7 @@ impl<'io> StockExecution<'io> {
                             &original.0.invocation,
                             result,
                             projection,
-                            (definition, false),
+                            (definition, None, None),
                             _hook_context,
                         )
                         .await?;
@@ -408,20 +408,13 @@ impl<'io> StockExecution<'io> {
             RecordedCall::Completed {
                 result, projection, ..
             } => {
-                if let Some(authorization) = tool.executor.authorize_replay(
-                    context.as_ref(),
-                    &invocation,
-                    self.native_work(),
-                ) {
-                    authorization.await?;
-                }
                 self.replay_tool_output(
                     journal,
                     operation_id,
                     &invocation,
                     result,
                     projection,
-                    (&tool.definition, tool.executor.is_code_mode()),
+                    (&tool.definition, Some(&tool), context.as_ref()),
                     _hook_context,
                 )
                 .await?
@@ -724,6 +717,16 @@ impl<'io> StockExecution<'io> {
 
     fn filesystem_binding(&self, invocation: &ToolInvocation) -> Option<[u8; 32]> {
         if invocation.name != "fs" {
+            return None;
+        }
+        let task = self.context.map(|(task, _)| task)?;
+        if task.harness.targets().is_some()
+            && !invocation
+                .arguments
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|command| crate::tools::scoped_search(command).unwrap_or(false))
+        {
             return None;
         }
         self.context

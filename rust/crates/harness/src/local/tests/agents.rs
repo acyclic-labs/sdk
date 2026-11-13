@@ -1197,11 +1197,35 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         .write_text("/directory-b", "second")
         .await
         .map_err(agent)?;
+    harness
+        .files
+        .apply(
+            &crate::filesystem::workspace_ref(
+                entry.output.volume().provider().clone(),
+                &entry.output.volume().storage_name(&mut None)?,
+            )?,
+            None,
+            &[
+                crate::filesystem::WorkspaceMutation::CreateDirectory {
+                    path: "/listing".into(),
+                },
+                crate::filesystem::WorkspaceMutation::PutFile {
+                    path: "/listing/a".into(),
+                    bytes: b"first".to_vec().into(),
+                },
+                crate::filesystem::WorkspaceMutation::PutFile {
+                    path: "/listing/b".into(),
+                    bytes: b"second".to_vec().into(),
+                },
+            ],
+            &crate::IdempotencyKey::new("directory-credit-fixture")?,
+        )
+        .await?;
     // The same authenticated session selects a directory and its original
     // generation, then continues only at that immutable generation.
     let page =
         |after| acyclic_harness_client::AgentPageRequest::new(1, 64 * 1024, after).map_err(agent);
-    let first = client.directory_page("", None, page(None)?).await?;
+    let first = client.directory_page("listing", None, page(None)?).await?;
     assert_eq!(first.entries.len(), 1);
     assert!(first.has_more);
     private
@@ -1213,7 +1237,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     let selected = AgentCommand::Directory {
         agent: root.clone(),
         target: crate::conversation::DirectoryTarget::Private {},
-        path: String::new(),
+        path: "listing".into(),
         generation: Some(first.generation.clone()),
         after_generation: None,
         page: page(None)?,
@@ -1228,16 +1252,18 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     let credit = u32::try_from(encoded.len()).map_err(agent)?;
     let bounded = client
         .directory_page(
-            "",
+            "listing",
             Some(&first.generation),
             acyclic_harness_client::AgentPageRequest::new(128, credit, None).map_err(agent)?,
         )
         .await?;
-    assert_eq!(bounded, first);
+    assert_eq!(bounded.entries, first.entries);
+    assert_eq!(bounded.generation, first.generation);
+    assert_eq!(bounded.has_more, first.has_more);
     assert!(
         client
             .directory_page(
-                "",
+                "listing",
                 Some(&first.generation),
                 acyclic_harness_client::AgentPageRequest::new(128, credit - 1, None)
                     .map_err(agent)?,
@@ -1247,7 +1273,11 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     );
     let last = &first.entries[0].name;
     let second = client
-        .directory_page("", Some(&first.generation), page(Some(last.clone()))?)
+        .directory_page(
+            "listing",
+            Some(&first.generation),
+            page(first.next.clone())?,
+        )
         .await?;
     assert_eq!(second.generation, first.generation);
     assert_eq!(second.entries.len(), 1);
@@ -1267,10 +1297,10 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     let continued = acyclic_harness_client::AgentCommand::Directory {
         agent: root.clone(),
         target: crate::conversation::DirectoryTarget::Private {},
-        path: String::new(),
+        path: "listing".into(),
         generation: Some(first.generation.clone()),
         after_generation: None,
-        page: page(Some(last.clone()))?,
+        page: page(first.next.clone())?,
     };
     assert!(
         acyclic_harness_client::encode_agent_reply(
@@ -1305,11 +1335,12 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
             .await
             .is_err()
     );
-    assert!(
+    assert_eq!(
         client
-            .directory_page("", None, page(Some(last.clone()))?)
-            .await
-            .is_err()
+            .directory_page("listing", None, page(first.next.clone())?)
+            .await?
+            .generation,
+        first.generation,
     );
     assert!(
         client
@@ -2672,9 +2703,15 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
     let mut observed = ObservedConversation::open(&harness).await?;
     let prompt = "inspect @mention.txt and @pixel.png then @mention.txt again";
     // A capture for one message replays its pinned manifest exactly.
-    let first = harness.prompt_attachments(b"direct", Some(prompt)).await?;
+    let first = harness
+        .clone()
+        .prompt_attachments(b"direct", Some(prompt))
+        .await?;
     assert_eq!(
-        harness.prompt_attachments(b"direct", Some(prompt)).await?,
+        harness
+            .clone()
+            .prompt_attachments(b"direct", Some(prompt))
+            .await?,
         first
     );
     let inbox = observed.conversation.send("mention", prompt).await?;
@@ -2687,7 +2724,10 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
     let client = observed.conversation;
     // Later publications on the private volume leave a replay unchanged.
     assert_eq!(
-        harness.prompt_attachments(b"direct", Some(prompt)).await?,
+        harness
+            .clone()
+            .prompt_attachments(b"direct", Some(prompt))
+            .await?,
         first
     );
     let TurnInput::Message {
@@ -2749,12 +2789,16 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
     std::fs::write(checkout.join("mention.txt"), "CHANGED\n").map_err(agent)?;
     std::fs::remove_file(checkout.join("pixel.png")).map_err(agent)?;
     assert_eq!(
-        harness.prompt_attachments(b"direct", Some(prompt)).await?,
+        harness
+            .clone()
+            .prompt_attachments(b"direct", Some(prompt))
+            .await?,
         first
     );
     assert_eq!(client.send("mention", prompt).await?, inbox);
     // A new message sees the files as they are now.
     let fresh = harness
+        .clone()
         .prompt_attachments(b"fresh", Some("inspect @mention.txt"))
         .await?
         .expect("a manifest");
@@ -3265,13 +3309,14 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
     assert_ne!(child_skills, parent_skills);
     for command in ["/context-checkpoint", "/CONTEXT-CHECKPOINT"] {
         assert!(matches!(
-            harness.resolve_prompt_command(command).await,
+            harness.clone().resolve_prompt_command(command).await,
             Err(Error::Conflict(_))
         ));
     }
     // An unambiguous name must still expand in the same catalog.
     assert!(
         harness
+            .clone()
             .resolve_prompt_command("/candidate-search")
             .await?
             .is_some()

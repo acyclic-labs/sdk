@@ -67,7 +67,7 @@ impl serde::Serialize for ListFilesEntries<'_> {
 
 fn list_files_page_wire<'a>(
     generation: &'a GenerationRef,
-    page: &'a DirectoryPage,
+    page: &'a crate::filesystem::AuthorizedDirectoryPage,
 ) -> Result<ListFilesPageWire<'a>> {
     for entry in &page.entries {
         if entry.name.encoding() != NameEncoding::Utf8
@@ -86,10 +86,7 @@ fn list_files_page_wire<'a>(
         generation,
         entries: ListFilesEntries(&page.entries),
         has_more: page.has_more,
-        next_after: page
-            .entries
-            .last()
-            .and_then(|entry| std::str::from_utf8(entry.name.as_bytes()).ok()),
+        next_after: page.next.as_deref(),
     })
 }
 
@@ -177,9 +174,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
         let (input, custody): (ListFilesInput, _) =
             crate::tool::decode(&invocation.arguments, Some(work))?;
         _input_custody = custody;
-        if input.maximum_entries == 0
-            || (input.after.is_some() && input.expected_generation.is_none())
-        {
+        if input.maximum_entries == 0 {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
                 reason: "list_files requires a bounded, generation-pinned page",
@@ -360,20 +355,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
         }
         let input: ListFilesInput = serde_json::from_value(invocation.arguments.clone())
             .map_err(|error| Error::Invalid(format!("list_files input is invalid: {error}")))?;
-        if input.maximum_entries == 0
-            || (input.after.is_some() && input.expected_generation.is_none())
-        {
+        if input.maximum_entries == 0 {
             return Err(Error::Invalid(
                 "list_files requires a bounded, generation-pinned page".into(),
             ));
         }
-        let after = input
-            .after
-            .map(|name| {
-                LogicalName::new(NameEncoding::Utf8, name.into_bytes())
-                    .map_err(|error| Error::Invalid(error.to_string()))
-            })
-            .transpose()?;
+
         let (generation, page) = self
             .verifier
             .list_private_directory(
@@ -382,7 +369,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
                 &input.path,
                 crate::filesystem::DirectoryOptions {
                     generation: pinned.or(input.expected_generation.as_ref()),
-                    after: after.as_ref(),
+                    after: input.after.as_deref(),
                     maximum_entries: input.maximum_entries,
                     ceiling: context.map(|context| context.effective_scope().grants()),
                 },

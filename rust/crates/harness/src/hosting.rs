@@ -994,9 +994,9 @@ where
                 page: request,
             } => {
                 let agent = self.within_tree(agent)?;
-                let mut page = self
+                let page = self
                     .bound
-                    .directory_page(
+                    .directory_page_select(
                         agent,
                         crate::conversation::DirectoryQuery {
                             target: *target,
@@ -1006,24 +1006,47 @@ where
                             after_name: request.cursor(),
                             maximum_entries: request.items(),
                         },
+                        |page, cursor_bytes| {
+                            let empty = |next: bool| AgentReply::Directory {
+                                page: crate::conversation::PrivateDirectoryPage {
+                                    generation: page.generation.clone(),
+                                    entries: Vec::new(),
+                                    has_more: next,
+                                    next: next.then(String::new),
+                                    examined: page.examined,
+                                },
+                            };
+                            let mut credit =
+                                PageCredit::from_envelopes(request, &empty(false), &empty(true))?;
+                            if page.entries.is_empty() {
+                                if let Some(next) = &page.next {
+                                    if !acyclic_harness_client::encoded_agent_reply_size(
+                                        credit.next_envelope + next.len() as u64,
+                                    )
+                                    .is_ok_and(|size| size <= u64::from(request.bytes()))
+                                    {
+                                        return Err(Error::Stream(StreamError::Capacity));
+                                    }
+                                }
+                            }
+                            for (index, entry) in page.entries.iter().enumerate() {
+                                let next_bytes = if index + 1 < page.entries.len() {
+                                    Some(
+                                        cursor_bytes(&entry.name)
+                                            .ok_or(Error::Stream(StreamError::Capacity))?
+                                            as u64,
+                                    )
+                                } else {
+                                    page.next.as_ref().map(|next| next.len() as u64)
+                                };
+                                if !credit.accept(entry, next_bytes)? {
+                                    break;
+                                }
+                            }
+                            Ok(credit.items)
+                        },
                     )
                     .await?;
-                let empty = |has_more| AgentReply::Directory {
-                    page: crate::conversation::PrivateDirectoryPage {
-                        generation: page.generation.clone(),
-                        entries: Vec::new(),
-                        has_more,
-                    },
-                };
-                let mut credit = PageCredit::from_envelopes(request, &empty(false), &empty(true))?;
-                for (index, entry) in page.entries.iter().enumerate() {
-                    let continues = index + 1 < page.entries.len() || page.has_more;
-                    if !credit.accept(entry, continues.then_some(0))? {
-                        break;
-                    }
-                }
-                page.has_more |= credit.items < page.entries.len();
-                page.entries.truncate(credit.items);
                 Ok(AgentReply::Directory { page })
             }
             AgentCommand::Read {

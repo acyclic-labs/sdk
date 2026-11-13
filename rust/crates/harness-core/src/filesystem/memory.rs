@@ -23,8 +23,7 @@ use crate::{
     tool::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult},
 };
 use acyclic_fs::{
-    AsyncAuthorityStore, AsyncObjectStore, DirectoryPage, Fs, MemoryAuthorityBackend,
-    MemoryObjectBackend,
+    AsyncAuthorityStore, AsyncObjectStore, Fs, MemoryAuthorityBackend, MemoryObjectBackend,
     kernel::{FileKind, LogicalName, NameEncoding},
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
@@ -473,9 +472,9 @@ impl<
         &self,
         path: &str,
         expected_generation: Option<&GenerationRef>,
-        after: Option<&LogicalName>,
+        after: Option<&str>,
         maximum_entries: u32,
-    ) -> Result<(GenerationRef, DirectoryPage)> {
+    ) -> Result<(GenerationRef, crate::filesystem::AuthorizedDirectoryPage)> {
         self.content_verifier
             .list_private_directory(
                 &self.volume,
@@ -533,9 +532,9 @@ impl<
         granted_prefix: &str,
         path: &str,
         expected_generation: Option<&GenerationRef>,
-        after: Option<&LogicalName>,
+        after: Option<&str>,
         maximum_entries: u32,
-    ) -> Result<(GenerationRef, DirectoryPage)> {
+    ) -> Result<(GenerationRef, crate::filesystem::AuthorizedDirectoryPage)> {
         self.delegated_reader(scope)?
             .list_private_directory(
                 &self.volume,

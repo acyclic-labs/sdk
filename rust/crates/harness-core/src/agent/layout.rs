@@ -219,9 +219,18 @@ impl AgentPath {
     /// This checks routing containment, not the caller's current authority.
     #[must_use]
     pub fn contains(&self, agent: &Self) -> bool {
-        agent
-            .text
-            .strip_prefix(self.text.as_str())
+        self.contains_canonical(agent.as_str())
+    }
+
+    /// Validates a borrowed canonical address and checks subtree containment
+    /// without constructing an owned path. This is routing, not authority.
+    pub fn contains_path(&self, path: &str) -> Result<bool, Error> {
+        Self::parse_depth(path)?;
+        Ok(self.contains_canonical(path))
+    }
+
+    fn contains_canonical(&self, path: &str) -> bool {
+        path.strip_prefix(self.text.as_str())
             .is_some_and(|rest| rest.is_empty() || rest.starts_with("/children/"))
     }
 

@@ -61,7 +61,13 @@
         "pty-question",
         "question-headless",
         "question-headless-approval-eof",
-        "question-write-hook-deny"
+        "question-write-hook-deny",
+        "search-cross-agent-git",
+        "search-cross-agent-plain",
+        "search-history-paged-git",
+        "search-history-paged-plain",
+        "search-acl-git",
+        "search-acl-plain"
       ]
     },
     "A4": {

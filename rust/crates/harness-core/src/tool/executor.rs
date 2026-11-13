@@ -1,13 +1,16 @@
 use super::*;
 
 /// The authority needed to resolve one public namespace selection.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ReadPathKind {
     /// A file's bytes.
     File,
     /// A directory's child names; the empty relative path selects its root.
     Directory,
 }
+
+crate::core::ownership::owned_enum!(ReadPathKind { File, Directory });
 
 impl ReadPathKind {
     /// Checks a tool address after separating its explicit volume qualifier.
@@ -232,6 +235,10 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     }
 
     /// Rechecks mutable source authority before exposing a completed result.
+    /// The result has been loaded and schema-checked, but neither it nor its
+    /// projection has been exposed. Source addresses in saved results require
+    /// the same current authority as an original read. The returned future
+    /// retains its physical allocation on the original operation ledger.
     /// The invocation has already passed `authorize` and its recorded identity
     /// check. This must only authorize reads: it cannot execute or reconcile the
     /// command. Executors whose synchronous authorization is sufficient return
@@ -240,9 +247,10 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         &'a self,
         _context: Option<&'a crate::runtime::ToolContext>,
         _invocation: &'a ToolInvocation,
-        _work: acyclic_fs::NativeWork<'a>,
-    ) -> Option<BoxFuture<'a, Result<()>>> {
-        None
+        _result: &'a ToolResult,
+        _io: Option<&'a crate::filesystem::PreparationIo>,
+    ) -> Result<Option<crate::conversation::BoundedContentFuture<'a, ()>>> {
+        Ok(None)
     }
 
     /// The record that hands this invocation to another host, appended in the

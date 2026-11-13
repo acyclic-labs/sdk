@@ -843,6 +843,60 @@ mod tests {
             super::check(&bytes);
         }
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn accounted_records_share_exact_wire_consumption_and_original_custody() {
+        acyclic_native_runtime::initialize_native_io_services().expect("native services");
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .map_err(|(error, _)| error)
+        .expect("original work");
+        let baseline = work.live_allocation_bytes();
+        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+            work: &work,
+            cancellation: &cancellation,
+        };
+        for (_, bytes) in super::seeds().expect("production agent writers") {
+            if !bytes.starts_with(&super::super::RECORD_VERSION.to_be_bytes()) {
+                continue;
+            }
+            let ordinary = super::records::decode_record::<serde_json::Value>(&bytes)
+                .expect("original record");
+            let decoded = super::records::decode_record_accounted::<serde_json::Value>(
+                &bytes,
+                &mut accounting,
+            )
+            .expect("funded original record");
+            assert_eq!(*decoded, ordinary);
+            drop(decoded);
+            assert_eq!(work.live_allocation_bytes(), baseline);
+            // An extra value and truncated integer are both trailing input,
+            // including when a trailing decoder reports unexpected EOF.
+            for suffix in [&[0xc0][..], &[0xce][..], &[0xce, 0][..]] {
+                let mut trailing = bytes.clone();
+                trailing.extend_from_slice(suffix);
+                assert!(super::records::decode_record::<serde_json::Value>(&trailing).is_err());
+                assert!(
+                    super::records::decode_record_accounted::<serde_json::Value>(
+                        &trailing,
+                        &mut accounting,
+                    )
+                    .is_err()
+                );
+                assert_eq!(work.live_allocation_bytes(), baseline);
+            }
+        }
+        cancellation.cancel();
+        assert!(
+            super::records::decode_record_accounted::<serde_json::Value>(&[], &mut accounting,)
+                .is_err()
+        );
+        assert_eq!(work.live_allocation_bytes(), baseline);
+    }
 }
 
 fn workspace(bytes: &[u8]) {

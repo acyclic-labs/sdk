@@ -1,0 +1,14 @@
+{
+  "id": "search-acl",
+  "workspace": {"kind": ["plain", "git"], "files": {}},
+  "model": {"steps": [
+    {"when": {"user": "RECORD_AUTHORIZED"}, "text": ["Authorized specimen retained."]},
+    {"when": {"user": "VERIFY_SEARCH_AUTHORITY"}, "tools": [{"id": "check-search-authority", "name": "code", "arguments": {"code": "const query = \"grep --scope . 'Authorized specimen' --page-size 1\"; let next; let cursor; let source; do { const page = (await tools.fs({command: query + (next ? ' --cursor ' + next : '')})).result; if (!Array.isArray(page.matches) || page.work > 1) throw Error('invalid authorized page'); source ??= page.matches[0]?.path; cursor ??= page.next; next = page.next; } while (next && !source); if (!source || !cursor) throw Error('original query lacks an address or continuation'); const parts = source.split('/'); parts[2] = (parts[2][0] === '0' ? '1' : '0') + parts[2].slice(1); const foreign = parts.slice(0, 3).join('/'); async function refuse(command, expected) { let reason = ''; try { reason = JSON.stringify(await tools.fs({command})); } catch (error) { reason = String(error); } if (!reason.includes(expected)) throw Error('search did not enforce authority: ' + reason); } await refuse('grep --scope ' + foreign + ' specimen --cursor ' + cursor, 'outside the bound agent subtree'); await refuse('grep --scope . changed --cursor ' + cursor, 'differs from selection'); export default {verified: 'SEARCH_AUTHORITY_VERIFIED'};"}}]},
+    {"when": {"user": "VERIFY_SEARCH_AUTHORITY", "tool_result": "SEARCH_AUTHORITY_VERIFIED"}, "text": ["SEARCH_AUTHORITY_COMPLETE"]}
+  ]},
+  "inputs": [
+    {"mode": "headless", "text": "RECORD_AUTHORIZED", "answer": "Authorized specimen retained."},
+    {"mode": "headless", "operation": "00000000-0000-0000-0000-000000000002", "text": "VERIFY_SEARCH_AUTHORITY", "answer": "SEARCH_AUTHORITY_COMPLETE"}
+  ],
+  "assert": {"requests": 3, "tool_contains": ["SEARCH_AUTHORITY_VERIFIED"]}
+}

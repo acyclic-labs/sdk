@@ -1,14 +1,33 @@
 use super::*;
 use acyclic_fs::access::{Action, PreparedPath};
+pub(in crate::filesystem) mod cursor;
+
+/// A bounded authorized physical page. Empty entries with `next` are progress.
+#[derive(Debug)]
+pub struct AuthorizedDirectoryPage {
+    /// Only names allowed by both current policy owners.
+    pub page: acyclic_fs::DirectoryPage,
+    /// Confidential continuation at the same immutable generation and directory.
+    pub next: Option<String>,
+    /// Candidate names consumed before policy filtering; excludes SDK seek work.
+    pub examined: u32,
+}
+
+impl std::ops::Deref for AuthorizedDirectoryPage {
+    type Target = acyclic_fs::DirectoryPage;
+    fn deref(&self) -> &Self::Target {
+        &self.page
+    }
+}
 
 /// Immutable pagination and authority limits for a private directory read.
 #[derive(Clone, Copy)]
 pub struct DirectoryOptions<'a> {
     /// Exact selected generation, or the current head.
     pub generation: Option<&'a GenerationRef>,
-    /// Exclusive logical-name cursor.
-    pub after: Option<&'a LogicalName>,
-    /// Maximum visible entries in the returned page.
+    /// Confidential continuation returned by the previous page.
+    pub after: Option<&'a str>,
+    /// Maximum candidate entries consumed before policy filtering.
     pub maximum_entries: u32,
     /// Additional caller authority ceiling.
     pub ceiling: Option<&'a crate::Capabilities>,
@@ -20,11 +39,11 @@ pub(in crate::filesystem) struct DirectoryListing<'a> {
     pub ceiling: Option<&'a crate::Capabilities>,
     pub path: &'a str,
     pub generation: Option<&'a GenerationRef>,
-    pub after: Option<&'a LogicalName>,
+    pub after: Option<&'a str>,
     pub maximum_entries: u32,
 }
 
-fn owned_bytes(page: &DirectoryPage) -> Result<u64> {
+fn raw_owned_bytes(page: &DirectoryPage) -> Result<u64> {
     page.entries.iter().try_fold(
         (page.entries.capacity() as u64)
             .checked_mul(std::mem::size_of::<acyclic_fs::kernel::TreeEntry>() as u64)
@@ -40,6 +59,16 @@ fn owned_bytes(page: &DirectoryPage) -> Result<u64> {
     )
 }
 
+#[cfg(test)]
+fn owned_bytes(page: &AuthorizedDirectoryPage) -> Result<u64> {
+    Ok(raw_owned_bytes(&page.page)?
+        + (std::mem::size_of::<AuthorizedDirectoryPage>() - std::mem::size_of::<DirectoryPage>())
+            as u64
+        + page
+            .next
+            .as_ref()
+            .map_or(0, |token| token.capacity() as u64))
+}
 fn visible(parent: PreparedPath<'_>, name: &LogicalName, now: u64) -> bool {
     parent
         .child_name(name)
@@ -55,7 +84,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant: &ContentGrant,
         path: &str,
         options: crate::filesystem::DirectoryOptions<'_>,
-    ) -> Result<Option<(GenerationRef, DirectoryPage)>> {
+    ) -> Result<Option<(GenerationRef, AuthorizedDirectoryPage)>> {
         let crate::filesystem::DirectoryOptions {
             generation: expected_generation,
             after,
@@ -93,7 +122,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         request: DirectoryListing<'_>,
         work: &acyclic_fs::NativeMaterializationWork,
         mut guard: F,
-    ) -> Result<((GenerationRef, DirectoryPage), acyclic_fs::NativeAllocation)>
+    ) -> Result<(
+        (GenerationRef, AuthorizedDirectoryPage),
+        acyclic_fs::NativeAllocation,
+    )>
     where
         F: FnMut() -> Fut + acyclic_stream::ProviderTask,
         Fut: Future<Output = Result<()>> + acyclic_stream::ProviderTask,
@@ -187,11 +219,32 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         request: DirectoryListing<'_>,
         io: &'io PreparationIo,
         guard: &mut F,
-    ) -> Result<Option<((GenerationRef, DirectoryPage), DecodeReservation<'io>)>>
+    ) -> Result<
+        Option<(
+            (GenerationRef, AuthorizedDirectoryPage),
+            DecodeReservation<'io>,
+        )>,
+    >
     where
         F: FnMut() -> Fut + acyclic_stream::ProviderTask,
         Fut: Future<Output = Result<()>> + acyclic_stream::ProviderTask,
     {
+        let continuation = request
+            .after
+            .map(|token| cursor::open(&self.provider, request.volume, request.path, token, io))
+            .transpose()?;
+        if let (Some(expected), Some((generation, _, _))) = (request.generation, &continuation) {
+            if expected != generation {
+                return Err(io.invalid("directory cursor generation differs from selection"));
+            }
+        }
+        let request = DirectoryListing {
+            generation: continuation
+                .as_ref()
+                .map(|cursor| &cursor.0)
+                .or(request.generation),
+            ..request
+        };
         let selection = self.select_directory(&request, io, guard).await?;
         let generation = &selection.generation;
         let parent = selection
@@ -212,11 +265,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         })?;
         let requested_hold = io.guard_owned(requested.capacity() as u64)?;
         let requested = (requested, requested_hold);
-        let mut cursor: Option<(LogicalName, DecodeReservation<'io>)> = None;
-        let mut spent = WorkCounters::default();
-        let selected = loop {
+        let selected = async {
             guard().await?;
-            let after = cursor.as_ref().map(|cursor| &cursor.0).or(request.after);
+            let after = continuation.as_ref().map(|cursor| &cursor.1);
             let Some((mut page, custody)) = io.sdk_if_present(
                 generation
                     .list_directory(
@@ -229,9 +280,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     .await,
             )?
             else {
-                break None;
+                return Ok(None);
             };
-            let page_bytes = owned_bytes(&page)?;
+            let page_bytes = raw_owned_bytes(&page)?;
+            let examined = u32::try_from(page.entries.len())
+                .map_err(|_| io.invalid("directory page is too large"))?;
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(custody) = custody {
                 io.absorb_native_custody(custody)?;
@@ -246,36 +299,56 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             let mut page_hold = io.guard_owned(page_bytes)?;
             guard().await?;
-            spent = spent
-                .checked_add(page.work)
-                .map_err(|_| io.invalid("directory work overflow"))?;
             io.charge(WorkCounters {
                 items_examined: page.entries.len() as u64,
                 ..Default::default()
             })?;
             let now = super::super::access::access_now()?;
-            let (removed, successor) = filter_page(&mut page, parent, data_parent, now);
-            page_hold.substitute(page_bytes - removed)?;
-            if page.entries.is_empty() && page.has_more {
-                let name = successor
+            let next = if page.has_more {
+                let name = page
+                    .entries
+                    .last()
                     .ok_or_else(|| io.invalid("directory page made no cursor progress"))?;
-                if after.is_some_and(|after| &name <= after) {
+                if after.is_some_and(|after| &name.name <= after) {
                     return Err(io.invalid("directory cursor did not advance"));
                 }
-                page_hold.retain_part(name.logical_owned_bytes())?;
-                let hold = io.guard_owned(name.logical_owned_bytes())?;
-                drop(page);
-                drop(page_hold);
-                cursor = Some((name, hold));
-                continue;
-            }
+                let (token, hold) = cursor::seal(
+                    request.volume,
+                    request.path,
+                    generation.id(),
+                    &name.name,
+                    io,
+                )?;
+                page_hold.absorb(hold)?;
+                Some(token)
+            } else {
+                None
+            };
+            let removed = filter_page(&mut page, parent, data_parent, now);
+            page_hold.substitute(
+                page_bytes - removed + next.as_ref().map_or(0, |token| token.capacity() as u64),
+            )?;
             // Do not expose a physical prefetch hint for an unauthorized successor.
             page.next_residency = None;
-            page.work = spent;
             let reference = bounded_io::generation_ref(&self.provider, generation.id(), Some(io))?;
             page_hold.adopt(reference.logical_owned_bytes()?)?;
-            break Some(((reference, page), page_hold));
-        };
+            let wrapper_bytes = (std::mem::size_of::<AuthorizedDirectoryPage>()
+                - std::mem::size_of::<DirectoryPage>()) as u64;
+            io.retain_owned(wrapper_bytes)?;
+            page_hold.adopt(wrapper_bytes)?;
+            Ok::<_, Error>(Some((
+                (
+                    reference,
+                    AuthorizedDirectoryPage {
+                        page,
+                        next,
+                        examined,
+                    },
+                ),
+                page_hold,
+            )))
+        }
+        .await?;
         selection.require_current(io).await?;
         request.grant.recheck(Some(io))?;
         Ok(selected)
@@ -290,9 +363,7 @@ fn filter_page(
     parent: PreparedPath<'_>,
     data_parent: Option<PreparedPath<'_>>,
     now: u64,
-) -> (u64, Option<LogicalName>) {
-    // Keep the physical successor by moving its name, never copying it.
-    let last = page.entries.pop();
+) -> u64 {
     let mut removed = 0;
     page.entries.retain(|entry| {
         let keep = visible(parent, &entry.name, now)
@@ -302,19 +373,7 @@ fn filter_page(
         }
         keep
     });
-    let mut successor = None;
-    if let Some(last) = last {
-        if visible(parent, &last.name, now)
-            && data_parent.is_none_or(|parent| visible(parent, &last.name, now))
-        {
-            page.entries.push(last);
-        } else if page.entries.is_empty() && page.has_more {
-            successor = Some(last.name);
-        } else {
-            removed += last.name.logical_owned_bytes();
-        }
-    }
-    (removed, successor)
+    removed
 }
 
 pub(super) struct DirectorySelection<'io, A: 'static, O: 'static> {

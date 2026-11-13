@@ -166,6 +166,15 @@ impl WorkspaceRef {
 }
 
 impl GenerationRef {
+    pub(crate) fn clone_in_quota(
+        &self,
+        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    ) -> Result<Self> {
+        Self::from_resource(
+            crate::core::copy_resource(self.as_resource(), quota)?,
+            quota.work(),
+        )
+    }
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         self.0.logical_owned_bytes()
     }

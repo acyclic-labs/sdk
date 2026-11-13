@@ -895,28 +895,37 @@ pub trait AgentRecord: Serialize + for<'de> Deserialize<'de> {
     ) -> Result<acyclic_fs::kernel::Retained<Self>, acyclic_fs::kernel::MetadataDecodeError<Error>>
     {
         use acyclic_fs::kernel::MetadataDecodeError;
-        accounting.charge(acyclic_fs::WorkCounters {
-            items_examined: 1,
-            ..acyclic_fs::WorkCounters::UNCHARGED
-        })?;
-        let payload = record_payload(bytes).map_err(MetadataDecodeError::Codec)?;
-        let value = decode_payload_with(
-            payload,
-            |decoder| {
-                accounting
-                    .deserialize::<Self, _>(decoder)
-                    .map_err(|error| match error {
-                        MetadataDecodeError::Work(error) => MetadataDecodeError::Work(error),
-                        MetadataDecodeError::Codec(_) => {
-                            MetadataDecodeError::Codec(Error::Record("record is malformed"))
-                        }
-                    })
-            },
-            || MetadataDecodeError::Codec(Error::Record("record is malformed")),
-        )?;
+        let value = decode_record_accounted::<Self>(bytes, accounting)?;
         value.check().map_err(MetadataDecodeError::Codec)?;
         Ok(value)
     }
+}
+
+pub(crate) fn decode_record_accounted<T: serde::de::DeserializeOwned>(
+    bytes: &[u8],
+    accounting: &mut acyclic_fs::kernel::KernelAccounting<'_>,
+) -> Result<acyclic_fs::kernel::Retained<T>, acyclic_fs::kernel::MetadataDecodeError<Error>> {
+    use acyclic_fs::kernel::MetadataDecodeError;
+    accounting.charge(acyclic_fs::WorkCounters {
+        items_examined: 1,
+        ..acyclic_fs::WorkCounters::UNCHARGED
+    })?;
+    let payload = record_payload(bytes).map_err(MetadataDecodeError::Codec)?;
+    let value = decode_payload_with(
+        payload,
+        |decoder| {
+            accounting
+                .deserialize::<T, _>(decoder)
+                .map_err(|error| match error {
+                    MetadataDecodeError::Work(error) => MetadataDecodeError::Work(error),
+                    MetadataDecodeError::Codec(_) => {
+                        MetadataDecodeError::Codec(Error::Record("record is malformed"))
+                    }
+                })
+        },
+        || MetadataDecodeError::Codec(Error::Record("record is malformed")),
+    )?;
+    Ok(value)
 }
 
 fn check_outcome(outcome: &AgentOutcome) -> Result<(), Error> {
