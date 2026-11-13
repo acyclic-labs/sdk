@@ -67,6 +67,10 @@ async function main() {
       }
       return;
     }
+    const discovery = await fetch("http://127.0.0.1:15420/actors-discovery");
+    const discoveryOutput = await discovery.text();
+    if (!discovery.ok) throw new Error(`discovery HTTP ${discovery.status}: ${discoveryOutput}`);
+    console.log(`workerd Actors discovery: ${discoveryOutput}`);
     const alarm = await fetch("http://127.0.0.1:15420/alarm-recovery");
     const alarmOutput = await alarm.text();
     if (!alarm.ok) throw new Error(`alarm recovery HTTP ${alarm.status}: ${alarmOutput}`);
