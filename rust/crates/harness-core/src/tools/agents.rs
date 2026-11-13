@@ -769,7 +769,11 @@ impl AgentTool {
                 })?;
             if open.contains(child).await.map_err(Error::from)? {
                 pending.insert(child.clone());
-                unsettled.push(json!({"name": name, "phase": phase}));
+                unsettled.push(json!({
+                    "name": name,
+                    "phase": phase,
+                    "progress": observed.as_ref().and_then(|observed| observed.activity.as_ref()),
+                }));
             } else {
                 stranded.push(format!("{name} ({phase}, not an open child)"));
             }
@@ -811,6 +815,7 @@ impl AgentTool {
                         "phase": serde_json::to_value(&observed.phase)
                             .map_err(|error| Error::Invalid(error.to_string()))?,
                         "answer": answer,
+                        "progress": observed.activity,
                     });
                     if let Some(TurnOutcome::Failed { message }) = outcome {
                         entry["failed"] = json!(message);
@@ -945,7 +950,7 @@ impl ToolExecutor for AgentTool {
     fn preparation_timeout(
         &self,
         invocation: &ToolInvocation,
-    ) -> Result<Option<(u64, ToolResult)>> {
+    ) -> Result<Option<crate::tool::PreparationTimeout>> {
         if self.name != "wait" {
             return Ok(None);
         }
@@ -963,18 +968,24 @@ impl ToolExecutor for AgentTool {
             let unsettled: Vec<_> = input
                 .agents
                 .iter()
-                .map(|name| json!({"name": name, "phase": "unknown"}))
+                .map(|name| json!({"name": name, "phase": "unknown", "progress": null}))
                 .collect();
-            (
-                timeout,
-                ToolResult {
+            crate::tool::PreparationTimeout {
+                timeout_ms: timeout,
+                result: ToolResult {
                     value: json!({
                         "settled": [], "unsettled": unsettled, "sent": [],
                         "unobserved_sent": input.sent,
                         "reason": reason
                     }),
                 },
-            )
+                observe_on_expiry: matches!(
+                    self.release(invocation.operation_id),
+                    Some(
+                        crate::agent::WaitReason::Deadline | crate::agent::WaitReason::Input { .. }
+                    )
+                ),
+            }
         }))
     }
 
@@ -1140,7 +1151,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "wait",
             definition::<WaitAgentInput>(
                 "wait",
-                "Wait for children to settle or for replies to original send IDs in sent. Child results include phase and last answer, failed when a turn failed, and branch when addressed by spawn name. Sent results report only the original delivery and reply settlement, never the peer's transcript or files; exchange reply content with send and re. Every result identifies its reason: need_met, deadline, input (with its inbox sequence), or settlement (with its child). need (default all) counts distinct children and send IDs together, 1 for the first; timeout_ms returns regardless. With neither agents nor sent, use timeout_ms for one actor alarm, input=true for inbox input, or both for whichever arrives first. input=true also interrupts a settlement wait. No timer runs per waiting agent. Inspect child changes with fs diff <branch>, then accept them with fs merge <branch>",
+                "Wait for children to settle or for replies to original send IDs in sent. Child results include phase and last answer, failed when a turn failed, and branch when addressed by spawn name. Running children include progress from their current input: the zero-based step, original journal publication time and age_ms; null means no activity observation is available. Sent results report only the original delivery and reply settlement, never the peer's transcript or files; exchange reply content with send and re. Every result identifies its reason: need_met, deadline, input (with its inbox sequence), or settlement (with its child). need (default all) counts distinct children and send IDs together, 1 for the first; timeout_ms returns regardless. With neither agents nor sent, use timeout_ms for one actor alarm, input=true for inbox input, or both for whichever arrives first. input=true also interrupts a settlement wait. No timer runs per waiting agent. Inspect child changes with fs diff <branch>, then accept them with fs merge <branch>",
             )?,
         ),
     ] {
@@ -1411,6 +1422,7 @@ mod tests {
                     crate::agent::Phase::Running
                 },
                 answer: None,
+                activity: None,
             };
             Box::pin(async move { Ok(phase) })
         }

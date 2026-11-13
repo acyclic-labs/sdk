@@ -55,7 +55,8 @@ pub(crate) use tool_changes::decode_tool_table;
 mod event_page;
 mod tool_changes;
 pub use event_page::{
-    EXECUTION_EVENT_PAGE_RECORDS, ExecutionEventPage, ExecutionPayloadField, event_page,
+    EXECUTION_EVENT_PAGE_RECORDS, ExecutionActivity, ExecutionEventPage, ExecutionPayloadField,
+    event_page,
 };
 mod model_cache;
 mod model_cost;

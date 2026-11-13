@@ -286,6 +286,13 @@ async fn detached_and_forged_checkpoint_heads_cannot_authorize_recovery() -> Res
             .is_err(),
         "detached valid root was accepted without its anchor commit"
     );
+    assert!(
+        journal
+            .activity(operation, &acyclic_actors::local::SystemClock)
+            .await
+            .is_err(),
+        "activity trusted a detached checkpoint"
+    );
     let observation = bytes(operation, "forged", &event(0))?;
     let mut forged = codec::decode(&original, None)?;
     forged.state.tail = 2;
@@ -327,6 +334,13 @@ async fn detached_and_forged_checkpoint_heads_cannot_authorize_recovery() -> Res
             .await
             .is_err(),
         "forged root was accepted merely because its anchor was atomic"
+    );
+    assert!(
+        journal
+            .activity(operation, &acyclic_actors::local::SystemClock)
+            .await
+            .is_err(),
+        "activity trusted an unsigned root and atomic anchor"
     );
     Ok(())
 }

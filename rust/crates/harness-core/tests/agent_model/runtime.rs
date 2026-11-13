@@ -181,6 +181,7 @@ async fn same_phase_settlement_advances_the_original_actor_checkpoint() -> Resul
                 settled: true,
                 phase: Phase::Idle,
                 answer: Some(n),
+                activity: None,
             }
         );
     }

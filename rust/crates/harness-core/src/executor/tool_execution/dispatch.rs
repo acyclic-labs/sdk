@@ -100,23 +100,34 @@ impl<'io> StockExecution<'io> {
             let prepared = if let Some(preparation) = preparation {
                 let deadline = timeout
                     .as_ref()
-                    .map(|(timeout, _)| Self::tool_wait_deadline(started_at, *timeout))
+                    .map(|timeout| Self::tool_wait_deadline(started_at, timeout.timeout_ms))
                     .transpose()?;
                 let preparation = async {
-                    let Some((_, result)) = timeout else {
+                    let Some(timeout) = timeout else {
                         return preparation.await;
                     };
                     let alarm = journal.preparation_deadline(deadline.ok_or_else(|| {
                         Error::Invalid("timed preparation has no original deadline".into())
                     })?)?;
-                    futures::pin_mut!(preparation);
-                    // At expiry, do no new storage work merely to describe an
-                    // already elapsed wait. Unobserved children remain unknown.
-                    match futures::future::select(alarm, preparation).await {
-                        futures::future::Either::Right((prepared, _)) => prepared,
-                        futures::future::Either::Left((expired, _)) => {
-                            expired?;
-                            Ok((crate::tool::ToolPreparation::Ready(result), None))
+                    let expired = async {
+                        alarm.await?;
+                        Ok((crate::tool::ToolPreparation::Ready(timeout.result), None))
+                    };
+                    futures::pin_mut!(preparation, expired);
+                    if timeout.observe_on_expiry {
+                        // The actor has already released the condition. Allow
+                        // its ready snapshot to describe progress, but do not
+                        // wait for any observation that is still pending.
+                        match futures::future::select(preparation, expired).await {
+                            futures::future::Either::Left((result, _))
+                            | futures::future::Either::Right((result, _)) => result,
+                        }
+                    } else {
+                        // Expiry of an initial or blocked preparation starts
+                        // no new observation just to describe an elapsed wait.
+                        match futures::future::select(expired, preparation).await {
+                            futures::future::Either::Left((result, _))
+                            | futures::future::Either::Right((result, _)) => result,
                         }
                     }
                 };

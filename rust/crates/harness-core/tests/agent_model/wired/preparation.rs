@@ -20,6 +20,7 @@ impl acyclic_stream::UnixMillisClock for JournalClock {
 }
 #[derive(Default)]
 struct Probe {
+    clock: Option<Arc<acyclic_actors::local::ControlledClock>>,
     journal: Mutex<
         Option<(
             OperationId,
@@ -236,7 +237,10 @@ pub(super) async fn check(
     clock: Arc<acyclic_actors::local::ControlledClock>,
     control: &mut acyclic_actors::local::ClockControl,
 ) -> Result {
-    let probe = Arc::new(Probe::default());
+    let probe = Arc::new(Probe {
+        clock: Some(clock.clone()),
+        ..Probe::default()
+    });
     let dispatch_probe = probe.clone();
     let model = Arc::new(
         ScriptedModelProvider::new([
@@ -405,6 +409,7 @@ async fn observe(
     per_call_deadline(host, probe, model, parent, child, control).await?;
     admission(host, probe, model, parent, child).await?;
     parallel(stream, host, probe, model, parent, child).await?;
+    live_activity(host, probe, model, parent, child, control).await?;
     model.extend([wait(child)]);
 
     let (producer, gate) = oneshot::channel();
@@ -428,6 +433,109 @@ async fn observe(
     };
     assert_eq!(probe.reads.swap(0, Ordering::SeqCst), 1);
     dropped_answer(host, probe, model, parent, child).await
+}
+
+async fn live_activity(
+    host: &AgentHost<MemoryStream>,
+    probe: &Probe,
+    model: &ScriptedModelProvider,
+    parent: &AgentPath,
+    child: &AgentPath,
+    control: &mut acyclic_actors::local::ClockControl,
+) -> Result {
+    let clock = probe.clock.as_ref().ok_or("missing shared test clock")?;
+    let deadline = acyclic_actors::local::Clock::now_unix_ms(&**clock)
+        .checked_add(10)
+        .ok_or("test deadline overflow")?;
+    model.extend([
+        ScriptedTurn::Text("working child answer".into()),
+        selected(&[child], Some(10), None),
+        ScriptedTurn::Text("parent observed live progress".into()),
+        ScriptedTurn::Text("none".into()),
+        selected(&[child], Some(10), None),
+        ScriptedTurn::Text("parent did not wait on unavailable progress".into()),
+        ScriptedTurn::Text("none".into()),
+        ScriptedTurn::Text("none".into()),
+        ScriptedTurn::Text("parent observed the eventual completion".into()),
+        ScriptedTurn::Text("none".into()),
+    ]);
+    let (entered, observed) = oneshot::channel();
+    let (release, gate) = oneshot::channel();
+    *probe.model_gate.lock().unwrap() = Some((entered, gate));
+    let mut working = Box::pin(deliver(
+        host,
+        child,
+        requested("live-child-activity", child),
+    ));
+    match futures::future::select(working.as_mut(), observed).await {
+        futures::future::Either::Right((observed, _)) => observed?,
+        futures::future::Either::Left(_) => {
+            return Err("child did not reach its original model admission".into());
+        }
+    }
+    let (operation, journal) = probe
+        .journal
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("child journal was not bound")?;
+    let record = journal
+        .replay(operation, 0, 32, None)?
+        .await?
+        .pop()
+        .ok_or("child's model admission is absent")?;
+    let acyclic_harness_core::executor::ExecutionEvent::ModelStarted { step, .. } = record.event
+    else {
+        return Err("held child has no original model-start observation".into());
+    };
+    let at = record
+        .committed_at_micros
+        .ok_or("child's original timestamp is absent")?;
+    let waiting = deliver(host, parent, requested("observe-live-child", parent)).await?;
+    assert!(
+        matches!(waiting.phase, Phase::Waiting { deadline_unix_ms: Some(at), .. } if at == deadline)
+    );
+    control.advance_to(deadline)?;
+    host.drain(parent).await?;
+    let value = result(model);
+    assert_eq!(value["reason"]["kind"], "deadline");
+    assert_eq!(
+        value["unsettled"][0]["progress"],
+        serde_json::json!({
+            "sequence": record.sequence,
+            "step": step,
+            "committed_at_micros": at,
+            "age_ms": deadline.saturating_sub(at / 1000),
+        })
+    );
+    assert_eq!(probe.reads.swap(0, Ordering::SeqCst), 2);
+    // Negative control: a released deadline may poll a ready snapshot once,
+    // but cannot wait on a blocked producer to decorate the expired result.
+    let waiting = deliver(host, parent, requested("unavailable-live-child", parent)).await?;
+    let deadline = deadline + 10;
+    assert!(
+        matches!(waiting.phase, Phase::Waiting { deadline_unix_ms: Some(at), .. } if at == deadline)
+    );
+    let (producer, gate) = oneshot::channel();
+    *probe.gate.lock().unwrap() = Some(gate);
+    control.advance_to(deadline)?;
+    host.drain(parent).await?;
+    assert!(
+        producer.send(()).is_err(),
+        "expired observation retained its producer"
+    );
+    let value = result(model);
+    assert_eq!(value["reason"]["kind"], "deadline");
+    assert_eq!(value["unsettled"][0]["phase"], "unknown");
+    assert!(value["unsettled"][0]["progress"].is_null());
+    assert_eq!(probe.reads.swap(0, Ordering::SeqCst), 2);
+    release
+        .send(())
+        .map_err(|_| "child's producer disappeared")?;
+    assert_eq!(working.await?.phase, Phase::Idle);
+    host.drain(parent).await?;
+    assert!(settled(host.provider(), &within(), parent).await?.settled);
+    Ok(())
 }
 
 async fn pending_start(
@@ -550,7 +658,7 @@ async fn deadlines(
     assert_eq!(result(model)["reason"]["kind"], "deadline");
     assert_eq!(
         result(model)["unsettled"],
-        serde_json::json!([{ "name": child.as_str(), "phase": "unknown" }])
+        serde_json::json!([{ "name": child.as_str(), "phase": "running", "progress": null }])
     );
     control.advance_to(129)?;
     host.drain(parent).await?;
@@ -563,12 +671,12 @@ async fn deadlines(
     assert_eq!(result(model)["reason"]["kind"], "deadline");
     assert_eq!(
         result(model)["unsettled"],
-        serde_json::json!([{ "name": child.as_str(), "phase": "unknown" }])
+        serde_json::json!([{ "name": child.as_str(), "phase": "running", "progress": null }])
     );
     assert_eq!(
         probe.reads.swap(0, Ordering::SeqCst),
-        2,
-        "expired waits must not start new observations"
+        4,
+        "each released deadline observes its child once"
     );
     host.drain(child).await?;
     // The parent is idle after its own timeout; the later child settlement
