@@ -128,10 +128,13 @@ async fn native_local_inputs_retire_before_their_credit() -> Result<(), Box<dyn 
                 let requests = vec![(body, references)];
                 input_bytes += requests.capacity() * size_of::<(crate::Sealed, Vec<Digest>)>();
                 let custody = ReadAllocation::new(&meter, input_bytes)?;
-                let future = blobs.put_batch_native(
-                    crate::ObjectsNativeRequest::new(requests, custody, &meter)?,
-                    Arc::clone(&meter),
-                )?;
+                let future = blobs
+                    .native()
+                    .expect("native account capability")
+                    .put_batch_native(
+                        crate::ObjectsNativeRequest::new(requests, custody, &meter)?,
+                        Arc::clone(&meter),
+                    )?;
                 Box::pin(async move {
                     let mut results = future.await?;
                     assert_eq!(results.len(), 1);
@@ -142,10 +145,13 @@ async fn native_local_inputs_retire_before_their_credit() -> Result<(), Box<dyn 
                 })
             } else {
                 let custody = ReadAllocation::new(&meter, input_bytes)?;
-                let future = blobs.put_native(
-                    crate::ObjectsNativeRequest::new((body, references), custody, &meter)?,
-                    Arc::clone(&meter),
-                )?;
+                let future = blobs
+                    .native()
+                    .expect("native account capability")
+                    .put_native(
+                        crate::ObjectsNativeRequest::new((body, references), custody, &meter)?,
+                        Arc::clone(&meter),
+                    )?;
                 Box::pin(async move { future.await.map(|receipt| receipt.put().clone()) })
             };
             // The original payload was already admitted before arming the
@@ -264,10 +270,15 @@ async fn native_local_batch_retires_results_before_their_credit()
             })
             .collect();
         let (mut reached, release) = medium.park("read", last.clone());
-        let mut read = Box::pin(blobs.get_batch_native(
-            crate::ObjectsNativeRequest::new(requests, (), &meter)?,
-            meter,
-        )?);
+        let mut read = Box::pin(
+            blobs
+                .native()
+                .expect("native account capability")
+                .get_batch_native(
+                    crate::ObjectsNativeRequest::new(requests, (), &meter)?,
+                    meter,
+                )?,
+        );
         super::drive_to_park(read.as_mut(), &mut reached).await;
         // The last request starts only after an earlier result was delivered
         // into the original vector. Its physical read now owns the one wait.
@@ -350,6 +361,8 @@ async fn native_local_batch_refusals_belong_to_their_original_members()
             let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
             let causes = if read {
                 blobs
+                    .native()
+                    .expect("native account capability")
                     .get_batch_native(
                         crate::ObjectsNativeRequest::new(
                             vec![(digest, ByteRange::FULL, bytes.len() as u64); 4],
@@ -363,6 +376,8 @@ async fn native_local_batch_refusals_belong_to_their_original_members()
                     .collect::<Vec<_>>()
             } else {
                 blobs
+                    .native()
+                    .expect("native account capability")
                     .put_batch_native(
                         crate::ObjectsNativeRequest::new(
                             super::sealed(
@@ -432,7 +447,12 @@ async fn native_local_presence_finishes_on_original_read_outcomes()
             *budget.writes.lock().unwrap() = Some(0);
             let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
             let request = crate::ObjectsNativeRequest::new(digest, (), &meter)?;
-            let mut operation = Box::pin(blobs.contains_native(request, Arc::clone(&meter))?);
+            let mut operation = Box::pin(
+                blobs
+                    .native()
+                    .expect("native account capability")
+                    .contains_native(request, Arc::clone(&meter))?,
+            );
             let (mut reached, release) = medium.park("read", fragment);
             super::drive_to_park(operation.as_mut(), &mut reached).await;
             if state == 1 {
@@ -480,6 +500,9 @@ async fn native_local_decoded_metadata_keeps_its_original_credit()
     let store =
         Store::new(crate::LocalMedium::open(directory.path(), Default::default(), None).await?);
     let blobs = store.account(b"decoded-metadata")?;
+    #[cfg(feature = "conformance")]
+    let blobs = acyclic_stream::testing::Counted::new(blobs);
+    let blobs = Arc::new(blobs);
     let mut references = Vec::new();
     for byte in 0..3 {
         references.push(
@@ -504,11 +527,19 @@ async fn native_local_decoded_metadata_keeps_its_original_credit()
         let request = (digest, ByteRange::FULL, 19);
         let object = if batch {
             let request = crate::ObjectsNativeRequest::new(vec![request], (), &meter)?;
-            let mut results = blobs.get_batch_native(request, meter)?.await?;
+            let mut results = blobs
+                .native()
+                .expect("native account capability")
+                .get_batch_native(request, meter)?
+                .await?;
             results.next().ok_or("original batch member")??
         } else {
             let request = crate::ObjectsNativeRequest::new(request, (), &meter)?;
-            blobs.get_native(request, meter)?.await?
+            blobs
+                .native()
+                .expect("native account capability")
+                .get_native(request, meter)?
+                .await?
         };
         assert_eq!(object.head().references, references);
         let metadata = (object.head().references.capacity() * size_of::<Digest>()) as u64;
@@ -588,6 +619,8 @@ async fn native_manifest_reads_release_copied_fragments_before_the_next_read()
     let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
     let request = crate::ObjectsNativeRequest::new((digest, ByteRange::FULL, length), (), &meter)?;
     let object = blobs
+        .native()
+        .expect("native account capability")
         .get_native(request, Arc::clone(&meter))?
         .await
         .unwrap_or_else(|error| {
@@ -607,7 +640,7 @@ async fn native_manifest_reads_release_copied_fragments_before_the_next_read()
     let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
     let request = crate::ObjectsNativeRequest::new((digest, ByteRange::FULL, length), (), &meter)?;
     assert!(matches!(
-        blobs.get_native(request, meter)?.await
+        blobs.native().expect("native account capability").get_native(request, meter)?.await
             .expect_err("manifest assembly bypassed original allocation admission").into_cause(),
         crate::NativeObjectsCause::Admission(error) if error.kind() == std::io::ErrorKind::OutOfMemory
     ));
@@ -620,7 +653,12 @@ async fn native_manifest_reads_release_copied_fragments_before_the_next_read()
         let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
         let request =
             crate::ObjectsNativeRequest::new((digest, ByteRange::FULL, length), (), &meter)?;
-        let mut operation = Box::pin(blobs.get_native(request, meter)?);
+        let mut operation = Box::pin(
+            blobs
+                .native()
+                .expect("native account capability")
+                .get_native(request, meter)?,
+        );
         let (mut reached, release) =
             medium.park("read", format!("/{}.", leaves[2].digest.to_hex()));
         super::drive_to_park(operation.as_mut(), &mut reached).await;
@@ -709,11 +747,21 @@ async fn retained_local_reads_do_not_claim_a_writer_run() -> Result<(), Box<dyn 
         (),
         &meter,
     )?;
-    let native = reader.get_native(request, Arc::clone(&meter))?.await?;
+    let native = reader
+        .native()
+        .expect("native account capability")
+        .get_native(request, Arc::clone(&meter))?
+        .await?;
     assert_eq!(native.body(), &bytes);
     assert!(native.head().revision.is_none());
     let request = crate::ObjectsNativeRequest::new(digest, (), &meter)?;
-    assert!(reader.contains_native(request, Arc::clone(&meter))?.await?);
+    assert!(
+        reader
+            .native()
+            .expect("native account capability")
+            .contains_native(request, Arc::clone(&meter))?
+            .await?
+    );
 
     // Original account selection still fences equal digests in another account.
     assert_eq!(
@@ -726,7 +774,13 @@ async fn retained_local_reads_do_not_claim_a_writer_run() -> Result<(), Box<dyn 
     );
     let other = selected.account(b"other-account")?;
     let request = crate::ObjectsNativeRequest::new(digest, (), &meter)?;
-    assert!(!other.contains_native(request, Arc::clone(&meter))?.await?);
+    assert!(
+        !other
+            .native()
+            .expect("native account capability")
+            .contains_native(request, Arc::clone(&meter))?
+            .await?
+    );
     assert_eq!(selected.medium().writes.load(Ordering::SeqCst), 0);
     // The same projection refuses a real writer; reads did not borrow authority.
     assert_eq!(

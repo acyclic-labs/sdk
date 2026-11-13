@@ -1,9 +1,5 @@
 //! The account-scoped blob contract every provider implements.
 use crate::{ByteRange, Digest, Error, Kind, Manifest, Sealed, wire};
-#[cfg(not(target_arch = "wasm32"))]
-use crate::{NativeObjectsCause, NativeObjectsError, ObjectsBatch, ObjectsNativeFuture};
-#[cfg(not(target_arch = "wasm32"))]
-use crate::{ObjectsNativeRequest, ObjectsPutReceipt};
 use acyclic_stream::{OwnedBytes, Revision};
 
 /// Requests a default batch keeps in flight: one round trip covers a window
@@ -435,73 +431,10 @@ pub trait Blobs: acyclic_stream::ProviderPlatform {
         results
     }
 
-    /// Checks complete blob presence under the caller's original meter.
-    /// Every physical read is admitted before dispatch; cancellation and
-    /// physical failures remain errors. Only absence returns `false`.
-    /// Temporary head metadata retires within the call.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn contains_native(
-        &self,
-        _request: ObjectsNativeRequest<Digest>,
-        _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> Result<ObjectsNativeFuture<'_, bool>, NativeObjectsError> {
-        Err(NativeObjectsError::from(NativeObjectsCause::Unsupported))
-    }
-
-    /// Reads under the caller's original allocation owner.
-    /// Decoded metadata is admitted before allocation and retains its original
-    /// credit through the returned object's lifetime. Body aliases retain
-    /// their independent original backing credit.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn get_native(
-        &self,
-        _request: ObjectsNativeRequest<(Digest, ByteRange, u64)>,
-        _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> Result<ObjectsNativeFuture<'_, Object>, NativeObjectsError> {
-        Err(NativeObjectsError::from(NativeObjectsCause::Unsupported))
-    }
-
-    /// Reads a batch under the caller's original allocation owner.
-    /// Each returned object retains its decoded metadata as in [`Blobs::get_native`].
-    #[cfg(not(target_arch = "wasm32"))]
-    fn get_batch_native(
-        &self,
-        _requests: ObjectsNativeRequest<Vec<(Digest, ByteRange, u64)>>,
-        _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<Object>>, NativeObjectsError> {
-        Err(NativeObjectsError::from(NativeObjectsCause::Unsupported))
-    }
-
-    /// Stores under the caller's original allocation owner.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn put_native(
-        &self,
-        _request: ObjectsNativeRequest<(Sealed, Vec<Digest>)>,
-        _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> Result<ObjectsNativeFuture<'_, ObjectsPutReceipt>, NativeObjectsError> {
-        Err(NativeObjectsError::from(NativeObjectsCause::Unsupported))
-    }
-
-    /// Stores a batch under the caller's original allocation owner.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn put_batch_native(
-        &self,
-        _requests: ObjectsNativeRequest<Vec<(Sealed, Vec<Digest>)>>,
-        _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
-        Err(NativeObjectsError::from(NativeObjectsCause::Unsupported))
-    }
-
-    /// Retains a batch under `root` within the caller's original work: every
-    /// medium operation is admitted to, and every buffer charged on, its
-    /// meter, and the call observes its cancellation.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn retain_native(
-        &self,
-        _request: ObjectsNativeRequest<(RootId, Vec<Digest>)>,
-        _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> Result<ObjectsNativeFuture<'_, Retained>, NativeObjectsError> {
-        Err(NativeObjectsError::from(NativeObjectsCause::Unsupported))
+    /// The provider's original-meter capability, when supported. Absence never
+    /// falls back to ordinary operations that cannot retain native custody.
+    fn native(&self) -> Option<&dyn crate::NativeBlobs> {
+        None
     }
 }
 

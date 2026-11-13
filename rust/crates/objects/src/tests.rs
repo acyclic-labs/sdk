@@ -3748,6 +3748,8 @@ async fn a_native_batch_has_every_member_in_flight_at_once()
         .await?;
     store.medium().peak();
     let batch = blobs
+        .native()
+        .expect("native account capability")
         .put_batch_native(
             crate::ObjectsNativeRequest::new(sealed(bodies(1)), (), &meter)?,
             std::sync::Arc::clone(&meter),
@@ -3763,6 +3765,8 @@ async fn a_native_batch_has_every_member_in_flight_at_once()
         .map(|digest| (*digest, ByteRange::FULL, 8))
         .collect();
     let batch = blobs
+        .native()
+        .expect("native account capability")
         .get_batch_native(
             crate::ObjectsNativeRequest::new(requests, (), &meter)?,
             std::sync::Arc::clone(&meter),
@@ -3862,6 +3866,8 @@ async fn a_native_batch_member_starts_once_the_members_it_needs_complete()
     };
     slow(1);
     let receipts = blobs
+        .native()
+        .expect("native account capability")
         .put_batch_native(
             crate::ObjectsNativeRequest::new(sealed(batch(1)), (), &meter)?,
             std::sync::Arc::clone(&meter),
@@ -3959,7 +3965,10 @@ async fn a_native_retain_runs_inside_the_callers_work() -> Result<(), Box<dyn st
             (),
             &meter,
         )?;
-        let future = blobs.retain_native(request, std::sync::Arc::clone(&meter));
+        let future = blobs
+            .native()
+            .expect("native account capability")
+            .retain_native(request, std::sync::Arc::clone(&meter));
         let completed = if limit == 0 {
             let refusal = future.err().map(|error| error.into_cause());
             assert!(
@@ -4025,6 +4034,8 @@ async fn a_retain_short_of_writes_writes_no_index_key() -> Result<(), Box<dyn st
         let meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
         let request = crate::ObjectsNativeRequest::new((root.clone(), vec![digest]), (), &meter)?;
         let retained = blobs
+            .native()
+            .expect("native account capability")
             .retain_native(request, std::sync::Arc::clone(&meter))?
             .await;
         let refusal = retained.err().map(|error| error.into_cause());

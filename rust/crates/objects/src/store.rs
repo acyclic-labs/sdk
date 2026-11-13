@@ -2190,7 +2190,19 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
         )
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    fn native(&self) -> Option<&dyn crate::NativeBlobs> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            Some(self)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            None
+        }
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::NativeBlobs for Account<M, P> {
     fn contains_native(
         &self,
         request: crate::ObjectsNativeRequest<Digest>,
@@ -2199,7 +2211,6 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
         crate::native::contains(self, request, meter)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn get_native(
         &self,
         request: crate::ObjectsNativeRequest<(Digest, ByteRange, u64)>,
@@ -2208,7 +2219,6 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
         crate::native::get(self, request, meter)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn get_batch_native(
         &self,
         requests: crate::ObjectsNativeRequest<Vec<(Digest, ByteRange, u64)>>,
@@ -2220,7 +2230,6 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
         crate::native::get_batch(self, requests, meter)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn put_native(
         &self,
         request: crate::ObjectsNativeRequest<(crate::Sealed, Vec<Digest>)>,
@@ -2230,7 +2239,6 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
         crate::native::put(self, request, meter)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn put_batch_native(
         &self,
         requests: crate::ObjectsNativeRequest<Vec<(crate::Sealed, Vec<Digest>)>>,
@@ -2242,7 +2250,6 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
         crate::native::put_batch(self, requests, meter)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn retain_native(
         &self,
         request: crate::ObjectsNativeRequest<(RootId, Vec<Digest>)>,
