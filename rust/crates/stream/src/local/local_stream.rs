@@ -662,27 +662,39 @@ impl LocalStream {
                         owner.active = false;
                         Ok(flushed)
                     };
-                    #[cfg(not(loom))]
-                    let submitted = acyclic_native_runtime::FileLease::submit(
-                        "streams", "flush", key, acquire, flush,
+                    let submitted = async move {
+                        #[cfg(not(loom))]
+                        let submitted = acyclic_native_runtime::FileLease::submit(
+                            "streams", "flush", key, acquire, flush,
+                        );
+                        #[cfg(loom)]
+                        let submitted =
+                            query_model::submit_file("streams", "flush", key, acquire, flush);
+                        submitted.await
+                    };
+                    #[cfg(feature = "serde")]
+                    let submitted = crate::trace::observe_value(
+                        crate::trace::Request {
+                            name: "stream.journal_flush",
+                            mechanism: crate::trace::Mechanism::Fsync,
+                            parent: None,
+                            guarantee: Some(match durability {
+                                LocalDurability::FullFlush => "journal_cut_device_flushed",
+                                LocalDurability::Barrier => "journal_cut_writes_ordered",
+                            }),
+                        },
+                        submitted,
+                        |result| match result {
+                            Ok(Ok(Some(()))) if self.check_available().is_ok() => {
+                                Some((None, crate::trace::Outcome::Succeeded))
+                            }
+                            _ => None,
+                        },
                     );
-                    #[cfg(loom)]
-                    let submitted =
-                        query_model::submit_file("streams", "flush", key, acquire, flush);
-                    let flushed = submitted.await.map_err(|_| {
+                    submitted.await.map_err(|_| {
                         self.inner
                             .fail(LocalStreamFailure::new("flush", "executor"))
                     })??;
-                    // Group commit: one fsync covers every frame written since the last one.
-                    if let Some((target, synced_before, journal_bytes)) = flushed {
-                        tracing::debug!(
-                            fsyncs = 1_u64,
-                            batch_len = target.saturating_sub(synced_before),
-                            journal_bytes,
-                            waiters = self.inner.synced.receiver_count(),
-                            "acyclic.stream.fsync"
-                        );
-                    }
                 }
                 None => {
                     if synced.changed().await.is_err() {

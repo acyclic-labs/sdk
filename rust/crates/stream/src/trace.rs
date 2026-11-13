@@ -9,7 +9,7 @@ use crate::RetainedRecord;
 #[cfg(feature = "serde")]
 mod context;
 #[cfg(feature = "serde")]
-pub(crate) use context::{is_source, records};
+pub(crate) use context::{inherit, is_source, records};
 #[cfg(feature = "serde")]
 pub use context::{observe, observe_outcome, observe_value};
 #[cfg(feature = "serde")]

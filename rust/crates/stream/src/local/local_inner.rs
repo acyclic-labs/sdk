@@ -129,7 +129,7 @@ impl LocalInner {
         file: &acyclic_native_runtime::FileLease,
         durability: LocalDurability,
         work: Option<&crate::native::Work>,
-    ) -> Option<(u64, u64, u64)> {
+    ) -> Option<()> {
         #[cfg(test)]
         {
             let journal_identity = Arc::as_ptr(&self.journal) as usize;
@@ -144,12 +144,12 @@ impl LocalInner {
                 let _ = release.recv();
             }
         }
-        let (target, synced_before, journal_bytes) = {
+        let target = {
             let Ok(journal) = self.journal.lock() else {
                 self.poison();
                 return None;
             };
-            (journal.appended, journal.synced, journal.bytes)
+            journal.appended
         };
         let flushed = match &work {
             Some(work) => file.flush(|file| work.sync(|| sync_file_data(file, durability))),
@@ -191,6 +191,6 @@ impl LocalInner {
                 );
             }
         }
-        Some((target, synced_before, journal_bytes))
+        Some(())
     }
 }
