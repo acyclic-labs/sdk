@@ -526,6 +526,7 @@ impl ToolContext {
             let Some(receipt) = receipt else {
                 return Ok((None, retained));
             };
+            let hold = io.map(|io| io.guard_owned(retained)).transpose()?;
             if receipt.members.len() != 1 {
                 return Err(crate::executor::stock_boundary(
                     io,
@@ -534,15 +535,15 @@ impl ToolContext {
                 ));
             }
             if receipt.members[0].path() != path.as_ref() {
-                #[cfg(not(target_arch = "wasm32"))]
-                let hold = io.map(|io| io.guard_owned(retained)).transpose()?;
                 drop(receipt);
-                #[cfg(not(target_arch = "wasm32"))]
                 drop(hold);
                 return Ok((None, 0));
             }
             self.published_changes(operation_id, volume, &receipt, io)
                 .await?;
+            if let Some(hold) = hold {
+                hold.into_retained()?;
+            }
             let (file, retained) = Self::replacement_file(receipt, retained, io)?;
             return Ok((Some(file), retained));
         }
@@ -558,8 +559,12 @@ impl ToolContext {
                 self.effective_scope(),
             )
             .await?;
+        let hold = io.map(|io| io.guard_owned(output.1)).transpose()?;
         if let Some(file) = &output.0 {
             self.published_file(operation_id, file, io).await?;
+        }
+        if let Some(hold) = hold {
+            hold.into_retained()?;
         }
         Ok(output)
     }
@@ -976,7 +981,11 @@ impl ToolContext {
                 io,
             )
             .await?;
+        let hold = io.map(|io| io.guard_owned(output.1)).transpose()?;
         self.published_file(operation_id, &output.0, io).await?;
+        if let Some(hold) = hold {
+            hold.into_retained()?;
+        }
         Ok(output)
     }
 
@@ -1025,8 +1034,12 @@ impl ToolContext {
                 io,
             )
             .await?;
+        let hold = io.map(|io| io.guard_owned(retained)).transpose()?;
         self.published_changes(operation_id, source.volume(), &receipt, io)
             .await?;
+        if let Some(hold) = hold {
+            hold.into_retained()?;
+        }
         Self::replacement_file(receipt, retained, io)
     }
 
