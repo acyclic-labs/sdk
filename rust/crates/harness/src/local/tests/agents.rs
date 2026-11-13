@@ -5477,6 +5477,21 @@ async fn assert_lost_model_producer(
     producer: tokio::sync::oneshot::Sender<()>,
     wire: bool,
 ) -> Result<()> {
+    fn exchange_failure<T: std::fmt::Debug>(result: &Result<T>, operation: &str) {
+        let Err(error @ Error::Exchange { .. }) = result else {
+            panic!("{operation} lost its typed exchange: {result:?}");
+        };
+        assert_eq!(error.code(), crate::wire::ErrorCode::Storage);
+        let mut source = std::error::Error::source(error);
+        while let Some(cause) = source {
+            if cause.to_string().contains("model producer closed") {
+                return;
+            }
+            source = cause.source();
+        }
+        panic!("{operation} lost the original producer cause: {error:?}");
+    }
+
     let client = Conversation::open(connection.clone());
     // Create the conversation through its actual first turn before testing
     // out-of-range follows: an absent stream intentionally waits for creation.
@@ -5568,16 +5583,10 @@ async fn assert_lost_model_producer(
         },
     };
     eprintln!("producer-loss wire={wire}: usage terminal");
-    assert!(
-        matches!(&usage_result, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
-        "usage lost the runtime cause: {usage_result:?}"
-    );
+    exchange_failure(&usage_result, "usage");
     let fenced = fenced.await;
     eprintln!("producer-loss wire={wire}: input fence terminal");
-    assert!(
-        matches!(&fenced, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
-        "input fence lost the runtime cause: {fenced:?}"
-    );
+    exchange_failure(&fenced, "input fence");
     let admitted = futures::poll!(&mut admission);
     assert!(
         admitted.is_pending(),
@@ -5591,22 +5600,15 @@ async fn assert_lost_model_producer(
     // Only the failed actor's live subscriptions report its original failure.
     let observed = waiting.await;
     eprintln!("producer-loss wire={wire}: public settlement terminal");
-    assert!(
-        matches!(&observed, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
-        "public settlement retained its lost model producer: {observed:?}"
-    );
+    exchange_failure(&observed, "public settlement");
     let hosted = harness.agents.get().unwrap();
     assert!(futures::poll!(core::pin::pin!(hosted.runtime.completion())).is_pending());
     loop {
         match retired.next_projected().await {
-            Err(Error::Storage(reason)) => {
-                assert!(
-                    reason.contains("model producer closed"),
-                    "retired follow lost the runtime cause: {reason}"
-                );
+            Err(error) => {
+                exchange_failure(&Err::<(), _>(error), "retired follow");
                 break;
             }
-            Err(error) => return Err(error),
             Ok((event, _)) => {
                 event?;
             }
