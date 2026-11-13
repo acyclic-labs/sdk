@@ -7,8 +7,8 @@ use acyclic_harness::{
     model::Model,
     resources::ProviderRef,
     test_support::{
-        PromptOutcome, ScriptedModelProvider, ScriptedTurn, local_harness_config, open_scripted,
-        prompt_settled,
+        PromptOutcome, ScriptedModelProvider, ScriptedTurn, local_harness_config_with_settings,
+        open_scripted, prompt_settled,
     },
 };
 use acyclic_native_runtime::testing::DurableWrite;
@@ -30,6 +30,29 @@ fn entry<'a, T>(future: impl Future<Output = T> + 'a) -> EntryFuture<'a, T> {
 
 fn storage(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
+}
+
+fn config(
+    directory: &Path,
+    workspace: &str,
+    model: (Model, Arc<ScriptedModelProvider>),
+) -> acyclic_harness::LocalHarnessConfig {
+    let before = acyclic_harness::native_settings::test_support::temporary_home_allocations();
+    let home = directory.join("home");
+    let config = local_harness_config_with_settings(
+        directory.join(workspace),
+        (model.0, model.1),
+        acyclic_harness::native_settings::SettingsConfig::new(directory.join(workspace), &home)
+            .codex_home(home.join(".codex")),
+    )
+    .without_user_settings()
+    .state_directory(directory.join("state"));
+    assert_eq!(
+        acyclic_harness::native_settings::test_support::temporary_home_allocations(),
+        before,
+        "disabled user settings allocated an unused temporary home"
+    );
+    config
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -328,13 +351,10 @@ fn scenario(directory: &Path) -> EntryFuture<'_, Result<(Vec<u8>, Vec<u8>, Vec<u
             ScriptedTurn::Text("reopened".into()),
         ]));
         let config = || -> Result<_> {
-            Ok(local_harness_config(
-                directory.join("filesystem"),
-                (model.clone(), provider.clone()),
-            )?
-            .without_user_settings()
-            .volume(volume.clone())
-            .state_directory(directory.join("state")))
+            Ok(
+                config(directory, "filesystem", (model.clone(), provider.clone()))
+                    .volume(volume.clone()),
+            )
         };
         let harness = Arc::new(entry(open_scripted(config()?)).await?);
         prompt(&harness, "first", "finish this turn", "done").await?;

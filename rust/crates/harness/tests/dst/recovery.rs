@@ -26,9 +26,7 @@ fn local_turn<'a>(
 ) -> EntryFuture<'a, Result<()>> {
     entry(async move {
         let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
-        let config = local_harness_config(directory.join("checkout"), (model, provider))?
-            .without_user_settings()
-            .state_directory(directory.join("state"));
+        let config = config(directory, "checkout", (model, provider));
         let harness = Arc::new(entry(open_scripted(config)).await?);
         if matches!(cut, Some(Cut::FirstTurnWrite)) {
             ordinal.store(schedule.cut_next(DurableFault::After), Ordering::SeqCst);

@@ -66,13 +66,10 @@ fn turns(
             .collect();
         let provider = Arc::new(ScriptedModelProvider::new(replies));
         let config = || -> Result<_> {
-            Ok(local_harness_config(
-                directory.join("filesystem"),
-                (model.clone(), provider.clone()),
-            )?
-            .without_user_settings()
-            .volume(volume.clone())
-            .state_directory(directory.join("state")))
+            Ok(
+                config(directory, "filesystem", (model.clone(), provider.clone()))
+                    .volume(volume.clone()),
+            )
         };
         let mut cuts = [0; 10];
         cuts[0] = schedule.durable_write_count();
