@@ -152,12 +152,17 @@ impl StockExecution<'_> {
             None => crate::contract::canonical_json_bytes(&selection)?.into(),
         };
         let _hold = self.io.map(|io| io.guard_bytes(&bytes)).transpose()?;
+        let _path_hold;
         let path = with_history_io(self.io, |work| {
             preparation_format(
                 format_args!("tools/{}/{operation}/selection.json", context.turn_id()),
                 work,
             )
         })?;
+        _path_hold = self
+            .io
+            .map(|io| io.guard_owned(path.capacity() as u64))
+            .transpose()?;
         context
             .stage_file_once(
                 operation,
