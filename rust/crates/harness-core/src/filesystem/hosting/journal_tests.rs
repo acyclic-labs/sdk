@@ -1201,25 +1201,28 @@ async fn prompt_history_streams_original_human_messages_in_bounded_ranges() -> T
             )
             .await?;
         if name == "structured" {
-            let mut source = bound.input_preview_steps(root.clone(), 4, InputSelection::Latest);
-            let mut work = 0;
-            let preview = loop {
-                let step = source
-                    .next()
-                    .await
-                    .transpose()?
-                    .ok_or("structured preview ended before selection")?;
-                match step {
-                    InputPreviewStep::Progress => work += 1,
-                    InputPreviewStep::Selected(Some(preview)) => {
-                        break preview;
+            for (maximum, expected) in [(0, ""), (1, "s"), (4, "stru"), (11, "structured")] {
+                let mut source =
+                    bound.input_preview_steps(root.clone(), maximum, InputSelection::Latest);
+                let mut work = 0;
+                let preview = loop {
+                    let step = source
+                        .next()
+                        .await
+                        .transpose()?
+                        .ok_or("structured preview ended before selection")?;
+                    match step {
+                        InputPreviewStep::Progress => work += 1,
+                        InputPreviewStep::Selected(Some(preview)) => {
+                            break preview;
+                        }
+                        _ => panic!("latest structured preview returned a history range"),
                     }
-                    _ => panic!("latest structured preview returned a history range"),
-                }
-            };
-            assert!(work > 1, "structured source work did not yield credit");
-            assert_eq!(preview.text, "stru");
-            assert_eq!(preview.bytes, structured_text.len() as u64 + 7);
+                };
+                assert!(work > 1, "structured source work did not yield credit");
+                assert_eq!(preview.text, expected);
+                assert_eq!(preview.bytes, structured_text.len() as u64 + 7);
+            }
         }
     }
     let source = bound.input_preview_steps(root, 4, InputSelection::History);
