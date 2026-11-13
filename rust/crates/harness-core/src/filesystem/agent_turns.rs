@@ -517,6 +517,22 @@ pub async fn agent_authority<'v>(
         .await
 }
 
+/// The host's authority over this agent's implicit journal and exact retained
+/// conversation files. The original admission is verified before storage IO.
+/// This scope carries host custody and must never enter task or tool bindings;
+/// use [`agent_authority`] for the workload's independent workspace scope.
+pub async fn agent_journal_authority<'v>(
+    issuer: &RuntimeAuthority,
+    admission: &'v TurnAdmission,
+    path: &AgentPath,
+    volumes: &'v [WorkspaceEntry],
+    retained: &[FileRef],
+) -> Result<(VolumeRef, AgentAuthority<'v>)> {
+    AdmittedAgent::verify(issuer, admission, path, volumes)?
+        .journal_authority(retained)
+        .await
+}
+
 /// Builds the executor of one agent turn: its tools, context, policy, limits
 /// and compaction, under the turn's [`TurnAuthority`]. It may stage files (a
 /// context manifest) through the authority's private writer.

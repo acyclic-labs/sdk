@@ -257,13 +257,13 @@ impl RootWitness {
 // f_fsid, Windows volume serial); on macOS it is st_dev, so a remount that
 // renumbers the device refuses attachment rather than trusting a copied token.
 
-/// Version eleven creates native roots and their protected journals atomically,
-/// retaining version ten's v1 actor state, invocation and fork-acceptance records
-/// and version nine's host-owned epoch manifests. Refuse earlier owners before
-/// record decoding, credential access or filesystem attachment; never rewrite
-/// an earlier native root's separate creation receipts.
-const RECORD: &str = "owner.v11";
-const OLDER_RECORDS: [&str; 10] = [
+/// Version twelve retains native events, prompts and session snapshots in the
+/// host journal. It keeps the atomic roots, v1 actor records and host-owned
+/// epochs of versions eleven, ten and nine. Refuse earlier owners before
+/// record decoding, credential access or filesystem attachment; never import
+/// native controller records from a task-writable private volume.
+const RECORD: &str = "owner.v12";
+const OLDER_RECORDS: [&str; 11] = [
     "owner.json",
     "owner.v2",
     "owner.v3",
@@ -274,6 +274,7 @@ const OLDER_RECORDS: [&str; 10] = [
     "owner.v8",
     "owner.v9",
     "owner.v10",
+    "owner.v11",
 ];
 
 impl Owner {

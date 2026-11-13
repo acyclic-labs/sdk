@@ -18,6 +18,7 @@ use crate::{
     filesystem::{
         AgentAuthority, FilesystemContentPublisher, FilesystemContentVerifier,
         FilesystemSpawnVolumes, PRIVATE_VOLUME, TurnAdmission, agent_authority,
+        agent_journal_authority,
         hosting::{Prepared, RootSubmission},
     },
 };
@@ -219,20 +220,20 @@ pub(super) struct HostDriver {
 }
 
 impl HostDriver {
-    /// Content access of `agent` over its own volumes and the `external`
-    /// files it names.
+    /// Host-only content access over the journal and the exact `external`
+    /// files selected by the agent's committed adoption.
     async fn content(
         &self,
         agent: &AgentState,
         bound: u64,
         external: &[FileRef],
     ) -> Result<Content> {
-        let AgentAuthority {
-            scope,
-            verifier,
-            private,
-            ..
-        } = agent_authority(
+        let (
+            volume,
+            AgentAuthority {
+                scope, verifier, ..
+            },
+        ) = agent_journal_authority(
             &self.issuer.clone().into(),
             &TurnAdmission::LocalRoot,
             &agent.path,
@@ -250,7 +251,7 @@ impl HostDriver {
             )?,
             writer: FilesystemContentPublisher::new(
                 Arc::clone(&self.files),
-                private.volume()?,
+                &volume,
                 &verifier,
                 &scope,
                 bound,
@@ -259,7 +260,7 @@ impl HostDriver {
         })
     }
 
-    /// Reads one file on the agent's own volumes, or an exact file its
+    /// Reads one file on the host journal, or an exact file its
     /// adoption named.
     async fn read(&self, agent: &AgentState, file: &FileRef, bound: u64) -> Result<Vec<u8>> {
         let content = self
@@ -282,7 +283,7 @@ impl HostDriver {
         .map_err(storage)
     }
 
-    /// Stages `bytes` once on the agent's private volume under `operation`.
+    /// Stages `bytes` once on the host journal under `operation`.
     pub(super) async fn stage(
         &self,
         agent: &AgentState,
@@ -306,7 +307,7 @@ impl HostDriver {
     }
 
     /// The brief of `agent`'s child session `reference`, staged once on the
-    /// agent's private volume. A reference names one prompt: a spawn
+    /// agent's journal. A reference names one prompt: a spawn
     /// replayed with another is a conflict.
     pub(super) async fn brief(
         &self,
@@ -978,9 +979,10 @@ mod adoption_tests {
                 .all(|entry| entry.as_volume() != Some(&journal))
         );
         let scope = native.view_scope(&state).await?;
+        let verifier = native.issuer.verifier(&mut None)?;
         assert!(
             crate::conversation::ContentGrant::verify(
-                &native.issuer.verifier(&mut None)?,
+                &verifier,
                 &scope,
                 &journal,
                 VolumeOperation::Read,
@@ -995,6 +997,27 @@ mod adoption_tests {
         assert_eq!(
             local.files.resolve(&journal_ref, None).await?.generation,
             generation
+        );
+        let body = b"retained native event";
+        let file = native
+            .driver
+            .stage(&state, OperationId::new(), body, MAXIMUM_BYTES)
+            .await?;
+        assert_eq!(file.volume(), &journal);
+        assert!(crate::conversation::ContentGrant::verify_read(&verifier, &scope, &file).is_err());
+        let published = local.files.resolve(&journal_ref, None).await?.generation;
+        let replay = native.prepare_root(&agent).await?;
+        assert!(matches!(
+            replay.submit(&native.files, &native.host).await.map_err(storage)?,
+            RootSubmission::Created(created) if created == root
+        ));
+        assert_eq!(
+            local.files.resolve(&journal_ref, None).await?.generation,
+            published
+        );
+        assert_eq!(
+            native.read(&state, &file).await?.as_slice(),
+            body.as_slice()
         );
         Ok(())
     }
@@ -1013,6 +1036,10 @@ mod adoption_tests {
         let state = native.state(&parent).await?;
         let reference = "committed-unrun-child";
         let brief = native.brief(&state, reference, "original prompt").await?;
+        assert_eq!(
+            brief.volume(),
+            &crate::conversation::journal_volume(local.project.provider().clone(), &parent.id())?
+        );
         let operation = OperationId::new();
         let event = Event::Spawn {
             reference: reference.into(),
