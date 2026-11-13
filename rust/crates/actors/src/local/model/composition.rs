@@ -1260,6 +1260,7 @@ enum Via {
     Binding,
     Flush,
     Delete,
+    Export,
 }
 
 /// One owner publishes `kinds` (bit set: composed) `via` one path, reloading
@@ -1308,6 +1309,13 @@ async fn one_owner(failing: usize, kinds: usize, via: Via, forget: bool) -> Resu
                 cut.unsettled = false;
             }
             let outcome = async {
+                if via == Via::Export && step == STEPS {
+                    let publication =
+                        store.prepare_publish(&cut, 1, &trigger, None, transition, publish)?;
+                    let request = store.export_prepared(publication).await?;
+                    PreparedPublish::settle(&store.provider().commit(request).await?)?;
+                    return Ok(None);
+                }
                 if via == Via::Delete && step == STEPS {
                     // A raw commit is refused while custody is unsettled;
                     // the deletion then goes through the one settling path.
@@ -1323,7 +1331,7 @@ async fn one_owner(failing: usize, kinds: usize, via: Via, forget: bool) -> Resu
                     };
                 }
                 let publication = match via {
-                    Via::Direct | Via::Delete => {
+                    Via::Direct | Via::Delete | Via::Export => {
                         store.prepare_publish(&cut, 1, &trigger, None, transition, publish)?
                     }
                     Via::Binding | Via::Flush => {
@@ -1366,6 +1374,22 @@ async fn one_owner(failing: usize, kinds: usize, via: Via, forget: bool) -> Resu
 }
 
 const STEPS: usize = 3;
+
+#[tokio::test]
+async fn exporting_a_plain_publication_first_settles_prior_committed_custody() -> Result<(), Failure>
+{
+    let mut caught = 0;
+    for failing in 0..1 << STEPS {
+        let kinds = 1 << (STEPS - 1);
+        assert!(one_owner(failing, kinds, Via::Export, false).await?);
+        caught += usize::from(!one_owner(failing, kinds, Via::Export, true).await?);
+    }
+    assert!(
+        caught > 0,
+        "the control must detect forgotten custody before export"
+    );
+    Ok(())
+}
 
 /// Exhaustive over which settlement attempts fail, which publications
 /// compose, and the publication path (direct, through a state binding, or a

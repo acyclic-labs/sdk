@@ -7,6 +7,147 @@ use futures::TryStreamExt as _;
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[tokio::test]
+async fn signal_files_follow_a_continuing_runs_pause_at_the_captured_cut() -> TestResult {
+    use crate::client_files::FileView as _;
+    let provider = MemoryStream::default();
+    let agent = AgentPath::root(&AgentId::from_bytes([87; 16]));
+    let a = OperationId::from_bytes([88; 16]);
+    let b = OperationId::from_bytes([89; 16]);
+    let events = path(&agent)?;
+    let policy = Policy {
+        thresholds: super::super::Thresholds {
+            repeat_failure: Some(1),
+            repeat_failure_pause: Some(1),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let observation = Observation::ToolFinished {
+        command: "check",
+        error: Some(b"failure"),
+    };
+    let mut state = State::default();
+    let mut b_cut = 0;
+    for (sequence, run) in [(0, a), (1, b), (2, a)] {
+        let source = Position {
+            stream: agent.inbox()?,
+            sequence,
+        };
+        let queries = Queries::new(&provider, &agent, run);
+        let previous = if run == a { &state } else { &State::default() };
+        let mut prepared = queries
+            .prepare(previous, previous.through, &source, &observation, &policy)
+            .await?;
+        let mut records = Vec::new();
+        if sequence < 2 {
+            let mut started = lifecycle_record(&Event {
+                version: 1,
+                agent: agent.clone(),
+                run: Some(run),
+                source: source.clone(),
+                event: Lifecycle::Started { input: sequence },
+            })?;
+            started.headers = acyclic_stream::RecordHeaders::new(
+                vec![
+                    Bytes::from_static(CURRENT_RUN_KEY).into(),
+                    Bytes::from_static(super::super::RUN_KEY).into(),
+                ],
+                Vec::new(),
+            )?;
+            records.push(started);
+        }
+        // The continuation deliberately has no new Started record.
+        if sequence == 2 {
+            records.push(lifecycle_record(&Event {
+                version: 1,
+                agent: agent.clone(),
+                run: Some(a),
+                source: source.clone(),
+                event: Lifecycle::Paused {
+                    signal: Some(Kind::RepeatFailure),
+                },
+            })?);
+        }
+        let mut effect = prepared.effect.take().ok_or("signal effect absent")?;
+        let appended = effect
+            .mutations
+            .iter_mut()
+            .find_map(|mutation| match mutation {
+                CommitMutation::Append { path, records } if path == &events => Some(records),
+                _ => None,
+            })
+            .ok_or("signal records absent")?;
+        // Start precedes its signal; pause follows it in the same commit.
+        if sequence < 2 {
+            records.append(appended);
+            *appended = records;
+        } else {
+            appended.extend(records);
+        }
+        let request = CommitRequest {
+            deadline_unix_millis: None,
+            idempotency_key: IdempotencyKey::unique(),
+            effects: vec![
+                CommitEffect::hard(
+                    vec![condition(
+                        agent.inbox()?,
+                        (sequence > 0).then_some(sequence),
+                    )],
+                    vec![CommitMutation::Append {
+                        path: agent.inbox()?,
+                        records: vec![b"actual source".as_slice().into()],
+                    }],
+                ),
+                effect,
+            ],
+        };
+        if sequence == 2 {
+            let mut refused = request.clone();
+            refused.idempotency_key = IdempotencyKey::unique();
+            refused.effects[0].conditions = vec![CommitCondition::Tail {
+                path: agent.inbox()?,
+                expected: 99,
+            }];
+            assert!(matches!(
+                provider.commit(refused).await?,
+                CommitOutcome::Conflict(_)
+            ));
+            assert_eq!(
+                current_run_before(&provider, &agent, u64::MAX, Default::default()).await?,
+                Some(b)
+            );
+        }
+        assert!(matches!(
+            provider.commit(request).await?,
+            CommitOutcome::Committed(_)
+        ));
+        if run == a {
+            state = prepared.transition.state;
+        }
+        if sequence == 1 {
+            b_cut = provider.tail(events.clone()).await?;
+        }
+    }
+    assert_eq!(
+        active_run_before(&provider, &agent, u64::MAX, Default::default()).await?,
+        Some(b),
+        "negative control: latest start still belongs to B"
+    );
+    let files = super::super::files::SignalFiles;
+    let paths = ["status/supervision/repeat_failure.json"];
+    for (cut, expected_sequence) in [(b_cut, 1), (u64::MAX, 2)] {
+        let values = files
+            .read(&provider, &agent, &paths, &events, cut, Default::default())
+            .await?;
+        let signal: Signal =
+            serde_json::from_str(&values.first().ok_or("pause reason disappeared")?.text)?;
+        assert_eq!(signal.sequence, expected_sequence);
+        assert_eq!(values[0].input.stream, events);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn original_turn_spending_is_atomic_and_does_not_borrow_later_turn_usage() -> TestResult {
     let provider = MemoryStream::default();
     let agent = AgentPath::root(&AgentId::from_bytes([95; 16]));
