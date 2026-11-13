@@ -1,0 +1,10 @@
+--- a/rust/crates/harness-core/src/filesystem/hosting/controls.rs
++++ b/rust/crates/harness-core/src/filesystem/hosting/controls.rs
+@@ -547,7 +547,6 @@
+     ) -> Result<Option<Bytes>, GuestError> {
+         if [
+             super::quiet::ACTIVITY,
+-            super::quiet::COMPLETED,
+             super::quiet::LIFECYCLE,
+             super::quiet::CLOSED,
+         ]
