@@ -116,6 +116,7 @@ pub(crate) mod summary_identity;
 mod tool_cards;
 pub use tool_cards::ToolCard;
 mod tool_execution;
+pub use tool_execution::ToolCallSettlement;
 mod tool_failure;
 pub(crate) use tool_execution::tool_failure_content;
 pub(crate) use tool_failure::ToolFailureText;
