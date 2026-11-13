@@ -63,15 +63,16 @@ async fn fixture() -> Result<Fixture> {
         scope,
     };
     let content = MemoryHarnessStorage::new(owner, 1_000_000).await?;
+    let operation = OperationId::new();
     let task = Bindings {
         scope: RuntimeScope::new(grants, Limits::default())?,
         ..Bindings::local()
     }
     .build()?
     .agent_context(&Capabilities::default(), content.content_bindings())?
-    .with_execution_journal(content.journal())
+    .with_execution_journal(content.journal(), operation)?
     .for_agent(path.clone(), Vec::new());
-    let context = ToolContext::new(Arc::new(task), OperationId::new(), "search")?;
+    let context = ToolContext::new(Arc::new(task), operation, "search")?;
     Ok(Fixture {
         tools,
         context,
