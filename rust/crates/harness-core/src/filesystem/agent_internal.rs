@@ -480,10 +480,7 @@ where
         Box::pin(self.ui_input(turn, journal))
     }
     fn tool_results(&self, turn: OperationId) -> Option<String> {
-        Some(format!(
-            "{}{turn}",
-            InternalContentClass::ToolResult.prefix()
-        ))
+        Some(tool_result_directory(turn))
     }
 
     fn stage<'a>(

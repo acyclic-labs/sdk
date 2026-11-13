@@ -8,7 +8,9 @@
 //! streaming answer is the observer's delta projection, rewrapped alone.
 use acyclic_harness::local::{
     Event, LiveKind,
-    agent_conversation::{Conversation, PreparedHistoryAction, UsageQuery, checkpoint},
+    agent_conversation::{
+        Conversation, InputSettlement, PreparedHistoryAction, UsageQuery, checkpoint,
+    },
 };
 use acyclic_harness::{
     agent::{
@@ -57,7 +59,7 @@ struct Older {
     epoch: u64,
     from: u64,
     cleared: bool,
-    blocks: Vec<(BlockKind, String)>,
+    sources: Vec<(Option<String>, Vec<(BlockKind, String)>)>,
 }
 
 async fn older(
@@ -71,21 +73,25 @@ async fn older(
             epoch,
             from,
             cleared: false,
-            blocks: Vec::new(),
+            sources: Vec::new(),
         };
         for (sequence, entry) in (from..to).zip(conversation.entries(from, to).await?) {
             if let Some(action) = checkpoint(&entry) {
                 match notice(&action) {
-                    Some(text) => page.blocks.push((BlockKind::Answer, text)),
+                    Some(text) => page
+                        .sources
+                        .push((entry.tool_results.clone(), vec![(BlockKind::Answer, text)])),
                     // A cleared conversation shows nothing before it.
                     None => {
-                        page.blocks.clear();
+                        page.sources.clear();
                         page.cleared = true;
                     }
                 }
             } else {
-                page.blocks
-                    .extend(turn(&conversation, sequence, &entry).await?);
+                page.sources.push((
+                    entry.tool_results.clone(),
+                    turn(&conversation, sequence, &entry).await?,
+                ));
             }
         }
         acyclic_harness::Result::Ok(page)
@@ -274,7 +280,12 @@ struct View {
     title: String,
     /// The running turn's answer while it streams.
     reply: String,
+    /// Original immutable namespace shared with settled entries and history.
+    reply_source: Option<String>,
     phase: Option<Phase>,
+    /// A terminal phase waits on its own committed conversation prefix.
+    /// The latest phase supersedes earlier states from that same source.
+    pending_phase: Option<(u64, Phase)>,
     /// The terminal phase dominates any older turn replayed after attachment.
     /// Retain its bounded diagnostic page for the process exit reason.
     phase_failure: Option<String>,
@@ -320,6 +331,7 @@ impl View {
     /// own unsettled sends cover only the moment before their status commits.
     fn busy(&self) -> bool {
         self.phase.as_ref().is_some_and(Phase::in_turn)
+            || self.pending_phase.is_some()
             || !self.pending.is_empty()
             || !self.checkpoints.is_empty()
     }
@@ -376,6 +388,31 @@ impl View {
             return Err("Review the complete approval action before deciding (PgDn: more)");
         }
         Ok(Some((id.clone(), binding.clone(), verdict)))
+    }
+
+    async fn observe_phase(
+        &mut self,
+        conversation: &Conversation,
+        snapshot: InputSettlement,
+        seen: u64,
+    ) -> Result<(), Failure> {
+        if matches!(snapshot.phase, Phase::Done { .. }) && snapshot.conversation > seen {
+            self.pending_phase = Some((snapshot.conversation, snapshot.phase));
+            return Ok(());
+        }
+        self.pending_phase = None;
+        self.restore_phase(conversation, snapshot.phase).await
+    }
+
+    async fn release_phase(
+        &mut self,
+        conversation: &Conversation,
+        seen: u64,
+    ) -> Result<(), Failure> {
+        if let Some((_, phase)) = self.pending_phase.take_if(|(through, _)| *through <= seen) {
+            self.restore_phase(conversation, phase).await?;
+        }
+        Ok(())
     }
 
     async fn restore_phase(
@@ -446,6 +483,18 @@ impl View {
         event: Event,
         seen: u64,
     ) -> Result<(), Failure> {
+        self.apply_event(conversation, event, seen).await?;
+        self.release_phase(conversation, seen).await?;
+        self.stop(seen);
+        Ok(())
+    }
+
+    async fn apply_event(
+        &mut self,
+        conversation: &Conversation,
+        event: Event,
+        seen: u64,
+    ) -> Result<(), Failure> {
         match event {
             Event::Turn(entry) => {
                 self.pending_dirty = true;
@@ -489,16 +538,20 @@ impl View {
                         &entry,
                     )
                     .await?;
+                let mut blocks = Vec::new();
                 if let Some(text) = sent.or(turn.prompt) {
                     let (kind, text) = prompt(&entry.input, text);
-                    self.transcript.push(kind, &text);
+                    blocks.push((kind, text));
                 }
-                for (kind, text) in work(turn.tools, turn.answer) {
-                    self.transcript.push(kind, &text);
-                }
-                self.reply.clear();
+                blocks.extend(work(turn.tools, turn.answer));
                 if cancelled {
-                    self.transcript.push(BlockKind::Answer, CANCELLED);
+                    blocks.push((BlockKind::Answer, CANCELLED.into()));
+                }
+                self.transcript
+                    .append_source(entry.tool_results.as_deref(), blocks);
+                self.reply.clear();
+                self.reply_source = None;
+                if cancelled {
                     self.outcome = Outcome::Cancelled;
                     // It marks the stop a cancel in flight would otherwise mark.
                     self.cancel_marked = self.cancelling == Some(entry.inbox)
@@ -513,7 +566,6 @@ impl View {
                     self.cancelling = None;
                 }
                 self.ring = true;
-                self.stop(seen);
             }
             Event::Delta => return Ok(()),
             Event::Status(status) => {
@@ -551,8 +603,15 @@ impl View {
                     }
                 }
                 self.pending_dirty = true;
-                self.restore_phase(conversation, status.phase).await?;
-                self.stop(seen);
+                self.observe_phase(
+                    conversation,
+                    InputSettlement {
+                        conversation: status.conversation,
+                        phase: status.phase,
+                    },
+                    seen,
+                )
+                .await?;
             }
         }
         Ok(())
@@ -662,9 +721,12 @@ impl View {
             self.transcript.push(BlockKind::Prompt, &prompt);
         }
         if !self.reply.is_empty() {
-            self.transcript
-                .push(BlockKind::Answer, &std::mem::take(&mut self.reply));
+            self.transcript.append_source(
+                self.reply_source.as_deref(),
+                [(BlockKind::Answer, std::mem::take(&mut self.reply))],
+            );
         }
+        self.reply_source = None;
         self.pending_dirty = true;
     }
 
@@ -694,6 +756,7 @@ impl View {
         if !std::mem::take(&mut self.cancel_marked) {
             if !self.phase.as_ref().is_some_and(Phase::in_turn) {
                 self.reply.clear();
+                self.reply_source = None;
             }
             self.transcript.push(BlockKind::Answer, CANCELLED);
             self.outcome = Outcome::Cancelled;
@@ -714,7 +777,8 @@ impl View {
             self.tail_dirty = true;
         }
         if std::mem::take(&mut self.tail_dirty) {
-            self.transcript.tail(Some(self.reply.as_str()));
+            self.transcript
+                .tail_from(self.reply_source.as_deref(), &self.reply);
         }
         self.transcript.rows(width)
     }
@@ -733,7 +797,7 @@ impl View {
         if older.epoch != self.epoch {
             return;
         }
-        let added = self.transcript.prepend(older.blocks);
+        let added = self.transcript.prepend_sources(older.sources);
         if let Some((_, row)) = &mut self.search {
             *row += added;
         }
@@ -1004,7 +1068,8 @@ async fn run_current(
         floor: if resume { 0 } else { events.seen() },
         ..View::default()
     };
-    view.restore_phase(&conversation, phase).await?;
+    view.observe_phase(&conversation, phase, events.seen())
+        .await?;
     if view.busy() {
         view.pending = conversation.pending_inputs().await?;
     }
@@ -1411,7 +1476,7 @@ async fn run_current(
                     // Another client can start a turn while this view is idle.
                     // Refresh once when its live output becomes visible.
                     if !view.busy() && !events.live().1.is_empty() {
-                        view.restore_phase(&conversation, conversation.phase().await?).await?;
+                        view.observe_phase(&conversation, conversation.current_settlement().await?, events.seen()).await?;
                     }
                 }
                 // Only a turn this view waited on rings; a reopened
@@ -1433,9 +1498,13 @@ async fn run_current(
                 // A settled turn clears the output and the streamed text.
                 let (kind, live) = events.live();
                 let answer = if kind == LiveKind::Answer { live } else { "" };
-                if view.reply != answer {
+                let source = if kind == LiveKind::Answer { events.live_source() } else { None };
+                if view.reply != answer || view.reply_source.as_deref() != source {
                     view.reply.clear();
                     view.reply.push_str(answer);
+                    if view.reply_source.as_deref() != source {
+                        view.reply_source = source.map(str::to_owned);
+                    }
                     view.tail_dirty = true;
                 }
                 output_rows = live_rows(kind, live, &input);
@@ -1507,7 +1576,7 @@ async fn run_current(
                                 let session = session::Session::open(&selected).await?;
                                 let title = selected.agent_file_previews(vec!["ui/title".into()], None, acyclic_harness::client::MAX_READ_BYTES).await?;
                                 let mut view = View { title: session::title(&title), top: events.seen(), floor: 0, pending_dirty: true, tail_dirty: true, ..View::default() };
-                                view.restore_phase(&selected, phase).await?;
+                                view.observe_phase(&selected, phase, events.seen()).await?;
                                 if view.busy() {
                                     view.pending = selected.pending_inputs().await?;
                                 }
@@ -1843,7 +1912,7 @@ async fn run_current(
                                 // turn yet; a cached idle phase cannot discard
                                 // an explicit interrupt of accepted input.
                                 if !view.busy() {
-                                    view.restore_phase(&conversation, conversation.phase().await?).await?;
+                                    view.observe_phase(&conversation, conversation.current_settlement().await?, events.seen()).await?;
                                 }
                                 if view.busy() {
                                     view.cancel(&conversation).await?;
@@ -2296,12 +2365,159 @@ mod tests {
         );
         let page = older(Arc::clone(&forked), 0, 0, 1).await?;
         assert_eq!(
-            page.blocks,
+            page.sources
+                .iter()
+                .flat_map(|(_, blocks)| blocks.iter().cloned())
+                .collect::<Vec<_>>(),
             vec![
                 (BlockKind::Prompt, "before".into()),
                 (BlockKind::Answer, "before".into())
             ]
         );
+
+        // Attaching and scrolling a child's inherited history and replaying
+        // its original live preview may arrive in either order. Both refer to
+        // the parent's immutable turn, not to a newly derived child identity.
+        let source = inherited[0]
+            .tool_results
+            .clone()
+            .ok_or("native turn has no original source")?;
+        let answer = forked.turn_at(0, &inherited[0]).await?.answer;
+        for live_first in [false, true] {
+            let mut attached = View::default();
+            attached.rows(120);
+            if live_first {
+                attached.reply_source = Some(source.clone());
+                attached.reply = answer.clone();
+                attached.tail_dirty = true;
+                attached.rows(120);
+            }
+            attached.prepend(older(Arc::clone(&forked), 0, 0, 1).await?);
+            attached.reply_source = Some(source.clone());
+            attached.reply = answer.clone();
+            attached.tail_dirty = true;
+            let once = attached
+                .rows(120)
+                .iter()
+                .map(Line::to_string)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                once.iter().filter(|row| row.contains("before")).count(),
+                2,
+                "one original prompt and answer, without the replayed answer tail"
+            );
+            attached
+                .apply(&forked, Event::Turn(inherited[0].clone()), 1)
+                .await?;
+            attached.prepend(older(Arc::clone(&forked), 0, 0, 1).await?);
+            assert_eq!(
+                attached
+                    .rows(120)
+                    .iter()
+                    .map(Line::to_string)
+                    .collect::<Vec<_>>(),
+                once,
+                "settlement and older-page replay duplicated an inherited source",
+            );
+        }
+
+        // A terminal snapshot and its already committed conversation records
+        // use separate follows. Finalizing the phase must wait for its own
+        // cut, so a partial preview never becomes a second anonymous answer.
+        let snapshot = forked.current_settlement().await?;
+        let last = snapshot
+            .conversation
+            .checked_sub(1)
+            .ok_or("no saved turn")?;
+        let entry = forked.entries(last, snapshot.conversation).await?.remove(0);
+        let saved = forked.turn_at(last, &entry).await?;
+        let saved_source = entry.tool_results.clone().ok_or("no native source")?;
+        let failure = "terminal failure after the original conversation cut";
+        for snapshot_first in [false, true] {
+            let mut attached = View {
+                phase: (!snapshot_first).then_some(Phase::Running),
+                notice: Some("prior command refusal".into()),
+                pending: vec![(entry.inbox, saved.prompt.clone().ok_or("no prompt")?)],
+                pending_dirty: true,
+                tail_dirty: true,
+                ..View::default()
+            };
+            attached.prepend(older(Arc::clone(&forked), 0, 0, last).await?);
+            let terminal = InputSettlement {
+                conversation: snapshot.conversation,
+                phase: Phase::Done {
+                    outcome: AgentOutcome::Failed {
+                        message: failure.into(),
+                    },
+                },
+            };
+            let partial = saved
+                .answer
+                .strip_suffix('y')
+                .ok_or("unexpected scripted answer")?;
+            if snapshot_first {
+                attached.reply = partial.to_owned();
+                attached.reply_source = Some(saved_source.clone());
+                attached.rows(120);
+                attached
+                    .observe_phase(&forked, terminal.clone(), last)
+                    .await?;
+                assert!(attached.phase.is_none());
+                assert!(attached.busy());
+                // Dismissing an earlier command notice is local input, not an
+                // acknowledgement of the terminal snapshot's unread prefix.
+                attached.begin_input(&InputEvent::Paste("next draft".into()));
+                assert!(attached.notice.is_none());
+                assert!(attached.busy());
+                assert!(
+                    !attached
+                        .rows(120)
+                        .iter()
+                        .any(|line| line.to_string().contains(failure))
+                );
+            }
+            attached
+                .apply(&forked, Event::Turn(entry.clone()), snapshot.conversation)
+                .await?;
+            if !snapshot_first {
+                // A delayed preview may still be cached even though its
+                // source is already loaded and suppressed by the renderer.
+                attached.reply = saved.answer.clone();
+                attached.reply_source = Some(saved_source.clone());
+                attached.tail_dirty = true;
+                attached.rows(120);
+                attached
+                    .observe_phase(&forked, terminal, snapshot.conversation)
+                    .await?;
+                attached.begin_input(&InputEvent::CommittedText("next draft".into()));
+                assert!(attached.notice.is_none());
+            }
+            assert_eq!(attached.phase_failure.as_deref(), Some(failure));
+            let rows = attached
+                .rows(120)
+                .iter()
+                .map(Line::to_string)
+                .collect::<Vec<_>>();
+            assert_eq!(rows.iter().filter(|row| row.contains(partial)).count(), 1);
+            assert_eq!(
+                rows.iter()
+                    .filter(|row| row.contains(&saved.answer))
+                    .count(),
+                1
+            );
+            assert_eq!(rows.iter().filter(|row| row.contains(failure)).count(), 1);
+            assert!(matches!(attached.phase, Some(Phase::Done { .. })));
+            assert!(!attached.busy());
+            let answer_at = rows
+                .iter()
+                .position(|row| row.contains(&saved.answer))
+                .unwrap();
+            let failure_at = rows.iter().position(|row| row.contains(failure)).unwrap();
+            assert!(
+                answer_at < failure_at,
+                "terminal failure preceded its committed answer"
+            );
+        }
 
         let mut sidebar = tree::Sidebar::new(&forked)?;
         sidebar.focused = true;
@@ -2440,7 +2656,10 @@ mod tests {
                 epoch: view.epoch,
                 from,
                 cleared: false,
-                blocks: vec![(BlockKind::Prompt, text.into())],
+                sources: vec![(
+                    Some(format!("original-page-{from}")),
+                    vec![(BlockKind::Prompt, text.into())],
+                )],
             });
             view.find("match", 1);
             let row = view.search.as_ref().unwrap().1;

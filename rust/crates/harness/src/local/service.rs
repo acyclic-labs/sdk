@@ -1060,7 +1060,7 @@ mod tests {
             drop(first);
             let attached = Conversation::open(directory.connect().await?);
             let (mut attached_events, phase) = attached.observe_with_phase(None).await?;
-            assert!(phase.in_turn(), "a fresh attachment must see the running turn");
+            assert!(phase.phase.in_turn(), "a fresh attachment must see the running turn");
             let status = attached.path().status().map_err(storage)?;
             let resource = acyclic_stream::wire_codec::session::stream_resource(status.as_str());
             loop {

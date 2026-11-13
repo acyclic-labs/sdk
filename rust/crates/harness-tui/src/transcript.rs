@@ -14,7 +14,7 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
 };
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use unicode_width::UnicodeWidthStr;
 
 #[cfg(test)]
@@ -105,6 +105,9 @@ impl Block {
 /// prepending wraps only the new blocks; resizing rewraps the settled ones.
 pub struct TranscriptRows {
     blocks: VecDeque<Block>,
+    /// Original identities of settled sources actually loaded by this view.
+    /// No unloaded history or other agent's state is retained here.
+    settled_sources: HashSet<String>,
     lines: Vec<Line<'static>>,
     links: Vec<Vec<crate::RowLink>>,
     code: Vec<Option<crate::CodeRow>>,
@@ -115,6 +118,7 @@ pub struct TranscriptRows {
     /// Rows of the streaming tail, after the pending prompts.
     tail_rows: usize,
     tail_parser: Option<(usize, acyclic_markdown::Markdown)>,
+    tail_source: Option<String>,
     code_cache: acyclic_markdown::CodeCache,
     tool_details: bool,
 }
@@ -123,6 +127,7 @@ impl Default for TranscriptRows {
     fn default() -> Self {
         Self {
             blocks: VecDeque::new(),
+            settled_sources: HashSet::new(),
             lines: Vec::new(),
             links: Vec::new(),
             code: Vec::new(),
@@ -131,6 +136,7 @@ impl Default for TranscriptRows {
             pending_rows: 0,
             tail_rows: 0,
             tail_parser: None,
+            tail_source: None,
             code_cache: acyclic_markdown::CodeCache::default(),
             tool_details: false,
         }
@@ -138,6 +144,51 @@ impl Default for TranscriptRows {
 }
 
 impl TranscriptRows {
+    /// Append an immutable source's blocks once, using its original identity.
+    /// A streamed preview of that source is replaced by these settled blocks.
+    /// Replaying the source changes no rows, even if a different source has
+    /// identical text. State grows only with sources loaded into this view.
+    /// `None` denotes anonymous UI blocks rather than an immutable event.
+    pub fn append_source(
+        &mut self,
+        source: Option<&str>,
+        blocks: impl IntoIterator<Item = (BlockKind, String)>,
+    ) {
+        if let Some(source) = source {
+            if self.settled_sources.contains(source) {
+                return;
+            }
+            self.settled_sources.insert(source.to_owned());
+        }
+        self.clear_pending();
+        for (kind, text) in blocks {
+            self.push_owned(kind, settled(&text).to_owned());
+        }
+    }
+
+    /// Page original immutable sources before the current window. Sources
+    /// already loaded by a settled event or another page are not duplicated.
+    /// Anonymous UI blocks (`None`) retain their supplied order.
+    pub fn prepend_sources(
+        &mut self,
+        sources: impl IntoIterator<Item = (Option<String>, Vec<(BlockKind, String)>)>,
+    ) -> usize {
+        let mut blocks = Vec::new();
+        for (source, source_blocks) in sources {
+            if let Some(source) = source {
+                let replaces_tail = self.tail_source.as_deref() == Some(source.as_str());
+                if !self.settled_sources.insert(source) {
+                    continue;
+                }
+                if replaces_tail {
+                    self.tail(None);
+                }
+            }
+            blocks.extend(source_blocks);
+        }
+        self.prepend(blocks)
+    }
+
     /// Append a settled block after every settled row. The pending prompts
     /// and the tail are cleared; the caller restores them.
     pub fn push(&mut self, kind: BlockKind, text: &str) {
@@ -241,12 +292,14 @@ impl TranscriptRows {
     /// Remove every block, keeping the width and theme.
     pub fn clear(&mut self) {
         self.blocks.clear();
+        self.settled_sources.clear();
         self.lines.clear();
         self.links.clear();
         self.code.clear();
         self.pending_rows = 0;
         self.tail_rows = 0;
         self.tail_parser = None;
+        self.tail_source = None;
         self.code_cache = acyclic_markdown::CodeCache::default();
     }
 
@@ -287,6 +340,7 @@ impl TranscriptRows {
     /// Replace the streaming answer after the pending prompts, wrapping only
     /// it: a delta costs the tail's rows, whatever precedes it.
     pub fn tail(&mut self, text: Option<&str>) {
+        self.tail_source = None;
         self.lines
             .truncate(self.lines.len().saturating_sub(self.tail_rows));
         self.links.truncate(self.lines.len());
@@ -336,6 +390,21 @@ impl TranscriptRows {
         }
     }
 
+    /// Render a live preview only while its original source is unsettled in
+    /// this view. A late replay cannot resurrect a source loaded from history.
+    pub fn tail_from(&mut self, source: Option<&str>, text: &str) {
+        if source.is_some_and(|source| self.settled_sources.contains(source)) {
+            self.tail(None);
+        } else {
+            let previous = self.tail_source.take();
+            self.tail(Some(text));
+            self.tail_source = source.map(|source| match previous {
+                Some(previous) if previous == source => previous,
+                _ => source.to_owned(),
+            });
+        }
+    }
+
     /// Search the display before an exclusive row index. Call again with the
     /// previous hit to search backward; an empty query has no hit.
     #[must_use]
@@ -367,6 +436,7 @@ impl TranscriptRows {
     }
 
     fn clear_pending(&mut self) {
+        self.tail_source = None;
         self.lines.truncate(
             self.lines
                 .len()
@@ -615,6 +685,71 @@ mod tests {
                     .collect::<String>()
             })
             .collect()
+    }
+
+    #[test]
+    fn original_source_identity_reconciles_history_live_and_settled_replays() {
+        let blocks = || vec![(BlockKind::Answer, "one original answer".into())];
+        // The source is immutable, while delivery order across its history and
+        // live subscriptions is independent. Neither text nor arrival time is
+        // an identity: distinct sources may legitimately say the same thing.
+        for history_first in [false, true] {
+            let mut transcript = TranscriptRows::default();
+            transcript.rows(80);
+            if history_first {
+                transcript.prepend_sources([(Some("source/a".into()), blocks())]);
+                transcript.tail_from(Some("source/a"), "one original answer");
+            } else {
+                transcript.tail_from(Some("source/a"), "one original answer");
+                transcript.prepend_sources([(Some("source/a".into()), blocks())]);
+            }
+            let once = text(transcript.rows(80));
+            assert_eq!(
+                once.iter()
+                    .filter(|row| row.contains("one original answer"))
+                    .count(),
+                1
+            );
+            transcript.append_source(Some("source/a"), blocks());
+            assert_eq!(
+                transcript.prepend_sources([(Some("source/a".into()), blocks())]),
+                0
+            );
+            transcript.tail_from(Some("source/a"), "one original answer");
+            assert_eq!(text(transcript.rows(80)), once);
+
+            // A different event's identical text must remain visible.
+            transcript.tail_from(Some("source/b"), "one original answer");
+            assert_eq!(
+                text(transcript.rows(80))
+                    .iter()
+                    .filter(|row| row.contains("one original answer"))
+                    .count(),
+                2
+            );
+            transcript.append_source(Some("source/b"), blocks());
+            assert_eq!(
+                text(transcript.rows(80))
+                    .iter()
+                    .filter(|row| row.contains("one original answer"))
+                    .count(),
+                2
+            );
+            transcript.tail_from(Some("source/b"), "one original answer");
+            assert_eq!(
+                text(transcript.rows(80))
+                    .iter()
+                    .filter(|row| row.contains("one original answer"))
+                    .count(),
+                2
+            );
+
+            // A new view owns a new loaded window; cleared source identities
+            // cannot suppress a later explicit reload of that history.
+            transcript.clear();
+            transcript.append_source(Some("source/a"), blocks());
+            assert_eq!(text(transcript.rows(80)), once);
+        }
     }
 
     #[test]
