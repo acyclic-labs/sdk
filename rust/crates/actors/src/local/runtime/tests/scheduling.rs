@@ -704,6 +704,7 @@ async fn a_released_failed_actor_is_carried_once() -> TestResult {
     let healthy = spawn_with(&store, "resident", &[b"emit"]).await?;
     let log = store.scheduling_path(0)?;
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one),
         Arc::new(Poisons {
             package: Package::new()?,
@@ -772,6 +773,7 @@ async fn a_released_failed_actor_is_carried_once() -> TestResult {
     );
     // The next placer delivers the retained input.
     let next = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
