@@ -180,7 +180,11 @@ fn sandbox_policy_probe() {
         "descendant escaped or could not execute: {descendant:?}"
     );
     std::fs::metadata("..").unwrap();
-    std::fs::read_dir(".cargo").unwrap();
+    let mut listed = false;
+    for entry in std::fs::read_dir(".cargo").unwrap() {
+        listed |= entry.unwrap().file_name() == "config.toml";
+    }
+    assert!(listed, "workspace directory listing omitted config.toml");
     assert_eq!(std::fs::read("readable").unwrap(), b"workspace data");
     assert_eq!(
         std::fs::read(
