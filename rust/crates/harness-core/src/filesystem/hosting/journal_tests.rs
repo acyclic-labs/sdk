@@ -1116,6 +1116,20 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
         .stage(operation, "trace-content", b"raw", "text/plain", None)?
         .await?;
     assert_eq!(journal.load(&staged, None)?.await?.as_ref(), b"raw");
+    assert_eq!(
+        journal
+            .load_range(
+                &staged,
+                acyclic_fs::ByteRange {
+                    offset: 1,
+                    length: 2
+                },
+                None
+            )?
+            .await?
+            .as_ref(),
+        b"aw"
+    );
     let changed = watching.await?;
     assert!(
         bound.trace_recorder(&agent)?.is_none(),
@@ -1165,6 +1179,7 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
                 "harness.execution_replay_page" => (None, "authenticated_execution_prefix"),
                 "harness.private_stage" => (Some(3), "authenticated_private_publication"),
                 "harness.private_load" => (Some(3), "authenticated_immutable_content"),
+                "harness.private_load_range" => (Some(2), "authenticated_immutable_range"),
                 _ => continue,
             };
             assert_eq!(start.parent, None);
@@ -1174,6 +1189,6 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
             assert!(original.insert(start.name, ()).is_none());
         }
     }
-    assert_eq!(original.len(), 3);
+    assert_eq!(original.len(), 4);
     Ok(())
 }

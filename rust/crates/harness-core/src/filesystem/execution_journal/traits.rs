@@ -481,33 +481,44 @@ where
         range: acyclic_fs::ByteRange,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            if reference.volume() != &self.volume {
-                return Err(canonical_boundary(
-                    io,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "journal content belongs to another private volume",
-                ));
-            }
-            let grant = crate::executor::with_history_io(io, |work| {
-                ContentGrant::verify(
-                    &self.verifier,
-                    &self.scope,
-                    &self.volume,
-                    VolumeOperation::Read,
-                    work,
-                )
-            })?;
-            let grant_hold = io
-                .map(|io| io.guard_owned(grant.logical_owned_bytes()?))
-                .transpose()?;
-            let result = self
-                .host
-                .read_content_range(reference, &grant, range, io)
-                .await;
-            drop(grant);
-            drop(grant_hold);
-            result
+        crate::conversation::BoundedContentFuture::new(io, || {
+            self.observe_request(
+                acyclic_stream::trace::Request {
+                    name: "harness.private_load_range",
+                    mechanism: acyclic_stream::trace::Mechanism::Io,
+                    parent: None,
+                    guarantee: Some("authenticated_immutable_range"),
+                },
+                async move {
+                    if reference.volume() != &self.volume {
+                        return Err(canonical_boundary(
+                            io,
+                            crate::wire::ErrorCode::Unauthorized,
+                            "journal content belongs to another private volume",
+                        ));
+                    }
+                    let grant = crate::executor::with_history_io(io, |work| {
+                        ContentGrant::verify(
+                            &self.verifier,
+                            &self.scope,
+                            &self.volume,
+                            VolumeOperation::Read,
+                            work,
+                        )
+                    })?;
+                    let grant_hold = io
+                        .map(|io| io.guard_owned(grant.logical_owned_bytes()?))
+                        .transpose()?;
+                    let result = self
+                        .host
+                        .read_content_range(reference, &grant, range, io)
+                        .await;
+                    drop(grant);
+                    drop(grant_hold);
+                    result
+                },
+                |bytes| u64::try_from(bytes.len()).ok(),
+            )
         })
     }
 
