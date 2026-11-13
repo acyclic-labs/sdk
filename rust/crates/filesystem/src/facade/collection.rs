@@ -244,6 +244,8 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 .into_iter()
                 .partition::<Vec<_>, _>(|digest| marked.contains(digest));
             drop(marker);
+            #[cfg(test)]
+            acyclic_native_runtime::testing::boundary("filesystem:collection-marked").await;
             if advance {
                 self.retain_marked(logical.provider(), next, live, cancellation)
                     .await?;

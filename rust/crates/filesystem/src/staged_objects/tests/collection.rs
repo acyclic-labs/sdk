@@ -1,6 +1,73 @@
 use super::*;
 use crate::workspace::ForkOptions;
 
+#[tokio::test]
+async fn construction_after_the_real_marker_cut_survives_private_collection()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_native_runtime::testing::Schedule;
+    for bypass_admission in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let cancel = CancellationToken::new();
+        let fs = crate::Fs::local(crate::LocalOptions::new(directory.path())).await?;
+        let store = fs.objects();
+        let (schedule, mut events) = Schedule::new();
+        let mut collection = Box::pin(schedule.scope(fs.collect_local_garbage(None, &cancel)));
+        let held = loop {
+            tokio::select! {
+                biased;
+                boundary = events.recv() => {
+                    let boundary = boundary.ok_or("collection marker boundary was lost")?;
+                    if boundary.name == "filesystem:collection-marked" { break boundary; }
+                    boundary.release();
+                }
+                result = collection.as_mut() => {
+                    result?;
+                    return Err("collection ended before its marker cut".into());
+                }
+            }
+        };
+        let expected = OwnedBytes::from_static(b"child constructed after the marker snapshot");
+        let object = HashedObject::new(ObjectKind::BlobChunk, expected.clone());
+        let id = object.object_id();
+        let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
+        if bypass_admission {
+            // Negative control: install actual private bytes without the common
+            // admission barrier. The already-complete marker cannot see them.
+            store.index_mut().admit_resident(object)?;
+        } else {
+            store.put_hashed(object, &mut work).await?;
+        }
+        held.release();
+        let result = loop {
+            tokio::select! {
+                biased;
+                boundary = events.recv() => boundary.ok_or("collection completion was lost")?.release(),
+                result = collection.as_mut() => break result?,
+            }
+        };
+        drop(collection);
+        schedule.drained().await;
+        assert_eq!(result.removed, u64::from(bypass_admission));
+        let mut reading = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
+        let read = store.read(id, expected.len() as u64, &mut reading).await;
+        if bypass_admission {
+            assert!(
+                matches!(read, Err(ObjectStoreError::Missing)),
+                "omitted-admission negative did not lose actual bytes"
+            );
+        } else {
+            assert_eq!(read?.bytes, expected);
+            drop(work);
+            assert_eq!(fs.collect_local_garbage(None, &cancel).await?.removed, 1);
+        }
+        assert!(
+            fs.local_account().list(None, 1).await?.digests.is_empty(),
+            "unfinished construction published durable bytes"
+        );
+    }
+    Ok(())
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[tokio::test]
 async fn cancelled_collection_keeps_native_deallocation_before_extent_reuse()
