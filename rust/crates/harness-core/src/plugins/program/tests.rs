@@ -255,21 +255,6 @@ async fn hook_manifests_pin_source_selectors_and_refuse_invalid_or_cross_kind_so
     Ok(())
 }
 
-struct Metered<'a> {
-    files: &'a Files,
-    io: &'a crate::filesystem::PreparationIo,
-}
-impl Tree for Metered<'_> {
-    fn preparation_io(&self) -> Option<&crate::filesystem::PreparationIo> {
-        Some(self.io)
-    }
-    fn read<'a>(
-        &'a self,
-        path: &'a str,
-    ) -> futures::future::BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
-        self.files.read(path)
-    }
-}
 #[tokio::test]
 async fn authored_arguments_reach_the_canonical_shell_only_as_json_stdin() -> Result<()> {
     let files = Files::program("tools/count");

@@ -47,7 +47,7 @@ pub enum HookEvent {
 
 /// A hook follows a source through the source's existing event mechanism.
 /// The selector grants neither read access to that source nor execution rights.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS, crate::HeapLayout)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum ProgramTrigger {
     /// An existing lifecycle boundary.
@@ -74,6 +74,16 @@ pub enum ProgramTrigger {
 }
 
 impl ProgramTrigger {
+    pub(crate) fn owned_bytes(&self) -> crate::Result<u64> {
+        match self {
+            Self::Lifecycle { .. } => Ok(0),
+            Self::File { volume, prefix, .. } => {
+                crate::core::owned_sum([volume.capacity() as u64, prefix.capacity() as u64])
+            }
+            Self::Stream { path, .. } => Ok(path.capacity() as u64),
+        }
+    }
+
     /// The one runner event delivered by this selector.
     #[must_use]
     pub const fn event(&self) -> HookEvent {

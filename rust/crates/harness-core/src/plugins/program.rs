@@ -69,13 +69,7 @@ impl LoadedProgram {
             value,
             _custody: None,
         };
-        let bytes = match &selector.value {
-            config::ProgramTrigger::Lifecycle { .. } => 0,
-            config::ProgramTrigger::File { volume, prefix, .. } => {
-                crate::core::owned_sum([volume.capacity() as u64, prefix.capacity() as u64])?
-            }
-            config::ProgramTrigger::Stream { path, .. } => path.capacity() as u64,
-        };
+        let bytes = selector.value.owned_bytes()?;
         selector._custody = self
             .custody
             .as_mut()
@@ -235,7 +229,7 @@ pub async fn load_program(tree: &dyn Tree, directory: &str) -> Result<LoadedProg
             "{path}: unsupported version or mismatched name"
         )));
     }
-    match (kind, &manifest.on) {
+    match (kind, &manifest.value.on) {
         ("tools", None) => {}
         ("hooks", Some(selector)) => selector.validate()?,
         _ => {
@@ -289,6 +283,11 @@ pub async fn load_program(tree: &dyn Tree, directory: &str) -> Result<LoadedProg
         manifest.value.name.capacity() as u64,
         manifest.value.description.capacity() as u64,
         crate::executor::json::json_value_retained_owned_bytes(&manifest.value.input_schema)?,
+        manifest
+            .value
+            .on
+            .as_ref()
+            .map_or(Ok(0), config::ProgramTrigger::owned_bytes)?,
     ])?;
     let revision = crate::executor::with_history_io(io, |work| {
         crate::executor::preparation_format(format_args!("{}", identity.finalize().to_hex()), work)
@@ -302,6 +301,7 @@ pub async fn load_program(tree: &dyn Tree, directory: &str) -> Result<LoadedProg
         output_schema: serde_json::json!({}),
         projection_schema: serde_json::json!({}),
     };
+    let on = manifest.value.on.take();
     crate::executor::stock_retire_text(path, io)?;
     crate::executor::with_history_io(tree.preparation_io(), |work| definition.validate(work))?;
     let selected_shell = if cfg!(windows) {
@@ -315,7 +315,7 @@ pub async fn load_program(tree: &dyn Tree, directory: &str) -> Result<LoadedProg
     }
     Ok(LoadedProgram {
         definition,
-        on: manifest.on,
+        on,
         run: HookRun::Shell {
             command,
             shell: selected_shell,
