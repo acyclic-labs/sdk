@@ -359,7 +359,7 @@ mod machine_results;
 #[tokio::test]
 async fn session_reads_committed_tool_output_without_local_storage_features() -> Result {
     use crate::conversation::{ContentAccess, ContentPublisher};
-    use crate::filesystem::{FilesystemContentPublisher, agent_authority};
+    use crate::filesystem::{FilesystemContentPublisher, agent_journal_authority};
     use acyclic_harness_client::{CommandError, MAX_READ_BYTES, ReadTarget};
     use acyclic_stream::wire as session_wire;
     use futures::StreamExt as _;
@@ -398,11 +398,19 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
     let bound = server.bound();
     let root = server.root();
     let state = bound.agents().state(root).await?;
-    let authority =
-        agent_authority(bound.issuer(), bound.admission(), root, &state.volumes, &[]).await?;
+    let (journal, authority) = agent_journal_authority(
+        bound.volumes(),
+        bound.issuer(),
+        bound.admission(),
+        root,
+        &state.volumes,
+        &[],
+    )
+    .await?;
+    assert_ne!(&journal, authority.private.volume()?);
     let publisher = FilesystemContentPublisher::new(
         bound.volumes().clone(),
-        authority.private.volume()?,
+        &journal,
         &authority.verifier,
         &authority.scope,
         64 * 1024,
@@ -558,7 +566,15 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
         ));
         owner.denied.store(false, Ordering::SeqCst);
     }
-    publisher
+    let private_publisher = FilesystemContentPublisher::new(
+        bound.volumes().clone(),
+        authority.private.volume()?,
+        &authority.verifier,
+        &authority.scope,
+        64 * 1024,
+        None,
+    )?;
+    private_publisher
         .stage_once(
             OperationId::from_bytes([5; 16]),
             "notes/private",
