@@ -15,6 +15,7 @@ pub(super) struct Reply {
     pub expected: String,
     pub text: Option<String>,
     pub previous: bool,
+    before: Option<usize>,
 }
 
 #[cfg(test)]
@@ -63,14 +64,31 @@ mod tests {
         history.request(1, "draft".into(), true, None, true);
         history.request(2, "draft".into(), true, None, false);
         let first = futures::future::poll_fn(|cx| history.poll(cx)).await?;
+        history.resolve(&first, false);
         let second = futures::future::poll_fn(|cx| history.poll(cx)).await?;
         assert_eq!(first.text.as_deref(), Some(original));
         assert_eq!(second.request, 2);
         assert_eq!(second.text.as_deref(), Some(original));
+        history.resolve(&second, true);
         let editor = super::super::Editor::new(original);
         history.request(3, editor.text().into(), false, None, false);
         let restored = futures::future::poll_fn(|cx| history.poll(cx)).await?;
         assert_eq!(restored.text.as_deref(), Some("draft"));
+        history.resolve(&restored, true);
+        history.request(4, "draft".into(), true, None, false);
+        let unseen = futures::future::poll_fn(|cx| history.poll(cx)).await?;
+        history.resolve(&unseen, false);
+        history.request(5, "draft".into(), true, None, false);
+        let recalled = futures::future::poll_fn(|cx| history.poll(cx)).await?;
+        assert_eq!(recalled.text.as_deref(), Some(original));
+        history.resolve(&recalled, true);
+        // A failed older-page load cannot take custody of the saved draft.
+        history.failure = Some("original history source closed".into());
+        history.request(6, editor.text().into(), false, None, false);
+        let restored = futures::future::poll_fn(|cx| history.poll(cx)).await?;
+        assert_eq!(restored.text.as_deref(), Some("draft"));
+        history.resolve(&restored, true);
+        assert!(history.failure.is_none());
         Ok(())
     }
 }
@@ -164,10 +182,6 @@ impl History {
             let Some(next) = self.pending.front() else {
                 return Poll::Pending;
             };
-            if let Some(error) = &self.failure {
-                self.pending.clear();
-                return Poll::Ready(Err(error.clone()));
-            }
             let selected = if next.previous {
                 let start = self.cursor.map_or(0, |cursor| cursor + 1);
                 (start..self.messages.len()).find(|index| self.matches(*index))
@@ -177,6 +191,7 @@ impl History {
             };
             if selected.is_some() || !next.previous || self.ended {
                 let next = self.pending.pop_front().expect("selected request");
+                let before = self.cursor;
                 let text = match selected {
                     Some(index) => {
                         self.cursor = Some(index);
@@ -184,7 +199,6 @@ impl History {
                     }
                     None if !next.previous => {
                         self.cursor = None;
-                        self.refresh();
                         Some(self.draft.clone())
                     }
                     None => self.cursor.map(|index| self.messages[index].clone()),
@@ -197,7 +211,12 @@ impl History {
                     expected: next.expected,
                     text,
                     previous: next.previous,
+                    before,
                 }));
+            }
+            if let Some(error) = &self.failure {
+                self.pending.clear();
+                return Poll::Ready(Err(error.clone()));
             }
             if self.loading.is_none() {
                 let source = self.source.take();
@@ -234,6 +253,20 @@ impl History {
                     }
                 }
             }
+        }
+    }
+
+    pub fn resolve(&mut self, reply: &Reply, accepted: bool) {
+        if accepted {
+            if self.cursor.is_none() && reply.text.is_some() {
+                self.refresh();
+            }
+        } else if self.pending.is_empty() {
+            self.cursor = reply.before;
+            let text = self
+                .cursor
+                .map_or(self.draft.as_str(), |index| self.messages[index].as_str());
+            self.shown = Some(super::Editor::new(text).text().to_owned());
         }
     }
 
