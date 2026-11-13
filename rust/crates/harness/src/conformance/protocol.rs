@@ -454,20 +454,23 @@ pub async fn verify(backend: &dyn Backend) -> Result {
                 );
             }
         }
-        let outside = AgentPath::root(&acyclic_harness_core::agent::AgentId::from_bytes([255; 16]));
+        // A missing descendant is within this credential's admitted tree. A
+        // foreign root instead requires its own credential before agent lookup.
+        // Reply checks existence before interpreting its original inbox cursor;
+        // Cancel validates the input first and cannot prove this refusal.
+        let missing = root.child(&acyclic_harness_core::agent::AgentId::from_bytes([255; 16]))?;
         let refused = call(
             endpoint,
-            &AgentCommand::Cancel {
-                conversation: 0,
-                input: 1,
-                agent: outside,
-                id: IntentId::try_from("outside")?,
+            &AgentCommand::Reply {
+                inbox: 1,
+                agent: missing,
+                id: IntentId::try_from("missing")?,
             },
         )
         .await?;
         if !matches!(refused, Err(AgentControlFailure::Refused { code, .. }) if code == "no_such_agent")
         {
-            return Err("an outside-tree command was not a typed refusal".into());
+            return Err("a missing descendant did not report no_such_agent".into());
         }
     }
     Ok(())
