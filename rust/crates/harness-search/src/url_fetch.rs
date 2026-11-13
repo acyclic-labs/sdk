@@ -1,4 +1,4 @@
-//! Credential-free, bounded retrieval of one HTTP(S) source, distinct from search.
+//! Credential-free retrieval of one HTTP(S) source under caller-owned capacity.
 
 use crate::{Error, Result};
 use acyclic_stream::BoxProviderFuture;
@@ -87,7 +87,8 @@ pub struct FetchResponse {
     pub status: u16,
     /// Final source's Content-Type header, when present.
     pub content_type: Option<String>,
-    /// Exact UTF-8 response body, bounded to one MiB by the HTTP adapter.
+    /// Exact UTF-8 response body. Native retrieval retains the caller's allocation
+    /// and work credit for the full body; the HTTP adapter adds no size ceiling.
     pub content: String,
 }
 

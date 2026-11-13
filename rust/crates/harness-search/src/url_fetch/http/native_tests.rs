@@ -72,7 +72,7 @@ async fn api_fetch_identifies_the_client_and_preserves_http_error_details() -> R
 async fn native_fetch_retains_exact_source_content_in_the_original_ledger() -> Result<()> {
     let work = work(budget(), &CancellationToken::new())?;
     let baseline = work.live_allocation_bytes();
-    let content = format!("<p>native-source:{} 東京</p>\r\n", nonce());
+    let content = format!("a{}", "🦀".repeat(262_145));
     let (url, server) = serve(
         200,
         "Content-Type: text/html; charset=utf-8\r\n",
@@ -206,7 +206,50 @@ async fn native_fetch_one_byte_budget_cannot_read_a_complete_http_frame() -> Res
 }
 
 #[tokio::test]
-async fn native_fetch_protocol_body_and_size_rejections_release_all_custody() -> Result<()> {
+async fn response_capacity_is_owned_by_the_original_work_ledger() -> Result<()> {
+    for (framing, heap_limited) in [
+        (Framing::Length, false),
+        (Framing::Chunked, false),
+        (Framing::Close, false),
+        (Framing::Chunked, true),
+    ] {
+        let allowance = if heap_limited {
+            WorkBudget {
+                peak_allocation_bytes: 512 * 1024,
+                ..budget()
+            }
+        } else {
+            WorkBudget {
+                source_bytes_read: 64 * 1024,
+                ..budget()
+            }
+        };
+        let work = work(allowance, &CancellationToken::new())?;
+        let baseline = work.live_allocation_bytes();
+        let (url, server) = serve(200, "", vec![b'x'; 1_048_581], framing).await?;
+        let request = FetchRequest { url };
+        let error = HttpFetch::new()?
+            .fetch_with_native_work(&request, &work)?
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::NativeWork { .. }), "{error:?}");
+        assert!(work.receipt().source_bytes_read > 0);
+        if !heap_limited {
+            assert_eq!(
+                work.receipt().source_bytes_read,
+                allowance.source_bytes_read
+            );
+        }
+        assert!(work.receipt().peak_allocation_bytes <= allowance.peak_allocation_bytes);
+        drop(error);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+        joined(server).await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_fetch_protocol_and_body_rejections_release_all_custody() -> Result<()> {
     for (status, headers, body, framing) in [
         (200, "", vec![0xff], Framing::Length),
         (
@@ -226,24 +269,6 @@ async fn native_fetch_protocol_body_and_size_rejections_release_all_custody() ->
             "Location: http://user:private-nonce@example.com/\r\n",
             Vec::new(),
             Framing::Length,
-        ),
-        (
-            200,
-            "",
-            vec![b'x'; MAXIMUM_RESPONSE_BYTES + 1],
-            Framing::Length,
-        ),
-        (
-            200,
-            "",
-            vec![b'x'; MAXIMUM_RESPONSE_BYTES + 1],
-            Framing::Chunked,
-        ),
-        (
-            200,
-            "",
-            vec![b'x'; MAXIMUM_RESPONSE_BYTES + 1],
-            Framing::Close,
         ),
     ] {
         let work = work(budget(), &CancellationToken::new())?;

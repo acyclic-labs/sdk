@@ -304,25 +304,29 @@ async fn fetch_rejects_unsafe_urls_and_redirect_locations_without_echoing_them()
 }
 
 #[tokio::test]
-async fn fetch_enforces_the_one_mebibyte_cap_for_length_chunked_and_close_delimited_sources()
--> Result<()> {
+async fn fetch_preserves_large_bodies_with_length_chunked_and_close_framing() -> Result<()> {
     let provider = HttpFetch::new()?;
+    // The leading byte splits a multibyte character across the fixture's chunks.
+    let content = format!("a{}", "🦀".repeat(262_145));
     for framing in [Framing::Length, Framing::Chunked, Framing::Close] {
-        let (url, server) = serve(200, "", vec![b'x'; MAXIMUM_RESPONSE_BYTES + 1], framing).await?;
-        let error = provider.fetch(&FetchRequest { url }).await.unwrap_err();
-        assert!(error.to_string().contains("byte limit"));
+        let (url, server) = serve(200, "", content.as_bytes().to_vec(), framing).await?;
+        let response = provider.fetch(&FetchRequest { url: url.clone() }).await?;
+        assert_eq!(response.content, content);
+        assert_eq!(response.source_url, url);
+        assert_eq!(response.final_url, url);
         joined(server).await?;
     }
-    for length in [0, MAXIMUM_RESPONSE_BYTES] {
-        let (url, server) = serve(200, "", vec![b'x'; length], Framing::Length).await?;
-        let response = provider.fetch(&FetchRequest { url }).await?;
-        assert_eq!(response.content.len(), length);
-        assert!(response.content.as_bytes().iter().all(|byte| *byte == b'x'));
-        joined(server).await?;
-    }
+    let (url, server) = serve(200, "", Vec::new(), Framing::Length).await?;
+    assert!(
+        provider
+            .fetch(&FetchRequest { url })
+            .await?
+            .content
+            .is_empty()
+    );
+    joined(server).await?;
     Ok(())
 }
-
 #[tokio::test]
 async fn fetch_rejects_non_utf8_and_encoded_bodies() -> Result<()> {
     for (status, headers, body) in [

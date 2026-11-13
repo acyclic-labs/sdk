@@ -14,7 +14,6 @@ mod native_tests;
 pub(crate) mod tests;
 mod transport;
 
-const MAXIMUM_RESPONSE_BYTES: usize = 1_048_576;
 const MAXIMUM_REDIRECTS: usize = 5;
 
 /// Direct GET adapter. No keys, cookies, proxy credentials, or search provider are used.
