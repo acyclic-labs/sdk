@@ -92,6 +92,71 @@ async fn binding() -> TestResult<(Binding, AgentPath)> {
 }
 
 #[tokio::test]
+async fn admitted_readers_bind_evaluation_directories_and_reopen_original_private_cuts()
+-> TestResult {
+    use crate::{client_files::ClientFileChange, conversation::ContentAccess};
+    let (bound, root) = binding().await?;
+    bound
+        .publish_agent_files(
+            &root,
+            OperationId::new(),
+            &[ClientFileChange {
+                path: "ui/title".into(),
+                expected: None,
+                text: "original authored title".into(),
+            }],
+        )
+        .await?;
+    let state = bound.agents().state(&root).await?;
+    let volume = state.volumes[0].volume()?;
+    let reader = bound.content_reader(&root).await?;
+    let (cut, page) = reader
+        .list_private_directory(
+            volume,
+            "",
+            "evals",
+            super::super::DirectoryOptions {
+                generation: None,
+                after: None,
+                maximum_entries: 1,
+                ceiling: None,
+            },
+        )
+        .await?
+        .ok_or("production evaluation route is absent")?;
+    assert_eq!(cut.as_resource().version(), Some("lazy-v1"));
+    assert!(page.entries.is_empty(), "an unsettled agent has no cases");
+    assert!(page.next.is_none());
+    bound
+        .publish_agent_files(
+            &root,
+            OperationId::new(),
+            &[ClientFileChange {
+                path: "ui/title".into(),
+                expected: None,
+                text: "later authored title".into(),
+            }],
+        )
+        .await?;
+    let reopened = bound.content_reader(&root).await?;
+    let (_, bytes, _) = reopened
+        .read_private_range(
+            volume,
+            "",
+            "ui/title",
+            Some(&cut),
+            acyclic_fs::ByteRange {
+                offset: 0,
+                length: 128,
+            },
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert_eq!(bytes.as_ref(), b"original authored title");
+    Ok(())
+}
+
+#[tokio::test]
 async fn tool_result_reads_keep_the_settled_journal_cut() -> TestResult {
     use crate::{agent::TurnHost, executor::ExecutionJournal};
     let (bound, root) = binding().await?;
