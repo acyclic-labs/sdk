@@ -81,20 +81,15 @@ impl<Q: Message + Default + Send + 'static, R: Message + Default + Send + 'stati
                 .ok_or_else(|| Status::internal("missing input"))?;
             let json = contract::json(input, request.get_ref())
                 .map_err(|error| Status::internal(error.to_string()))?;
-            // The captured probe sends an empty handshake.
-            let case = if self.method == "Handshake" {
-                first
-            } else {
-                candidates
-                    .iter()
-                    .find(|case| case["request"] == json)
-                    .ok_or_else(|| {
-                        Status::invalid_argument(format!(
-                            "{} differs from Cloud JSON: {json}",
-                            self.method
-                        ))
-                    })?
-            };
+            let case = candidates
+                .iter()
+                .find(|case| case["request"] == json)
+                .ok_or_else(|| {
+                    Status::invalid_argument(format!(
+                        "{} differs from Cloud JSON: {json}",
+                        self.method
+                    ))
+                })?;
             self.service
                 .seen
                 .lock()
@@ -461,7 +456,7 @@ async fn generated_clients_match_cloud_filesystem_roundtrip() -> TestResult {
             }),
     );
     let client = FilesystemServiceClient::connect(endpoint.clone()).await?;
-    let mut handshake = Request::new(wire::HandshakeRequest { protocol: None });
+    let mut handshake = Request::new(contract::handshake());
     handshake
         .metadata_mut()
         .insert("authorization", "Bearer fixture".parse()?);

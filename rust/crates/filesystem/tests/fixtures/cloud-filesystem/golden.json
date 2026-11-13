@@ -3,7 +3,22 @@
     "input": "HandshakeRequest",
     "method": "Handshake",
     "output": "HandshakeResponse",
-    "request": {},
+    "request": {
+      "protocol": {
+        "protocol": {
+          "descriptorDigest": "823ed3117ba1327bcf6b1e40b6626db62117ee1999bf1ca5ed981a0e10ec8c93",
+          "version": "1"
+        },
+        "required": {
+          "capabilities": [
+            {
+              "name": "filesystem",
+              "version": "1"
+            }
+          ]
+        }
+      }
+    },
     "response": {
       "capabilities": {
         "contractVersion": "1",

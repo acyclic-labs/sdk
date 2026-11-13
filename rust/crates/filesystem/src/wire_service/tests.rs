@@ -113,12 +113,178 @@ fn mutation(value: wire::mutation::Mutation) -> wire::Mutation {
     }
 }
 
+fn handshake_request() -> wire::HandshakeRequest {
+    wire::HandshakeRequest {
+        protocol: Some(protocol::HandshakeRequest {
+            protocol: Some(protocol::ProtocolIdentity {
+                version: FILESYSTEM_PROTOCOL_VERSION.to_owned(),
+                descriptor_digest: crate::descriptor_digest(),
+            }),
+            required: Some(protocol::CapabilitySet {
+                capabilities: vec![protocol::Capability {
+                    name: "filesystem".to_owned(),
+                    version: FILESYSTEM_PROTOCOL_VERSION.to_owned(),
+                }],
+            }),
+        }),
+    }
+}
+
+#[tokio::test]
+async fn handshake_refuses_incomplete_identity_and_unsupported_requirements()
+-> Result<(), Box<dyn std::error::Error>> {
+    let service = FilesystemWireService::new(Fs::memory(), FilesystemWireLimits::default())?;
+    let mut requests = vec![(
+        wire::HandshakeRequest::default(),
+        tonic::Code::InvalidArgument,
+    )];
+    let mut missing = handshake_request();
+    missing
+        .protocol
+        .as_mut()
+        .ok_or("missing handshake")?
+        .protocol = None;
+    requests.push((missing, tonic::Code::InvalidArgument));
+    for (version, digest) in [
+        (String::new(), crate::descriptor_digest()),
+        (FILESYSTEM_PROTOCOL_VERSION.to_owned(), String::new()),
+        ("other".to_owned(), crate::descriptor_digest()),
+        (FILESYSTEM_PROTOCOL_VERSION.to_owned(), "other".to_owned()),
+    ] {
+        let mut request = handshake_request();
+        request
+            .protocol
+            .as_mut()
+            .ok_or("missing handshake")?
+            .protocol = Some(protocol::ProtocolIdentity {
+            version,
+            descriptor_digest: digest,
+        });
+        requests.push((request, tonic::Code::FailedPrecondition));
+    }
+    for (name, version) in [
+        ("", "1"),
+        ("filesystem", ""),
+        ("filesystem", "other"),
+        ("other", "1"),
+        ("filesystem.durable", "1"),
+    ] {
+        let mut request = handshake_request();
+        request
+            .protocol
+            .as_mut()
+            .ok_or("missing handshake")?
+            .required
+            .as_mut()
+            .ok_or("missing requirements")?
+            .capabilities
+            .push(protocol::Capability {
+                name: name.to_owned(),
+                version: version.to_owned(),
+            });
+        requests.push((request, tonic::Code::FailedPrecondition));
+    }
+    for (request, expected) in requests {
+        assert_eq!(
+            service
+                .handshake(Request::new(request))
+                .await
+                .unwrap_err()
+                .code(),
+            expected
+        );
+    }
+    let mut request = handshake_request();
+    request
+        .protocol
+        .as_mut()
+        .ok_or("missing handshake")?
+        .required = None;
+    let response = service.handshake(Request::new(request)).await?.into_inner();
+    let response = response.protocol.ok_or("missing response handshake")?;
+    assert_eq!(
+        response.protocol,
+        handshake_request()
+            .protocol
+            .and_then(|request| request.protocol)
+    );
+    assert_eq!(
+        response
+            .supported
+            .ok_or("missing advertised capabilities")?
+            .capabilities,
+        handshake_request()
+            .protocol
+            .and_then(|request| request.required)
+            .ok_or("missing requirements")?
+            .capabilities
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn required_durability_survives_workspace_restart() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempfile::tempdir()?;
+    let options = crate::LocalOptions::new(directory.path());
+    let filesystem = Fs::local(options.clone()).await?;
+    let service = FilesystemWireService::new(filesystem, FilesystemWireLimits::default())?;
+    let mut request = handshake_request();
+    let durable = protocol::Capability {
+        name: "filesystem.durable".to_owned(),
+        version: "1".to_owned(),
+    };
+    request
+        .protocol
+        .as_mut()
+        .ok_or("missing handshake")?
+        .required
+        .as_mut()
+        .ok_or("missing requirements")?
+        .capabilities
+        .push(durable.clone());
+    let response = service.handshake(Request::new(request)).await?.into_inner();
+    assert!(
+        response
+            .protocol
+            .and_then(|response| response.supported)
+            .ok_or("missing advertised capabilities")?
+            .capabilities
+            .contains(&durable)
+    );
+    let created = service
+        .create_workspace(Request::new(wire::CreateWorkspaceRequest {
+            name: "persistent-workspace".to_owned(),
+            profile: wire::FilesystemProfile::Portable as i32,
+            operation: operation(1),
+        }))
+        .await?
+        .into_inner()
+        .workspace
+        .ok_or("missing workspace")?;
+    drop(service);
+    let reopened =
+        FilesystemWireService::new(Fs::local(options).await?, FilesystemWireLimits::default())?;
+    let observed = reopened
+        .open_workspace(Request::new(wire::OpenWorkspaceRequest {
+            selector: Some(wire::open_workspace_request::Selector::Name(
+                "persistent-workspace".to_owned(),
+            )),
+        }))
+        .await?
+        .into_inner()
+        .workspace
+        .ok_or("missing reopened workspace")?;
+    assert_eq!(created.workspace, observed.workspace);
+    Ok(())
+}
+
 #[tokio::test]
 async fn handshake_and_creation_expose_every_canonical_profile()
 -> Result<(), Box<dyn std::error::Error>> {
     let service = FilesystemWireService::new(Fs::memory(), FilesystemWireLimits::default())?;
     let advertised = service
-        .handshake(Request::new(wire::HandshakeRequest { protocol: None }))
+        .handshake(Request::new(handshake_request()))
         .await?
         .into_inner()
         .capabilities
@@ -163,7 +329,7 @@ async fn source_provider_controls_capability_and_all_lifecycle_rpcs()
 -> Result<(), Box<dyn std::error::Error>> {
     let absent = FilesystemWireService::new(Fs::memory(), FilesystemWireLimits::default())?;
     let capabilities = absent
-        .handshake(Request::new(wire::HandshakeRequest { protocol: None }))
+        .handshake(Request::new(handshake_request()))
         .await?
         .into_inner()
         .capabilities
@@ -176,7 +342,7 @@ async fn source_provider_controls_capability_and_all_lifecycle_rpcs()
     let service = FilesystemWireService::new(Fs::memory(), FilesystemWireLimits::default())?
         .with_source_provider(provider.clone());
     let capabilities = service
-        .handshake(Request::new(wire::HandshakeRequest { protocol: None }))
+        .handshake(Request::new(handshake_request()))
         .await?
         .into_inner()
         .capabilities

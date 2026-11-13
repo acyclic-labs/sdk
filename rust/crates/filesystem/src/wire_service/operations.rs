@@ -9,36 +9,58 @@ where
         request: Request<wire::HandshakeRequest>,
     ) -> Result<Response<wire::HandshakeResponse>, Status> {
         self.admit(&request)?;
-        if let Some(requested) = request
-            .into_inner()
-            .protocol
-            .and_then(|value| value.protocol)
-        {
-            if !requested.version.is_empty() && requested.version != FILESYSTEM_PROTOCOL_VERSION {
-                return Err(Status::failed_precondition(
-                    "unsupported filesystem contract version",
-                ));
-            }
-            let digest = crate::descriptor_digest();
-            if !requested.descriptor_digest.is_empty() && requested.descriptor_digest != digest {
-                return Err(Status::failed_precondition(
-                    "filesystem descriptor digest mismatch",
-                ));
-            }
-        }
+        let request = request.into_inner();
         let protocol = protocol::ProtocolIdentity {
             version: FILESYSTEM_PROTOCOL_VERSION.to_owned(),
             descriptor_digest: crate::descriptor_digest(),
         };
+        let mut supported = protocol::CapabilitySet {
+            capabilities: vec![protocol::Capability {
+                name: "filesystem".to_owned(),
+                version: FILESYSTEM_PROTOCOL_VERSION.to_owned(),
+            }],
+        };
+        if self.filesystem.capabilities().durable {
+            supported.capabilities.push(protocol::Capability {
+                name: "filesystem.durable".to_owned(),
+                version: "1".to_owned(),
+            });
+        }
+        acyclic_protocol::negotiate(
+            request
+                .protocol
+                .as_ref()
+                .and_then(|request| request.protocol.as_ref())
+                .map(|identity| {
+                    (
+                        identity.version.as_str(),
+                        identity.descriptor_digest.as_str(),
+                    )
+                }),
+            (&protocol.version, &protocol.descriptor_digest),
+            request
+                .protocol
+                .as_ref()
+                .and_then(|request| request.required.as_ref())
+                .into_iter()
+                .flat_map(|set| {
+                    set.capabilities
+                        .iter()
+                        .map(|capability| (capability.name.as_str(), capability.version.as_str()))
+                }),
+            supported
+                .capabilities
+                .iter()
+                .map(|capability| (capability.name.as_str(), capability.version.as_str())),
+        )
+        .map_err(|error| match error {
+            acyclic_protocol::Error::MissingIdentity => Status::invalid_argument(error.to_string()),
+            _ => Status::failed_precondition(error.to_string()),
+        })?;
         Ok(Response::new(wire::HandshakeResponse {
             protocol: Some(protocol::HandshakeResponse {
                 protocol: Some(protocol),
-                supported: Some(protocol::CapabilitySet {
-                    capabilities: vec![protocol::Capability {
-                        name: "filesystem".to_owned(),
-                        version: FILESYSTEM_PROTOCOL_VERSION.to_owned(),
-                    }],
-                }),
+                supported: Some(supported),
             }),
             capabilities: Some(wire::Capabilities {
                 contract_version: FILESYSTEM_PROTOCOL_VERSION.to_owned(),
