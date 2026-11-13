@@ -34,7 +34,12 @@ impl<
                 .await?
                 .map(|node| (cut.source.clone(), node)),
         };
-        let state = LazyWorkspaceState::new(cut.workspace_id, cut.source.clone(), cut.overlay, cut.shadows);
+        let state = LazyWorkspaceState::new(
+            cut.workspace_id,
+            cut.source.clone(),
+            cut.overlay,
+            cut.shadows,
+        );
         let (paths, _) = self.enumerate_paths(root, &cut, &state, ctx).await?;
         let start = crate::Generation {
             workspace: self.workspace.clone(),
@@ -91,7 +96,7 @@ impl<
     /// resumes it and a different observation never reuses it.
     pub async fn exactify_cut(
         &self,
-        cut: &LazySnapshotRef,
+        cut: LazySnapshotRef,
         paths: &[String],
         witness: &Self,
         ctx: &mut KernelAccounting<'_>,
@@ -133,7 +138,7 @@ impl<
                 )
                 .await?;
         }
-        self.exactify_cut_overlay(cut, paths, overlay, ctx)
+        self.exactify_cut_overlay(&cut, paths, overlay, ctx)
             .await
             .map(Some)
     }
@@ -144,14 +149,14 @@ impl<
     /// Missing original source versions refuse instead of inventing a delta.
     pub async fn exactify_observed_base(
         &self,
-        cut: &LazySnapshotRef,
+        cut: LazySnapshotRef,
         paths: &[String],
         witness: &Self,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
-        self.validate_snapshot(cut, ctx).await?;
+        self.validate_snapshot(&cut, ctx).await?;
         let witnessed = witness.state(ctx).await?;
-        if witnessed.fork_origin.map(|origin| origin.snapshot) != Some(cut) {
+        if witnessed.fork_origin.map(|origin| origin.snapshot) != Some(cut.clone()) {
             return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
         }
         let authored = accounted!(ctx, |work, cancel| self.workspace.generation(
@@ -160,7 +165,7 @@ impl<
             cancel
         ))?;
         let tombstones = witness.source_tombstones_owned(usize::MAX, ctx).await?;
-        let deleted_paths = match self.deleted_base_paths(cut, &tombstones.value, ctx).await {
+        let deleted_paths = match self.deleted_base_paths(&cut, &tombstones.value, ctx).await {
             Ok(paths) => paths,
             Err(error) => {
                 tombstones.retire(ctx)?;
@@ -188,11 +193,11 @@ impl<
                     Err(LazyWorkspaceError::WorkspaceCause(error)) if error.is_absent() => {}
                     Err(error) => return Err(error),
                 }
-                let live = self.source.reference();
+                let live = self.source_reference(ctx).await?;
                 let observation = match witness.overlay_fact(witnessed.overlay, path, ctx).await? {
                     Some(LazyOverlayChange::Observe { source, node, .. }) => {
                         if self
-                            .source_lookup(live, path, ctx)
+                            .source_lookup(&live, path, ctx)
                             .await?
                             .is_none_or(|current| {
                                 current.version != node.version
@@ -211,7 +216,7 @@ impl<
                         removed: Some(version),
                     }) => {
                         let node = self
-                            .source_lookup(live, path, ctx)
+                            .source_lookup(&live, path, ctx)
                             .await?
                             .filter(|node| node.version == version)
                             .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
@@ -229,7 +234,7 @@ impl<
                         .is_ok() =>
                     {
                         let node = self
-                            .source_lookup(live, path, ctx)
+                            .source_lookup(&live, path, ctx)
                             .await?
                             .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
                         Some(LazyOverlayChange::Observe {
@@ -252,7 +257,7 @@ impl<
             if selected.value.is_empty() {
                 return Ok(authored);
             }
-            self.exactify_cut_overlay(cut, &selected.value, overlay, ctx)
+            self.exactify_cut_overlay(&cut, &selected.value, overlay, ctx)
                 .await
         }
         .await;
@@ -270,13 +275,18 @@ impl<
         tombstones: &[(String, SourceVersion)],
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Owned<Vec<String>>, LazyWorkspaceError> {
-        let state = LazyWorkspaceState::new(cut.workspace_id, cut.source.clone(), cut.overlay, cut.shadows);
+        let state = LazyWorkspaceState::new(
+            cut.workspace_id,
+            cut.source.clone(),
+            cut.overlay,
+            cut.shadows,
+        );
         let mut paths = Owned::allocate(0, ctx)?;
         let result = async {
             let mut expanded: Option<&str> = None;
             for (path, version) in tombstones {
                 if self
-                    .saved_source_subtree(cut.overlay, cut.source, path, ctx)
+                    .saved_source_subtree(cut.overlay, &cut.source, path, ctx)
                     .await?
                 {
                     continue;
@@ -288,7 +298,7 @@ impl<
                     continue;
                 }
                 let Some(node) = self
-                    .source_lookup(self.source.reference(), path, ctx)
+                    .source_lookup(&self.source_reference(ctx).await?, path, ctx)
                     .await?
                 else {
                     continue;
@@ -326,7 +336,7 @@ impl<
     pub(super) async fn saved_source_subtree(
         &self,
         overlay: LazyOverlayId,
-        source: SourceReference,
+        source: &SourceReference,
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<bool, LazyWorkspaceError> {
@@ -335,7 +345,7 @@ impl<
             if matches!(
                 self.overlay_fact(overlay, path, ctx).await?,
                 Some(LazyOverlayChange::Observe { source: saved, complete: true, .. })
-                    if saved == source
+                    if &saved == source
             ) {
                 return Ok(true);
             }
@@ -408,7 +418,7 @@ impl<
         let head = accounted!(ctx, |work, cancel| fork.head(work, cancel))?;
         self.exactify_into(
             "/",
-            pinned,
+            &pinned,
             owned,
             head,
             crate::PublicationPermit::Unrestricted,
@@ -429,7 +439,12 @@ impl<
         permit: crate::PublicationPermit,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(crate::Generation<A, O>, LazyOverlayId), LazyWorkspaceError> {
-        let state = LazyWorkspaceState::new(cut.workspace_id, cut.source.clone(), cut.overlay, cut.shadows);
+        let state = LazyWorkspaceState::new(
+            cut.workspace_id,
+            cut.source.clone(),
+            cut.overlay,
+            cut.shadows,
+        );
         let workspace = &start.workspace;
         paths
             .value

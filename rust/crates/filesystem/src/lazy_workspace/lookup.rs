@@ -141,7 +141,7 @@ impl<
                 source: saved_source, node: saved_node, complete: true,
             }) if saved_source == source && saved_node == node);
             let change = LazyOverlayChange::Observe {
-                source: *source,
+                source: source.clone(),
                 node: *node,
                 complete,
             };
@@ -283,7 +283,7 @@ impl<
         };
         if self.tombstoned(state.overlay, path, ctx).await?
             || self
-                .saved_source_subtree(state.overlay, state.source, path, ctx)
+                .saved_source_subtree(state.overlay, &state.source, path, ctx)
                 .await?
         {
             return Ok((None, false, ctx.claim_owned(0, 0)?));
