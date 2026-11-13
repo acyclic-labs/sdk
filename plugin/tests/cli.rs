@@ -13,6 +13,22 @@ use std::{
 const ANSWER: &str = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"fixture answer\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":64,\"output_tokens\":2}}}\n\n";
 
 #[tokio::test]
+async fn shipping_entrypoints_route_inspect_and_send_to_the_shared_parser() {
+    for binary in [
+        acyclic_test_support::cargo_binary!("acyclic"),
+        acyclic_test_support::cargo_binary!("graphcoder"),
+    ] {
+        for operation in ["inspect", "send"] {
+            let mut command = Command::new(&binary);
+            command.args([operation, "--help"]);
+            let output = capture(command, "").await;
+            assert!(output.status.success(), "{operation}: {output:?}");
+            assert!(output.stderr.is_empty(), "{operation}: {output:?}");
+        }
+    }
+}
+
+#[tokio::test]
 async fn installers_observe_the_shipping_product_name_and_version() {
     for (product, binary) in [
         ("acyclic", acyclic_test_support::cargo_binary!("acyclic")),

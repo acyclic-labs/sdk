@@ -31,24 +31,7 @@ pub fn parse(arguments: Vec<OsString>) -> Result<Input, InvalidNativeArgument> {
                 .to_str()
                 .is_none_or(|value| !value.starts_with('-'))
         });
-    if (!native_doctor
-        && matches!(
-            first,
-            Some(
-                "run"
-                    | "serve"
-                    | "attach"
-                    | "exec"
-                    | "sessions"
-                    | "history"
-                    | "study"
-                    | "doctor"
-                    | "new"
-                    | "name"
-                    | "rename"
-                    | "archive"
-            )
-        ))
+    if (!native_doctor && first.is_some_and(crate::runner::accepts_subcommand))
         || first.is_some_and(|argument| {
             argument.starts_with('-')
                 && !matches!(argument, "--help" | "-h" | "--version" | "-V" | "--task")
