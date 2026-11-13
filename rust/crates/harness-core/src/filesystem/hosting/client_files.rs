@@ -149,75 +149,19 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         Error,
     > {
         let (volume, scope, verifier) = self.client_volume(agent, session).await?;
-        let reference =
-            super::super::bounded_io::content_workspace(&self.volumes.provider, &volume, None)
-                .map_err(turn)?;
         let initial = if after.is_none() && session.is_some() {
-            Some(self.volumes.create_volume(&volume).await.map_err(turn)?)
-        } else {
-            None
-        };
-        let waiting = if after.is_some() {
-            let workspace = self.volumes.open(&reference, None).await.map_err(turn)?;
-            let path = acyclic_fs::session::changes_path(
-                &self.volumes.filesystem,
-                workspace.id().volume_id(),
+            Some(
+                self.volumes
+                    .create_volume(&volume)
+                    .await
+                    .map_err(turn)?
+                    .generation,
             )
-            .map_err(Error::Stream)?;
-            let request = acyclic_stream::HeadsRequest {
-                paths: [path.clone()].into_iter().collect(),
-                retained: Default::default(),
-                durable_through: None,
-                projection: acyclic_stream::HeadProjection::Tail,
-                children: None,
-                limit: 1,
-                at_least: Default::default(),
-            };
-            let heads = self
-                .agents
-                .provider()
-                .heads(request.clone())
-                .await
-                .map_err(Error::Stream)?;
-            heads.validate_for(&request).map_err(Error::Stream)?;
-            Some(acyclic_stream::FollowRequest {
-                path,
-                from: heads
-                    .heads
-                    .first()
-                    .and_then(Option::as_ref)
-                    .map_or(0, |head| head.tail),
-                preceding: None,
-                bootstrap_head: false,
-                until: None,
-                when_absent: acyclic_stream::WhenAbsent::Wait,
-                filter: Default::default(),
-                progress: false,
-                at_least: Default::default(),
-            })
         } else {
             None
         };
-        let mut selected = match initial {
-            Some(selected) => selected,
-            None => self.volumes.resolve(&reference, None).await.map_err(turn)?,
-        };
-        if after == Some(&selected.generation) {
-            use futures::TryStreamExt as _;
-            let updates = self
-                .agents
-                .provider()
-                .follow(waiting.ok_or(Error::Record("client files wait has no producer"))?)
-                .await
-                .map_err(Error::Stream)?;
-            acyclic_stream::records_only(updates)
-                .try_next()
-                .await
-                .map_err(Error::Stream)?
-                .ok_or(Error::Stream(acyclic_stream::StreamError::Unavailable))?;
-            selected = self.volumes.resolve(&reference, None).await.map_err(turn)?;
-        }
-        Ok((volume, scope, verifier, selected.generation))
+        let generation = self.volume_generation(&volume, initial, after).await?;
+        Ok((volume, scope, verifier, generation))
     }
 
     /// Read only the caller's display credit, at the same live snapshot used

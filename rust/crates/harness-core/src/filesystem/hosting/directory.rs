@@ -1,28 +1,51 @@
-//! Private directory projection under the original selected agent authority.
+//! Directory and range projections under the original selected agent authority.
 use super::*;
 use crate::{
-    conversation::{ContentGrant, PrivateDirectoryPage},
+    agent::{WorkspaceRole, WorkspaceTable},
+    conversation::{ContentGrant, DirectoryQuery, DirectoryTarget, PrivateDirectoryPage},
     resources::GenerationRef,
 };
+
+struct DirectoryBinding {
+    volume: crate::conversation::VolumeRef,
+    path: String,
+    grant: ContentGrant,
+    scope: Scope,
+}
 
 impl<P, O> Bound<P, O>
 where
     P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
-    /// Read one bounded range at the selected directory's immutable generation.
-    /// The original private grant and current persisted policy authorize each
-    /// range; the path never selects another agent or volume.
-    pub async fn read_private_file(
+    async fn directory_binding(
         &self,
         agent: &AgentPath,
+        target: DirectoryTarget,
         path: &str,
-        generation: &GenerationRef,
-        offset: u64,
-        maximum: u64,
-    ) -> Result<(acyclic_stream::OwnedBytes, u64), Error> {
+    ) -> Result<DirectoryBinding, Error> {
         self.admit_path(agent)?;
+        if !path.is_empty() {
+            crate::conversation::validate_content_path(path, &mut None).map_err(turn)?;
+        }
         let state = self.agents.state(agent).await?;
+        let binding = match target {
+            DirectoryTarget::Private {} => state
+                .volumes
+                .iter()
+                .find(|binding| binding.role == WorkspaceRole::Private),
+            DirectoryTarget::Primary {} => WorkspaceTable::primary_in(&state.volumes),
+            DirectoryTarget::Workspace { id } => {
+                state.volumes.iter().find(|binding| binding.id == id)
+            }
+        }
+        .filter(|binding| binding.role != WorkspaceRole::Internal)
+        .ok_or_else(|| {
+            turn(crate::Error::Unauthorized(
+                "workspace is not visible".into(),
+            ))
+        })?;
+        let volume = binding.volume().map_err(turn)?.clone();
         let authority = agent_authority(
             &self.issuer,
             &self.admission,
@@ -32,26 +55,51 @@ where
         )
         .await
         .map_err(turn)?;
+        let path = match (binding.root.is_empty(), path.is_empty()) {
+            (true, _) => path.to_owned(),
+            (false, true) => binding.root.clone(),
+            (false, false) => format!("{}/{path}", binding.root),
+        };
         let grant = ContentGrant::verify_directory_read(
             &authority.verifier,
             &authority.scope,
-            authority.private.volume()?,
-            path,
+            &volume,
+            &path,
             &mut None,
         )
         .map_err(turn)?;
+        Ok(DirectoryBinding {
+            volume,
+            path,
+            grant,
+            scope: authority.scope,
+        })
+    }
+
+    /// Read one bounded file range at an exact workspace-directory generation.
+    /// The current binding, original admission and persisted policy authorize
+    /// every range; no path can widen a rooted workspace or select a volume.
+    pub async fn read_path(
+        &self,
+        agent: &AgentPath,
+        target: DirectoryTarget,
+        path: &str,
+        generation: &GenerationRef,
+        range: acyclic_fs::ByteRange,
+    ) -> Result<(acyclic_stream::OwnedBytes, u64), Error> {
+        let binding = self.directory_binding(agent, target, path).await?;
         let (bytes, _selected, length) = self
             .volumes
             .read_private_range(
-                authority.private.volume()?,
-                &grant,
-                path,
+                &binding.volume,
+                &binding.grant,
+                &binding.path,
                 Some(generation),
-                acyclic_fs::ByteRange {
-                    offset,
-                    length: maximum,
+                range,
+                ContentAccess {
+                    ceiling: Some(binding.scope.capabilities()),
+                    io: None,
                 },
-                ContentAccess::default(),
             )
             .await
             .map_err(turn)?;
@@ -59,34 +107,31 @@ where
     }
 
     /// Select visible names at one immutable generation under current policy.
+    /// An authorized absent directory yields an empty page at that same cut,
+    /// so callers can wait for its creation using the original volume producer.
     pub async fn directory_page(
         &self,
         agent: &AgentPath,
-        path: &str,
-        generation: Option<&GenerationRef>,
-        after: Option<&str>,
-        limit: u32,
+        query: DirectoryQuery<'_>,
     ) -> Result<PrivateDirectoryPage, Error> {
-        self.admit_path(agent)?;
-        let state = self.agents.state(agent).await?;
-        let authority = agent_authority(
-            &self.issuer,
-            &self.admission,
-            &state.path,
-            &state.volumes,
-            &[],
-        )
-        .await
-        .map_err(turn)?;
-        let grant = ContentGrant::verify_directory_read(
-            &authority.verifier,
-            &authority.scope,
-            authority.private.volume()?,
-            path,
-            &mut None,
-        )
-        .map_err(turn)?;
-        let after = after
+        if (query.generation.is_none() && query.after_name.is_some())
+            || (query.after_generation.is_some()
+                && (query.generation.is_some() || query.after_name.is_some()))
+        {
+            return Err(Error::Record("invalid directory selection"));
+        }
+        let binding = self
+            .directory_binding(agent, query.target, query.path)
+            .await?;
+        let generation = match query.generation {
+            Some(generation) => generation.clone(),
+            None => {
+                self.volume_generation(&binding.volume, None, query.after_generation)
+                    .await?
+            }
+        };
+        let after = query
+            .after_name
             .map(|name| {
                 acyclic_fs::kernel::LogicalName::new(
                     acyclic_fs::kernel::NameEncoding::Utf8,
@@ -96,17 +141,23 @@ where
             .transpose()
             .map_err(|_| Error::Record("invalid directory continuation name"))?;
         let options = super::super::DirectoryOptions {
-            generation,
+            generation: Some(&generation),
             after: after.as_ref(),
-            maximum_entries: limit,
-            ceiling: None,
+            maximum_entries: query.maximum_entries,
+            ceiling: Some(binding.scope.capabilities()),
         };
-        let (generation, page) = self
+        let page = self
             .volumes
-            .list_private_directory(authority.private.volume()?, &grant, path, options)
+            .list_private_directory(&binding.volume, &binding.grant, &binding.path, options)
             .await
-            .map_err(turn)?
-            .ok_or(Error::Record("selected directory does not exist"))?;
+            .map_err(turn)?;
+        let Some((generation, page)) = page else {
+            return Ok(PrivateDirectoryPage {
+                generation,
+                entries: Vec::new(),
+                has_more: false,
+            });
+        };
         let ledger =
             crate::filesystem::PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())
                 .map_err(turn)?;

@@ -147,6 +147,102 @@ async fn tool_result_reads_keep_the_settled_journal_cut() -> TestResult {
 }
 
 #[tokio::test]
+async fn workspace_queries_keep_subdirectory_read_grants_without_widening_them() -> TestResult {
+    use crate::{
+        client_files::ClientFileChange,
+        conversation::{DirectoryQuery, DirectoryTarget, VolumeOperation},
+    };
+    let (mut bound, root) = binding().await?;
+    let generation = bound
+        .publish_agent_files(
+            &root,
+            OperationId::from_bytes([73; 16]),
+            &[
+                ClientFileChange {
+                    path: "ui/title".into(),
+                    expected: None,
+                    text: "scoped title".into(),
+                },
+                ClientFileChange {
+                    path: "outside".into(),
+                    expected: None,
+                    text: "must not be disclosed".into(),
+                },
+            ],
+        )
+        .await?;
+    let state = bound.agents().state(&root).await?;
+    let private = state.volumes[0].volume()?;
+    let journal = crate::conversation::journal_volume(private.provider().clone(), &root.id())?;
+    let grants = crate::Capabilities::new([
+        private.capability(VolumeOperation::Write, &mut None)?,
+        private.directory_read_capability("ui", &mut None)?,
+        journal.capability(VolumeOperation::Read, &mut None)?,
+        journal.capability(VolumeOperation::Write, &mut None)?,
+    ]);
+    let scope = bound
+        .issuer
+        .issue(
+            None,
+            "ui-reader",
+            &grants,
+            Some(crate::AgentId::from_bytes(root.id_bytes())),
+        )
+        .await?;
+    bound.admission = TurnAdmission::Admitted {
+        audience: bound
+            .issuer
+            .native()
+            .ok_or("native fixture custody")?
+            .audience()
+            .clone(),
+        scope,
+    };
+    let query = |path| DirectoryQuery {
+        target: DirectoryTarget::Private {},
+        path,
+        generation: Some(&generation),
+        after_generation: None,
+        after_name: None,
+        maximum_entries: 4,
+    };
+    let page = bound.directory_page(&root, query("ui")).await?;
+    assert_eq!(page.entries[0].name, "title");
+    let (bytes, _) = bound
+        .read_path(
+            &root,
+            DirectoryTarget::Private {},
+            "ui/title",
+            &generation,
+            acyclic_fs::ByteRange {
+                offset: 0,
+                length: 64,
+            },
+        )
+        .await?;
+    assert_eq!(bytes.as_slice(), b"scoped title");
+    for path in ["", "outside", "ui/../outside"] {
+        assert!(bound.directory_page(&root, query(path)).await.is_err());
+        assert!(
+            bound
+                .read_path(
+                    &root,
+                    DirectoryTarget::Private {},
+                    path,
+                    &generation,
+                    acyclic_fs::ByteRange {
+                        offset: 0,
+                        length: 64,
+                    },
+                )
+                .await
+                .is_err()
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn call_output_uses_the_journal_without_granting_tools_its_writer() -> TestResult {
     use crate::{
         agent::TurnHost,
