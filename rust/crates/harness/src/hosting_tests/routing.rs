@@ -405,6 +405,38 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
         assert_eq!(call_record.commit_id, root_record.commit_id);
         let row_call = route::Publication::decode(&call_record.value)?;
         assert!(matches!(&row_call, route::Publication::Call(_)));
+        let route::Publication::Call(mut wrong_reply) = row_call.clone() else {
+            return Err("root row call missing".into());
+        };
+        wrong_reply.reply = bytes::Bytes::from_static(b"wrong receipt");
+        let interrupted = acyclic_stream::MemoryStream::default();
+        assert!(matches!(
+            interrupted
+                .commit(CommitRequest {
+                    deadline_unix_millis: None,
+                    idempotency_key: IdempotencyKey::new(b"wrong-metadata-receipt".to_vec())?,
+                    effects: vec![wrong_reply.effect(&paths)?],
+                })
+                .await?,
+            CommitOutcome::Committed(_)
+        ));
+        let refused = route::forward(
+            &interrupted,
+            &paths,
+            &source,
+            async |publication: route::Publication| {
+                publication.publish(&client, 4, &paths, 4096).await
+            },
+            async |_| Err(route::Error::InvalidRecord),
+        )
+        .await;
+        assert!(
+            matches!(refused, Err(route::Error::Stream(error)) if error.category() == StreamError::InvalidResponse)
+        );
+        assert!(matches!(
+            interrupted.tail(paths.outbox_cursor(&source)?).await,
+            Err(StreamError::NotFound)
+        ));
         row_call.publish(&client, 4, &paths, 4096).await?;
         publication.publish(&client, 4, 4096).await?;
         publication.publish(&client, 4, 4096).await?;
