@@ -6,6 +6,9 @@ use acyclic_stream::{
     CommitMutation, CommittedMutation, IdempotencyOutcome, Record, StreamProviderExt as _,
 };
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;
+
 impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     /// Retain the command's original semantic record, rather than preparing
     /// another row revision after an uncertain or repeated user operation.
@@ -97,19 +100,8 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             .as_ref()
             .ok_or(Error::Record("root has no routing context"))?;
         let actor = self.actor(root)?;
-        let path = SessionPublication::row_path(&actor)?;
-        let current = match self.provider.head(path.clone()).await {
-            Ok(head) => {
-                let record = head.last.ok_or(Error::Record("session row is empty"))?;
-                let row = SessionRow::decode(&record.value)?;
-                if row.rev != head.tail || row.node != routing.node {
-                    return Err(Error::Record("session row ownership or revision differs"));
-                }
-                Some(row)
-            }
-            Err(error) if error.category() == StreamError::NotFound => None,
-            Err(error) => return Err(Error::Stream(error)),
-        };
+        let (current, row_guard) =
+            SessionPublication::observe(self.provider.as_ref(), &actor, &routing.node).await?;
         let mut guard = None;
         let changed = if !enabled {
             match current {
@@ -127,7 +119,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             {
                 let record = self
                     .provider
-                    .record_at(path, row.rev - 2)
+                    .record_at(row_guard.path().clone(), row.rev - 2)
                     .await
                     .map_err(Error::Stream)?
                     .ok_or(Error::Record("removed session has no preceding row"))?;
@@ -157,23 +149,22 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
                 None => Some(SessionRow::new(routing.node.clone(), profile)),
             }
         };
-        let Some(row) = changed else {
-            return Ok(base);
-        };
-        let publication = SessionPublication {
-            actor,
-            row,
-            intent: base.idempotency_key.clone(),
-        };
         let mut joined = PreparedPublish::foreign(base.idempotency_key.clone());
+        let intent = base.idempotency_key.clone();
         for effect in base.effects {
             joined.join(effect).map_err(super::actor_error)?;
         }
+        joined
+            .require(vec![row_guard])
+            .map_err(super::actor_error)?;
         if let Some(guard) = guard {
             joined.require(vec![guard]).map_err(super::actor_error)?;
         }
-        for effect in publication.effects(&routing.paths)? {
-            joined.join(effect).map_err(super::actor_error)?;
+        if let Some(row) = changed {
+            let publication = SessionPublication { actor, row, intent };
+            for effect in publication.effects(&routing.paths)? {
+                joined.join(effect).map_err(super::actor_error)?;
+            }
         }
         joined.into_request().map_err(super::actor_error)
     }

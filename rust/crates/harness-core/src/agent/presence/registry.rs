@@ -6,9 +6,9 @@ use acyclic_actors::{
 };
 use acyclic_auth::authority::PolicyDecision;
 use acyclic_stream::{
-    Attribute, BoxProviderFuture, CommitEffect, CommitMutation, CommitOutcome, CommitRequest,
-    IdempotencyKey, OwnedBytes, RecordHeaders, StreamError, StreamPath, StreamProvider,
-    StreamProviderExt as _,
+    Attribute, BoxProviderFuture, CommitCondition, CommitEffect, CommitMutation, CommitOutcome,
+    CommitRequest, IdempotencyKey, OwnedBytes, RecordHeaders, StreamError, StreamPath,
+    StreamProvider, StreamProviderExt as _,
     session::{CallAuthorization, CallInput, CallProvider, CallTarget, Client},
 };
 use bytes::Bytes;
@@ -79,6 +79,31 @@ impl SessionPublication {
             acyclic_auth::encode_component(&actor.encode())
         ))
         .map_err(Error::Stream)
+    }
+
+    /// Original source row and its monotonic revision fence. Absence and no-op
+    /// observations must be fenced too: a concurrent membership change may
+    /// otherwise publish a row between observation and the caller's commit.
+    pub(crate) async fn observe<P: StreamProvider + ?Sized>(
+        provider: &P,
+        actor: &ActorReference,
+        node: &route::NodeId,
+    ) -> Result<(Option<SessionRow>, CommitCondition), Error> {
+        let path = Self::row_path(actor)?;
+        let row = match provider.head(path.clone()).await {
+            Ok(head) => {
+                let record = head.last.ok_or(Error::Record("session row is empty"))?;
+                let row = SessionRow::decode(&record.value)?;
+                if row.rev != head.tail || &row.node != node {
+                    return Err(Error::Record("session row ownership or revision differs"));
+                }
+                Some(row)
+            }
+            Err(error) if error.category() == StreamError::NotFound => None,
+            Err(error) => return Err(Error::Stream(error)),
+        };
+        let expected = row.as_ref().map_or(0, |row| row.rev);
+        Ok((row, CommitCondition::Tail { path, expected }))
     }
 
     fn key(&self) -> Result<IdempotencyKey, Error> {
