@@ -695,9 +695,9 @@ mod indexed_trace_tests {
     use crate::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
     use std::sync::Arc;
 
-    #[tokio::test]
-    async fn indexed_lookup_preserves_original_record_cut_and_owner()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn indexed_lookup_custody(
+        defer_creation: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let provider = Arc::new(MemoryStream::default());
         let data = Stream::new(provider.clone(), "agents/worker/data")?;
         data.append(
@@ -728,13 +728,29 @@ mod indexed_trace_tests {
             .await?
             .into_owned();
         let parent = root.id();
-        let (selected, condition) = root
-            .within(provider.latest_fenced(
-                data.path().clone(),
-                Some(OwnedBytes::from_static(b"selected")),
-                Default::default(),
-            ))
-            .await?;
+        let foreign_recorder = Arc::new(Recorder::new(trace.clone(), [52; 16]));
+        let foreign = foreign_recorder
+            .start("foreign", Mechanism::ToolCall, None, Some("foreign_poller"))
+            .await?
+            .into_owned();
+        let foreign_parent = foreign.id();
+        let lookup = root
+            .within(async {
+                let create = || {
+                    provider.latest_fenced(
+                        data.path().clone(),
+                        Some(OwnedBytes::from_static(b"selected")),
+                        Default::default(),
+                    )
+                };
+                if defer_creation {
+                    futures::future::Either::Left(async move { create().await })
+                } else {
+                    futures::future::Either::Right(create())
+                }
+            })
+            .await;
+        let (selected, condition) = foreign.within(lookup).await?;
         assert_eq!(selected, original);
         assert_eq!(
             condition,
@@ -743,30 +759,37 @@ mod indexed_trace_tests {
                 expected: 1
             }
         );
-        assert!(
-            root.within(provider.latest(
-                data.path().clone(),
-                OwnedBytes::from_static(b"absent"),
-                Default::default()
-            ))
-            .await?
-            .is_none()
-        );
-        assert!(
-            root.within(provider.latest_before(data.path().clone(), None, 0, Default::default()))
-                .await?
-                .is_none()
-        );
-        assert!(
-            root.within(provider.latest(
-                trace.path().clone(),
-                OwnedBytes::from_static(b"absent"),
-                Default::default()
-            ))
-            .await?
-            .is_none()
-        );
+        let absent = root
+            .within(async {
+                provider.latest(
+                    data.path().clone(),
+                    OwnedBytes::from_static(b"absent"),
+                    Default::default(),
+                )
+            })
+            .await;
+        assert!(foreign.within(absent).await?.is_none());
+        let zero = root
+            .within(async {
+                provider.latest_before(data.path().clone(), None, 0, Default::default())
+            })
+            .await;
+        assert!(foreign.within(zero).await?.is_none());
+        let diagnostic = root
+            .within(async {
+                provider.latest(
+                    trace.path().clone(),
+                    OwnedBytes::from_static(b"absent"),
+                    Default::default(),
+                )
+            })
+            .await;
+        assert!(foreign.within(diagnostic).await?.is_none());
+        // Creation without an owner must not adopt the foreign poller's owner.
+        let unobserved = provider.latest_before(data.path().clone(), None, 1, Default::default());
+        assert_eq!(foreign.within(unobserved).await?, original);
         let _completion = root.finish_submitted(None, Outcome::Succeeded)?;
+        let _foreign_completion = foreign.finish_submitted(None, Outcome::Succeeded)?;
         let mut query = TraceQuery::new(
             trace.follow(0, Default::default()).await?,
             Default::default(),
@@ -774,8 +797,9 @@ mod indexed_trace_tests {
         let mut completed = 0;
         let mut fence = false;
         let mut request = false;
+        let mut foreign_request = false;
         let mut indexed_bytes = Vec::new();
-        while completed < 4 {
+        while completed < 5 {
             let Some(observation) = query.next().await? else {
                 return Err("trace ended before original request hops settled".into());
             };
@@ -794,7 +818,20 @@ mod indexed_trace_tests {
                     request = true;
                     continue;
                 }
-                assert_eq!(start.parent, Some(parent));
+                if id == foreign_parent {
+                    assert!(!foreign_request);
+                    foreign_request = true;
+                    continue;
+                }
+                assert_eq!(
+                    start.parent,
+                    Some(parent),
+                    "indexed operation lost its request owner"
+                );
+                assert_eq!(
+                    id.process, parent.process,
+                    "indexed operation changed its producer"
+                );
                 assert_eq!(start.mechanism, Mechanism::ProviderCall);
                 match start.name.as_str() {
                     "stream.latest_fence" => {
@@ -817,12 +854,12 @@ mod indexed_trace_tests {
                 }
             }
         }
-        assert!(fence && request);
+        assert!(fence && request && foreign_request);
         indexed_bytes.sort();
         assert_eq!(indexed_bytes, [Some(0), Some(8)]);
         assert_eq!(
             trace.tail().await?,
-            8,
+            10,
             "zero cuts and diagnostic reads must not emit provider work"
         );
         assert_eq!(
@@ -837,9 +874,23 @@ mod indexed_trace_tests {
         );
         assert_eq!(
             trace.tail().await?,
-            8,
+            10,
             "the request owner must not leak into unrelated work"
         );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn indexed_lookup_preserves_original_record_cut_and_owner()
+    -> Result<(), Box<dyn std::error::Error>> {
+        indexed_lookup_custody(false).await
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "indexed operation lost its request owner")]
+    async fn indexed_lookup_negative_control_defers_creation_past_its_owner() {
+        indexed_lookup_custody(true)
+            .await
+            .expect("actual MemoryStream lookup");
     }
 }

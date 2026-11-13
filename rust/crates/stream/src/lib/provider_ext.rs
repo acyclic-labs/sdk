@@ -219,7 +219,7 @@ pub trait StreamProviderExt: StreamProvider {
         before: u64,
         at_least: RevisionCut,
     ) -> impl Future<Output = Result<Option<Record>, StreamError>> + ProviderTask {
-        async move {
+        let work = async move {
             use futures::StreamExt as _;
             #[cfg(feature = "serde")]
             let diagnostic = crate::trace::is_source(&path);
@@ -262,9 +262,12 @@ pub trait StreamProviderExt: StreamProvider {
             .await;
             #[cfg(not(feature = "serde"))]
             work.await
-        }
+        };
+        #[cfg(feature = "serde")]
+        return crate::trace::inherit(work);
+        #[cfg(not(feature = "serde"))]
+        work
     }
-
     /// Select the latest record, optionally keyed, at a captured head with the condition that
     /// fences that observation in the caller's original publication. The head
     /// read buys this optimistic fence; the bounded key read cannot include a
@@ -276,8 +279,9 @@ pub trait StreamProviderExt: StreamProvider {
         at_least: RevisionCut,
     ) -> impl Future<Output = Result<(Option<Record>, CommitCondition), StreamError>> + ProviderTask
     {
+        let selected = self.latest_many_fenced(path, [key], at_least);
         async move {
-            let ([record], condition) = self.latest_many_fenced(path, [key], at_least).await?;
+            let ([record], condition) = selected.await?;
             Ok((record, condition))
         }
     }
@@ -292,7 +296,7 @@ pub trait StreamProviderExt: StreamProvider {
         at_least: RevisionCut,
     ) -> impl Future<Output = Result<([Option<Record>; N], CommitCondition), StreamError>> + ProviderTask
     {
-        async move {
+        let work = async move {
             let request = HeadsRequest {
                 retained: Default::default(),
                 durable_through: None,
@@ -347,9 +351,12 @@ pub trait StreamProviderExt: StreamProvider {
                     .await?;
             }
             Ok((records, condition))
-        }
+        };
+        #[cfg(feature = "serde")]
+        return crate::trace::inherit(work);
+        #[cfg(not(feature = "serde"))]
+        work
     }
-
     /// Waits for the authority snapshot to cover the caller's minimum cut.
     fn wait_applied(
         &self,
