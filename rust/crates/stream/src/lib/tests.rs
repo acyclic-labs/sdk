@@ -1102,9 +1102,9 @@ mod replay_tests {
             })
             .await?;
         let row = rows
-            .try_next()
-            .await?
-            .ok_or("original comparison evidence disappeared")?;
+            .next()
+            .await
+            .ok_or("original comparison evidence disappeared")??;
         assert_eq!(row.commit_id, receipt.commit_id);
         assert_eq!(row.value.as_ref(), b"original");
         Ok(())
