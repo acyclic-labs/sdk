@@ -520,7 +520,12 @@ pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
                 let (composed, chain) = compose("agent.ts", &layers, &tree, base.clone())
                     .await
                     .map_err(|error| format!("layer composition admission: {error}"))?;
-                if composed != json!({"below": below, "named": value})
+                let admitted = compose_result("agent.ts", &layers, &tree, base.clone())
+                    .await
+                    .map_err(|error| format!("layer source admission: {error}"))?
+                    .map_err(|error| format!("layer value admission: {error}"))?;
+                if admitted != composed
+                    || composed != json!({"below": below, "named": value})
                     || composed != upper_result.value
                 {
                     return Err("layer composition lost its original lower value".into());
