@@ -73,12 +73,19 @@ impl PreparedLocalHarness {
             .or(bound.as_deref())
             .ok_or_else(|| Error::Invalid("model selection is absent".into()))?;
         let verifier = stored.issuer.verifier(&mut None)?;
-        let capabilities = Capabilities::new([
+        let mut capabilities = vec![
             stored
                 .scratch
                 .capability(VolumeOperation::Read, &mut None)?,
             stored.scratch.directory_read_capability("", &mut None)?,
-        ]);
+        ];
+        for layer in opening.config.configuration.iter().flatten() {
+            capabilities.extend([
+                layer.volume.capability(VolumeOperation::Read, &mut None)?,
+                layer.volume.directory_read_capability("", &mut None)?,
+            ]);
+        }
+        let capabilities = Capabilities::new(capabilities);
         let signed = stored.issuer.bootstrap_scope(
             "settings",
             &capabilities,
@@ -91,6 +98,8 @@ impl PreparedLocalHarness {
             signed: &signed,
             home: &stored.scratch,
             journal: &stored.journal,
+            seed: (&stored.seed.0, &stored.seed.1),
+            configuration: &opening.config.configuration,
             maximum_bytes: opening.config.limits.file_bytes,
         };
         agent_settings::Tree::pinned(&volumes, stored.home_generation.clone())?
@@ -630,6 +639,7 @@ impl Opening {
                 volume: seed.0.clone(),
                 generation: seed.1.clone(),
             }),
+            configuration: self.config.configuration.clone(),
             system,
             ..crate::runtime::Bindings::local()
         }
@@ -640,6 +650,8 @@ impl Opening {
             signed: &signed,
             home: &scratch,
             journal: &journal,
+            seed: (&seed.0, &seed.1),
+            configuration: &self.config.configuration,
             maximum_bytes: self.config.limits.file_bytes,
         };
         #[cfg(any(test, not(target_arch = "wasm32")))]
@@ -780,7 +792,14 @@ fn scopes(
         }
         grants.push(volume.directory_read_capability("", &mut None)?);
     }
-    for volume in std::iter::once(seed).chain(system) {
+    for volume in std::iter::once(seed).chain(system).chain(
+        opening
+            .config
+            .configuration
+            .iter()
+            .flatten()
+            .map(|layer| &layer.volume),
+    ) {
         grants.extend([
             volume.capability(VolumeOperation::Read, &mut None)?,
             volume.directory_read_capability("", &mut None)?,
@@ -815,6 +834,9 @@ fn scopes(
 
 fn validate_configuration(config: &LocalHarnessConfig) -> Result<()> {
     config.limits.validate(&mut None)?;
+    for layer in config.configuration.iter().flatten() {
+        layer.validate()?;
+    }
     for path in config.home_files.keys() {
         crate::conversation::validate_content_path(path, &mut None)?;
     }

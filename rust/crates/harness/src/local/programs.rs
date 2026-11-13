@@ -54,6 +54,8 @@ impl ToolSource for Programs {
                 signed: &self.scope,
                 home: &self.home,
                 journal: &self.journal,
+                seed: (&local.seed.0, &local.seed.1),
+                configuration: local.harness.issuer_configuration(),
                 maximum_bytes: local.limits.file_bytes,
             };
             let directory = format!("tools/{name}");

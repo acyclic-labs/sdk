@@ -62,7 +62,7 @@ pub struct Bindings {
     pub artifacts: Option<ContentBindings>,
     /// The read-only seed layer under every agent's home (see
     /// [`crate::seed`]), read through the content reader under the scope's
-    /// read grants. Without it the effective view is the home alone.
+    /// read grants. Without it the effective view has no built-in fallback.
     pub seed: Option<crate::layers::PinnedLayer>,
     /// Original read-only user/org, scope, template and parent sources, in
     /// that order. Reads retain each supplied generation and ordinary source
@@ -125,6 +125,11 @@ impl Bindings {
 }
 
 impl AgentHarness {
+    /// Original user/org, scope, template and parent pins, in that order.
+    pub fn issuer_configuration(&self) -> &[Option<crate::layers::PinnedLayer>; 4] {
+        &self.configuration
+    }
+
     /// Original immutable issuer sources, in increasing authority order.
     pub fn configuration_layers(
         &self,
