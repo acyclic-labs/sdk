@@ -118,6 +118,7 @@ pub(crate) const MAXIMUM_PAYLOAD_BYTES: u64 = crate::conversation::MAX_EXACT_JS_
 pub struct FilesystemExecutionJournal<P: ?Sized, A: 'static, O: 'static> {
     cache_identity: crate::executor::ExecutionJournalCacheId,
     stream: Arc<P>,
+    traces: Option<(acyclic_stream::trace::Registry<P>, crate::agent::AgentPath)>,
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
     verifier: AuthorityVerifier,

@@ -32,9 +32,15 @@ follower; with no trace followers, selection is one atomic check with no clock,
 allocation, registry lock or IO. Interest is ephemeral subscription custody,
 not stored trace history or authorization.
 
-This file binding does not create span producers. Complete request-path
-instrumentation, content correlation and deterministic crash replay remain
-separate requirements.
+The shared filesystem turn host binds each admitted journal to this same
+registry and original agent. Ordinary execution replay pages emit
+`harness.execution_replay_page` spans, buying `authenticated_execution_prefix`.
+The same decoder and native-work custody serve both observed and unobserved
+reads. Byte counts remain unknown because decoded events do not establish wire
+or copy bytes. Diagnostic failures preserve the original request result;
+failed reads stay unfinished until their original cause is retained. The old
+separate replay tracing span is removed. Complete request-path instrumentation,
+content correlation and deterministic crash replay remain separate requirements.
 
 ## Original model recovery observations
 

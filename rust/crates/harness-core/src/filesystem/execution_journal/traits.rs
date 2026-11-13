@@ -408,18 +408,8 @@ where
         #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
         acyclic_differential::record(ExecutionReplayObservation::Requested);
         if io.is_none() {
-            return crate::conversation::BoundedContentFuture::new(None, || async move {
-                let span = obs_span!(
-                    "acyclic.harness.journal.replay",
-                    rev = after,
-                    items = crate::obs::Empty
-                );
-                crate::obs::traced_future(span, async move {
-                    let records = self.records(operation, after, maximum, None).await?;
-                    crate::obs::obs_record!("items" = records.len());
-                    Ok(records)
-                })
-                .await
+            return crate::conversation::BoundedContentFuture::new(None, || {
+                self.records(operation, after, maximum, None)
             });
         }
         crate::conversation::BoundedContentFuture::new(io, || async move {

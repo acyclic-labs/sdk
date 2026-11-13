@@ -166,7 +166,7 @@ async fn seed(
     agent: &AgentState,
 ) -> Result<(PreparedModelRequest, serde_json::Value)> {
     let (journal, bindings, _files) = host
-        .journal(host.admit(agent)?, &[], &[], None, None)
+        .journal((host.admit(agent)?, &agent.path), &[], &[], None, None)
         .await?;
     let (body, _hold) = bindings
         .content

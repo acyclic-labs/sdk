@@ -1,5 +1,5 @@
 //! Trace admission reuses the primitive's existing subscription registry.
-use super::Recorder;
+use super::{Observed, Recorder, Request};
 use crate::{
     Stream, StreamError, StreamPath, StreamProvider,
     interest::{Interest, Interests},
@@ -83,6 +83,24 @@ impl<P: StreamProvider + ?Sized> Registry<P> {
             return Ok(None);
         }
         self.0.entries.get(owner)
+    }
+
+    /// Select demand at the original request boundary. A failed diagnostic
+    /// lookup cannot replace the operation's original output or cause.
+    pub async fn observe<T, E>(
+        &self,
+        owner: &str,
+        request: Request,
+        work: impl std::future::Future<Output = Result<T, E>>,
+        bytes: impl FnOnce(&T) -> Option<u64>,
+    ) -> Observed<T, E, P> {
+        match self.recorder(owner) {
+            Ok(recorder) => Recorder::observe(recorder.as_ref(), request, work, bytes).await,
+            Err(error) => Observed {
+                result: work.await,
+                observation: Err(error),
+            },
+        }
     }
 }
 

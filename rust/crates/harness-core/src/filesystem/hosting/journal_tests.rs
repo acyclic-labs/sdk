@@ -785,6 +785,7 @@ async fn settled_arrivals_and_archive_do_not_end_a_retained_inbox_cut_early() ->
 #[tokio::test]
 async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     use crate::client_files::{ClientFileChange, FileRoot};
+    use crate::executor::{ExecutionEvent, ExecutionJournal};
     use acyclic_stream::StreamProviderExt as _;
     let (bound, agent) = binding().await?;
     let root = FileRoot::Private {};
@@ -890,6 +891,16 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     // source follow, including when the trace stream does not exist yet.
     let trace_path = "live/agents/self/trace/0/1.json".to_owned();
     let paths = vec![trace_path.clone()];
+    let journal = bound.turns().query_journal(&state).await?;
+    let operation = OperationId::from_bytes([74; 16]);
+    let event = ExecutionEvent::Started {
+        request_digest: [75; 32],
+    };
+    journal.append(operation, "start", &event, None)?.await?;
+    assert_eq!(
+        journal.replay(operation, 0, 1, None)?.await?[0].event,
+        event
+    );
     let before = bound.files(&agent, root, &paths, None).await?;
     assert!(before.files[&trace_path].is_none());
     assert!(
@@ -911,25 +922,11 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
             .ok_or("shared recorder missing")?
     ));
     let source = crate::client_files::trace::source(&agent)?;
-    let data =
-        acyclic_stream::Stream::new(bound.agents.provider().clone(), "trace-demand-fixture")?;
-    data.append(
-        b"original".to_vec(),
-        acyclic_stream::IdempotencyKey::unique(),
-    )
-    .await?;
-    let mut replay = data.replay(0);
-    let observed = replay.next_page_observed(Some(&recorder), None).await;
-    assert_eq!(
-        observed.result?.ok_or("replay page missing")?[0]
-            .value
-            .as_ref(),
-        b"original"
-    );
-    assert!(matches!(
-        observed.observation?,
-        acyclic_stream::trace::Settlement::Finished(_)
-    ));
+    // The ordinary journal request now selects the host's original demand;
+    // callers never construct a recorder or choose a diagnostic stream.
+    let page = journal.replay(operation, 0, 1, None)?.await?;
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0].event, event);
     let changed = waiting.await?;
     assert_eq!(changed.cut.queries[&source], 2);
     let file = changed.files[&trace_path]
@@ -943,6 +940,25 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     assert_eq!(value["activeSpans"], 1);
     assert_eq!(value["missingGuarantees"], 0);
     assert_eq!(value["coveredThrough"], 1);
+    let traces = acyclic_stream::Stream::new(bound.agents.provider().clone(), source.as_str())?;
+    let mut query =
+        acyclic_stream::trace::TraceQuery::new(traces.read(0, 2).await?, Default::default());
+    query.next().await?;
+    assert!(
+        matches!(query.next().await?, Some(acyclic_stream::trace::Observation::Completed {
+        start, bytes: None, ..
+    }) if start.name == "harness.execution_replay_page"
+        && start.guarantee.as_deref() == Some("authenticated_execution_prefix"))
+    );
+    assert!(journal.replay(operation, 0, 0, None)?.await.is_err());
+    let mut failed =
+        acyclic_stream::trace::TraceQuery::new(traces.read(0, 3).await?, Default::default());
+    while failed.next().await?.is_some() {}
+    assert_eq!(
+        failed.active().len(),
+        1,
+        "unretained failure fabricated settlement"
+    );
     assert!(
         bound.trace_recorder(&agent)?.is_some(),
         "second wait lost its lease"
@@ -951,6 +967,15 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     assert!(
         bound.trace_recorder(&agent)?.is_none(),
         "last wait retained producer admission"
+    );
+    assert_eq!(
+        journal.replay(operation, 0, 1, None)?.await?[0].event,
+        event
+    );
+    assert_eq!(
+        traces.tail().await?,
+        3,
+        "unfollowed request appended diagnostics"
     );
     Ok(())
 }
