@@ -31,7 +31,30 @@ async fn lost_flush_producer_terminates_original_waiters() -> Result<(), Box<dyn
     };
     // The real await_synced producer is admitted but has not executed. Losing
     // its caller must leave custody with that producer and this waiter parked.
-    let mut waiting = std::pin::pin!(stream.await_publication(1));
+    #[cfg(feature = "serde")]
+    let trace = crate::Stream::new(
+        Arc::new(MemoryStream::default()),
+        StreamPath::new("owner/trace")?,
+    );
+    #[cfg(feature = "serde")]
+    let recorder = Arc::new(crate::trace::Recorder::new(trace.clone(), [32; 16]));
+    #[cfg(feature = "serde")]
+    let recording = recorder
+        .start(
+            "lost_flush_owner",
+            crate::trace::Mechanism::Commit,
+            None,
+            Some("original_failure_observed"),
+        )
+        .await?;
+    #[cfg(feature = "serde")]
+    let parent = recording.id();
+    #[cfg(feature = "serde")]
+    let recording = recording.into_owned();
+    let wait = stream.await_publication(1);
+    #[cfg(feature = "serde")]
+    let wait = recording.within(wait);
+    let mut waiting = std::pin::pin!(wait);
     assert!(futures::poll!(waiting.as_mut()).is_pending());
     assert!(stream.failure().is_none());
     // Retiring the scheduler drops the original queued job, including the
@@ -46,6 +69,35 @@ async fn lost_flush_producer_terminates_original_waiters() -> Result<(), Box<dyn
         stream.failure().map(|failure| failure.cause),
         Some("producer_lost")
     );
+    #[cfg(feature = "serde")]
+    {
+        use crate::trace::{Mechanism, Observation, Outcome, TraceQuery};
+        let mut query = TraceQuery::new(
+            trace.follow(0, Default::default()).await?,
+            Default::default(),
+        );
+        loop {
+            if let Some(Observation::Completed { start, result, .. }) = query.next().await? {
+                assert_eq!(start.name, "stream.journal_cut_wait");
+                assert_eq!(start.parent, Some(parent));
+                assert_eq!(start.mechanism, Mechanism::Wait);
+                assert_eq!(
+                    start.guarantee.as_deref(),
+                    Some("requested_journal_cut_device_flushed")
+                );
+                assert_eq!(result, Outcome::Unsettled);
+                break;
+            }
+        }
+        assert_eq!(
+            query
+                .totals()
+                .get(&Mechanism::Wait)
+                .ok_or("missing original waiter")?
+                .unsettled,
+            1
+        );
+    }
     Ok(())
 }
 

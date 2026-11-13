@@ -89,32 +89,53 @@ async fn local_append_retains_original_flush_guarantee() -> Result<(), Box<dyn s
             trace.follow(0, Default::default()).await?,
             Default::default(),
         );
-        loop {
+        let mut flush = None;
+        let mut wait = None;
+        while flush.is_none() || wait.is_none() {
             if let Some(Observation::Completed {
+                id,
                 start,
                 result,
                 bytes,
                 ..
             }) = query.next().await?
             {
-                assert_eq!(start.name, "stream.journal_flush");
-                assert_eq!(start.parent, Some(parent));
-                assert_eq!(start.mechanism, Mechanism::Fsync);
-                assert_eq!(
-                    start.guarantee.as_deref(),
-                    Some(match durability {
-                        LocalDurability::FullFlush => "journal_cut_device_flushed",
-                        LocalDurability::Barrier => "journal_cut_writes_ordered",
-                    })
-                );
                 assert_eq!(result, Outcome::Succeeded);
-                assert_eq!(
-                    bytes, None,
-                    "file length is not the number of bytes flushed"
-                );
-                break;
+                match start.name.as_str() {
+                    "stream.journal_flush" => {
+                        assert_eq!(start.mechanism, Mechanism::Fsync);
+                        assert_eq!(
+                            start.guarantee.as_deref(),
+                            Some(match durability {
+                                LocalDurability::FullFlush => "journal_cut_device_flushed",
+                                LocalDurability::Barrier => "journal_cut_writes_ordered",
+                            })
+                        );
+                        assert_eq!(
+                            bytes, None,
+                            "file length is not the number of bytes flushed"
+                        );
+                        assert!(flush.replace(start).is_none());
+                    }
+                    "stream.journal_cut_wait" => {
+                        assert_eq!(start.parent, Some(parent));
+                        assert_eq!(start.mechanism, Mechanism::Wait);
+                        assert_eq!(
+                            start.guarantee.as_deref(),
+                            Some(match durability {
+                                LocalDurability::FullFlush =>
+                                    "requested_journal_cut_device_flushed",
+                                LocalDurability::Barrier => "requested_journal_cut_writes_ordered",
+                            })
+                        );
+                        assert_eq!(bytes, Some(0));
+                        assert!(wait.replace(id).is_none());
+                    }
+                    _ => return Err("unexpected local publication span".into()),
+                }
             }
         }
+        assert_eq!(flush.ok_or("missing physical flush")?.parent, wait);
         root.finish_submitted(None, Outcome::Succeeded)?
             .result()
             .await?

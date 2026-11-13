@@ -615,6 +615,29 @@ impl LocalStream {
         sequence: u64,
         durability: LocalDurability,
     ) -> Result<SyncCompletion, StreamError> {
+        let wait = self.await_synced_cut(sequence, durability);
+        #[cfg(feature = "serde")]
+        let wait = crate::trace::observe(
+            crate::trace::Request {
+                name: "stream.journal_cut_wait",
+                mechanism: crate::trace::Mechanism::Wait,
+                parent: None,
+                guarantee: Some(match durability {
+                    LocalDurability::FullFlush => "requested_journal_cut_device_flushed",
+                    LocalDurability::Barrier => "requested_journal_cut_writes_ordered",
+                }),
+            },
+            wait,
+            |_| Some(0),
+        );
+        wait.await
+    }
+
+    async fn await_synced_cut(
+        &self,
+        sequence: u64,
+        durability: LocalDurability,
+    ) -> Result<SyncCompletion, StreamError> {
         let mut synced = self.inner.synced.subscribe();
         loop {
             self.check_available()?;
