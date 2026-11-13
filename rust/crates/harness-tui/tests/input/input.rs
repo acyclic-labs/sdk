@@ -455,4 +455,32 @@ fn query_history_replies_preserve_edits_and_cancelled_searches() {
         edited.as_slice(),
         [InputEffect::History { restart: true, .. }]
     ));
+    let mut moved = PromptInput::new(Editor::new("draft"));
+    moved.use_history_query();
+    press(&mut moved, KeyCode::Home, M::NONE, 0);
+    let requested = press(&mut moved, KeyCode::Up, M::NONE, 1);
+    let [InputEffect::History { request, .. }] = requested.as_slice() else {
+        panic!("missing history demand before cursor motion")
+    };
+    press(&mut moved, KeyCode::End, M::NONE, 2);
+    assert!(moved.resolve_history(*request, "draft", Some("latest"), true, 3));
+    let requested = press(&mut moved, KeyCode::Char('r'), M::CONTROL, 4);
+    let [InputEffect::History { request, .. }] = requested.as_slice() else {
+        panic!("missing search demand after recall")
+    };
+    assert!(moved.resolve_history(*request, "latest", Some("searched"), true, 5));
+    assert_eq!(
+        press(&mut moved, KeyCode::Esc, M::NONE, 6),
+        [InputEffect::HistorySearchFinished { accepted: false }]
+    );
+    assert_eq!(moved.editor.text(), "latest");
+    press(&mut moved, KeyCode::End, M::NONE, 7);
+    assert!(matches!(
+        press(&mut moved, KeyCode::Down, M::NONE, 8).as_slice(),
+        [InputEffect::History {
+            restart: false,
+            previous: false,
+            ..
+        }]
+    ));
 }

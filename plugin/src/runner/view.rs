@@ -1550,6 +1550,9 @@ async fn run_current(
                                     prompt_history.request(request, input.editor.text().to_owned(), previous, search, restart);
                                 }
                             }
+                            InputEffect::HistorySearchFinished { accepted } => {
+                                prompt_history.finish_search(accepted);
+                            }
                             InputEffect::Submit { text, .. } => {
                                 prompt_history = prompt_history::History::new(Arc::clone(&conversation));
                                 view.notice = None;
