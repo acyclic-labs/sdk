@@ -1,7 +1,7 @@
 //! Immutable provider-neutral model values and streaming contract.
 
 pub(crate) mod selection;
-pub use selection::{ModelBinding, ModelResolver};
+pub use selection::{ModelBinding, ModelResolver, validate as validate_selection};
 mod call_id;
 mod content;
 mod instruction_identity;
