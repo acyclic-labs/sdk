@@ -301,9 +301,10 @@ impl Snapshot {
             .is_some_and(|origin| self.anchor == Some(origin.inherited.commit_id))
     }
 
-    /// The state stream whose committed custody this cut has not seen settled.
-    fn unsettled(&self) -> Option<&StreamPath> {
-        self.unsettled.then_some(&self.path)
+    /// The state stream and record whose committed custody this cut has not
+    /// seen settled.
+    fn unsettled(&self) -> Option<(StreamPath, Option<CommitId>)> {
+        self.unsettled.then(|| (self.path.clone(), self.anchor))
     }
 
     fn owns_epoch(&self, epoch: u64) -> bool {
@@ -379,7 +380,7 @@ pub struct PreparedPublish {
     composition: Option<Box<dyn Composition>>,
     /// The previous cut's committed, unfinished custody, settled before this
     /// publication can replace it.
-    unsettled: Option<StreamPath>,
+    unsettled: Option<(StreamPath, Option<CommitId>)>,
     sealed: bool,
     acknowledgement_unknown: bool,
     provenance: Option<Provenance<StreamPath, ForkCut>>,
@@ -658,6 +659,16 @@ pub struct Store<P: StreamProvider + ?Sized> {
     root: StreamPath,
     composer: Option<Arc<dyn Composer>>,
     scheduling_shards: std::num::NonZeroU16,
+    /// Each actor state stream whose latest committed custody this owner
+    /// process settled, by that state record's commit. Hot-path accounting:
+    /// settlement is idempotent by contract (`Composition::settle`, in
+    /// `guest/handler.rs`), so re-settling buys no guarantee, yet a cut read
+    /// later cannot know it settled and would pay a head read, an idempotency
+    /// inspection and a participant settle on its next write. This memo
+    /// removes those round trips within one owner; across owners settlement
+    /// stays at least once. At most one entry per actor whose tail is a
+    /// composed record.
+    settled: Arc<std::sync::Mutex<std::collections::HashMap<StreamPath, CommitId>>>,
 }
 
 /// The same store with its whole configuration, so a copy cannot disagree
@@ -669,6 +680,7 @@ impl<P: StreamProvider + ?Sized> Clone for Store<P> {
             root: self.root.clone(),
             composer: self.composer.clone(),
             scheduling_shards: self.scheduling_shards,
+            settled: Arc::clone(&self.settled),
         }
     }
 }
@@ -681,6 +693,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             root,
             composer: None,
             scheduling_shards: DEFAULT_SCHEDULING_SHARDS,
+            settled: Arc::default(),
         }
     }
 
@@ -958,12 +971,38 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     /// custody, or one this process settled, costs nothing here.
     pub(crate) async fn recover_custody(&self, snapshot: &Snapshot) -> Result<(), Error> {
         match snapshot.unsettled() {
-            Some(path) => self.settle_custody(path).await,
+            Some((path, record)) => self.settle_custody(&path, record).await,
             None => Ok(()),
         }
     }
 
-    async fn settle_custody(&self, path: &StreamPath) -> Result<(), Error> {
+    /// The settled-custody memory, shared by every clone of this store.
+    fn settled(
+        &self,
+    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<StreamPath, CommitId>> {
+        self.settled
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Settle the custody committed by `record` on `path`, unless this owner
+    /// already settled it.
+    async fn settle_custody(
+        &self,
+        path: &StreamPath,
+        record: Option<CommitId>,
+    ) -> Result<(), Error> {
+        if record.is_some() && self.settled().get(path).copied() == record {
+            return Ok(());
+        }
+        self.recover_settlement(path).await?;
+        if let Some(record) = record {
+            self.settled().insert(path.clone(), record);
+        }
+        Ok(())
+    }
+
+    async fn recover_settlement(&self, path: &StreamPath) -> Result<(), Error> {
         let composer = self
             .composer
             .as_ref()
@@ -1358,8 +1397,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 // Committed custody is durable state: every publication from
                 // its cut, a retry by the same owner included, finishes it
                 // first, and a failure leaves it committed for the next one.
-                if let Some(path) = &prepared.unsettled {
-                    self.settle_custody(path).await?;
+                if let Some((path, record)) = &prepared.unsettled {
+                    self.settle_custody(path, *record).await?;
                     prepared.unsettled = None;
                 }
                 if !prepared.sealed {
@@ -1459,9 +1498,19 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     Ok(CommitOutcome::Conflict(conflicts)) if !conflicts.is_empty()
                         && conflicts.iter().all(|conflict| matches!(conflict,
                             acyclic_stream::CommitConflict::Exists { path } if path == call.settled()))));
+                let composed = prepared.composition.is_some();
                 if let Some(composition) = prepared.composition {
                     if let Err(source) = composition.settle(outcome.as_ref()).await {
                         return Err(Error::Settlement { outcome, source });
+                    }
+                }
+                if let (Ok(CommitOutcome::Committed(receipt)), Some(own)) =
+                    (&outcome, &prepared.own)
+                {
+                    if composed {
+                        self.settled().insert(own.clone(), receipt.commit_id);
+                    } else {
+                        self.settled().remove(own);
                     }
                 }
                 if let Some((call, trigger)) = settled {
@@ -1545,7 +1594,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             journal: None,
             failure_owner: None,
             composition: None,
-            unsettled: previous.unsettled().cloned(),
+            unsettled: previous.unsettled(),
             sealed: false,
             acknowledgement_unknown: false,
             provenance: previous.provenance.clone(),
