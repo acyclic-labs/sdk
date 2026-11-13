@@ -9,6 +9,9 @@ use crate::{
 };
 use acyclic_harness_client::ReadTarget;
 
+mod prompt_history;
+pub use prompt_history::PromptHistory;
+
 /// One visible root-session row. Nothing in this projection is stored separately.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct Session {
