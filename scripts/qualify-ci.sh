@@ -422,6 +422,7 @@ case "$lane" in
     bash scripts/test-qualify-ci-preflight.sh
     node --test scripts/wasm-size-report.test.mjs
     bash scripts/test-ensure-rust-target.sh
+    node --test scripts/check-workflow-runners.test.mjs
     node scripts/check-workflow-runners.mjs
     node --test scripts/harness-provider-evidence.test.mjs
     node --test scripts/qualify-main-green-debts.test.mjs scripts/test-support/libtest.test.mjs

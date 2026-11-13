@@ -1,75 +1,23 @@
 import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { workflowExecution } from "./static-policy.mjs";
 
-const directory = ".github/workflows";
-const githubHosted = [];
-const permissionScopes = new Set([
-  "actions",
-  "attestations",
-  "checks",
-  "contents",
-  "deployments",
-  "discussions",
-  "id-token",
-  "issues",
-  "models",
-  "packages",
-  "pages",
-  "pull-requests",
-  "repository-projects",
-  "security-events",
-  "statuses",
-]);
-for (const name of readdirSync(directory).filter(name => /\.ya?ml$/.test(name)).sort()) {
-  const path = join(directory, name);
-  const source = readFileSync(path, "utf8");
-  for (const line of source.split(/\r?\n/)) {
-    const match = line.match(/^\s*(?:runner|runs-on):\s*(["']?)(ubuntu|windows|macos)-([^\s#"']+)\1\s*(?:#.*)?$/);
-    if (match) githubHosted.push(`${path}:${match[2]}-${match[3]}`);
-  }
-  if (source.includes("self-hosted")) throw new Error(`${path} uses a self-hosted runner`);
-  if (/^\s*shell:\s*\$\{\{/m.test(source)) {
-    throw new Error(`${path} computes a shell dynamically; use the runner default or a literal shell`);
-  }
-  for (const match of source.matchAll(/^\s{2,}(?<scope>[a-z][a-z-]+):\s*(?:read|write|none)\s*$/gm)) {
-    const [, scope] = match;
-    if (!permissionScopes.has(scope)) {
-      throw new Error(`${path} uses unknown permission scope ${scope}`);
-    }
-  }
-}
-
-// Qualification lanes are scheduled from data rather than workflow YAML; each
-// lane runs one worker per vCPU of its runner.
-const laneRunnerCpus = new Map([["kaizen-linux", 8], ["ubuntu-24.04-arm", 4], ["macos-15", 3], ["windows-2025", 4]]);
-for (const lane of JSON.parse(readFileSync(".github/qualification-lanes.json", "utf8"))) {
-  if (laneRunnerCpus.get(lane.runner) !== lane.workers) {
+// Explicit runner capabilities; workflow row counts and matrix key names are
+// not policy. Qualification workers match the selected runner's native CPUs.
+const runnerCpus = new Map([["kaizen-linux", 8], ["ubuntu-24.04-arm", 4], ["macos-15", 3], ["windows-2025", 4]]);
+const allowed = new Set([...runnerCpus.keys(), "ubuntu-24.04", "ubuntu-latest"]);
+const lanes = JSON.parse(readFileSync(".github/qualification-lanes.json", "utf8"));
+for (const lane of lanes) {
+  if (runnerCpus.get(lane.runner) !== lane.workers) {
     throw new Error(`qualification lane ${lane.lane} must run one worker per vCPU on a known runner, not ${lane.workers} on ${lane.runner}`);
   }
 }
-
-const expected = [
-  ".github\\workflows\\agent-host-qualification.yml:macos-15",
-  ".github\\workflows\\agent-host-qualification.yml:windows-2025",
-  ".github\\workflows\\publish-crate.yml:ubuntu-24.04",
-  ".github\\workflows\\publish-npm.yml:ubuntu-24.04",
-  ".github\\workflows\\readme-guard.yml:ubuntu-latest",
-  ".github\\workflows\\release-acyclic.yml:ubuntu-24.04-arm",
-  ".github\\workflows\\release-acyclic.yml:ubuntu-24.04-arm",
-  ".github\\workflows\\release-acyclic.yml:macos-15",
-  ".github\\workflows\\release-acyclic.yml:macos-15",
-  ".github\\workflows\\release-acyclic.yml:windows-2025",
-  ".github\\workflows\\release-acyclic.yml:windows-2025",
-  ".github\\workflows\\release.yml:ubuntu-24.04",
-  ".github\\workflows\\release.yml:ubuntu-24.04",
-  ".github\\workflows\\release.yml:ubuntu-24.04",
-  ".github\\workflows\\sdk-generator.yml:ubuntu-24.04",
-];
-if (process.platform !== "win32") {
-  for (let index = 0; index < expected.length; index += 1) {
-    expected[index] = expected[index].replaceAll("\\", "/");
+// The plan producer emits this exact registry. Other dynamic producers require
+// their own explicit binding and cannot evade runner policy with an expression.
+const matrixIncludes = new Map([["${{ fromJSON(needs.plan.outputs.matrix) }}", lanes]]);
+const directory = ".github/workflows";
+for (const name of readdirSync(directory).filter(name => /\.ya?ml$/.test(name)).sort()) {
+  const path = `${directory}/${name}`;
+  for (const runner of workflowExecution(path, readFileSync(path, "utf8"), matrixIncludes)) {
+    if (!allowed.has(runner)) throw new Error(`${path} uses unapproved runner ${runner}`);
   }
-}
-if (JSON.stringify(githubHosted) !== JSON.stringify(expected)) {
-  throw new Error(`GitHub-hosted runner boundary changed: ${JSON.stringify(githubHosted)}`);
 }
