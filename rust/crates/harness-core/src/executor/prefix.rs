@@ -157,7 +157,7 @@ impl StockExecution<'_> {
                 }
             };
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(tool) = self.stock.tools.get(&invocation.name, None, self.io)?
+            if let Some(tool) = self.selected_tools().get(&invocation.name, None, self.io)?
                 && tool.executor.is_code_mode()
                 && let RecordedCall::Completed { result, .. } = call
             {

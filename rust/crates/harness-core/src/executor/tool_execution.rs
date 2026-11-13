@@ -144,7 +144,7 @@ impl<'io> StockExecution<'io> {
         } else if matches!(recorded, RecordedCall::Unstarted) {
             None
         } else {
-            self.stock.tools.fixed_for_grants(
+            self.selected_tools().fixed_for_grants(
                 &invocation.name,
                 self.stock.tool_scope.grants(),
                 self.io,
@@ -172,7 +172,7 @@ impl<'io> StockExecution<'io> {
                     })
                 })
                 .ok_or(Error::Indeterminate(operation_id))?;
-            match self.stock.tools.recover(definition, self.io)? {
+            match self.selected_tools().recover(definition, self.io)? {
                 Some(tool) => Some(tool),
                 None if matches!(recorded, RecordedCall::Completed { .. }) => {
                     // Retained results belong to the journal, even after their
@@ -248,8 +248,8 @@ impl<'io> StockExecution<'io> {
                 None => return Err(Error::Indeterminate(operation_id)),
             }
         } else {
-            self.stock.tools.refresh().await?;
-            self.stock.tools.resolve(&invocation.name, self.io)?
+            self.selected_tools().refresh().await?;
+            self.selected_tools().resolve(&invocation.name, self.io)?
         };
         let admitted = match selected {
             Some(tool) => self
@@ -264,7 +264,7 @@ impl<'io> StockExecution<'io> {
                 .epoch_tools
                 .as_ref()
                 .is_some_and(|tools| tools.iter().any(|tool| tool.name == invocation.name))
-                || self.stock.tools.was_removed(&invocation.name)? =>
+                || self.selected_tools().was_removed(&invocation.name)? =>
             {
                 Err(ToolCallRejection::Removed)
             }
@@ -281,11 +281,10 @@ impl<'io> StockExecution<'io> {
         };
         if !pinned_call
             && matches!(recorded, RecordedCall::Unstarted)
-            && self
-                .stock
-                .tools
-                .fixed_for_grants(&invocation.name, self.stock.tool_scope.grants(), self.io)?
-                .is_none()
+                & self
+                    .selected_tools()
+                    .fixed_for_grants(&invocation.name, self.stock.tool_scope.grants(), self.io)?
+                    .is_none()
         {
             let retained = self
                 .retained_dispatch_step(journal, operation_id, step, ModelPurpose::Response)
@@ -692,7 +691,7 @@ impl<'io> StockExecution<'io> {
         // A native call runs where its capability's call would, and its start
         // records that target. A call its declaration refuses runs nowhere;
         // admission settles the refusal.
-        let canonical = match self.stock.tools.resolve(&invocation.name, None)? {
+        let canonical = match self.selected_tools().resolve(&invocation.name, None)? {
             Some(tool) => match tool.executor.canonical(invocation, self.native_work()) {
                 Ok(canonical) => canonical,
                 // A declaration refusal is settled by admission. Resource and
@@ -802,8 +801,7 @@ impl<'io> StockExecution<'io> {
         })?;
         if !self.stock.tool_scope.grants().contains(&capability)
             && !self
-                .stock
-                .tools
+                .selected_tools()
                 .source_granted(&granted.definition, self.stock.tool_scope.grants())?
         {
             return Ok(Err(ToolCallRejection::Unavailable));

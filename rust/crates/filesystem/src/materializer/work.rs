@@ -99,8 +99,7 @@ impl NativeMaterializationWork {
     }
     /// Exact shared-owner allocation layout, including header and alignment.
     pub fn shared_allocation_bytes<T>() -> Result<u64, NativeTreeMaterializationError> {
-        crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<T>())
-            .map(|bytes| bytes as u64)
+        crate::shared_allocation_bytes::<T>()
             .map_err(|_| NativeTreeMaterializationError::InvalidLayout)
     }
 

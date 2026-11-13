@@ -100,8 +100,7 @@ impl StockExecution<'_> {
         }
         let selected: Result<SelectedCall> = async {
             let tool = self
-                .stock
-                .tools
+                .selected_tools()
                 .load(&invocation.name, self.io)
                 .await?
                 .ok_or_else(|| Error::NotFound("authored tool is not available".into()))?;

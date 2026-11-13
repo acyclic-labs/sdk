@@ -124,7 +124,7 @@ impl StockExecution<'_> {
                 steering.admit(from..history.len(), self.io)?;
             }
             if retained.request.is_none() {
-                self.stock.tools.refresh().await?;
+                self.selected_tools().refresh().await?;
             }
             if let request::ModelStepHistory::Turn(history, _) = &mut prior_messages {
                 let live;
@@ -264,7 +264,7 @@ impl StockExecution<'_> {
                     Either::Right(
                         attempt
                             .generate_native(
-                                self.stock.provider.as_ref(),
+                                self.selected_provider().as_ref(),
                                 &request,
                                 dispatch,
                                 work,
@@ -273,10 +273,15 @@ impl StockExecution<'_> {
                             .map(|result| stock_admit_model_event(result, self.io)),
                     )
                 } else {
-                    Either::Left(attempt.generate(self.stock.provider.as_ref(), &request, dispatch))
+                    Either::Left(attempt.generate(
+                        self.selected_provider().as_ref(),
+                        &request,
+                        dispatch,
+                    ))
                 };
                 #[cfg(target_arch = "wasm32")]
-                let generated = attempt.generate(self.stock.provider.as_ref(), &request, dispatch);
+                let generated =
+                    attempt.generate(self.selected_provider().as_ref(), &request, dispatch);
                 (Either::Right(generated), live.then_some(source))
             };
             let observed = self
@@ -450,8 +455,7 @@ impl StockExecution<'_> {
         #[cfg(not(target_arch = "wasm32"))]
         let continuation = if let Some(work) = self.native_work() {
             let (continuation, custody) = self
-                .stock
-                .provider
+                .selected_provider()
                 .reconcile_with_native_work(dispatch, replayed, work)?
                 .await?;
             io.ok_or_else(|| {
@@ -464,10 +468,15 @@ impl StockExecution<'_> {
             .absorb_native_custody(custody)?;
             continuation
         } else {
-            self.stock.provider.reconcile(dispatch, replayed).await?
+            self.selected_provider()
+                .reconcile(dispatch, replayed)
+                .await?
         };
         #[cfg(target_arch = "wasm32")]
-        let continuation = self.stock.provider.reconcile(dispatch, &replayed).await?;
+        let continuation = self
+            .selected_provider()
+            .reconcile(dispatch, &replayed)
+            .await?;
         Ok(continuation)
     }
 
@@ -703,7 +712,7 @@ impl StockExecution<'_> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = self.native_work() {
             work.remaining()?;
-            if !self.stock.provider.supports_native_model(work)? {
+            if !self.selected_provider().supports_native_model(work)? {
                 return Err(stock_boundary(
                     io,
                     Unsupported,

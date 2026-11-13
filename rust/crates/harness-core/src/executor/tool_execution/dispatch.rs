@@ -30,7 +30,7 @@ impl<'io> StockExecution<'io> {
             None
         } else {
             stock_recorded_tool_result(
-                self.stock.provider.as_ref(),
+                self.selected_provider().as_ref(),
                 operation_id,
                 &invocation.call_id,
                 self.io,
@@ -767,7 +767,7 @@ impl<'io> StockExecution<'io> {
                     crate::hooks::HookSite::AfterTool,
                     (
                         _invocation,
-                        self.stock.tools.get(
+                        self.selected_tools().get(
                             &definition.name,
                             Some(&definition.revision),
                             self.io,

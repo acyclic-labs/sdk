@@ -33,8 +33,8 @@ impl StockExecution<'_> {
             )
         })?;
         let executor = StockExecution {
-            origin: self.origin,
-            stock: ExecutionConfiguration::Borrowed(&self.stock),
+            stock: self.stock,
+            selected: self.selected.clone(),
             configuration: None,
             context: self.context,
             io: self.io,

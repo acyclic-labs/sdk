@@ -1,6 +1,6 @@
 use super::*;
 
-struct Configurations([Arc<StockExecutor>; 2]);
+struct Configurations([Arc<StepBinding>; 2]);
 
 impl StepConfiguration for Configurations {
     fn select<'a>(
@@ -9,7 +9,7 @@ impl StepConfiguration for Configurations {
         _: OperationId,
         step: u32,
         io: Option<&'a PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<Arc<StockExecutor>>>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<Arc<StepBinding>>>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             Ok(Some(Arc::clone(&self.0[usize::from(step != 0)])))
         })
@@ -26,7 +26,13 @@ async fn a_step_rebinds_the_complete_provider_configuration_without_restarting_t
             "change",
             json!({"value": "change configuration"}),
         )])]));
-        let second = Arc::new(ScriptedModelProvider::new([done_turn()]));
+        let second = Arc::new(ScriptedModelProvider::new([
+            tool_turn([echo_call(
+                "after-change",
+                json!({"value": "use original authority"}),
+            )]),
+            done_turn(),
+        ]));
         let models = crate::model::ModelResolver::new("fixture/first", {
             let first = Arc::clone(&first);
             let second = Arc::clone(&second);
@@ -81,16 +87,20 @@ async fn a_step_rebinds_the_complete_provider_configuration_without_restarting_t
                 ..Default::default()
             })
         };
-        let initial = Arc::new(bind("fixture/first", 0.1, instruction)?);
-        let next = Arc::new(bind(
+        let initial = bind("fixture/first", 0.1, instruction)?;
+        let next = bind(
             "fixture/second",
             0.8,
             instruction.map(|_| "rewritten instruction"),
-        )?);
+        )?
+        .without_tool_authority()
+        .into_step_binding(None)?;
         let executor = initial
-            .as_ref()
             .clone()
-            .with_step_configuration(Arc::new(Configurations([initial, Arc::clone(&next)])));
+            .with_step_configuration(Arc::new(Configurations([
+                initial.into_step_binding(None)?,
+                Arc::clone(&next),
+            ])));
         let input = TurnInput {
             operation_id: OperationId::new(),
             input: ModelContent::Text("question".into()),
@@ -103,10 +113,10 @@ async fn a_step_rebinds_the_complete_provider_configuration_without_restarting_t
                 .await?,
             ExecutionProgress::Ready(_)
         ));
-        assert_eq!(tool.0.load(Ordering::SeqCst), 1);
+        assert_eq!(tool.0.load(Ordering::SeqCst), 2);
         let first_requests = first.requests();
         let second_requests = second.requests();
-        assert_eq!((first_requests.len(), second_requests.len()), (1, 1));
+        assert_eq!((first_requests.len(), second_requests.len()), (1, 2));
         assert_eq!(first_requests[0].model.name, "first");
         assert_eq!(second_requests[0].model.name, "second");
         assert_eq!(first_requests[0].sampling.temperature, Some(0.1));
@@ -130,7 +140,7 @@ async fn a_step_rebinds_the_complete_provider_configuration_without_restarting_t
         // identity after a step changes the selected model and sampling.
         let mut selected = StockExecution::ordinary(&executor);
         let original_identity = selected.request_digest(&input)?;
-        selected.stock = ExecutionConfiguration::Shared(next);
+        selected.selected = Some(next);
         assert_eq!(selected.request_digest(&input)?, original_identity);
         selected.ensure_started(journal.as_ref(), &input).await?;
         let mut different_input = input.clone();
@@ -145,8 +155,60 @@ async fn a_step_rebinds_the_complete_provider_configuration_without_restarting_t
             executor.execute_progress(input, journal.as_ref()).await?,
             ExecutionProgress::Ready(_)
         ));
-        assert_eq!((first.requests().len(), second.requests().len()), (1, 1));
-        assert_eq!(tool.0.load(Ordering::SeqCst), 1);
+        assert_eq!((first.requests().len(), second.requests().len()), (1, 2));
+        assert_eq!(tool.0.load(Ordering::SeqCst), 2);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let cancel = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget {
+                peak_allocation_bytes: 1_000_000,
+                ..acyclic_fs::WorkBudget::UNBOUNDED
+            },
+            &cancel,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = PreparationIo::from_native_work(&work)?;
+        let configuration = || -> Result<StockExecutor> {
+            Ok(StockExecutor::new(
+                Model::new("fixture".into(), "owned".into(), "1".into())?,
+                Arc::new(ScriptedModelProvider::new([])),
+                ContextPipeline::default(),
+                ToolRegistry::default(),
+            ))
+        };
+        let before = work.live_allocation_bytes();
+        let bound = configuration()?.into_step_binding(Some(&io))?;
+        assert!(work.live_allocation_bytes() > before);
+        drop(bound);
+        assert_eq!(work.live_allocation_bytes(), before);
+        let occupied = work.claim(
+            work.remaining()?.peak_allocation_bytes,
+            1,
+            acyclic_fs::WorkCounters::UNCHARGED,
+        )?;
+        let refused = configuration()?.into_step_binding(Some(&io));
+        assert!(matches!(
+            refused,
+            Err(Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                    acyclic_fs::WorkError::BudgetExceeded {
+                        counter: "peak_allocation_bytes",
+                        ..
+                    }
+                ),
+                ..
+            })
+        ));
+        drop(occupied);
+        assert_eq!(work.live_allocation_bytes(), before);
+        cancel.cancel();
+        let refused = configuration()?.into_step_binding(Some(&io));
+        assert!(
+            matches!(refused, Err(ref error) if error.code() == crate::wire::ErrorCode::Cancelled)
+        );
+        assert_eq!(work.live_allocation_bytes(), before);
     }
     Ok(())
 }
