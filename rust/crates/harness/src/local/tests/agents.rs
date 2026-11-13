@@ -1695,9 +1695,18 @@ async fn names(
     volume: &crate::conversation::VolumeRef,
     path: &str,
 ) -> Result<Vec<String>> {
+    names_with_scope(harness, &harness.signed, volume, path).await
+}
+
+async fn names_with_scope(
+    harness: &LocalHarness,
+    scope: &crate::core::Scope,
+    volume: &crate::conversation::VolumeRef,
+    path: &str,
+) -> Result<Vec<String>> {
     let grant = crate::conversation::ContentGrant::verify_directory_read(
         &harness.verifier,
-        &harness.signed,
+        scope,
         volume,
         "",
         &mut None,
@@ -2239,8 +2248,12 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
         bound.read_file(&root, &configuration, 0, configuration.descriptor().byte_length()).await,
         Err(crate::agent::Error::Turn(error)) if matches!(*error, Error::Unauthorized(_))
     ));
-    assert_eq!(names(&harness, private, "hooks").await?, [turn.to_string()]);
-    let recorded = names(&harness, private, &format!("hooks/{turn}")).await?;
+    assert_eq!(
+        names_with_scope(&harness, &scope, &content.volume, "hooks").await?,
+        [turn.to_string()]
+    );
+    let recorded =
+        names_with_scope(&harness, &scope, &content.volume, &format!("hooks/{turn}")).await?;
     let [outcome, marker] = recorded.as_slice() else {
         return Err(Error::Conflict(format!(
             "one hook outcome, got {recorded:?}"
@@ -2250,6 +2263,40 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
         outcome.strip_suffix(".json"),
         marker.strip_suffix(".started")
     );
+    for name in &recorded {
+        let path = format!("hooks/{turn}/{name}");
+        let (file, _, _) = content
+            .reader
+            .read_private_path(
+                &content.volume,
+                "",
+                &path,
+                None,
+                harness.limits.file_bytes,
+                Default::default(),
+            )?
+            .await?
+            .ok_or_else(|| Error::NotFound(path.clone()))?;
+        assert_eq!(file.volume(), &content.volume);
+        assert!(matches!(
+            bound.read_file(&root, &file, 0, file.descriptor().byte_length()).await,
+            Err(crate::agent::Error::Turn(error)) if matches!(*error, Error::Unauthorized(_))
+        ));
+        assert!(
+            harness
+                .context_reader()?
+                .read_private_path(
+                    private,
+                    "",
+                    &path,
+                    None,
+                    harness.limits.file_bytes,
+                    Default::default(),
+                )?
+                .await?
+                .is_none()
+        );
+    }
     Ok(())
 }
 

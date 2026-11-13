@@ -1,6 +1,8 @@
 use super::*;
 use crate::{
-    conversation::VolumeOperation,
+    Capabilities, OperationId, Result,
+    conversation::{Limits, VolumeOperation},
+    filesystem::MemoryHarnessStorage,
     runtime::{Bindings, RuntimeScope, TaskContext, ToolContext},
 };
 use acyclic_auth::addressing::AccountId;
@@ -9,7 +11,7 @@ use acyclic_stream::{
     StreamProviderExt as _,
 };
 use futures::StreamExt as _;
-
+use std::sync::atomic::{AtomicUsize, Ordering};
 #[tokio::test]
 async fn followed_hook_records_retain_outcomes_and_do_not_repeat_interrupted_effects()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -191,5 +193,171 @@ async fn followed_hook_records_retain_outcomes_and_do_not_repeat_interrupted_eff
             );
         }
     }
+    Ok(())
+}
+
+async fn fixture() -> Result<(MemoryHarnessStorage, TaskContext)> {
+    let storage = MemoryHarnessStorage::new(crate::AgentId::new(), 4096).await?;
+    let task = Bindings {
+        scope: RuntimeScope::new(
+            Capabilities::new([
+                storage
+                    .volume()
+                    .capability(VolumeOperation::Read, &mut None)?,
+                storage
+                    .volume()
+                    .capability(VolumeOperation::Write, &mut None)?,
+            ]),
+            Limits::default(),
+        )?,
+        ..Bindings::local()
+    }
+    .build()?
+    .agent_context(&Capabilities::default(), storage.content_bindings())?;
+    Ok((storage, task))
+}
+
+#[tokio::test]
+async fn retained_hooks_use_the_journal_without_a_bound_agent() -> Result<()> {
+    let (storage, bare) = fixture().await?;
+    let operation = OperationId::new();
+    let runs = AtomicUsize::new(0);
+    let run = || async {
+        runs.fetch_add(1, Ordering::SeqCst);
+        Ok(HookOutput {
+            additional_context: vec!["original".into()],
+            ..Default::default()
+        })
+    };
+    let interrupted = || Ok(HookOutput::default());
+    let missing = ToolContext::new(Arc::new(bare.clone()), operation, "hook")?;
+    assert!(matches!(
+        run_once(&missing, HookEvent::SessionStart, false, (run, interrupted)).await,
+        Err(crate::Error::Unsupported(_))
+    ));
+    assert_eq!(runs.load(Ordering::SeqCst), 0);
+    // The effect identity differs from the execution binding, as SessionStart
+    // does when a later turn replays the same session's original outcome.
+    let task = Arc::new(
+        bare.clone()
+            .with_execution_journal(storage.journal(), OperationId::new())?,
+    );
+    assert!(task.agent().is_none());
+    let issued = ToolContext::new(task.clone(), operation, "hook")?;
+    let first = run_once(&issued, HookEvent::SessionStart, false, (run, interrupted))
+        .await?
+        .unwrap();
+    assert_eq!(first.additional_context, ["original"]);
+    let phase = phase_operation(operation, HookEvent::SessionStart);
+    let (content, publisher) = task.retained_content()?;
+    let file = content
+        .observe_retained(publisher, phase, task.scope().limits())
+        .await?
+        .unwrap();
+    assert_eq!(file.volume(), &content.volume);
+    assert_ne!(file.volume(), storage.volume());
+    assert_eq!(
+        task.read_file(&file, None).await.unwrap_err().code(),
+        crate::wire::ErrorCode::Unauthorized
+    );
+    assert_eq!(
+        task.stage_file(
+            Some(file.volume()),
+            OperationId::new(),
+            file.path(),
+            b"forged",
+            "application/json",
+            "forged"
+        )
+        .await
+        .unwrap_err()
+        .code(),
+        crate::wire::ErrorCode::Unauthorized
+    );
+    // A task can still author its own private files, but a colliding path is
+    // never an outcome or marker in the protected publication owner.
+    bare.stage_file_once(
+        OperationId::new(),
+        file.path(),
+        b"forged",
+        "application/json",
+        "forged",
+        None,
+    )
+    .await?;
+    let later = Arc::new(bare.with_execution_journal(storage.journal(), OperationId::new())?);
+    let later = ToolContext::new(later, operation, "hook")?;
+    let replay = run_once(&later, HookEvent::SessionStart, false, (run, interrupted))
+        .await?
+        .unwrap();
+    assert_eq!(replay.additional_context, first.additional_context);
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn interrupted_hooks_keep_the_original_marker_and_content_bounds() -> Result<()> {
+    let (storage, bare) = fixture().await?;
+    let task = Arc::new(bare.with_execution_journal(storage.journal(), OperationId::new())?);
+    let operation = OperationId::new();
+    let issued = ToolContext::new(task.clone(), operation, "hook")?;
+    let runs = AtomicUsize::new(0);
+    let run = || async {
+        runs.fetch_add(1, Ordering::SeqCst);
+        Err(crate::Error::Invalid("interrupted after the marker".into()))
+    };
+    let interrupted = || {
+        Ok(HookOutput {
+            additional_context: vec!["interrupted".into()],
+            ..Default::default()
+        })
+    };
+    assert!(
+        run_once(&issued, HookEvent::SessionStart, false, (run, interrupted))
+            .await
+            .is_err()
+    );
+    assert!(
+        run_once(&issued, HookEvent::SessionStart, true, (run, interrupted))
+            .await?
+            .is_none()
+    );
+    let recovered = run_once(&issued, HookEvent::SessionStart, false, (run, interrupted))
+        .await?
+        .unwrap();
+    assert_eq!(recovered.additional_context, ["interrupted"]);
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+    let phase = phase_operation(operation, HookEvent::SessionStart);
+    let (content, publisher) = task.retained_content()?;
+    assert!(
+        content
+            .observe_retained(publisher, start_operation(phase), task.scope().limits())
+            .await?
+            .is_some()
+    );
+    let bounded = Arc::new(task.scoped(
+        task.scope().grants().clone(),
+        Limits {
+            file_bytes: Some(1),
+            ..task.scope().limits()
+        },
+    )?);
+    let operation = OperationId::new();
+    let bounded = ToolContext::new(bounded, operation, "hook")?;
+    assert_eq!(
+        run_once(&bounded, HookEvent::SessionStart, false, (run, interrupted))
+            .await
+            .unwrap_err()
+            .code(),
+        crate::wire::ErrorCode::Invalid
+    );
+    let phase = phase_operation(operation, HookEvent::SessionStart);
+    assert!(
+        content
+            .observe_retained(publisher, start_operation(phase), task.scope().limits())
+            .await?
+            .is_none()
+    );
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
     Ok(())
 }

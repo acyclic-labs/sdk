@@ -1,7 +1,7 @@
 //! Configured lifecycle hooks run in the selected checkout like a shell
 //! command. The checkout is captured before and after, the hooks share the
 //! shell's native volume scope, and each event's outcome is retained once on
-//! the agent's private volume.
+//! the host journal.
 use super::*;
 use crate::hooks::{HookEvent, HookOutput, Hooks};
 use acyclic_native_runtime::ProcessControl;
@@ -16,8 +16,8 @@ impl CheckoutTools {
         context: ToolContext,
         reconcile_only: bool,
     ) -> Result<Option<HookOutput>> {
-        // Retained outcomes are immutable private files, read under this
-        // task's own grant without waiting behind a live checkout command.
+        // Retained outcomes are protected journal files, read under original
+        // host custody without waiting behind a live checkout command.
         crate::hooks::effects::run_once(
             &context,
             event,

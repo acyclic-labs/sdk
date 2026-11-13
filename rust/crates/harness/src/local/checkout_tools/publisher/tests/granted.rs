@@ -49,7 +49,9 @@ async fn host_executor_grants_reach_shells_and_hooks_without_erasing_refusals() 
             )?),
         },
     )?;
-    let task = Arc::new(task);
+    let retained =
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), maximum).await?;
+    let task = Arc::new(task.with_execution_journal(retained.journal(), OperationId::new())?);
     let read: Vec<_> = ["/usr", "/bin", "/lib", "/lib64", "/etc/ld.so.cache"]
         .into_iter()
         .map(PathBuf::from)

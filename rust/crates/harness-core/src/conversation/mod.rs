@@ -116,6 +116,27 @@ impl Limits {
         Ok(())
     }
 
+    /// Bounds bytes and destination before invoking a publication owner.
+    pub(crate) fn validate_publication(
+        &self,
+        path: &str,
+        bytes: u64,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if self.file_bytes.is_some_and(|maximum| bytes > maximum)
+            || self
+                .path_bytes
+                .is_some_and(|maximum| path.len() > maximum.get())
+        {
+            return Err(conversation_error(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "file exceeds task content limits",
+            ));
+        }
+        Ok(())
+    }
+
     /// Checks an immutable file against these limits.
     pub fn validate_file(
         &self,
