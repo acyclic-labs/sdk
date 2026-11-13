@@ -139,7 +139,14 @@ pub fn remote(handler: Arc<dyn Handler>) -> Result<Arc<dyn Handler>> {
 }
 
 /// Execute every portable vector against fresh backend storage.
-pub async fn verify(backend: &dyn Backend) -> Result {
+///
+/// The suite is erased at this boundary, so a backend's entry future holds one
+/// pointer and its compile-time layout depth does not grow with the vectors.
+pub fn verify(backend: &dyn Backend) -> BoxProviderFuture<'_, Result> {
+    acyclic_stream::erase_provider_future(move || verify_vectors(backend))
+}
+
+async fn verify_vectors(backend: &dyn Backend) -> Result {
     identified("controls", vectors::controls(backend).await)?;
     identified("spawn", vectors::spawn_cut(backend).await)?;
     identified("reply", reply::verify(backend).await)?;
