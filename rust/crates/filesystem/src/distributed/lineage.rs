@@ -54,7 +54,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             // still locates its operation: the operation index then exists
             // durably beside every volume, so an ephemeral fork's locators
             // are always fresh paths beneath a present parent.
-            let effect = &mut request.effects[0];
+            let effect = crate::distributed::composition::hard_effect(request, work)?;
             self.locate_operation_in(
                 authority,
                 &record,
