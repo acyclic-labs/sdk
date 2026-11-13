@@ -627,12 +627,14 @@ impl KernelOwnedAllocation {
 #[doc(hidden)]
 pub enum KernelAccounting<'a> {
     Standalone {
+        construction: crate::collection::ConstructionScope<'a>,
         allocations: AllocationLedger,
         work: WorkCounters,
         budget: WorkBudget,
         cancellation: &'a crate::CancellationToken,
     },
     BorrowedStandalone {
+        construction: crate::collection::ConstructionScope<'a>,
         allocations: &'a mut AllocationLedger,
         work: &'a mut WorkCounters,
         budget: WorkBudget,
@@ -640,6 +642,7 @@ pub enum KernelAccounting<'a> {
     },
     #[cfg(not(target_arch = "wasm32"))]
     NativeOriginal {
+        construction: crate::collection::ConstructionScope<'a>,
         work: &'a crate::NativeMaterializationWork,
         cancellation: &'a crate::CancellationToken,
     },

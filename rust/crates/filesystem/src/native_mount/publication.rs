@@ -114,11 +114,7 @@ where
     F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
     Fut: std::future::Future<Output = Result<(), T>> + Send + 'static,
 {
-    let crate::kernel::KernelAccounting::NativeOriginal {
-        work: original,
-        cancellation,
-    } = accounting
-    else {
+    let crate::kernel::KernelAccounting::native(original, cancellation) = accounting else {
         return Err(T::from(MountSourceError::OriginalSnapshotUnavailable));
     };
     cancellation

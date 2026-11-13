@@ -1,5 +1,105 @@
 use super::*;
 
+async fn construction_custody_survives_its_frames(
+    drop_early: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::async_storage::AuthorityFrame;
+    use crate::kernel::allocation::KernelAccounting;
+
+    let directory = tempfile::tempdir()?;
+    let (store, _provider) = open_staged(directory.path()).await?;
+    let token = CancellationToken::new();
+    let native = NativeMaterializationWork::new(native_write_budget(), &token)
+        .map_err(|(error, _)| error)?;
+    let baseline = native.live_allocation_bytes();
+    let object = HashedObject::new(
+        ObjectKind::BlobChunk,
+        OwnedBytes::from_static(b"unfinished child"),
+    );
+    let mut original = KernelAccounting::native(&native, &token);
+    {
+        let mut frame = AuthorityFrame::borrow(&mut original)?;
+        {
+            let mut scope = frame.scope()?;
+            store.put_hashed(object.clone(), &mut scope).await?;
+            if drop_early {
+                drop(std::mem::take(&mut scope.construction));
+            }
+        }
+    }
+    native.receipt();
+    assert!(
+        native.live_allocation_bytes() > baseline,
+        "construction roots retired before their outer operation"
+    );
+
+    let mut continuation =
+        crate::kernel::allocation::retained::OwnedAccounting::take_branch(&mut original, &token)?;
+    drop(original);
+    native.receipt();
+    assert!(
+        native.live_allocation_bytes() > baseline,
+        "dropping the caller retired accepted construction roots"
+    );
+    {
+        let mut accounting = continuation.borrow();
+        let mut frame = AuthorityFrame::borrow(&mut accounting)?;
+        store
+            .put_hashed(
+                HashedObject::new(
+                    ObjectKind::BlobChunk,
+                    OwnedBytes::from_static(b"continuation child"),
+                ),
+                &mut frame,
+            )
+            .await?;
+    }
+    let mut original = KernelAccounting::native(&native, &token);
+    continuation.restore(&mut original)?;
+
+    // A suspended nested borrow restores the same physical root owner even
+    // when cancellation prevents any subsequent admission or completion call.
+    let (_producer, receiver) = tokio::sync::oneshot::channel::<()>();
+    let mut pending = Box::pin(async {
+        let mut frame = AuthorityFrame::borrow(&mut original)?;
+        let mut accounting = frame.accounting();
+        let mut nested = AuthorityFrame::borrow(&mut accounting)?;
+        store.put_hashed(object, &mut nested).await?;
+        let _ = receiver.await;
+        Ok::<_, crate::FsError>(())
+    });
+    assert!(futures::poll!(pending.as_mut()).is_pending());
+    token.cancel();
+    drop(pending);
+    native.receipt();
+    assert!(
+        native.live_allocation_bytes() > baseline,
+        "withdrawal lost the original construction roots"
+    );
+    drop(original);
+    native.receipt();
+    assert_eq!(
+        native.live_allocation_bytes(),
+        baseline,
+        "construction roots retained backing after their operation ended"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_construction_roots_survive_nested_frames_and_cancelled_withdrawal()
+-> Result<(), Box<dyn std::error::Error>> {
+    construction_custody_survives_its_frames(false).await
+}
+
+#[tokio::test]
+#[should_panic(expected = "construction roots retired before their outer operation")]
+async fn construction_negative_control_erases_the_root_before_frame_restore() {
+    construction_custody_survives_its_frames(true)
+        .await
+        .expect("real local staging fixture");
+}
+
 fn native_write_budget() -> WorkBudget {
     WorkBudget {
         backend_read_operations: 128,

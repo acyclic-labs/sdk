@@ -152,6 +152,22 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             }
             for held in collection.held() {
                 match held {
+                    crate::collection::Held::Construction { group } => {
+                        let mut accounting =
+                            crate::kernel::allocation::KernelAccounting::standalone(
+                                WorkBudget::UNBOUNDED,
+                                cancellation,
+                            );
+                        let mut after = None;
+                        loop {
+                            let page = group.page(after, 256, &mut accounting)?;
+                            let Some(last) = page.value.last() else {
+                                break;
+                            };
+                            after = Some(last.index_key());
+                            marker.keep(page.value.iter().copied());
+                        }
+                    }
                     crate::collection::Held::Checkout {
                         base,
                         working,

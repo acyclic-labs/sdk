@@ -7,7 +7,10 @@ pub(super) fn inspect(
     probe: &mut impl FnMut(u8, u64, u64),
 ) -> Result<(bool, bool, u64, u64), WorkspaceError> {
     #[cfg(not(target_arch = "wasm32"))]
-    if let KernelAccounting::NativeOriginal { work, cancellation } = accounting {
+    if let KernelAccounting::NativeOriginal {
+        work, cancellation, ..
+    } = accounting
+    {
         // No allocation owners or external callbacks enter this pure planning
         // loop. Hold the original leaf (50); resource ancestors follow it.
         return work.state(|state| {

@@ -196,9 +196,9 @@ where
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
         let invocation = match accounting {
-            crate::kernel::KernelAccounting::NativeOriginal { work, cancellation } => {
-                Ok((*work, *cancellation))
-            }
+            crate::kernel::KernelAccounting::NativeOriginal {
+                work, cancellation, ..
+            } => Ok((*work, *cancellation)),
             _ => Err(MountSourceError::OriginalSnapshotUnavailable),
         };
         async move {

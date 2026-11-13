@@ -91,10 +91,24 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
             .check()
             .map_err(crate::async_storage::object_error)?;
         let native = work.original;
+        // This short shared admission establishes the collection cut, while
+        // the original operation's root group protects a not-yet-installed
+        // parent after the admission is released. Concurrent puts are readers.
+        let unswept = self
+            .collection
+            .unswept(&mut work.accounting())
+            .await
+            .map_err(crate::async_storage::object_error)?;
+        let mut construction = std::mem::take(&mut work.construction);
+        let pinned = construction.pin(&self.collection, object.object_id(), &mut work.accounting());
+        work.construction = construction;
+        pinned.map_err(crate::async_storage::object_error)?;
+        self.collection.writing(&unswept, [object.object_id()]);
         let overflowing = {
             let mut index = self.index_mut();
             index.admit_resident(object)? && index.resident_bytes > MAXIMUM_RESIDENT_BYTES
         };
+        drop(unswept);
         if !overflowing {
             return Ok(());
         }

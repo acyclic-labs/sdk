@@ -319,10 +319,10 @@ impl CheckoutTools {
             )
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let selected = view
-                .share(&mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                    work: &work,
-                    cancellation: &cancellation,
-                })
+                .share(&mut acyclic_fs::kernel::KernelAccounting::native(
+                    &work,
+                    &cancellation,
+                ))
                 .map_err(storage)?;
             let mut selected_watcher = if background {
                 state.watcher.take()

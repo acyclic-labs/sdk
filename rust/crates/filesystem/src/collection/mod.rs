@@ -45,6 +45,9 @@ struct State {
 
 #[derive(Clone, Debug)]
 pub(crate) enum Held {
+    Construction {
+        group: crate::kernel::allocation::retained::RetainedArc<construction::ConstructionGroup>,
+    },
     Checkout {
         base: ObjectId,
         working: GenerationRoot,
@@ -359,6 +362,8 @@ impl Drop for Collecting {
 }
 
 mod buffers;
+mod construction;
+pub use construction::{ConstructionRoots, ConstructionScope};
 mod epoch;
 mod holds;
 mod roots;

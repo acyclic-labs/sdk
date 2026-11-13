@@ -573,10 +573,7 @@ async fn lazy_view(
         store,
         &work,
     )?;
-    let mut accounting = KernelAccounting::NativeOriginal {
-        work: &work,
-        cancellation: &cancellation,
-    };
+    let mut accounting = KernelAccounting::native(&work, &cancellation);
     let name = volume.storage_name(&mut None)?;
     let id = filesystem.workspace_id(&name).map_err(storage)?;
     let original = store

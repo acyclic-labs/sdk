@@ -87,10 +87,7 @@ fn kernel_charge(bencher: Bencher, (context, recheck): (u8, bool)) {
         ..WorkCounters::UNCHARGED
     };
     let operation = |work: &NativeMaterializationWork| {
-        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-            work,
-            cancellation: &cancellation,
-        };
+        let mut accounting = acyclic_fs::kernel::KernelAccounting::native(work, &cancellation);
         for _ in 0..CHARGES_PER_BATCH {
             accounting.charge(delta).unwrap_or_else(fail);
         }
@@ -130,10 +127,7 @@ fn kernel_charge_shared(bencher: Bencher, context: u8) {
     };
     marker(&work, context, false, true);
     bencher.bench(|| {
-        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-            work: &work,
-            cancellation: &cancellation,
-        };
+        let mut accounting = acyclic_fs::kernel::KernelAccounting::native(&work, &cancellation);
         accounting.charge(delta).unwrap_or_else(fail);
     });
     marker(&work, context, false, false);
@@ -215,10 +209,7 @@ fn copy_preflight(bencher: Bencher, (context, recheck): (u8, bool)) {
         || std::env::var_os("ACYCLIC_BENCH_MARKERS").is_some()
     {
         let work = fixture(context, recheck);
-        let accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-            work: &work,
-            cancellation: &cancellation,
-        };
+        let accounting = acyclic_fs::kernel::KernelAccounting::native(&work, &cancellation);
         let before = work.receipt();
         let live = work.live_allocation_bytes();
         marker(&work, context, recheck, true);
@@ -238,10 +229,7 @@ fn copy_preflight(bencher: Bencher, (context, recheck): (u8, bool)) {
         .counter(divan::counter::ItemsCount::new(CHARGES_PER_BATCH))
         .with_inputs(|| fixture(context, recheck))
         .bench_refs(|work| {
-            let accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                work,
-                cancellation: &cancellation,
-            };
+            let accounting = acyclic_fs::kernel::KernelAccounting::native(work, &cancellation);
             for _ in 0..CHARGES_PER_BATCH {
                 accounting
                     .admit(std::hint::black_box(delta))

@@ -77,10 +77,7 @@ async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -
         .view()
         .open_related(
             root.view().workspace().clone(),
-            &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                work: &work,
-                cancellation: &stop,
-            },
+            &mut acyclic_fs::kernel::KernelAccounting::native(&work, &stop),
         )
         .await
         .map_err(storage)?;
