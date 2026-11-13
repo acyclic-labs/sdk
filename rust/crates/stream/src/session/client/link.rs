@@ -427,10 +427,6 @@ impl Pool {
         } else {
             node
         };
-        let registering = self
-            .routes
-            .on_node(node)
-            .any(|(_, route)| route.live() && route.ready.is_some());
         let ids = self
             .routes
             .on_node(node)
@@ -456,7 +452,7 @@ impl Pool {
             },
             Some(link.channel.clone()),
         );
-        if registering && let Some(mut dial) = self.dials.remove(destination) {
+        if let Some(mut dial) = self.dials.remove(destination) {
             let executor = self.executor.clone();
             // Back off after EOF so a repeatedly disconnected transport yields
             // to cancellation and other work before opening another RPC.
