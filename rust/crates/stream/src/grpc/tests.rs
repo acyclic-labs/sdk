@@ -780,6 +780,16 @@ fn every_member_refusal_round_trips_its_original_status() {
             matches!(error, StreamError::Refused(_)),
             "{relayed:?} decoded blind as {error:?}"
         );
+        // A generic consumer sees the retained status without knowing Stream's enum.
+        let refusal = std::error::Error::source(&error).expect("retained refusal");
+        let parts = refusal
+            .source()
+            .expect("original failure")
+            .downcast_ref::<acyclic_auth::refusal::Parts>()
+            .expect("typed status");
+        assert_eq!(parts.code, relayed.code() as i32);
+        assert_eq!(parts.message, relayed.message());
+        assert_eq!(parts.details.as_ref(), relayed.details());
         assert!(error.uncertain());
         assert_eq!(error.code(), "unavailable");
         for encoded in [Status::from(&error), Status::from(error.clone())] {
