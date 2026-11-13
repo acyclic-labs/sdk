@@ -822,6 +822,77 @@ async fn agent_diff_exactifies_only_its_authorized_target() -> Result<()> {
     Ok(())
 }
 
+/// GC-217: a parent showing a path its child holds as a directory made a
+/// definitive refusal look like a storage failure. That failed the parent's
+/// delivery and stopped the owner serving the whole tree. The refusal must
+/// settle the call as the model's error; a storage cause still must not.
+#[tokio::test]
+async fn child_show_of_a_directory_settles_as_the_models_error() -> Result<()> {
+    let (_temp, _root, fs, store, main) = fixture().await?;
+    let repository = main.workspace().id();
+    let cancellation = CancellationToken::new();
+    acyclic_fs::WorkspaceGraph::new(store.clone())
+        .register_root(main.workspace(), WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(|failure| failure.error)?;
+    let (_, child) = run(
+        &fs,
+        &store,
+        &main,
+        repository,
+        &["checkout", "-b", "agents/audit"],
+    )
+    .await?;
+    let child = child.ok_or("missing child")?;
+    run(&fs, &store, &child, repository, &["checkout", "main"]).await?;
+    child
+        .write(
+            "/findings/report.md",
+            bytes::Bytes::from_static(b"finding\n").into(),
+            IdempotencyKey::new(),
+            PublicationPermit::Unrestricted,
+            &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
+        )
+        .await?;
+    let (shown, _) = run(
+        &fs,
+        &store,
+        &main,
+        repository,
+        &["show", "agents/audit:findings/report.md"],
+    )
+    .await?;
+    let GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data { value, .. }) = shown
+    else {
+        return Err("expected the child's file".into());
+    };
+    assert_eq!(value["text"], "finding\n");
+    let Err(refused) = run(
+        &fs,
+        &store,
+        &main,
+        repository,
+        &["show", "agents/audit:findings"],
+    )
+    .await
+    else {
+        return Err("a directory has no file page".into());
+    };
+    let refused = refused
+        .downcast::<Error>()
+        .map_err(|other| format!("expected a harness error, got {other}"))?;
+    assert_eq!(
+        refused.code(),
+        acyclic_harness_core::wire::ErrorCode::Invalid,
+        "{refused:?}"
+    );
+    assert!(refused.settles_tool_call(), "{refused:?}");
+    // Negative control: a lost lazy record is not the request's error.
+    let lost = Error::from(acyclic_fs::LazyWorkspaceError::Store("record lost".into()));
+    assert!(!lost.settles_tool_call(), "{lost:?}");
+    Ok(())
+}
+
 #[tokio::test]
 async fn child_ignore_rules_do_not_erase_inherited_fork_base() -> Result<()> {
     use acyclic_fs::{GitFilesystemResult, GitPathStatus};
