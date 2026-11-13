@@ -926,7 +926,7 @@ impl ToolContext {
         changes: &crate::conversation::ContentChanges,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
-        if let Some(journal) = &self.task.journal {
+        if let Some((journal, _)) = &self.task.journal {
             journal
                 .published_progress(
                     self.turn_id(),
@@ -945,7 +945,7 @@ impl ToolContext {
         file: &FileRef,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
-        if let Some(journal) = &self.task.journal {
+        if let Some((journal, _)) = &self.task.journal {
             journal
                 .published_progress(
                     self.turn_id(),
