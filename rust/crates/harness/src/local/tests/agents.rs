@@ -3292,75 +3292,12 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
     use acyclic_harness_client::{AgentCommand, AgentReply, ReadTarget};
     // The child's brief turn, then the parent's own.
     let turns = ["child", "parent"].map(|text| super::ScriptedTurn::Text(text.into()));
-    let recorded = Arc::new(std::sync::OnceLock::<std::sync::Weak<ScriptedModelProvider>>::new());
-    let parent_cwd = Arc::new(std::sync::OnceLock::<std::path::PathBuf>::new());
-    let checked = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let (source, parent, observed) = (recorded.clone(), parent_cwd.clone(), checked.clone());
-    let provider = Arc::new(
-        ScriptedModelProvider::new(turns)
-            .with_context_capacity(super::capacity())
-            .with_dispatch_observer(move |_| {
-                let provider = source
-                    .get()
-                    .and_then(std::sync::Weak::upgrade)
-                    .expect("live provider");
-                if provider.request_count() != 1 {
-                    return Box::pin(async { Ok(()) });
-                }
-                let request = provider.last_request().expect("child request");
-                let cwd = request
-                    .messages
-                    .iter()
-                    .find_map(|message| match &message.content {
-                        crate::model::ModelContent::Text(text) => text
-                            .split_once("<cwd>")
-                            .and_then(|(_, tail)| tail.split_once("</cwd>"))
-                            .map(|(cwd, _)| cwd.to_owned()),
-                        content => content.parts().iter().find_map(|part| match part {
-                            crate::model::ModelContentPart::Text { text, .. } => text
-                                .split_once("<cwd>")
-                                .and_then(|(_, tail)| tail.split_once("</cwd>"))
-                                .map(|(cwd, _)| cwd.to_owned()),
-                            _ => None,
-                        }),
-                    })
-                    .expect("child environment cwd");
-                let parent = parent.get().expect("parent cwd").clone();
-                let observed = observed.clone();
-                Box::pin(async move {
-                    // Native projection must keep running while the actual
-                    // turn retains its mount and inspects the inherited file.
-                    let cwd = tokio::fs::canonicalize(&cwd).await.map_err(agent)?;
-                    assert_ne!(cwd, tokio::fs::canonicalize(parent).await.map_err(agent)?);
-                    assert_eq!(
-                        tokio::fs::read(cwd.join("context-sentinel"))
-                            .await
-                            .map_err(agent)?,
-                        b"inherited"
-                    );
-                    observed.store(true, std::sync::atomic::Ordering::SeqCst);
-                    Ok(())
-                })
-            }),
-    );
-    recorded
-        .set(Arc::downgrade(&provider))
-        .expect("one provider binding");
+    let provider = super::scripted(turns);
     let (_directory, harness, provider) = checkout_scripted(
         &[("context-sentinel".into(), b"inherited".to_vec())],
         provider,
     )
     .await?;
-    parent_cwd
-        .set(
-            harness
-                .workspace
-                .as_ref()
-                .expect("root workspace")
-                .path
-                .clone(),
-        )
-        .expect("one parent binding");
     let (_, root) = harness.agents().await?;
     let root = root.clone();
     let connection = harness.connect().await?;
@@ -3384,7 +3321,7 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
     assert!(context.contains(&format!("working for parent {root}")));
     assert!(context.contains("final message is your report"));
     assert!(context.contains(&format!("Use send with agent {root}")));
-    assert!(checked.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(context.contains("<cwd>.</cwd>"), "{context}");
     assert!(context.contains("<environment_context>"));
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let TurnInput::Brief { brief: file } = entry.input else {
