@@ -22,6 +22,7 @@ use std::collections::BTreeMap;
 
 const INBOX: &str = "node-link";
 const PROTOCOL: &str = "acyclic.actors.route.v1";
+const NAMESPACE: &str = "acyclic.route.node.";
 
 /// One node's existing Actors socket on its authenticated session.
 /// Dropping it produces the ordinary peer Close, including on transport loss.
@@ -43,7 +44,7 @@ fn guest(error: impl std::fmt::Display) -> GuestError {
 /// actor. This request contains identity only and grants no authority.
 pub fn open_request(account: &[u8], node: &NodeId) -> Result<SocketOpen, Error> {
     let namespace = format!(
-        "acyclic.route.node.{}",
+        "{NAMESPACE}{}",
         acyclic_auth::encode_component(node.as_bytes())
     );
     Ok(SocketOpen {
@@ -255,6 +256,15 @@ impl NodeActor {
 impl Handler for NodeActor {
     fn manifest(&self) -> &Manifest {
         &self.manifest
+    }
+
+    fn accepts_actor(&self, actor: &ActorReference) -> bool {
+        actor.id() == "link"
+            && actor
+                .namespace()
+                .as_str()
+                .strip_prefix(NAMESPACE)
+                .is_some_and(|node| !node.is_empty())
     }
 
     fn on_record<'a>(

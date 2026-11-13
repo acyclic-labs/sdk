@@ -435,8 +435,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
 
     /// Whether an actor belongs to this runtime's discovery scope.
     pub fn includes(&self, actor: &ActorReference) -> bool {
-        self.scheduling_shards
-            .contains(&self.store.scheduling_shard(actor))
+        self.handler.accepts_actor(actor)
+            && self
+                .scheduling_shards
+                .contains(&self.store.scheduling_shard(actor))
             && self.scope.as_ref().is_none_or(|(account, namespace)| {
                 actor.account() == account && actor.namespace() == namespace
             })

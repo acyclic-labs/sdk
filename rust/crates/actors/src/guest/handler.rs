@@ -347,6 +347,12 @@ impl AdmissionClass {
 pub trait Handler: acyclic_stream::ProviderPlatform {
     /// The package's immutable code, codec, subscriptions and bindings.
     fn manifest(&self) -> &Manifest;
+    /// Restrict scheduling to this package's actor family before loading or
+    /// claiming its state. The runtime's account/namespace restriction also
+    /// applies. This selects an owner; it never grants caller authority.
+    fn accepts_actor(&self, _actor: &ActorReference) -> bool {
+        true
+    }
     /// Match a declared interrupt against the original active delivery. A
     /// control for another operation must not cancel this delivery's work.
     fn accepts_interrupt<'a>(

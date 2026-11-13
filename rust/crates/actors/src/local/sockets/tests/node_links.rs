@@ -20,6 +20,41 @@ async fn node_links_bind_owner_credentials_and_publish_only_lifecycle_changes() 
     let node = NodeId::new(b"first-node")?;
     let other = NodeId::new(b"other-node")?;
     let package = NodeActor::new(ActorLimits::default())?;
+    let foreign = ActorReference::new(backend.account(), b"other-artifact", b"link")?;
+    let foreign_inbox = StreamPath::new("other-artifact/inbox")?;
+    let mut foreign_creation =
+        crate::local::PreparedPublish::foreign(IdempotencyKey::new(b"other-artifact".to_vec())?);
+    foreign_creation.join(backend.store.create(
+        None,
+        &foreign,
+        crate::local::Creation {
+            subscriptions: std::collections::BTreeMap::from([(
+                "node-link".into(),
+                crate::local::Subscription {
+                    path: foreign_inbox.clone(),
+                    cursor: 0,
+                },
+            )]),
+            checkpoint: None,
+            escrow: None,
+        },
+    )?)?;
+    foreign_creation.join(acyclic_stream::CommitEffect::hard(
+        vec![acyclic_stream::CommitCondition::Absent {
+            path: foreign_inbox.clone(),
+        }],
+        vec![acyclic_stream::CommitMutation::Append {
+            path: foreign_inbox,
+            records: vec![Bytes::from_static(b"owned by another package").into()],
+        }],
+    ))?;
+    foreign_creation.join(backend.store.activation(&foreign))?;
+    let outcome = backend
+        .store
+        .provider()
+        .commit(foreign_creation.into_request()?)
+        .await?;
+    crate::local::PreparedPublish::settle(&outcome)?;
     for identity in [&node, &other] {
         let request = package.creation(
             &backend.store,
@@ -55,6 +90,17 @@ async fn node_links_bind_owner_credentials_and_publish_only_lifecycle_changes() 
     let online = changes.try_next().await?.ok_or("missing online event")?;
     let online = NodePresence::decode(&online.value)?;
     assert!(online.online && online.node == node && online.generation == 1);
+    assert_eq!(
+        backend
+            .store
+            .load(&foreign)
+            .await?
+            .state()
+            .ok_or("foreign state missing")?
+            .epoch(),
+        0,
+        "node runtime claimed another artifact's pending input"
+    );
     assert!(
         route::open_link(&client, 1, backend.account(), &other)
             .await
