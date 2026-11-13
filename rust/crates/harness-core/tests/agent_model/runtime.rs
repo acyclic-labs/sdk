@@ -83,7 +83,10 @@ async fn a_same_turn_stop_archives_newly_admitted_children() -> Result {
         let failures = host.runtime().drain().await;
         assert!(failures.is_empty(), "{failures:?}");
         let parent = host.state(&root).await?;
-        let child = host.state(&child).await?;
+        let child = host
+            .state(&child)
+            .await
+            .expect("same-turn child was not admitted and archived");
         assert_eq!(parent.closed, stop);
         assert_eq!(child.closed, stop, "same-turn spawn escaped the stop");
         assert_eq!(parent.open_children.len(), usize::from(!stop));
