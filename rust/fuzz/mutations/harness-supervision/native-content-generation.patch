@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/lazy_workspace/content_eq.rs
++++ b/rust/crates/filesystem/src/lazy_workspace/content_eq.rs
+@@ -47,7 +47,7 @@
+         } else {
+             crate::kernel::retire_allocation(left_allocation, 0, ctx)?;
+         }
+-        result
++        result.map(|_| before.authored_generation == after.authored_generation)
+     }
+ 
+     async fn compare_optional_content(

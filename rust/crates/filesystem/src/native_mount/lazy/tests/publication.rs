@@ -63,14 +63,14 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
     }
     assert!(
         view.lazy
-            .matches_optional_content_at_snapshots(before, after, "/absent", &mut accounting)
-            .await?,
-    );
-    assert!(
-        view.lazy
             .matches_optional_content_at_snapshots(before, after, "/same", &mut accounting)
             .await?,
         "source promotion with unchanged bytes counted as a content change",
+    );
+    assert!(
+        view.lazy
+            .matches_optional_content_at_snapshots(before, after, "/absent", &mut accounting)
+            .await?,
     );
     assert!(
         view.lazy
