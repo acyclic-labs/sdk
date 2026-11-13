@@ -806,6 +806,12 @@ fn attributed_unavailability_survives_transport_round_trips() {
     let original = StreamError::unavailable(cause.clone());
     let encoded = Status::from(original);
     let decoded = status(&encoded);
+    let refusal = decoded
+        .source()
+        .unwrap()
+        .downcast_ref::<acyclic_auth::refusal::Refusal>()
+        .unwrap();
+    assert!(refusal.original().is_none());
     assert_eq!(decoded.category(), StreamError::Unavailable);
     assert!(decoded.uncertain());
     assert_eq!(
