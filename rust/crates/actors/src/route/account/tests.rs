@@ -14,11 +14,169 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 struct PeerGrant {
     paths: Paths,
     creation: tokio::sync::Mutex<Option<CreationCut>>,
+    preparation_unavailable: std::sync::atomic::AtomicBool,
 }
 
 struct CreationCut {
     observed: tokio::sync::oneshot::Sender<()>,
     created: tokio::sync::oneshot::Receiver<()>,
+}
+
+struct CreditCut {
+    observed: tokio::sync::oneshot::Sender<()>,
+    resume: tokio::sync::oneshot::Receiver<()>,
+    waiting: tokio::sync::oneshot::Sender<()>,
+    available: tokio::sync::oneshot::Receiver<()>,
+}
+
+struct CreditRace {
+    peer: PeerGrant,
+    cut: tokio::sync::Mutex<Option<CreditCut>>,
+}
+
+impl AdmissionPolicy for CreditRace {
+    fn authorize(
+        &self,
+        authorization: &CallAuthorization,
+        message: &Envelope,
+    ) -> std::result::Result<(), StreamError> {
+        self.peer.authorize(authorization, message)
+    }
+
+    fn prepare<'a>(
+        &'a self,
+        authorization: &'a CallAuthorization,
+        message: &'a Envelope,
+        destination: Option<&'a Placement>,
+    ) -> BoxProviderFuture<'a, std::result::Result<Admission, Error>> {
+        Box::pin(async move {
+            let cut = self.cut.lock().await.take();
+            if let Some(cut) = cut {
+                cut.observed
+                    .send(())
+                    .map_err(|_| StreamError::Unavailable)?;
+                cut.resume.await.map_err(|_| StreamError::Unavailable)?;
+                return Ok(Admission::Credit {
+                    changed: Box::pin(async move {
+                        let _ = cut.waiting.send(());
+                        cut.available.await.map_err(|_| StreamError::Unavailable)?;
+                        Ok(())
+                    }),
+                });
+            }
+            self.peer.prepare(authorization, message, destination).await
+        })
+    }
+}
+
+#[tokio::test]
+async fn original_admission_wins_a_concurrent_credit_wait() -> Result {
+    let provider = Arc::new(MemoryStream::default());
+    let paths = Paths::new(StreamPath::new("routing")?);
+    let source = NodeId::new(b"source")?;
+    let destination = NodeId::new(b"destination")?;
+    let sender = ActorReference::new(b"account", b"sessions", b"sender")?;
+    let recipient = ActorReference::new(b"account", b"sessions", b"recipient")?;
+    place(&provider, &paths, &sender, &source).await?;
+    place(&provider, &paths, &recipient, &destination).await?;
+    let policy = Arc::new(CreditRace {
+        peer: PeerGrant {
+            paths: paths.clone(),
+            creation: tokio::sync::Mutex::new(None),
+            preparation_unavailable: false.into(),
+        },
+        cut: tokio::sync::Mutex::new(None),
+    });
+    let service = Arc::new(AccountService::new(
+        AccountId::new(b"account")?,
+        provider.clone(),
+        paths.clone(),
+        policy.clone(),
+    ));
+    let client = Client::in_process_with_products(
+        provider.clone(),
+        acyclic_stream::session::testing::authority(),
+        None,
+        service,
+        None,
+        Arc::new(acyclic_stream::runtime::PlatformExecutor),
+        None,
+    );
+    client.register_credential(0, credential(&source, &sender, true)?)?;
+    let message = Envelope {
+        source,
+        sender,
+        to: recipient,
+        request: CommitRequest {
+            deadline_unix_millis: None,
+            idempotency_key: IdempotencyKey::new(b"original".to_vec())?,
+            effects: vec![CommitEffect::hard(
+                Vec::new(),
+                vec![CommitMutation::Append {
+                    path: StreamPath::new("recipient/inbox")?,
+                    records: vec!["input".into()],
+                }],
+            )],
+        },
+    };
+    for replay in [true, false] {
+        let (observed, wait_observed) = tokio::sync::oneshot::channel();
+        let (resume, wait_resume) = tokio::sync::oneshot::channel();
+        let (waiting, mut wait_waiting) = tokio::sync::oneshot::channel();
+        let (available, wait_available) = tokio::sync::oneshot::channel();
+        *policy.cut.lock().await = Some(CreditCut {
+            observed,
+            resume: wait_resume,
+            waiting,
+            available: wait_available,
+        });
+        let mut selected = message.clone();
+        if !replay {
+            selected.request.idempotency_key = IdempotencyKey::new(b"fresh".to_vec())?;
+        }
+        let request = admit(&client, 0, &selected, 4096);
+        tokio::pin!(request);
+        tokio::select! {
+            observed = wait_observed => observed?,
+            result = &mut request => panic!("request skipped its controlled preparation: {result:?}"),
+        }
+        if replay {
+            // Another authenticated call commits after the first inspection,
+            // before this caller observes the exhausted-credit result.
+            let original = admit(&client, 0, &message, 4096).await?;
+            assert!(matches!(original, Routed::Relayed { relay_seq: 0, .. }));
+        }
+        resume.send(()).map_err(|_| "preparation ended early")?;
+        let routed = if replay {
+            tokio::select! {
+                result = &mut request => result?,
+                entered = &mut wait_waiting => {
+                    assert!(entered.is_err(), "accepted work requested new credit");
+                    request.await?
+                }
+            }
+        } else {
+            // Negative control: a different intent really waits on the event.
+            tokio::select! {
+                entered = &mut wait_waiting => entered?,
+                result = &mut request => panic!("fresh work bypassed credit: {result:?}"),
+            }
+            available.send(()).map_err(|_| "credit wait ended early")?;
+            request.await?
+        };
+        assert_eq!(
+            routed,
+            Routed::Relayed {
+                key: selected.request.idempotency_key.clone(),
+                relay_seq: u64::from(!replay),
+            }
+        );
+        assert_eq!(
+            provider.tail(paths.relay(&destination)?).await?,
+            if replay { 1 } else { 2 }
+        );
+    }
+    Ok(())
 }
 
 impl AdmissionPolicy for PeerGrant {
@@ -57,6 +215,12 @@ impl AdmissionPolicy for PeerGrant {
         destination: Option<&'a Placement>,
     ) -> BoxProviderFuture<'a, std::result::Result<Admission, Error>> {
         Box::pin(async move {
+            if self
+                .preparation_unavailable
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(StreamError::Unavailable.into());
+            }
             if destination.is_some() {
                 return Ok(Admission::Allow(Vec::new()));
             }
@@ -161,14 +325,16 @@ async fn account_calls_enforce_source_and_message_authority() -> Result {
     let recipient = ActorReference::new(b"account", b"sessions", b"recipient")?;
     place(&provider, &paths, &sender, &source).await?;
     place(&provider, &paths, &recipient, &other).await?;
+    let policy = Arc::new(PeerGrant {
+        paths: paths.clone(),
+        creation: tokio::sync::Mutex::new(None),
+        preparation_unavailable: false.into(),
+    });
     let service = Arc::new(AccountService::new(
         AccountId::new(b"account")?,
         provider.clone(),
         paths.clone(),
-        Arc::new(PeerGrant {
-            paths: paths.clone(),
-            creation: tokio::sync::Mutex::new(None),
-        }),
+        policy.clone(),
     ));
     let client = Client::in_process_with_products(
         provider.clone(),
@@ -253,7 +419,29 @@ async fn account_calls_enforce_source_and_message_authority() -> Result {
             relay_seq: 0,
         }
     );
+    policy
+        .preparation_unavailable
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     assert_eq!(admit(&client, 0, &message, 4096).await?, original);
+    // Negative control: a new intent reaches the unavailable preparation path.
+    // Only the accepted intent can recover without another storage admission.
+    let mut fresh = message.clone();
+    fresh.request.idempotency_key = IdempotencyKey::new(b"fresh-message".to_vec())?;
+    assert!(matches!(admit(&client, 0, &fresh, 4096).await,
+        Err(Error::Stream(error)) if error.category() == StreamError::Unavailable));
+    let mut changed = message.clone();
+    let CommitMutation::Append { records, .. } = &mut changed.request.effects[0].mutations[0]
+    else {
+        return Err("message has no append".into());
+    };
+    records[0].value = "changed input".into();
+    assert!(matches!(admit(&client, 0, &changed, 4096).await,
+        Err(Error::Stream(error)) if error.category() == StreamError::IdempotencyMismatch));
+    assert!(matches!(admit(&client, 1, &message, 4096).await,
+        Err(Error::Stream(error)) if error.category() == StreamError::AccessDenied));
+    policy
+        .preparation_unavailable
+        .store(false, std::sync::atomic::Ordering::SeqCst);
     assert_eq!(provider.tail(paths.relay(&other)?).await?, 1);
     assert!(matches!(
         provider.tail(StreamPath::new("recipient/inbox")?).await,
@@ -318,6 +506,7 @@ async fn account_admission_revalidates_a_concurrently_created_recipient() -> Res
                 observed,
                 created: wait_created,
             })),
+            preparation_unavailable: false.into(),
         }),
     ));
     let client = Client::in_process_with_products(

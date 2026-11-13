@@ -103,23 +103,9 @@ impl Envelope {
                 }],
             )?,
         };
-        let mut key = Sha256::new();
-        key.update(b"acyclic.actors.route.relay.v1\0");
-        for part in [
-            paths.0.as_str().as_bytes(),
-            self.to.account().as_bytes(),
-            self.to.namespace().as_str().as_bytes(),
-            self.to.id().as_bytes(),
-            self.sender.namespace().as_str().as_bytes(),
-            self.sender.id().as_bytes(),
-            self.request.idempotency_key.as_bytes(),
-        ] {
-            key.update((part.len() as u64).to_le_bytes());
-            key.update(part);
-        }
         Ok(CommitRequest {
             deadline_unix_millis: None,
-            idempotency_key: IdempotencyKey::new(key.finalize().to_vec())?,
+            idempotency_key: self.relay_key(paths)?,
             effects: vec![CommitEffect::hard(
                 Vec::new(),
                 vec![CommitMutation::Append {
@@ -135,6 +121,94 @@ impl Envelope {
                 }],
             )],
         })
+    }
+
+    fn relay_key(&self, paths: &Paths) -> Result<IdempotencyKey, Error> {
+        let mut key = Sha256::new();
+        key.update(b"acyclic.actors.route.relay.v1\0");
+        for part in [
+            paths.0.as_str().as_bytes(),
+            self.to.account().as_bytes(),
+            self.to.namespace().as_str().as_bytes(),
+            self.to.id().as_bytes(),
+            self.sender.namespace().as_str().as_bytes(),
+            self.sender.id().as_bytes(),
+            self.request.idempotency_key.as_bytes(),
+        ] {
+            key.update((part.len() as u64).to_le_bytes());
+            key.update(part);
+        }
+        Ok(IdempotencyKey::new(key.finalize().to_vec())?)
+    }
+
+    /// Recover accepted work before waiting for another membership or storage
+    /// admission. The original Streams envelope is the only retained outcome.
+    pub(super) async fn retained_admission<P: StreamProvider + ?Sized>(
+        &self,
+        provider: &P,
+        paths: &Paths,
+    ) -> Result<Option<Routed>, Error> {
+        let key = self.relay_key(paths)?;
+        let Some(retained) = provider.inspect_idempotency(key.clone()).await? else {
+            return Ok(None);
+        };
+        let prefix = format!("{}/relay/", paths.0);
+        if retained.idempotency_key != key {
+            return Err(Error::InvalidRecord);
+        }
+        let IdempotencyOutcome::Commit(envelope) = retained.outcome else {
+            return Err(Error::InvalidRecord);
+        };
+        let original_bytes = self.encode();
+        let mut original = None;
+        for mutation in &envelope.mutations {
+            let CommittedMutation::Append(append) = mutation else {
+                continue;
+            };
+            let Some(node) = append.path.as_str().strip_prefix(&prefix) else {
+                continue;
+            };
+            if node.is_empty() || node.contains('/') {
+                continue;
+            }
+            let [record] = append.records.as_slice() else {
+                return Err(Error::InvalidRecord);
+            };
+            if original.is_some() {
+                return Err(Error::InvalidRecord);
+            }
+            let attributes = record.headers.attributes();
+            let header = attributes.iter().find(|value| value.name == ADMISSION);
+            let reason = match header {
+                None => None,
+                Some(header) => {
+                    let binding =
+                        Binding::decode(header.value.as_ref()).map_err(|_| Error::InvalidRecord)?;
+                    if binding.version != 1 {
+                        return Err(Error::InvalidRecord);
+                    }
+                    if binding.intent_digest.as_ref() != &Sha256::digest(&original_bytes)[..] {
+                        return Err(StreamError::IdempotencyMismatch.into());
+                    }
+                    Some(
+                        Rejection::try_from(binding.rejection.ok_or(Error::InvalidRecord)?)
+                            .map_err(|_| Error::InvalidRecord)?,
+                    )
+                }
+            };
+            if reason.is_none() && record.value.as_ref() != original_bytes.as_ref() {
+                return Err(StreamError::IdempotencyMismatch.into());
+            }
+            if reason.is_some() && Self::decode(&record.value)?.to != self.sender {
+                return Err(Error::InvalidRecord);
+            }
+            original = Some(outcome(
+                reason,
+                self.request.idempotency_key.clone(),
+                append.start,
+            ));
+        }
+        original.map(Some).ok_or(Error::InvalidRecord)
     }
 
     /// Publish after authenticated account-host admission. Hard membership
@@ -204,7 +278,6 @@ impl Envelope {
             return Err(Error::InvalidRecord);
         }
         let mut request = self.publication(paths, destination, payload, rejection)?;
-        let key = request.idempotency_key.clone();
         request.effects.extend(admission);
         match provider.commit(request).await {
             Ok(CommitOutcome::Committed(receipt)) => {
@@ -226,70 +299,10 @@ impl Envelope {
             Ok(CommitOutcome::Conflict(conflicts)) => {
                 Err(crate::local::Error::PreconditionChanged(conflicts).into())
             }
-            Err(StreamError::IdempotencyMismatch) => {
-                let retained = provider
-                    .inspect_idempotency(key.clone())
-                    .await?
-                    .ok_or(Error::InvalidRecord)?;
-                if retained.idempotency_key != key {
-                    return Err(Error::InvalidRecord);
-                }
-                let IdempotencyOutcome::Commit(envelope) = retained.outcome else {
-                    return Err(Error::InvalidRecord);
-                };
-                let original_bytes = self.encode();
-                let mut original = None;
-                for mutation in &envelope.mutations {
-                    let CommittedMutation::Append(append) = mutation else {
-                        continue;
-                    };
-                    let Some(node) = append.path.as_str().strip_prefix(&prefix) else {
-                        continue;
-                    };
-                    if node.is_empty() || node.contains('/') {
-                        continue;
-                    }
-                    let [record] = append.records.as_slice() else {
-                        return Err(Error::InvalidRecord);
-                    };
-                    if original.is_some() {
-                        return Err(Error::InvalidRecord);
-                    }
-                    let attributes = record.headers.attributes();
-                    let header = attributes.iter().find(|value| value.name == ADMISSION);
-                    let reason = match header {
-                        None => None,
-                        Some(header) => {
-                            let binding = Binding::decode(header.value.as_ref())
-                                .map_err(|_| Error::InvalidRecord)?;
-                            if binding.version != 1 {
-                                return Err(Error::InvalidRecord);
-                            }
-                            if binding.intent_digest.as_ref()
-                                != &Sha256::digest(&original_bytes)[..]
-                            {
-                                return Err(StreamError::IdempotencyMismatch.into());
-                            }
-                            Some(
-                                Rejection::try_from(binding.rejection.ok_or(Error::InvalidRecord)?)
-                                    .map_err(|_| Error::InvalidRecord)?,
-                            )
-                        }
-                    };
-                    if reason.is_none() && record.value.as_ref() != original_bytes.as_ref() {
-                        return Err(StreamError::IdempotencyMismatch.into());
-                    }
-                    if reason.is_some() && Self::decode(&record.value)?.to != self.sender {
-                        return Err(Error::InvalidRecord);
-                    }
-                    original = Some(outcome(
-                        reason,
-                        self.request.idempotency_key.clone(),
-                        append.start,
-                    ));
-                }
-                original.ok_or(Error::InvalidRecord)
-            }
+            Err(StreamError::IdempotencyMismatch) => self
+                .retained_admission(provider, paths)
+                .await?
+                .ok_or(Error::InvalidRecord),
             Err(error) => Err(error.into()),
         }
     }

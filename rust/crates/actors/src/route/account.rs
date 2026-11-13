@@ -25,6 +25,13 @@ pub fn relay_resource(account: &AccountId, node: &NodeId) -> String {
 pub enum Admission {
     /// Membership guards and funded account storage admission.
     Allow(Vec<CommitEffect>),
+    /// Storage was exhausted at an observed cut. The owned event must resume
+    /// after that cut's drain or reservation change; it must not poll. Keeping
+    /// the wait outside preparation lets a concurrent original publication win.
+    Credit {
+        /// Existing reservation/drain event, captured before returning.
+        changed: BoxProviderFuture<'static, Result<(), Error>>,
+    },
     /// A definitive refusal with a host-constructed, authorized sender Notice.
     Reject {
         /// Original recipient refusal.
@@ -50,7 +57,7 @@ pub trait AdmissionPolicy: acyclic_stream::ProviderPlatform + 'static {
     ) -> Result<(), StreamError>;
 
     /// Read the current membership cut and prepare account storage admission.
-    /// No credit waits on its drain event, never a timer or readiness probe.
+    /// No credit returns its captured drain event, never awaits it here.
     /// Return guards over the observed cut; no admission is published here.
     fn prepare<'a>(
         &'a self,
@@ -227,6 +234,13 @@ impl<P: StreamProvider + ?Sized> CallProvider for AccountService<P> {
                 return Err(StreamError::AccessDenied);
             }
             let routed = loop {
+                if let Some(original) = message
+                    .retained_admission(provider.as_ref(), &paths)
+                    .await
+                    .map_err(stream_error)?
+                {
+                    break original;
+                }
                 let destination = Placement::read(provider.as_ref(), &paths, &message.to)
                     .await
                     .map_err(stream_error)?;
@@ -234,10 +248,24 @@ impl<P: StreamProvider + ?Sized> CallProvider for AccountService<P> {
                     .prepare(&authorization, &message, destination.as_ref())
                     .await
                     .map_err(stream_error)?;
-                // Credit admission may have waited. Recheck the same current
-                // credential and host grant before publishing its effects.
+                // Preparation may have suspended. Recheck the current credential
+                // and host grant before publishing or awaiting credit.
                 authorize()?;
                 let result = match decision {
+                    Admission::Credit { changed } => {
+                        // The original may have committed between inspection
+                        // and the no-credit cut. It needs no second debit.
+                        if let Some(original) = message
+                            .retained_admission(provider.as_ref(), &paths)
+                            .await
+                            .map_err(stream_error)?
+                        {
+                            break original;
+                        }
+                        changed.await.map_err(stream_error)?;
+                        authorize()?;
+                        continue;
+                    }
                     Admission::Allow(effects) => {
                         let destination =
                             destination.as_ref().ok_or(StreamError::InvalidResponse)?;
