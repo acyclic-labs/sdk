@@ -97,7 +97,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
             .check()
             .map_err(crate::async_storage::object_error)?;
         let native = work.original;
-        if object.object_id().storage.is_some() || object.length() > MAXIMUM_DRAIN_BYTES {
+        if object.object_id().storage.is_some() {
             return in_frame(native, || async {
                 let unswept = self
                     .collection

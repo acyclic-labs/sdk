@@ -1,6 +1,46 @@
 use super::*;
 
 #[tokio::test]
+async fn large_objects_stay_private_until_explicit_publication()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let store = StagedObjects::open(
+        crate::MemoryObjectStore::default(),
+        directory.path().to_owned(),
+    );
+    let cancellation = CancellationToken::new();
+    // One object crosses the former direct-write shortcut, independently of
+    // aggregate-window spilling and the multi-chunk crash regression.
+    let object = HashedObject::new(
+        crate::ObjectKind::BlobChunk,
+        OwnedBytes::from(vec![37_u8; MAXIMUM_DRAIN_BYTES as usize + 1]),
+    );
+    let id = object.object_id();
+    let length = object.length();
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    store.put_hashed(object, &mut work).await?;
+    assert!(matches!(store.lookup(id), Lookup::Spilled { .. }));
+    assert!(
+        !store.inner().contains(id, &mut work).await?,
+        "large private object reached durable storage before publication",
+    );
+    let observed = store.read(id, length, &mut work).await?;
+    assert_eq!(observed.bytes.len() as u64, length);
+    assert!(observed.bytes.iter().all(|byte| *byte == 37));
+    drop(observed);
+    // Independent durable-provider oracle: explicit publication must make
+    // the same object visible there, rather than merely testing our index.
+    let scope = PublicationScope {
+        objects: &[id],
+        proven_at: store.collection.sweeps(),
+    };
+    drop(store.flush_before_publish(scope, &mut work).await?);
+    assert!(store.inner().contains(id, &mut work).await?);
+    assert!(matches!(store.lookup(id), Lookup::Absent));
+    Ok(())
+}
+
+#[tokio::test]
 async fn flush_vector_and_visit_denial_precede_provider_work()
 -> Result<(), Box<dyn std::error::Error>> {
     for budget in [
