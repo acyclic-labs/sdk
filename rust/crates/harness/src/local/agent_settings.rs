@@ -765,12 +765,17 @@ mod tests {
             journal: harness.journal.clone(),
             verifier: harness.verifier.clone(),
             scope: harness.signed.copy(&mut None)?,
-            shell: Arc::new(harness.tools.get("shell", None, None)?.unwrap().clone()),
+            shell: Arc::clone(harness.tools.get_shared("shell", None, None)?.unwrap()),
             catalog: crate::tool::ToolRegistry::default(),
         };
         let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
         let control = crate::executor::PreparationIo::from_budget(budget, &cancellation)?;
-        assert!(source.load("budget", Some(&control)).await?.is_some());
+        let loaded = source.load("budget", Some(&control)).await?.unwrap();
+        assert!(Arc::ptr_eq(
+            loaded.executor.capability().unwrap(),
+            &source.shell,
+        ));
+        drop(loaded);
         let mut allowance = budget;
         allowance.output_bytes = control
             .receipt()

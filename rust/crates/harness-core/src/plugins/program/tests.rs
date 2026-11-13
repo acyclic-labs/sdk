@@ -359,7 +359,14 @@ async fn authored_arguments_reach_the_canonical_shell_only_as_json_stdin() -> Re
         assert_eq!(canonical.invocation.call_id, call.call_id);
     }
     let before_drop = work.live_allocation_bytes();
+    let retained_tool = Arc::clone(&tool);
     drop(tool);
+    assert_eq!(
+        work.live_allocation_bytes(),
+        before_drop,
+        "a retained program binding still owns its original storage"
+    );
+    drop(retained_tool);
     assert!(
         before_drop - work.live_allocation_bytes() >= retained,
         "dropping the last bound tool retires all transferred program ownership"

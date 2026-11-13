@@ -1,6 +1,12 @@
 use super::*;
 
 impl StockExecutor {
+    /// Retains a selected executable revision from this executor's admitted
+    /// catalog. This observation grants no execution authority; derived file
+    /// programs still use ordinary canonical admission and the original scope.
+    pub fn tool_binding(&self, name: &str) -> Result<Option<Arc<crate::tool::Tool>>> {
+        Ok(self.tools.get_shared(name, None, None)?.map(Arc::clone))
+    }
     /// Retains only the complete model/tool selection for a later step. This
     /// cannot replace the running turn's context, authority or journal.
     /// Shared storage uses the supplied original preparation owner.
