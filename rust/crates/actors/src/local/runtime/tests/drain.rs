@@ -11,8 +11,11 @@ async fn delayed_activation_cannot_redeliver_a_failed_attempt() -> TestResult {
     let address = spawn_with(&store, "one-activation", &[b"emit"]).await?;
     runtime.track(address.clone())?;
     for recover in [false, true] {
-        let mut request = CommitRequest::new(key(if recover { "recover" } else { "deliver" })?);
-        request.effects.push(store.activation(&address)?);
+        let request = CommitRequest {
+            deadline_unix_millis: None,
+            effects: vec![store.activation(&address)?],
+            idempotency_key: key(if recover { "recover" } else { "deliver" })?,
+        };
         let outcome = provider.commit(request).await?;
         let acyclic_stream::CommitOutcome::Committed(receipt) = outcome else {
             return Err(format!("activation did not commit: {outcome:?}").into());
