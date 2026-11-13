@@ -52,7 +52,20 @@ function fixture(t, failure = "") {
       if (failure === "zip-root") entries[1].path = "other/source.php";
       if (failure === "zip-data") entries[1].data = "not-base64!";
       if (failure === "zip-metadata") entries[0].data = Buffer.from("{}").toString("base64");
-      return { status: 0, stdout: JSON.stringify(entries) };
+      const lines = [{ path: "root/", directory: true, size: 0 }, { end: true }, ...entries.flatMap(entry => [
+        { path: entry.path, directory: entry.directory, size: Buffer.from(entry.data, "base64").length },
+        ...(entry.data ? (failure === "zip-data" && entry.data === "not-base64!"
+          ? [{ data: entry.data }]
+          : Array.from({ length: Math.ceil(Buffer.from(entry.data, "base64").length / 7) }, (_, index) => ({
+            data: Buffer.from(entry.data, "base64").subarray(index * 7, (index + 1) * 7).toString("base64"),
+          }))) : []),
+        { end: true },
+      ])];
+      if (failure === "zip-truncated") lines.pop();
+      if (failure === "zip-length") lines[2].size++;
+      if (failure === "zip-staged-drift") put(argv.at(-2), "archive changed during inspection");
+      put(argv.at(-1), lines.map(line => JSON.stringify(line) + "\n").join(""));
+      return { status: 0, stdout: "" };
     }
     if (argv.includes("-czf")) {
       const index = argv.indexOf("-C"), source = argv[index + 1];
@@ -112,8 +125,8 @@ function fixture(t, failure = "") {
   return { root, args, payload, receipt, toolchain, command, calls, put };
 }
 
-test("canonical packaging, locked offline installation and two intended runtime rejections write a receipt", t => {
-  const f = fixture(t), result = qualify(f.args, f);
+test("canonical packaging, locked offline installation and two intended runtime rejections write a receipt", async t => {
+  const f = fixture(t), result = await qualify(f.args, f);
   assert.equal(result.independent_negative_runtime_type_controls_rejected, 2);
   assert.equal(result.native_client_creation_shutdown_passed, true); assert.equal(result.rust_backed_rpc_qualified, false);
   assert.equal(result.complete_file_descriptor_comparison, true);
@@ -126,53 +139,53 @@ test("canonical packaging, locked offline installation and two intended runtime 
   }
   assert.deepEqual(JSON.parse(readFileSync(join(f.args.output, "qualification.json"))), result);
 });
-test("drift in package, authority, runtime, tools, dependency or template fails before commands", t => {
+test("drift in package, authority, runtime, tools, dependency or template fails before commands", async t => {
   for (const drift of ["package", "authority", "runtime", "composer", "extension", "archiver", "dependency", "template"]) {
     const f = fixture(t); const file = drift === "package" ? join(f.args.package, "LICENSE") : drift === "authority" ? join(f.args.authority, "shared.bin")
       : drift === "runtime" ? join(f.args["php-home"], "php.exe") : drift === "composer" ? f.args.composer : drift === "extension" ? f.args["grpc-extension"]
         : drift === "archiver" ? f.args.archiver : drift === "dependency" ? join(f.args.cache, "fixture-dependency-1.0.0.zip") : join(f.args.package, "composer.json");
     f.put(file, "drift"); if (drift === "template") { f.receipt.output_sha256["composer.json"] = sha256("drift"); f.put(join(f.args.package, "generation-receipt.json"), JSON.stringify(f.receipt)); }
-    assert.throws(() => qualify(f.args, f));
+    await assert.rejects(async () => await qualify(f.args, f));
     // ZIP digests are checked after version admission, before any output exists.
     if (drift !== "dependency") assert.equal(f.calls.length, 0);
     assert.equal(existsSync(f.args.output), false);
   }
 });
-test("existing and overlapping outputs are preserved", t => {
+test("existing and overlapping outputs are preserved", async t => {
   const f = fixture(t); mkdirSync(f.args.output); f.put(join(f.args.output, "keep"), "caller data");
-  assert.throws(() => qualify(f.args, f), /absent/); assert.equal(readFileSync(join(f.args.output, "keep"), "utf8"), "caller data");
-  f.args.output = join(f.args.cache, "new"); assert.throws(() => qualify(f.args, f), /overlaps/); assert.equal(f.calls.length, 0);
+  await assert.rejects(async () => await qualify(f.args, f), /absent/); assert.equal(readFileSync(join(f.args.output, "keep"), "utf8"), "caller data");
+  f.args.output = join(f.args.cache, "new"); await assert.rejects(async () => await qualify(f.args, f), /overlaps/); assert.equal(f.calls.length, 0);
 });
-test("missing, unsafe and case-colliding package output is rejected", t => {
+test("missing, unsafe and case-colliding package output is rejected", async t => {
   for (const mutation of ["missing", "unsafe", "case"]) {
     const f = fixture(t);
     if (mutation === "missing") f.receipt.outputs = f.receipt.outputs.filter(name => !name.endsWith("ActorsServiceClient.php"));
     else f.receipt.outputs.push(mutation === "case" ? "license" : "../outside");
-    f.put(join(f.args.package, "generation-receipt.json"), JSON.stringify(f.receipt)); assert.throws(() => qualify(f.args, f)); assert.equal(f.calls.length, 0);
+    f.put(join(f.args.package, "generation-receipt.json"), JSON.stringify(f.receipt)); await assert.rejects(async () => await qualify(f.args, f)); assert.equal(f.calls.length, 0);
   }
 });
-test("runtime inventory additions and unsafe or duplicate dependency coordinates fail", t => {
+test("runtime inventory additions and unsafe or duplicate dependency coordinates fail", async t => {
   for (const kind of ["runtime", "coordinate", "duplicate"]) {
     const f = fixture(t);
     if (kind === "runtime") f.put(join(f.args["php-home"], "unadmitted.dll"), "extra");
     if (kind === "coordinate") f.toolchain.dependencies[0].name = "../escape";
     if (kind === "duplicate") f.toolchain.dependencies.push(f.toolchain.dependencies[0]);
-    assert.throws(() => qualify(f.args, f)); assert.equal(existsSync(f.args.output), false);
+    await assert.rejects(async () => await qualify(f.args, f)); assert.equal(existsSync(f.args.output), false);
   }
 });
-test("ambient Composer and PHP configuration cannot enter child commands", t => {
+test("ambient Composer and PHP configuration cannot enter child commands", async t => {
   const keys = ["COMPOSER_AUTH", "COMPOSER_REPOSITORIES", "PHPRC", "PHP_INI_SCAN_DIR", "TAR_OPTIONS"];
   const prior = Object.fromEntries(keys.map(key => [key, process.env[key]]));
   t.after(() => { for (const key of keys) if (prior[key] === undefined) delete process.env[key]; else process.env[key] = prior[key]; });
   for (const key of keys) process.env[key] = "untrusted fixture";
-  const f = fixture(t); qualify(f.args, f);
+  const f = fixture(t); await qualify(f.args, f);
   for (const { options } of f.calls) for (const key of keys) assert.equal(options.env[key], undefined);
 });
-for (const failure of ["php-version", "composer-version", "tar-version", "zip-inspection", "zip-path", "zip-case-collision", "zip-root", "zip-data", "zip-metadata",
+for (const failure of ["php-version", "composer-version", "tar-version", "zip-inspection", "zip-path", "zip-case-collision", "zip-root", "zip-data", "zip-metadata", "zip-truncated", "zip-length", "zip-staged-drift",
   "build-payload", "build-inventory", "gzip-time", "lock-inventory", "lock-version", "lock-url", "lock-reference", "lock-dev", "installed-reference", "install-payload", "install-inventory",
   "dependency-payload", "dependency-inventory", "install-lock", "install-project", "positive", "silent", "native", "native-silent", "accepted", "unrelated", "extra-diagnostic", "wrong-negative-line",
   "late-sdk", "late-dependency", "late-runtime", "late-runtime-inventory", "late-composer", "late-extension", "late-archiver", "late-lock", "late-project", "late-control", "late-autoloader", "late-installed-metadata", "late-vendor-package"]) {
-  test(`${failure} cannot produce a success receipt`, t => {
-    const f = fixture(t, failure); assert.throws(() => qualify(f.args, f)); assert.equal(existsSync(join(f.args.output, "qualification.json")), false);
+  test(`${failure} cannot produce a success receipt`, async t => {
+    const f = fixture(t, failure); await assert.rejects(async () => await qualify(f.args, f)); assert.equal(existsSync(join(f.args.output, "qualification.json")), false);
   });
 }

@@ -1,3 +1,4 @@
+import { copyVerifiedArchive } from "../../../../../scripts/archive-utils.mjs";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -17,12 +18,12 @@ const markers = [
 const negatives = { InvalidActorBytes: "Data", InvalidOptionalInteger: "UInt64" };
 
 // Command/pin injection supports offline controls. The CLI always uses real tools.
-export function qualify(args, { command = spawnSync, toolchain = pinned, onProgress = () => {} } = {}) {
+export async function qualify(args, { command = spawnSync, toolchain = pinned, onProgress = () => {} } = {}) {
   if (command === spawnSync && (process.platform !== "linux" || process.arch !== "x64")) throw new Error("Swift installed qualification requires the admitted Linux x86_64 runtime");
   const inputs = Object.fromEntries(["package", "receipt", "authority", "swift-home", "sdk-inventory", "dependencies", "git"].map(name => [name, realpathSync(args[name])]));
   const output = qualificationOutput(args.output, [...Object.values(inputs), realpathSync(join(directory, "../../.."))]);
   onProgress("Verify archive and producer inputs");
-  const admitted = readPackage({ ...args, ...inputs });
+  const admitted = await readPackage({ ...args, ...inputs });
   const sourceNames = ["qualify.mjs", "package.mjs", "provenance.mjs", "generate.mjs",
     "../toolchains/qualification.json", "../toolchains/toolchain.json", "../../../shared/protoc.json",
     "../../../shared/authority.mjs", "../../../../../scripts/archive-utils.mjs",
@@ -79,7 +80,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned, onProgr
   };
   const installed = join(output, "sdk"), project = join(output, "consumer"), scratch = join(output, "build");
   for (const [name, bytes] of admitted.payload) put("sdk/" + name, bytes);
-  put("package.tar.gz", admitted.archiveBytes); put("generation-receipt.json", admitted.receiptBytes);
+  await copyVerifiedArchive(admitted.archivePath, join(output, "package.tar.gz"), admitted.archiveDigest); put("generation-receipt.json", admitted.receiptBytes);
   const controls = new Map(["Consumer.swift", "RPCConsumer.swift", ...Object.keys(negatives).map(name => name + ".swift")]
     .map(name => [name, sourceBytes.get("../tests/fixtures/consumer/" + name)]));
   const template = sourceBytes.get("../templates/qualification/Package.swift");
@@ -137,7 +138,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned, onProgr
   const result = {
     schema: "acyclic.sdk.swift.installed-qualification.v1", scope: "archive-installed-swift-transport-bindings",
     source_revision: admitted.receipt.source_revision, authority_manifest_sha256: sha256(admitted.approved.bytes),
-    archive_sha256: sha256(admitted.archiveBytes), generation_receipt_sha256: sha256(admitted.receiptBytes),
+    archive_sha256: admitted.archiveDigest, generation_receipt_sha256: sha256(admitted.receiptBytes),
     sdk_inventory_sha256: sha256(inventoryBytes), sdk_archive_sha256: toolchain.sdk_archive_sha256,
     swift_version: inventory.swift_version, git_sha256: gitPin.sha256, dependencies: compiled,
     consumer_template_sha256: sha256(template), control_sha256: Object.fromEntries([...controls].map(([name, bytes]) => [name, sha256(bytes)])),

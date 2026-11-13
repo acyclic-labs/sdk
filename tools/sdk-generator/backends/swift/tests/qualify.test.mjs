@@ -60,8 +60,8 @@ function installedFixture(t) {
   return { ...f, args, toolchain, command, state, calls, runtime };
 }
 
-test("offline qualifier staging reaches native markers, exact dependencies and two specific negative diagnostics", t => {
-  const f = installedFixture(t), result = qualify(f.args, f);
+test("offline qualifier staging reaches native markers, exact dependencies and two specific negative diagnostics", async t => {
+  const f = installedFixture(t), result = await qualify(f.args, f);
   assert.equal(result.native_in_process_rpc_methods, canonicalRPCs().length);
   assert.equal(Object.keys(result.dependencies).length, 4);
   assert.equal(result.negative_type_controls.length, 2);
@@ -71,37 +71,37 @@ test("offline qualifier staging reaches native markers, exact dependencies and t
   assert.ok(f.calls.some(call => call.argv.includes("--no-hardlinks")));
 });
 
-test("SDK, Git and dependency source drift cannot create qualification output", t => {
+test("SDK, Git and dependency source drift cannot create qualification output", async t => {
   for (const mutate of [
     f => writeFileSync(join(f.runtime,"usr/bin/swiftc"), "drifted compiler"),
     f => writeFileSync(f.args.git, "drifted git"),
     f => writeFileSync(join(f.args.dependencies,"grpc-swift-2/Package.swift"),"drifted source"),
-  ]) { const f = installedFixture(t); mutate(f); assert.throws(() => qualify(f.args,f)); assert.equal(existsSync(f.args.output),false); }
+  ]) { const f = installedFixture(t); mutate(f); await assert.rejects(async () => await qualify(f.args,f)); assert.equal(existsSync(f.args.output),false); }
 });
 
-test("partial native completion, accepted negatives and unrelated diagnostic failures cannot qualify", t => {
+test("partial native completion, accepted negatives and unrelated diagnostic failures cannot qualify", async t => {
   for (const key of ["missingMarker","acceptedNegative","unrelatedNegative"]) {
     const f = installedFixture(t); f.state[key] = true;
-    assert.throws(() => qualify(f.args,f)); assert.equal(existsSync(join(f.args.output,"qualification.json")),false);
+    await assert.rejects(async () => await qualify(f.args,f)); assert.equal(existsSync(join(f.args.output,"qualification.json")),false);
   }
 });
 
-test("compiled dependency and installed payload drift cannot qualify", t => {
+test("compiled dependency and installed payload drift cannot qualify", async t => {
   for (const key of ["dependencyDrift","extraCompiledSource","payloadDrift"]) {
     const f = installedFixture(t); f.state[key] = true;
-    assert.throws(() => qualify(f.args,f)); assert.equal(existsSync(join(f.args.output,"qualification.json")),false);
+    await assert.rejects(async () => await qualify(f.args,f)); assert.equal(existsSync(join(f.args.output,"qualification.json")),false);
   }
 });
 
-test("untracked preparation metadata in clone inputs is excluded from compiled mirrors", t => {
+test("untracked preparation metadata in clone inputs is excluded from compiled mirrors", async t => {
   const f = installedFixture(t);
   writeFileSync(join(f.args.dependencies,"grpc-swift-2/untracked.swift"),"not a Git input");
-  const result = qualify(f.args,f);
+  const result = await qualify(f.args,f);
   assert.equal(Object.keys(result.dependencies["grpc-swift-2"].files_sha256).length,1);
   assert.equal(existsSync(join(f.args.output,"feed/grpc-swift-2/untracked.swift")),false);
 });
 
-test("mutated or extra staged consumer inputs cannot write qualification success", t => {
+test("mutated or extra staged consumer inputs cannot write qualification success", async t => {
   for (const name of ["consumer/Package.swift", "consumer/Sources/Consumer/main.swift", "negative/InvalidActorBytes.swift",
     "negative/InvalidOptionalInteger.swift", "consumer/.swiftpm/configuration/mirrors.json",
     "consumer/Package.resolved", "consumer/Sources/Consumer/Extra.swift", "consumer/Package@swift-6.4.swift", "negative/Extra.swift"]) {
@@ -111,20 +111,20 @@ test("mutated or extra staged consumer inputs cannot write qualification success
       if (basename(exe) === "Consumer") { const file = join(f.args.output,name); mkdirSync(dirname(file),{recursive:true}); writeFileSync(file,"changed staged source"); }
       return result;
     };
-    assert.throws(() => qualify(f.args,{...f,command}), /staged consumer|dependency lock changed/);
+    await assert.rejects(async () => await qualify(f.args,{...f,command}), /staged consumer|dependency lock changed/);
     assert.equal(existsSync(join(f.args.output,"qualification.json")),false);
   }
 });
 
-test("existing and overlapping output paths remain intact", t => {
+test("existing and overlapping output paths remain intact", async t => {
   const f = installedFixture(t); mkdirSync(f.args.output); writeFileSync(join(f.args.output,"keep"),"caller bytes");
-  assert.throws(() => qualify(f.args,f), /absent/); assert.equal(readFileSync(join(f.args.output,"keep"),"utf8"),"caller bytes");
-  f.args.output = join(f.args.dependencies,"new-output"); assert.throws(() => qualify(f.args,f),/overlaps/);
+  await assert.rejects(async () => await qualify(f.args,f), /absent/); assert.equal(readFileSync(join(f.args.output,"keep"),"utf8"),"caller bytes");
+  f.args.output = join(f.args.dependencies,"new-output"); await assert.rejects(async () => await qualify(f.args,f),/overlaps/);
   assert.equal(f.calls.length,0);
 });
 
 
-test("receipt coverage matches the probe's checked and invoked method inventory", t => {
+test("receipt coverage matches the probe's checked and invoked method inventory", async t => {
   const probe = readFileSync(new URL("./fixtures/consumer/RPCConsumer.swift", import.meta.url), "utf8");
   const inventory = probe.match(/methods.count == (\d+)/);
   assert.ok(inventory);
@@ -143,5 +143,5 @@ test("receipt coverage matches the probe's checked and invoked method inventory"
   assert.equal(calls.length, count);
   assert.equal(new Set(calls).size, count);
   const f = installedFixture(t);
-  assert.equal(qualify(f.args, f).native_in_process_rpc_methods, count);
+  assert.equal((await qualify(f.args, f)).native_in_process_rpc_methods, count);
 });

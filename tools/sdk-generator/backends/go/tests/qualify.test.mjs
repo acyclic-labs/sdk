@@ -29,13 +29,13 @@ test("archive admission rejects traversal, links, aliases and digest drift", () 
   assert.throws(() => validatePayload(files, receipt), /payload digest mismatch/);
 });
 
-test("archive identity is checked before payload qualification", t => {
+test("archive identity is checked before payload qualification", async t => {
   const root = mkdtempSync(join(tmpdir(), "go-archive-admission-"));
   t.after(() => rmSync(root, { recursive: true }));
   const path = join(root, "package.tar.gz");
   const files = [entry("go.mod")];
   writeFileSync(path, archiveBytes(files));
-  assert.throws(() => verifyArchive(path, "0".repeat(64), receiptFor(files)), /archive digest mismatch/);
+  await assert.rejects(async () => await verifyArchive(path, "0".repeat(64), receiptFor(files)), /archive digest differs/);
 });
 
 function fixture(t) {
@@ -82,10 +82,10 @@ function commands(calls, failure = "") {
   };
 }
 
-test("successful workflow uses verified shared descriptor paths and isolated workspace", t => {
+test("successful workflow uses verified shared descriptor paths and isolated workspace", async t => {
   const { args } = fixture(t);
   const calls = [];
-  const result = qualify(args, commands(calls));
+  const result = await qualify(args, commands(calls));
   assert.equal(calls.length, 4);
   assert.deepEqual(calls.map(call => call.args.includes("test")), [false, false, true, true]);
   for (const call of calls) {
@@ -102,7 +102,7 @@ test("successful workflow uses verified shared descriptor paths and isolated wor
   assert.deepEqual(JSON.parse(readFileSync(join(args.output, "qualification.json"), "utf8")), result);
 });
 
-test("descriptor-less imports are digest-checked and tested families still require descriptors", t => {
+test("descriptor-less imports are digest-checked and tested families still require descriptors", async t => {
   const { args } = fixture(t);
   const manifestPath = join(args.authority, "rust-authority.json");
   const manifest = JSON.parse(readFileSync(manifestPath));
@@ -114,18 +114,18 @@ test("descriptor-less imports are digest-checked and tested families still requi
   receipt.authority_manifest_sha256 = sha256(bytes);
   writeFileSync(args.receipt, JSON.stringify(receipt));
   const calls = [];
-  assert.throws(() => qualify(args, commands(calls)), /tested family lacks an attested descriptor/);
+  await assert.rejects(async () => await qualify(args, commands(calls)), /tested family lacks an attested descriptor/);
   assert.equal(calls.length, 0);
   assert.equal(existsSync(args.output), false);
   const other = fixture(t);
   writeFileSync(join(other.args.authority, "validation/v1/options.proto"), "drift");
-  assert.throws(() => qualify(other.args, commands(calls)), /authority input digest mismatch/);
+  await assert.rejects(async () => await qualify(other.args, commands(calls)), /authority input digest mismatch/);
   assert.equal(calls.length, 0);
   assert.equal(existsSync(other.args.output), false);
 });
 
-for (const failure of ["positive", "negative"]) test(`${failure} failure cannot produce qualification`, t => {
+for (const failure of ["positive", "negative"]) test(`${failure} failure cannot produce qualification`, async t => {
   const { args } = fixture(t);
-  assert.throws(() => qualify(args, commands([], failure)), failure === "positive" ? /positive failed/ : /unrelated reason/);
+  await assert.rejects(async () => await qualify(args, commands([], failure)), failure === "positive" ? /positive failed/ : /unrelated reason/);
   assert.equal(existsSync(join(args.output, "qualification.json")), false);
 });

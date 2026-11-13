@@ -1,11 +1,9 @@
 #!/usr/bin/env node
 
-import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import { readTarGzip, collectBody } from "./archive-utils.mjs";
 
-const MAX_RECEIPT_BYTES = 65_536;
 const PACKAGE_NAME = "@acyclic-labs/plugin";
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:[+-][0-9A-Za-z.-]+)?$/;
 const OBJECT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
@@ -14,28 +12,15 @@ function fail(message) {
   throw new Error(message);
 }
 
-function archiveManifest(path) {
-  const result = spawnSync("tar", ["-xOf", path, "package/package.json"], {
-    encoding: "utf8",
-    windowsHide: true,
-    maxBuffer: 1024 * 1024,
-  });
-  if (result.error || result.status !== 0) {
-    fail(`could not read plugin archive manifest: ${result.error ?? result.stderr}`);
-  }
-  const manifest = JSON.parse(result.stdout);
-  if (manifest.name !== PACKAGE_NAME || !VERSION_PATTERN.test(manifest.version ?? "")) {
-    fail("plugin archive identity is invalid");
-  }
-  return manifest;
-}
-
-function archiveEvidence(path) {
-  const bytes = readFileSync(path);
-  return {
-    sha512: createHash("sha512").update(bytes).digest("base64"),
-    size: bytes.length,
-  };
+async function archiveEvidence(path) {
+  let manifest;
+  const evidence = await readTarGzip(path, async entry => {
+    if (entry.path !== "package/package.json") return;
+    if (manifest || entry.type !== "0") fail("plugin archive manifest is invalid");
+    manifest = JSON.parse((await collectBody(entry)).toString("utf8"));
+  }, { algorithm: "sha512", encoding: "base64" });
+  if (manifest?.name !== PACKAGE_NAME || !VERSION_PATTERN.test(manifest?.version ?? "")) fail("plugin archive identity is invalid");
+  return { manifest, evidence: { sha512: evidence.digest, size: evidence.size } };
 }
 
 function canonicalAsset(version) {
@@ -44,7 +29,7 @@ function canonicalAsset(version) {
 
 function readReceipt(path) {
   const metadata = statSync(path);
-  if (!metadata.isFile() || metadata.size <= 0 || metadata.size > MAX_RECEIPT_BYTES) {
+  if (!metadata.isFile() || metadata.size <= 0) {
     fail("plugin qualification receipt size is invalid");
   }
   const receipt = JSON.parse(readFileSync(path, "utf8"));
@@ -68,15 +53,14 @@ function readReceipt(path) {
   return receipt;
 }
 
-function create(archiveArgument, receiptArgument, sourceSha) {
+async function create(archiveArgument, receiptArgument, sourceSha) {
   if (!OBJECT_ID_PATTERN.test(sourceSha ?? "")) {
     fail("source commit must be a full lowercase Git object ID");
   }
   const archive = resolve(archiveArgument);
   const receipt = resolve(receiptArgument);
   if (existsSync(receipt)) fail("plugin qualification receipt already exists");
-  const manifest = archiveManifest(archive);
-  const evidence = archiveEvidence(archive);
+  const { manifest, evidence } = await archiveEvidence(archive);
   writeFileSync(receipt, `${JSON.stringify({
     revision: 1,
     source_commit: sourceSha,
@@ -89,14 +73,13 @@ function create(archiveArgument, receiptArgument, sourceSha) {
   })}\n`);
 }
 
-function verify(receiptArgument, sourceSha, archiveArgument, version) {
+async function verify(receiptArgument, sourceSha, archiveArgument, version) {
   if (!OBJECT_ID_PATTERN.test(sourceSha ?? "") || !VERSION_PATTERN.test(version ?? "")) {
     fail("verification identity is invalid");
   }
   const archive = resolve(archiveArgument);
   const receipt = readReceipt(resolve(receiptArgument));
-  const manifest = archiveManifest(archive);
-  const evidence = archiveEvidence(archive);
+  const { manifest, evidence } = await archiveEvidence(archive);
   if (receipt.source_commit !== sourceSha) fail("plugin receipt belongs to another source commit");
   if (manifest.name !== PACKAGE_NAME || manifest.version !== version) fail("plugin release identity differs");
   if (basename(archive) !== canonicalAsset(version)) fail("plugin publication asset name is not canonical");
@@ -111,6 +94,6 @@ function verify(receiptArgument, sourceSha, archiveArgument, version) {
 }
 
 const [command, ...args] = process.argv.slice(2);
-if (command === "create" && args.length === 3) create(...args);
-else if (command === "verify" && args.length === 4) verify(...args);
+if (command === "create" && args.length === 3) await create(...args);
+else if (command === "verify" && args.length === 4) await verify(...args);
 else fail("usage: plugin-qualification.mjs create ARCHIVE RECEIPT SOURCE_SHA | verify RECEIPT SOURCE_SHA ARCHIVE VERSION");

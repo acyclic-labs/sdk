@@ -4,9 +4,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { gunzipSync } from "node:zlib";
 import test from "node:test";
-import { tarEntries } from "../../../../../scripts/archive-utils.mjs";
+import { collectBody, readTarGzip } from "../../../../../scripts/archive-utils.mjs";
 import { sha256 } from "../../../shared/authority.mjs";
 import { qualify } from "../src/qualify.mjs";
 
@@ -39,7 +38,7 @@ function fixture(t, failure = "") {
     runtime_files: { "bin/dart.exe": sha256("Dart fixture") }, archiver: { [`${process.platform}-${process.arch}`]: { sha256: sha256("tar fixture"), version: "bsdtar fixture" } },
     dependencies: [{ name: "dependency", version: "1.0.0", sha256: sha256(dependency) }] };
   const args = { package: packageRoot, authority, "dart-home": runtime, archiver, cache, output: join(root, "qualified") }, calls = [];
-  const command = (exe, argv, options) => {
+  const command = async (exe, argv, options) => {
     calls.push({ exe, argv, options });
     if (argv[0] === "--version") return { status: 0, stdout: exe === archiver ? (failure === "tar-version" ? "wrong" : "bsdtar fixture\n") : failure === "dart-version" ? "wrong" : 'Dart SDK version: fixture (stable) on "windows_x64"\n' };
     if (argv.includes("-czf")) {
@@ -51,7 +50,7 @@ function fixture(t, failure = "") {
       put(argv[argv.indexOf("-czf") + 1], bytes);
     }
     if (argv[0] === "-xzf") {
-      const dest = argv[3]; for (const entry of tarEntries(gunzipSync(readFileSync(argv[1])))) put(join(dest, entry.path), entry.body);
+      const dest = argv[3]; await readTarGzip(argv[1], async entry => put(join(dest, entry.path), await collectBody(entry)));
       if (dest === join(args.output, "sdk")) {
         if (failure === "install-payload") put(join(dest, "LICENSE"), "drift");
         if (failure === "install-inventory") put(join(dest, "unexpected.dart"), "extra");
@@ -86,8 +85,8 @@ function fixture(t, failure = "") {
   return { root, args, payload, receipt, manifest, toolchain, command, calls, put };
 }
 
-test("builds, installs and checks a fresh offline SDK with two independent static rejections", t => {
-  const f = fixture(t), result = qualify(f.args, f);
+test("builds, installs and checks a fresh offline SDK with two independent static rejections", async t => {
+  const f = fixture(t), result = await qualify(f.args, f);
   assert.equal(result.independent_negative_static_type_controls_rejected, 2);
   assert.equal(result.complete_file_descriptor_comparison, false); assert.equal(result.rust_backed_rpc_qualified, false);
   assert.equal(result.archive_sha256, sha256(readFileSync(join(f.args.output, "package/acyclic_sdk_transport-0.2.0-alpha.1.tar.gz"))));
@@ -103,41 +102,41 @@ test("builds, installs and checks a fresh offline SDK with two independent stati
   assert.deepEqual(JSON.parse(readFileSync(join(f.args.output, "qualification.json"))), result);
 });
 
-test("drifting package, authority, runtime, archiver, dependencies and metadata fail before commands", t => {
+test("drifting package, authority, runtime, archiver, dependencies and metadata fail before commands", async t => {
   for (const drift of ["package", "authority", "runtime", "archiver", "dependency", "template"]) {
     const f = fixture(t); const name = drift === "package" ? join(f.args.package, "LICENSE") : drift === "authority" ? join(f.args.authority, "shared.bin")
       : drift === "runtime" ? join(f.args["dart-home"], "bin/dart.exe") : drift === "archiver" ? f.args.archiver : drift === "dependency" ? join(f.args.cache, "dependency-1.0.0.tar.gz") : join(f.args.package, "pubspec.yaml");
     f.put(name, "drift"); if (drift === "template") { f.receipt.output_sha256["pubspec.yaml"] = sha256("drift"); f.put(join(f.args.package, "generation-receipt.json"), JSON.stringify(f.receipt)); }
-    assert.throws(() => qualify(f.args, f)); assert.equal(f.calls.length, 0); assert.equal(existsSync(f.args.output), false);
+    await assert.rejects(async () => await qualify(f.args, f)); assert.equal(f.calls.length, 0); assert.equal(existsSync(f.args.output), false);
   }
 });
 
-test("existing and overlapping destinations are preserved", t => {
+test("existing and overlapping destinations are preserved", async t => {
   const f = fixture(t); mkdirSync(f.args.output); f.put(join(f.args.output, "keep"), "caller bytes");
-  assert.throws(() => qualify(f.args, f), /absent/); assert.equal(readFileSync(join(f.args.output, "keep"), "utf8"), "caller bytes");
-  f.args.output = join(f.args.cache, "new"); assert.throws(() => qualify(f.args, f), /overlaps/); assert.equal(f.calls.length, 0);
+  await assert.rejects(async () => await qualify(f.args, f), /absent/); assert.equal(readFileSync(join(f.args.output, "keep"), "utf8"), "caller bytes");
+  f.args.output = join(f.args.cache, "new"); await assert.rejects(async () => await qualify(f.args, f), /overlaps/); assert.equal(f.calls.length, 0);
 });
 
-test("unsafe or duplicate package outputs and missing bindings fail before commands", t => {
+test("unsafe or duplicate package outputs and missing bindings fail before commands", async t => {
   for (const name of ["../outside", "LICENSE", "lib/actors/v1/actors.pb.dart"]) {
     const f = fixture(t); if (name === "lib/actors/v1/actors.pb.dart") f.receipt.outputs = f.receipt.outputs.filter(n => n !== name); else f.receipt.outputs.push(name);
-    f.put(join(f.args.package, "generation-receipt.json"), JSON.stringify(f.receipt)); assert.throws(() => qualify(f.args, f)); assert.equal(f.calls.length, 0);
+    f.put(join(f.args.package, "generation-receipt.json"), JSON.stringify(f.receipt)); await assert.rejects(async () => await qualify(f.args, f)); assert.equal(f.calls.length, 0);
   }
 });
 
-test("unsafe dependency archive members fail even when the archive digest is admitted", t => {
+test("unsafe dependency archive members fail even when the archive digest is admitted", async t => {
   const f = fixture(t), bytes = gzipArchive({ "../escape": "bad", "pubspec.yaml": "name: dependency" });
   f.put(join(f.args.cache, "dependency-1.0.0.tar.gz"), bytes); f.toolchain.dependencies[0].sha256 = sha256(bytes);
-  assert.throws(() => qualify(f.args, f), /unsafe/); assert.equal(f.calls.length, 0); assert.equal(existsSync(f.args.output), false);
+  await assert.rejects(async () => await qualify(f.args, f), /unsafe/); assert.equal(f.calls.length, 0); assert.equal(existsSync(f.args.output), false);
 });
 
-test("runtime inventory additions fail before commands", t => {
+test("runtime inventory additions fail before commands", async t => {
   const f = fixture(t); f.put(join(f.args["dart-home"], "unadmitted.dll"), "extra");
-  assert.throws(() => qualify(f.args, f), /runtime inventory/); assert.equal(f.calls.length, 0);
+  await assert.rejects(async () => await qualify(f.args, f), /runtime inventory/); assert.equal(f.calls.length, 0);
 });
 
 for (const failure of ["dart-version", "tar-version", "build-payload", "build-inventory", "gzip-time", "install-payload", "install-inventory", "dependency-install", "config", "config-extra", "lock", "compile", "positive", "silent", "accepted", "unrelated", "extra-diagnostic", "late-sdk", "late-dependency", "late-runtime", "late-runtime-inventory"]) {
-  test(`${failure} cannot write a success receipt`, t => {
-    const f = fixture(t, failure); assert.throws(() => qualify(f.args, f)); assert.equal(existsSync(join(f.args.output, "qualification.json")), false);
+  test(`${failure} cannot write a success receipt`, async t => {
+    const f = fixture(t, failure); await assert.rejects(async () => await qualify(f.args, f)); assert.equal(existsSync(join(f.args.output, "qualification.json")), false);
   });
 }

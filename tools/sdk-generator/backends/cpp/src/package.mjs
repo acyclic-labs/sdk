@@ -1,8 +1,8 @@
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readDeclaredTarGzip } from "../../../../../scripts/archive-utils.mjs";
-import { equalEntries, readGenerationReceipt, runCli, sha256, verifyPackageOutputs } from "../../../shared/authority.mjs";
+import { readArchivePayload } from "../../../../../scripts/archive-utils.mjs";
+import { canonical, equalEntries, readGenerationReceipt, runCli, sha256, verifyPackageOutputs } from "../../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 export const pins = JSON.parse(readFileSync(join(directory, "../toolchains/toolchain.json")));
@@ -10,9 +10,8 @@ export const targets = ["actors/v1/actors.proto", "stream/v1/stream.proto"];
 export const producerSources = ["generate.mjs", "../../../shared/authority.mjs", "../toolchains/toolchain.json", "../toolchains/build-runtime.cmake"];
 
 // Archive admission only. Native compilation and consumer execution are separate.
-export function readPackage(args) {
+export async function readPackage(args) {
   if (!/^[a-f0-9]{64}$/.test(args.sha256)) throw new Error("archive SHA256 is required");
-  if (statSync(args.receipt).size > 1024 * 1024) throw new Error("generation receipt exceeds size bound");
   const { receiptBytes, receipt, approved } = readGenerationReceipt(args.receipt, args.authority, "cpp");
   if (!receipt.output_sha256 || !receipt.input_sha256) throw new Error("unsupported C++ generation receipt");
   if (!equalEntries(receipt.input_sha256, Object.fromEntries([...approved.inputs].map(([name, bytes]) => [name, sha256(bytes)])))) throw new Error("package authority differs");
@@ -30,12 +29,12 @@ export function readPackage(args) {
     ...approved.manifest.families.flatMap(family => [".pb.h", ".pb.cc", ".grpc.pb.h", ".grpc.pb.cc"].map(suffix =>
       (suffix.endsWith(".h") ? "include/" : "src/") + family.source.slice(0, -6) + suffix))]);
   verifyPackageOutputs(receipt.outputs, receipt.output_sha256, required, "unsafe, duplicate or unexpected C++ package output");
-  const { compressed, payload } = readDeclaredTarGzip(args.package, args.sha256, receipt.output_sha256, 64 * 1024 * 1024);
+  const { digest, payload } = await readArchivePayload(args.package, { canonical, expected: args.sha256, declared: receipt.output_sha256 });
   if (Object.entries(templates).some(([name, bytes]) => !payload.get(name).equals(bytes)) || !payload.get("authority/rust-authority.json").equals(approved.bytes)) throw new Error("package metadata differs from maintained inputs");
-  return { payload, receipt, receiptBytes, approved, archiveBytes: compressed };
+  return { payload, receipt, receiptBytes, approved, archiveDigest: digest, archivePath: args.package };
 }
 
-runCli(import.meta.url, values => {
-  const admitted = readPackage(values);
-  return { scope: "C++ archive admission only", archive_sha256: sha256(admitted.archiveBytes), source_revision: admitted.receipt.source_revision, payload_files: admitted.payload.size };
+runCli(import.meta.url, async values => {
+  const admitted = await readPackage(values);
+  return { scope: "C++ archive admission only", archive_sha256: admitted.archiveDigest, source_revision: admitted.receipt.source_revision, payload_files: admitted.payload.size };
 }, ["package", "sha256", "receipt", "authority"], "all archive admission arguments are required");

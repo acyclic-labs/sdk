@@ -1,12 +1,11 @@
 #!/usr/bin/env node
+import { spawnSync } from "node:child_process";
 
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
 
-const MAX_RECEIPT_BYTES = 1_048_576;
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PACKAGES = JSON.parse(readFileSync(join(root, "release", "npm-packages.json"), "utf8"))
   .filter(item => item.source === "typescript");
@@ -41,26 +40,23 @@ async function create(output, sourceSha, buildReceipt, retained) {
   const original = retained ? await retainedCompilerFiles(retained, sourceSha, buildReceipt) : undefined;
   const { build, receiptSha256: buildSha256 } = readCompilerBuild(buildReceipt, sourceSha, original);
   const archiveUtils = await import("./archive-utils.mjs");
-  const packages = expectedAssets().map(({ directory, ...packageEntry }) => {
+  const packages = [];
+  for (const { directory, ...packageEntry } of expectedAssets()) {
     const archive = join(output, packageEntry.asset);
-    const validatedSha256 = validateArchive(archive, packageEntry.name, packageEntry.version, directory);
     {
-      const { expanded } = archiveUtils.readBoundedGzip(archive, 104_857_600, 536_870_912);
       const prefix = `${directory}/dist/`;
       const expected = build.outputs.filter(file => file.path.startsWith(prefix));
       const observed = [];
-      for (const entry of archiveUtils.tarEntries(expanded)) {
+      const evidence = await validateArchive(archive, packageEntry.name, packageEntry.version, directory, async entry => {
         if (entry.path.startsWith("package/dist/") && entry.type !== "5") {
-          observed.push({ path: `${directory}/${entry.path.slice(8)}`, sha256: `sha256:${archiveUtils.sha256(entry.body)}`, bytes: entry.body.length });
+          observed.push({ path: `${directory}/${entry.path.slice(8)}`, sha256: `sha256:${await archiveUtils.hashBody(entry)}`, bytes: entry.size });
         }
-      }
+      });
       observed.sort((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path)));
       if (!expected.length || JSON.stringify(expected) !== JSON.stringify(observed)) fail(`archive dist differs from compiler output: ${packageEntry.asset}`);
+      packages.push({ ...packageEntry, sha256: evidence.digest, size: evidence.size });
     }
-    const [sha256, size] = digest(archive);
-    if (validatedSha256 !== sha256) fail(`archive changed while it was being validated: ${packageEntry.asset}`);
-    return { ...packageEntry, sha256, size };
-  });
+  }
   const expectedNames = new Set(packages.map(item => item.asset));
   const observedNames = new Set(readdirSync(output).filter(name => name.endsWith(".tgz")));
   if (expectedNames.size !== observedNames.size || [...expectedNames].some(name => !observedNames.has(name))) {
@@ -74,16 +70,16 @@ async function create(output, sourceSha, buildReceipt, retained) {
   writeFileSync(target, `${JSON.stringify({ ...provenance, source_commit: sourceSha, packages })}\n`, { flag: "wx" });
 }
 
-function readReceiptBytes(path, limit) {
+function readReceiptBytes(path) {
   const info = lstatSync(path);
-  if (!info.isFile() || info.size > limit) fail("receipt must be a regular file within its size bound");
+  if (!info.isFile()) fail("receipt must be a regular file");
   const payload = readFileSync(path);
   if (payload.length !== info.size) fail("receipt changed while it was being read");
   return payload;
 }
 
 function readCompilerBuild(path, sourceSha, retained) {
-  const payload = readReceiptBytes(path, 16_777_216);
+  const payload = readReceiptBytes(path);
   const build = JSON.parse(payload.toString("utf8"));
   if (!build || Object.keys(build).sort().join() !== "executions,outputs,runtime,rust_producers_qualified,schema,scope,source_commit,source_files,source_sha256" || build.schema !== "acyclic.typescript-build-receipt.v1" || build.scope !== "typescript-compiler" || build.rust_producers_qualified !== false) fail("compiler build receipt scope is invalid");
   if (!/^v\d+\.\d+\.\d+/.test(build.runtime) || !Array.isArray(build.executions) || build.executions.length !== consumerCommands().length) fail("compiler build receipt executions are invalid");
@@ -109,22 +105,22 @@ const compareRecords = (a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from
 async function retainedCompilerFiles(directory, sourceSha, buildReceipt) {
   const receiptPath = join(directory, "QUALIFICATION.json");
   const receipt = readReceipt(receiptPath);
-  const build = JSON.parse(readReceiptBytes(buildReceipt, 16_777_216).toString("utf8"));
+  const build = JSON.parse(readReceiptBytes(buildReceipt).toString("utf8"));
   if (receipt.compiler_build_receipt_sha256 !== `sha256:${digest(buildReceipt)[0]}` || receipt.source_sha256 !== build.source_sha256) fail("retained compiler provenance differs");
-  const { readBoundedGzip, tarEntries, sha256 } = await import("./archive-utils.mjs");
+  const { hashBody } = await import("./archive-utils.mjs");
   const { validateArchive } = await import("./validate-npm-package.mjs");
+  const packages = qualifiedPackages(receipt, sourceSha);
   const files = new Map();
   for (const item of expectedAssets()) {
     const archive = join(directory, item.asset);
-    verify(receiptPath, sourceSha, item.asset, archive);
-    const { compressed, expanded } = readBoundedGzip(archive, 104_857_600, 536_870_912);
-    if (receipt.packages.find(entry => entry.asset === item.asset).sha256 !== sha256(compressed) || validateArchive(archive, item.name, item.version, item.directory) !== sha256(compressed)) fail("retained archive changed during admission");
-    for (const entry of tarEntries(expanded)) {
-      if (entry.type === "5") continue;
+    const expected = packages.get(item.asset);
+    const observedDigest = await validateArchive(archive, item.name, item.version, item.directory, async entry => {
+      if (entry.type === "5") return;
       const path = `${item.directory}/${entry.path.slice(8)}`;
       if (files.has(path)) fail("retained archive contains duplicate compiler files");
-      files.set(path, { path, sha256: `sha256:${sha256(entry.body)}`, bytes: entry.body.length });
-    }
+      files.set(path, { path, sha256: `sha256:${await hashBody(entry)}`, bytes: entry.size });
+    });
+    verifyArtifact(expected, observedDigest);
   }
   return files;
 }
@@ -146,7 +142,7 @@ function retainedSource(records, retained) {
 }
 
 function readReceipt(path) {
-  const payload = readReceiptBytes(path, MAX_RECEIPT_BYTES);
+  const payload = readReceiptBytes(path);
   const receipt = JSON.parse(payload.toString("utf8"));
   const keys = "compiler_build_receipt_sha256,packages,revision,rust_producers_qualified,scope,source_commit,source_sha256";
   if (!receipt || typeof receipt !== "object" || Array.isArray(receipt) || Object.keys(receipt).sort().join() !== keys) {
@@ -169,17 +165,26 @@ function readReceipt(path) {
   return receipt;
 }
 
-function verify(receiptPath, sourceSha, assetName, archive) {
-  const receipt = readReceipt(receiptPath);
+function qualifiedPackages(receipt, sourceSha) {
   if (receipt.source_commit !== sourceSha) fail("qualification receipt belongs to another source commit");
-  const identity = item => `${item.asset}\0${item.name}\0${item.version}`;
-  const observed = new Set(receipt.packages.map(identity));
-  const expected = new Set(expectedAssets().map(identity));
-  if (observed.size !== expected.size || [...expected].some(item => !observed.has(item))) fail("qualification receipt does not identify the public npm packages");
-  const matches = receipt.packages.filter(item => item.asset === assetName);
-  if (matches.length !== 1) fail("archive is absent from the qualification receipt");
-  const [sha256, size] = digest(archive);
-  if (matches[0].sha256 !== sha256 || matches[0].size !== size) fail("archive bytes differ from the qualified artifact");
+  const packages = new Map(receipt.packages.map(item => [item.asset, item]));
+  const expected = expectedAssets();
+  if (packages.size !== expected.length || expected.some(item => {
+    const observed = packages.get(item.asset);
+    return observed?.name !== item.name || observed?.version !== item.version;
+  })) fail("qualification receipt does not identify the public npm packages");
+  return packages;
+}
+
+function verifyArtifact(expected, evidence) {
+  if (!expected) fail("archive is absent from the qualification receipt");
+  if (expected.sha256 !== evidence.digest || expected.size !== evidence.size) fail("archive bytes differ from the qualified artifact");
+}
+
+function verify(receiptPath, sourceSha, assetName, archive) {
+  const expected = qualifiedPackages(readReceipt(receiptPath), sourceSha).get(assetName);
+  const [digest_, size] = digest(archive);
+  verifyArtifact(expected, { digest: digest_, size });
 }
 
 function checkedGit(args) {
