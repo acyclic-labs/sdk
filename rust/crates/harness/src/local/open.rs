@@ -46,8 +46,10 @@ struct Storage {
     workspace: Option<Arc<workspace::LocalWorkspace>>,
 }
 
-pub(crate) async fn open(config: LocalHarnessConfig) -> Result<LocalHarness> {
-    prepare(config).await?.open().await
+pub(crate) fn open(
+    config: LocalHarnessConfig,
+) -> impl std::future::Future<Output = Result<LocalHarness>> {
+    futures::TryFutureExt::and_then(prepare(config), PreparedLocalHarness::open)
 }
 
 /// A pinned local home, prepared before the session model is bound.
@@ -99,9 +101,9 @@ impl PreparedLocalHarness {
     }
 
     /// Binds providers and opens the host over this same pinned home.
-    pub async fn open(self) -> Result<LocalHarness> {
-        let opening = self.opening.activate().await?;
-        opening.finish(self.storage).await
+    pub fn open(self) -> impl std::future::Future<Output = Result<LocalHarness>> {
+        let Self { opening, storage } = self;
+        futures::TryFutureExt::and_then(opening.activate(), move |opening| opening.finish(storage))
     }
 }
 
@@ -231,13 +233,13 @@ impl Opening {
                 Some(settings) => {
                     let root = std::fs::canonicalize(opening.config.project.root())
                         .map_err(Error::process_io)?;
-                    Box::pin(crate::mcp::McpConfig::install_watched(
+                    crate::mcp::McpConfig::install_watched(
                         opening.tools,
                         Arc::clone(settings),
                         &root,
                         opening.config.mcp_limits,
                         Arc::new(crate::secrets::EnvSecrets),
-                    ))
+                    )
                     .await?
                 }
                 None => crate::mcp::McpInstallation {
