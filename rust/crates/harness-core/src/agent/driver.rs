@@ -227,7 +227,10 @@ pub trait TurnOutputs: acyclic_stream::ProviderPlatform {
 
 /// Host binding of agent turns to an executor and journal.
 pub trait TurnHost: acyclic_stream::ProviderPlatform {
-    /// Publishes workspace effects before any terminal turn record.
+    /// Integrates workspace effects at the end of an executor invocation.
+    /// Successful answers and recorded effects commit before this hook runs,
+    /// so integration failure cannot erase a completed answer. Replays of
+    /// the same turn must be idempotent.
     fn settle<'a>(
         &'a self,
         _agent: &'a AgentState,
@@ -552,6 +555,9 @@ struct Checkpoint {
     /// Whether the original announcement delta was committed before execution.
     opened: bool,
     notices: Option<super::NoticeSelection>,
+    /// The answer and effects committed before host workspace integration.
+    completed: bool,
+    waiting_user: Option<String>,
 }
 
 /// The input of the turn a step continues (kept in the checkpoint) and its
@@ -1023,6 +1029,20 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
     ) -> TurnFuture<'a> {
         Box::pin(async move {
             let (Queued { inbox, input, .. }, segment) = starting(agent, input)?;
+            if let Some(checkpoint) = checkpoint(agent)?
+                && checkpoint.completed
+            {
+                self.host
+                    .settle(agent, turn_id(agent, &input)?)
+                    .await
+                    .map_err(host_error)?;
+                return Ok(TurnStep {
+                    checkpoint: None,
+                    outs: Vec::new(),
+                    wait: checkpoint.waiting_user.map_or(Wait::Input, Wait::User),
+                    drops: None,
+                });
+            }
             if let Some(
                 action @ (ContextAction::Rewind
                 | ContextAction::Clear
@@ -1059,6 +1079,8 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         segment,
                         announcements: Vec::new(),
                         opened: false,
+                        completed: false,
+                        waiting_user: None,
                         notices: Some(notices),
                     })?),
                     outs: Vec::new(),
@@ -1090,6 +1112,8 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         segment,
                         announcements: announced(&open),
                         opened: true,
+                        completed: false,
+                        waiting_user: None,
                         notices,
                     })?),
                     outs: Vec::new(),
@@ -1147,7 +1171,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
             };
             let step = match progress {
                 ExecutionProgress::Ready(output) => {
-                    self.host.settle(agent, turn).await.map_err(host_error)?;
                     // An active goal continues the agent through its own inbox;
                     // a checkpoint is no step of it.
                     let checkpoint = input.context().is_some();
@@ -1165,6 +1188,8 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                                             segment,
                                             announcements: open.announcements.clone(),
                                             opened: true,
+                                            completed: false,
+                                            waiting_user: None,
                                             notices: notices.clone(),
                                         })?),
                                         outs: Vec::new(),
@@ -1217,17 +1242,22 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     // stays open to its parent's messages until archived, and a
                     // parent observes its answer through `wait`.
                     TurnStep {
-                        checkpoint: None,
+                        checkpoint: Some(encode(&Checkpoint {
+                            inbox,
+                            input: entry.input.clone(),
+                            segment,
+                            announcements: announced(&open),
+                            opened: true,
+                            notices: notices.clone(),
+                            completed: true,
+                            waiting_user: open
+                                .outputs
+                                .waiting_user(turn, &*open.journal)
+                                .await
+                                .map_err(host_error)?,
+                        })?),
                         outs,
-                        wait: match open
-                            .outputs
-                            .waiting_user(turn, &*open.journal)
-                            .await
-                            .map_err(host_error)?
-                        {
-                            Some(path) => Wait::User(path),
-                            None => Wait::Input,
-                        },
+                        wait: Wait::Continue,
                         drops: None,
                     }
                 }
@@ -1256,6 +1286,8 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                             segment,
                             announcements: open.announcements.clone(),
                             opened: true,
+                            completed: false,
+                            waiting_user: None,
                             notices: notices.clone(),
                         })?),
                         outs,
@@ -1291,6 +1323,8 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                             segment,
                             announcements: open.announcements.clone(),
                             opened: true,
+                            completed: false,
+                            waiting_user: None,
                             notices: notices.clone(),
                         })?),
                         outs,
@@ -1333,6 +1367,8 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                             segment,
                             announcements: open.announcements.clone(),
                             opened: true,
+                            completed: false,
+                            waiting_user: None,
                             notices: notices.clone(),
                         })?),
                         outs,

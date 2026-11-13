@@ -124,6 +124,7 @@ struct Script {
     failure: Mutex<Option<CoreError>>,
     operations: Mutex<Vec<OperationId>>,
     effects: Mutex<Vec<TurnEffect>>,
+    settlement_failure: Mutex<Option<CoreError>>,
 }
 
 impl TurnEffects for Script {
@@ -200,6 +201,18 @@ impl Executor for Script {
 struct Host(Arc<Script>, Option<Arc<Goal>>);
 
 impl TurnHost for Host {
+    fn settle<'a>(
+        &'a self,
+        _: &'a AgentState,
+        _: OperationId,
+    ) -> BoxFuture<'a, acyclic_harness_core::Result<()>> {
+        Box::pin(async move {
+            match self.0.settlement_failure.lock().expect("lock").take() {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
+        })
+    }
     fn open_control<'a>(
         &'a self,
         _: &'a AgentState,
@@ -352,7 +365,7 @@ async fn a_roster_enters_the_conversation_only_when_its_digest_changes() -> Resu
                 .copied(),
             digest
         );
-        state = settled.state;
+        state = integrate(&driver, settled.state, sequence + 1, &[]).await?;
     }
     Ok(())
 }
@@ -540,7 +553,8 @@ async fn definitive_failures_settle_the_turn_and_uncertain_ones_retry() -> Resul
         )
         .await?;
         assert_eq!(script.operations.lock().expect("lock").len(), 2);
-        assert_eq!(next.state.phase, Phase::Idle);
+        let integrated = integrate(&driver, next.state.clone(), 3, &[]).await?;
+        assert_eq!(integrated.phase, Phase::Idle);
         let completed = entries(&next.outs)?;
         assert_eq!(completed.len(), 1);
         assert_eq!(completed[0].inbox, 2);
@@ -596,7 +610,9 @@ async fn settled_turns_keep_actions_recorded_before_a_later_provider_failure() -
         );
         // A failed turn settles its entry with the recorded actions too.
         assert_eq!(step.outs.len(), 2);
-        assert!(matches!(step.wait, Wait::Input));
+        if failed {
+            assert!(matches!(step.wait, Wait::Input));
+        }
         let Some(Out::Conversation(entry)) = step.outs.get(1) else {
             return Err("settled turn has no entry".into());
         };
@@ -813,6 +829,118 @@ fn ready() -> ExecutionProgress<TurnOutput> {
     ExecutionProgress::Ready(TurnOutput::new("worked".into(), Default::default(), 1))
 }
 
+async fn integrate<D: TurnDriver>(
+    driver: &D,
+    state: AgentState,
+    cursor: u64,
+    providers: &[&acyclic_stream::MemoryStream],
+) -> Result<AgentState> {
+    use acyclic_stream::StreamProviderExt as _;
+    let path = state.path.clone();
+    let integrated = step(
+        driver,
+        &path,
+        Some(state),
+        (cursor, 0),
+        Wake::Alarm,
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
+    assert_eq!(integrated.state.phase, Phase::Idle);
+    let request = lower(
+        &integrated,
+        cursor,
+        delivery_key(&integrated.state, &format!("integration-{cursor}"))?,
+    )?;
+    for provider in providers {
+        assert!(matches!(
+            provider.commit(request.clone()).await?,
+            acyclic_stream::CommitOutcome::Committed(_)
+        ));
+    }
+    Ok(integrated.state)
+}
+
+#[tokio::test]
+async fn completed_answer_commits_before_workspace_settlement_failure() -> Result {
+    use acyclic_stream::{MemoryStream, StreamProviderExt as _};
+    let provider = MemoryStream::default();
+    super::create(&provider, id(1)).await?;
+    let path = AgentPath::root(&id(1));
+    let (script, driver) = driver(vec![ready()]);
+    *script.settlement_failure.lock().expect("lock") =
+        Some(CoreError::Conflict("workspace publication refused".into()));
+    let completed = step(
+        &driver,
+        &path,
+        Some(AgentState::adopted(path.clone(), &adopted(id(1)))?),
+        (1, 0),
+        Wake::Inbox {
+            sequence: 1,
+            record: request("answer")?.0,
+        },
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
+    let entry = completed
+        .outs
+        .iter()
+        .find_map(|out| match out {
+            Out::Conversation(bytes) => Some(ConversationEntry::decode(bytes)),
+            _ => None,
+        })
+        .ok_or("completion omitted the durable answer")??;
+    assert_eq!(entry.outcome, TurnOutcome::Completed);
+    assert_eq!(completed.state.conversation_tail, 1);
+    let committed = provider
+        .commit(lower(
+            &completed,
+            2,
+            delivery_key(&completed.state, "completed-answer")?,
+        )?)
+        .await?;
+    assert!(matches!(
+        committed,
+        acyclic_stream::CommitOutcome::Committed(_)
+    ));
+    let resumed = step(
+        &driver,
+        &path,
+        Some(completed.state),
+        (2, 0),
+        Wake::Alarm,
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
+    assert!(matches!(
+        resumed.state.phase,
+        Phase::Done {
+            outcome: AgentOutcome::Failed { .. }
+        }
+    ));
+    assert_eq!(resumed.state.conversation_tail, 1);
+    let committed = provider
+        .commit(lower(
+            &resumed,
+            2,
+            delivery_key(&resumed.state, "failed-integration")?,
+        )?)
+        .await?;
+    assert!(matches!(
+        committed,
+        acyclic_stream::CommitOutcome::Committed(_)
+    ));
+    assert_eq!(answer(&provider, &path, 0).await?, entry);
+    assert!(
+        !resumed
+            .outs
+            .iter()
+            .any(|out| matches!(out, Out::Conversation(_)))
+    );
+    assert_eq!(script.operations.lock().expect("lock").len(), 1);
+    Ok(())
+}
+
 /// The goal continuation a step sent its own agent, if any.
 fn continuation(step: &Step, path: &AgentPath) -> Option<Message> {
     let sends: Vec<_> = step
@@ -873,7 +1001,6 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
             acyclic_actors::guest::CancellationToken::new(),
         )
         .await?;
-        assert_eq!(settled.state.phase, Phase::Idle);
         if let Some(message) = continuation(&settled, &path) {
             assert_eq!(message.from, Sender::Agent { path: path.clone() });
             assert_eq!(*message.body, file("GOAL.md")?);
@@ -982,7 +1109,13 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
                 Reply::Continuing { run }
             );
         }
-        state = settled.state;
+        state = integrate(
+            &driver,
+            settled.state,
+            sequence + 1,
+            &[&provider, &missing_completion, &wrong_completion],
+        )
+        .await?;
     }
     // Two continuations of one loop, then the allowance blocks the goal.
     assert_eq!(sent.len(), 2);
@@ -1042,7 +1175,7 @@ ship it
             matches!(reply(&provider, &mut settled.state, sequence + 1, &intent("m1"), 1).await?,
             Reply::Answered { sequence: 2, entry, origin: Some(origin), .. } if entry.inbox == 3 && origin.inbox == 1)
         );
-        state = settled.state;
+        state = integrate(&driver, settled.state, sequence + 1, &[&provider]).await?;
     }
     assert_eq!(goal.rewrites.lock().expect("lock").len(), 1);
     Ok(())
@@ -1097,7 +1230,7 @@ async fn an_unlimited_goal_keeps_its_loop_identity_across_counter_boundaries() -
             assert_eq!(message.from, Sender::Agent { path: path.clone() });
             assert_eq!(*message.body, file("GOAL.md")?);
             assert_ne!(message.id, previous_id);
-            state = settled.state;
+            state = integrate(&driver, settled.state, sequence + 1, &[]).await?;
         }
         assert_eq!(message.id.as_str(), format!("{GOAL_INTENT}{run}:{last}"));
         assert!(goal.rewrites.lock().expect("lock").is_empty());
