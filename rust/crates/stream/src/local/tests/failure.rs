@@ -479,3 +479,140 @@ async fn originating_native_failure(mode: u8) -> Result<(), Box<dyn std::error::
     assert_eq!(reopened.tail(StreamPath::new("prepared/target")?).await?, 1);
     Ok(())
 }
+
+// Drive the production flush and its original native operation fault, not a
+// replacement provider or a callback returning a fabricated stream failure.
+#[tokio::test]
+async fn failed_group_flush_retains_original_source_and_never_certifies_its_cut()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_native_runtime::testing::{DurableFault, InjectedStorageFault, Schedule};
+    use std::error::Error as _;
+    for fault in [
+        DurableFault::Failed,
+        DurableFault::DiskFull,
+        DurableFault::After,
+    ] {
+        let directory = tempfile::tempdir()?;
+        let stream = LocalStream::open(directory.path(), Default::default()).await?;
+        deferring_durability(stream.append(super::keyed_append("failed-flush", 0)?)).await?;
+        let before = stream
+            .inner
+            .journal
+            .lock()
+            .map_err(|_| "journal poisoned")?
+            .flushed_sequence;
+        #[cfg(feature = "serde")]
+        let trace = crate::Stream::new(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("owner/trace")?,
+        );
+        #[cfg(feature = "serde")]
+        let recorder = Arc::new(crate::trace::Recorder::new(trace.clone(), [34; 16]));
+        #[cfg(feature = "serde")]
+        let recording = recorder
+            .start(
+                "flush_failure_owner",
+                crate::trace::Mechanism::Commit,
+                None,
+                Some("original_failed_flush_observed"),
+            )
+            .await?
+            .into_owned();
+        let (schedule, mut boundaries) = Schedule::seeded(35);
+        schedule.cut_at(0, fault);
+        let flush = stream.await_publication(1);
+        #[cfg(feature = "serde")]
+        let flush = recording.within(flush);
+        let result = super::journal_lifecycle(&schedule, &mut boundaries, flush).await?;
+        let error = result.err().ok_or("failed flush reported success")?;
+        assert_eq!(error.category(), StreamError::Unavailable);
+        let mut source = error.source();
+        let mut original = None;
+        while let Some(cause) = source {
+            if let Some(io) = cause.downcast_ref::<std::io::Error>() {
+                original = io
+                    .get_ref()
+                    .and_then(|cause| cause.downcast_ref::<InjectedStorageFault>());
+                if original.is_some() {
+                    break;
+                }
+            }
+            source = cause.source();
+        }
+        let original = original.ok_or("flush error lost original injected storage cause")?;
+        let writes = schedule.durable_writes();
+        assert_eq!(
+            writes.len(),
+            1,
+            "failed flush dispatched another physical operation"
+        );
+        assert_eq!(original.ordinal, 0);
+        assert_eq!(original.fault, fault);
+        assert_eq!(original.operation, writes[0].operation);
+        assert!(writes[0].failure.is_some());
+        assert_eq!(
+            stream
+                .failure()
+                .ok_or("missing incarnation failure")?
+                .io_kind,
+            writes[0].failure
+        );
+        assert_eq!(
+            stream
+                .inner
+                .journal
+                .lock()
+                .map_err(|_| "journal poisoned")?
+                .flushed_sequence,
+            before
+        );
+        assert!(
+            stream
+                .inner
+                .synced
+                .borrow()
+                .completion(1, LocalDurability::FullFlush)
+                .is_none()
+        );
+        #[cfg(feature = "serde")]
+        {
+            use crate::trace::{Mechanism, Observation, Outcome, TraceQuery};
+            let mut query = TraceQuery::new(
+                trace.follow(0, Default::default()).await?,
+                Default::default(),
+            );
+            let mut names = std::collections::BTreeSet::new();
+            while names.len() != 2 {
+                if let Some(Observation::Completed { start, result, .. }) = query.next().await? {
+                    assert!(matches!(
+                        start.name.as_str(),
+                        "stream.journal_flush" | "stream.journal_cut_wait"
+                    ));
+                    assert_eq!(
+                        result,
+                        Outcome::Unsettled,
+                        "no retained failure record was published"
+                    );
+                    assert!(names.insert(start.name));
+                }
+            }
+            assert_eq!(
+                query
+                    .totals()
+                    .get(&Mechanism::Fsync)
+                    .ok_or("missing flush")?
+                    .unsettled,
+                1
+            );
+            assert_eq!(
+                query
+                    .totals()
+                    .get(&Mechanism::Wait)
+                    .ok_or("missing waiter")?
+                    .unsettled,
+                1
+            );
+        }
+    }
+    Ok(())
+}

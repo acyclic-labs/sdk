@@ -685,3 +685,11 @@ physical error until its original completion is observed. A failed flush no
 longer returns an optional success acknowledgement and relies on a later cut
 check to discover the failure. Failure spans still need a retained journal
 record before they can claim a Failed outcome; otherwise they remain unsettled.
+
+The deterministic group-flush regression arms the native runtime at the original
+flush boundary with Failed, DiskFull and lost acknowledgement (After). It uses
+the real local provider and original file lease, verifies the injected typed
+source through the caller error chain against the original operation journal,
+and requires both flush and cut-wait observations to remain unsettled without
+advancing the certified device-flushed cut. This is simulation coverage of the
+original mechanism, not proof that the test has run or universal crash capture.
