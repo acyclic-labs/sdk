@@ -53,7 +53,7 @@ async fn hidden_directory_pages_advance_once_at_the_original_generation() -> Res
         b"later",
         "text/plain",
         "later",
-        4096,
+        Some(4096),
         &IdempotencyKey::new("later-directory-entry")?,
         None,
         crate::conversation::ContentAccess::default(),

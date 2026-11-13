@@ -233,17 +233,22 @@ impl<'a> ContentMatcher<'a> {
         }
         let position = position(after, io)?;
         let cancellation = acyclic_fs::CancellationToken::new();
+        let standalone = || KernelAccounting::Standalone {
+            allocations: Default::default(),
+            work: acyclic_fs::WorkCounters::UNCHARGED,
+            budget: acyclic_fs::WorkBudget::UNBOUNDED,
+            cancellation: &cancellation,
+        };
         #[cfg(not(target_arch = "wasm32"))]
         let mut ctx = match io.and_then(PreparationIo::original_native_work) {
             Some(work) => KernelAccounting::NativeOriginal {
                 work,
                 cancellation: work.cancellation(),
             },
-            None => KernelAccounting::standalone(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation),
+            None => standalone(),
         };
         #[cfg(target_arch = "wasm32")]
-        let mut ctx =
-            KernelAccounting::standalone(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation);
+        let mut ctx = standalone();
         let selected = reference(record, position.file, io, &mut ctx)?;
         let Some(file) = selected.file else {
             if after.is_some() {
