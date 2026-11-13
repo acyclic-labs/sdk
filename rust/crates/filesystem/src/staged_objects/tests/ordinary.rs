@@ -1166,80 +1166,72 @@ async fn stale_spilled_pin_progresses_with_a_queued_collector_and_publication()
 -> Result<(), Box<dyn std::error::Error>> {
     use std::future::Future;
     use std::task::{Context, Poll, Waker};
-    for pressure in [false, true] {
-        let directory = tempfile::tempdir()?;
-        let (store, _provider) = open_staged(directory.path()).await?;
-        let token = CancellationToken::new();
-        let (id, bytes) = spill_fixture(&store, &token).await?;
-        let proven_at = store.collection.sweeps();
-        let previous = store.collection.begin().await;
-        previous.sweeping();
-        drop(previous);
-        let mut pin_accounting =
-            crate::kernel::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &token);
-        let pin_gate = store.collection.unswept(&mut pin_accounting).await?;
-        let mut collector = std::pin::pin!(store.collection.begin());
-        let mut context = Context::from_waker(Waker::noop());
-        assert!(matches!(
-            collector.as_mut().poll(&mut context),
-            Poll::Pending
-        ));
-        let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &token);
-        let mut publication = std::pin::pin!(async {
-            if pressure {
-                store.relieve_window(&mut work).await
-            } else {
-                store
-                    .flush(
-                        PublicationScope {
-                            objects: &[id],
-                            proven_at,
-                        },
-                        &mut work,
-                    )
-                    .await
-                    .map(drop)
-            }
-        });
-        assert!(matches!(
-            publication.as_mut().poll(&mut context),
-            Poll::Pending
-        ));
-        // A publisher queued behind the collector cannot own spill access
-        // needed by the earlier pin. The former order fails here without a
-        // timer or a test that hangs on the circular wait.
-        assert!(
-            store.spill_io.try_read().is_ok(),
-            "queued publication owns the pin's spill lock"
-        );
-        let mut accounting =
-            crate::kernel::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &token);
-        let admitted = store
-            .collection
-            .admit_held(
-                pin_gate,
-                &store,
-                PublicationScope {
-                    objects: &[id],
-                    proven_at,
-                },
-                |_| false,
-                &mut accounting,
-            )
-            .await?;
-        assert_eq!(accounting.spent().object_bytes_read, bytes.len() as u64);
-        drop(admitted);
-        let collecting = collector.await;
-        publication.await?;
-        drop(collecting);
-        let read = store
-            .read(
-                id,
-                u64::MAX,
-                &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &token),
-            )
-            .await?;
-        assert_eq!(read.bytes, bytes);
-    }
+    let directory = tempfile::tempdir()?;
+    let (store, _provider) = open_staged(directory.path()).await?;
+    let token = CancellationToken::new();
+    let (id, bytes) = spill_fixture(&store, &token).await?;
+    let proven_at = store.collection.sweeps();
+    let previous = store.collection.begin().await;
+    previous.sweeping();
+    drop(previous);
+    let mut pin_accounting =
+        crate::kernel::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &token);
+    let pin_gate = store.collection.unswept(&mut pin_accounting).await?;
+    let mut collector = std::pin::pin!(store.collection.begin());
+    let mut context = Context::from_waker(Waker::noop());
+    assert!(matches!(
+        collector.as_mut().poll(&mut context),
+        Poll::Pending
+    ));
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &token);
+    let objects = [id];
+    // Private spill relief no longer publishes or enters the collection gate.
+    // Only actual publication can participate in this lock-order cycle.
+    let mut publication = std::pin::pin!(store.flush(
+        PublicationScope {
+            objects: &objects,
+            proven_at,
+        },
+        &mut work,
+    ));
+    assert!(matches!(
+        publication.as_mut().poll(&mut context),
+        Poll::Pending
+    ));
+    // A publisher queued behind the collector cannot own spill access
+    // needed by the earlier pin. The former order fails here without a
+    // timer or a test that hangs on the circular wait.
+    assert!(
+        store.spill_io.try_read().is_ok(),
+        "queued publication owns the pin's spill lock"
+    );
+    let mut accounting =
+        crate::kernel::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &token);
+    let admitted = store
+        .collection
+        .admit_held(
+            pin_gate,
+            &store,
+            PublicationScope {
+                objects: &[id],
+                proven_at,
+            },
+            |_| false,
+            &mut accounting,
+        )
+        .await?;
+    assert_eq!(accounting.spent().object_bytes_read, bytes.len() as u64);
+    drop(admitted);
+    let collecting = collector.await;
+    drop(publication.await?);
+    drop(collecting);
+    let read = store
+        .read(
+            id,
+            u64::MAX,
+            &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &token),
+        )
+        .await?;
+    assert_eq!(read.bytes, bytes);
     Ok(())
 }
