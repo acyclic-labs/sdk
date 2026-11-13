@@ -1188,20 +1188,20 @@ impl ModelProvider for CeilingCounter {
         &'a self,
         request: &'a crate::model::PreparedModelRequest,
         ceiling: u64,
-    ) -> acyclic_stream::BoxProviderFuture<'a, Result<crate::context::ModelTokenCount>> {
-        Box::pin(async move {
-            let bound = u32::try_from(request.bytes().len())
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-            if u64::from(bound) <= ceiling {
+    ) -> crate::model::ModelStream<'a> {
+        if request.bytes().len() as u64 <= ceiling {
+            crate::model::ModelStream::from_count(async move {
+                let bound = u32::try_from(request.bytes().len())
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
                 Ok(crate::context::ModelTokenCount::from_upper_bounds(
                     request.request_digest(),
                     bound,
                     vec![0; request.request().messages.len()],
                 ))
-            } else {
-                self.0.count_tokens(request, ceiling).await
-            }
-        })
+            })
+        } else {
+            self.0.count_tokens(request, ceiling)
+        }
     }
 
     fn generate<'a>(

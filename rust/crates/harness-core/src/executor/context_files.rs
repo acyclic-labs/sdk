@@ -34,7 +34,8 @@ impl StockExecution<'_> {
         let key = with_history_io(io, |work| {
             preparation_format(format_args!("manager:{step}:files"), work)
         })?;
-        match journal.staged_ref(input.operation_id, &key, io)?.await {
+        let staged = journal.staged_ref(input.operation_id, &key, io)?.await;
+        match staged {
             Ok(file) => {
                 drop(key);
                 scope.finish(file.logical_owned_bytes()?)?;
@@ -220,7 +221,7 @@ impl StockExecution<'_> {
             .observe_changes(
                 &binding.volume,
                 operation,
-                self.stock.limits.render_bytes.unwrap_or(u64::MAX),
+                self.stock.limits.render_bytes,
                 access,
             )?
             .await?;
@@ -422,7 +423,7 @@ mod tests {
                     "context",
                     path,
                     None,
-                    65_536,
+                    Some(65_536),
                     ContentAccess::default(),
                 )
             };
@@ -443,7 +444,8 @@ mod tests {
             } else {
                 result?;
                 assert_eq!(summary_bytes.as_ref(), b"selected");
-                let drops: serde_json::Value = crate::contract::json_from_slice(&drops_bytes)?;
+                let drops: serde_json::Value = crate::contract::json_from_slice(&drops_bytes)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
                 assert_eq!(drops["drop_through"], 2);
                 assert_eq!(
                     drops["operation"],
