@@ -515,11 +515,14 @@ mod tests {
     fn pinned_shell_guards_use_the_admitted_implementation_with_native_declarations() -> Result<()>
     {
         use crate::model::NativeToolProfile;
-        let guard = Requests::compile(&RequestMatch {
-            action: vec!["exec".into()],
-            command: Some("^git push --force".into()),
-            path: None,
-        })?;
+        let guard = Requests::compile(
+            &RequestMatch {
+                action: vec!["exec".into()],
+                command: Some("^git push --force".into()),
+                path: None,
+            },
+            None,
+        )?;
         for profile in [
             None,
             Some(NativeToolProfile::Anthropic),
