@@ -51,7 +51,10 @@ impl<P: StreamProvider + ?Sized + 'static> AccountNode<P> {
     /// Open the account's node-actor store. It is separate from agent
     /// stores, so file, shell and same-node inbox traffic never wakes this host.
     /// The storage owner supplies the account's membership and reservation policy.
+    /// `requests` is this runtime's caller-owned ledger, shared with any guest
+    /// bridge before construction; opening never replaces that authority.
     pub async fn open(
+        requests: crate::guest::Requests,
         account: AccountId,
         provider: Arc<P>,
         paths: Paths,
@@ -76,7 +79,7 @@ impl<P: StreamProvider + ?Sized + 'static> AccountNode<P> {
             paths,
             service,
             handler: handler.clone(),
-            runtime: Runtime::new(Store::new(provider, root), handler, clock),
+            runtime: Runtime::new(requests, Store::new(provider, root), handler, clock),
             sockets,
             calls: None,
             queries: None,

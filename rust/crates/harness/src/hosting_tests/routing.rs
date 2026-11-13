@@ -135,6 +135,7 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
         server.clone(),
     ));
     let node = AccountNode::open(
+        acyclic_actors::guest::Requests::default(),
         acyclic_actors::addressing::AccountId::new(b"account")?,
         stream.clone(),
         paths.clone(),

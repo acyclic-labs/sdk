@@ -727,6 +727,7 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
             )?
             .with_routing(receiving.clone());
             let host = AgentHost::hosting(
+                acyclic_actors::guest::Requests::default(),
                 destination.clone(),
                 within.clone(),
                 Arc::new(handler),

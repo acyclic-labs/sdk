@@ -30,7 +30,12 @@ async fn input_aliases<P: StreamProvider>(provider: P) -> TestResult {
     )?;
     creation.join(store.activation(&address)?)?;
     store.submit(creation).await?;
-    let runtime = Runtime::new(store, Arc::new(Package::new()?), Arc::new(SystemClock));
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    );
     runtime.track(address.clone())?;
     runtime.drain_actor(&address).await?;
     assert!(

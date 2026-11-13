@@ -134,6 +134,7 @@ async fn public_metadata_changes_share_the_original_actor_commit()
             handler
         };
         let host = AgentHost::hosting(
+            acyclic_actors::guest::Requests::default(),
             provider.clone(),
             ActorReference::new(b"account", b"agents", b"owner")?,
             Arc::new(handler),

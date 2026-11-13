@@ -91,6 +91,7 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
     }
     let peer_policy_entered = Arc::new(AtomicBool::new(false));
     let routing = acyclic_actors::route::AccountNode::open(
+        acyclic_actors::guest::Requests::default(),
         server.bound().within().account().clone(),
         server.bound().agents().provider().clone(),
         acyclic_actors::route::Paths::new(StreamPath::new("account/routing").map_err(storage)?),

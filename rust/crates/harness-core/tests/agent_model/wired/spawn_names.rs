@@ -314,6 +314,7 @@ async fn fixture_with_route(
             .with_close()
             .with_routing(routing);
             AgentHost::hosting(
+                acyclic_actors::guest::Requests::default(),
                 stream.clone(),
                 within(),
                 Arc::new(handler),

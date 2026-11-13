@@ -127,6 +127,7 @@ where
 {
     let node = Arc::new(
         route::AccountNode::open(
+            acyclic_actors::guest::Requests::default(),
             AccountId::new(b"account")?,
             directory.provider.clone(),
             directory.routes.clone(),
