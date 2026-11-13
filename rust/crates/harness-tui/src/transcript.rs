@@ -150,13 +150,15 @@ impl TranscriptRows {
     /// identical text. State grows only with sources loaded into this view.
     pub fn append_source(
         &mut self,
-        source: &str,
+        source: Option<&str>,
         blocks: impl IntoIterator<Item = (BlockKind, String)>,
     ) {
-        if self.settled_sources.contains(source) {
-            return;
+        if let Some(source) = source {
+            if self.settled_sources.contains(source) {
+                return;
+            }
+            self.settled_sources.insert(source.to_owned());
         }
-        self.settled_sources.insert(source.to_owned());
         self.clear_pending();
         for (kind, text) in blocks {
             self.push_owned(kind, settled(&text).to_owned());
@@ -167,16 +169,18 @@ impl TranscriptRows {
     /// already loaded by a settled event or another page are not duplicated.
     pub fn prepend_sources(
         &mut self,
-        sources: impl IntoIterator<Item = (String, Vec<(BlockKind, String)>)>,
+        sources: impl IntoIterator<Item = (Option<String>, Vec<(BlockKind, String)>)>,
     ) -> usize {
         let mut blocks = Vec::new();
         for (source, source_blocks) in sources {
-            let replaces_tail = self.tail_source.as_deref() == Some(source.as_str());
-            if !self.settled_sources.insert(source) {
-                continue;
-            }
-            if replaces_tail {
-                self.tail(None);
+            if let Some(source) = source {
+                let replaces_tail = self.tail_source.as_deref() == Some(source.as_str());
+                if !self.settled_sources.insert(source) {
+                    continue;
+                }
+                if replaces_tail {
+                    self.tail(None);
+                }
             }
             blocks.extend(source_blocks);
         }
@@ -386,13 +390,13 @@ impl TranscriptRows {
 
     /// Render a live preview only while its original source is unsettled in
     /// this view. A late replay cannot resurrect a source loaded from history.
-    pub fn tail_from(&mut self, source: &str, text: &str) {
-        if self.settled_sources.contains(source) {
+    pub fn tail_from(&mut self, source: Option<&str>, text: &str) {
+        if source.is_some_and(|source| self.settled_sources.contains(source)) {
             self.tail(None);
         } else {
             let previous = self.tail_source.take();
             self.tail(Some(text));
-            self.tail_source = Some(match previous {
+            self.tail_source = source.map(|source| match previous {
                 Some(previous) if previous == source => previous,
                 _ => source.to_owned(),
             });
@@ -691,11 +695,11 @@ mod tests {
             let mut transcript = TranscriptRows::default();
             transcript.rows(80);
             if history_first {
-                transcript.prepend_sources([("source/a".into(), blocks())]);
-                transcript.tail_from("source/a", "one original answer");
+                transcript.prepend_sources([(Some("source/a".into()), blocks())]);
+                transcript.tail_from(Some("source/a"), "one original answer");
             } else {
-                transcript.tail_from("source/a", "one original answer");
-                transcript.prepend_sources([("source/a".into(), blocks())]);
+                transcript.tail_from(Some("source/a"), "one original answer");
+                transcript.prepend_sources([(Some("source/a".into()), blocks())]);
             }
             let once = text(transcript.rows(80));
             assert_eq!(
@@ -704,16 +708,16 @@ mod tests {
                     .count(),
                 1
             );
-            transcript.append_source("source/a", blocks());
+            transcript.append_source(Some("source/a"), blocks());
             assert_eq!(
-                transcript.prepend_sources([("source/a".into(), blocks())]),
+                transcript.prepend_sources([(Some("source/a".into()), blocks())]),
                 0
             );
-            transcript.tail_from("source/a", "one original answer");
+            transcript.tail_from(Some("source/a"), "one original answer");
             assert_eq!(text(transcript.rows(80)), once);
 
             // A different event's identical text must remain visible.
-            transcript.tail_from("source/b", "one original answer");
+            transcript.tail_from(Some("source/b"), "one original answer");
             assert_eq!(
                 text(transcript.rows(80))
                     .iter()
@@ -721,7 +725,7 @@ mod tests {
                     .count(),
                 2
             );
-            transcript.append_source("source/b", blocks());
+            transcript.append_source(Some("source/b"), blocks());
             assert_eq!(
                 text(transcript.rows(80))
                     .iter()
@@ -729,7 +733,7 @@ mod tests {
                     .count(),
                 2
             );
-            transcript.tail_from("source/b", "one original answer");
+            transcript.tail_from(Some("source/b"), "one original answer");
             assert_eq!(
                 text(transcript.rows(80))
                     .iter()
@@ -741,7 +745,7 @@ mod tests {
             // A new view owns a new loaded window; cleared source identities
             // cannot suppress a later explicit reload of that history.
             transcript.clear();
-            transcript.append_source("source/a", blocks());
+            transcript.append_source(Some("source/a"), blocks());
             assert_eq!(text(transcript.rows(80)), once);
         }
     }

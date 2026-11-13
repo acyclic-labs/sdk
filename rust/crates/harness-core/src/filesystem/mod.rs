@@ -112,7 +112,9 @@ pub use native_contract::{
 };
 mod config;
 use config::*;
-pub use config::{FilesystemJournalBinding, WorkspaceMutation, WorkspaceObservation};
+pub use config::{
+    FilesystemJournalBinding, WorkspaceMutation, WorkspaceObservation, tool_result_directory,
+};
 pub(crate) mod host;
 pub(crate) use host::content_path;
 pub(crate) use host::map_error;

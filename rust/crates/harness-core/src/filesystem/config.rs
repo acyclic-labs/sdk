@@ -45,6 +45,12 @@ pub enum WorkspaceMutation {
     },
 }
 
+/// Original namespace identity shared by a settled entry and its live output.
+/// The directory name conveys no authority to read the source.
+pub fn tool_result_directory(turn: crate::OperationId) -> String {
+    format!("{}{turn}", InternalContentClass::ToolResult.prefix())
+}
+
 /// Publication families within the host-owned journal.
 #[derive(Clone, Copy)]
 pub(crate) enum InternalContentClass {

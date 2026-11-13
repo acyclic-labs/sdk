@@ -306,9 +306,19 @@ impl Observer {
 
     /// The live text absorbed so far and what it is: the newest tool call's
     /// output, or the running dispatch's answer or reasoning, its last
-    /// 16 KiB at most. Empty once the turn settles: its entry is the record.
+    /// 16 KiB at most. Settlement clears the delivered prefix, but another
+    /// source's later delivery may replay older output. Combine `live_source`
+    /// with loaded history to reconcile by original identity.
     #[must_use]
     pub fn live(&self) -> (LiveKind, &str) {
         (self.tail.kind(), self.tail.text())
+    }
+
+    /// Original source identity of the live turn, shared with a settled
+    /// entry's `tool_results`. A transcript can reconcile late cross-stream
+    /// replay against its loaded history without comparing displayed text.
+    #[must_use]
+    pub fn live_source(&self) -> Option<&str> {
+        self.tail.source()
     }
 }

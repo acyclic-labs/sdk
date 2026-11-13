@@ -517,10 +517,10 @@ impl<H: TurnHost> ExecutorDriver<H> {
 /// agent's inbox (its sender and intent form the Streams idempotency key, and a
 /// child reports once), so this is stable across replays and distinct per turn,
 /// including turns started by an alarm at an unchanged inbox cursor.
-pub fn turn_id(agent: &AgentPath, input: &TurnInput) -> Result<OperationId, Error> {
+pub fn turn_id(agent: &AgentState, input: &TurnInput) -> Result<OperationId, Error> {
     let encoded = encode(input)?;
     let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.agent.turn.v1");
-    hasher.update(agent.as_str().as_bytes());
+    hasher.update(agent.path.as_str().as_bytes());
     hasher.update(&[0]);
     hasher.update(&encoded);
     let mut bytes = [0; 16];
@@ -1029,7 +1029,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 | ContextAction::Restore { .. }),
             ) = input.context()
             {
-                let turn = turn_id(&agent.path, &input)?;
+                let turn = turn_id(agent, &input)?;
                 let refusal = self
                     .host
                     .selection(agent, action)
@@ -1067,7 +1067,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 });
             }
             let notices = turn_notices(agent)?;
-            let turn = turn_id(&agent.path, &input)?;
+            let turn = turn_id(agent, &input)?;
             let stop = cancellation;
             let content = model_input_at(inbox, &input)?;
             let Some(open) = opened(

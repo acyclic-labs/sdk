@@ -31,6 +31,8 @@ pub(super) struct OutputTail {
     /// `tools/{turn}/{operation}` of the newest call, or
     /// `tools/{turn}/{dispatch}/{reply|reasoning}` of the newest model text.
     call: Option<String>,
+    /// The same original namespace key the settled conversation entry keeps.
+    source: Option<String>,
     kind: LiveKind,
     text: String,
     /// Bytes of a character a chunk split, for stdout and stderr.
@@ -122,6 +124,12 @@ impl OutputTail {
         if switched {
             self.call = plan.call;
             self.kind = plan.kind;
+            self.source = self.call.as_deref().and_then(|call| {
+                let (turn, _) = call.strip_prefix("tools/")?.split_once('/')?;
+                crate::OperationId::parse(turn)
+                    .ok()
+                    .map(crate::filesystem::tool_result_directory)
+            });
         }
         if switched || cut {
             self.text.clear();
@@ -153,6 +161,7 @@ impl OutputTail {
     pub(super) fn reset(&mut self, end: u64) {
         self.next = self.next.max(end);
         self.call = None;
+        self.source = None;
         self.kind = LiveKind::Output;
         self.text.clear();
         self.split = Default::default();
@@ -160,6 +169,10 @@ impl OutputTail {
 
     pub(super) fn text(&self) -> &str {
         &self.text
+    }
+
+    pub(super) fn source(&self) -> Option<&str> {
+        self.source.as_deref()
     }
 
     /// What [`Self::text`] is.
@@ -347,6 +360,33 @@ mod tests {
         let output = (3, paths(&["tools/t2/b/stdout/0"]));
         assert!(absorb(&mut tail, vec![output], 4, 4, &[b"fresh"]).is_some());
         assert_eq!(tail.text(), "fresh");
+    }
+
+    #[test]
+    fn late_cross_stream_replay_preserves_the_original_settled_source_identity() {
+        let turn = crate::OperationId::new();
+        let next_turn = crate::OperationId::new();
+        let original = crate::filesystem::tool_result_directory(turn);
+        let path = format!("tools/{turn}/dispatch/reply/0000000000000000");
+        let mut tail = OutputTail::default();
+        let first = (0, vec![path.clone()]);
+        absorb(&mut tail, vec![first], 1, 1, &[b"original answer"]).unwrap();
+        assert_eq!(tail.source(), Some(original.as_str()));
+        // Conversation settlement arrives before this output follow delivers
+        // all its records. Its delivered cursor alone cannot fence that replay.
+        tail.reset(1);
+        let late = (1, vec![path]);
+        absorb(&mut tail, vec![late], 2, 2, &[b"original answer"]).unwrap();
+        assert_eq!(tail.text(), "original answer");
+        assert_eq!(tail.source(), Some(original.as_str()));
+        // Equal text in a different turn must retain a different identity.
+        let next = (
+            2,
+            vec![format!("tools/{next_turn}/dispatch/reply/0000000000000000")],
+        );
+        absorb(&mut tail, vec![next], 3, 3, &[b"original answer"]).unwrap();
+        assert_eq!(tail.text(), "original answer");
+        assert_ne!(tail.source(), Some(original.as_str()));
     }
 
     #[test]

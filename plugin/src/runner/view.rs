@@ -57,7 +57,7 @@ struct Older {
     epoch: u64,
     from: u64,
     cleared: bool,
-    blocks: Vec<(BlockKind, String)>,
+    sources: Vec<(Option<String>, Vec<(BlockKind, String)>)>,
 }
 
 async fn older(
@@ -71,21 +71,25 @@ async fn older(
             epoch,
             from,
             cleared: false,
-            blocks: Vec::new(),
+            sources: Vec::new(),
         };
         for (sequence, entry) in (from..to).zip(conversation.entries(from, to).await?) {
             if let Some(action) = checkpoint(&entry) {
                 match notice(&action) {
-                    Some(text) => page.blocks.push((BlockKind::Answer, text)),
+                    Some(text) => page
+                        .sources
+                        .push((entry.tool_results.clone(), vec![(BlockKind::Answer, text)])),
                     // A cleared conversation shows nothing before it.
                     None => {
-                        page.blocks.clear();
+                        page.sources.clear();
                         page.cleared = true;
                     }
                 }
             } else {
-                page.blocks
-                    .extend(turn(&conversation, sequence, &entry).await?);
+                page.sources.push((
+                    entry.tool_results.clone(),
+                    turn(&conversation, sequence, &entry).await?,
+                ));
             }
         }
         acyclic_harness::Result::Ok(page)
@@ -274,6 +278,8 @@ struct View {
     title: String,
     /// The running turn's answer while it streams.
     reply: String,
+    /// Original immutable namespace shared with settled entries and history.
+    reply_source: Option<String>,
     phase: Option<Phase>,
     /// The terminal phase dominates any older turn replayed after attachment.
     /// Retain its bounded diagnostic page for the process exit reason.
@@ -488,16 +494,20 @@ impl View {
                         &entry,
                     )
                     .await?;
+                let mut blocks = Vec::new();
                 if let Some(text) = sent.or(turn.prompt) {
                     let (kind, text) = prompt(&entry.input, text);
-                    self.transcript.push(kind, &text);
+                    blocks.push((kind, text));
                 }
-                for (kind, text) in work(turn.tools, turn.answer) {
-                    self.transcript.push(kind, &text);
-                }
-                self.reply.clear();
+                blocks.extend(work(turn.tools, turn.answer));
                 if cancelled {
-                    self.transcript.push(BlockKind::Answer, CANCELLED);
+                    blocks.push((BlockKind::Answer, CANCELLED.into()));
+                }
+                self.transcript
+                    .append_source(entry.tool_results.as_deref(), blocks);
+                self.reply.clear();
+                self.reply_source = None;
+                if cancelled {
                     self.outcome = Outcome::Cancelled;
                     // It marks the stop a cancel in flight would otherwise mark.
                     self.cancel_marked = self.cancelling == Some(entry.inbox)
@@ -664,6 +674,7 @@ impl View {
             self.transcript
                 .push(BlockKind::Answer, &std::mem::take(&mut self.reply));
         }
+        self.reply_source = None;
         self.pending_dirty = true;
     }
 
@@ -693,6 +704,7 @@ impl View {
         if !std::mem::take(&mut self.cancel_marked) {
             if !self.phase.as_ref().is_some_and(Phase::in_turn) {
                 self.reply.clear();
+                self.reply_source = None;
             }
             self.transcript.push(BlockKind::Answer, CANCELLED);
             self.outcome = Outcome::Cancelled;
@@ -713,7 +725,8 @@ impl View {
             self.tail_dirty = true;
         }
         if std::mem::take(&mut self.tail_dirty) {
-            self.transcript.tail(Some(self.reply.as_str()));
+            self.transcript
+                .tail_from(self.reply_source.as_deref(), &self.reply);
         }
         self.transcript.rows(width)
     }
@@ -732,7 +745,7 @@ impl View {
         if older.epoch != self.epoch {
             return;
         }
-        let added = self.transcript.prepend(older.blocks);
+        let added = self.transcript.prepend_sources(older.sources);
         if let Some((_, row)) = &mut self.search {
             *row += added;
         }
@@ -1415,9 +1428,13 @@ async fn run_current(
                 // A settled turn clears the output and the streamed text.
                 let (kind, live) = events.live();
                 let answer = if kind == LiveKind::Answer { live } else { "" };
-                if view.reply != answer {
+                let source = if kind == LiveKind::Answer { events.live_source() } else { None };
+                if view.reply != answer || view.reply_source.as_deref() != source {
                     view.reply.clear();
                     view.reply.push_str(answer);
+                    if view.reply_source.as_deref() != source {
+                        view.reply_source = source.map(str::to_owned);
+                    }
                     view.tail_dirty = true;
                 }
                 output_rows = live_rows(kind, live, &input);
@@ -2172,12 +2189,61 @@ mod tests {
         );
         let page = older(Arc::clone(&forked), 0, 0, 1).await?;
         assert_eq!(
-            page.blocks,
+            page.sources
+                .iter()
+                .flat_map(|(_, blocks)| blocks.iter().cloned())
+                .collect::<Vec<_>>(),
             vec![
                 (BlockKind::Prompt, "before".into()),
                 (BlockKind::Answer, "before".into())
             ]
         );
+
+        // Attaching and scrolling a child's inherited history and replaying
+        // its original live preview may arrive in either order. Both refer to
+        // the parent's immutable turn, not to a newly derived child identity.
+        let source = inherited[0]
+            .tool_results
+            .clone()
+            .ok_or("native turn has no original source")?;
+        let answer = forked.turn_at(0, &inherited[0]).await?.answer;
+        for live_first in [false, true] {
+            let mut attached = View::default();
+            attached.rows(120);
+            if live_first {
+                attached.reply_source = Some(source.clone());
+                attached.reply = answer.clone();
+                attached.tail_dirty = true;
+                attached.rows(120);
+            }
+            attached.prepend(older(Arc::clone(&forked), 0, 0, 1).await?);
+            attached.reply_source = Some(source.clone());
+            attached.reply = answer.clone();
+            attached.tail_dirty = true;
+            let once = attached
+                .rows(120)
+                .iter()
+                .map(Line::to_string)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                once.iter().filter(|row| row.contains("before")).count(),
+                2,
+                "one original prompt and answer, without the replayed answer tail"
+            );
+            attached
+                .apply(&forked, Event::Turn(inherited[0].clone()), 1)
+                .await?;
+            attached.prepend(older(Arc::clone(&forked), 0, 0, 1).await?);
+            assert_eq!(
+                attached
+                    .rows(120)
+                    .iter()
+                    .map(Line::to_string)
+                    .collect::<Vec<_>>(),
+                once,
+                "settlement and older-page replay duplicated an inherited source",
+            );
+        }
 
         let mut sidebar = tree::Sidebar::new(&forked)?;
         sidebar.focused = true;
@@ -2316,7 +2382,10 @@ mod tests {
                 epoch: view.epoch,
                 from,
                 cleared: false,
-                blocks: vec![(BlockKind::Prompt, text.into())],
+                sources: vec![(
+                    Some(format!("original-page-{from}")),
+                    vec![(BlockKind::Prompt, text.into())],
+                )],
             });
             view.find("match", 1);
             let row = view.search.as_ref().unwrap().1;

@@ -465,7 +465,7 @@ where
         let journal = if let Some(queued) = queued {
             Some((
                 self.turns.query_journal(state).await.map_err(turn)?,
-                crate::agent::turn_id(&state.path, &queued.input)?,
+                crate::agent::turn_id(state, &queued.input)?,
                 match &queued.input {
                     crate::agent::TurnInput::Context { id, action, .. } if !matches!(action, crate::agent::ContextAction::Restore { mode, .. } if !mode.context()) => {
                         Some(id.clone())

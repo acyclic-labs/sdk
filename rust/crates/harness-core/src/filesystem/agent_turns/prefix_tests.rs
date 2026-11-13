@@ -185,7 +185,7 @@ async fn seed(
     let input = crate::agent::TurnInput::Brief {
         brief: Box::new(body),
     };
-    let turn = crate::agent::turn_id(&agent.path, &input).map_err(Error::from)?;
+    let turn = crate::agent::turn_id(agent, &input).map_err(Error::from)?;
     let output = executor()?
         .execute(
             crate::executor::TurnInput {

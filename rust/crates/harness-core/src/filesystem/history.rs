@@ -175,7 +175,7 @@ where
                     .value,
             );
         }
-        let operation = crate::agent::turn_id(&parent.path, &entry.input).map_err(guest)?;
+        let operation = crate::agent::turn_id(parent, &entry.input).map_err(guest)?;
         let specs = volumes
             .iter()
             .zip(&sources)

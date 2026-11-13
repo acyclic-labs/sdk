@@ -1589,7 +1589,7 @@ impl<'a> TurnContext<'a> {
                     fork = None;
                 }
                 Some((
-                    crate::agent::turn_id(&agent.path, &entry.input).map_err(Error::from)?,
+                    crate::agent::turn_id(agent, &entry.input).map_err(Error::from)?,
                     entry.output,
                 ))
             }
@@ -1624,7 +1624,7 @@ impl<'a> TurnContext<'a> {
                     }
                 }
                 Ok(SettledTurn {
-                    turn: crate::agent::turn_id(&agent.path, &entry.input).map_err(Error::from)?,
+                    turn: crate::agent::turn_id(agent, &entry.input).map_err(Error::from)?,
                     announcements: entry.announcements,
                     input: crate::agent::model_input_at(entry.inbox, &entry.input)
                         .map_err(Error::from)?,
