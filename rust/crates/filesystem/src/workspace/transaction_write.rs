@@ -24,7 +24,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
     ) -> W::Output<(), WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
         let result = self
-            .write_with_accounting(path, bytes, &mut accounting, cancellation)
+            .write_with_accounting(path, bytes, None, &mut accounting, cancellation)
             .await;
         work.finish(result, &accounting)
     }
@@ -33,16 +33,30 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
         &mut self,
         path: &str,
         bytes: impl Into<acyclic_stream::OwnedBytes>,
+        condition: Option<FileCondition>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), WorkspaceError> {
         let path = self.mutation_path(path, accounting, cancellation)?;
-        let existing = self
+        let observed = self
             .checkout
             .lookup_no_follow_with_accounting(&path.value, accounting, cancellation, true)
-            .await?
-            .0
-            .record;
+            .await;
+        let existing = match observed {
+            Ok((lookup, _allocation)) => lookup.record,
+            Err(error) => {
+                path.retire(accounting)?;
+                return Err(error.into());
+            }
+        };
+        if let Some(condition) = condition
+            && let Err(error) = self
+                .check_file_condition(existing, condition, accounting, cancellation)
+                .await
+        {
+            path.retire(accounting)?;
+            return Err(error);
+        }
         let mut operations =
             crate::kernel::Owned::allocate(if existing.is_some() { 2 } else { 1 }, accounting)?;
         if let Some(record) = existing {
@@ -613,7 +627,7 @@ impl BatchFileMode for ReplaceFiles {
         accounting: &'a mut KernelAccounting<'_>,
         cancellation: &'a CancellationToken,
     ) -> impl Future<Output = Result<(), WorkspaceError>> + Send {
-        transaction.write_with_accounting(path, bytes.clone(), accounting, cancellation)
+        transaction.write_with_accounting(path, bytes.clone(), None, accounting, cancellation)
     }
 }
 
