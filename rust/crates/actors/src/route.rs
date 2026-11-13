@@ -10,6 +10,9 @@ use bytes::Bytes;
 use futures::TryStreamExt as _;
 use prost::Message as _;
 
+mod node;
+pub use node::{NodeActor, NodeLink, NodePresence, open_link, open_request};
+
 /// Opaque, nonempty node identity, encoded by the shared resource-ID primitive.
 pub type NodeId = ResourceId;
 
@@ -22,6 +25,20 @@ pub enum Error {
     /// The provider refused or could not establish this operation's outcome.
     #[error(transparent)]
     Stream(#[from] StreamError),
+    /// The existing actor store or publication boundary refused the operation.
+    #[error(transparent)]
+    Actor(#[from] crate::local::Error),
+    /// Invalid actor socket data or checkpoint.
+    #[error(transparent)]
+    Guest(#[from] crate::guest::GuestError),
+    /// The authenticated owner rejected the node link.
+    #[error("node link rejected ({status}): {reason}")]
+    LinkRejected {
+        /// Original HTTP-style rejection status.
+        status: u16,
+        /// Original public rejection reason.
+        reason: String,
+    },
     /// An unsupported version, malformed body or mismatched record identity.
     #[error("invalid routing record")]
     InvalidRecord,
@@ -58,6 +75,16 @@ impl Paths {
     /// The destination node's single account-owned relay.
     pub fn relay(&self, node: &NodeId) -> Result<StreamPath, StreamError> {
         self.child("relay", node.as_bytes())
+    }
+
+    /// One node's socket-driven presence, shared by all its session rows.
+    pub fn presence(&self, node: &NodeId) -> Result<StreamPath, StreamError> {
+        self.child("presence", node.as_bytes())
+    }
+
+    /// The account-side node actor's ordinary socket and invocation inbox.
+    pub fn node_inbox(&self, node: &NodeId) -> Result<StreamPath, StreamError> {
+        self.child("node-inbox", node.as_bytes())
     }
 }
 

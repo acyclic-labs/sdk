@@ -34,6 +34,7 @@ impl Drop for Host {
 struct LocalSockets {
     store: Store<LocalStream>,
     host: fn(Sockets<LocalStream>) -> Arc<dyn SocketHost>,
+    package: fn(Arc<dyn SocketHost>) -> Result<Arc<dyn crate::guest::Handler>, Error>,
     /// The current host is last. Crashed hosts stay alive, holding their
     /// sockets, as a crashed process's peers would.
     hosts: std::sync::Mutex<Vec<Host>>,
@@ -42,6 +43,18 @@ struct LocalSockets {
 impl LocalSockets {
     async fn start(
         host: fn(Sockets<LocalStream>) -> Arc<dyn SocketHost>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::start_with(host, |host| {
+            SocketPackage::new(host)
+                .map(|package| Arc::new(package) as Arc<dyn crate::guest::Handler>)
+                .map_err(|_| Error::Invalid("socket package"))
+        })
+        .await
+    }
+
+    async fn start_with(
+        host: fn(Sockets<LocalStream>) -> Arc<dyn SocketHost>,
+        package: fn(Arc<dyn SocketHost>) -> Result<Arc<dyn crate::guest::Handler>, Error>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let directory = Arc::new(tempfile::tempdir()?);
         // The original provider owner also outlives detached journal work.
@@ -54,6 +67,7 @@ impl LocalSockets {
         let backend = Self {
             store: Store::new(Arc::new(provider), root()?),
             host,
+            package,
             hosts: std::sync::Mutex::new(Vec::new()),
         };
         backend.launch().await?;
@@ -68,12 +82,11 @@ impl LocalSockets {
             Arc::new(SystemClock),
         )
         .await?;
-        let package = SocketPackage::new((self.host)(sockets.clone()))
-            .map_err(|_| Error::Invalid("socket package"))?;
+        let package = (self.package)((self.host)(sockets.clone()))?;
         let runtime = Runtime::new(
             crate::guest::Requests::default(),
             Store::new(Arc::clone(&provider), root()?),
-            Arc::new(package),
+            package,
             Arc::new(SystemClock),
         );
         let task = tokio::spawn(async move {
@@ -175,6 +188,9 @@ async fn local_backend() -> Result<LocalSockets, Box<dyn std::error::Error>> {
 }
 
 conformance::suite!(socket_conformance_passes_on_local_runtime, local_backend);
+
+#[path = "tests/node_links.rs"]
+mod node_links;
 
 #[tokio::test]
 async fn socket_ledger_exhaustion_preserves_committed_history() -> TestResult {
