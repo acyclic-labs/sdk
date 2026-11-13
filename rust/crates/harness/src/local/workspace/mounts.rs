@@ -2,6 +2,23 @@
 use super::*;
 use acyclic_fs::access::*;
 
+/// The selected task's visible volumes, excluding its primary and control volume.
+pub(super) fn auxiliary(
+    bindings: &[crate::agent::WorkspaceEntry],
+) -> impl Iterator<Item = (&String, &VolumeRef)> {
+    let primary = crate::agent::WorkspaceTable::primary_in(bindings).map(|entry| entry.id);
+    bindings
+        .iter()
+        .filter(move |binding| {
+            Some(binding.id) != primary
+                && !matches!(
+                    binding.role,
+                    crate::agent::WorkspaceRole::Private | crate::agent::WorkspaceRole::Internal
+                )
+        })
+        .filter_map(|binding| binding.as_volume().map(|volume| (&binding.name, volume)))
+}
+
 pub(super) fn owner<T>(
     root: &Path,
     volume: &VolumeRef,

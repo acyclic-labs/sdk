@@ -20,21 +20,48 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         &mut None,
     )?;
     harness.files.create_volume(&shared).await?;
+    let selected_agent = crate::AgentId::from_bytes([1; 16]);
+    let private_home = VolumeRef::new(
+        harness.scratch.provider().clone(),
+        "selected-home".into(),
+        harness.scratch.class(),
+        crate::conversation::VolumeOwner::Agent(selected_agent),
+        &mut None,
+    )?;
+    harness.files.create_volume(&private_home).await?;
     let read = shared.capability(crate::conversation::VolumeOperation::Read, &mut None)?;
     let write = shared.capability(crate::conversation::VolumeOperation::Write, &mut None)?;
-    let grants = crate::Capabilities::new(
-        harness
-            .signed
-            .capabilities()
-            .iter()
-            .chain([read.as_str(), write.as_str()]),
-    );
+    let home_read =
+        private_home.capability(crate::conversation::VolumeOperation::Read, &mut None)?;
+    let home_write =
+        private_home.capability(crate::conversation::VolumeOperation::Write, &mut None)?;
+    let grants = crate::Capabilities::new(harness.signed.capabilities().iter().chain([
+        read.as_str(),
+        write.as_str(),
+        home_read.as_str(),
+        home_write.as_str(),
+    ]));
     let signed = harness
         .root_authority
         .as_ref()
         .ok_or_else(|| Error::NotFound("test signing custody".into()))?
-        .bootstrap_scope("other-shared", &grants, None, &mut None)?;
-    let mut session_bindings = harness.session_bindings();
+        .bootstrap_scope("selected-volumes", &grants, Some(selected_agent), &mut None)?;
+    let mut session_bindings = harness.session_bindings().to_vec();
+    session_bindings[0].name = "repository".into();
+    session_bindings[1].source = crate::agent::WorkspaceSource::Volume(private_home.clone());
+    for (role, name) in [
+        (
+            crate::agent::WorkspaceRole::Private,
+            crate::filesystem::PRIVATE_VOLUME,
+        ),
+        (crate::agent::WorkspaceRole::Internal, "interaction"),
+    ] {
+        session_bindings.push(crate::agent::WorkspaceEntry::initial_volume(
+            role,
+            name.into(),
+            harness.scratch.clone(),
+        ));
+    }
     session_bindings
         .iter_mut()
         .find(|entry| entry.name == "shared")
@@ -66,8 +93,10 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
             .await
             .map_err(storage)
     };
-    let authority =
-        crate::filesystem::NativeMountAuthority::admitted(harness.verifier.clone(), signed);
+    let authority = crate::filesystem::NativeMountAuthority::admitted(
+        harness.verifier.clone(),
+        signed.copy(&mut None)?,
+    );
     let (entered, observed) = oneshot::channel();
     let (release, released) = oneshot::channel();
     let owner = PausedOwner {
@@ -101,12 +130,97 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
             &authority,
         )
         .await?;
-    assert!(
-        second
+    let home = second.mounts.named(Some(crate::filesystem::HOME_VOLUME))?.1;
+    assert_eq!(home.view.volume, private_home);
+    assert!(home.native_root.override_path().is_none());
+    for name in [
+        crate::filesystem::PRIVATE_VOLUME,
+        "interaction",
+        "repository",
+    ] {
+        assert!(
+            second.mounts.named(Some(name)).is_err(),
+            "unexpected auxiliary {name}"
+        );
+    }
+    assert_eq!(second.mounts.named(None)?.1.view.volume, harness.project);
+    let logical = workspace.context_task_view(
+        view().await?,
+        &harness.project,
+        &session_bindings,
+        &authority,
+    )?;
+    assert_eq!(
+        logical
             .mounts
-            .named(Some(crate::filesystem::HOME_VOLUME))
-            .is_err()
+            .named(Some(crate::filesystem::HOME_VOLUME))?
+            .1
+            .view
+            .volume,
+        private_home
     );
+    for name in [
+        crate::filesystem::PRIVATE_VOLUME,
+        "interaction",
+        "repository",
+    ] {
+        assert!(
+            logical.mounts.named(Some(name)).is_err(),
+            "unexpected auxiliary {name}"
+        );
+    }
+    assert_eq!(logical.mounts.named(None)?.1.view.volume, harness.project);
+    {
+        let selected = &second;
+        let path = "bound-note";
+        let tools = Arc::new(
+            crate::local::checkout_tools::CheckoutTools::new(
+                Arc::clone(selected),
+                &harness.project,
+                Arc::clone(&harness.clock),
+                &signed,
+                &harness.verifier,
+                None,
+            )
+            .await?,
+        );
+        let publisher = crate::local::checkout_tools::publisher::CheckoutPublisher::new(
+            tools,
+            Arc::clone(&harness.files),
+            &harness.project,
+            &harness.verifier,
+            harness.limits.file_bytes,
+        );
+        let (file, _) = crate::conversation::ContentPublisher::stage_once(
+            &publisher,
+            OperationId::new(),
+            &format!("volume:///home/{path}"),
+            b"selected private home",
+            "text/plain",
+            path,
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+        assert_eq!(file.volume(), &private_home);
+        let reference = crate::filesystem::workspace_ref(
+            private_home.provider().clone(),
+            &private_home.storage_name(&mut None)?,
+        )?;
+        assert_eq!(
+            harness
+                .files
+                .read(&reference, None, &format!("/{path}"), 64, None)
+                .await?
+                .as_ref(),
+            b"selected private home"
+        );
+        assert!(
+            selected
+                .mounts
+                .named(Some(crate::filesystem::PRIVATE_VOLUME))
+                .is_err()
+        );
+    }
     for selection in [&changed_bindings, &changed_mode] {
         assert!(matches!(
             workspace

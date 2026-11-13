@@ -229,13 +229,14 @@ impl LocalWorkspace {
         &self,
         view: workspace::View,
         project: &VolumeRef,
+        bindings: &[crate::agent::WorkspaceEntry],
         authority: &crate::filesystem::NativeMountAuthority,
     ) -> Result<Arc<LocalWorkspace>> {
         let mounts = Arc::new(mounts::owner(
             &self.path,
             project,
             None,
-            std::iter::empty::<(String, VolumeRef, Option<Arc<MountedVolume>>)>(),
+            mounts::auxiliary(bindings).map(|(name, volume)| (name.clone(), volume.clone(), None)),
         )?);
         Ok(Arc::new(self.unmounted_task_view(view, mounts, authority)))
     }

@@ -778,7 +778,12 @@ impl LocalHarness {
                     scope.copy(&mut None)?,
                 );
                 super::context::Binding {
-                    workspace: Some(workspace.context_task_view(view, project, &authority)?),
+                    workspace: Some(workspace.context_task_view(
+                        view,
+                        project,
+                        &agent.volumes,
+                        &authority,
+                    )?),
                     ..context
                 }
             } else {

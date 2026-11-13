@@ -1,7 +1,8 @@
 use super::*;
 
-async fn native_fixture(
+async fn fixture(
     source: &[(&str, &[u8])],
+    mounting: crate::local::WorkspaceMounting,
 ) -> Result<(
     tempfile::TempDir,
     tempfile::TempDir,
@@ -17,7 +18,8 @@ async fn native_fixture(
     let provider = Arc::new(crate::test_support::ScriptedModelProvider::new([]));
     let harness = LocalHarness::open(
         crate::test_support::local_harness_config(directory.path(), (model, provider))?
-            .state_directory(state.path()),
+            .state_directory(state.path())
+            .workspace_mounting(mounting),
     )
     .await?;
     let tools = Arc::new(
@@ -48,8 +50,11 @@ async fn native_fixture(
 #[tokio::test]
 async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -> Result<()> {
     // The before-image belongs to the source that predates checkout binding.
-    let (_directory, _state, harness, initial) =
-        native_fixture(&[("branch.txt", b"before\n")]).await?;
+    let (_directory, _state, harness, initial) = fixture(
+        &[("branch.txt", b"before\n")],
+        crate::local::WorkspaceMounting::Native,
+    )
+    .await?;
     initial
         .stage_once(
             OperationId::new(),
@@ -252,7 +257,8 @@ async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -
 
 #[tokio::test]
 async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()> {
-    let (directory, _state, harness, publisher) = native_fixture(&[]).await?;
+    let (directory, _state, harness, publisher) =
+        fixture(&[], crate::local::WorkspaceMounting::Native).await?;
     let (file, _) = publisher
         .stage_once(
             OperationId::new(),
@@ -354,7 +360,17 @@ async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()>
 #[tokio::test]
 async fn mounted_publication_retries_and_replacements_keep_their_volume_with_negative_control()
 -> Result<()> {
-    let (directory, _state, harness, publisher) = native_fixture(&[]).await?;
+    for mounting in [
+        crate::local::WorkspaceMounting::Physical,
+        crate::local::WorkspaceMounting::Native,
+    ] {
+        check_auxiliary_publication(mounting).await?;
+    }
+    Ok(())
+}
+
+async fn check_auxiliary_publication(mounting: crate::local::WorkspaceMounting) -> Result<()> {
+    let (directory, _state, harness, publisher) = fixture(&[], mounting).await?;
     let operation = OperationId::new();
     let (file, _) = publisher
         .stage_once(
@@ -525,7 +541,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
         full_context.clone(),
         crate::tool::files::edit()?,
         serde_json::json!({"path": path, "version": token,
-            "old_text": "first", "new_text": "second"}),
+        "old_text": "first", "new_text": "second"}),
     )
     .await?;
     assert_eq!(edit_result.value["file"]["path"], "note");
@@ -536,7 +552,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
             full_context,
             crate::tool::files::edit()?,
             serde_json::json!({"path": path, "version": token,
-            "old_text": "first", "new_text": "stale"})
+        "old_text": "first", "new_text": "stale"})
         )
         .await
         .is_err()
@@ -613,23 +629,34 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
         .ok_or_else(|| Error::NotFound("checkout".into()))?
         .mounts;
     assert!(!directory.path().join(".volumes/home").exists());
-    crate::local::workspace::volumes::native_scope(mounts, async |claims| {
-        assert_eq!(
-            std::fs::read(
-                mounts
-                    .named(Some("home"))?
-                    .1
-                    .native_root
-                    .override_path()
-                    .expect("bound home")
-                    .join("note")
-            )
-            .map_err(storage)?,
-            b"edited"
+    if mounting == crate::local::WorkspaceMounting::Native {
+        crate::local::workspace::volumes::native_scope(mounts, async |claims| {
+            assert_eq!(
+                std::fs::read(
+                    mounts
+                        .named(Some("home"))?
+                        .1
+                        .native_root
+                        .override_path()
+                        .expect("bound home")
+                        .join("note")
+                )
+                .map_err(storage)?,
+                b"edited"
+            );
+            Ok(((), claims))
+        })
+        .await?;
+    } else {
+        assert!(
+            mounts
+                .named(Some("home"))?
+                .1
+                .native_root
+                .override_path()
+                .is_none()
         );
-        Ok(((), claims))
-    })
-    .await?;
+    }
     assert!(!directory.path().join(".volumes/home").exists());
     let view = harness.workspace.as_ref().unwrap().view();
     let stop = acyclic_fs::CancellationToken::new();
@@ -687,7 +714,8 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
 // Negative control: requiring access to every mount refuses the caller.
 #[tokio::test]
 async fn project_only_callers_recover_their_own_operations() -> Result<()> {
-    let (_directory, _state, harness, publisher) = native_fixture(&[]).await?;
+    let (_directory, _state, harness, publisher) =
+        fixture(&[], crate::local::WorkspaceMounting::Native).await?;
     let project_only = Capabilities::new([
         harness
             .project
@@ -757,7 +785,8 @@ async fn project_only_callers_recover_their_own_operations() -> Result<()> {
 
 #[tokio::test]
 async fn atomic_patch_uses_the_checkout_publisher_and_recovers_its_original_cut() -> Result<()> {
-    let (directory, _state, harness, publisher) = native_fixture(&[]).await?;
+    let (directory, _state, harness, publisher) =
+        fixture(&[], crate::local::WorkspaceMounting::Native).await?;
     let publisher = Arc::new(publisher);
     let task_for = |grants| {
         let runtime = crate::runtime::Bindings {

@@ -71,7 +71,12 @@ impl LocalHarness {
             }
             // A volume join needs no OS projection. Keep the same selected
             // checkout and original authority without minting a native grant.
-            let logical = workspace.context_task_view(view, project.volume()?, &authority)?;
+            let logical = workspace.context_task_view(
+                view,
+                project.volume()?,
+                &parent_state.volumes,
+                &authority,
+            )?;
             let (selected, pending) = logical.selected_view().await?;
             if pending.is_some() {
                 return Err(Error::Conflict(

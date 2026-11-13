@@ -187,30 +187,21 @@ impl LocalWorkspace {
                 acyclic_fs::NativeDurability::Durable,
             )
             .map_err(storage)?;
-        // A physical view projects no volume: its home stays unbound, as the
-        // checkout's does.
+        // Namespace bindings are independent of OS projection. Physical views
+        // retain the same logical volumes without creating native mounts.
         let native = self.mounting == WorkspaceMounting::Native;
         let mut mounts = mounts::owner(
             root.path(),
             project,
             None,
-            bindings
-                .iter()
-                .filter_map(|binding| {
-                    let volume = binding.as_volume()?;
-                    ((native || volume.class() == VolumeClass::SessionShared)
-                        && binding.name != "project"
-                        && binding.name != crate::filesystem::PRIVATE_VOLUME)
-                        .then_some((binding, volume))
-                })
-                .map(|(binding, volume)| {
-                    let source = self
-                        .mounts
-                        .mounts()
-                        .find(|(_, mount)| &mount.view.volume == volume)
-                        .and_then(|(_, mount)| mount.view.source.clone());
-                    (binding.name.clone(), volume.clone(), source)
-                }),
+            mounts::auxiliary(bindings).map(|(name, volume)| {
+                let source = self
+                    .mounts
+                    .mounts()
+                    .find(|(_, mount)| &mount.view.volume == volume)
+                    .and_then(|(_, mount)| mount.view.source.clone());
+                (name.clone(), volume.clone(), source)
+            }),
         )?;
         mounts.scratch_root = self.mounts.scratch_root.clone();
         volumes::attach(
@@ -365,9 +356,7 @@ pub(super) struct Attach<'a> {
 
 impl Attach<'_> {
     fn auxiliary(&self) -> impl Iterator<Item = (&'static str, &VolumeRef)> {
-        self.native_mounts
-            .then_some((crate::filesystem::HOME_VOLUME, self.scratch))
-            .into_iter()
+        std::iter::once((crate::filesystem::HOME_VOLUME, self.scratch))
             .chain(self.shared.map(|volume| (super::SHARED_VOLUME, volume)))
     }
 }
