@@ -475,6 +475,7 @@ where
             None,
         ));
         let agents = AgentHost::hosting(
+            acyclic_actors::guest::Requests::default(),
             stream,
             within.clone(),
             handler.clone(),
@@ -507,11 +508,13 @@ where
     /// of this binding; the guest owns only delivery execution.
     pub fn hosting(
         mut self,
+        requests: acyclic_actors::guest::Requests,
         handler: Arc<dyn acyclic_actors::guest::Handler>,
     ) -> Result<Self, Error> {
         // The guest composes the same spawns as this binding's own handler,
         // and roots keep the creation reader its turns use.
         self.agents = Arc::new(self.agents.rehosted(
+            requests,
             handler.clone(),
             self.clock.clone(),
             Some(self.composer.clone()),

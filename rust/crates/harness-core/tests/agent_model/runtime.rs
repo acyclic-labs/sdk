@@ -413,6 +413,7 @@ async fn cancelling_an_injected_input_preserves_the_original_and_later_turns() -
         },
     );
     let host = AgentHost::hosting(
+        acyclic_actors::guest::Requests::default(),
         provider.clone(),
         ActorReference::new(b"account", b"agents", b"owner")?,
         Arc::new(remote),
@@ -1244,6 +1245,7 @@ async fn a_foreign_actor_cannot_run_the_agents_committed_input() -> Result {
         ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
     )?);
     let host = AgentHost::hosting(
+        acyclic_actors::guest::Requests::default(),
         provider.clone(),
         ActorReference::new(b"account", b"agents", b"owner")?,
         handler.clone(),

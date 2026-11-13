@@ -46,7 +46,14 @@ pub async fn spawned<P: acyclic_harness_core::store::JournalProvider + ?Sized>(
         Driver,
         ActorLimits::new(1_000, 1 << 20, 1 << 16)?,
     )?);
-    let host = AgentHost::hosting(provider, within, handler, Arc::new(SystemClock), None)?;
+    let host = AgentHost::hosting(
+        acyclic_actors::guest::Requests::default(),
+        provider,
+        within,
+        handler,
+        Arc::new(SystemClock),
+        None,
+    )?;
     let root = host
         .create(&IntentId::try_from("fixture-root")?, adopted())
         .await?;

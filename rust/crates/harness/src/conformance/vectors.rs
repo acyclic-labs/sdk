@@ -38,6 +38,7 @@ pub(crate) fn hosting(
     composer: Option<Arc<dyn acyclic_actors::guest::Composer>>,
 ) -> Result<AgentHost<Observed>> {
     Ok(AgentHost::hosting(
+        acyclic_actors::guest::Requests::default(),
         provider,
         ActorReference::new(b"conformance", b"agents", b"host")?,
         handler,

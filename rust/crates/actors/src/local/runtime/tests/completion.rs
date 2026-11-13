@@ -81,8 +81,13 @@ async fn completion_joins_discovery_delivery_and_producer_lifetime() -> TestResu
         let provider = Arc::new(Counted::new(MemoryStream::default()));
         let store = Store::new(Arc::clone(&provider), root()?);
         let handler = Arc::new(Gated::new()?);
-        let runtime = Runtime::new(store, handler.clone(), Arc::new(SystemClock))
-            .with_limits(RuntimeLimits::new(1, 1)?);
+        let runtime = Runtime::new(
+            crate::guest::Requests::default(),
+            store,
+            handler.clone(),
+            Arc::new(SystemClock),
+        )
+        .with_limits(RuntimeLimits::new(1, 1)?);
         let before = provider.requests();
         let mut unstarted = Box::pin(runtime.complete());
         assert!(
@@ -245,7 +250,12 @@ async fn completion_joins_discovery_delivery_and_producer_lifetime() -> TestResu
     let provider = Arc::new(MemoryStream::default());
     let store = Store::new(Arc::clone(&provider), root()?);
     spawn_with(&store, "complete-error", &[b"invalid-command"]).await?;
-    let runtime = Runtime::new(store, Arc::new(Package::new()?), Arc::new(SystemClock));
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    );
     let mut serving = Box::pin(runtime.run(|_, error| {
         assert!(matches!(error, Error::Handler(_)));
     }));
