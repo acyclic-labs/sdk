@@ -143,23 +143,17 @@ pub fn check_native_child_reference(input: &[u8]) {
     }
 }
 
-/// Local test composition with temporary state and settings, independent of the per-user store, HOME and CODEX_HOME.
+/// Resolve configured fixture models through the supplied scripted provider.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn local_harness_config(
-    workspace: impl Into<std::path::PathBuf>,
+pub fn fixture_models(
     model: (
         crate::model::Model,
         std::sync::Arc<dyn crate::model::ModelProvider>,
     ),
-) -> crate::Result<crate::LocalHarnessConfig> {
-    let workspace = workspace.into();
-    #[cfg(any(test, not(target_arch = "wasm32")))]
-    let settings = crate::native_settings::SettingsConfig::for_test(&workspace)?;
-    // Store opening supplies temporary state only when no explicit root was selected.
-    let policy = crate::approvals::ApprovalPolicy::accept_all("graphcoder-default");
+) -> std::sync::Arc<crate::model::ModelResolver> {
     let initial = format!("{}/{}", model.0.provider, model.0.name);
     let selected = initial.clone();
-    let models = std::sync::Arc::new(crate::model::ModelResolver::new(
+    std::sync::Arc::new(crate::model::ModelResolver::new(
         initial,
         move |selection| {
             if selection == selected {
@@ -176,7 +170,24 @@ pub fn local_harness_config(
             chosen.name = name.into();
             Ok((chosen, model.1.clone()))
         },
-    ));
+    ))
+}
+
+/// Local test composition with temporary state and settings, independent of the per-user store, HOME and CODEX_HOME.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn local_harness_config(
+    workspace: impl Into<std::path::PathBuf>,
+    model: (
+        crate::model::Model,
+        std::sync::Arc<dyn crate::model::ModelProvider>,
+    ),
+) -> crate::Result<crate::LocalHarnessConfig> {
+    let workspace = workspace.into();
+    #[cfg(any(test, not(target_arch = "wasm32")))]
+    let settings = crate::native_settings::SettingsConfig::for_test(&workspace)?;
+    // Store opening supplies temporary state only when no explicit root was selected.
+    let policy = crate::approvals::ApprovalPolicy::accept_all("graphcoder-default");
+    let models = fixture_models(model);
     let config = crate::LocalHarnessConfig::resolving(workspace, models, None)
         .hermetic()
         .approval_policy(policy);

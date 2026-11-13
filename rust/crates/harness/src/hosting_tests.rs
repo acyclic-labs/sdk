@@ -601,7 +601,6 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
     for (agent, path) in [
         (root.clone(), "tools/missing"),
         (root.clone(), "notes/private"),
-        (AgentPath::root(&AgentId::from_bytes([9; 16])), path),
     ] {
         assert!(
             call(
@@ -620,6 +619,24 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
             .is_err()
         );
     }
+    let refused = call(
+        &client,
+        "agents",
+        &AgentCommand::Read {
+            agent: AgentPath::root(&AgentId::from_bytes([9; 16])),
+            target: ReadTarget::ToolOutput {
+                path: path.into(),
+                at: None,
+            },
+            offset: 0,
+        },
+    )
+    .await
+    .expect_err("foreign agent read admitted");
+    assert!(matches!(
+        refused.downcast_ref::<StreamError>(),
+        Some(StreamError::AccessDenied)
+    ));
     let foreign = VolumeRef::new(
         provider()?,
         "another-private".into(),
