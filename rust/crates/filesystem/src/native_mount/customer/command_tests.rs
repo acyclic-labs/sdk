@@ -85,6 +85,31 @@ async fn publish_command(
         mount.complete_command(retire).await?;
     }
     let trace = take_trace();
+    if !retire {
+        // Another writer can advance the volume after this command publishes.
+        // A retained projection must expose that head on its next completion.
+        workspace.write_text("/external.txt", "external").await?;
+        mount.complete_command(false).await?;
+        let external = MountPath::root().child({
+            #[cfg(unix)]
+            let name = b"external.txt".to_vec();
+            #[cfg(windows)]
+            let name = "external.txt"
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect();
+            name
+        });
+        assert_eq!(
+            mount
+                .source
+                .read_range_with_meter(&external, 0, 8, &work)?
+                .bytes
+                .as_ref(),
+            b"external"
+        );
+        take_trace();
+    }
     let reopened = workspace.head(&work, &cancellation).await?;
     assert_ne!(
         reopened.id(),
@@ -102,7 +127,7 @@ async fn command_completion_publishes_once_with_an_independent_duplicate_sync_co
 -> Result<(), Box<dyn std::error::Error>> {
     let (bytes, trace) = publish_command(false, true).await?;
     assert_eq!(bytes, b"updated!");
-    assert_eq!(trace, ["sync", "advance", "detach"]);
+    assert_eq!(trace, ["sync", "detach"]);
     let (baseline_bytes, duplicate_trace) = publish_command(true, true).await?;
     assert_eq!(baseline_bytes, bytes);
     assert_eq!(duplicate_trace, ["sync", "advance", "sync", "detach"]);
