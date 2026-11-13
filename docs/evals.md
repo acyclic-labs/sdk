@@ -21,16 +21,20 @@ The version-one JSON case contains:
 History checkpoints are the existing typed descriptors, not copies of volume
 contents. They name the selected model-context stream/checkpoint and exact
 retained project generations, including after a context restore. Opening one
-case reads its conversation entry and at most two indexed history descriptors;
+case reads its conversation entry and two adjacent indexed history boundaries;
 directory pages read no descriptors. Both stream heads share the selected cut,
 and descriptor reads use its revision floor and the current authenticated reader.
 Missing or malformed descriptors fail; current generations are never substituted.
-The first decision needs the agent's original creation cut. A workspace may
-predate the agent, so its birth generation cannot reconstruct a later adoption.
-Creation and fork composition return `PreparedGeneration` values from the
-original operations; the creation/history descriptor must retain those selected
-generations before the agent runs. Reading a case must not substitute current
-workspace heads or workspace birth generations for missing adoption metadata.
+History uses version-three boundary descriptors: sequence zero commits with
+adoption, and each later sequence names its exclusive conversation cut. The first
+case reads that original boundary, so its preceding checkpoint is present too.
+Fresh and forked volumes use their original `PreparedGeneration` identities.
+Existing project volumes are retained at the head selected by adoption, with a
+head condition in the same commit; a racing write refuses the entire adoption.
+A workspace may predate the agent. Its birth generation and its later current
+head never substitute for the agent's selected adoption generation. Other history
+formats are refused; no migration or inferred initial checkpoint is used.
+
 Human corrections and overrides retain their exact authored input. Approval
 inputs retain their request identity. No classifier guesses acceptance from prose.
 The output reference retains the original answer and its cost metadata; cases do

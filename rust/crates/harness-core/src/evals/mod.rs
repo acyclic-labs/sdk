@@ -20,7 +20,7 @@ pub trait Inputs: Send + Sync + 'static {
     fn tail(&self) -> u64;
     /// One already-resident original record and its decoded turn.
     fn entry(&self, sequence: u64) -> Result<(&Record, &ConversationEntry), DemandError>;
-    /// Original context and project roots at one settled boundary.
+    /// Original context/project roots at an exclusive boundary; zero is adoption.
     fn checkpoint(&self, sequence: u64) -> Result<&HistoryCheckpoint, DemandError>;
 }
 
@@ -30,7 +30,7 @@ pub trait Inputs: Send + Sync + 'static {
 struct Cut<'a> {
     stream: &'a str,
     through: u64,
-    checkpoint: Option<&'a HistoryCheckpoint>,
+    checkpoint: &'a HistoryCheckpoint,
 }
 
 /// The version-one export schema borrows only committed product data. Host
@@ -85,10 +85,7 @@ pub fn write_case(
             cut: Cut {
                 stream: inputs.stream().as_str(),
                 through: sequence,
-                checkpoint: sequence
-                    .checked_sub(1)
-                    .map(|at| inputs.checkpoint(at))
-                    .transpose()?,
+                checkpoint: inputs.checkpoint(sequence)?,
             },
             source: Source {
                 origin: record.origin.as_str(),
@@ -102,7 +99,8 @@ pub fn write_case(
             },
             outcome: Outcome {
                 status: &entry.outcome,
-                checkpoint: inputs.checkpoint(sequence)?,
+                checkpoint: inputs
+                    .checkpoint(sequence.checked_add(1).ok_or(DemandError::StaleSource)?)?,
                 output: &entry.output,
                 tool_results: entry.tool_results.as_deref(),
             },

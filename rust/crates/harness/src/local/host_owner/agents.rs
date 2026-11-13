@@ -683,6 +683,16 @@ impl NativeAgents {
                 false,
             )
             .map_err(storage)?;
+        let journal = acyclic_harness_core::conversation::journal_volume(
+            project.provider().clone(),
+            &spawn.child.id(),
+        )
+        .map_err(storage)?;
+        let fresh = fresh
+            .iter()
+            .filter_map(WorkspaceEntry::as_volume)
+            .chain(std::iter::once(&journal))
+            .collect::<Vec<_>>();
         Prepared::prepare(&self.files, spawn, &fresh)
             .await
             .map_err(storage)

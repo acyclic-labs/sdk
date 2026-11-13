@@ -639,11 +639,11 @@ where
                     other => other,
                 })?;
         }
-        fs.prepare_fork_many(&forks, &mut commit, WorkBudget::UNBOUNDED, &cancellation)
+        let mut prepared = fs
+            .prepare_fork_many(&forks, &mut commit, WorkBudget::UNBOUNDED, &cancellation)
             .await
-            .map_err(|failure| {
-                guest(format!("preparing spawned volume forks: {}", failure.error))
-            })?;
+            .map_err(|failure| guest(format!("preparing spawned volume forks: {}", failure.error)))?
+            .value;
         // Sources read one after another are one consistent cut only if none
         // advanced before the commit applies: each source forked at its head
         // must still be at that head, or the whole spawn is refused. A
@@ -661,14 +661,20 @@ where
                 .map_err(|failure| guest(failure.error))?;
             }
         }
-        fs.prepare_create_many(
-            &creations,
-            &mut commit,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map_err(|failure| guest(failure.error))?;
+        let created = fs
+            .prepare_create_many(
+                &creations,
+                &mut commit,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|failure| guest(failure.error))?
+            .value;
+        prepared.extend(created);
+        for agent in &self.journals {
+            super::history::capture_creation(fs, agent, &prepared, &mut commit).await?;
+        }
         fs.seal_commit(&mut commit, WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|failure| guest(failure.error))?;
         Ok(commit)

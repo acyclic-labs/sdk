@@ -600,7 +600,7 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
     let host = committing(&stream, &files, driver)?;
     let mut adoption = adopted(id(32));
     adoption.volumes = vec![tree(&users[0], &path), private, users[0].clone()];
-    host.create(&intent("root"), adoption).await?;
+    create_filesystem_root(&host, &files, &intent("root"), adoption).await?;
     let mut second = users[1].clone();
     let mut previous_document = None::<AnnouncedDocument>;
     for turn in 0..18 {
@@ -818,11 +818,11 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
             within(),
             acyclic_actors::domain::ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             Arc::new(clock),
-            Arc::new(acyclic_harness_core::filesystem::FilesystemSpawnVolumes::new(files)),
+            Arc::new(acyclic_harness_core::filesystem::FilesystemSpawnVolumes::new(files.clone())),
         )?;
         let mut adoption = adopted(path.id());
         adoption.volumes = vec![tree(&users[0], &path), private, users[0].clone()];
-        host.create(&intent("paused-root"), adoption).await?;
+        create_filesystem_root(&host, &files, &intent("paused-root"), adoption).await?;
         change(&stream, &path, WorkspaceOp::Add, extra.clone(), &extra.name).await?;
         host.drain(&path).await?;
         let waiting = deliver(&host, &path, requested("pause-with-instructions", &path)).await?;

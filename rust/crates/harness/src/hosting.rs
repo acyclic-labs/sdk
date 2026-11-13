@@ -1267,7 +1267,7 @@ where
                             .map_err(|_| Error::Record("invalid history cursor"))?;
                         let cursor: HistoryCursor = serde_json::from_slice(&bytes)
                             .map_err(|_| Error::Record("invalid history cursor"))?;
-                        if cursor.version != 1
+                        if cursor.version != 2
                             || cursor.agent != *agent
                             || cursor.before > cursor.tail
                         {
@@ -1276,9 +1276,13 @@ where
                         cursor
                     }
                     None => {
-                        let tail = self.tail(agent.history()?).await?;
+                        let tail = self
+                            .tail(agent.history()?)
+                            .await?
+                            .checked_sub(1)
+                            .ok_or(Error::Record("history adoption boundary is absent"))?;
                         HistoryCursor {
-                            version: 1,
+                            version: 2,
                             agent: agent.clone(),
                             before: tail,
                             tail,
@@ -1294,7 +1298,7 @@ where
                         .read(acyclic_stream::ReadRequest {
                             key: None,
                             path: agent.history()?,
-                            from: start,
+                            from: start + 1,
                             limit: count as u32,
                             at_least: Default::default(),
                         })
@@ -1302,8 +1306,8 @@ where
                         .map_err(Error::Stream)?;
                     while let Some(record) = records.try_next().await.map_err(Error::Stream)? {
                         let item = crate::agent::HistoryCheckpoint::summary(&record.value)?;
-                        let sequence = start + items.len() as u64;
-                        if record.sequence != sequence || item.conversation != sequence + 1 {
+                        let sequence = start + 1 + items.len() as u64;
+                        if record.sequence != sequence || item.conversation != sequence {
                             return Err(Error::Record("history page differs from indexed cut"));
                         }
                         items.push(item);

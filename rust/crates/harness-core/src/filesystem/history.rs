@@ -14,6 +14,10 @@ use acyclic_fs::{
 use acyclic_stream::{CommitCondition, CommitMutation, ReadRequest, StreamProvider};
 use futures::TryStreamExt as _;
 
+mod creation;
+mod retention;
+pub(super) use creation::capture_creation;
+
 fn guest(error: impl std::fmt::Display) -> GuestError {
     GuestError::Handler(error.to_string())
 }
@@ -24,13 +28,28 @@ pub async fn read<P: StreamProvider + ?Sized>(
     agent: &AgentPath,
     at: u64,
 ) -> crate::Result<HistoryCheckpoint> {
+    read_boundary(
+        stream,
+        agent,
+        at.checked_add(1)
+            .ok_or_else(|| crate::Error::Invalid("history boundary overflows".into()))?,
+    )
+    .await
+}
+
+/// Reads the original adoption boundary at zero or an exclusive settled cut.
+pub async fn read_boundary<P: StreamProvider + ?Sized>(
+    stream: &P,
+    agent: &AgentPath,
+    through: u64,
+) -> crate::Result<HistoryCheckpoint> {
     let mut records = stream
         .read(ReadRequest {
             key: None,
             path: agent
                 .history()
                 .map_err(|error| crate::Error::Invalid(error.to_string()))?,
-            from: at,
+            from: through,
             limit: 1,
             at_least: Default::default(),
         })
@@ -41,7 +60,7 @@ pub async fn read<P: StreamProvider + ?Sized>(
         .ok_or_else(|| crate::Error::Invalid("history cut is absent".into()))?;
     let checkpoint = HistoryCheckpoint::decode(&record.value)
         .map_err(|error| crate::Error::Invalid(error.to_string()))?;
-    if record.sequence != at || at.checked_add(1) != Some(checkpoint.conversation) {
+    if record.sequence != through || checkpoint.conversation != through {
         return Err(crate::Error::Invalid(
             "history descriptor differs from its indexed cut".into(),
         ));
@@ -208,24 +227,10 @@ where
     }
     let mut sequence = parent.conversation_tail;
     let mut checkpoint = parent.checkpoint;
-    let mut previous = if sequence == 0 {
-        None
-    } else {
-        Some(
-            read(fs.stream_provider().as_ref(), &parent.path, sequence - 1)
-                .await
-                .map_err(guest)?,
-        )
-    };
-    let mut context = match &previous {
-        Some(saved) => saved.context.clone(),
-        None => ContextCut {
-            path: acyclic_stream::StreamPath::new(format!("{}/context/0", parent.path))
-                .map_err(guest)?,
-            tail: 0,
-            checkpoint: None,
-        },
-    };
+    let mut previous = read_boundary(fs.stream_provider().as_ref(), &parent.path, sequence)
+        .await
+        .map_err(guest)?;
+    let mut context = previous.context.clone();
     // Each segment forks a published cut once. Its descriptors may select
     // different prefixes, but no fork reads another mutation in this commit.
     let mut segment: Option<usize> = None;
@@ -316,78 +321,32 @@ where
                 retained.push(saved);
                 continue;
             }
-            if let Some(saved) = previous.as_ref().and_then(|previous| {
-                previous
-                    .volumes
-                    .iter()
-                    .find(|saved| saved.binding == *binding && saved.generation == head.id())
-            }) {
+            if let Some(saved) = previous
+                .volumes
+                .iter()
+                .find(|saved| saved.binding == *binding && saved.generation == head.id())
+            {
                 retained.push(saved.clone());
                 continue;
             }
-            let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.history.volume.v1");
-            hash.update(parent.path.as_str().as_bytes());
-            hash.update(&sequence.to_be_bytes());
-            hash.update(&binding.id.into_bytes());
-            // A refused publication can retry this turn at a newer project
-            // head. Both the companion cut and fork operation belong to the
-            // complete selected generation, not just the conversation slot.
-            hash.update(head.id().to_bytes().as_slice());
-            let identity = hash.finalize();
-            let mut key = [0; 16];
-            key.copy_from_slice(&identity.as_bytes()[..16]);
-            let destination = WorkspaceName::new(
-                format!("history-{}", identity.to_hex()),
-                &WorkBudget::UNBOUNDED,
-                &cancel,
-            )
-            .map_err(|failure| guest(failure.error))?
-            .value;
-            let retained_workspace = destination.as_str().to_owned();
-            if let Some(cuts) = cuts {
-                cuts.cut(
-                    &binding
-                        .volume()
-                        .map_err(guest)?
-                        .storage_name(&mut None)
-                        .map_err(guest)?,
-                    &retained_workspace,
-                    acyclic_fs::OperationId::from_bytes(key),
-                    Some(head.id()),
-                )
-                .await
-                .map_err(GuestError::from)?;
-            }
-            let prepared = fs
-                .prepare_fork_many(
-                    &[ForkSpec {
-                        destination,
-                        source: head,
-                        paths: None,
-                        idempotency_key: IdempotencyKey::from_bytes(key),
-                    }],
+            retained.push(
+                retention::retain(
+                    fs,
+                    (&parent.path, sequence),
+                    binding,
+                    head,
+                    cuts,
                     commit,
-                    WorkBudget::UNBOUNDED,
                     &cancel,
                 )
-                .await
-                .map_err(|failure| guest(failure.error))?
-                .value;
-            let prepared = prepared
-                .first()
-                .ok_or_else(|| guest("retained generation is absent"))?;
-            retained.push(SavedVolume {
-                binding: binding.clone(),
-                generation: head.id(),
-                retained_workspace,
-                retained_generation: prepared.generation,
-            });
+                .await?,
+            );
         }
         sequence = sequence
             .checked_add(1)
             .ok_or_else(|| guest("history cut overflow"))?;
         let saved = HistoryCheckpoint {
-            version: 2,
+            version: 3,
             live_children: !next.open_children.is_empty(),
             conversation: sequence,
             checkpoint,
@@ -395,7 +354,7 @@ where
             volumes: retained,
         };
         records.push(serde_json::to_vec(&saved).map_err(guest)?.into());
-        previous = Some(saved);
+        previous = saved;
     }
     let history = parent.path.history().map_err(guest)?;
     let request = commit
@@ -403,7 +362,10 @@ where
         .ok_or_else(|| guest("history commit is sealed"))?;
     request.effects[0].conditions.push(CommitCondition::Tail {
         path: history.clone(),
-        expected: parent.conversation_tail,
+        expected: parent
+            .conversation_tail
+            .checked_add(1)
+            .ok_or_else(|| guest("history boundary overflows"))?,
     });
     request.effects[0].mutations.push(CommitMutation::Append {
         path: history,

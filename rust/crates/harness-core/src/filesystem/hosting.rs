@@ -21,7 +21,7 @@ use crate::{
         IntentId, Sender, Spawn, WorkspaceEntry,
     },
     approvals::ApprovalResponder,
-    conversation::{ContentAccess, ContentPublisher, FileRef},
+    conversation::{ContentAccess, ContentPublisher, FileRef, VolumeRef},
     core::{Authority, AuthorityRoot, RuntimeAuthority, Scope},
     interaction::{ApprovalBinding, Interaction},
     resources::ProviderRef,
@@ -102,8 +102,8 @@ pub struct Prepared {
 }
 
 impl Prepared {
-    /// Composes an admitted root adoption with its fresh volumes and its
-    /// implicit journal, outside the workspace table, in one sealed commit.
+    /// Composes an admitted adoption with exactly the explicitly supplied fresh
+    /// volumes in one sealed commit. Include a fresh journal when it is needed.
     /// The caller authenticates the adoption and fresh bindings before IO.
     /// Preparation retains publication custody without making the root visible.
     ///
@@ -112,7 +112,7 @@ impl Prepared {
     pub async fn prepare<P, O>(
         host: &Host<P, O>,
         Spawn { child, request }: Spawn,
-        fresh: &[WorkspaceEntry],
+        fresh: &[&VolumeRef],
     ) -> Result<Self, Error>
     where
         P: AuthorityProvider + ?Sized + 'static,
@@ -120,25 +120,23 @@ impl Prepared {
     {
         let fs = &host.filesystem;
         let cancellation = CancellationToken::new();
-        let journal = crate::conversation::journal_volume(host.provider.clone(), &child.id())
-            .map_err(turn)?;
-        let mut creations = Vec::with_capacity(fresh.len() + 1);
-        for volume in fresh
-            .iter()
-            .filter_map(WorkspaceEntry::as_volume)
-            .chain(std::iter::once(&journal))
-        {
+        let mut creations = Vec::with_capacity(fresh.len());
+        for volume in fresh {
             creations.push(host.volume_create_spec(volume).map_err(turn)?);
         }
         let mut commit = FilesystemCommit::new(request);
-        fs.prepare_create_many(
-            &creations,
-            &mut commit,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map_err(|failure| turn(super::map_error(failure.error)))?;
+        let created = fs
+            .prepare_create_many(
+                &creations,
+                &mut commit,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|failure| turn(super::map_error(failure.error)))?;
+        super::history::capture_creation(fs, &child, &created.value, &mut commit)
+            .await
+            .map_err(|error| turn(crate::Error::Storage(error.to_string())))?;
         fs.seal_commit(&mut commit, WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|failure| turn(failure.error.into()))?;
         Ok(Self { child, commit })
@@ -1495,6 +1493,14 @@ where
         if indexed {
             self.index_session(&child, &mut request)?;
         }
+        let journal =
+            crate::conversation::journal_volume(self.volumes.provider.clone(), &child.id())
+                .map_err(turn)?;
+        let fresh = fresh
+            .iter()
+            .filter_map(WorkspaceEntry::as_volume)
+            .chain(std::iter::once(&journal))
+            .collect::<Vec<_>>();
         Prepared::prepare(&self.volumes, Spawn { child, request }, &fresh).await
     }
 

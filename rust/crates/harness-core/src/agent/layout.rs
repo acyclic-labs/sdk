@@ -287,7 +287,7 @@ impl AgentPath {
         stream(&self.stream_parts(AgentStream::Conversation).concat())
     }
 
-    /// Generation-linked checkpoints, indexed exactly like the conversation.
+    /// Generation-linked boundaries, indexed by exclusive conversation tail.
     /// Consumers read bounded ranges and follow its live tail.
     pub fn history(&self) -> Result<StreamPath, Error> {
         stream(&format!("{}/{HISTORY}", self.text))

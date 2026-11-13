@@ -14,7 +14,7 @@ mod watch;
 struct Prepared {
     record: NativeStreamOutput<Record>,
     entry: Retained<ConversationEntry>,
-    before: Option<Retained<HistoryCheckpoint>>,
+    before: Retained<HistoryCheckpoint>,
     after: Retained<HistoryCheckpoint>,
 }
 
@@ -44,13 +44,10 @@ impl Inputs for Snapshot {
             .prepared
             .as_ref()
             .ok_or(DemandError::SourceUnavailable)?;
-        if prepared.record.value().sequence == sequence {
+        if prepared.record.value().sequence.checked_add(1) == Some(sequence) {
             Ok(&prepared.after)
-        } else if prepared.record.value().sequence.checked_sub(1) == Some(sequence) {
-            prepared
-                .before
-                .as_deref()
-                .ok_or(DemandError::SourceUnavailable)
+        } else if prepared.record.value().sequence == sequence {
+            Ok(&prepared.before)
         } else {
             Err(DemandError::SourceUnavailable)
         }
@@ -152,7 +149,7 @@ impl<P: NativeStreamProvider + ?Sized + 'static> StreamProvider<P> {
                 MetadataDecodeError::Work(error) => DemandError::from(error),
                 MetadataDecodeError::Codec(_) => DemandError::InvalidRequest,
             })?;
-        if checkpoint.conversation != sequence.checked_add(1).ok_or(DemandError::StaleSource)? {
+        if checkpoint.conversation != sequence {
             return Err(DemandError::StaleSource);
         }
         Ok(checkpoint)
@@ -329,11 +326,14 @@ impl<P: NativeStreamProvider + ?Sized + 'static> ViewProvider for StreamProvider
                         MetadataDecodeError::Work(error) => DemandError::from(error),
                         MetadataDecodeError::Codec(_) => DemandError::InvalidRequest,
                     })?;
-                let before = match selected.checked_sub(1) {
-                    Some(at) => Some(self.checkpoint(at, &revision, &owner.work).await?),
-                    None => None,
-                };
-                let after = self.checkpoint(selected, &revision, &owner.work).await?;
+                let before = self.checkpoint(selected, &revision, &owner.work).await?;
+                let after = self
+                    .checkpoint(
+                        selected.checked_add(1).ok_or(DemandError::StaleSource)?,
+                        &revision,
+                        &owner.work,
+                    )
+                    .await?;
                 snapshot.prepared = Some(Prepared {
                     record,
                     entry,
