@@ -35,6 +35,13 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
     let head_workspace_tree =
         visible_head.and_then(|id| state.commits.get(&id).map(|commit| commit.workspace_tree));
     let head_tree = visible_head.and_then(|id| state.commits.get(&id).map(|commit| commit.tree));
+    let visible_tracked_paths = if state.bisect.is_some() {
+        visible_head
+            .and_then(|id| state.commits.get(&id))
+            .map_or(&current.tracked_paths, |commit| &commit.tracked_paths)
+    } else {
+        &current.tracked_paths
+    };
     Ok(match command {
         GitCommand::MergeContinue | GitCommand::MergeAbort => {
             return Err(GitCompatError::InvalidState);
@@ -47,10 +54,10 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
         GitCommand::Diff { .. } => GitCommandOutput::Action(GitFilesystemAction::Diff {
             from: head_tree,
             to: workspace,
-            tracked_paths: current.tracked_paths,
+            tracked_paths: visible_tracked_paths.clone(),
         }),
         GitCommand::Log { maximum } => {
-            GitCommandOutput::Commits(walk_commits(state, current.head, maximum))
+            GitCommandOutput::Commits(walk_commits(state, visible_head, maximum))
         }
         GitCommand::Show { object, offset } => {
             if let Some((revision, path)) =
@@ -392,7 +399,7 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
         }
         GitCommand::Blame { path } => GitCommandOutput::Action(GitFilesystemAction::Blame {
             path,
-            commits: walk_commits(state, current.head, u32::MAX),
+            commits: walk_commits(state, visible_head, u32::MAX),
         }),
         GitCommand::Grep { pattern, path } => GitCommandOutput::Action(GitFilesystemAction::Grep {
             pattern,
@@ -402,7 +409,7 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
         GitCommand::Clean { dry_run } => GitCommandOutput::Action(GitFilesystemAction::Clean {
             dry_run,
             tree: workspace,
-            tracked_paths: current.tracked_paths,
+            tracked_paths: visible_tracked_paths.clone(),
         }),
         GitCommand::Archive { object } => {
             let snapshot = match object {
@@ -442,7 +449,9 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
                 .ok_or_else(|| GitCompatError::UnknownObject("merge base".to_owned()))?;
             GitCommandOutput::Text(common.to_hex())
         }
-        GitCommand::LsFiles => GitCommandOutput::Paths(current.tracked_paths.into_iter().collect()),
+        GitCommand::LsFiles => {
+            GitCommandOutput::Paths(visible_tracked_paths.iter().cloned().collect())
+        }
         GitCommand::CheckIgnore { paths } => {
             GitCommandOutput::Action(GitFilesystemAction::CheckIgnore {
                 paths,

@@ -453,9 +453,6 @@ async fn discard_retires_only_an_idle_non_current_branch() {
     }
     let listed = repository
         .run(
-            GitCommand::Add {
-                paths: vec!["tracked.txt".to_owned()],
-            },
             GitCommand::Branch { create: None },
             tree(1),
             &TestExecutor::failing(),
@@ -622,7 +619,11 @@ async fn bisect_uses_durable_first_parent_generation_checkouts() {
             .record_commit(
                 expected,
                 generation(byte),
-                BTreeSet::from(["tracked.txt".to_owned()]),
+                if byte <= 3 {
+                    BTreeSet::from(["tracked.txt".to_owned(), "removed-later.txt".to_owned()])
+                } else {
+                    BTreeSet::from(["tracked.txt".to_owned()])
+                },
                 format!("commit {byte}"),
                 "agent".to_owned(),
                 i64::from(byte),
@@ -654,6 +655,45 @@ async fn bisect_uses_durable_first_parent_generation_checkouts() {
     };
     assert_eq!(started.current, Some(commits[2]));
     assert_eq!(started.remaining, 3);
+    let selected_paths = BTreeSet::from(["tracked.txt".to_owned(), "removed-later.txt".to_owned()]);
+    for command in [
+        GitCommand::Log { maximum: 10 },
+        GitCommand::Blame {
+            path: "tracked.txt".to_owned(),
+        },
+    ] {
+        let output = repository
+            .execute(command, tree(3))
+            .await
+            .expect("selected history");
+        let history = match output {
+            GitCommandOutput::Commits(commits) => commits,
+            GitCommandOutput::Action(GitFilesystemAction::Blame { commits, .. }) => commits,
+            _ => panic!("expected selected history"),
+        };
+        assert_eq!(history.first().map(|commit| commit.id), Some(commits[2]));
+    }
+    for command in [
+        GitCommand::Diff { cached: false },
+        GitCommand::Clean { dry_run: true },
+    ] {
+        let output = repository
+            .execute(command, tree(3))
+            .await
+            .expect("selected paths");
+        let paths = match output {
+            GitCommandOutput::Action(GitFilesystemAction::Diff { tracked_paths, .. })
+            | GitCommandOutput::Action(GitFilesystemAction::Clean { tracked_paths, .. }) => {
+                tracked_paths
+            }
+            _ => panic!("expected selected paths"),
+        };
+        assert_eq!(paths, selected_paths);
+    }
+    assert!(
+        matches!(repository.execute(GitCommand::LsFiles, tree(3)).await.expect("selected files"),
+        GitCommandOutput::Paths(paths) if paths.iter().cloned().collect::<BTreeSet<_>>() == selected_paths)
+    );
 
     for command in [
         GitCommand::Add {
@@ -772,7 +812,11 @@ async fn distributed_publication_records_one_idempotent_merge_commit() {
         .record_commit(
             None,
             generation(1),
-            BTreeSet::from(["tracked.txt".to_owned()]),
+            if byte <= 3 {
+                BTreeSet::from(["tracked.txt".to_owned(), "removed-later.txt".to_owned()])
+            } else {
+                BTreeSet::from(["tracked.txt".to_owned()])
+            },
             "initial",
             "parent",
             1,
@@ -1330,7 +1374,11 @@ async fn show_rev_path_reads_a_tracked_file_from_the_commit_tree() {
     let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
     let executor = TestExecutor::returning(GitFilesystemResult::Captured {
         tree: tree(9),
-        tracked_paths: BTreeSet::from(["tracked.txt".to_owned()]),
+        tracked_paths: if byte <= 3 {
+            BTreeSet::from(["tracked.txt".to_owned(), "removed-later.txt".to_owned()])
+        } else {
+            BTreeSet::from(["tracked.txt".to_owned()])
+        },
         proof: None,
     });
     let GitCommandOutput::Committed(commit) = repository
