@@ -460,8 +460,17 @@ mod replay_tests {
     async fn sdk_reads_inherit_owner_without_recursive_diagnostics()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
+        let inner = MemoryStream::default();
+        inner
+            .append(AppendRequest {
+                path: StreamPath::new("diagnostic-probe")?,
+                records: vec!["original probe".into()],
+                if_tail: None,
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
         let provider = Arc::new(Gapped {
-            inner: MemoryStream::default(),
+            inner,
             missing: u64::MAX,
             extra_records: 0,
             inspect_on_write: true,
@@ -481,7 +490,9 @@ mod replay_tests {
         .await?;
         let original = data.head().await?;
         let trace = Stream::new(provider, "agents/worker/trace")?;
-        assert_eq!(trace.tail().await?, 0);
+        assert!(
+            matches!(trace.tail().await, Err(error) if error.category() == StreamError::NotFound)
+        );
         let recorder = Arc::new(Recorder::new(trace.clone(), [15; 16]));
         let root = recorder
             .start(
