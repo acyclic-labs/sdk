@@ -246,6 +246,7 @@ impl From<tonic::Status> for Error {
                     message: status.message(),
                     details: status.details(),
                     owned: &[],
+                    cause_is_embedded: true,
                 },
                 None,
             ),

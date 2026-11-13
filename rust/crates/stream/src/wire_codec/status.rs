@@ -60,6 +60,7 @@ pub(super) fn canonical(error: &StreamError) -> Canonical<'static> {
         message,
         details: b"",
         owned: &[],
+        cause_is_embedded: false,
     }
 }
 

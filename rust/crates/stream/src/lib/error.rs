@@ -90,6 +90,13 @@ impl std::error::Error for StreamRefusal {
     }
 }
 
+impl<T> From<std::sync::PoisonError<T>> for StreamError {
+    fn from(error: std::sync::PoisonError<T>) -> Self {
+        drop(error);
+        Self::unavailable(acyclic_auth::refusal::Cause::new("stream.lock", "poisoned"))
+    }
+}
+
 #[cfg(feature = "serde")]
 impl serde::Serialize for StreamError {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -157,6 +164,14 @@ impl StreamError {
             Self::Unavailable.with_refusal(refusal)
         })
     }
+
+    /// Unavailability with its original typed attribution. Recovery still follows
+    /// the unavailable category; attribution is diagnostic, not retry permission.
+    #[must_use]
+    pub fn unavailable(cause: acyclic_auth::refusal::Cause) -> Self {
+        Self::Unavailable.with_refusal(acyclic_auth::refusal::Refusal::caused(cause))
+    }
+
     /// Every failure, in canonical code order.
     pub const ALL: [Self; 16] = [
         Self::InvalidResponse,
@@ -198,6 +213,7 @@ impl StreamError {
                 message: "stream sequence out of range",
                 details: b"",
                 owned: &[],
+                cause_is_embedded: false,
             },
             None,
         )

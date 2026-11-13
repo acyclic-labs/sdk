@@ -172,6 +172,7 @@ fn every_stream_category_survives_the_authority_wrapper() -> Result<(), Box<dyn 
                 message: error.code(),
                 details: b"",
                 owned: &[],
+                cause_is_embedded: false,
             },
             None,
         )

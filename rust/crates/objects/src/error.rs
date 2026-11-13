@@ -100,6 +100,7 @@ impl Error {
             message: "objects operation failed",
             details,
             owned: OWNED,
+            cause_is_embedded: true,
         }
     }
 
