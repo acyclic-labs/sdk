@@ -181,3 +181,7 @@ where
         Ok(OpenTriage { summary, outs })
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "approval_triage_tests.rs"]
+mod tests;

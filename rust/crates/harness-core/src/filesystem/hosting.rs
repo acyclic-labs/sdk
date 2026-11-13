@@ -51,6 +51,8 @@ pub type Turner<P, O> = FilesystemTurnHost<P, StreamAuthorityStore<P>, O>;
 mod client_files;
 mod input_preview;
 mod journal;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(in crate::filesystem) use journal::tests::binding_with;
 mod sessions;
 
 #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
