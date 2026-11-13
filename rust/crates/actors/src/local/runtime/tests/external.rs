@@ -627,6 +627,41 @@ async fn external_sources_wake_shared_dispatch_and_preserve_committed_cursors() 
                 "unrelated output published a checkpoint"
             );
         }
+        // A source-level hold must release the same real follow as an actor
+        // pause, without holding admission closed for unrelated inputs.
+        let registry = super::super::external::Registry::default();
+        let _running = registry.running();
+        let mut state = store.load(&address).await?.state().unwrap().clone();
+        let wake = futures::task::noop_waker();
+        registry.refresh(&address, &state, handler.as_ref(), &wake)?;
+        let std::task::Poll::Ready(watch) =
+            registry.poll_registered(&mut std::task::Context::from_waker(&wake))
+        else {
+            panic!("active external source was not registered")
+        };
+        let mut watching = watch.next(&provider);
+        assert!(futures::poll!(watching.as_mut()).is_pending());
+        state.subscriptions.get_mut("inbox").unwrap().paused = true;
+        registry.refresh(&address, &state, handler.as_ref(), &wake)?;
+        let stopped = watching.await;
+        assert!(stopped.result.is_ok());
+        assert!(
+            stopped.watch.is_none(),
+            "suspended source retained its follow"
+        );
+        registry.refresh(&address, &state, handler.as_ref(), &wake)?;
+        assert!(
+            registry
+                .poll_registered(&mut std::task::Context::from_waker(&wake))
+                .is_pending()
+        );
+        state.subscriptions.get_mut("inbox").unwrap().paused = false;
+        registry.refresh(&address, &state, handler.as_ref(), &wake)?;
+        assert!(
+            registry
+                .poll_registered(&mut std::task::Context::from_waker(&wake))
+                .is_ready()
+        );
     }
     Ok(())
 }
