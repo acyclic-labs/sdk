@@ -1,6 +1,9 @@
 //! Explicit producer admission through original owned appends, without a second store.
 use super::{Comparison, ComparisonKind, Mechanism, Outcome, SpanEvent, SpanId, TraceRecord};
-use crate::{AppendOutcome, IdempotencyKey, RetainedRecord, Stream, StreamError, StreamProvider};
+use crate::{
+    AppendOutcome, IdempotencyKey, RetainedRecord, Stream, StreamError, StreamProvider,
+    StreamProviderExt as _,
+};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, AtomicUsize, Ordering},

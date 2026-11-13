@@ -232,7 +232,7 @@ impl Client {
                     guarantee: Some("complete_bounded_reply_on_original_session"),
                 },
                 work,
-                |reply| u64::try_from(reply.len()).ok(),
+                |reply: &Bytes| u64::try_from(reply.len()).ok(),
             )
             .await
         }
