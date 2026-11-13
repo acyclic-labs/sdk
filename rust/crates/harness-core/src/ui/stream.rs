@@ -193,7 +193,7 @@ enum Inputs<'a> {
     Conversation,
     Status,
     Role,
-    Children(u32),
+    Children { offset: u64, limit: u32 },
     Child(&'a str),
 }
 
@@ -234,7 +234,7 @@ where
         let count = match inputs {
             Inputs::Reference => 4,
             Inputs::Conversation => 2,
-            Inputs::Children(_) => 0,
+            Inputs::Children { .. } => 0,
             _ => 1,
         };
         // This is the request's one spilled HeadSet buffer, before dispatch.
@@ -279,24 +279,20 @@ where
                 &[self.agent.as_str(), "/children/", id],
                 original,
             )?),
-            Inputs::Children(_) => {}
+            Inputs::Children { .. } => {}
         }
         let children = match inputs {
-            Inputs::Children(page) => Some(ChildrenPageRequest {
+            Inputs::Children { offset, limit } => Some(ChildrenPageRequest {
                 parent: Some(native_path(&[self.agent.as_str(), "/children"], original)?),
-                offset: u64::from(page) * u64::from(self.view.page_size),
+                offset,
                 after: None,
                 hierarchy_version: None,
-                limit: self.view.page_size,
+                limit,
                 tail_stream: None,
             }),
             _ => None,
         };
-        let limit = if children.is_some() {
-            self.view.page_size
-        } else {
-            count as u32
-        };
+        let limit = children.as_ref().map_or(count as u32, |page| page.limit);
         let projection = match inputs {
             Inputs::Conversation | Inputs::Status | Inputs::Role => HeadProjection::History,
             _ => HeadProjection::Tail,
@@ -417,19 +413,42 @@ where
             _ => None,
         };
         if let Some(page) = child_page {
-            let heads = self
-                .heads(Inputs::Children(page), Some(at), original, ctx)
-                .await?;
-            let listing = heads
-                .value()
-                .children
-                .as_ref()
-                .ok_or(DemandError::InvalidRequest)?;
-            cut.page = Some((page, listing.next_after.is_some()));
-            for child in &listing.children {
-                AgentPath::parse_id(child.path.as_str()).map_err(Error::from)?;
-                cut.targets.push((self.links)(&child.path, ctx)?, ctx)?;
-                cut.children.push(child.path.clone(), ctx)?;
+            let mut remaining = self.view.page_size;
+            let mut offset = u64::from(page) * u64::from(self.view.page_size);
+            loop {
+                let limit = remaining.min(acyclic_stream::MAX_ITEMS as u32);
+                let heads = self
+                    .heads(
+                        Inputs::Children { offset, limit },
+                        Some(at.clone()),
+                        original,
+                        ctx,
+                    )
+                    .await?;
+                let listing = heads
+                    .value()
+                    .children
+                    .as_ref()
+                    .ok_or(DemandError::InvalidRequest)?;
+                let more = listing.next_after.is_some();
+                for child in &listing.children {
+                    AgentPath::parse_id(child.path.as_str()).map_err(Error::from)?;
+                    cut.targets.push((self.links)(&child.path, ctx)?, ctx)?;
+                    cut.children.push(child.path.clone(), ctx)?;
+                }
+                // Each request selects the same exact cut. Only the visible UI
+                // page is assembled; protocol chunking never changes its offset.
+                let received = u32::try_from(listing.children.len())
+                    .map_err(|_| DemandError::InvalidRequest)?;
+                if received > limit || (more && received == 0) {
+                    return Err(DemandError::InvalidRequest);
+                }
+                remaining -= received;
+                offset += u64::from(received);
+                cut.page = Some((page, more));
+                if !more || remaining == 0 {
+                    break;
+                }
             }
             return Ok(cut);
         }
