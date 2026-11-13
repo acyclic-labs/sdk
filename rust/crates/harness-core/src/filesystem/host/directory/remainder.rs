@@ -27,25 +27,36 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )
             .await?;
         let now = super::super::super::access::access_now()?;
-        let mut index = 0;
-        while index < page.entries.len() {
-            let path = crate::executor::with_history_io(Some(io), |work| {
-                crate::executor::preparation_format(
-                    format_args!(
-                        "{}{}{}",
-                        request.path,
-                        if request.path.is_empty() { "" } else { "/" },
-                        page.entries[index].name
-                    ),
-                    work,
-                )
-            })?;
-            let _hold = io.guard_owned(path.capacity() as u64)?;
-            if selection.lists(&path, now) {
-                index += 1;
-            } else {
-                page.entries.remove(index);
+        let mut failure = None;
+        page.entries.retain(|entry| {
+            if failure.is_some() {
+                return false;
             }
+            let allowed = (|| {
+                let path = crate::executor::with_history_io(Some(io), |work| {
+                    crate::executor::preparation_format(
+                        format_args!(
+                            "{}{}{}",
+                            request.path,
+                            if request.path.is_empty() { "" } else { "/" },
+                            entry.name
+                        ),
+                        work,
+                    )
+                })?;
+                let _hold = io.guard_owned(path.capacity() as u64)?;
+                Ok::<_, Error>(selection.lists(&path, now))
+            })();
+            match allowed {
+                Ok(allowed) => allowed,
+                Err(error) => {
+                    failure = Some(error);
+                    false
+                }
+            }
+        });
+        if let Some(error) = failure {
+            return Err(error);
         }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(cut) = &selection.snapshot {
