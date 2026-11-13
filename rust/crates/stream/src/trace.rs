@@ -7,6 +7,8 @@
 use crate::RetainedRecord;
 
 #[cfg(feature = "serde")]
+mod context;
+#[cfg(feature = "serde")]
 mod interest;
 #[cfg(feature = "serde")]
 mod recorder;

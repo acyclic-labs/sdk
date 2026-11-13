@@ -4,6 +4,67 @@ use futures::TryStreamExt as _;
 use std::sync::Arc;
 
 #[tokio::test]
+async fn admitted_future_parentage_survives_suspension_without_leaking_to_other_work()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::trace::{Recorder, Request, Settlement};
+    let stream = crate::Stream::new(Arc::new(MemoryStream::default()), "agents/worker/trace")?;
+    let recorder = Arc::new(Recorder::new(stream.clone(), [13; 16]));
+    let request = |name| Request {
+        name,
+        mechanism: Mechanism::Io,
+        parent: None,
+        guarantee: Some("original_causal_request"),
+    };
+    let (release, resumed) = futures::channel::oneshot::channel::<()>();
+    let mut observed = Box::pin(Recorder::observe(
+        Some(&recorder),
+        request("outer"),
+        async {
+            let child = Recorder::observe(
+                Some(&recorder),
+                request("child"),
+                async { resumed.await.map_err(std::io::Error::other) },
+                |_| Some(0),
+            )
+            .await;
+            child.result?;
+            Ok::<_, std::io::Error>(())
+        },
+        |_| Some(0),
+    ));
+    assert!(futures::poll!(&mut observed).is_pending());
+    let unrelated = recorder
+        .start(
+            "unrelated",
+            Mechanism::Io,
+            None,
+            Some("independent_request"),
+        )
+        .await?;
+    unrelated.finish(None, Outcome::Succeeded).await?;
+    release
+        .send(())
+        .map_err(|_| "observed work abandoned its event")?;
+    let finished = observed.await;
+    finished.result?;
+    assert!(matches!(finished.observation?, Settlement::Finished(_)));
+    let mut query = TraceQuery::new(stream.read(0, 6).await?, Default::default());
+    let Some(Observation::Started { id: outer, .. }) = query.next().await? else {
+        return Err("outer admission missing".into());
+    };
+    let mut completed = 0;
+    while let Some(event) = query.next().await? {
+        if let Observation::Completed { start, .. } = event {
+            assert_eq!(start.parent, (start.name == "child").then_some(outer));
+            completed += 1;
+        }
+    }
+    assert_eq!(completed, 3);
+    assert_eq!(query.active().len(), 0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn repeated_calls_use_original_descriptor_evidence() -> Result<(), Box<dyn std::error::Error>>
 {
     original_comparisons(ComparisonKind::Request, "repeatedCalls").await

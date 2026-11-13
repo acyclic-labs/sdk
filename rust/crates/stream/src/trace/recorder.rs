@@ -79,7 +79,10 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
             request.guarantee,
         )
         .await;
-        let result = work.await;
+        let result = match &admission {
+            Ok(Some(recording)) => super::context::within(recording.id(), work).await,
+            _ => work.await,
+        };
         let observation = match admission {
             Err(error) => Err(error),
             Ok(None) => Ok(Settlement::Disabled),
@@ -189,7 +192,7 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
         let start = self
             .publish(SpanEvent::Started {
                 id,
-                parent,
+                parent: parent.or_else(super::context::current),
                 name: name.to_owned(),
                 mechanism,
                 at_ns: self.now()?,

@@ -42,6 +42,17 @@ failed reads stay unfinished until their original cause is retained. The old
 separate replay tracing span is removed. Complete request-path instrumentation,
 content correlation and deterministic crash replay remain separate requirements.
 
+Private journal staging and immutable content loading use the same demand
+boundary as replay. Their guarantees are `authenticated_private_publication`
+and `authenticated_immutable_content`; byte counts describe supplied/returned
+payloads, not device or wire traffic. Canonical model-request admission emits
+`attested_request_prefix`. The original native work and cancellation stay in
+the admitted operation future. Separate journal stage/load tracing wrappers
+are removed. Nested observed futures inherit the original span as their parent
+on each poll; suspension restores the preceding context, so unrelated work on
+the same worker cannot acquire that parent. Disabled observation installs no
+context and allocates no propagation task or boxed future.
+
 Typed `Compared` deltas carry a request, output or cache-prefix comparison in
 an explicit identity domain: the preceding original publication and its
 canonical integrity digest, plus the current original digest. They contain no

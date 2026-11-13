@@ -51,25 +51,18 @@ where
         retain_models: bool,
         io: Option<&PreparationIo>,
     ) -> Result<Vec<(ExecutionRecord, Option<ModelEvent>)>> {
-        let work = self.replay_page_inner(operation_id, after, maximum, retain_models, io);
-        let Some((traces, owner)) = &self.traces else {
-            return work.await;
-        };
-        traces
-            .observe(
-                owner.as_str(),
-                acyclic_stream::trace::Request {
-                    name: "harness.execution_replay_page",
-                    mechanism: acyclic_stream::trace::Mechanism::Io,
-                    parent: None,
-                    guarantee: Some("authenticated_execution_prefix"),
-                },
-                work,
-                // Decoded values cannot establish original wire/copy bytes.
-                |_| None,
-            )
-            .await
-            .result
+        self.observe_request(
+            acyclic_stream::trace::Request {
+                name: "harness.execution_replay_page",
+                mechanism: acyclic_stream::trace::Mechanism::Io,
+                parent: None,
+                guarantee: Some("authenticated_execution_prefix"),
+            },
+            self.replay_page_inner(operation_id, after, maximum, retain_models, io),
+            // Decoded values cannot establish original wire/copy bytes.
+            |_| None,
+        )
+        .await
     }
 
     async fn replay_page_inner(

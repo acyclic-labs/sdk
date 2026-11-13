@@ -2,7 +2,6 @@
 
 use super::bounded_io::{PreparationIo, PreparationRecord};
 use super::{FilesystemHost, InternalContentClass};
-use crate::obs::{obs_span, traced};
 use crate::{
     Error, IdempotencyKey, InteractionId, OperationId, Result,
     conversation::{
@@ -98,6 +97,7 @@ mod test_support;
 #[cfg(test)]
 mod tests;
 mod tool_settlement;
+mod trace;
 mod traits;
 use summary::*;
 use summary_cache::SummaryCache;

@@ -983,9 +983,75 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     }) if start.name == "harness.execution_replay_page"
         && start.guarantee.as_deref() == Some("authenticated_execution_prefix"))
     );
+    let staged = journal
+        .stage(operation, "trace-content", b"raw", "text/plain", None)?
+        .await?;
+    assert_eq!(journal.load(&staged, None)?.await?.as_ref(), b"raw");
+    let mut storage =
+        acyclic_stream::trace::TraceQuery::new(traces.read(2, 4).await?, Default::default());
+    for (name, guarantee) in [
+        ("harness.private_stage", "authenticated_private_publication"),
+        ("harness.private_load", "authenticated_immutable_content"),
+    ] {
+        storage.next().await?;
+        assert!(
+            matches!(storage.next().await?, Some(acyclic_stream::trace::Observation::Completed {
+            start, bytes: Some(3), ..
+        }) if start.name == name && start.guarantee.as_deref() == Some(guarantee))
+        );
+    }
+    let prepared = crate::model::PreparedModelRequest::prepare(
+        crate::model::ModelRequest {
+            summary: true,
+            compose_tools: false,
+            model: crate::model::Model::new("test".into(), "trace".into(), "1".into())?,
+            messages: vec![crate::model::ModelMessage {
+                role: crate::model::ModelRole::User,
+                content: crate::model::ModelContent::Text("original request".into()),
+            }],
+            tools: Vec::new(),
+            sampling: Default::default(),
+        },
+        Default::default(),
+        None,
+    )?;
+    journal
+        .stage_prepared_model_request(operation, "trace-request", &prepared, None, None)?
+        .ok_or("original request admission unavailable")?
+        .await?;
+    let admitted_through = traces.tail().await?;
+    let mut admission = acyclic_stream::trace::TraceQuery::new(
+        traces.read(6, u32::try_from(admitted_through - 6)?).await?,
+        Default::default(),
+    );
+    let Some(acyclic_stream::trace::Observation::Started { id: parent, .. }) =
+        admission.next().await?
+    else {
+        return Err("request admission span missing".into());
+    };
+    let mut children = 0;
+    while let Some(event) = admission.next().await? {
+        if let acyclic_stream::trace::Observation::Completed { id, start, .. } = event {
+            if id == parent {
+                assert_eq!(start.name, "harness.request_admission");
+                assert_eq!(start.guarantee.as_deref(), Some("attested_request_prefix"));
+            } else {
+                assert_eq!(start.parent, Some(parent));
+                children += 1;
+            }
+        }
+    }
+    assert!(
+        children > 0,
+        "canonical admission bypassed the original private publisher"
+    );
+    assert_eq!(admission.active().len(), 0);
     assert!(journal.replay(operation, 0, 0, None)?.await.is_err());
-    let mut failed =
-        acyclic_stream::trace::TraceQuery::new(traces.read(0, 3).await?, Default::default());
+    let through = traces.tail().await?;
+    let mut failed = acyclic_stream::trace::TraceQuery::new(
+        traces.read(0, u32::try_from(through)?).await?,
+        Default::default(),
+    );
     while failed.next().await?.is_some() {}
     assert_eq!(
         failed.active().len(),
@@ -1005,9 +1071,13 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
         journal.replay(operation, 0, 1, None)?.await?[0].event,
         event
     );
+    let unfollowed = journal
+        .stage(operation, "unfollowed", b"quiet", "text/plain", None)?
+        .await?;
+    assert_eq!(journal.load(&unfollowed, None)?.await?.as_ref(), b"quiet");
     assert_eq!(
         traces.tail().await?,
-        3,
+        through,
         "unfollowed request appended diagnostics"
     );
     Ok(())
