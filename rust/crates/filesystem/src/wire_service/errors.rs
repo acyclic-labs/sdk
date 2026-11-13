@@ -238,7 +238,7 @@ fn stream_code(error: &acyclic_stream::StreamError) -> Code {
         E::OutOfRange => Code::OutOfRange,
         E::Capacity => Code::ResourceExhausted,
         E::AccessDenied => Code::PermissionDenied,
-        E::Unavailable => Code::Unavailable,
+        E::Unavailable | E::ProducerDropped(_) => Code::Unavailable,
         E::Refused(_) => stream_code(&error.category()),
         E::DeadlineElapsed => Code::DeadlineExceeded,
         E::Unsupported => Code::Unimplemented,
@@ -439,7 +439,7 @@ fn local_objects_code(error: &acyclic_objects::local::LocalOpenError) -> Code {
         E::Invalid => Code::InvalidArgument,
         E::Corrupt => Code::DataLoss,
         E::UnsupportedLayout | E::AlreadyOwned => Code::FailedPrecondition,
-        E::Unavailable => Code::Unavailable,
+        E::Unavailable | E::ProducerDropped(_) => Code::Unavailable,
         E::Io(error) => io_code(error),
     }
 }
