@@ -25,7 +25,7 @@ mod linux;
 #[cfg(target_os = "linux")]
 pub(crate) use linux::user_home_directory;
 #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
-pub use linux::{initialize_isolated_user_home, with_isolated_user_home};
+pub use linux::{initialize_isolated_user_runtime, with_isolated_user_runtime};
 
 /// Create a new owner-only regular file, without replacing an existing entry.
 pub fn create(path: &Path) -> io::Result<File> {

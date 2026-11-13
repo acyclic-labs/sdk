@@ -40,12 +40,14 @@ fn exited(event: &OwnedFd, timeout: i32) -> io::Result<bool> {
 fn concurrent_admission_survives_startup_and_last_owner_retirement()
 -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var_os(CASE).is_some_and(|case| case == "foreign-env") {
-        let refusal =
-            crate::FileLock::try_acquire(admission_file()?.0, crate::FileLockMode::Exclusive)
-                .unwrap_err();
-        assert_eq!(
-            refusal.kind(),
-            io::ErrorKind::WouldBlock,
+        let refused = admissions()?.into_iter().any(|admission| {
+            admission
+                .lock
+                .try_lock(crate::FileLockMode::Exclusive)
+                .is_err_and(|error| error.kind() == io::ErrorKind::WouldBlock)
+        });
+        assert!(
+            refused,
             "a different HOME/XDG_RUNTIME_DIR must still contend on the original authority"
         );
         return Ok(());
@@ -61,7 +63,8 @@ fn concurrent_admission_survives_startup_and_last_owner_retirement()
                 "private",
                 "--",
             ])
-            .arg(std::env::current_exe()?)
+            .arg("/proc/self/fd/0")
+            .stdin(File::open("/proc/self/exe")?)
             .args([TEST, "--exact", "--nocapture"])
             .env(CASE, "1")
             .output()?;
@@ -73,7 +76,7 @@ fn concurrent_admission_survives_startup_and_last_owner_retirement()
         );
         return Ok(());
     }
-    crate::private_file::initialize_isolated_user_home()?;
+    crate::private_file::initialize_isolated_user_runtime()?;
 
     // An attacker can reserve the former public pathname without any access
     // to the user's private root. Actual admission must ignore that entry.
@@ -140,13 +143,15 @@ fn concurrent_admission_survives_startup_and_last_owner_retirement()
     admission_directory(private.path())?;
 
     {
-        let _held = crate::FileLock::acquire(admission_file()?.0, crate::FileLockMode::Exclusive)?;
-        let output = std::process::Command::new(std::env::current_exe()?)
-            .args([TEST, "--exact", "--nocapture"])
-            .env(CASE, "foreign-env")
-            .env("HOME", private.path())
-            .env("XDG_RUNTIME_DIR", private.path())
-            .output()?;
+        let admissions = admissions()?;
+        let output = with_admissions(&admissions, &mut || {
+            std::process::Command::new("/proc/self/exe")
+                .args([TEST, "--exact", "--nocapture"])
+                .env(CASE, "foreign-env")
+                .env("HOME", private.path())
+                .env("XDG_RUNTIME_DIR", private.path())
+                .output()
+        })?;
         assert!(
             output.status.success(),
             "{}\n{}",
@@ -232,5 +237,68 @@ fn concurrent_admission_survives_startup_and_last_owner_retirement()
         exited(&exit, 5000)?,
         "last close must retire the actual host"
     );
+    runtime_appearance_and_read_only_home()?;
+    Ok(())
+}
+
+fn runtime_appearance_and_read_only_home() -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::ffi::OsStrExt;
+    let home = crate::private_file::user_home_directory()?;
+    assert!(home.parent().is_some());
+    let target = std::ffi::CString::new(home.as_os_str().as_bytes())?;
+    let flags = libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC;
+    // This test already owns fresh user/mount/network namespaces. Supply an
+    // account home without accessing or changing the original account files.
+    if unsafe {
+        libc::mount(
+            c"tmpfs".as_ptr(),
+            target.as_ptr(),
+            c"tmpfs".as_ptr(),
+            flags,
+            c"mode=0700".as_ptr().cast(),
+        )
+    } < 0
+    {
+        return Err(io::Error::last_os_error().into());
+    }
+    let runtime = std::path::PathBuf::from(format!(
+        "/run/user/{}",
+        crate::private_file::effective_user()
+    ));
+    let parked = runtime.with_extension("parked");
+    std::fs::rename(&runtime, &parked)?;
+    let original = device()?;
+    let host = original.retirement.host_id();
+    let exit = exit_event(host)?;
+    std::fs::rename(parked, runtime)?;
+    // A login directory appears while the original home becomes read-only.
+    // Original exclusion and IN_ACCESS wake delivery must still be usable.
+    if unsafe {
+        libc::mount(
+            std::ptr::null(),
+            target.as_ptr(),
+            std::ptr::null(),
+            flags | libc::MS_REMOUNT | libc::MS_RDONLY,
+            std::ptr::null(),
+        )
+    } < 0
+    {
+        return Err(io::Error::last_os_error().into());
+    }
+    let joined = device()?;
+    assert_eq!(
+        joined.retirement.host_id(),
+        host,
+        "runtime appearance must join the original home-backed host"
+    );
+    drop(original);
+    drop(joined);
+    assert!(exited(&exit, 5000)?);
+    // Its closed read-only endpoint must not block creating the next host in
+    // the writable OS runtime directory, nor replace its permanent lock.
+    let next = device()?;
+    let exit = exit_event(next.retirement.host_id())?;
+    drop(next);
+    assert!(exited(&exit, 5000)?);
     Ok(())
 }
