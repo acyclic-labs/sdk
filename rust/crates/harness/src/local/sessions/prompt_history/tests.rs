@@ -50,11 +50,20 @@ async fn prompt_history_reconnects_across_sessions_without_copying_inherited_pro
     let fork_view = Conversation::open(fork);
     fork_view.send("fork-prompt", "fork own prompt").await?;
 
+    let (mut inputs, _) = first_view.observe_current().await?;
+    inputs.watch_inputs()?;
     let mut history = PromptHistory::new(first.clone());
     assert_eq!(history.next().await?.as_deref(), Some("repeated prompt"));
-    first_view
+    let other_client = Conversation::open(owner.select(first.root().clone()).await?);
+    let accepted = other_client
         .send("later-prompt", "later selected prompt")
         .await?;
+    loop {
+        if matches!(inputs.next().await?, crate::local::Event::Input { through } if through > accepted)
+        {
+            break;
+        }
+    }
     assert_eq!(history.next().await?.as_deref(), Some("repeated prompt"));
     let mut other = Vec::new();
     while let Some(text) = history.next().await? {

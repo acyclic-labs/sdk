@@ -15,7 +15,11 @@
     {"mode": "pty", "resume": true, "actions": [
       {"when": {"contains": ["GraphCoder", "HISTORY_FIRST_REPLY", "○"], "cursor": true}, "send": "UNSUBMITTED_DRAFT"},
       {"when": {"contains": ["UNSUBMITTED_DRAFT"], "cursor": true}, "send": "\u001b[H\u001b[A"},
-      {"when": {"contains": ["original recalled prompt", "○"], "absent": ["UNSUBMITTED_DRAFT"], "cursor": true}, "send": "\r"},
+      {"when": {"contains": ["original recalled prompt", "○"], "absent": ["UNSUBMITTED_DRAFT"], "cursor": true}, "send": "\u001b[F\u001b[B"},
+      {"when": {"contains": ["UNSUBMITTED_DRAFT"], "cursor": true}, "send": "\u0012"},
+      {"when": {"contains": ["original recalled prompt"], "absent": ["UNSUBMITTED_DRAFT"], "cursor": true}, "send": "\u001b"},
+      {"when": {"contains": ["UNSUBMITTED_DRAFT"], "cursor": true}, "send": "\u0012"},
+      {"when": {"contains": ["original recalled prompt"], "absent": ["UNSUBMITTED_DRAFT"], "cursor": true}, "send": "\r\r"},
       {"when": {"contains": ["HISTORY_RECALLED_REPLY", "○"]}, "detach": true}
     ]}
   ],
