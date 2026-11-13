@@ -22,6 +22,10 @@ fn sandbox_policy() {
     .unwrap();
     std::fs::write(volume.join("readable"), b"volume data").unwrap();
     std::fs::write(&outside, b"private").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, workspace.join("escape")).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(&outside, workspace.join("escape")).unwrap();
     #[cfg(target_os = "linux")]
     outside_attributes(&outside, false, true);
     let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
@@ -124,6 +128,7 @@ fn sandbox_policy() {
                 assert_eq!(std::fs::read(&outside).unwrap(), b"private");
             } else {
                 listener.accept().unwrap();
+                listener.accept().unwrap();
                 std::fs::write(&outside, b"private").unwrap();
             }
         }
@@ -163,22 +168,23 @@ fn sandbox_policy_probe() {
     let traversed = Path::new("..").join("outside");
     allowed(std::fs::read(&traversed).map(|_| ()), !confined);
     allowed(std::fs::write(&traversed, b"escaped"), !confined);
-    if std::env::var_os("ACYCLIC_POLICY_DESCENDANT").is_some() {
-        return;
+    allowed(std::fs::read("escape").map(|_| ()), !confined);
+    allowed(std::fs::write("escape", b"escaped"), !confined);
+    if std::env::var_os("ACYCLIC_POLICY_DESCENDANT").is_none() {
+        let descendant = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "execution::tests::sandbox_policy_probe",
+                "--nocapture",
+            ])
+            .env("ACYCLIC_POLICY_DESCENDANT", "yes")
+            .output()
+            .unwrap();
+        assert!(
+            descendant.status.success(),
+            "descendant escaped or could not execute: {descendant:?}"
+        );
     }
-    let descendant = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "execution::tests::sandbox_policy_probe",
-            "--nocapture",
-        ])
-        .env("ACYCLIC_POLICY_DESCENDANT", "yes")
-        .output()
-        .unwrap();
-    assert!(
-        descendant.status.success(),
-        "descendant escaped or could not execute: {descendant:?}"
-    );
     std::fs::metadata("..").unwrap();
     let mut listed = false;
     for entry in std::fs::read_dir(".cargo").unwrap() {
@@ -1472,7 +1478,7 @@ fn kernel_network_grants_attenuate_without_a_network_service() {
     eprintln!("network boundary cases: admitted={admitted}, unsupported={unsupported}");
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 #[test]
 fn inherited_file_stdio_cannot_bypass_the_workspace_boundary() {
     use crate::{ProcessCommand, ProcessStdio, ProcessTree};
@@ -1481,18 +1487,18 @@ fn inherited_file_stdio_cannot_bypass_the_workspace_boundary() {
     std::fs::create_dir(&workspace).unwrap();
     let sentinel = root.path().join("outside");
     std::fs::write(&sentinel, "original").unwrap();
-    let read = system_read_roots();
-    let grant = ExecutionGrant::new(
-        &workspace,
-        ExecutionAccess::WorkspaceWrite,
-        read,
-        ExecutionNetwork::Off,
-    )
-    .unwrap();
+    let grant =
+        ExecutionGrant::workspace_default(&workspace, ExecutionAccess::WorkspaceWrite, [], [])
+            .unwrap();
     let command = || {
-        let mut command = ProcessCommand::new("/bin/sh");
+        let mut command = ProcessCommand::new(crate::platform_shell().unwrap());
         command
-            .args(["-c", "printf escaped"])
+            .args(acyclic_host_platform::shell::PLATFORM.arguments)
+            .arg(if cfg!(windows) {
+                "[Console]::Write('escaped')"
+            } else {
+                "printf escaped"
+            })
             .current_dir(&workspace)
             .env_clear()
             .stdin(ProcessStdio::null())
@@ -1503,6 +1509,8 @@ fn inherited_file_stdio_cannot_bypass_the_workspace_boundary() {
                     .open(&sentinel)
                     .unwrap(),
             );
+        #[cfg(windows)]
+        command.env("SystemRoot", std::env::var_os("SystemRoot").unwrap());
         command
     };
     let custody = crate::ProcessCustody::open(&root.path().join("custody")).unwrap();
