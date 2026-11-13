@@ -718,5 +718,9 @@ credential, resource name, audience, holder, key or attribute enters a span.
 Successful checks report zero payload bytes. Rejections currently remain
 `Unsettled` because these paths do not yet retain an original cause record;
 this is an explicit remaining cause-custody gap, not a successful authorization
-or a fabricated failure reference. Scope/account guards and credential-lock
-acquisition still need their own physical observations.
+or a fabricated failure reference.
+stream.credential_snapshot accounts for acquiring the original current-credential
+lock, cloning its existing shared capability and releasing the guard. Its
+guarantee is an atomic snapshot against renewal, with zero payload bytes and
+no copy of the credential. Scope/account guards and the renewal writer's lock
+still need their own physical observations.
