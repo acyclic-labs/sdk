@@ -86,6 +86,22 @@ impl ToolCallSettlement<'_> {
     }
 }
 
+#[derive(Serialize)]
+struct HostCallIdentity<'a> {
+    version: u32,
+    invocation: &'a ToolInvocation,
+    definition: &'a crate::tool::ToolDefinition,
+    metadata: &'a Value,
+}
+
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+struct HostCallSelection {
+    version: u32,
+    fingerprint: [u8; 32],
+}
+
+impl crate::filesystem::PreparationRecord for HostCallSelection {}
 impl StockExecutor {
     /// Runs or recovers one host-selected call through the stock tool engine,
     /// without dispatching a model or creating a model request.
@@ -94,11 +110,14 @@ impl StockExecutor {
     /// across pending approval and restart. Selection grants no execution
     /// authority: the issued task, canonical capability, policy and approvals
     /// are checked by the same engine used for model calls. No start record is
-    /// written while approval is pending. `hook_context` receives ordinary
+    /// written while approval is pending. The original call selection is
+    /// fingerprinted before policy admission; another binding or input cannot
+    /// replace it on retry. `hook_context` receives ordinary
     /// context additions for the caller to retain with its execution.
     ///
-    /// The original journal must authenticate `parent` and implement child
-    /// effect custody. A live duplicate refuses before any replay read. Work
+    /// The original journal must authenticate `parent`, provide immutable
+    /// staged-payload observation, and implement child-effect custody.
+    /// A live duplicate refuses before any replay read. Work
     /// and retained output use the supplied preparation owner.
     pub fn settle_invocation<'a, 'io: 'a>(
         &'io self,
@@ -127,9 +146,14 @@ impl StockExecutor {
                 ));
             }
             execution.verify_invocation_binding(parent.0, &call.0, Some(&call.1))?;
+            call.0
+                .validate_recorded(metadata, execution.invocation_limits(), io)?;
             let owner = journal
                 .acquire_effect(parent.0, call.0.operation_id, io)?
                 .into_owner(io)?;
+            execution
+                .retain_host_selection(journal, parent, &call.0, &call.1, metadata)
+                .await?;
             let outcome = execution
                 .settle_invocation(
                     journal,
@@ -157,6 +181,81 @@ fn settled_call<'a>(
     }))
 }
 impl<'io> StockExecution<'io> {
+    fn invocation_limits(&self) -> crate::conversation::Limits {
+        crate::conversation::Limits {
+            file_bytes: self
+                .stock
+                .limits
+                .file_bytes
+                .into_iter()
+                .chain(self.stock.tool_scope.limits().file_bytes)
+                .min(),
+            render_bytes: self
+                .stock
+                .limits
+                .render_bytes
+                .into_iter()
+                .chain(self.stock.tool_scope.limits().render_bytes)
+                .min(),
+            ..self.stock.limits
+        }
+    }
+
+    async fn retain_host_selection(
+        &self,
+        journal: &dyn ExecutionJournal,
+        parent: (OperationId, u32),
+        invocation: &ToolInvocation,
+        tool: &crate::tool::Tool,
+        metadata: &Value,
+    ) -> Result<()> {
+        let selected = HostCallIdentity {
+            version: 1,
+            invocation,
+            definition: &tool.definition,
+            metadata,
+        };
+        let fingerprint = match self.io {
+            Some(io) => io.canonical_digest(&selected)?,
+            None => json::canonical_json_digest(&selected, None, &mut None)?,
+        };
+        let _key_hold;
+        let key = with_history_io(self.io, |work| {
+            preparation_format(
+                format_args!("tool:{}:{}:selection", parent.1, invocation.call_id),
+                work,
+            )
+        })?;
+        _key_hold = self
+            .io
+            .map(|io| io.guard_owned(key.capacity() as u64))
+            .transpose()?;
+        if let Some(reference) = journal.staged_ref(parent.0, &key, self.io)?.await? {
+            let (original, _hold) =
+                load_json::<HostCallSelection>(journal, &reference, self.io).await?;
+            if original.version != 1 || original.fingerprint != fingerprint {
+                return Err(stock_boundary(
+                    self.io,
+                    Conflict,
+                    "host call selection changed after admission",
+                ));
+            }
+        } else {
+            stage_json_once(
+                journal,
+                parent.0,
+                &key,
+                &HostCallSelection {
+                    version: 1,
+                    fingerprint,
+                },
+                self.io,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     fn verify_invocation_binding(
         &self,
         operation_id: OperationId,
@@ -191,6 +290,7 @@ impl<'io> StockExecution<'io> {
             &invocation.call_id,
             self.io,
         )?;
+        invocation.validate_recorded(metadata, self.invocation_limits(), self.io)?;
         let outcome = self
             .settle_invocation(
                 journal,
@@ -224,24 +324,7 @@ impl<'io> StockExecution<'io> {
         _hook_context: &mut Vec<ModelMessage>,
     ) -> Result<ExecutionProgress<Option<ToolCallSettlement<'io>>>> {
         let pinned_call = pinned.is_some();
-        let invocation_limits = crate::conversation::Limits {
-            file_bytes: self
-                .stock
-                .limits
-                .file_bytes
-                .into_iter()
-                .chain(self.stock.tool_scope.limits().file_bytes)
-                .min(),
-            render_bytes: self
-                .stock
-                .limits
-                .render_bytes
-                .into_iter()
-                .chain(self.stock.tool_scope.limits().render_bytes)
-                .min(),
-            ..self.stock.limits
-        };
-        invocation.validate_recorded(metadata, invocation_limits, self.io)?;
+        let invocation_limits = self.invocation_limits();
         let (_, records) = self
             .tool_records(journal, operation_id, step, &invocation.call_id)
             .await?;
