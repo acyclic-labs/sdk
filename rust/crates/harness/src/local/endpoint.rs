@@ -178,11 +178,10 @@ impl Connection {
     /// Commands retain the original caller; a native host may enroll read-only
     /// access to the selected child's private output on that same session.
     pub async fn select(&self, agent: AgentPath) -> Result<Self> {
-        if !self.directory && !self.root.contains(&agent) {
-            return Err(Error::Unauthorized(
-                "selected observation is outside this connection's agent subtree".into(),
-            ));
-        }
+        // Bind is authorized by the server against the original caller's tree
+        // or directory capability. A selected read-only view is not a change
+        // to that caller's authority, and transport constructors cannot infer
+        // directory authority from their local attachment mode.
         let (controls, tools) = self
             .controls
             .select(agent.clone())

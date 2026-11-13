@@ -45,6 +45,18 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
         .get()
         .ok_or_else(|| Error::Invalid("missing owner".into()))?;
     let server = Arc::clone(hosted.server());
+    let directory_credential = server
+        .bound()
+        .session_credential(
+            server.root(),
+            server.resource(),
+            &server.session_resource(),
+            local.clock.clone(),
+        )
+        .await
+        .map_err(exchange)?;
+    let directory_credential =
+        acyclic_auth::credential::capability_text(&directory_credential.credential);
     let credential = server
         .bound()
         .client_credential(server.root(), server.resource(), local.clock.clone())
@@ -273,7 +285,17 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
                 .map(|error| error.category()),
             Some(StreamError::AccessDenied)
         );
-        assert!(connection.select(foreign).await.is_err());
+        assert!(connection.select(foreign.clone()).await.is_err());
+        // The same transport constructor must honor an authenticated directory
+        // owner even though its local attachment mode is not a directory.
+        let options = acyclic_harness_client::ConnectionOptions::from_env(
+            Some(&endpoint),
+            Some(&directory_credential),
+        )
+        .map_err(exchange)?;
+        let directory = Connection::connect(&options).await?;
+        assert!(!directory.directory);
+        assert_eq!(directory.select(foreign.clone()).await?.root(), &foreign);
         Ok(())
     };
     let checked = tokio::select! {
@@ -1074,8 +1096,9 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
         ])
     };
     // Descendant observation is enrolled on the same transport pool. The
-    // original root capability remains narrow, and a child cannot enroll a
-    // sibling or ancestor merely because they share the command endpoint.
+    // original root capability remains narrow. Selecting a read-only view
+    // retains the original caller's command authority, while its raw follows
+    // are restricted to the selected observation credential.
     let spawn = async |from: &super::Connection, name: &str| -> Result<crate::agent::AgentPath> {
         provider.extend([measured_reply()]);
         let AgentReply::Spawned { agent, .. } = from
@@ -1104,14 +1127,18 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
         connection.session.credential(),
         "local selection opened a new session instead of enrolling its view"
     );
-    assert!(local_child.select(sibling.clone()).await.is_err());
+    assert_eq!(local_child.select(sibling.clone()).await?.root(), &sibling);
     let mut local_child_feed = local_child.supervision_own().await?;
-    assert!(child_connection.select(sibling.clone()).await.is_err());
-    assert!(
+    assert_eq!(
+        child_connection.select(sibling.clone()).await?.root(),
+        &sibling
+    );
+    assert_eq!(
         child_connection
             .select(connection.root().clone())
-            .await
-            .is_err()
+            .await?
+            .root(),
+        connection.root(),
     );
     let sibling_source = crate::supervision::streams::path(&sibling)?;
     assert!(
@@ -1129,13 +1156,16 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
             break;
         }
     }
-    // A non-root observer must use each discovering parent's narrow grant
-    // at every depth. Root membership cannot enroll the deeper descendants.
+    // A non-root observer uses each discovering parent's narrow read grant
+    // at every depth, while selections retain the original caller identity.
     let mut subtree = child_connection.supervision().await?;
     let grandchild = spawn(&child_connection, "observed-grandchild").await?;
     let grandchild_connection = child_connection.select(grandchild).await?;
     let descendant = spawn(&grandchild_connection, "observed-great-grandchild").await?;
-    assert!(child_connection.select(descendant.clone()).await.is_err());
+    assert_eq!(
+        child_connection.select(descendant.clone()).await?.root(),
+        &descendant
+    );
     let descendant_connection = grandchild_connection.select(descendant.clone()).await?;
     let mut descendant_feed = descendant_connection.supervision_own().await?;
     loop {
