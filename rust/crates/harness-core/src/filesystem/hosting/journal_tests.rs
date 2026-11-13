@@ -6,7 +6,7 @@ use crate::{
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
     filesystem::{PRIVATE_VOLUME, TurnAuthority},
 };
-use acyclic_stream::MemoryStream;
+use acyclic_stream::{MemoryStream, Source as _};
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 type Binding = Bound<MemoryStream, acyclic_fs::LogicalObjectStore<acyclic_objects::MemoryObjects>>;
@@ -167,14 +167,14 @@ async fn waking_notices_steer_without_granting_their_journal_files() -> TestResu
         None,
     )?;
     let operation = OperationId::from_bytes([64; 16]);
+    let initial_through = bound.agents().provider().tail(root.inbox()?).await?;
     let boundary = FilesystemBoundary::new(
         Arc::clone(bound.agents().provider()),
         Arc::clone(bound.volumes()),
         bound.issuer().clone(),
         bound.admission().clone(),
         state.clone(),
-        operation,
-        inbox,
+        (operation, inbox, initial_through),
         files,
         journal_reader,
         writer,
