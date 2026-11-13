@@ -123,7 +123,8 @@ impl Placement {
             Err(error) => return Err(error.into()),
         };
         let record = records.try_next().await?.ok_or(Error::InvalidRecord)?;
-        let value = PlacementWire::decode(record.value).map_err(|_| Error::InvalidRecord)?;
+        let value =
+            PlacementWire::decode(record.value.as_ref()).map_err(|_| Error::InvalidRecord)?;
         let found = ActorReference::decode(&value.actor)?;
         if value.version != 1
             || record.sequence != 0
