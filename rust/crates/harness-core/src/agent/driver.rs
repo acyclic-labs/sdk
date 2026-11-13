@@ -229,21 +229,19 @@ pub trait TurnOutputs: acyclic_stream::ProviderPlatform {
 pub trait TurnHost: acyclic_stream::ProviderPlatform {
     /// Saves workspace effects before a pending operation releases the delivery.
     /// Unlike settlement, this does not complete the turn or merge a child.
+    /// Required, so no wrapping host can silently drop a save.
     fn park<'a>(
         &'a self,
-        _agent: &'a AgentState,
-        _operation: OperationId,
-    ) -> BoxFuture<'a, crate::Result<()>> {
-        Box::pin(async { Ok(()) })
-    }
-    /// Publishes workspace effects before any terminal turn record.
+        agent: &'a AgentState,
+        operation: OperationId,
+    ) -> BoxFuture<'a, crate::Result<()>>;
+    /// Publishes workspace effects before any terminal turn record. Required
+    /// for the same reason as [`park`](Self::park).
     fn settle<'a>(
         &'a self,
-        _agent: &'a AgentState,
-        _turn: OperationId,
-    ) -> BoxFuture<'a, crate::Result<()>> {
-        Box::pin(async { Ok(()) })
-    }
+        agent: &'a AgentState,
+        turn: OperationId,
+    ) -> BoxFuture<'a, crate::Result<()>>;
     /// Open only the bounded resources a context control needs. Hosts without
     /// context controls refuse before opening an executor or dispatching a model.
     fn open_control<'a>(
@@ -279,6 +277,13 @@ pub trait TurnHost: acyclic_stream::ProviderPlatform {
 }
 
 impl<H: TurnHost + ?Sized> TurnHost for Arc<H> {
+    fn park<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        operation: OperationId,
+    ) -> BoxFuture<'a, crate::Result<()>> {
+        (**self).park(agent, operation)
+    }
     fn settle<'a>(
         &'a self,
         agent: &'a AgentState,

@@ -613,6 +613,20 @@ async fn cancelling_during_open_publishes_its_input_and_preserves_queued_work() 
 
     struct Opening(mpsc::UnboundedSender<u64>);
     impl TurnHost for Opening {
+        fn park<'a>(
+            &'a self,
+            _: &'a AgentState,
+            _: OperationId,
+        ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn settle<'a>(
+            &'a self,
+            _: &'a AgentState,
+            _: OperationId,
+        ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
         fn open_control<'a>(
             &'a self,
             _: &'a AgentState,

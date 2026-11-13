@@ -2500,6 +2500,20 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
         edit: Arc<Edit>,
     }
     impl<H: TurnHost> TurnHost for EditingHost<H> {
+        fn park<'a>(
+            &'a self,
+            agent: &'a AgentState,
+            operation: OperationId,
+        ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<()>> {
+            self.original.park(agent, operation)
+        }
+        fn settle<'a>(
+            &'a self,
+            agent: &'a AgentState,
+            turn: OperationId,
+        ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<()>> {
+            self.original.settle(agent, turn)
+        }
         fn open_control<'a>(
             &'a self,
             agent: &'a AgentState,
