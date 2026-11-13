@@ -59,26 +59,115 @@ enum ToolInvocationOutcome<'a> {
     Interrupted,
 }
 
-// Settlement retains the invocation and original result credit independently
-// of whether its caller assembles a model transcript.
-struct SettledToolCall<'a> {
+/// One settled invocation, retaining its original result and replay credit.
+/// Read the result while this value remains alive; dropping it retires the
+/// retained receipt after its content and invocation.
+pub struct ToolCallSettlement<'a> {
     invocation: ToolInvocation,
     content: crate::model::ToolResultContent,
     receipt: Option<ToolReceipt<'a>>,
 }
 
+impl ToolCallSettlement<'_> {
+    /// The exact invocation settled by the canonical call engine.
+    pub fn invocation(&self) -> &ToolInvocation {
+        &self.invocation
+    }
+
+    /// Its ordinary model-independent result, including a settled refusal.
+    pub fn content(&self) -> &crate::model::ToolResultContent {
+        &self.content
+    }
+}
+
+impl StockExecutor {
+    /// Runs or recovers one host-selected call through the stock tool engine,
+    /// without dispatching a model or creating a model request.
+    ///
+    /// The host retains the original immutable binding and source selection
+    /// across pending approval and restart. Selection grants no execution
+    /// authority: the issued task, canonical capability, policy and approvals
+    /// are checked by the same engine used for model calls. No start record is
+    /// written while approval is pending. `hook_context` receives ordinary
+    /// context additions for the caller to retain with its execution.
+    ///
+    /// The original journal must authenticate `parent` and implement child
+    /// effect custody. A live duplicate refuses before any replay read. Work
+    /// and retained output use the supplied preparation owner.
+    pub fn settle_invocation<'a>(
+        &'a self,
+        journal: &'a dyn ExecutionJournal,
+        parent: (OperationId, u32),
+        call: (ToolInvocation, Arc<crate::tool::Tool>),
+        metadata: &'a Value,
+        hook_context: &'a mut Vec<ModelMessage>,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            ExecutionProgress<Option<ToolCallSettlement<'a>>>,
+        >,
+    > {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let execution = StockExecution {
+                io,
+                ..StockExecution::ordinary(self)
+            };
+            if execution.context.is_none() {
+                return Err(stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "host invocation has no issued task context",
+                ));
+            }
+            execution.verify_invocation_binding(parent.0, &call.0, Some(&call.1))?;
+            let owner = journal
+                .acquire_effect(parent.0, call.0.operation_id, io)?
+                .into_owner(io)?;
+            let outcome = execution
+                .settle_invocation(
+                    journal,
+                    parent.0,
+                    parent.1,
+                    (call.0, Some(call.1)),
+                    metadata,
+                    hook_context,
+                )
+                .await?;
+            owner.release();
+            Ok(outcome)
+        })
+    }
+}
 fn settled_call<'a>(
     invocation: ToolInvocation,
     content: crate::model::ToolResultContent,
     receipt: Option<ToolReceipt<'a>>,
-) -> ExecutionProgress<Option<SettledToolCall<'a>>> {
-    ExecutionProgress::Ready(Some(SettledToolCall {
+) -> ExecutionProgress<Option<ToolCallSettlement<'a>>> {
+    ExecutionProgress::Ready(Some(ToolCallSettlement {
         invocation,
         content,
         receipt,
     }))
 }
 impl<'io> StockExecution<'io> {
+    fn verify_invocation_binding(
+        &self,
+        operation_id: OperationId,
+        invocation: &ToolInvocation,
+        pinned: Option<&Arc<crate::tool::Tool>>,
+    ) -> Result<()> {
+        self.verify_task_context_binding(operation_id)?;
+        if pinned.is_some_and(|tool| tool.definition.name != invocation.name) {
+            return Err(stock_boundary(
+                self.io,
+                Invalid,
+                "canonical tool call identity changed",
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) async fn settle_tool_call(
         &self,
         journal: &dyn ExecutionJournal,
@@ -89,17 +178,7 @@ impl<'io> StockExecution<'io> {
         prior_messages: &mut Vec<ModelMessage>,
         _hook_context: &mut Vec<ModelMessage>,
     ) -> Result<ExecutionProgress<Option<ToolReceipt<'io>>>> {
-        self.verify_task_context_binding(operation_id)?;
-        if pinned
-            .as_ref()
-            .is_some_and(|tool| tool.definition.name != invocation.name)
-        {
-            return Err(stock_boundary(
-                self.io,
-                Invalid,
-                "canonical tool call identity changed",
-            ));
-        }
+        self.verify_invocation_binding(operation_id, &invocation, pinned.as_ref())?;
         let metadata = metadata_for_call(
             prior_messages,
             invocation_index,
@@ -137,7 +216,7 @@ impl<'io> StockExecution<'io> {
         (invocation, pinned): (ToolInvocation, Option<Arc<crate::tool::Tool>>),
         metadata: &Value,
         _hook_context: &mut Vec<ModelMessage>,
-    ) -> Result<ExecutionProgress<Option<SettledToolCall<'io>>>> {
+    ) -> Result<ExecutionProgress<Option<ToolCallSettlement<'io>>>> {
         let pinned_call = pinned.is_some();
         let invocation_limits = crate::conversation::Limits {
             file_bytes: self
@@ -179,7 +258,11 @@ impl<'io> StockExecution<'io> {
                 .as_ref()
                 .is_some_and(|record| record.0.filesystem.is_some())
         {
-            self.call_target(&invocation, original.as_ref().map(|record| &record.0))?
+            self.call_target(
+                &invocation,
+                original.as_ref().map(|record| &record.0),
+                pinned.as_deref(),
+            )?
         } else {
             Ok(None)
         };
@@ -407,8 +490,11 @@ impl<'io> StockExecution<'io> {
                 effective.arguments = arguments;
                 effective.validate_recorded(metadata, invocation_limits, self.io)?;
                 if matches!(recorded, RecordedCall::Started(_) | RecordedCall::Unstarted) {
-                    target =
-                        self.call_target(&effective, original.as_ref().map(|record| &record.0))?;
+                    target = self.call_target(
+                        &effective,
+                        original.as_ref().map(|record| &record.0),
+                        Some(tool),
+                    )?;
                 }
                 match self.authorize_tool_invocation(
                     tool,
@@ -733,11 +819,22 @@ impl<'io> StockExecution<'io> {
         &self,
         invocation: &ToolInvocation,
         original: Option<&crate::tool::RecordedInvocation>,
+        pinned: Option<&crate::tool::Tool>,
     ) -> Result<Result<Option<Arc<crate::runtime::Target>>>> {
         // A native call runs where its capability's call would, and its start
         // records that target. A call its declaration refuses runs nowhere;
         // admission settles the refusal.
-        let canonical = match self.selected_tools().resolve(&invocation.name, None)? {
+        // A retained alias may not be installed in today's registry. Resolve
+        // its target from the same immutable binding used for admission.
+        let resolved;
+        let selected = match pinned {
+            Some(tool) => Some(tool),
+            None => {
+                resolved = self.selected_tools().resolve(&invocation.name, None)?;
+                resolved.as_deref()
+            }
+        };
+        let canonical = match selected {
             Some(tool) => match tool.executor.canonical(invocation, self.native_work()) {
                 Ok(canonical) => canonical,
                 // A declaration refusal is settled by admission. Resource and
