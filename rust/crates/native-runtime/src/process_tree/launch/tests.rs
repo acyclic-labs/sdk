@@ -203,7 +203,12 @@ async fn refusals_precede_spawn_and_return_the_original_handler() -> io::Result<
     };
     assert_eq!(failure.error.kind(), io::ErrorKind::PermissionDenied);
     assert_eq!(
-        failure.error.to_string(),
+        failure
+            .error
+            .get_ref()
+            .and_then(|error| error.downcast_ref::<crate::execution::ExecutionRefusal>())
+            .expect("original typed execution refusal")
+            .reason(),
         "execution working directory escapes the granted workspace"
     );
     assert!(failure.cleanup_completed && failure.status.is_none());
