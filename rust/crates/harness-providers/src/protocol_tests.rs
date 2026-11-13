@@ -503,8 +503,12 @@ async fn context_window_stop_compacts_before_continuing_without_a_count_endpoint
         first.push_str(&format!("data: {event}\n\n"));
     }
     first.push_str("data: {\"type\":\"content_block_stop\",\"index\":0}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"model_context_window_exceeded\"},\"usage\":{\"output_tokens\":50000}}\n\ndata: {\"type\":\"message_stop\"}\n\n");
+    let manager = format!(
+        "data: {}\n\ndata: {{\"type\":\"content_block_stop\",\"index\":0}}\n\ndata: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"end_turn\"}},\"usage\":{{\"output_tokens\":1}}}}\n\ndata: {{\"type\":\"message_stop\"}}\n\n",
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":r#"{"version":1,"drop_through":2,"summary":"earlier facts"}"#}}),
+    );
     let transport = Arc::new(ToolLoop {
-        replies: Mutex::new(VecDeque::from([first,
+        replies: Mutex::new(VecDeque::from([first, manager,
             "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\" complete\"}}\n\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\ndata: {\"type\":\"message_stop\"}\n\n".into()
         ])),
         sent: Mutex::new(Vec::new()),
@@ -518,7 +522,7 @@ async fn context_window_stop_compacts_before_continuing_without_a_count_endpoint
     Arc::make_mut(&mut provider.config).max_event_bytes = None;
     provider.capacity = ModelContextCapacity {
         context_tokens: 65536,
-        output_tokens: Some(65536),
+        output_tokens: Some(50000),
     };
     let history = Context {
         messages: vec![
@@ -567,18 +571,18 @@ async fn context_window_stop_compacts_before_continuing_without_a_count_endpoint
     assert_eq!(output.steps, 2);
     assert_eq!(executor.execute(input, journal.as_ref()).await?, output);
     let sent = transport.sent.lock().unwrap();
-    assert_eq!(sent.len(), 2);
+    assert_eq!(sent.len(), 3);
     assert!(
         sent.iter()
             .all(|request| request.url.ends_with("/messages"))
     );
-    let next = json(&sent[1].body)?;
-    assert_eq!(next["max_tokens"], 65536);
+    let next = json(&sent[2].body)?;
+    assert_eq!(next["max_tokens"], 50000);
     // More bytes than tokens is valid. The provider admits an unknown count;
     // the byte upper bound must not turn this into a false overflow.
-    assert!(sent[1].body.len() > 65536);
+    assert!(sent[2].body.len() > 65536);
     assert!(
-        !std::str::from_utf8(&sent[1].body)
+        !std::str::from_utf8(&sent[2].body)
             .unwrap()
             .contains(&"h".repeat(20000))
     );

@@ -221,6 +221,11 @@ pub enum CommandResolution {
         /// View identifier.
         query: CommandQuery,
     },
+    /// Open one authored UI document without a model request.
+    View {
+        /// Canonical path relative to the selected agent's ui/ root.
+        path: String,
+    },
 }
 
 mod model_input;
@@ -332,7 +337,7 @@ impl CommandResolution {
                     layout.into(),
                 ))
             }
-            Self::Sdk { .. } => Ok(publish_request(
+            Self::Sdk { .. } | Self::View { .. } => Ok(publish_request(
                 CommandFileRoot::Session,
                 serde_json::to_value(self).map_err(codec)?,
             )),

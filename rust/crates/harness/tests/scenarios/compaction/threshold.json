@@ -1,7 +1,70 @@
-{"compaction":{"config":{}},"turns":["answer"],"replay":true,
-  "expect":{"text":"answer","request_count":1,"reconciliation_count":0,"requests":[{
-  "messages":[{"role":"assistant","content":{"kind":"file"}},{"role":"system","content":"keep instructions"},
-  {"role":"user","content":"current request"}]}],"events":[{"kind":"context_compacted"},{"kind":"model_started",
-  "purpose":"response"}],
-  "request_files":[["[context backstop: earlier messages were evicted to fit the model's context window; they remain in this agent's history]"]],
-  "not_events":[{"kind":"model_started","purpose":"summary"}]}}
+{
+  "compaction": {
+    "config": {}
+  },
+  "turns": [
+    "{\"version\":1,\"drop_through\":3,\"summary\":\"retained earlier facts\"}",
+    "{\"version\":1,\"drop_through\":4,\"summary\":\"retained facts\"}",
+    "answer"
+  ],
+  "replay": true,
+  "expect": {
+    "text": "answer",
+    "request_count": 3,
+    "reconciliation_count": 0,
+    "requests": [
+      {
+        "summary": true
+      },
+      {
+        "summary": true
+      },
+      {
+        "messages": [
+          {
+            "role": "assistant",
+            "content": {
+              "kind": "file"
+            }
+          },
+          {
+            "role": "system",
+            "content": "keep instructions"
+          },
+          {
+            "role": "user",
+            "content": "current request"
+          }
+        ]
+      }
+    ],
+    "events": [
+      {
+        "purpose": "summary",
+        "kind": "model_started"
+      },
+      {
+        "purpose": {
+          "summary_part": 1
+        },
+        "kind": "model_started"
+      },
+      {
+        "kind": "context_compacted"
+      },
+      {
+        "purpose": "response",
+        "kind": "model_started"
+      }
+    ],
+    "request_files": [
+      [],
+      [
+        "retained earlier facts"
+      ],
+      [
+        "retained facts"
+      ]
+    ]
+  }
+}

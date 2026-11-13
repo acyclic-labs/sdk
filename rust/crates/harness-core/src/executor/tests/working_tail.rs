@@ -12,9 +12,14 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
         },
     );
     journal.8 = Some(issuer.verifier(&mut None)?);
-    // Compaction admits input up to the whole window; the prior history
-    // below (about 52k synthetic tokens) overflows this one.
-    let (provider, _) = counted_model(49_152, None, [], []);
+    let (provider, _) = counted_model(
+        49_152,
+        None,
+        [ScriptedTurn::Text(
+            r#"{"version":1,"drop_through":3,"summary":"retained tool history"}"#.into(),
+        )],
+        [],
+    );
     let instruction = ModelContent::Text("fresh stage instruction".into());
     let stage = crate::context::Context {
         messages: vec![ModelMessage {
@@ -54,7 +59,7 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
         },
         ModelMessage {
             role: ModelRole::Assistant,
-            content: ModelContent::Text("recent answer".into()),
+            content: ModelContent::Text("r".repeat(15_000)),
         },
     ];
     let execution = StockExecution::ordinary(&executor);
@@ -62,8 +67,8 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
     let compacted = execution
         .prepared_response(&journal, &input, 1, &prior, None)
         .await?;
-    assert!(compacted.bytes().len() < 2_000);
-    assert!(provider.requests().is_empty());
+    assert!(compacted.bytes().len() < 17_000);
+    assert_eq!(provider.request_count(), 1);
     for step in 2..4 {
         prior.push(ModelMessage {
             role: ModelRole::Assistant,
@@ -153,7 +158,7 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
             .ok_or_else(|| Error::Invalid("invalid current input".into()))?;
         assert_eq!(current.content, input.input);
         assert!(
-            crate::contract::canonical_json_bytes(&base)?.len() < 2_000,
+            crate::contract::canonical_json_bytes(&base)?.len() < 17_000,
             "later working checkpoint resurrected the consumed history"
         );
         let mut original_input = ContextInput::copy_for_turn(&input, step, &prior, None)?;
@@ -177,10 +182,10 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
         let response = session
             .prepared_response(&journal, &input, step, &prior, None)
             .await?;
-        assert!(response.bytes().len() < 2_000);
+        assert!(response.bytes().len() < 17_000);
         assert!(
-            provider.requests().is_empty(),
-            "the backstop called a model"
+            provider.request_count() == 1,
+            "reopen repeated context management"
         );
         let mut changed = input.clone();
         changed.input = ModelContent::Text("different question".into());
@@ -227,7 +232,7 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
         );
         let (_, retired_base, _) = session.response_base(&journal, &input, step, &tail).await?;
         assert_eq!(retired_base.messages.last(), prior.last());
-        assert!(crate::contract::canonical_json_bytes(&retired_base)?.len() < 2_000);
+        assert!(crate::contract::canonical_json_bytes(&retired_base)?.len() < 17_000);
         assert!(
             session
                 .response_base(&journal, &input, 0, &tail)

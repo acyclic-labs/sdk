@@ -13,7 +13,10 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub(super) enum Source {
     Cost,
-    Question(String),
+    Document {
+        path: String,
+        waiting: bool,
+    },
     Diff(Option<diff::Continuation>),
     History(Option<String>),
     AgentDiff(AgentPath, Option<diff::Continuation>),
@@ -32,7 +35,8 @@ impl Source {
     pub(super) fn title(&self) -> &'static str {
         match self {
             Self::Cost => "Subtree cost",
-            Self::Question(_) => "Question to you",
+            Self::Document { waiting: true, .. } => "Question to you",
+            Self::Document { waiting: false, .. } => "Agent view",
             Self::Diff(_) | Self::AgentDiff(..) => "Diff",
             Self::Wait(_) => "Wait",
             Self::Merge(..) => "Merge",
@@ -45,7 +49,10 @@ impl Source {
     pub(super) fn newest(&self) -> Self {
         match self {
             Self::Cost => Self::Cost,
-            Self::Question(path) => Self::Question(path.clone()),
+            Self::Document { path, waiting } => Self::Document {
+                path: path.clone(),
+                waiting: *waiting,
+            },
             Self::Diff(_) => Self::Diff(None),
             Self::AgentDiff(agent, _) => Self::AgentDiff(agent.clone(), None),
             Self::Wait(agent) => Self::Wait(agent.clone()),
@@ -171,22 +178,29 @@ pub(super) async fn load(
     prices: Arc<acyclic_harness::executor::ModelPrices>,
 ) -> Result<Panel, Failure> {
     match source {
-        Source::Question(path) => {
+        Source::Document { path, waiting } => {
+            let path = acyclic_harness::client::ui::UiPath::new(path)?
+                .as_str()
+                .to_owned();
             let name = format!("ui/{path}");
             let snapshot = conversation.agent_files(vec![name.clone()], None).await?;
             let file = snapshot
                 .files
                 .get(&name)
                 .and_then(Option::as_ref)
-                .ok_or("Question file is absent")?;
+                .ok_or("UI document is absent")?;
             let blocks = acyclic_harness::client::ui::blocks::parse(&file.text)?;
             let original = file
                 .original()
                 .ok_or("Question has no authored reply precondition")?;
-            let mut lines = vec![Line::raw(format!(
-                "Orchestrator {} asks · Enter replies directly",
-                conversation.agent().id()
-            ))];
+            let mut lines = vec![Line::raw(if waiting {
+                format!(
+                    "Orchestrator {} asks · Enter replies directly",
+                    conversation.agent().id()
+                )
+            } else {
+                format!("Agent view: {path} · Enter replies directly")
+            })];
             lines.extend(
                 file.text
                     .lines()
@@ -543,7 +557,7 @@ mod tests {
                 agent.clone(),
                 Some(Arc::clone(cursor.as_ref().unwrap_or(retained))),
             ),
-            Source::Question(_) | Source::Wait(_) | Source::Merge(..) | Source::Discard(..) => {
+            Source::Document { .. } | Source::Wait(_) | Source::Merge(..) | Source::Discard(..) => {
                 return QueryPage::new(vec![], None, false).with_context(Context::default());
             }
             Source::Approval { .. } => source.clone(),

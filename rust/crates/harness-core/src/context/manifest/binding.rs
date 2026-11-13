@@ -63,7 +63,8 @@ impl ContextManifest {
                 manifest.conventions.len()
                     + manifest.discovery.instructions.len()
                     + usize::from(!manifest.discovery.skills.is_empty())
-                    + manifest.selected_skills.len(),
+                    + manifest.selected_skills.len()
+                    + manifest.documents.len(),
                 work,
             )
         })?;
@@ -75,6 +76,15 @@ impl ContextManifest {
         }
         let mut discovered = manifest.discovery.messages(limits, io)?;
         append_context_messages(&mut messages, &mut discovered, io)?;
+        for file in manifest.documents {
+            messages.push(ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Part(crate::model::ModelContentPart::File {
+                    file,
+                    policy: crate::model::FileProjectionPolicy::BoundedFull,
+                }),
+            });
+        }
         let mut remaining = limits
             .render_bytes
             .map(|maximum| {

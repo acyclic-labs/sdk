@@ -12,8 +12,8 @@ use crate::{
 /// The common agent instruction, shared by every host: the seed `AGENT.md`.
 pub(crate) const AGENT_PROMPT: &str = include_str!("AGENT.md");
 
-/// The kernel backstop and its read-only explanation share these exact bytes.
-pub(crate) const CONTEXT_BACKSTOP: &str = include_str!("context-backstop.md");
+/// The context manager's file-based rewrite contract.
+pub(crate) const CONTEXT_MANAGER: &str = include_str!("context-manager.md");
 
 /// Exact lab-trained tool declarations, by family: `sys/native/<family>/tools.json`.
 pub(crate) const ANTHROPIC_TOOLS: &str = include_str!("../tools/native/anthropic.json");
@@ -55,8 +55,6 @@ const FILES: &[(&str, &[u8])] = &[
     seed_file!("plugins/approvals/modes/model.ts"),
     seed_file!("plugins/approvals/modes/parent.ts"),
     seed_file!("plugins/approvals/plugin.ts"),
-    seed_file!("plugins/compaction/hooks/after-usage.ts"),
-    seed_file!("plugins/compaction/plugin.ts"),
     seed_file!("plugins/feedback/hooks/after-settlement.ts"),
     seed_file!("plugins/feedback/plugin.ts"),
     seed_file!("plugins/question/plugin.ts"),
@@ -75,13 +73,15 @@ const FILES: &[(&str, &[u8])] = &[
     skill!("advisor-consultation"),
     skill!("candidate-search"),
     skill!("context-checkpoint"),
+    skill!("context"),
     skill!("debugging"),
     skill!("fresh-context-review"),
+    skill!("memory"),
     skill!("swarm-topology"),
     skill!("ui"),
     skill!("verify-before-done"),
     skill!("writing-skills"),
-    ("sys/context-backstop.md", CONTEXT_BACKSTOP.as_bytes()),
+    ("sys/context-manager.md", CONTEXT_MANAGER.as_bytes()),
     seed_file!("sys/kernel.md", "kernel.md"),
     (
         "sys/native/anthropic/profile.md",

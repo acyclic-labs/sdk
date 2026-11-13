@@ -75,6 +75,25 @@ impl<'a> StockExecution<'a> {
             content_admission: Default::default(),
         }
     }
+    pub(in crate::executor) fn preparing<'b>(
+        &'b self,
+        io: Option<&'b PreparationIo>,
+    ) -> StockExecution<'b> {
+        StockExecution {
+            stock: self.stock,
+            context: self.context,
+            io,
+            summary: None,
+            single_request: false,
+            journal_writes: self.journal_writes.borrowed(),
+            compaction: once_cell::sync::OnceCell::new(),
+            records: tokio::sync::Mutex::new(Default::default()),
+            working_tail: tokio::sync::Mutex::new(Default::default()),
+            request_cache: tokio::sync::Mutex::new(Default::default()),
+            content_admission: Default::default(),
+        }
+    }
+
     pub(in crate::executor) fn native_work(&self) -> acyclic_fs::NativeWork<'_> {
         { self.io.and_then(PreparationIo::original_native_work) }
     }

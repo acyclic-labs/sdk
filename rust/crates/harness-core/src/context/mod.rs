@@ -30,7 +30,7 @@ pub mod native_skills;
 #[cfg(not(target_arch = "wasm32"))]
 mod skill_materializer;
 pub use compaction::*;
-pub(crate) use compaction::{clone_context, compact_projection, prefix_digest};
+pub(crate) use compaction::{clone_context_range, compact_projection, prefix_digest};
 pub(crate) use compaction::{mandatory_message_count, mandatory_messages};
 mod snapshot;
 pub use snapshot::*;
@@ -38,6 +38,8 @@ mod epoch;
 pub use epoch::{CONTEXT_CHANGED, ContextChange, ContextEpoch};
 mod manifest;
 pub use manifest::ContextManifest;
+mod documents;
+pub use documents::capture_working_documents;
 #[doc(hidden)]
 pub use manifest::DEFAULT_CONVENTIONS_JSON;
 

@@ -57,7 +57,7 @@ fn restriction(action: &CommandAction, arguments: Option<&str>) -> Option<&'stat
         CommandAction::Theme {} if arguments.is_none_or(str::is_empty) => {
             Some("Theme picker unavailable; use /theme auto, dark or light.")
         }
-        CommandAction::Theme {} | CommandAction::Peers {} => None,
+        CommandAction::Theme {} | CommandAction::Peers {} | CommandAction::View {} => None,
     }
 }
 

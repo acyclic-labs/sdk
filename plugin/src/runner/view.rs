@@ -1182,11 +1182,19 @@ async fn run_current(
             && overlay.is_none()
             && view.prompt.is_none()
         {
-            queries.select(query::Source::Question(path.clone()), query_future.as_mut());
+            queries.select(
+                query::Source::Document {
+                    path: path.clone(),
+                    waiting: true,
+                },
+                query_future.as_mut(),
+            );
             overlay_top = 0;
         }
-        if matches!(queries.source(), Some(query::Source::Question(_)))
-            && !matches!(view.phase, Some(Phase::WaitingUser { .. }))
+        if matches!(
+            queries.source(),
+            Some(query::Source::Document { waiting: true, .. })
+        ) && !matches!(view.phase, Some(Phase::WaitingUser { .. }))
         {
             queries.close(query_future.as_mut());
         }
@@ -1748,6 +1756,16 @@ async fn run_current(
                                     Ok(Some(resolution @ (CommandResolution::Submit { request: CommandRequest::Theme { .. } } | CommandResolution::Select { query: CommandQuery::Details | CommandQuery::Reasoning }))) => {
                                         match ui.submit(&conversation, &resolution).await {
                                             Ok(()) => files_changed = true,
+                                            Err(error) => view.notice = Some(error.to_string()),
+                                        }
+                                        continue;
+                                    }
+                                    Ok(Some(CommandResolution::View { path })) => {
+                                        match acyclic_harness::client::ui::UiPath::new(path) {
+                                            Ok(path) => {
+                                                queries.select(query::Source::Document { path: path.as_str().to_owned(), waiting: false }, query_future.as_mut());
+                                                overlay_top = 0;
+                                            }
                                             Err(error) => view.notice = Some(error.to_string()),
                                         }
                                         continue;

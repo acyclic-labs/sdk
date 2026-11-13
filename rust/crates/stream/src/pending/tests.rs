@@ -252,3 +252,39 @@ async fn commit_custody_keeps_exact_results_and_terminates_on_producer_loss()
     cancellation_keeps_exact_submission_and_shared_outcome().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn append_submission_keeps_identity_and_survives_observer_cancellation()
+-> Result<(), StreamError> {
+    let provider = Arc::new(MemoryStream::default());
+    let stream = Stream::new(Arc::clone(&provider), "append-custody")?;
+    let request = crate::AppendRequest {
+        path: stream.path().clone(),
+        records: vec!["original".into()],
+        if_tail: None,
+        idempotency_key: IdempotencyKey::unique(),
+    };
+    let executor = Executor::default();
+    let pending = AppendPending::submit_append(Arc::clone(&provider), request.clone(), &executor);
+    let retained = pending.clone();
+    assert_eq!(retained.request(), &request);
+    assert!(pending.wait().now_or_never().is_none());
+    drop(pending);
+    assert_eq!(
+        provider.head(request.path.clone()).await,
+        Err(StreamError::NotFound)
+    );
+    let producer = executor.0.lock().unwrap().pop().unwrap();
+    producer.await;
+    let outcome = retained.wait().await?;
+    assert!(matches!(outcome, crate::AppendOutcome::Committed(_)));
+    assert_eq!(provider.append(request.clone()).await?, outcome);
+    assert_eq!(retained.wait().await?, outcome);
+    let abandoned = AppendPending::submit_task(request, futures::future::pending(), &executor);
+    drop(executor.0.lock().unwrap().pop().unwrap());
+    assert!(matches!(
+        abandoned.result().await,
+        Err(StreamError::Unavailable)
+    ));
+    Ok(())
+}

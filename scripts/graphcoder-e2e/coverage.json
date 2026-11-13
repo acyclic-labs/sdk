@@ -43,6 +43,8 @@
       "owner": "children-controller",
       "cases": [
         "child-fork-message-merge",
+        "bestofn-model-chosen",
+        "tree-search-depth2",
         "child-completion-merge",
         "explicit-session-keeps-checkout-unchanged",
         "child-result",
@@ -137,9 +139,11 @@
       "target": "Compaction and continuation",
       "owner": "b-substrate",
       "cases": [
-        "auto-compaction",
         "pty-manual-compaction",
-        "compaction-background"
+        "compaction-background",
+        "context-agent-rewrite",
+        "context-auto-rewrite",
+        "context-bound-protective"
       ]
     },
     "A9": {
@@ -147,6 +151,7 @@
       "owner": "e2e-gate",
       "cases": [
         "instructions-and-skills",
+        "memory-skill-files",
         "skill-invocation",
         "file-mention",
         "pty-mention",

@@ -75,6 +75,8 @@ pub enum CommandAction {
         /// Selection handled by the renderer.
         query: CommandQuery,
     },
+    /// Open an authored file under the selected agent's ui/ root.
+    View {},
     /// Direct tool dispatch, never prompt expansion.
     Tool {
         /// Owner-selected tool implementation.
@@ -163,7 +165,9 @@ impl CommandCatalog {
                 CommandAction::Builtin { .. }
                 | CommandAction::Request { .. }
                 | CommandAction::Select { .. } => CommandArguments::None,
-                CommandAction::Tool { .. } => CommandArguments::RequiredText,
+                CommandAction::Tool { .. } | CommandAction::View {} => {
+                    CommandArguments::RequiredText
+                }
             };
             if spec.arguments != expected {
                 return Err(Error::Invalid(
@@ -250,6 +254,12 @@ impl CommandCatalog {
             _ => {}
         }
         Ok(Some(match &spec.action {
+            CommandAction::View {} => CommandResolution::View {
+                path: crate::client::ui::UiPath::new(arguments)
+                    .map_err(|error| Error::Invalid(error.to_string()))?
+                    .as_str()
+                    .to_owned(),
+            },
             CommandAction::Request {
                 request,
                 confirmation: true,
@@ -395,6 +405,26 @@ mod tests {
     #[test]
     fn builtins_resolve_and_prompts_pass_through() -> Result<()> {
         let catalog = CommandCatalog::builtins()?;
+        let view = catalog.resolve("/view compare.md", 64)?;
+        assert_eq!(
+            view,
+            Some(CommandResolution::View {
+                path: "compare.md".into()
+            })
+        );
+        assert!(
+            view.ok_or_else(|| Error::Invalid("view command is missing".into()))?
+                .into_model_input()
+                .is_err()
+        );
+        for input in [
+            "/view",
+            "/view ../compare.md",
+            "/view /compare.md",
+            "/view volume:///home/memory.md",
+        ] {
+            assert!(catalog.resolve(input, 128).is_err(), "{input}");
+        }
         assert!(matches!(
             catalog.resolve("/help ", 64)?,
             Some(CommandResolution::Select {

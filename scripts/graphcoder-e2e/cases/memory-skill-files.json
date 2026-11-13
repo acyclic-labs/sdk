@@ -1,0 +1,292 @@
+{
+  "id": "memory-skill-files",
+  "model": {
+    "steps": [
+      {
+        "tools": [
+          {
+            "name": "read",
+            "arguments": {
+              "path": "volume:///effective/skills/memory/SKILL.md"
+            },
+            "id": "memory-0"
+          }
+        ],
+        "when": {
+          "user": "WRITE_MEMORY"
+        }
+      },
+      {
+        "tools": [
+          {
+            "name": "write",
+            "arguments": {
+              "content": "ORIGINAL_PRIVATE_EVIDENCE",
+              "path": "volume:///home/memory/decision.md"
+            },
+            "id": "memory-1"
+          }
+        ],
+        "when": {
+          "user": "WRITE_MEMORY",
+          "tool_result": "ordinary file tools"
+        }
+      },
+      {
+        "tools": [
+          {
+            "name": "write",
+            "arguments": {
+              "content": "---\nname: retained-check\ndescription: Inspect retained evidence before revising it.\n---\nREAD_RETAINED_EVIDENCE_BEFORE_EDITING\n",
+              "path": "volume:///home/skills/retained-check/SKILL.md"
+            },
+            "id": "memory-2"
+          }
+        ],
+        "when": {
+          "user": "WRITE_MEMORY"
+        }
+      },
+      {
+        "text": [
+          "MEMORY_WRITTEN"
+        ],
+        "when": {
+          "user": "WRITE_MEMORY"
+        }
+      },
+      {
+        "text": [
+          "INTERVENING_DONE"
+        ],
+        "when": {
+          "user": "INTERVENING_TURN"
+        }
+      },
+      {
+        "tools": [
+          {
+            "name": "read",
+            "arguments": {
+              "path": "volume:///home/skills/retained-check/SKILL.md"
+            },
+            "id": "memory-5"
+          }
+        ],
+        "when": {
+          "user": "USE_RETAINED_SKILL"
+        }
+      },
+      {
+        "tools": [
+          {
+            "name": "spawn",
+            "arguments": {
+              "name": "reader",
+              "role": "worker",
+              "task": "READ_FORKED_MEMORY"
+            },
+            "id": "memory-6"
+          }
+        ],
+        "when": {
+          "user": "USE_RETAINED_SKILL",
+          "tool_result": "READ_RETAINED_EVIDENCE_BEFORE_EDITING"
+        }
+      },
+      {
+        "tools": [
+          {
+            "name": "read",
+            "arguments": {
+              "path": "volume:///home/skills/retained-check/SKILL.md"
+            },
+            "id": "memory-7"
+          }
+        ],
+        "when": {
+          "user": "READ_FORKED_MEMORY"
+        }
+      },
+      {
+        "tools": [
+          {
+            "name": "read",
+            "arguments": {
+              "path": "volume:///home/memory/decision.md"
+            },
+            "id": "memory-8"
+          }
+        ],
+        "when": {
+          "user": "READ_FORKED_MEMORY",
+          "tool_result": "READ_RETAINED_EVIDENCE_BEFORE_EDITING"
+        }
+      },
+      {
+        "tools": [
+          {
+            "name": "write",
+            "arguments": {
+              "content": "CHILD_PRIVATE_REVISION",
+              "path": "volume:///home/memory/decision.md"
+            },
+            "id": "memory-9"
+          }
+        ],
+        "when": {
+          "user": "READ_FORKED_MEMORY",
+          "tool_result": "ORIGINAL_PRIVATE_EVIDENCE"
+        }
+      },
+      {
+        "tools": [
+          {
+            "name": "read",
+            "arguments": {
+              "path": "volume:///home/memory/decision.md"
+            },
+            "id": "memory-10"
+          }
+        ],
+        "when": {
+          "user": "READ_FORKED_MEMORY"
+        }
+      },
+      {
+        "text": [
+          "FORK_MEMORY_VERIFIED"
+        ],
+        "when": {
+          "user": "READ_FORKED_MEMORY",
+          "tool_result": "CHILD_PRIVATE_REVISION"
+        }
+      },
+      {
+        "tools": [
+          {
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "reader"
+              ]
+            },
+            "id": "memory-12"
+          }
+        ],
+        "when": {
+          "user": "USE_RETAINED_SKILL"
+        }
+      },
+      {
+        "tools": [
+          {
+            "name": "read",
+            "arguments": {
+              "path": "volume:///home/memory/decision.md"
+            },
+            "id": "memory-13"
+          }
+        ],
+        "when": {
+          "user": "USE_RETAINED_SKILL",
+          "tool_result": "FORK_MEMORY_VERIFIED"
+        }
+      },
+      {
+        "text": [
+          "MEMORY_INHERITANCE_DONE"
+        ],
+        "when": {
+          "user": "USE_RETAINED_SKILL",
+          "tool_result": "ORIGINAL_PRIVATE_EVIDENCE"
+        }
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "service"
+    },
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "WRITE_MEMORY"
+        },
+        {
+          "when": {
+            "contains": [
+              "MEMORY_WRITTEN",
+              "○"
+            ],
+            "cursor": true
+          },
+          "prompt": "INTERVENING_TURN"
+        },
+        {
+          "when": {
+            "contains": [
+              "INTERVENING_DONE",
+              "○"
+            ],
+            "cursor": true
+          },
+          "prompt": "USE_RETAINED_SKILL"
+        },
+        {
+          "when": {
+            "contains": [
+              "MEMORY_INHERITANCE_DONE",
+              "○"
+            ],
+            "cursor": true
+          },
+          "detach": true
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "tool_contains": [
+      "READ_RETAINED_EVIDENCE_BEFORE_EDITING",
+      "FORK_MEMORY_VERIFIED"
+    ],
+    "requests": 15,
+    "last_model_absent": [
+      "CHILD_PRIVATE_REVISION"
+    ],
+    "model_notices": [
+      {
+        "notice": {
+          "kind": "context.changed",
+          "source": "harness",
+          "body": {
+            "skill": {
+              "name": "retained-check",
+              "description": "Inspect retained evidence before revising it."
+            },
+            "version": 1
+          }
+        },
+        "absent": [
+          "READ_RETAINED_EVIDENCE_BEFORE_EDITING",
+          "ORIGINAL_PRIVATE_EVIDENCE"
+        ],
+        "step": 4
+      }
+    ]
+  },
+  "physical": true,
+  "workspace": {
+    "files": {},
+    "kind": "plain"
+  },
+  "ntfs": true
+}

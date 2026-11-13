@@ -757,6 +757,18 @@ impl LocalHarness {
                     context,
                 });
             }
+            let home_content = crate::runtime::ContentBindings {
+                volume: scratch.clone(),
+                reader: Arc::clone(&content.reader),
+                writer: Some(crate::filesystem::FilesystemContentPublisher::new(
+                    Arc::clone(&self.files),
+                    scratch,
+                    &verifier,
+                    scope,
+                    self.limits.file_bytes,
+                    None,
+                )?),
+            };
             #[cfg(any(test, not(target_arch = "wasm32")))]
             if super::open::uses_native_execution(&self.tools)?
                 && let Some(workspace) = &self.workspace
@@ -786,6 +798,7 @@ impl LocalHarness {
                             reader: Arc::clone(&content.reader),
                             writer: Some(writer),
                         },
+                        home_content,
                     )?,
                 });
             }
@@ -825,6 +838,7 @@ impl LocalHarness {
                         reader: Arc::clone(&content.reader),
                         writer: Some(writer),
                     },
+                    home_content,
                 )?,
             })
         })

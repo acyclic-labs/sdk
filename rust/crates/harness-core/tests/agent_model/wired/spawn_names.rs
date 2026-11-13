@@ -95,10 +95,21 @@ impl acyclic_harness_core::filesystem::TurnContext for ProjectTasks {
         Box::pin(async move {
             let entry = WorkspaceTable::primary_in(&agent.volumes)
                 .ok_or_else(|| acyclic_harness_core::Error::NotFound("project".into()))?;
+            let home = agent
+                .volumes
+                .iter()
+                .find(|binding| binding.role == acyclic_harness_core::agent::WorkspaceRole::Home)
+                .and_then(|binding| binding.as_volume())
+                .ok_or_else(|| acyclic_harness_core::Error::NotFound("home".into()))?;
             let harness = self.harness.with_workspace(
                 None,
                 acyclic_harness_core::runtime::ContentBindings {
                     volume: entry.volume()?.clone(),
+                    reader: authority.content.reader.clone(),
+                    writer: None,
+                },
+                acyclic_harness_core::runtime::ContentBindings {
+                    volume: home.clone(),
                     reader: authority.content.reader.clone(),
                     writer: None,
                 },
@@ -274,6 +285,14 @@ async fn fixture_with_pause(
     let agents = committing(&stream, &files, ExecutorDriver::new(turns))?.with_templates(templates);
     let mut adoption = adopted(root.id());
     adoption.volumes = vec![binding];
+    adoption.volumes.push(
+        home_binding(
+            &files,
+            &root,
+            adoption.volumes[0].volume()?.provider().clone(),
+        )
+        .await?,
+    );
     if project {
         let volume = VolumeRef::new(
             adoption.volumes[0].volume()?.provider().clone(),
@@ -293,6 +312,27 @@ async fn fixture_with_pause(
     Ok((agents, stream, root, model, files))
 }
 
+async fn home_binding(
+    files: &Host,
+    agent: &AgentPath,
+    provider: acyclic_harness_core::conversation::ProviderRef,
+) -> Result<WorkspaceEntry> {
+    let volume = VolumeRef::new(
+        provider,
+        "agent-home".into(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(
+            agent.id().to_bytes(),
+        )),
+        &mut None,
+    )?;
+    files.create_volume(&volume).await?;
+    Ok(WorkspaceEntry::initial_volume(
+        WorkspaceRole::Home,
+        "home".into(),
+        volume,
+    ))
+}
 async fn create_peer(
     agents: &AgentHost<MemoryStream>,
     files: &Host,
@@ -328,6 +368,9 @@ async fn create_peer(
         PRIVATE_VOLUME.into(),
         volume,
     )];
+    adoption
+        .volumes
+        .push(home_binding(files, peer, source.volume()?.provider().clone()).await?);
     agents
         .create(&intent(&format!("create-{}", peer.id())), adoption)
         .await?;

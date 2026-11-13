@@ -270,15 +270,24 @@ fn capacity_rewrite_publishes_its_own_context_occupancy() -> Result<()> {
         .enable_all()
         .build()
         .map_err(|error| Error::Storage(error.to_string()))?;
-    for output_capacity in [Some(4096), None] {
+    for output_capacity in [Some(4096), Some(8192)] {
         let storage = runtime.block_on(crate::filesystem::MemoryHarnessStorage::new(
             crate::AgentId::new(),
             65_536,
         ))?;
         let journal = storage.journal();
         let journal = journal.as_ref();
-        let (provider, _accounting_calls) =
-            counted_model(65_536, None, [ScriptedTurn::Text("answer".into())], []);
+        let (provider, _accounting_calls) = counted_model(
+            65_536,
+            None,
+            [
+                ScriptedTurn::Text(
+                    r#"{"version":1,"drop_through":3,"summary":"MANAGED_SUMMARY"}"#.into(),
+                ),
+                ScriptedTurn::Text("answer".into()),
+            ],
+            [],
+        );
         let provider = Arc::new(
             Arc::into_inner(provider)
                 .expect("unique fixture model")
@@ -295,11 +304,11 @@ fn capacity_rewrite_publishes_its_own_context_occupancy() -> Result<()> {
                 },
                 ModelMessage {
                     role: ModelRole::User,
-                    content: ModelContent::Text("o".repeat(30_000)),
+                    content: ModelContent::Text("o".repeat(25_000)),
                 },
                 ModelMessage {
                     role: ModelRole::Assistant,
-                    content: ModelContent::Text("a".repeat(30_000)),
+                    content: ModelContent::Text("a".repeat(25_000)),
                 },
             ],
             ..crate::context::Context::default()
@@ -318,16 +327,12 @@ fn capacity_rewrite_publishes_its_own_context_occupancy() -> Result<()> {
         let input = TurnInput {
             max_steps: None,
             operation_id: OperationId::new(),
-            input: ModelContent::Text("c".repeat(6_000)),
+            input: ModelContent::Text("c".repeat(20_000)),
             selected_context: None,
         };
-        let (output, _trace) =
-            acyclic_test_support::differential::observe::<_, _, (&'static str, u64)>(
-                || (),
-                |()| runtime.block_on(executor.execute(input.clone(), journal)),
-            );
-        let output = output?;
+        let output = runtime.block_on(executor.execute(input.clone(), journal))?;
         assert_eq!(output.text, "answer");
+        assert_eq!(output.steps, 1, "context management is not a worker step");
         assert_eq!(
             runtime.block_on(executor.execute(input.clone(), journal))?,
             output
@@ -349,41 +354,104 @@ fn capacity_rewrite_publishes_its_own_context_occupancy() -> Result<()> {
         };
         assert_eq!(capacity_tokens, 65_536);
         assert!(
-            input_tokens < 7_000,
+            input_tokens < 21_000,
             "occupancy kept the pre-rewrite input count"
         );
         let requests = provider.requests();
-        assert_eq!(requests.len(), 1);
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].summary);
+        assert!(!requests[1].summary);
+        let response = &requests[1];
         assert_eq!(
             provider.context_capacity(&requests[0].model)?.output_tokens,
             output_capacity
         );
-        assert_eq!(requests[0].messages.len(), 3);
-        let ModelContent::Part(ModelContentPart::File { file, .. }) =
-            &requests[0].messages[0].content
+        assert_eq!(response.messages.len(), 3);
+        let ModelContent::Part(ModelContentPart::File { file, .. }) = &response.messages[0].content
         else {
-            panic!("the backstop marker opens the request");
+            panic!("the selected summary opens the request");
         };
-        assert!(
-            runtime.block_on(journal.load(file, None)?)?.as_ref()
-                == super::super::compaction::BACKSTOP_MARKER.as_bytes()
+        assert_eq!(
+            runtime.block_on(journal.load(file, None)?)?.as_ref(),
+            b"MANAGED_SUMMARY"
         );
         assert_eq!(
-            requests[0].messages[1].content,
+            response.messages[1].content,
             ModelContent::Text("keep".into())
         );
         assert_eq!(
-            requests[0].messages.last().map(|message| &message.content),
-            Some(&ModelContent::Text("c".repeat(6_000)))
+            response.messages.last().map(|message| &message.content),
+            Some(&ModelContent::Text("c".repeat(20_000)))
         );
-        #[cfg(not(target_arch = "wasm32"))]
-        assert_eq!(
-            _trace
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn rejected_manager_rewrites_preserve_history_and_never_dispatch_the_worker() -> Result<()> {
+    for reply in [
+        "not a rewrite",
+        r#"{"version":2,"drop_through":2,"summary":"wrong version"}"#,
+        r#"{"version":1,"drop_through":0,"summary":"empty range"}"#,
+        r#"{"version":1,"drop_through":3,"summary":"unseen source"}"#,
+        r#"{"version":1,"drop_through":1,"summary":"insufficient rewrite"}"#,
+    ] {
+        let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+        let journal = storage.journal();
+        let (provider, _) = counted_model(32_768, None, [ScriptedTurn::Text(reply.into())], []);
+        let source = crate::context::Context {
+            messages: vec![
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("o".repeat(10_000)),
+                },
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Text("a".repeat(10_000)),
+                },
+            ],
+            ..Default::default()
+        };
+        let executor = StockExecutor::new(
+            Model::new("fixture".into(), "managed-context".into(), "1".into())?,
+            provider.clone(),
+            ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
+                "history",
+                "1",
+                Arc::new(source),
+                crate::context::ContextPlacement::Prepend,
+            )) as Arc<dyn crate::context::ContextStage>]),
+            ToolRegistry::default(),
+        );
+        let input = TurnInput {
+            operation_id: OperationId::new(),
+            input: ModelContent::Text("current".repeat(3_000)),
+            selected_context: None,
+            max_steps: None,
+        };
+        for _ in 0..2 {
+            assert!(
+                matches!(
+                    executor
+                        .execute_progress(input.clone(), journal.as_ref())
+                        .await?,
+                    ExecutionProgress::PreDispatchFailed(_)
+                ),
+                "manager response {reply} must not authorize an unchecked worker request"
+            );
+        }
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 1, "replay must not call the manager again");
+        assert!(
+            requests[0].summary,
+            "a rejected rewrite must never dispatch the worker"
+        );
+        let records = journal.replay(input.operation_id, 0, 128, None)?.await?;
+        assert!(
+            records
                 .iter()
-                .filter(|(kind, _)| *kind == "prepare request")
-                .count(),
-            5,
-            "post-stage budgeting repeated admission of the validated request"
+                .all(|record| !matches!(record.event, ExecutionEvent::ContextCompacted { .. })),
+            "a rejected rewrite must not replace its source history"
         );
     }
     Ok(())
@@ -402,15 +470,22 @@ fn compacted_projection_recovers_before_response_admission() -> Result<()> {
         ))?;
         let journal = storage.journal();
         let journal = journal.as_ref();
-        let (provider, accounting_calls) = counted_model(32_768, None, [], []);
+        let (provider, accounting_calls) = counted_model(
+            32_768,
+            None,
+            [ScriptedTurn::Text(
+                r#"{"version":1,"drop_through":2,"summary":"retained history"}"#.into(),
+            )],
+            [],
+        );
         let history = vec![
             ModelMessage {
                 role: ModelRole::User,
-                content: ModelContent::Text("o".repeat(27_000)),
+                content: ModelContent::Text("o".repeat(11_000)),
             },
             ModelMessage {
                 role: ModelRole::Assistant,
-                content: ModelContent::Text("a".repeat(27_000)),
+                content: ModelContent::Text("a".repeat(11_000)),
             },
         ];
         let pipeline = if source == "projected" {
@@ -438,7 +513,7 @@ fn compacted_projection_recovers_before_response_admission() -> Result<()> {
         let mut input = TurnInput {
             max_steps: None,
             operation_id: OperationId::new(),
-            input: ModelContent::Text("current".into()),
+            input: ModelContent::Text("current".repeat(2_000)),
             selected_context: None,
         };
         if source == "selected" {
@@ -481,7 +556,7 @@ fn compacted_projection_recovers_before_response_admission() -> Result<()> {
         let recovered = recovered?;
         assert_eq!(original.bytes(), recovered.bytes(), "{source}");
         assert_eq!(accounting_calls.load(Ordering::SeqCst), counted);
-        assert!(provider.requests().is_empty());
+        assert_eq!(provider.request_count(), 1);
         let (_, records) = runtime.block_on(execution.model_records(
             journal,
             input.operation_id,
@@ -575,48 +650,6 @@ fn accounting_wire_rejects_unknown_negative_and_out_of_range_counts() -> Result<
             assert!(serde_json::from_value::<ContextAccounting>(count).is_err());
         }
     }
-    Ok(())
-}
-
-#[tokio::test]
-async fn actual_compacted_accounting_blocks_the_response_without_a_model_call() -> Result<()> {
-    let journal = Journal::default();
-    let (provider, _accounting_calls) =
-        counted_model(32_768, Some(AccountingFault::CompactedPressure), [], []);
-    let source = Arc::new(ChangingCompactionSource(AtomicUsize::new(0)));
-    let executor = StockExecutor::new(
-        Model::new("synthetic".into(), "counter".into(), "1".into())?,
-        provider.clone(),
-        ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
-            "changing-history",
-            "1",
-            source.clone(),
-            crate::context::ContextPlacement::Prepend,
-        )) as Arc<dyn crate::context::ContextStage>]),
-        ToolRegistry::default(),
-    );
-    let input = TurnInput {
-        max_steps: None,
-        operation_id: OperationId::new(),
-        input: ModelContent::Text("c".repeat(6_000)),
-        selected_context: None,
-    };
-    // The block is the turn's durable, visible outcome, the same on replay.
-    for _ in 0..2 {
-        assert!(
-            matches!(executor.execute_progress(input.clone(), &journal).await?,
-            ExecutionProgress::PreDispatchFailed(failure)
-                if failure.message().ends_with("context backstop: the irreducible set exceeds the model window"))
-        );
-    }
-    assert_eq!(source.0.load(Ordering::SeqCst), 1);
-    assert!(provider.requests().is_empty());
-    let records = journal.0.lock().unwrap();
-    assert!(
-        !records
-            .iter()
-            .any(|record| matches!(record.event, ExecutionEvent::ModelStarted { .. }))
-    );
     Ok(())
 }
 
@@ -1054,18 +1087,20 @@ async fn counting_context_refusal_compacts_and_replays_without_recounting() -> R
         let counted = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen = counted.clone();
         let provider = Arc::new(
-            ScriptedModelProvider::new([])
-                .with_context_capacity(crate::context::ModelContextCapacity {
-                    context_tokens: 65_536,
-                    output_tokens: Some(4096),
-                })
-                .with_token_counter(move |request| {
-                    seen.lock().unwrap().push(request.request_digest());
-                    if request.bytes().len() > 5_000 {
-                        return Err(Error::ModelContextOverflow);
-                    }
-                    fixture_token_count(request)
-                }),
+            ScriptedModelProvider::new([ScriptedTurn::Text(
+                r#"{"version":1,"drop_through":3,"summary":"retained history"}"#.into(),
+            )])
+            .with_context_capacity(crate::context::ModelContextCapacity {
+                context_tokens: 65_536,
+                output_tokens: Some(4096),
+            })
+            .with_token_counter(move |request| {
+                seen.lock().unwrap().push(request.request_digest());
+                if request.bytes().len() > 5_000 {
+                    return Err(Error::ModelContextOverflow);
+                }
+                fixture_token_count(request)
+            }),
         );
         let executor = StockExecutor::new(
             Model::new("fixture".into(), "reported-usage".into(), "1".into())?,
@@ -1090,15 +1125,15 @@ async fn counting_context_refusal_compacts_and_replays_without_recounting() -> R
         let prior = vec![
             ModelMessage {
                 role: ModelRole::User,
-                content: ModelContent::Text("old".repeat(10_000)),
+                content: ModelContent::Text("old".repeat(500)),
             },
             ModelMessage {
                 role: ModelRole::Assistant,
-                content: ModelContent::Text("old answer".repeat(2_000)),
+                content: ModelContent::Text("old answer".repeat(150)),
             },
             ModelMessage {
                 role: ModelRole::Assistant,
-                content: ModelContent::Text("recent answer".into()),
+                content: ModelContent::Text("recent answer".repeat(200)),
             },
         ];
         let execution = StockExecution::ordinary(&executor);
@@ -1136,9 +1171,254 @@ async fn counting_context_refusal_compacts_and_replays_without_recounting() -> R
             );
         }
         assert!(
-            provider.requests().is_empty(),
-            "admission never generates before a verified count"
+            provider.request_count() == usize::from(!irreducible),
+            "only an admissible summary may generate; the worker remains undispatched"
         );
     }
+    Ok(())
+}
+struct CeilingCounter(crate::test_support::ScriptedModelProvider);
+
+impl ModelProvider for CeilingCounter {
+    fn context_capacity(&self, model: &Model) -> Result<crate::context::ModelContextCapacity> {
+        self.0.context_capacity(model)
+    }
+
+    fn count_tokens<'a>(
+        &'a self,
+        request: &'a crate::model::PreparedModelRequest,
+        ceiling: u64,
+    ) -> crate::model::ModelStream<'a> {
+        if request.bytes().len() as u64 <= ceiling {
+            crate::model::ModelStream::from_count(async move {
+                let bound = u32::try_from(request.bytes().len())
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                Ok(crate::context::ModelTokenCount::from_upper_bounds(
+                    request.request_digest(),
+                    bound,
+                    vec![0; request.request().messages.len()],
+                ))
+            })
+        } else {
+            self.0.count_tokens(request, ceiling)
+        }
+    }
+
+    fn generate<'a>(
+        &'a self,
+        request: &'a crate::model::PreparedModelRequest,
+        dispatch: crate::model::ModelDispatch,
+    ) -> crate::model::ModelStream<'a> {
+        self.0.generate(request, dispatch)
+    }
+}
+
+#[tokio::test]
+async fn response_reserve_requests_a_tighter_count_before_rewriting() -> Result<()> {
+    let provider = Arc::new(CeilingCounter(
+        ScriptedModelProvider::new([ScriptedTurn::Text("answer".into())]).with_context_capacity(
+            crate::context::ModelContextCapacity {
+                context_tokens: 65_536,
+                output_tokens: Some(8192),
+            },
+        ),
+    ));
+    let executor = StockExecutor::new(
+        Model::new("fixture".into(), "ceiling-counter".into(), "1".into())?,
+        provider.clone(),
+        ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
+            "history",
+            "1",
+            Arc::new(crate::context::Context {
+                messages: vec![
+                    ModelMessage {
+                        role: ModelRole::User,
+                        content: ModelContent::Text("o".repeat(30_000)),
+                    },
+                    ModelMessage {
+                        role: ModelRole::Assistant,
+                        content: ModelContent::Text("a".repeat(30_000)),
+                    },
+                ],
+                ..Default::default()
+            }),
+            crate::context::ContextPlacement::Prepend,
+        )) as Arc<dyn crate::context::ContextStage>]),
+        ToolRegistry::default(),
+    );
+    let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+    let journal = storage.journal();
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        input: ModelContent::Text("question".into()),
+        selected_context: None,
+        max_steps: None,
+    };
+    let output = executor.execute(input.clone(), journal.as_ref()).await?;
+    assert_eq!(output.text, "answer");
+    assert_eq!(executor.execute(input, journal.as_ref()).await?, output);
+    let requests = provider.0.requests();
+    assert_eq!(
+        requests.len(),
+        1,
+        "an exact count fits; no manager call is needed"
+    );
+    assert!(!requests[0].summary);
+    let prepared =
+        crate::model::PreparedModelRequest::prepare(requests[0].clone(), Limits::default(), None)?;
+    assert!(
+        (57_345..=65_536).contains(&prepared.bytes().len()),
+        "the loose bound must distinguish the two ceilings"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn oversized_history_uses_bounded_manager_parts_without_worker_steps_or_replay_collisions()
+-> Result<()> {
+    let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+    let journal = storage.journal();
+    let (provider, _) = counted_model(
+        32_768,
+        None,
+        [
+            ScriptedTurn::Text(r#"{"version":1,"drop_through":3,"summary":"FIRST_FACT"}"#.into()),
+            ScriptedTurn::Text(
+                r#"{"version":1,"drop_through":4,"summary":"FIRST_FACT SECOND_FACT"}"#.into(),
+            ),
+            ScriptedTurn::Text("answer".into()),
+        ],
+        [],
+    );
+    let source = crate::context::Context {
+        messages: (0..6)
+            .map(|index| ModelMessage {
+                role: if index % 2 == 0 {
+                    ModelRole::User
+                } else {
+                    ModelRole::Assistant
+                },
+                content: ModelContent::Text(format!("FACT_{index} {}", "x".repeat(8_000))),
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let executor = StockExecutor::new(
+        Model::new("fixture".into(), "bounded-manager".into(), "1".into())?,
+        provider.clone(),
+        ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
+            "history",
+            "1",
+            Arc::new(source),
+            crate::context::ContextPlacement::Prepend,
+        )) as Arc<dyn crate::context::ContextStage>]),
+        ToolRegistry::default(),
+    );
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        input: ModelContent::Text("c".repeat(8_000)),
+        selected_context: None,
+        max_steps: None,
+    };
+    let output = executor.execute(input.clone(), journal.as_ref()).await?;
+    assert_eq!(output.text, "answer");
+    assert_eq!(output.steps, 1, "manager parts cannot consume worker steps");
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[..2].iter().all(|request| request.summary));
+    assert!(!requests[2].summary);
+    assert!(requests[0].messages.iter().all(
+        |message| !matches!(&message.content, ModelContent::Text(text) if text.contains("FACT_5"))
+    ));
+    let rolling = requests[1]
+        .messages
+        .iter()
+        .flat_map(|message| message.content.file_parts())
+        .next()
+        .ok_or_else(|| Error::Invalid("missing rolling summary".into()))?
+        .0;
+    assert_eq!(journal.load(rolling, None)?.await?.as_ref(), b"FIRST_FACT");
+    let fresh = StockExecution::ordinary(&executor);
+    for purpose in [ModelPurpose::Summary, ModelPurpose::SummaryPart(1)] {
+        let (_, records) = fresh
+            .model_records(journal.as_ref(), input.operation_id, 0, purpose)
+            .await?;
+        assert_eq!(records.iter().filter(|record| matches!(record.event, ExecutionEvent::ModelStarted { purpose: recorded, .. } if recorded == purpose)).count(), 1);
+        assert!(records.iter().any(|record| matches!(record.event, ExecutionEvent::Model { purpose: recorded, .. } | ExecutionEvent::ModelInline { purpose: recorded, .. } if recorded == purpose)));
+    }
+    assert_eq!(
+        executor.clone().execute(input, journal.as_ref()).await?,
+        output
+    );
+    assert_eq!(
+        provider.request_count(),
+        3,
+        "replay must not dispatch another manager part"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn manager_shrinks_source_before_encoding_under_a_finite_file_bound() -> Result<()> {
+    let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+    let journal = storage.journal();
+    let (provider, _) = counted_model(
+        65_536,
+        None,
+        [ScriptedTurn::Text(
+            r#"{"version":1,"drop_through":1,"summary":"retained fact"}"#.into(),
+        )],
+        [],
+    );
+    let executor = StockExecutor::new(
+        Model::new("fixture".into(), "byte-bounded-manager".into(), "1".into())?,
+        provider.clone(),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    )
+    .with_limits(Limits {
+        file_bytes: Some(12_000),
+        ..Limits::default()
+    });
+    let source = crate::context::Context {
+        messages: (0..5)
+            .map(|index| ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text(format!("FACT_{index} {}", "x".repeat(8_000))),
+            })
+            .collect(),
+        current_input_index: Some(4),
+        ..Default::default()
+    };
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        input: ModelContent::Text("continue".into()),
+        selected_context: None,
+        max_steps: None,
+    };
+    let digest = crate::context::prefix_digest(&source, 4, None)?;
+    for _ in 0..2 {
+        let execution = StockExecution::ordinary(&executor);
+        let (summary, _, more) = execution
+            .managed_summary(
+                journal.as_ref(),
+                (&input, 0),
+                &source,
+                &crate::context::CapacityCompaction::default(),
+                (4, None),
+                (0, None, digest),
+            )
+            .await?;
+        assert_eq!(summary.source_messages, 1);
+        assert!(more);
+    }
+    assert_eq!(
+        provider.request_count(),
+        1,
+        "replay reuses the original admitted byte-bounded window"
+    );
+    assert!(provider.requests()[0].messages.iter().all(
+        |message| !matches!(&message.content, ModelContent::Text(text) if text.contains("FACT_1"))
+    ));
     Ok(())
 }

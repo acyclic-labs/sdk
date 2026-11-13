@@ -10,6 +10,83 @@ impl StockExecution<'_> {
         material: (crate::context::Context, ModelContent),
         phase: &mut DispatchPhase,
     ) -> Result<(crate::context::ContextSummary, String)> {
+        self.summarize_part(
+            journal,
+            parent,
+            operation_id,
+            step,
+            material,
+            phase,
+            ModelPurpose::Summary,
+        )
+        .await
+    }
+
+    fn summary_executor(
+        &self,
+        source: crate::context::Context,
+        revision: String,
+    ) -> Result<StockExecution<'_>> {
+        Ok(StockExecution {
+            stock: self.stock,
+            context: self.context,
+            io: self.io,
+            summary: Some(ContextPipeline::summary_source(source, revision, self.io)?),
+            single_request: false,
+            journal_writes: self.journal_writes.borrowed(),
+            compaction: once_cell::sync::OnceCell::new(),
+            records: tokio::sync::Mutex::new(Default::default()),
+            working_tail: tokio::sync::Mutex::new(Default::default()),
+            request_cache: tokio::sync::Mutex::new(Default::default()),
+            content_admission: Default::default(),
+        })
+    }
+
+    pub(super) async fn admit_summary_window(
+        &self,
+        journal: &dyn ExecutionJournal,
+        turn: (&TurnInput, u32),
+        source: crate::context::Context,
+        instruction: ModelContent,
+        purpose: ModelPurpose,
+    ) -> Result<()> {
+        if let Some(maximum) = self.stock.limits.file_bytes {
+            let bytes = with_history_io(self.io, |work| {
+                crate::executor::json::json_byte_length(&source, None, work)
+            })?;
+            if bytes > maximum {
+                return Err(Error::ModelContextOverflow);
+            }
+        }
+        let (_, digest, _) = self.summary_source_identity(&source)?;
+        let revision = with_history_io(self.io, |work| {
+            preparation_format(
+                format_args!("{}", blake3::Hash::from(digest).to_hex()),
+                work,
+            )
+        })?;
+        let executor = self.summary_executor(source, revision)?;
+        let input = TurnInput {
+            operation_id: turn.0.operation_id,
+            input: instruction,
+            max_steps: Some(1),
+            selected_context: None,
+        };
+        self.prepare_summary_admission(&executor, journal, &input, turn.1, purpose)
+            .await?;
+        Ok(())
+    }
+
+    pub(super) async fn summarize_part(
+        &self,
+        journal: &dyn ExecutionJournal,
+        parent: Option<&TurnInput>,
+        operation_id: OperationId,
+        step: u32,
+        material: (crate::context::Context, ModelContent),
+        phase: &mut DispatchPhase,
+        purpose: ModelPurpose,
+    ) -> Result<(crate::context::ContextSummary, String)> {
         let (source, instruction) = material;
         // Validate the original task's summary authority before model admission,
         // even though the summary session disables recursive compaction.
@@ -32,19 +109,7 @@ impl StockExecution<'_> {
                 work,
             )
         })?;
-        let executor = StockExecution {
-            stock: self.stock,
-            context: self.context,
-            io: self.io,
-            summary: Some(ContextPipeline::summary_source(source, revision, self.io)?),
-            single_request: false,
-            journal_writes: self.journal_writes.borrowed(),
-            compaction: once_cell::sync::OnceCell::new(),
-            records: tokio::sync::Mutex::new(Default::default()),
-            working_tail: tokio::sync::Mutex::new(Default::default()),
-            request_cache: tokio::sync::Mutex::new(Default::default()),
-            content_admission: Default::default(),
-        };
+        let executor = self.summary_executor(source, revision)?;
         let input = TurnInput {
             max_steps: Some(1),
             operation_id,
@@ -52,7 +117,7 @@ impl StockExecution<'_> {
             selected_context: None,
         };
         let prepared = self
-            .prepare_summary_admission(&executor, journal, &input, step)
+            .prepare_summary_admission(&executor, journal, &input, step, purpose)
             .await?;
         executor.validate_turn_input(journal, &input).await?;
         if let Some(parent) = parent {
@@ -63,7 +128,10 @@ impl StockExecution<'_> {
             executor.ensure_started(journal, &input).await?;
         }
         let source_key = with_history_io(self.io, |work| {
-            crate::executor::preparation_format(format_args!("summary:{step}:source"), work)
+            crate::executor::preparation_format(
+                format_args!("{}:{step}:source", dispatch::model_purpose_key(purpose)),
+                work,
+            )
         })?;
         stage_bytes(
             journal,
@@ -86,7 +154,7 @@ impl StockExecution<'_> {
                     prepared,
                     publish_reply: false,
                 },
-                ModelPurpose::Summary,
+                purpose,
                 phase,
             )?
             .await?;
@@ -102,8 +170,11 @@ impl StockExecution<'_> {
                 "summary reached its output-token limit; request a shorter summary"));
         }
         let text = self.collect_summary_text(events)?;
-        let output_key = with_history_io(self.io, |work| {
-            crate::executor::preparation_format(format_args!("summary:{step}:output"), work)
+        let output_key = with_history_io(self.io, |work| match purpose {
+            ModelPurpose::SummaryPart(part) => {
+                preparation_format(format_args!("summary:{step}:part:{part}:output"), work)
+            }
+            _ => preparation_format(format_args!("summary:{step}:output"), work),
         })?;
         let summary = self
             .publish_summary(
@@ -218,8 +289,8 @@ impl StockExecution<'_> {
         Ok(text)
     }
 
-    /// Publish both authored summaries and kernel markers with the same exact
-    /// output provenance. Their original keys remain distinct for replay.
+    /// Publish a selected summary with the exact source and output provenance
+    /// replay requires. Manager responses retain their own original keys.
     pub(super) async fn publish_summary(
         &self,
         journal: &dyn ExecutionJournal,

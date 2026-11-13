@@ -127,6 +127,7 @@ fn mandatory_selection(
                 || message.content.contains_native_media(),
         );
     }
+    retain_latest_changes(context, &mut selected, quota)?;
     // Components are flattened. First select every selected member's root,
     // then select its other members without retaining unrelated interior text.
     for (position, group) in groups.iter().enumerate() {
@@ -151,6 +152,37 @@ fn mandatory_selection(
     Ok(selected)
 }
 
+// Frozen manifests do not contain revisions appended after the epoch started.
+// Retain each source's latest notice until a new manifest replaces the epoch.
+fn retain_latest_changes(
+    context: &Context,
+    selected: &mut [bool],
+    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+) -> Result<()> {
+    let original = crate::wire_codec::BorrowedIndexWork::new(quota.work());
+    let mut seen = acyclic_collections::FixedIndex::<(), _, 32>::default();
+    for (position, message) in context.messages.iter().enumerate().rev() {
+        let Some((notices, _)) = message.content.notice_parts() else {
+            continue;
+        };
+        for notice in notices.iter().rev() {
+            if notice.source != "harness" || notice.kind != crate::context::CONTEXT_CHANGED {
+                continue;
+            }
+            let Some(key) = &notice.coalesce_key else {
+                selected[position] = true;
+                continue;
+            };
+            let digest = original
+                .with(|work| crate::executor::json::canonical_json_digest(key, None, work))?;
+            if seen.get(digest, &mut &original)?.is_none() {
+                seen.get_or_try_insert_with(digest, &mut &original, |_| Ok(()))?;
+                selected[position] = true;
+            }
+        }
+    }
+    Ok(())
+}
 pub(crate) fn mandatory_messages(
     context: &Context,
     covered: usize,
@@ -213,31 +245,12 @@ pub(crate) fn compact_context(
     let made = (|| {
         let (mut selected, groups) =
             mandatory_flags(context, summary.source_messages as usize, &mut quota)?;
-        let mut count = selected.iter().filter(|value| **value).count();
+        let count = selected.iter().filter(|value| **value).count();
         if count >= maximum {
             return Err(compaction_error(
                 quota.work(),
                 "mandatory context exceeds compaction message budget",
             ));
-        }
-        for group in groups.iter().rev() {
-            compaction_step(&mut quota)?;
-            let root = group.root;
-            let mut size = groups[root].size;
-            for source in groups[root].sources() {
-                compaction_step(&mut quota)?;
-                if !selected[source] {
-                    size += groups[source].size;
-                }
-            }
-            if !selected[root] && size < maximum - count {
-                selected[root] = true;
-                for source in groups[root].sources() {
-                    compaction_step(&mut quota)?;
-                    selected[source] = true;
-                }
-                count += size;
-            }
         }
         for (position, group) in groups.iter().enumerate() {
             compaction_step(&mut quota)?;

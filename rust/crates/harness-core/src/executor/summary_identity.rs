@@ -1,20 +1,29 @@
 use crate::OperationId;
 use serde::Deserialize;
 
-/// The journal keys of model-visible summary outputs: a deliberate summary's
-/// text and the mechanical backstop marker.
+/// Model-visible summary outputs, including independently admitted rolling parts.
 pub(crate) fn is_summary_key(key: &str) -> bool {
-    let step = |rest: &str, suffix: &str| {
-        rest.strip_suffix(suffix)
-            .is_some_and(|step| !step.is_empty() && step.bytes().all(|byte| byte.is_ascii_digit()))
+    let number = |value: &str| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit());
+    let Some(rest) = key.strip_prefix("summary:") else {
+        return false;
     };
-    key.strip_prefix("summary:")
-        .is_some_and(|rest| step(rest, ":output"))
-        || key
-            .strip_prefix("backstop:")
-            .is_some_and(|rest| step(rest, ":marker"))
+    let Some((step, rest)) = rest.split_once(':') else {
+        return false;
+    };
+    if !number(step) {
+        return false;
+    }
+    if rest == "output" {
+        return true;
+    }
+    let Some(rest) = rest.strip_prefix("part:") else {
+        return false;
+    };
+    let Some((part, kind)) = rest.split_once(':') else {
+        return false;
+    };
+    number(part) && matches!(kind, "output" | "rewrite")
 }
-
 // Only the journal's complete, immutable summary payload namespace qualifies.
 pub(crate) fn summary_operation(path: &str) -> Option<OperationId> {
     let tail = path.strip_prefix(".system/summaries/")?;

@@ -281,7 +281,13 @@ impl StockExecution<'_> {
         capacity: crate::context::ModelContextCapacity,
     ) -> Result<u64> {
         capacity.validate()?;
-        Ok(u64::from(capacity.context_tokens))
+        if self.single_request {
+            return Ok(u64::from(capacity.context_tokens));
+        }
+        match self.compaction_policy()? {
+            crate::context::CompactionPolicy::Capacity(policy) => policy.input_ceiling(capacity),
+            crate::context::CompactionPolicy::Disabled => Ok(u64::from(capacity.context_tokens)),
+        }
     }
 
     pub(super) fn sampling(&self) -> Result<crate::model::ModelSampling> {
@@ -305,9 +311,10 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
+        purpose: ModelPurpose,
     ) -> Result<Option<crate::model::PreparedModelRequest>> {
         let (_, records) = self
-            .model_records(journal, input.operation_id, step, ModelPurpose::Summary)
+            .model_records(journal, input.operation_id, step, purpose)
             .await?;
         if records
             .iter()
@@ -321,7 +328,7 @@ impl StockExecution<'_> {
         let mut prepared = executor.prepare_request(input, step, &[]).await?;
         self.verify_model_request_content(journal, &mut prepared)
             .await?;
-        let ceiling = u64::from(capacity.context_tokens);
+        let ceiling = crate::context::CapacityCompaction::default().input_ceiling(capacity)?;
         let count = match stock_count_tokens(
             self.stock.provider.as_ref(),
             &prepared,
@@ -341,11 +348,7 @@ impl StockExecution<'_> {
         };
         let count = with_history_io(self.io, |work| count.validate(&prepared, work))?;
         if count > ceiling {
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Invalid,
-                "summary input exceeds selected model capacity",
-            ));
+            return Err(Error::ModelContextOverflow);
         }
         Ok(Some(prepared))
     }

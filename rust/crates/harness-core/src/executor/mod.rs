@@ -50,7 +50,9 @@ mod binding;
 mod compaction;
 mod composition;
 mod content;
+mod context_files;
 mod dispatch;
+mod manager;
 pub(crate) use tool_changes::decode_tool_table;
 mod event_page;
 mod tool_changes;
@@ -255,6 +257,8 @@ pub enum ModelPurpose {
     Response,
     /// A retained context summary inside that same execution.
     Summary,
+    /// One capacity-bounded part of a multi-call summary at the same worker step.
+    SummaryPart(u64),
     /// Token admission during request preparation, separate from generation.
     Count,
 }
@@ -267,8 +271,14 @@ impl ModelPurpose {
         io: Option<&PreparationIo>,
     ) -> Result<OperationId> {
         let charge = acyclic_fs::WorkCounters {
-            bytes_hashed: if self == Self::Summary {
-                b"harness:summary-attempt:v1".len() as u64 + 16
+            bytes_hashed: if matches!(self, Self::Summary | Self::SummaryPart(_)) {
+                b"harness:summary-attempt:v1".len() as u64
+                    + 16
+                    + if matches!(self, Self::SummaryPart(_)) {
+                        8
+                    } else {
+                        0
+                    }
             } else {
                 0
             },
@@ -279,10 +289,13 @@ impl ModelPurpose {
         }
         let operation = match self {
             Self::Response | Self::Count => execution,
-            Self::Summary => {
+            Self::Summary | Self::SummaryPart(_) => {
                 let mut hasher = blake3::Hasher::new();
                 hasher.update(b"harness:summary-attempt:v1");
                 hasher.update(&execution.into_bytes());
+                if let Self::SummaryPart(part) = self {
+                    hasher.update(&part.to_le_bytes());
+                }
                 let mut bytes = [0; 16];
                 bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
                 OperationId::from_bytes(bytes)

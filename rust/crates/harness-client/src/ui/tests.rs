@@ -458,7 +458,7 @@ fn ui_agent_override() -> TestResult {
 
 #[test]
 fn ui_reply_roundtrip_with_unknown_kind_and_approval() -> TestResult {
-    for kind in ["choose", "future-widget"] {
+    for kind in ["choose", "pick-fork", "future-widget"] {
         let blocks = blocks::parse(&format!(
             "```input {kind} id=approach recommended=b\n- a\n- b\n```\n\n~~~input text id=notes\nDetails?\n~~~\n"
         ))?;

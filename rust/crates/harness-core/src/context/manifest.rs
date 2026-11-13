@@ -28,6 +28,10 @@ pub struct ContextManifest {
     #[serde(default)]
     #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire[]"))]
     pub sources: Vec<FileRef>,
+    /// Ordered, immutable working documents, projected as assistant data rather than instructions.
+    #[serde(default)]
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire[]"))]
+    pub documents: Vec<FileRef>,
     /// Complete selected tool catalog before caller attenuation, with exact executor revisions.
     pub tools: Vec<ToolDefinition>,
 }
@@ -51,6 +55,7 @@ impl ContextManifest {
             discovery,
             selected_skills,
             sources: Vec::new(),
+            documents: Vec::new(),
             tools: tools.definitions(None)?,
         })
     }
@@ -72,6 +77,7 @@ impl ContextManifest {
                 .iter()
                 .map(|instruction| &**instruction)
                 .chain(&self.sources)
+                .chain(&self.documents)
             {
                 limits.validate_file(file, work)?;
             }
@@ -146,6 +152,7 @@ impl ContextManifest {
                 .instructions
                 .len()
                 .checked_add(self.conventions.len())
+                .and_then(|count| count.checked_add(self.documents.len()))
                 .and_then(|count| count.checked_add(usize::from(!self.discovery.skills.is_empty())))
                 .and_then(|count| count.checked_add(self.selected_skills.len()))
                 .ok_or_else(|| {
