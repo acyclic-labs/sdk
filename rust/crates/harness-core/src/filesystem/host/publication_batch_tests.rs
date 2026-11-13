@@ -59,7 +59,7 @@ async fn content_routing_evidence_never_creates_or_overwrites_a_workspace_path()
     let cancellation = acyclic_fs::CancellationToken::new();
     let io = PreparationIo::for_unmeasured(&cancellation)?;
     let (_, fence) = host
-        .authorize_content_write(&root, &grant, "file", false, None, Some(&io))?
+        .authorize_content_write(&root, &grant, "file", true, None, Some(&io))?
         .await?;
     let operation = FilesystemKey::new();
     let before = io.sdk(root.head(&io, &cancellation).await)?.id();
