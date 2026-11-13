@@ -2522,4 +2522,3 @@ async fn manifest_limits_bound_handler_time_and_checkpoint_size() -> TestResult 
     assert!(published.is_empty());
     Ok(())
 }
-
