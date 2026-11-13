@@ -25,6 +25,7 @@ pub struct PromptHistory {
     original: Option<(u64, u64)>,
     directories: Vec<Directory>,
     input: Option<ConversationInput>,
+    selected_end: bool,
 }
 
 impl PromptHistory {
@@ -42,6 +43,7 @@ impl PromptHistory {
                 ended: false,
             }],
             input: None,
+            selected_end: false,
         }
     }
 
@@ -104,7 +106,11 @@ impl PromptHistory {
                     }
                 }
                 Some(InputPreviewStep::Selected(None)) if self.original.is_none() => {
-                    self.input = None
+                    self.selected_end = true;
+                }
+                None if self.selected_end && self.original.is_none() => {
+                    self.input = None;
+                    self.selected_end = false;
                 }
                 _ => {
                     return Err(crate::Error::Invalid(
