@@ -1048,6 +1048,16 @@ async fn remote_send_recovers_original_admission_from_its_source_publication() -
         submit(&local, request).await?;
         let outbox = routing.paths.outbox(&routing.node)?;
         assert_eq!(local.tail(outbox.clone()).await?, 3);
+        assert!(
+            local
+                .record_at(outbox.clone(), 0)
+                .await?
+                .ok_or("placement missing")?
+                .headers
+                .keys()
+                .is_empty(),
+            "metadata publication must not masquerade as a message index"
+        );
         assert_eq!(
             local.tail(recipient.inbox()?).await?,
             1,
@@ -1066,6 +1076,12 @@ async fn remote_send_recovers_original_admission_from_its_source_publication() -
             assert_eq!(record.commit_id, marker.commit_id);
             assert_eq!(record.commit_id, receipt.commit_id);
             let envelope = route::Publication::decode(&record.value)?.delivery()?;
+            let canonical = envelope.outbox_record(&routing.paths)?;
+            assert_eq!(canonical.value, record.value);
+            assert_eq!(
+                canonical.headers, record.headers,
+                "singleton and batched publication must share the same index encoder"
+            );
             let CommitMutation::Append { records, .. } = &envelope.request.effects[0].mutations[0]
             else {
                 return Err("message append missing".into());
@@ -1093,6 +1109,89 @@ async fn remote_send_recovers_original_admission_from_its_source_publication() -
                     source: routing.paths.outbox_cursor(&routing.node)?,
                     from: sequence as u64 + 1
                 }
+            );
+        }
+        // A copied source key is not proof of the original journal publication.
+        // Keep all route/message bytes genuine and change only the commit
+        // relationship or the selected intent, so each guard is necessary.
+        for separate_commit in [true, false] {
+            let mirror = MemoryStream::default();
+            let source = local
+                .record_at(outbox.clone(), if separate_commit { 1 } else { 2 })
+                .await?
+                .ok_or("original source missing")?;
+            let marker_path = sender.sent_message(&intent("first"))?;
+            let marker = local
+                .head(marker_path.clone())
+                .await?
+                .last
+                .ok_or("original marker missing")?;
+            let mut attributes = marker
+                .headers
+                .attributes()
+                .iter()
+                .map(|attribute| attribute.to_owned())
+                .collect::<Vec<_>>();
+            let source_key = source
+                .headers
+                .keys()
+                .first()
+                .ok_or("source index missing")?
+                .clone();
+            for attribute in &mut attributes {
+                if attribute.name == "acyclic.actors.route.source-intent.v1" {
+                    attribute.value = source_key.clone();
+                }
+            }
+            let marker = acyclic_stream::AppendRecord {
+                value: marker.value,
+                headers: acyclic_stream::RecordHeaders::new(Vec::new(), attributes)?,
+            };
+            let mut effects = vec![CommitEffect::hard(
+                Vec::new(),
+                vec![CommitMutation::Append {
+                    path: outbox.clone(),
+                    records: vec![acyclic_stream::AppendRecord {
+                        value: source.value,
+                        headers: source.headers,
+                    }],
+                }],
+            )];
+            if !separate_commit {
+                effects[0].mutations.push(CommitMutation::Append {
+                    path: marker_path.clone(),
+                    records: vec![marker.clone()],
+                });
+            }
+            submit(
+                &mirror,
+                CommitRequest {
+                    deadline_unix_millis: None,
+                    idempotency_key: intent_key("copy-source", &[])?,
+                    effects,
+                },
+            )
+            .await?;
+            if separate_commit {
+                submit(
+                    &mirror,
+                    CommitRequest {
+                        deadline_unix_millis: None,
+                        idempotency_key: intent_key("copy-marker", &[])?,
+                        effects: vec![CommitEffect::hard(
+                            Vec::new(),
+                            vec![CommitMutation::Append {
+                                path: marker_path,
+                                records: vec![marker],
+                            }],
+                        )],
+                    },
+                )
+                .await?;
+            }
+            assert!(
+                sent(&mirror, &sender, &intent("first")).await.is_err(),
+                "a source locator must prove its original commit and exact message intent"
             );
         }
         let cursor = routing.paths.outbox_cursor(&routing.node)?;
@@ -1185,7 +1284,7 @@ async fn remote_send_recovers_original_admission_from_its_source_publication() -
                 .status,
             SentReplyStatus::Pending
         );
-        // One owned-marker head, its original commit, its admission receipt,
+        // One owned-marker head, its indexed publication, its admission receipt,
         // and one indexed result read. The read carries its own watch cut.
         assert_eq!(
             counted

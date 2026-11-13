@@ -350,8 +350,17 @@ pub(super) fn lower_routed(
                         request,
                     };
                     let target = routing.paths.outbox(&routing.node).map_err(Error::Stream)?;
-                    builder.append(target.clone(), envelope.outbox_record());
-                    outbox = Some(target);
+                    let record = envelope
+                        .outbox_record(&routing.paths)
+                        .map_err(super::routing::error)?;
+                    let intent = record
+                        .headers
+                        .keys()
+                        .first()
+                        .ok_or(Error::Record("routed publication has no original key"))?
+                        .clone();
+                    builder.append(target.clone(), record);
+                    outbox = Some((target, intent));
                 }
                 if let InboxRecord::Message(message) | InboxRecord::FollowUp(message) = record
                     && message.from == sender
@@ -366,13 +375,19 @@ pub(super) fn lower_routed(
                     }
                     .encode()?
                     .into();
-                    if let Some(outbox) = &outbox {
+                    if let Some((outbox, intent)) = &outbox {
                         marker_record.headers = acyclic_stream::RecordHeaders::new(
                             Vec::new(),
-                            vec![acyclic_stream::Attribute {
-                                name: super::routing::OUTBOX.into(),
-                                value: outbox.as_str().as_bytes().to_vec().into(),
-                            }],
+                            vec![
+                                acyclic_stream::Attribute {
+                                    name: super::routing::OUTBOX.into(),
+                                    value: outbox.as_str().as_bytes().to_vec().into(),
+                                },
+                                acyclic_stream::Attribute {
+                                    name: super::routing::SOURCE_INTENT.into(),
+                                    value: intent.clone(),
+                                },
+                            ],
                         )
                         .map_err(Error::Stream)?;
                     }

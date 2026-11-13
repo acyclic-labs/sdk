@@ -4,6 +4,7 @@
 use super::{AgentPath, AgentRecord, Delivered, Error, InboxRecord, IntentId, Sender};
 use acyclic_actors::route::{self, Routed};
 use acyclic_stream::{CommittedMutation, StreamError, StreamProviderExt as _};
+use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
 
 /// Original delivery or the lossless source position still awaiting admission.
@@ -212,6 +213,71 @@ pub async fn sent<P: crate::store::JournalProvider + ?Sized>(
     if marker.id != *id {
         return Err(Error::Record("send receipt intent differs"));
     }
+    let attributes = record.headers.attributes();
+    let source_intent = attributes
+        .iter()
+        .find(|attribute| attribute.name == super::routing::SOURCE_INTENT);
+    if let Some(outbox) = outbox {
+        let source_intent = source_intent.ok_or(Error::Record("send source index is missing"))?;
+        let mut records = provider
+            .read(acyclic_stream::ReadRequest {
+                path: outbox.clone(),
+                from: 0,
+                limit: 1,
+                key: Some(acyclic_stream::ReadKeySeek::exact(
+                    source_intent.value.to_vec(),
+                    u64::MAX,
+                )),
+                at_least: Default::default(),
+            })
+            .await
+            .map_err(Error::Stream)?;
+        let source = records
+            .try_next()
+            .await
+            .map_err(Error::Stream)?
+            .ok_or(Error::Record("send source publication is missing"))?;
+        if source.commit_id != record.commit_id || source.origin != outbox {
+            return Err(Error::Record("send source publication differs"));
+        }
+        let (paths, node) = route::Paths::from_outbox(&outbox).map_err(super::routing::error)?;
+        let envelope = route::Publication::decode(&source.value)
+            .map_err(super::routing::error)?
+            .delivery()
+            .map_err(super::routing::error)?;
+        let peer = super::PeerRoute::parse(&envelope)?;
+        if envelope.source != node
+            || peer.sender() != sender
+            || peer.recipient() != &marker.to
+            || peer.id() != id
+        {
+            return Err(Error::Record("send source intent differs"));
+        }
+        let delivery = match route::receipt(
+            provider,
+            &paths,
+            &node,
+            source.sequence,
+            &envelope.request.idempotency_key,
+        )
+        .await
+        .map_err(super::routing::error)?
+        {
+            Some(receipt) => SentDelivery::Complete(receipt),
+            None => SentDelivery::Pending {
+                source: paths.outbox_cursor(&node).map_err(Error::Stream)?,
+                from: source.sequence,
+            },
+        };
+        return Ok(Some(SentMessage {
+            to: marker.to,
+            id: marker.id,
+            delivery,
+        }));
+    }
+    if source_intent.is_some() {
+        return Err(Error::Record("send source index has no outbox"));
+    }
     let envelope = provider
         .read_commit(record.commit_id)
         .await
@@ -221,51 +287,10 @@ pub async fn sent<P: crate::store::JournalProvider + ?Sized>(
     }
     let inbox = marker.to.inbox()?;
     let mut delivery = Delivered::Closed;
-    let mut routed = None;
     for mutation in envelope.mutations {
         let CommittedMutation::Append(append) = mutation else {
             continue;
         };
-        if outbox.as_ref() == Some(&append.path) {
-            let (paths, node) =
-                route::Paths::from_outbox(&append.path).map_err(super::routing::error)?;
-            for record in append.records {
-                let route::Publication::Delivery(envelope) =
-                    route::Publication::decode(&record.value).map_err(super::routing::error)?
-                else {
-                    continue;
-                };
-                if envelope.source != node {
-                    return Err(Error::Record("send outbox source differs"));
-                }
-                let peer = super::PeerRoute::parse(&envelope)?;
-                if peer.sender() != sender || peer.recipient() != &marker.to || peer.id() != id {
-                    continue;
-                }
-                if routed.is_some() {
-                    return Err(Error::Record("send outbox intent differs"));
-                }
-                routed = Some(
-                    match route::receipt(
-                        provider,
-                        &paths,
-                        &node,
-                        record.sequence,
-                        &envelope.request.idempotency_key,
-                    )
-                    .await
-                    .map_err(super::routing::error)?
-                    {
-                        Some(receipt) => SentDelivery::Complete(receipt),
-                        None => SentDelivery::Pending {
-                            source: paths.outbox_cursor(&node).map_err(Error::Stream)?,
-                            from: record.sequence,
-                        },
-                    },
-                );
-            }
-            continue;
-        }
         if append.path != inbox {
             continue;
         }
@@ -284,17 +309,12 @@ pub async fn sent<P: crate::store::JournalProvider + ?Sized>(
             }
         }
     }
-    if outbox.is_some() && (routed.is_none() || matches!(delivery, Delivered::Committed { .. })) {
-        return Err(Error::Record("send outbox publication differs"));
-    }
     Ok(Some(SentMessage {
         to: marker.to,
         id: marker.id,
-        delivery: routed.unwrap_or_else(|| {
-            SentDelivery::Complete(match delivery {
-                Delivered::Committed { inbox } => Routed::Delivered(route::Delivered { inbox }),
-                Delivered::Closed => Routed::Rejected(route::Rejection::Closed),
-            })
+        delivery: SentDelivery::Complete(match delivery {
+            Delivered::Committed { inbox } => Routed::Delivered(route::Delivered { inbox }),
+            Delivered::Closed => Routed::Rejected(route::Rejection::Closed),
         }),
     }))
 }

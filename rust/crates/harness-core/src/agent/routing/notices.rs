@@ -201,7 +201,8 @@ impl<'a> PeerInput<'a> {
             self.sender,
             &self.receipt,
         )?
-        .outbox_record())
+        .outbox_record(&routing.paths)
+        .map_err(super::error)?)
     }
 }
 

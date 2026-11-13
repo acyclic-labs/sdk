@@ -321,10 +321,24 @@ impl Publication {
         envelope: &Envelope,
         paths: &Paths,
     ) -> Result<CommitEffect, Error> {
-        Self::effect(paths, &envelope.source, Body::Delivery(envelope.wire("")))
+        Ok(CommitEffect::hard(
+            Vec::new(),
+            vec![CommitMutation::Append {
+                path: paths.outbox(&envelope.source)?,
+                records: vec![Self::delivery_record(envelope, paths)?],
+            }],
+        ))
     }
-    pub(super) fn delivery_record(envelope: &Envelope) -> acyclic_stream::AppendRecord {
-        Self::record(Body::Delivery(envelope.wire("")))
+    pub(super) fn delivery_record(
+        envelope: &Envelope,
+        paths: &Paths,
+    ) -> Result<acyclic_stream::AppendRecord, Error> {
+        let mut record = Self::record(Body::Delivery(envelope.wire("")));
+        record.headers = RecordHeaders::new(
+            vec![envelope.relay_key(paths)?.as_bytes().to_vec().into()],
+            Vec::new(),
+        )?;
+        Ok(record)
     }
     fn record(body: Body) -> acyclic_stream::AppendRecord {
         PublicationWire {

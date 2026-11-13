@@ -6,6 +6,7 @@ pub(super) mod notices;
 pub use notices::PeerResultRoute;
 
 pub(super) const OUTBOX: &str = "acyclic.actors.route.outbox.v1";
+pub(super) const SOURCE_INTENT: &str = "acyclic.actors.route.source-intent.v1";
 pub(super) const ADMISSION: &str = "acyclic.harness.peer-admission.v1";
 
 impl AgentRecord for PeerAdmission {}

@@ -146,7 +146,7 @@ impl Envelope {
         })
     }
 
-    fn relay_key(&self, paths: &Paths) -> Result<IdempotencyKey, Error> {
+    pub(super) fn relay_key(&self, paths: &Paths) -> Result<IdempotencyKey, Error> {
         let mut key = Sha256::new();
         key.update(b"acyclic.actors.route.relay.v1\0");
         for part in [

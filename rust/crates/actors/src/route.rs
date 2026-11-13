@@ -328,7 +328,9 @@ impl Envelope {
 
     /// The canonical source publication for a batch joined to the original
     /// journal commit. Relays retain the ordinary envelope encoding instead.
-    pub fn outbox_record(&self) -> acyclic_stream::AppendRecord {
-        Publication::delivery_record(self)
+    /// Its native key identifies this original publication without reading
+    /// unrelated messages joined to the same journal transaction.
+    pub fn outbox_record(&self, paths: &Paths) -> Result<acyclic_stream::AppendRecord, Error> {
+        Publication::delivery_record(self, paths)
     }
 }
