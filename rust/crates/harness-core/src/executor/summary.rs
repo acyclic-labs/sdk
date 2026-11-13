@@ -162,11 +162,11 @@ impl StockExecution<'_> {
                 "summary reached its output-token limit; request a shorter summary"));
         }
         let text = self.collect_summary_text(events)?;
-        let output_key = with_history_io(self.io, |work| {
-            crate::executor::preparation_format(
-                format_args!("{}:{step}:output", dispatch::model_purpose_key(purpose)),
-                work,
-            )
+        let output_key = with_history_io(self.io, |work| match purpose {
+            ModelPurpose::SummaryPart(part) => {
+                preparation_format(format_args!("summary:{step}:part:{part}:output"), work)
+            }
+            _ => preparation_format(format_args!("summary:{step}:output"), work),
         })?;
         let summary = self
             .publish_summary(

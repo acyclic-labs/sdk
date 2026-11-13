@@ -231,7 +231,7 @@ impl StockExecution<'_> {
         }
         let source_digest = crate::context::prefix_digest(context, through, session.io)?;
         let key = with_history_io(session.io, |work| {
-            preparation_format(format_args!("manager:{step}:part:{part}:summary"), work)
+            preparation_format(format_args!("summary:{step}:part:{part}:rewrite"), work)
         })?;
         let summary = session
             .publish_summary(

@@ -8,7 +8,7 @@ proptest! {
     #[test]
     fn staged_lookup_preserves_identity_and_requires_read(
         identity in any::<[u8; 16]>(),
-        key in prop_oneof!["[a-z]{1,12}", "tool:[0-9]:[a-z]{1,12}:result", "tool:[0-9]:[a-z]{1,12}:result:[0-9a-f]{64}", "summary:[0-9]:output", "backstop:[0-9]:marker", "summary:[0-9]:output:[0-9a-f]{64}"],
+        key in prop_oneof!["[a-z]{1,12}", "tool:[0-9]:[a-z]{1,12}:result", "tool:[0-9]:[a-z]{1,12}:result:[0-9a-f]{64}", "summary:[0-9]:output", "summary:[0-9]:part:[0-9]:rewrite", "summary:[0-9]:part:[0-9]:output", "summary:[0-9]:output:[0-9a-f]{64}"],
         bytes in proptest::collection::vec(any::<u8>(), 0..128),
     ) {
         tokio::runtime::Builder::new_current_thread()
@@ -63,7 +63,7 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
         },
     )?;
     let operation = OperationId::from_bytes(identity);
-    if key.starts_with("summary:") || key.starts_with("backstop:") {
+    if key.starts_with("summary:") {
         check_summary_namespace(&journal, operation, key, bytes).await?;
     }
     let expected = journal
