@@ -34,7 +34,6 @@ async fn cancelled_retirement_keeps_contending_async_controls_off_the_executor()
         session: session.clone(),
         destination: physical.path().to_owned(),
         _destination_custody: work.path(physical.path(), None)?.1,
-        retiring: std::sync::atomic::AtomicBool::new(false),
     };
     let (entered, entering) = tokio::sync::oneshot::channel();
     let (release, released) = std::sync::mpsc::channel();

@@ -3,6 +3,7 @@ use super::*;
 
 pub(in crate::native_mount) struct CustomerSession {
     slot: Mutex<Option<NativeMountSession>>,
+    pub(super) retiring: std::sync::atomic::AtomicBool,
     _allocation: NativeAllocation,
 }
 
@@ -18,6 +19,7 @@ impl CustomerSession {
         )?;
         Ok(Arc::new(Self {
             slot: Mutex::new(session),
+            retiring: std::sync::atomic::AtomicBool::new(false),
             _allocation: allocation,
         }))
     }

@@ -172,8 +172,55 @@ async fn private_command(
         session: CustomerSession::new(None, work)?,
         destination: destination.to_owned(),
         _destination_custody: work.path(destination, None)?.1,
-        retiring: std::sync::atomic::AtomicBool::new(false),
     })
+}
+
+#[tokio::test]
+async fn command_cleanup_preparation_failure_preserves_its_retirement_state()
+-> Result<(), Box<dyn std::error::Error>> {
+    failed_command_cleanup(false).await
+}
+
+#[tokio::test]
+#[should_panic(expected = "failed cleanup was treated as already retired")]
+async fn command_cleanup_negative_control_detects_premature_retirement() {
+    failed_command_cleanup(true).await.unwrap();
+}
+
+async fn failed_command_cleanup(premature: bool) -> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_native_mount_services()?;
+    let cancellation = crate::CancellationToken::new();
+    let work = test_work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
+    let filesystem = crate::Fs::memory();
+    let workspace = filesystem
+        .create_workspace(
+            "cleanup-failure",
+            crate::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?
+        .value;
+    let destination = tempfile::tempdir()?;
+    let command = private_command(&workspace, &work, destination.path(), false).await?;
+    // A source that has lost its original lifetime cannot fund preparation.
+    // Publishing the retirement flag first would bypass that refusal entirely.
+    command.source.cancel();
+    if premature {
+        command
+            .session
+            .retiring
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+    let result = command.abandon_command().await;
+    assert!(
+        matches!(
+            result,
+            Err(MountLifecycleError::Source(MountSourceError::Stale))
+        ),
+        "failed cleanup was treated as already retired: {result:?}"
+    );
+    assert!(!command.is_retiring());
+    Ok(())
 }
 
 #[tokio::test]
@@ -324,7 +371,6 @@ async fn publish_command(
         session: CustomerSession::new(None, &work)?,
         destination: destination.path().to_owned(),
         _destination_custody: work.path(destination.path(), None)?.1,
-        retiring: std::sync::atomic::AtomicBool::new(false),
     };
     let path = {
         #[cfg(unix)]

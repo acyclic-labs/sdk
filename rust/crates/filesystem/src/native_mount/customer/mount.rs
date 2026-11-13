@@ -7,7 +7,6 @@ pub struct Mount<A: 'static, O: 'static> {
     pub(in crate::native_mount) session: Arc<CustomerSession>,
     pub(crate) destination: PathBuf,
     pub(super) _destination_custody: NativeAllocation,
-    pub(super) retiring: std::sync::atomic::AtomicBool,
 }
 
 impl<A, O> Mount<A, O> {
@@ -20,7 +19,9 @@ impl<A, O> Mount<A, O> {
     /// Retirement has started; the existing cleanup owner must finish before reuse.
     #[must_use]
     pub fn is_retiring(&self) -> bool {
-        self.retiring.load(std::sync::atomic::Ordering::Acquire)
+        self.session
+            .retiring
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 }
 
@@ -80,12 +81,11 @@ where
             ));
         }
         if self.is_retiring() {
-            return self.detach_async().await;
+            return self.detach_async(false).await;
         }
         self.sync().await?;
         if retire {
-            self.prepare_command_cleanup().await?;
-            self.detach_async().await?;
+            self.detach_async(true).await?;
         } else {
             self.advance_to_head().await?;
         }
@@ -103,16 +103,16 @@ where
                 "view is not a private command",
             ));
         }
-        if !self.is_retiring() {
+        let prepare_cleanup = !self.is_retiring();
+        if prepare_cleanup {
             with_session_work_async(
                 &self.session,
                 &self.source,
                 NativeSessionControl::FlushCallbacks,
             )
             .await?;
-            self.prepare_command_cleanup().await?;
         }
-        self.detach_async().await?;
+        self.detach_async(prepare_cleanup).await?;
         self.source
             .finish_retired_command()
             .await
@@ -135,10 +135,10 @@ where
     /// Publishes pending effects and detaches the native namespace exactly once.
     pub async fn unmount(&self) -> Result<(), MountLifecycleError> {
         if self.is_retiring() {
-            return self.detach_async().await;
+            return self.detach_async(false).await;
         }
         self.sync().await?;
-        self.detach_async().await
+        self.detach_async(false).await
     }
 
     /// Detaches and cancels this mount without publishing pending callbacks.
@@ -148,18 +148,7 @@ where
 
     /// Retires a command projection without publishing unverified authored effects.
     pub async fn abandon_command(&self) -> Result<(), MountLifecycleError> {
-        if !self.is_retiring() {
-            self.prepare_command_cleanup().await?;
-        }
-        self.detach_async().await
-    }
-
-    async fn prepare_command_cleanup(&self) -> Result<(), MountLifecycleError> {
-        let source = self.source.clone();
-        control_session(self.session.clone(), move |owner| {
-            prepare_destination_cleanup(owner, source.as_ref())
-        })
-        .await
+        self.detach_async(!self.is_retiring()).await
     }
 
     /// Synchronously publishes and detaches for foreign-runtime worker threads.
@@ -178,18 +167,26 @@ where
             Ok(owner) => owner,
             Err(poisoned) => poisoned.into_inner(),
         };
-        self.retiring
+        self.session
+            .retiring
             .store(true, std::sync::atomic::Ordering::Release);
         Self::detach_owned(&mut owner, self.source.as_ref())
     }
 
-    async fn detach_async(&self) -> Result<(), MountLifecycleError> {
+    async fn detach_async(&self, prepare_cleanup: bool) -> Result<(), MountLifecycleError> {
         #[cfg(all(test, not(loom)))]
         super::command_tests::record("detach");
-        self.retiring
-            .store(true, std::sync::atomic::Ordering::Release);
         let source = self.source.clone();
+        let session = self.session.clone();
         control_session(self.session.clone(), move |owner| {
+            // Preparation and physical retirement share one accepted owner:
+            // losing the waiter cannot strand an armed destination cleanup.
+            if prepare_cleanup && !session.retiring.load(std::sync::atomic::Ordering::Acquire) {
+                prepare_destination_cleanup(owner, source.as_ref())?;
+            }
+            session
+                .retiring
+                .store(true, std::sync::atomic::Ordering::Release);
             Self::detach_owned(owner, source.as_ref())
         })
         .await
@@ -328,7 +325,6 @@ where
             session: owner,
             destination,
             _destination_custody: destination_custody,
-            retiring: std::sync::atomic::AtomicBool::new(false),
         })
     }
 }
