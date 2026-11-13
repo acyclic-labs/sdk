@@ -21,6 +21,16 @@ impl<C> Failure<C> {
         }
     }
 
+    /// Share an already erased source without another error wrapper. Converting
+    /// its Box to Arc preserves the concrete vtable and downcasting target.
+    #[must_use]
+    pub fn from_boxed(category: C, source: Box<dyn Error + Send + Sync + 'static>) -> Self {
+        Self {
+            classification: Box::new(category),
+            source: Arc::from(source),
+        }
+    }
+
     /// The selected category or context; diagnostic ownership does not change it.
     #[must_use]
     pub const fn classification(&self) -> &C {
