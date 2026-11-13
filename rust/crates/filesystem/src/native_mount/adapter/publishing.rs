@@ -42,7 +42,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         Fut: Future<Output = Result<(), E>> + Send + 'static,
         E: From<FsError> + From<MountSourceError> + Send + 'static,
     {
-        let crate::kernel::KernelAccounting::NativeOriginal { work, cancellation } = accounting
+        let crate::kernel::KernelAccounting::NativeOriginal {
+            work, cancellation, ..
+        } = accounting
         else {
             return Err((E::from(MountSourceError::OriginalSnapshotUnavailable), None));
         };

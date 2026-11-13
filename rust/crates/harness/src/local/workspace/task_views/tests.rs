@@ -124,10 +124,7 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
             .view()
             .open_related(
                 workspace.view().workspace().clone(),
-                &mut KernelAccounting::NativeOriginal {
-                    work: &work,
-                    cancellation: &cancellation,
-                },
+                &mut KernelAccounting::native(&work, &cancellation),
             )
             .await
             .map_err(storage)
@@ -834,10 +831,7 @@ async fn binding_preparation_releases_the_checkout_owner() -> Result<()> {
         .view()
         .open_related(
             workspace.view().workspace().clone(),
-            &mut KernelAccounting::NativeOriginal {
-                work: &work,
-                cancellation: &cancellation,
-            },
+            &mut KernelAccounting::native(&work, &cancellation),
         )
         .await
         .map_err(storage)?;
@@ -955,10 +949,7 @@ async fn native_guard_retains_the_original_binding_until_physical_retirement() -
         .view()
         .open_related(
             workspace.view().workspace().clone(),
-            &mut KernelAccounting::NativeOriginal {
-                work: &work,
-                cancellation: &cancellation,
-            },
+            &mut KernelAccounting::native(&work, &cancellation),
         )
         .await
         .map_err(storage)?;
@@ -1019,7 +1010,9 @@ async fn native_guard_retains_the_original_binding_until_physical_retirement() -
             .ok_or_else(|| Error::NotFound("original binding".into()))?
     ));
     drop(reused);
-    let entered = source.enter(false).await?;
+    let entered = source
+        .enter_with_options(source.options.clone().unwrap())
+        .await?;
     let native = source.native().await;
     assert!(
         native.is_some(),

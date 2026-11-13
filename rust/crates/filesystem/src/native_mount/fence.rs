@@ -198,7 +198,7 @@ impl MountDestinationGuard {
         Self::acquire_files(
             cleanup,
             None,
-            name,
+            (name, None),
             FenceAcquisition::ExistingRecovery,
             guard,
             native,
@@ -338,6 +338,9 @@ impl MountDestinationGuard {
             } else {
                 Ok(None)
             };
+        // A mount fence records its destination, so the registry can reap
+        // the mount of an owner that died with its exit action.
+        let record = (!recovery).then(|| registry::fence_record(canonical));
         let (canonical, canonical_allocation) = canonical_owner;
         drop(canonical);
         work.release(canonical_allocation)?;
@@ -354,7 +357,7 @@ impl MountDestinationGuard {
         Self::acquire_files(
             cleanup,
             Some(parent_directory),
-            name,
+            (name, record),
             if recovery {
                 FenceAcquisition::Recovery
             } else {
@@ -557,7 +560,8 @@ impl MountDestinationGuard {
             Option<crate::NativeWorkReservation>,
         ),
         parent_directory: Option<cap_std::fs::Dir>,
-        name: [u8; NATIVE_FENCE_NAME_BYTES],
+        // The fence's name and, for a mount fence, the record it carries.
+        (name, record): ([u8; NATIVE_FENCE_NAME_BYTES], Option<Vec<u8>>),
         acquisition: FenceAcquisition,
         guard: &mut Option<Self>,
         native: &NativeMaterializationWork,
@@ -606,6 +610,15 @@ impl MountDestinationGuard {
                 false,
                 work,
             )?;
+            if let (Some(record), Some(file)) = (record, admitted.file.as_ref()) {
+                // Only the lock holder rewrites a fence, so a reaper never
+                // reads a record that another live owner is replacing.
+                crate::native_host::NativeHostWork::attempt_io(
+                    work,
+                    crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
+                    || registry::write_fence_record(file, &record),
+                )?;
+            }
             *guard = Some(admitted);
         } else {
             // Even a post-open lock failure belongs to the preborn admin
