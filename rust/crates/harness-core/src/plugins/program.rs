@@ -27,7 +27,7 @@ pub struct LoadedProgram {
 /// original allocation owner.
 pub struct BoundHook {
     selector: HookSelector,
-    binding: crate::tool::Tool,
+    binding: std::sync::Arc<crate::tool::Tool>,
 }
 
 struct HookSelector {
@@ -86,7 +86,10 @@ impl LoadedProgram {
     ///
     /// # Errors
     /// Refuses a non-shell capability or an unsupported command form.
-    pub fn bind(self, shell: std::sync::Arc<crate::tool::Tool>) -> Result<crate::tool::Tool> {
+    pub fn bind(
+        self,
+        shell: std::sync::Arc<crate::tool::Tool>,
+    ) -> Result<std::sync::Arc<crate::tool::Tool>> {
         if self.on.is_some() {
             return Err(Error::Invalid(
                 "hook programs cannot be bound as authored tools".into(),
@@ -206,7 +209,18 @@ impl LoadedProgram {
                 custody.absorb(&mut incoming)?;
             }
         }
-        crate::tools::native::alias(self.definition, shell, template, custody)
+        if let Some(custody) = &mut custody {
+            let bytes =
+                acyclic_fs::shared_allocation_bytes::<crate::tool::Tool>().map_err(|_| {
+                    Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Invalid,
+                        reason: "program tool storage overflows",
+                    }
+                })?;
+            custody.grow(bytes)?;
+        }
+        let tool = crate::tools::native::alias(self.definition, shell, template, custody)?;
+        Ok(std::sync::Arc::new(tool))
     }
 }
 

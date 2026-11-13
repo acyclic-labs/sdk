@@ -58,14 +58,17 @@ impl ToolSource for Programs {
                 configuration: local.harness.issuer_configuration(),
                 maximum_bytes: local.limits.file_bytes,
             };
-            let directory = format!("tools/{name}");
-            let entrypoint = format!("{directory}/program.ts");
+            let attempt = io.map(crate::executor::PreparationIo::scoped).transpose()?;
+            let temporary = attempt.as_ref();
+            let directory = crate::executor::with_history_io(temporary, |work| {
+                crate::executor::preparation_format(format_args!("tools/{name}"), work)
+            })?;
+            let entrypoint = crate::executor::with_history_io(temporary, |work| {
+                crate::executor::preparation_format(format_args!("{directory}/program.ts"), work)
+            })?;
             let tree = agent_settings::Tree::new(&volumes, &entrypoint, io).await?;
             match crate::plugins::load_program(&tree, &directory).await {
-                Ok(program) => program
-                    .bind(Arc::clone(&self.shell))
-                    .map(Arc::new)
-                    .map(Some),
+                Ok(program) => program.bind(Arc::clone(&self.shell)).map(Some),
                 Err(Error::NotFound(path)) if path == entrypoint => Ok(None),
                 Err(error) => Err(error),
             }
