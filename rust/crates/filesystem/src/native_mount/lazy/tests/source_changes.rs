@@ -1,5 +1,32 @@
 use super::*;
 
+#[test]
+fn directory_resolves_unknown_file_lengths_before_publishing_attributes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let work =
+        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(error, _)| error)?;
+    let view = shared_runtime()?.block_on(mounted_view_of_with_authored_work(
+        Arc::new(crate::demand::computed_tests::unknown_length_source()),
+        "computed-lengths",
+        crate::MemoryLazyWorkspaceStore::default(),
+        crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+        Some(&work),
+    ))?;
+    let page = view.read_directory_with_meter(&MountPath::root(), None, 1, &work)?;
+    assert_eq!(page.entries.len(), 1);
+    let entry = &page.entries[0];
+    assert_eq!(entry.name, b"index.md");
+    assert_eq!(entry.node.logical_bytes, 6);
+    let lookup = view
+        .lookup(&mounted(&["index.md"]))?
+        .ok_or("file disappeared")?;
+    assert_eq!(entry.node.logical_bytes, lookup.node.logical_bytes);
+    assert_eq!(entry.node.file_id, lookup.node.file_id);
+    view.cancel_cleanup(None)?;
+    Ok(())
+}
+
 #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
 #[test]
 fn cleanup_retry_observes_the_retired_source_watch_failure()
