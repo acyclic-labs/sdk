@@ -158,6 +158,29 @@ fn sandbox_policy_probe() {
     #[cfg(target_os = "linux")]
     outside_attributes(Path::new(&outside), confined, false);
     allowed(std::fs::write(&outside, b"escaped"), !confined);
+    // The same grant must survive pathname traversal and an ordinary child
+    // launch: a command cannot shed the kernel boundary by spawning itself.
+    let traversed = Path::new("..").join("outside");
+    allowed(std::fs::read(&traversed).map(|_| ()), !confined);
+    allowed(std::fs::write(&traversed, b"escaped"), !confined);
+    if std::env::var_os("ACYCLIC_POLICY_DESCENDANT").is_some() {
+        return;
+    }
+    let descendant = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "execution::tests::sandbox_policy_probe",
+            "--nocapture",
+        ])
+        .env("ACYCLIC_POLICY_DESCENDANT", "yes")
+        .output()
+        .unwrap();
+    assert!(
+        descendant.status.success(),
+        "descendant escaped or could not execute: {descendant:?}"
+    );
+    std::fs::metadata("..").unwrap();
+    std::fs::read_dir(".cargo").unwrap();
     assert_eq!(std::fs::read("readable").unwrap(), b"workspace data");
     assert_eq!(
         std::fs::read(
@@ -185,7 +208,6 @@ fn sandbox_policy_probe() {
     assert_eq!(output.stdout, b"runtime");
     #[cfg(target_os = "linux")]
     {
-        std::fs::metadata("..").unwrap();
         let listing = shell("ls -la && rg --files");
         assert!(
             listing.status.success(),
