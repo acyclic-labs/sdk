@@ -99,47 +99,110 @@ async fn committed_archive_fences_dispatch_before_its_actor_consumes_the_control
         addressing::ActorReference,
         local::{Creation, Store},
     };
-    for archive_first in [false, true] {
+    for (archive_depth, archive_first) in
+        (0..4).flat_map(|depth| [false, true].map(move |first| (depth, first)))
+    {
         let (journal, _issuer) = test_support::journal().await?;
         let operation = OperationId::new();
         let id = crate::agent::AgentId::from_bytes([81; 16]);
         let agent = crate::agent::AgentPath::root(&id);
-        let actor = ActorReference::new(b"account", b"agents", id.as_str().as_bytes())
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        let store = Store::new(
-            journal.stream.clone(),
-            acyclic_stream::StreamPath::new("archive-test/actors")?,
-        );
-        let actor_path = store
-            .path(&actor)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        let mut creation = crate::agent::create_root(
+        let adopted = ForkAdopted {
+            agent: id,
+            parent: None,
+            profile: None,
+            forked_at: 0,
+            conversation_tail: 0,
+            checkpoint: None,
+            volumes: Vec::new(),
+            brief: None,
+            policy: None,
+        };
+        let creation = crate::agent::create_root(
             &IntentId::try_from("create").map_err(|error| Error::Invalid(error.to_string()))?,
-            ForkAdopted {
-                agent: id,
-                parent: None,
-                profile: None,
-                forked_at: 0,
-                conversation_tail: 0,
-                checkpoint: None,
-                volumes: Vec::new(),
-                brief: None,
-                policy: None,
-            },
+            adopted.clone(),
         )
         .map_err(|error| Error::Invalid(error.to_string()))?
         .request;
-        creation.effects.push(
-            store
-                .create(None, &actor, Creation::default())
-                .map_err(|error| Error::Invalid(error.to_string()))?,
-        );
         assert!(matches!(
             crate::agent::submit(journal.stream.as_ref(), creation)
                 .await
                 .map_err(|error| Error::Invalid(error.to_string()))?,
             Submitted::Committed(_)
         ));
+        let mut ancestors = vec![agent];
+        for intent in ["parent", "leaf"] {
+            let parent = ancestors.last().expect("original root");
+            let mut spawn = crate::agent::spawn(
+                parent,
+                &IntentId::try_from(intent).map_err(|error| Error::Invalid(error.to_string()))?,
+                journal
+                    .stream
+                    .tail(
+                        parent
+                            .inbox()
+                            .map_err(|error| Error::Invalid(error.to_string()))?,
+                    )
+                    .await?,
+                adopted.clone(),
+            )
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+            if intent == "leaf" {
+                let actor = ActorReference::new(
+                    b"account",
+                    b"agents",
+                    spawn.child.id().as_str().as_bytes(),
+                )
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+                let store = Store::new(
+                    journal.stream.clone(),
+                    acyclic_stream::StreamPath::new("archive-test/actors")?,
+                );
+                spawn.request.effects.push(
+                    store
+                        .create(None, &actor, Creation::default())
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                );
+            }
+            assert!(matches!(
+                crate::agent::submit(journal.stream.as_ref(), spawn.request)
+                    .await
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+                Submitted::Committed(_)
+            ));
+            ancestors.push(spawn.child);
+        }
+        // Archiving a sibling must leave this branch's paid admission open.
+        let sibling = crate::agent::spawn(
+            &ancestors[0],
+            &IntentId::try_from("sibling").map_err(|error| Error::Invalid(error.to_string()))?,
+            1,
+            adopted,
+        )
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert!(matches!(
+            crate::agent::submit(journal.stream.as_ref(), sibling.request)
+                .await
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            Submitted::Committed(_)
+        ));
+        let stops_dispatch = archive_depth < ancestors.len();
+        let target = if stops_dispatch {
+            ancestors[archive_depth].clone()
+        } else {
+            sibling.child
+        };
+        let closed = target
+            .closed()
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let agent = ancestors.last().expect("original leaf").clone();
+        let actor = ActorReference::new(b"account", b"agents", agent.id().as_str().as_bytes())
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let actor_path = Store::new(
+            journal.stream.clone(),
+            acyclic_stream::StreamPath::new("archive-test/actors")?,
+        )
+        .path(&actor)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
         let journal = journal
             .with_agent_events(agent.clone(), operation, 0, true)
             .with_actor_admission(Some(actor_path.clone()));
@@ -166,7 +229,7 @@ async fn committed_archive_fences_dispatch_before_its_actor_consumes_the_control
         };
         let archive = async || -> Result<()> {
             let commit = crate::agent::archive(
-                &agent,
+                &target,
                 &Sender::User {
                     principal: "owner".into(),
                 },
@@ -188,12 +251,17 @@ async fn committed_archive_fences_dispatch_before_its_actor_consumes_the_control
         let first = journal
             .append(operation, "model:0:started", &dispatch, None)?
             .await;
-        if archive_first {
-            assert!(matches!(first, Err(Error::ExecutionControlled(control))
-                if control.action == crate::supervision::Action::Stop));
+        if archive_first && stops_dispatch {
+            assert!(
+                matches!(first, Err(Error::ExecutionControlled(control))
+                if control.action == crate::supervision::Action::Stop && control.source.stream == closed),
+                "ancestor archive admitted a fresh model dispatch"
+            );
         } else {
             first?;
-            archive().await?;
+            if !archive_first {
+                archive().await?;
+            }
             // An accepted dispatch can replay after closure without new work.
             journal
                 .append(operation, "model:0:started", &dispatch, None)?
@@ -208,13 +276,21 @@ async fn committed_archive_fences_dispatch_before_its_actor_consumes_the_control
             invocation: request,
             publication: None,
         };
-        assert!(
-            matches!(journal.append(operation, "tool:after-archive", &tool, None)?.await,
-            Err(Error::ExecutionControlled(control)) if control.action == crate::supervision::Action::Stop)
-        );
+        let tool_result = journal
+            .append(operation, "tool:after-archive", &tool, None)?
+            .await;
+        if stops_dispatch {
+            assert!(
+                matches!(tool_result, Err(Error::ExecutionControlled(control))
+                if control.action == crate::supervision::Action::Stop && control.source.stream == closed),
+                "ancestor archive admitted a fresh tool dispatch"
+            );
+        } else {
+            tool_result?;
+        }
         assert_eq!(
             journal.records(operation, 0, 8, None).await?.len(),
-            1 + usize::from(!archive_first)
+            1 + usize::from(!archive_first || !stops_dispatch) + usize::from(!stops_dispatch)
         );
     }
     Ok(())

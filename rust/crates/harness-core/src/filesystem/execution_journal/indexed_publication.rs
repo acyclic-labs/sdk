@@ -197,96 +197,105 @@ where
         if matches!(
             event,
             ExecutionEvent::ModelStarted { .. } | ExecutionEvent::ToolStarted { .. }
-        ) && let Some(path) = &self.actor_admission
+        ) && (self.actor_admission.is_some() || self.agent_events.is_some())
         {
-            // This one point observation buys a strict pause/archive boundary: accepted
-            // calls may finish, but no new model/tool dispatch can race the
-            // actor's admission closure. Keep the original native read owner.
-            let closed = self
-                .agent_events
-                .as_ref()
-                .map(|(agent, ..)| agent.closed())
-                .transpose()
-                .map_err(|error| Error::Invalid(error.to_string()))?;
+            // One authority cut observes actor pause and every ancestor's archive.
+            // These exact paths also fence the original dispatch commit, so
+            // archive delivery/cascade timing cannot admit new paid work.
             let mut paths = Vec::new();
-            crate::executor::stock_vec_push(&mut paths, path.clone(), io)?;
-            if let Some(closed) = &closed {
-                crate::executor::stock_vec_push(&mut paths, closed.clone(), io)?;
+            if let Some(path) = &self.actor_admission {
+                crate::executor::stock_vec_push(&mut paths, path.clone(), io)?;
+            }
+            let closed_start = paths.len();
+            if let Some((agent, ..)) = &self.agent_events {
+                for ancestor in agent.ancestors() {
+                    let mut text = crate::executor::stock_string_copy(ancestor, io)?;
+                    crate::executor::stock_string_push(
+                        &mut text,
+                        "/closed",
+                        u64::MAX,
+                        "archive path overflows",
+                        io,
+                    )?;
+                    let text_hold = io
+                        .map(|io| io.guard_owned(text.capacity() as u64))
+                        .transpose()?;
+                    let closed = crate::distributed::stream_path(&text, &mut work)?;
+                    drop(text);
+                    drop(text_hold);
+                    crate::executor::stock_vec_push(&mut paths, closed, io)?;
+                }
             }
             let _paths_hold = io
                 .map(|io| {
                     io.guard_owned((paths.capacity() * std::mem::size_of::<StreamPath>()) as u64)
                 })
                 .transpose()?;
-            let observed = crate::store::operations::heads_with_work(
-                &self.stream,
-                acyclic_stream::HeadsRequest {
-                    paths: acyclic_stream::HeadSet::from_vec(paths),
-                    retained: Default::default(),
-                    durable_through: None,
-                    projection: acyclic_stream::HeadProjection::History,
-                    children: None,
-                    limit: 1 + u32::from(closed.is_some()),
-                    at_least: Default::default(),
-                },
-                &mut work,
-            )
-            .await?;
-            if let Some(closed) = &closed
-                && let Some(record) = observed
-                    .heads
-                    .get(1)
-                    .and_then(Option::as_ref)
-                    .and_then(|head| head.last.as_ref())
+            let request = acyclic_stream::HeadsRequest {
+                limit: u32::try_from(paths.len()).map_err(|_| invalid(io))?,
+                paths: acyclic_stream::HeadSet::from_vec(paths),
+                retained: Default::default(),
+                durable_through: None,
+                projection: acyclic_stream::HeadProjection::History,
+                children: None,
+                at_least: Default::default(),
+            };
+            let observed =
+                crate::store::operations::heads_with_work(&self.stream, &request, &mut work)
+                    .await?;
+            for (closed, head) in request.paths[closed_start..]
+                .iter()
+                .zip(&observed.heads[closed_start..])
             {
-                return Err(Error::ExecutionControlled(crate::supervision::Control {
-                    source: crate::supervision::Position {
-                        stream: closed.clone(),
-                        sequence: record.sequence,
-                    },
-                    action: crate::supervision::Action::Stop,
-                    signal: None,
-                }));
-            }
-            let head = observed
-                .heads
-                .first()
-                .and_then(Option::as_ref)
-                .ok_or_else(|| invalid(io))?;
-            let record = head.last.as_ref().ok_or_else(|| invalid(io))?;
-            let admission = acyclic_actors::local::AdmissionState::from_record(&record.value)
-                .map_err(|_| invalid(io))?;
-            if admission.paused {
-                return Err(Error::ExecutionControlled(crate::supervision::Control {
-                    source: crate::supervision::Position {
-                        stream: path.clone(),
-                        sequence: record.sequence,
-                    },
-                    action: crate::supervision::Action::Pause,
-                    signal: None,
-                }));
+                if let Some(record) = head.as_ref().and_then(|head| head.last.as_ref()) {
+                    return Err(Error::ExecutionControlled(crate::supervision::Control {
+                        source: crate::supervision::Position {
+                            stream: closed.clone(),
+                            sequence: record.sequence,
+                        },
+                        action: crate::supervision::Action::Stop,
+                        signal: None,
+                    }));
+                }
             }
             let effect = derived
                 .get_or_insert_with(|| acyclic_stream::CommitEffect::hard(Vec::new(), Vec::new()));
-            if let Some(path) = closed {
-                // The archive marker and each newly admitted child's marker
-                // publish with the stop's subtree commit. An unconsumed inbox
-                // control must not admit a new paid dispatch in the meantime.
+            for path in &request.paths[closed_start..] {
                 crate::executor::stock_vec_push(
                     &mut effect.conditions,
-                    CommitCondition::Absent { path },
+                    CommitCondition::Absent { path: path.clone() },
                     io,
                 )?;
             }
-            crate::executor::stock_vec_push(
-                &mut effect.conditions,
-                CommitCondition::Head {
-                    path: path.clone(),
-                    expected: head.tail,
-                    commit_id: record.commit_id,
-                },
-                io,
-            )?;
+            if let Some(path) = &self.actor_admission {
+                let head = observed
+                    .heads
+                    .first()
+                    .and_then(Option::as_ref)
+                    .ok_or_else(|| invalid(io))?;
+                let record = head.last.as_ref().ok_or_else(|| invalid(io))?;
+                let admission = acyclic_actors::local::AdmissionState::from_record(&record.value)
+                    .map_err(|_| invalid(io))?;
+                if admission.paused {
+                    return Err(Error::ExecutionControlled(crate::supervision::Control {
+                        source: crate::supervision::Position {
+                            stream: path.clone(),
+                            sequence: record.sequence,
+                        },
+                        action: crate::supervision::Action::Pause,
+                        signal: None,
+                    }));
+                }
+                crate::executor::stock_vec_push(
+                    &mut effect.conditions,
+                    CommitCondition::Head {
+                        path: path.clone(),
+                        expected: head.tail,
+                        commit_id: record.commit_id,
+                    },
+                    io,
+                )?;
+            }
         }
         if !has_projection
             && matches!(
