@@ -46,7 +46,7 @@ async fn stock_driver_retires_only_settled_history_and_restarts_its_offset_on_re
         input: ModelContent::Text("question".into()),
         selected_context: None,
     };
-    let execution = StockExecution::ordinary(&executor);
+    let mut execution = StockExecution::ordinary(&executor);
     assert!(matches!(
         execution.execute_progress(&input, journal).await?,
         ExecutionProgress::Ready(_)

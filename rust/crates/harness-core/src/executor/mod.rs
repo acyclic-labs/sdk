@@ -654,9 +654,29 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
     }
 }
 
+/// A host-owned source of complete, admitted per-step configurations.
+/// Selections must be retained under the original `(operation, step)` before
+/// returning, so replay never substitutes current files for an admitted cut.
+/// The selected executor includes its provider, native declarations, sampling,
+/// context capacity and reasoning profile. It cannot replace the running
+/// execution's journal or original task authority.
+pub trait StepConfiguration: acyclic_stream::ProviderPlatform {
+    /// Selects an immutable configuration, or retains the preceding one.
+    /// Implementations use `io` for preparation and retain any owned result
+    /// storage with its original allocation owner through the returned `Arc`.
+    fn select<'a>(
+        &'a self,
+        journal: &'a dyn ExecutionJournal,
+        operation: OperationId,
+        step: u32,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<Arc<StockExecutor>>>>;
+}
+
 /// Complete default streaming model/tool loop assembled from replaceable values.
 #[derive(Clone)]
 pub struct StockExecutor {
+    step_configuration: Option<Arc<dyn StepConfiguration>>,
     intervention: Option<Arc<crate::agent::ContinuationOverride>>,
     model: Model,
     sampling: Option<crate::model::ModelSampling>,

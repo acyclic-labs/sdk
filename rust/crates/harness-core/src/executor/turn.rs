@@ -41,7 +41,7 @@ impl CollectedStep {
 
 impl StockExecution<'_> {
     pub(super) async fn execute_progress(
-        &self,
+        &mut self,
         input: &TurnInput,
         journal: &dyn ExecutionJournal,
     ) -> Result<ExecutionProgress<TurnOutput>> {
@@ -55,7 +55,7 @@ impl StockExecution<'_> {
     }
 
     async fn execute_turn(
-        &self,
+        &mut self,
         input: &TurnInput,
         journal: &dyn ExecutionJournal,
         phase: &mut DispatchPhase,
@@ -101,6 +101,14 @@ impl StockExecution<'_> {
                         "model step identity exhausted",
                     )
                 })?;
+                if let Some(configuration) = self.configuration
+                    && let Some(selected) = configuration
+                        .select(journal, input.operation_id, step, self.io)?
+                        .await?
+                {
+                    self.stock = ExecutionConfiguration::Shared(selected);
+                    self.compaction.take();
+                }
                 let model_events = async {
                     self.run_model_step(
                         journal,
