@@ -145,8 +145,14 @@ where
     /// enrolls nodes before issuing their credentials.
     #[must_use]
     pub fn with_account_routing(mut self, routing: acyclic_actors::route::AccountNode<P>) -> Self {
+        let registry = crate::agent::SessionRegistry::new(
+            routing.account().clone(),
+            routing.provider().clone(),
+            routing.paths().clone(),
+            self.server.clone(),
+        );
         self.routing = Some(Arc::new(
-            routing.with_products(self.server.clone(), self.server.clone()),
+            routing.with_products(Arc::new(registry), self.server.clone()),
         ));
         self
     }

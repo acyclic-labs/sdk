@@ -128,6 +128,12 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
     let destination = NodeId::new(b"destination")?;
     let sender = ActorReference::new(b"account", b"remote", b"sender")?;
     let recipient = ActorReference::new(b"account", b"remote", b"recipient")?;
+    let registry = Arc::new(crate::agent::SessionRegistry::new(
+        sender.account().clone(),
+        stream.clone(),
+        paths.clone(),
+        server.clone(),
+    ));
     let node = AccountNode::open(
         acyclic_actors::addressing::AccountId::new(b"account")?,
         stream.clone(),
@@ -138,7 +144,7 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
         Arc::new(acyclic_stream::runtime::PlatformExecutor),
     )
     .await?
-    .with_products(server.clone(), server.clone());
+    .with_products(registry, server.clone());
     node.enroll(
         &destination,
         IdempotencyKey::new(b"enroll-destination".to_vec())?,
@@ -299,6 +305,90 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
             return Err("root did not publish placement".into());
         };
         route::register(&client, 4, &paths, &root_registration, 4096).await?;
+        let publication = crate::agent::SessionPublication {
+            actor: root_actor.clone(),
+            row: crate::agent::SessionRow::new(
+                source.clone(),
+                crate::agent::SessionProfile::project(
+                    &crate::agent::Phase::Idle,
+                    "A session".into(),
+                    &crate::agent::WorkspaceTable::new(Vec::new())?,
+                    "A bounded public goal preview",
+                    16,
+                ),
+            ),
+            intent: IdempotencyKey::new(b"original-profile-publication".to_vec())?,
+        };
+        assert!(
+            publication.publish(&client, 1, 4096).await.is_err(),
+            "peer append authority published directory metadata"
+        );
+        let mut foreign = publication.clone();
+        foreign.actor = message.to.clone();
+        assert!(
+            foreign.publish(&client, 4, 4096).await.is_err(),
+            "own-node credential wrote another node's root row"
+        );
+        assert!(matches!(
+            stream.tail(foreign.path()?).await,
+            Err(StreamError::NotFound)
+        ));
+        // Source and account may share the same provider. Recover the original
+        // joined row rather than trying a different commit under its key.
+        assert!(matches!(
+            stream
+                .commit(CommitRequest {
+                    deadline_unix_millis: None,
+                    idempotency_key: publication.intent.clone(),
+                    effects: vec![publication.effect()?],
+                })
+                .await?,
+            CommitOutcome::Committed(_)
+        ));
+        publication.publish(&client, 4, 4096).await?;
+        publication.publish(&client, 4, 4096).await?;
+        assert_eq!(stream.tail(publication.path()?).await?, 1);
+        let mut profile = publication
+            .row
+            .profile
+            .clone()
+            .ok_or("initial profile missing")?;
+        profile.title = "Changed title".into();
+        let changed = crate::agent::SessionPublication {
+            actor: publication.actor.clone(),
+            row: publication
+                .row
+                .changed(Some(profile))?
+                .ok_or("profile did not change")?,
+            intent: IdempotencyKey::new(b"changed-profile-publication".to_vec())?,
+        };
+        changed.publish(&client, 4, 4096).await?;
+        changed.publish(&client, 4, 4096).await?;
+        assert_eq!(stream.tail(changed.path()?).await?, 2);
+        let mut altered = changed.clone();
+        altered
+            .row
+            .profile
+            .as_mut()
+            .ok_or("changed profile missing")?
+            .title = "Substituted".into();
+        assert!(
+            altered.publish(&client, 4, 4096).await.is_err(),
+            "changed bytes reused the original row intent"
+        );
+        let removed = crate::agent::SessionPublication {
+            actor: changed.actor.clone(),
+            row: changed.row.changed(None)?.ok_or("row did not leave")?,
+            intent: IdempotencyKey::new(b"remove-profile-publication".to_vec())?,
+        };
+        removed.publish(&client, 4, 4096).await?;
+        publication.publish(&client, 4, 4096).await?;
+        let head = stream.head(removed.path()?).await?;
+        assert_eq!(head.tail, 3, "retry resurrected a removed row");
+        assert_eq!(
+            crate::agent::SessionRow::decode(&head.last.ok_or("removed row missing")?.value)?,
+            removed.row
+        );
         assert_eq!(
             stream
                 .tail(paths.placement(&root_registration.placement.actor)?)

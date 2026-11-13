@@ -33,6 +33,21 @@ pub struct AccountNode<P: StreamProvider + ?Sized + 'static> {
 }
 
 impl<P: StreamProvider + ?Sized + 'static> AccountNode<P> {
+    /// Account whose directory and routing products share this owner.
+    pub fn account(&self) -> &AccountId {
+        &self.account
+    }
+
+    /// Original provider shared by placement, relay and directory products.
+    pub fn provider(&self) -> &Arc<P> {
+        self.runtime.store().provider()
+    }
+
+    /// Canonical immutable placement and routing subtree.
+    pub fn paths(&self) -> &Paths {
+        &self.paths
+    }
+
     /// Open the account's node-actor store. It is separate from agent
     /// stores, so file, shell and same-node inbox traffic never wakes this host.
     /// The storage owner supplies the account's membership and reservation policy.

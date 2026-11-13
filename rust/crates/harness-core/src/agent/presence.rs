@@ -3,6 +3,9 @@ use super::{Error, Phase, WorkspaceEntry, WorkspaceRole, WorkspaceTable};
 use acyclic_actors::route::NodeId;
 use serde::{Deserialize, Serialize};
 
+mod registry;
+pub use registry::{SessionPublication, SessionRegistry};
+
 /// Public phase only; approval bindings and host-local paths stay on their node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
