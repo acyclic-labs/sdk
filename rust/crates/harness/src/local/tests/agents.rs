@@ -64,7 +64,15 @@ async fn cancelling_current_input_preserves_a_newer_queued_prompt() -> Result<()
     );
     let next = observed.settled(queued).await?;
     assert_eq!(next.outcome, crate::agent::TurnOutcome::Completed);
-    assert_eq!(client.output_text(&next).await?, "queued prompt survived");
+    let sequence = observed
+        .observer
+        .seen()
+        .checked_sub(1)
+        .expect("settled entry advanced the conversation cursor");
+    assert_eq!(
+        client.output_text_at(sequence, &next).await?,
+        "queued prompt survived"
+    );
     Ok(())
 }
 

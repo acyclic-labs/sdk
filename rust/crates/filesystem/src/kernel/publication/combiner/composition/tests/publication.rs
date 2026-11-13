@@ -41,7 +41,7 @@ async fn retained_publication(delivery: Delivery) -> TestResult {
     let (bytes, custody) = original.copy_bytes(&evidence)?;
     intent.original_evidence = Some(
         acyclic_stream::OwnedBytes::from_vec_with_guard(bytes, custody, original.runtime_meter())
-            .ok_or("original evidence lost its funded backing")?,
+            .expect("fresh evidence has fully initialized unique backing"),
     );
     intent.preconditions = Some(core.preconditions.clone());
     drop(core);
