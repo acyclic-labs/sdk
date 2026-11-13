@@ -156,6 +156,8 @@ fn publication_barriers_follow_the_requested_guarantee() -> Result<(), DemandErr
     let stop = CancellationToken::new();
     let budget = WorkBudget {
         durability_operations: 0,
+        source_bytes_read: b"complete".len() as u64,
+        object_bytes_written: b"complete".len() as u64,
         ..WorkBudget::UNBOUNDED
     };
     let mut visible = DemandWork::new(budget, &stop);
