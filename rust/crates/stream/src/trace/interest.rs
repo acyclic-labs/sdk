@@ -102,6 +102,22 @@ impl<P: StreamProvider + ?Sized> Registry<P> {
             },
         }
     }
+
+    /// Same original demand, with no diagnostic wait after dispatch admission.
+    pub async fn handoff<T, E>(
+        &self,
+        owner: &str,
+        request: Request,
+        work: impl std::future::Future<Output = Result<T, E>>,
+    ) -> Observed<T, E, P> {
+        match self.recorder(owner) {
+            Ok(recorder) => Recorder::handoff(recorder.as_ref(), request, work).await,
+            Err(error) => Observed {
+                result: work.await,
+                observation: Err(error),
+            },
+        }
+    }
 }
 
 /// Original subscription custody. Dropping the last lease retires the existing

@@ -35,8 +35,8 @@ pub enum Settlement<P: ?Sized> {
     Disabled,
     /// A successful operation has an original terminal publication.
     Finished(RetainedRecord),
-    /// The operation failed. Its caller must retain the original failure before
-    /// finishing this span as Failed; dropping it preserves incomplete coverage.
+    /// Completion belongs to the caller. Failures need their original retained
+    /// cause before finishing as Failed; dropping preserves incomplete coverage.
     Pending(Recording<P>),
 }
 
@@ -71,6 +71,35 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
         work: impl std::future::Future<Output = Result<T, E>>,
         bytes: impl FnOnce(&T) -> Option<u64>,
     ) -> Observed<T, E, P> {
+        let Observed {
+            result,
+            observation,
+        } = Self::handoff(recorder, request, work).await;
+        let measured = match (&result, &observation) {
+            (Ok(value), Ok(Settlement::Pending(_))) => Some(bytes(value)),
+            _ => None,
+        };
+        let observation = match (observation, measured) {
+            (Ok(Settlement::Pending(recording)), Some(bytes)) => recording
+                .finish(bytes, Outcome::Succeeded)
+                .await
+                .map(Settlement::Finished),
+            (observation, _) => observation,
+        };
+        Observed {
+            result,
+            observation,
+        }
+    }
+
+    /// Return an original dispatch claim without suspending after its work.
+    /// Completion must be published outside that irreversible handoff. Dropping
+    /// its recording leaves an explicitly unfinished start, never a false finish.
+    pub async fn handoff<T, E>(
+        recorder: Option<&Arc<Self>>,
+        request: Request,
+        work: impl std::future::Future<Output = Result<T, E>>,
+    ) -> Observed<T, E, P> {
         let admission = Self::start_optional(
             recorder,
             request.name,
@@ -83,22 +112,10 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
             Ok(Some(recording)) => super::context::within(recording.id(), work).await,
             _ => work.await,
         };
-        // Finish publication owns only the measurement, never a borrow of the
-        // original output. Send-only outputs need not become Sync for tracing.
-        let measured = match (&result, &admission) {
-            (Ok(value), Ok(Some(_))) => Some(bytes(value)),
-            _ => None,
-        };
         let observation = match admission {
             Err(error) => Err(error),
             Ok(None) => Ok(Settlement::Disabled),
-            Ok(Some(recording)) => match measured {
-                Some(bytes) => recording
-                    .finish(bytes, Outcome::Succeeded)
-                    .await
-                    .map(Settlement::Finished),
-                None => Ok(Settlement::Pending(recording)),
-            },
+            Ok(Some(recording)) => Ok(Settlement::Pending(recording)),
         };
         Observed {
             result,

@@ -7,6 +7,19 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    /// An accepted dispatch claim must reach its executor without another wait.
+    /// Until completion custody crosses that boundary, leave its start unfinished.
+    pub(super) async fn observe_claim<T, E>(
+        &self,
+        request: acyclic_stream::trace::Request,
+        work: impl std::future::Future<Output = std::result::Result<T, E>>,
+    ) -> std::result::Result<T, E> {
+        match &self.traces {
+            Some((traces, owner)) => traces.handoff(owner.as_str(), request, work).await.result,
+            None => work.await,
+        }
+    }
+
     /// Diagnostics cannot replace an original result or its cause. Unretained
     /// operation failures leave their published start unfinished; no synthetic
     /// cause or successful terminal is written. Request custody stays in the

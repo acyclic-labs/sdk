@@ -307,7 +307,7 @@ where
         )
     }
 
-    pub(super) fn append_projected<'a, T: acyclic_stream::ProviderTask + 'a>(
+    pub(super) fn append_projected<'a, T: 'a>(
         &'a self,
         operation: OperationId,
         expected_tail: Option<u64>,
@@ -319,7 +319,7 @@ where
         project: impl FnOnce(AppendObservation) -> Result<T> + acyclic_stream::ProviderTask + 'a,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, T>> {
         crate::conversation::BoundedContentFuture::new(io, || {
-            self.observe_request(
+            self.observe_claim(
                 acyclic_stream::trace::Request {
                     name: if expected_tail.is_some() {
                         "harness.journal_append_if_tail"
@@ -365,7 +365,6 @@ where
                     .await
                     .and_then(project)
                 },
-                |_| None,
             )
         })
     }

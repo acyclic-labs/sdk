@@ -1086,16 +1086,15 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
         Default::default(),
     );
     let mut seen = std::collections::BTreeSet::new();
-    while let Some(observation) = publications.next().await? {
-        if let acyclic_stream::trace::Observation::Completed { start, .. } = observation {
-            let guarantee = match start.name.as_str() {
-                "harness.journal_append" => "idempotent_journal_publication",
-                "harness.journal_append_if_tail" => "atomic_journal_precondition_result",
-                _ => continue,
-            };
-            assert_eq!(start.guarantee.as_deref(), Some(guarantee));
-            seen.insert(start.name);
-        }
+    while publications.next().await?.is_some() {}
+    for (_, start) in publications.active() {
+        let guarantee = match start.name.as_str() {
+            "harness.journal_append" => "idempotent_journal_publication",
+            "harness.journal_append_if_tail" => "atomic_journal_precondition_result",
+            _ => continue,
+        };
+        assert_eq!(start.guarantee.as_deref(), Some(guarantee));
+        seen.insert(start.name.as_str());
     }
     assert_eq!(seen.len(), 2);
     assert!(journal.replay(operation, 0, 0, None)?.await.is_err());
@@ -1107,7 +1106,7 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     while failed.next().await?.is_some() {}
     assert_eq!(
         failed.active().len(),
-        1,
+        3,
         "unretained failure fabricated settlement"
     );
     assert!(

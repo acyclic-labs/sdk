@@ -62,6 +62,14 @@ bytes under `authenticated_immutable_range`. The separate append tracing
 wrappers are removed; physical publication, retry identity and projection
 results stay owned by the original journal operation.
 
+Dispatch-claim publication uses `Recorder::handoff`: it admits the span before
+the original work and performs no diagnostic await after that work returns.
+A trace finish cannot strand an accepted model dispatch claim before delivery
+to its executor. The returned recording gives completion custody to the caller;
+dropping it leaves its original start unfinished. Journal claim observations
+currently retain that unfinished start until completion custody is propagated
+through the executor. This is incomplete coverage, never successful settlement.
+
 Harness Stream failures use one source-owning `StreamFailure` on ordinary,
 native and WebAssembly paths. Request-boundary classification remains explicit;
 native provenance and admitted allocation custody remain attached. Journal

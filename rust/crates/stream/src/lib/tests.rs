@@ -436,6 +436,49 @@ mod replay_tests {
 
     #[cfg(feature = "serde")]
     #[tokio::test]
+    async fn observed_dispatch_handoff_cannot_wait_after_original_claim()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::trace::{Mechanism, Recorder, Request, Settlement, TraceQuery};
+        let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let traces = Stream::new(
+            Arc::new(Gapped {
+                inner: MemoryStream::default(),
+                missing: u64::MAX,
+                extra_records: 0,
+                pause_write: Some(writes.clone()),
+            }),
+            "trace",
+        )?;
+        let recorder = Arc::new(Recorder::new(traces.clone(), [14; 16]));
+        let claims = Stream::new(Arc::new(MemoryStream::default()), "claims")?;
+        let mut handoff = Box::pin(Recorder::handoff(
+            Some(&recorder),
+            Request {
+                name: "dispatch.claim",
+                mechanism: Mechanism::Commit,
+                parent: None,
+                guarantee: Some("original_dispatch_claim"),
+            },
+            claims.append(b"original".to_vec(), IdempotencyKey::unique()),
+        ));
+        let std::task::Poll::Ready(observed) = futures::poll!(&mut handoff) else {
+            return Err("diagnostic finish suspended an accepted claim".into());
+        };
+        assert!(matches!(observed.result?, AppendOutcome::Committed(_)));
+        let Settlement::Pending(recording) = observed.observation? else {
+            return Err("dispatch handoff fabricated completion".into());
+        };
+        drop(recording);
+        assert_eq!(claims.tail().await?, 1);
+        assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let mut query = TraceQuery::new(traces.read(0, 1).await?, Default::default());
+        query.next().await?;
+        assert_eq!(query.active().len(), 1);
+        Ok(())
+    }
+
+    #[cfg(feature = "serde")]
+    #[tokio::test]
     async fn replay_observation_preserves_results_parentage_and_unretained_failures()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::trace::{Mechanism, Observation, Recorder, Settlement, SpanId, TraceQuery};
