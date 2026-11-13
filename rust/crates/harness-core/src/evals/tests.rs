@@ -23,10 +23,16 @@ fn accounting(work: &NativeMaterializationWork) -> KernelAccounting<'_> {
         cancellation: work.cancellation(),
     }
 }
-struct Changes(tokio::sync::mpsc::UnboundedSender<()>);
-impl ViewChangeSink<()> for Changes {
-    fn changed(&self, _: &(), _: &mut KernelAccounting<'_>) -> Result<(), DemandError> {
-        self.0.send(()).map_err(|_| DemandError::SourceUnavailable)
+struct Changes(tokio::sync::mpsc::UnboundedSender<bool>);
+impl SourceChangeSink for Changes {
+    fn source_changed(
+        &self,
+        changes: &[SourceChange],
+        _: &mut KernelAccounting<'_>,
+    ) -> Result<(), DemandError> {
+        self.0
+            .send(matches!(changes, [SourceChange::Name(root)] if root.is_root()))
+            .map_err(|_| DemandError::SourceUnavailable)
     }
     fn delivery_lost(&self) {}
 }
@@ -118,7 +124,6 @@ async fn computed_cases_keep_original_decisions_cut_ranges_and_event_delivery() 
             .await?;
         entries.push(entry);
     }
-    let provider = StreamProvider::new(Arc::clone(&streams), &agent)?;
     let source = StreamProvider::new(Arc::clone(&streams), &agent)?.into_source();
     let cancel = CancellationToken::new();
     let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
@@ -196,10 +201,13 @@ async fn computed_cases_keep_original_decisions_cut_ranges_and_event_delivery() 
         assert_eq!(range.bytes.as_slice(), &output.bytes.as_slice()[7..26]);
     }
     let (send, mut receive) = tokio::sync::mpsc::unbounded_channel();
-    let watch = provider
-        .watch(Arc::new(Changes(send)), &mut accounting(&work))?
+    let watch = source
+        .watch(Arc::new(Changes(send)), &work, &cancel)?
         .ok_or("missing subscription")?;
-    receive.recv().await.ok_or("opening delivery ended")?;
+    assert!(
+        receive.recv().await.ok_or("opening delivery ended")?,
+        "opening invalidation must cover the directory namespace"
+    );
     streams
         .append(AppendRequest {
             path: stream,
@@ -208,7 +216,10 @@ async fn computed_cases_keep_original_decisions_cut_ranges_and_event_delivery() 
             idempotency_key: IdempotencyKey::unique(),
         })
         .await?;
-    receive.recv().await.ok_or("append delivery ended")?;
+    assert!(
+        receive.recv().await.ok_or("append delivery ended")?,
+        "an appended case must invalidate cached directory names"
+    );
     watch.stop(&mut accounting(&work))?;
     assert!(watch.is_stopped());
     assert!(

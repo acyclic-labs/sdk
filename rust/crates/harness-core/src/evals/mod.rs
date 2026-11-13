@@ -290,7 +290,8 @@ impl<C: Inputs> acyclic_fs::demand::View for View<C> {
             cancellation,
         )?;
         let bytes = root.logical_owned_bytes();
-        let changes = [SourceChange::Entry(root)];
+        // Appends change child names, so cached directory pages must retire too.
+        let changes = [SourceChange::Name(root)];
         let result = sink.source_changed(&changes, ctx);
         drop(changes);
         ctx.release_owned(&mut allocation, bytes)?;
