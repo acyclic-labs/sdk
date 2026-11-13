@@ -86,6 +86,7 @@ mod read;
 mod seek;
 mod source_stream;
 use source_stream::DemandBlobSource;
+mod content_eq;
 mod directory;
 mod error;
 mod fork;
