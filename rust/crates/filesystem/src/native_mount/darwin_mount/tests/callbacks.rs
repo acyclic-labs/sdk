@@ -452,3 +452,83 @@ fn fsync_rejects_a_released_handle_without_requiring_a_path() -> TestResult {
 fn fsync_negative_control_detects_erased_handle() {
     fsync_keeps_its_open_handle(true).expect("real callback fixture");
 }
+
+fn view_ids_do_not_alias(substitute_receivers_handle: bool) -> TestResult {
+    use super::super::file_ops::acyclic_fs_darwin_mount_fsync;
+
+    let (source, first, work) = checkout_context(MountPublication::Manual)?;
+    let path = MountPath::root().child(b"view-identity".to_vec());
+    first.mutate(
+        || source.create_file(&path, FileMetadata::default(), None, &work),
+        &work,
+    )?;
+    // The same source deliberately supplies identical FileIds to both views,
+    // as two forks do. The provider must still issue distinct native ids.
+    let second = test_context(&source, &work)?;
+    let file_id = first.lookup(&path, &work)?.node.file_id;
+    let first_inode = first.inode(file_id, &work)?;
+    let second_inode = second.inode(file_id, &work)?;
+    assert_ne!(first_inode, second_inode);
+    assert_eq!(first.inode(file_id, &work)?, first_inode);
+    assert_ne!(
+        first.attributes(&MountPath::root(), 0, &work)?.inode,
+        second.attributes(&MountPath::root(), 0, &work)?.inode
+    );
+    let open = |context: &DarwinMountContext| {
+        context.open(
+            &path,
+            crate::native_mount::MountOpenAccess::ReadWrite,
+            0,
+            &work,
+        )
+    };
+    let first_handle = open(&first)?;
+    let second_handle = open(&second)?;
+    assert_ne!(first_handle, second_handle);
+    let foreign = if substitute_receivers_handle {
+        second_handle
+    } else {
+        first_handle
+    };
+    // SAFETY: the receiving context remains live. No path is required for a
+    // handle lookup, and this deliberately foreign id must never find a file.
+    let status = unsafe {
+        acyclic_fs_darwin_mount_fsync(
+            &second as *const DarwinMountContext as usize,
+            std::ptr::null(),
+            foreign,
+        )
+    };
+    assert_eq!(
+        status,
+        -libc::ESTALE,
+        "foreign handle reached the receiving view"
+    );
+    // A foreign-handle refusal does not poison the receiving view.
+    assert_eq!(
+        unsafe {
+            acyclic_fs_darwin_mount_fsync(
+                &second as *const DarwinMountContext as usize,
+                std::ptr::null(),
+                second_handle,
+            )
+        },
+        0
+    );
+    drop(first);
+    let replacement = test_context(&source, &work)?;
+    assert_ne!(replacement.inode(file_id, &work)?, first_inode);
+    assert_ne!(open(&replacement)?, first_handle);
+    Ok(())
+}
+
+#[test]
+fn native_view_identities_do_not_alias_or_reuse_retired_ids() -> TestResult {
+    view_ids_do_not_alias(false)
+}
+
+#[test]
+#[should_panic(expected = "foreign handle reached the receiving view")]
+fn native_view_identity_negative_control_detects_handle_substitution() {
+    view_ids_do_not_alias(true).expect("real native view identity fixture");
+}

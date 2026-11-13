@@ -1,6 +1,17 @@
 use super::*;
 use crate::lock_order::{FILE, Mutex as RankedMutex, OPERATION, VIEW};
 
+// Identifiers belong to the provider, never to a source's FileId namespace.
+// Forks retain FileIds, and a delayed kernel request can outlive its view.
+// One checked counter avoids aliases and never lends a retired id to a new
+// view. Inode 1 remains reserved for the shared session's synthetic root.
+static NEXT_NATIVE_ID: AtomicU64 = AtomicU64::new(ROOT_INODE + 1);
+
+fn next_native_id() -> Result<u64, NativeMountError> {
+    NEXT_NATIVE_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .map_err(|_| driver_errno(libc::EOVERFLOW))
+}
 pub(super) struct FileHandle {
     file_id: FileId,
     file: RetainedFile,
@@ -29,7 +40,6 @@ pub(super) struct DarwinMountContext {
     pub(super) writable: bool,
     pub(super) mount_uid: u32,
     pub(super) mount_gid: u32,
-    pub(super) next_handle: AtomicU64,
     pub(super) inodes: RankedMutex<DarwinOwned<HashMap<FileId, u64>>, VIEW>,
     pub(super) forgotten: AtomicU64,
     pub(super) files: RwLock<DarwinOwned<HashMap<u64, FileHandle>>>,
@@ -101,7 +111,7 @@ impl DarwinMountContext {
         let mut inodes = DarwinOwned::empty(HashMap::new());
         grow_map(&mut inodes, work)?;
 
-        inodes.insert(root.node.file_id, ROOT_INODE);
+        inodes.insert(root.node.file_id, next_native_id()?);
         let (handler_budget, handler_cancellation) = {
             let meter = work.state.lock();
             (meter.budget, meter.cancellation().clone())
@@ -119,7 +129,6 @@ impl DarwinMountContext {
             handler_budget,
             handler_cancellation,
             startup_meter: Mutex::new(crate::native_mount::NativeMountMeterActivation::default()),
-            next_handle: AtomicU64::new(1),
             inodes: RankedMutex::new(inodes),
             forgotten: AtomicU64::new(0),
             files: RwLock::new(DarwinOwned::empty(HashMap::new())),
@@ -228,12 +237,7 @@ impl DarwinMountContext {
         if let Some(inode) = inodes.get(&file_id) {
             return Ok(*inode);
         }
-        let inode = (inodes.len() as u64)
-            .checked_add(1)
-            .ok_or_else(|| driver_errno(libc::EOVERFLOW))?;
-        if inode <= ROOT_INODE || inode == u64::MAX {
-            return Err(driver_errno(libc::EOVERFLOW));
-        }
+        let inode = next_native_id()?;
         grow_map(&mut inodes, work)?;
 
         inodes.insert(file_id, inode);
@@ -354,12 +358,7 @@ impl DarwinMountContext {
         work: &Work,
     ) -> Result<u64, NativeMountError> {
         let file = retained_file(work, file)?;
-        let handle = self
-            .next_handle
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |handle| {
-                handle.checked_add(1)
-            })
-            .map_err(|_| driver_errno(libc::EMFILE))?;
+        let handle = next_native_id()?;
         let entry = FileHandle {
             file_id: lookup.node.file_id,
             file,
