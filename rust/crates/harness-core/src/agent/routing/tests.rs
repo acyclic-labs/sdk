@@ -10,6 +10,8 @@ use acyclic_stream::{
     RecordHeaders, StreamPath, StreamProvider as _, StreamProviderExt as _,
 };
 
+mod account;
+
 #[tokio::test]
 async fn account_membership_uses_one_fenced_view_for_both_roots()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -24,6 +26,7 @@ async fn account_membership_uses_one_fenced_view_for_both_roots()
         let envelope = peer_envelope(
             &sender,
             &recipient,
+            "message",
             PeerAdmission {
                 sender: witness.clone(),
                 recipient: witness,
@@ -330,6 +333,7 @@ async fn absent_refusal_fences_creation_of_a_disabled_recipient()
     let envelope = peer_envelope(
         &sender,
         &created.child,
+        "message",
         PeerAdmission {
             sender: witness.clone(),
             recipient: witness,
@@ -410,13 +414,14 @@ async fn absent_refusal_fences_creation_of_a_disabled_recipient()
 fn peer_envelope(
     sender: &AgentPath,
     recipient: &AgentPath,
+    id: &str,
     admission: PeerAdmission,
 ) -> Result<route::Envelope, Box<dyn std::error::Error>> {
     let input = InboxRecord::Message(Message {
         from: Sender::Agent {
             path: sender.clone(),
         },
-        id: IntentId::try_from("message")?,
+        id: IntentId::try_from(id)?,
         re: None,
         body: Box::new(FileRef::new(
             VolumeRef::new(
@@ -428,7 +433,7 @@ fn peer_envelope(
                 )?,
                 "private".into(),
                 VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(crate::AgentId::from_bytes([2; 16])),
+                VolumeOwner::Agent(crate::AgentId::from_bytes(sender.id().to_bytes())),
                 &mut None,
             )?,
             "message.md".into(),
