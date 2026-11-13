@@ -33,8 +33,8 @@ pub use command::{
 };
 mod reply;
 pub use reply::{
-    AgentControlFailure, AgentReply, ChildAgent, PeerSession, PendingApproval, decode_agent_reply,
-    encode_agent_reply, encoded_agent_reply_size,
+    AgentControlFailure, AgentReply, ChildAgent, PeerPagePartial, PeerSession, PendingApproval,
+    decode_agent_reply, encode_agent_reply, encoded_agent_reply_size,
 };
 
 mod agents;

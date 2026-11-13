@@ -25,6 +25,9 @@ pub struct Session {
     pub created_at_micros: Option<u64>,
     /// UTC commit time of the returned status.
     pub updated_at_micros: Option<u64>,
+    /// Qualified public account metadata; grants no remote session control.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer: Option<acyclic_harness_client::PeerSession>,
 }
 
 /// User-facing state derived from the canonical actor status.
@@ -98,7 +101,19 @@ pub struct Filter {
 
 impl Filter {
     fn metadata(&self, item: &acyclic_harness_client::ChildAgent) -> bool {
-        (self.states.is_empty() || self.states.contains(&State::of(item.status.as_ref())))
+        let state = item.peer.as_ref().map_or_else(
+            || State::of(item.status.as_ref()),
+            |peer| match peer.profile.phase {
+                crate::agent::SessionPhase::Idle => State::Idle,
+                crate::agent::SessionPhase::Running => State::Running,
+                crate::agent::SessionPhase::WaitingApproval => State::WaitingApproval,
+                crate::agent::SessionPhase::Done => State::Done,
+                crate::agent::SessionPhase::WaitingUser
+                | crate::agent::SessionPhase::WaitingHost
+                | crate::agent::SessionPhase::Waiting => State::Waiting,
+            },
+        );
+        (self.states.is_empty() || self.states.contains(&state))
             && self
                 .created_after
                 .is_none_or(|after| item.created_at_micros.is_some_and(|time| time >= after))
@@ -131,6 +146,9 @@ pub struct Page {
     pub items: Vec<Session>,
     /// Pass unchanged when the viewer asks for another page.
     pub next: Option<String>,
+    /// An explicitly local-only view while the account cannot be reached.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partial: Option<acyclic_harness_client::PeerPagePartial>,
 }
 
 fn unexpected() -> Error {
@@ -283,7 +301,11 @@ pub async fn page_scoped(
     filter: &Filter,
     scope: acyclic_harness_client::SessionsScope,
 ) -> Result<Page> {
-    let AgentReply::Children { items, next } = connection
+    let AgentReply::Children {
+        items,
+        next,
+        partial,
+    } = connection
         .execute(&AgentCommand::Sessions {
             requester: Some(connection.root().tree_root()),
             scope,
@@ -299,10 +321,11 @@ pub async fn page_scoped(
                 if scope == acyclic_harness_client::SessionsScope::Peers {
                     return Ok(Session {
                         agent: item.agent,
-                        title: None,
+                        title: item.peer.as_ref().map(|peer| peer.profile.title.clone()),
                         status: item.status,
                         created_at_micros: item.created_at_micros,
                         updated_at_micros: item.updated_at_micros,
+                        peer: item.peer,
                     });
                 }
                 let AgentReply::FilePreviews { snapshot } = connection
@@ -351,6 +374,7 @@ pub async fn page_scoped(
                     status: item.status,
                     created_at_micros: item.created_at_micros,
                     updated_at_micros: item.updated_at_micros,
+                    peer: None,
                 })
             },
         ))
@@ -361,6 +385,7 @@ pub async fn page_scoped(
             .filter(|item| filter.title(item))
             .collect(),
         next,
+        partial,
     })
 }
 
@@ -447,7 +472,7 @@ pub fn pause_subtree<'a>(
         };
         let mut cursor = None;
         loop {
-            let AgentReply::Children { items, next } = connection
+            let AgentReply::Children { items, next, .. } = connection
                 .execute(&AgentCommand::Children {
                     agent: agent.clone(),
                     page: AgentPageRequest::new(32, 32 * 1024, cursor).map_err(storage)?,
@@ -471,7 +496,7 @@ pub fn pause_subtree<'a>(
 pub async fn pause_all(connection: &Connection, paused: bool) -> Result<()> {
     let mut cursor = None;
     loop {
-        let AgentReply::Children { items, next } = connection
+        let AgentReply::Children { items, next, .. } = connection
             .execute(&AgentCommand::Sessions {
                 requester: None,
                 scope: acyclic_harness_client::SessionsScope::Owned,

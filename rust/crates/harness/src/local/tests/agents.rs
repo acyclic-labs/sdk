@@ -1016,7 +1016,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         client
             .children_page(acyclic_harness_client::AgentPageRequest::default())
             .await?,
-        AgentReply::Children { items, next: None } if items.is_empty()
+        AgentReply::Children { items, next: None, .. } if items.is_empty()
     ));
     let inbox = client.send("hello", "hello").await?;
     let conversation = root.conversation().map_err(agent)?;

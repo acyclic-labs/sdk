@@ -1,5 +1,6 @@
 //! Signed peer discovery reads public account rows, never remote actor state.
 use super::*;
+use crate::observed::{Fault, Observed};
 use acyclic_actors::route::{NodeId, Paths};
 use acyclic_harness_client::{PeerSession, SessionsScope};
 use acyclic_stream::{CommitOutcome, CommitRequest, IdempotencyKey, StreamProvider as _};
@@ -8,7 +9,9 @@ use acyclic_stream::{CommitOutcome, CommitRequest, IdempotencyKey, StreamProvide
 async fn account_peer_command_preserves_qualified_identity_credit_and_authority() -> Result {
     let bound = binding()?;
     let local = bound.agents().provider().clone();
-    let account = Arc::new(Counted::new(MemoryStream::default()));
+    let account = Arc::new(Counted::new(Observed::new(Arc::new(
+        MemoryStream::default(),
+    ))));
     let paths = Paths::new(StreamPath::new("account/routing")?);
     let root = AgentPath::root(&AgentId::from_bytes(u128::MAX.to_be_bytes()));
     let requester = bound.agents().actor(&root)?;
@@ -49,6 +52,7 @@ async fn account_peer_command_preserves_qualified_identity_credit_and_authority(
         }),
         ..Default::default()
     });
+    owner.sessions.store(true, Ordering::SeqCst);
     let server = reopen(bound, owner.clone(), root.clone()).await?;
     let connect = |peer: bool| -> Result<Client> {
         let client = Client::in_process_with_products(
@@ -78,7 +82,7 @@ async fn account_peer_command_preserves_qualified_identity_credit_and_authority(
     };
     let before = account.requests();
     let local_before = local.requests();
-    let AgentReply::Children { items, next } = call(
+    let AgentReply::Children { items, next, .. } = call(
         &client,
         "agents",
         &command(AgentPageRequest::new(4, 64 * 1024, None)?),
@@ -111,9 +115,12 @@ async fn account_peer_command_preserves_qualified_identity_credit_and_authority(
     let full = AgentReply::Children {
         items: items.clone(),
         next: None,
+        partial: None,
     };
     let bytes = acyclic_harness_client::encoded_agent_reply_size(page_json_bytes(&full)?)?;
-    let AgentReply::Children { items: first, next } = call(
+    let AgentReply::Children {
+        items: first, next, ..
+    } = call(
         &client,
         "agents",
         &command(AgentPageRequest::new(4, u32::try_from(bytes - 1)?, None)?),
@@ -123,6 +130,19 @@ async fn account_peer_command_preserves_qualified_identity_credit_and_authority(
         return Err("expected credited account page".into());
     };
     assert_eq!(first.len(), 1);
+    let account_cursor = next.clone().ok_or("account continuation missing")?;
+    let changed = account_cursor.replacen("account.", peers::LOCAL_CURSOR, 1);
+    let before = local.requests();
+    assert!(!matches!(
+        call(
+            &client,
+            "agents",
+            &command(AgentPageRequest::new(4, 64 * 1024, Some(changed))?,)
+        )
+        .await,
+        Ok(Ok(_))
+    ));
+    assert_eq!(local.requests().since(before).control(), 0);
     let AgentReply::Children { items: rest, .. } = call(
         &client,
         "agents",
@@ -162,6 +182,168 @@ async fn account_peer_command_preserves_qualified_identity_credit_and_authority(
         .await,
         Ok(Ok(_))
     ));
+    // Seed real local directory facts only. No actor/transcript copy is needed
+    // for disconnected discovery, including a fully filtered first page.
+    let mut effects = vec![acyclic_stream::CommitEffect::hard(
+        Vec::new(),
+        vec![acyclic_stream::CommitMutation::Append {
+            path: root.peer_membership()?,
+            records: vec![
+                crate::agent::PeerMembership { enabled: true }
+                    .encode()?
+                    .into(),
+            ],
+        }],
+    )];
+    let parent = server.bound().peer_roots()?;
+    for index in [3_u8, 4] {
+        let agent = AgentPath::root(&AgentId::from_bytes([index; 16]));
+        effects.push(acyclic_stream::CommitEffect::hard(
+            Vec::new(),
+            vec![
+                acyclic_stream::CommitMutation::Append {
+                    path: StreamPath::new(format!("{}/{}", parent, agent.id()))?,
+                    records: vec![
+                        serde_json::to_vec(&serde_json::json!({
+                            "kind": "root", "version": 1, "agent": agent,
+                        }))?
+                        .into(),
+                    ],
+                },
+                acyclic_stream::CommitMutation::Append {
+                    path: agent.status()?,
+                    records: vec![
+                        StatusRecord {
+                            phase: crate::agent::Phase::Idle,
+                            cursor: 0,
+                            conversation: 0,
+                            cancelled_input: None,
+                            child_settlement: None,
+                            child_wakes: None,
+                        }
+                        .append_record()?,
+                    ],
+                },
+                acyclic_stream::CommitMutation::Append {
+                    path: agent.peer_membership()?,
+                    records: vec![
+                        crate::agent::PeerMembership {
+                            enabled: index == 4,
+                        }
+                        .encode()?
+                        .into(),
+                    ],
+                },
+            ],
+        ));
+    }
+    assert!(matches!(
+        local
+            .commit(CommitRequest {
+                deadline_unix_millis: None,
+                idempotency_key: IdempotencyKey::unique(),
+                effects,
+            })
+            .await?,
+        CommitOutcome::Committed(_)
+    ));
+    account
+        .inner()
+        .crash_at(account.inner().calls(), Fault::Before);
+    let AgentReply::Children {
+        items: filtered,
+        next,
+        partial,
+    } = call(
+        &client,
+        "agents",
+        &command(AgentPageRequest::new(1, 64 * 1024, Some(account_cursor))?),
+    )
+    .await??
+    else {
+        return Err("expected partial local page".into());
+    };
+    assert!(filtered.is_empty());
+    assert_eq!(
+        partial,
+        Some(acyclic_harness_client::PeerPagePartial::AccountUnreachable)
+    );
+    let cursor = next.ok_or("filtered local page lost continuation")?;
+    let before = account.requests();
+    let changed = cursor.replacen(peers::LOCAL_CURSOR, "account.", 1);
+    assert!(!matches!(
+        call(
+            &client,
+            "agents",
+            &command(AgentPageRequest::new(1, 64 * 1024, Some(changed))?,)
+        )
+        .await,
+        Ok(Ok(_))
+    ));
+    assert_eq!(account.requests().since(before).control(), 0);
+    let AgentReply::Children {
+        items: local_rows,
+        next,
+        partial,
+    } = call(
+        &client,
+        "agents",
+        &command(AgentPageRequest::new(1, 64 * 1024, Some(cursor))?),
+    )
+    .await??
+    else {
+        return Err("expected local continuation".into());
+    };
+    assert_eq!(local_rows.len(), 1);
+    assert!(local_rows[0].peer.is_none());
+    assert!(next.is_none());
+    assert_eq!(
+        partial,
+        Some(acyclic_harness_client::PeerPagePartial::AccountUnreachable)
+    );
+    assert_eq!(
+        account.requests().since(before).control(),
+        0,
+        "local continuation must not probe the recovered account"
+    );
+    let AgentReply::Children {
+        items: recovered,
+        partial,
+        ..
+    } = call(&client, "agents", &command(AgentPageRequest::default())).await??
+    else {
+        return Err("expected recovered account page".into());
+    };
+    assert_eq!(recovered.len(), 2);
+    assert!(recovered.iter().all(|item| item.peer.is_some()));
+    assert!(partial.is_none());
+    account
+        .inner()
+        .crash_at(account.inner().calls(), Fault::Refuse);
+    let before = local.requests();
+    assert!(!matches!(
+        call(&client, "agents", &command(AgentPageRequest::default())).await,
+        Ok(Ok(_))
+    ));
+    assert_eq!(
+        local.requests().since(before).control(),
+        0,
+        "authority refusal must not fall back"
+    );
+    account
+        .inner()
+        .crash_at(account.inner().calls(), Fault::After);
+    let AgentReply::Children {
+        items: local_rows,
+        partial,
+        ..
+    } = call(&client, "agents", &command(AgentPageRequest::default())).await??
+    else {
+        return Err("expected local fallback after failed account observation".into());
+    };
+    assert_eq!(local_rows.len(), 1);
+    assert!(local_rows.iter().all(|item| item.peer.is_none()));
+    assert!(partial.is_some());
     owner.revoke_query.store(true, Ordering::SeqCst);
     assert!(!matches!(
         call(&client, "agents", &command(AgentPageRequest::default())).await,
@@ -191,11 +373,35 @@ async fn account_peer_command_preserves_qualified_identity_credit_and_authority(
         acyclic_harness_client::encode_agent_reply(
             &Ok(AgentReply::Children {
                 items: vec![forged],
-                next: None
+                next: None,
+                partial: None,
             }),
             &command(AgentPageRequest::default()),
         )
         .is_err()
     );
+    for command in [
+        AgentCommand::Children {
+            agent: root,
+            page: AgentPageRequest::default(),
+        },
+        AgentCommand::Sessions {
+            requester: None,
+            scope: SessionsScope::Owned,
+            page: AgentPageRequest::default(),
+        },
+    ] {
+        assert!(
+            acyclic_harness_client::encode_agent_reply(
+                &Ok(AgentReply::Children {
+                    items: Vec::new(),
+                    next: None,
+                    partial: Some(acyclic_harness_client::PeerPagePartial::AccountUnreachable),
+                }),
+                &command,
+            )
+            .is_err()
+        );
+    }
     Ok(())
 }

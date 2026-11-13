@@ -1390,9 +1390,24 @@ where
                 if peers && requester.parent().is_some() {
                     return Err(Error::Record("peer discovery requires a root requester"));
                 }
-                if peers && let Some(directory) = self.platform.peer_directory() {
-                    return self.account_peers(directory, requester, page).await;
-                }
+                let local_page;
+                let partial;
+                let page = if peers {
+                    match self.peer_page(requester, page).await? {
+                        peers::PeerSelection::Account(reply) => return Ok(reply),
+                        peers::PeerSelection::Local {
+                            page: selected,
+                            partial: incomplete,
+                        } => {
+                            local_page = selected;
+                            partial = incomplete;
+                            &local_page
+                        }
+                    }
+                } else {
+                    partial = None;
+                    page
+                };
                 let parent = match command {
                     AgentCommand::Children { agent, .. } => self.within_tree(agent)?.children()?,
                     AgentCommand::Sessions { .. } if peers && self.platform.sessions() => {
@@ -1409,6 +1424,7 @@ where
                 let mut credit = PageCredit::new(page, |next| AgentReply::Children {
                     items: Vec::new(),
                     next,
+                    partial,
                 })?;
                 let (hierarchy_version, after) = match page.cursor() {
                     Some(cursor) => {
@@ -1456,6 +1472,7 @@ where
                         return Ok(AgentReply::Children {
                             items: Vec::new(),
                             next: None,
+                            partial,
                         });
                     }
                     Err(error) => return Err(Error::Stream(error)),
@@ -1591,7 +1608,9 @@ where
                                 listed_paths[index].as_str(),
                             );
                             (if peers {
-                                acyclic_auth::cursor::CursorKey::sealed_len(bytes).div_ceil(3) * 4
+                                peers::LOCAL_CURSOR.len()
+                                    + acyclic_auth::cursor::CursorKey::sealed_len(bytes).div_ceil(3)
+                                        * 4
                             } else {
                                 bytes
                             }) as u64
@@ -1617,10 +1636,14 @@ where
                     };
                     let cursor = children_cursor(&listed.hierarchy_version, last.as_str());
                     Some(if let Some(context) = &cursor_context {
-                        STANDARD.encode(
-                            self.cursor_key
-                                .seal(context.as_bytes(), cursor.as_bytes())
-                                .map_err(|_| Error::Record("peer cursor encryption failed"))?,
+                        format!(
+                            "{}{}",
+                            peers::LOCAL_CURSOR,
+                            STANDARD.encode(
+                                self.cursor_key
+                                    .seal(context.as_bytes(), cursor.as_bytes())
+                                    .map_err(|_| Error::Record("peer cursor encryption failed"))?,
+                            )
                         )
                     } else {
                         cursor
@@ -1634,13 +1657,18 @@ where
                         &AgentReply::Children {
                             items: Vec::new(),
                             next: next.clone(),
+                            partial,
                         },
                     )?)
                     .is_ok_and(|bytes| bytes <= u64::from(page.bytes()))
                 {
                     return Err(Error::Stream(StreamError::Capacity));
                 }
-                Ok(AgentReply::Children { items, next })
+                Ok(AgentReply::Children {
+                    items,
+                    next,
+                    partial,
+                })
             }
             AgentCommand::Spawn {
                 parent,

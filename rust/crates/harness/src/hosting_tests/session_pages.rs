@@ -112,7 +112,7 @@ async fn session_and_peer_pages_keep_discovery_at_two_bounded_head_views() -> Re
             credentials(&[server.resource(), &server.session_resource()]),
         )?;
         let before = stream.requests();
-        let Ok(AgentReply::Children { items, next }) = call(
+        let Ok(AgentReply::Children { items, next, .. }) = call(
             &client,
             "agents",
             &AgentCommand::Sessions {
@@ -177,7 +177,7 @@ async fn session_and_peer_pages_keep_discovery_at_two_bounded_head_views() -> Re
         let mut cursor = None;
         for expected in [0, 16] {
             let before = stream.requests();
-            let AgentReply::Children { items, next } = call(
+            let AgentReply::Children { items, next, .. } = call(
                 &client,
                 "agents",
                 &AgentCommand::Sessions {
@@ -200,7 +200,11 @@ async fn session_and_peer_pages_keep_discovery_at_two_bounded_head_views() -> Re
                     "filtered pages must advance without scanning ahead"
                 );
                 use base64::{Engine as _, engine::general_purpose::STANDARD};
-                let mut sealed = STANDARD.decode(next.as_ref().ok_or("missing continuation")?)?;
+                let mut sealed = STANDARD.decode(
+                    next.as_ref()
+                        .and_then(|cursor| cursor.strip_prefix(peers::LOCAL_CURSOR))
+                        .ok_or("missing local continuation")?,
+                )?;
                 let hidden = AgentId::from_bytes(17_u128.to_be_bytes()).to_string();
                 assert!(
                     !sealed
@@ -218,7 +222,11 @@ async fn session_and_peer_pages_keep_discovery_at_two_bounded_head_views() -> Re
                             page: AgentPageRequest::new(
                                 16,
                                 64 * 1024,
-                                Some(STANDARD.encode(sealed))
+                                Some(format!(
+                                    "{}{}",
+                                    peers::LOCAL_CURSOR,
+                                    STANDARD.encode(sealed)
+                                ))
                             )?,
                         }
                     )

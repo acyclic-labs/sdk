@@ -1013,7 +1013,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     };
     assert!(matches!(
         call(&client, "agents", &children).await?,
-        Ok(AgentReply::Children { items, next: None }) if items.is_empty()
+        Ok(AgentReply::Children { items, next: None, .. }) if items.is_empty()
     ));
     for query in [
         children.clone(),
@@ -1079,7 +1079,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     ));
     assert!(matches!(
         call(&client, "agents", &children).await?,
-        Ok(AgentReply::Children { items, next: None }) if items.is_empty()
+        Ok(AgentReply::Children { items, next: None, .. }) if items.is_empty()
     ));
     owner.childless.store(false, Ordering::SeqCst);
     // The parent's role decides: a role it does not admit is refused the
@@ -1096,7 +1096,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     ));
     assert!(matches!(
         call(&client, "agents", &children).await?,
-        Ok(AgentReply::Children { items, next: None }) if items.is_empty()
+        Ok(AgentReply::Children { items, next: None, .. }) if items.is_empty()
     ));
     // A spawn is the parent's own step: the reply names the child, and the
     // running host's next step for the parent creates it.
@@ -1119,7 +1119,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     let before = stream.requests();
     assert!(matches!(
         call(&client, "agents", &children).await?,
-        Ok(AgentReply::Children { items, next: None })
+        Ok(AgentReply::Children { items, next: None, .. })
             if items.len() == 1 && items[0].agent == child && items[0].status.is_some()
     ));
     let requests = stream.requests().since(before);

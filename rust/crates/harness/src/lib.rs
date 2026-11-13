@@ -36,6 +36,9 @@ pub mod completion;
 pub mod conformance;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod local;
+#[cfg(any(feature = "conformance", all(test, not(target_arch = "wasm32"))))]
+#[path = "conformance/observe.rs"]
+pub(crate) mod observed;
 pub mod preset;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod server;

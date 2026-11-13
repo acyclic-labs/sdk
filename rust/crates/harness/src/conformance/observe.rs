@@ -150,6 +150,9 @@ impl Observed {
         if matches!(fault, Some(Fault::Before)) {
             return Err(StreamError::Unavailable);
         }
+        if matches!(fault, Some(Fault::Refuse)) {
+            return Err(StreamError::AccessDenied);
+        }
         let result = operation.await;
         if matches!(fault, Some(Fault::After)) {
             return Err(StreamError::Unavailable);
@@ -296,11 +299,12 @@ impl acyclic_harness_core::filesystem::attestation::AttestedProvider for Observe
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
     fn measured_commit(
         provider: &dyn StreamProvider,
         request: CommitRequest,
-    ) -> crate::conformance::Result<(CommitOutcome, acyclic_test_support::AllocationInfo)> {
+    ) -> TestResult<(CommitOutcome, acyclic_test_support::AllocationInfo)> {
         let mut result = None;
         let allocation = acyclic_test_support::measure(|| {
             result = Some(futures::executor::block_on(provider.commit(request)));
@@ -313,7 +317,7 @@ mod tests {
 
     #[test]
     fn counter_observation_has_fixed_allocation_cost_with_request_capture_negative_control()
-    -> crate::conformance::Result {
+    -> TestResult {
         let mut previous = None;
         for records in [1, 1_024] {
             let memory = Arc::new(MemoryStream::default());
@@ -380,6 +384,6 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "conformance"))]
 #[path = "observe/tests.rs"]
 mod counter_tests;

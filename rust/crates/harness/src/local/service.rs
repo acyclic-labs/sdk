@@ -606,7 +606,7 @@ mod tests {
             let mut cursor = None;
             loop {
                 let page = AgentPageRequest::new(2, 65536, cursor).map_err(storage)?;
-                let AgentReply::Children { items, next } = connection
+                let AgentReply::Children { items, next, .. } = connection
                     .execute(&AgentCommand::Sessions {
                         requester: None,
                         scope: acyclic_harness_client::SessionsScope::Owned,

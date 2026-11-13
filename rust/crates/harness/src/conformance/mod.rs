@@ -11,7 +11,7 @@ mod dispatcher;
 pub mod fixtures;
 mod identity;
 mod interrupt;
-mod observe;
+pub(crate) use crate::observed as observe;
 mod performance;
 pub mod protocol;
 mod publication;

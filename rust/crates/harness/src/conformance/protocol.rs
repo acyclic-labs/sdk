@@ -145,7 +145,7 @@ pub async fn verify(backend: &dyn Backend) -> Result {
         else {
             return Err("Root did not reply with the admitted root".into());
         };
-        let AgentReply::Children { items, next } = call(
+        let AgentReply::Children { items, next, .. } = call(
             endpoint,
             &AgentCommand::Children {
                 agent: root.clone(),
@@ -411,7 +411,7 @@ pub async fn verify(backend: &dyn Backend) -> Result {
         {
             return Err("a child ran before explicit placement".into());
         }
-        let AgentReply::Children { items, next } = call(
+        let AgentReply::Children { items, next, .. } = call(
             endpoint,
             &AgentCommand::Children {
                 agent: root.clone(),
@@ -456,12 +456,13 @@ pub async fn verify(backend: &dyn Backend) -> Result {
         let AgentReply::Children {
             items: first_items,
             next: Some(cursor),
+            ..
         } = first?
         else {
             return Err("one-row discovery omitted its continuation".into());
         };
         let first_child = first_items.first().ok_or("first children page is empty")?;
-        let AgentReply::Children { items, next } =
+        let AgentReply::Children { items, next, .. } =
             call(endpoint, &children(2, credit, None)?).await??
         else {
             return Err("byte-credit children reply shape differs".into());
@@ -473,7 +474,7 @@ pub async fn verify(backend: &dyn Backend) -> Result {
         {
             return Err("children byte credit did not retain exactly its fitting prefix".into());
         }
-        let AgentReply::Children { items, next } =
+        let AgentReply::Children { items, next, .. } =
             call(endpoint, &children(2, credit, Some(cursor))?).await??
         else {
             return Err("continued children reply shape differs".into());

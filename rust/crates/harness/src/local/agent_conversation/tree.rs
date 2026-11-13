@@ -50,7 +50,7 @@ impl TreeWalk {
                 continue;
             };
             let page = AgentPageRequest::new(32, 32 * 1024, cursor).map_err(failed)?;
-            let AgentReply::Children { items, next } = connection
+            let AgentReply::Children { items, next, .. } = connection
                 .execute(&AgentCommand::Children {
                     agent: frame.agent.clone(),
                     page,

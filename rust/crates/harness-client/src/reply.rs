@@ -66,6 +66,15 @@ impl PeerSession {
     }
 }
 
+/// Why a peer listing covers only this node's sessions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[serde(rename_all = "snake_case")]
+pub enum PeerPagePartial {
+    /// The account directory could not be reached; same-node peers remain usable.
+    AccountUnreachable,
+}
+
 /// Original pending action identity; the immutable request is read separately.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -163,6 +172,11 @@ pub enum AgentReply {
         items: Vec<ChildAgent>,
         /// Opaque exclusive continuation, or the end of this listing.
         next: Option<String>,
+        /// A local-only peer view, never a complete account listing. A change
+        /// between complete and partial starts a new listing: replace previous
+        /// rows rather than appending across the two directory selections.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        partial: Option<PeerPagePartial>,
     },
     /// Authorized project roots observed for an exact-head restore request.
     ProjectHeads {
@@ -911,7 +925,17 @@ fn validate_reply(
         (AgentReply::Diff { items }, AgentCommand::Diff { page, .. }) => {
             return validate_diff_page(items, page, bytes);
         }
-        (AgentReply::Children { items, next }, AgentCommand::Children { agent, page }) => {
+        (
+            AgentReply::Children {
+                items,
+                next,
+                partial,
+            },
+            AgentCommand::Children { agent, page },
+        ) => {
+            if partial.is_some() {
+                return Err(CommandError::Invalid);
+            }
             let mut seen = std::collections::BTreeSet::new();
             if items.iter().any(|item| {
                 item.peer.is_some() || !item.agent.is_child_of(agent) || !seen.insert(&item.agent)
@@ -920,7 +944,17 @@ fn validate_reply(
             }
             (items.len(), next, page)
         }
-        (AgentReply::Children { items, next }, AgentCommand::Sessions { page, scope, .. }) => {
+        (
+            AgentReply::Children {
+                items,
+                next,
+                partial,
+            },
+            AgentCommand::Sessions { page, scope, .. },
+        ) => {
+            if partial.is_some() && *scope != crate::SessionsScope::Peers {
+                return Err(CommandError::Invalid);
+            }
             let mut seen = std::collections::BTreeSet::new();
             let qualified = items.first().is_some_and(|item| item.peer.is_some());
             for item in items {
@@ -1246,6 +1280,7 @@ mod tests {
         let reply = AgentReply::Children {
             items: vec![],
             next: None,
+            partial: None,
         };
         let body_bytes = serde_json::to_vec(&reply)?.len() as u32;
         let command = AgentCommand::Children {
