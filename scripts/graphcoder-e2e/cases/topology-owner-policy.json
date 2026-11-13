@@ -31,7 +31,10 @@
       { "step": 0, "absent": ["spawn"] },
       { "step": 1, "absent": ["spawn"] }
     ],
-    "model_contains": ["Forced topology: single."]
+    "each_model_absent": [
+      "Forced topology:",
+      "Delegate and coordinate work as an unrestricted tree"
+    ]
   },
   "physical": true,
   "adapter": "responses"

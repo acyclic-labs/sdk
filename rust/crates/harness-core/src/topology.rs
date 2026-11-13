@@ -12,12 +12,12 @@ use std::sync::Arc;
 pub struct Topology {
     /// Persisted format version, currently one.
     pub version: u32,
-    /// Forced arrangement and its user-supplied parameters.
+    /// Caller-selected spawn capability and its parameters.
     #[serde(flatten)]
     pub mode: Mode,
 }
 
-/// Forced model delegation policy.
+/// Run-start spawn admission capability.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Mode {
@@ -33,15 +33,6 @@ pub enum Mode {
 }
 
 impl Topology {
-    /// Immutable run instructions appended to the selected role directive.
-    #[must_use]
-    pub fn instruction(&self) -> String {
-        match self.mode {
-            Mode::Single => "Forced topology: single. Complete the task as one agent. Delegation is unavailable.".into(),
-            Mode::Team { workers } => format!("Forced topology: team:{workers}. The root may delegate to at most {workers} workers total over this run. Workers complete their assigned tasks without delegation; depth is one. Assign independent work and integrate their results."),
-            Mode::Swarm => "Forced topology: swarm. Delegate and coordinate work as an unrestricted tree, choosing its width and depth for the task.".into(),
-        }
-    }
     /// Rejects unsupported persisted formats before execution.
     pub fn validate(&self) -> Result<()> {
         if self.version != 1 {
@@ -122,7 +113,7 @@ impl SpawnTemplates for Templates {
                 && !topology.offers_spawn(path.parent().is_none())
             {
                 return Err(Error::Invalid(
-                    "forced topology does not admit delegation by this agent".into(),
+                    "the selected spawn capability does not admit children for this agent".into(),
                 ));
             }
             let mut child = self

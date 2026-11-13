@@ -228,10 +228,6 @@ pub(crate) async fn directive(
     let text = std::str::from_utf8(&source[body..])
         .map_err(|_| Error::Invalid("template directive is not UTF-8".into()))?
         .trim();
-    let text = match &creation.topology {
-        Some(topology) => format!("{text}\n\n{}", topology.instruction()),
-        None => text.to_owned(),
-    };
     Ok(Directive {
         digest: digest.finalize().to_hex().to_string(),
         allowed_tools: capabilities.allowed_tools,

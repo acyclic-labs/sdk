@@ -29,7 +29,8 @@ mod tests {
     };
 
     #[tokio::test]
-    async fn creation_keeps_the_selected_template_after_home_changes() -> Result<()> {
+    async fn creation_keeps_selected_templates_without_topology_orders_after_home_changes()
+    -> Result<()> {
         let provider = ProviderRef::new(
             "templates".into(),
             "filesystem".into(),
@@ -106,6 +107,28 @@ mod tests {
         assert_eq!(original.template.as_ref().unwrap().volume(), &seed);
         let admission = TurnAdmission::LocalRoot;
         let authority = agent_authority(&issuer, &admission, &path, &volumes, &[]).await?;
+        let reader = FilesystemContentVerifier::new(
+            Arc::clone(&host),
+            &authority.verifier,
+            &authority.scope,
+            crate::conversation::MAX_EXACT_JS_INTEGER,
+            None,
+        )?;
+        // Actual seeded root and child role directives remain their selected
+        // instructions. The spawn capability never appends delegation orders.
+        for mode in ["single", "team:2", "swarm"] {
+            let topology = crate::topology::Topology::select(mode)?;
+            for creation in [&parent, &original] {
+                let expected = crate::templates::directive(creation, reader.as_ref()).await?;
+                let mut configured = creation.clone();
+                configured.topology = Some(topology.clone());
+                let actual = crate::templates::directive(&configured, reader.as_ref()).await?;
+                assert_eq!(
+                    actual.context.messages, expected.context.messages,
+                    "mode={mode}"
+                );
+            }
+        }
         let writer = super::super::FilesystemContentPublisher::new(
             Arc::clone(&host),
             &home,
