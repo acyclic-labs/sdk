@@ -10,7 +10,7 @@ struct PolicyOwner<A: 'static, O: 'static> {
     scope: Scope,
     verifier: AuthorityVerifier,
     ceiling: Option<(crate::Capabilities, NativeAllocation)>,
-    generation: GenerationId,
+    generation: Option<GenerationId>,
     writable: bool,
     view: Arc<AccessView>,
     _custody: NativeAllocation,
@@ -20,7 +20,7 @@ async fn compile<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static
     workspace: &Workspace<A, O>,
     scope: &Scope,
     ceiling: &crate::Capabilities,
-    generation: GenerationId,
+    generation: Option<GenerationId>,
     writable: bool,
     io: &PreparationIo,
 ) -> Result<(PathTrie, NativeAllocation)> {
@@ -38,7 +38,7 @@ async fn compile<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static
     let (view, holds, _) = crate::filesystem::access::access_view(
         workspace,
         scope,
-        if writable { None } else { Some(generation) },
+        generation,
         payload,
         Some(ceiling),
         io,
@@ -86,7 +86,11 @@ where
         &mut Some(&mut io.history_io()),
     )?;
     let verifier = issuer.verifier(&mut Some(&mut io.history_io()))?;
-    let generation = workspace.head(work, work.cancellation()).await?.id();
+    let generation = if writable {
+        None
+    } else {
+        Some(workspace.head(work, work.cancellation()).await?.id())
+    };
     authenticated_mount_options(
         workspace,
         generation,
@@ -128,9 +132,11 @@ where
 }
 
 /// Compile persisted policy and retain the same authenticated refresh owner.
+/// `generation` selects an exact immutable view; `None` selects the live head,
+/// independently of whether mutations are allowed.
 pub async fn authenticated_mount_options<A, O>(
     workspace: &Workspace<A, O>,
-    generation: GenerationId,
+    generation: Option<GenerationId>,
     authority: NativeAccessAuthority<'_>,
     writable: bool,
     work: &NativeMaterializationWork,
@@ -165,7 +171,7 @@ where
 
 async fn bind_mount_options<A, O>(
     workspace: &Workspace<A, O>,
-    generation: GenerationId,
+    generation: Option<GenerationId>,
     admitted_scope: &Scope,
     verifier: &AuthorityVerifier,
     admitted_ceiling: &crate::Capabilities,
@@ -307,7 +313,7 @@ where
             }
             bind_mount_options(
                 &self.workspace,
-                generation,
+                self.generation.map(|_| generation),
                 &self.scope,
                 &self.verifier,
                 self.ceiling
@@ -366,7 +372,7 @@ mod workload_tests {
         let verifier = issuer.verifier(&mut None)?;
         let options = bind_mount_options(
             &workspace,
-            generation,
+            Some(generation),
             &scope,
             &verifier,
             scope.capabilities(),
@@ -380,7 +386,7 @@ mod workload_tests {
             scope: scope.clone(),
             verifier,
             ceiling: None,
-            generation,
+            generation: Some(generation),
             writable: false,
             view: options.require_access_view()?.clone(),
             _custody: work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?,

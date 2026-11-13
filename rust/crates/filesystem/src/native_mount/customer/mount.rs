@@ -186,11 +186,7 @@ where
         if let Some(guard) = options.callback_guard.as_ref() {
             guard.check(work)?.await?;
         }
-        let mode = if options.writable {
-            CheckoutMode::tracking_transaction()
-        } else {
-            CheckoutMode::read_only_pinned()
-        };
+        let mode = options.checkout_mode()?;
         let checkout = self
             .checkout(options.data_selector()?, mode, work, work.cancellation())
             .await?;

@@ -101,10 +101,9 @@ impl NativeMountAuthority {
             self.scope.agent(),
             &mut Some(&mut io.history_io()),
         )?;
-        let generation = workspace.head(work, work.cancellation()).await?.id();
         authenticated_mount_options(
             workspace,
-            generation,
+            None,
             NativeAccessAuthority {
                 verifier: &self.verifier,
                 scope: &scope,
@@ -356,6 +355,38 @@ mod tests {
             .ok_or_else(|| Error::Invalid("admitted source lost its caller guard".into()))?;
         caller_guard.check(&work)?.await?;
         caller_guard.check_write(&work)?.await?;
+        workspace.write_text("/observed", "before").await?;
+        let observer_options = caller_authority
+            .mount_options(&workspace, None, "", false, &work)
+            .await?;
+        let observer = workspace.native_source(&observer_options).await?;
+        #[cfg(windows)]
+        let name = "observed"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        #[cfg(not(windows))]
+        let name = b"observed".to_vec();
+        let path = acyclic_fs::native_mount::MountPath::root().child(name);
+        assert_eq!(observer.read_range(&path, 0, 32)?.as_ref(), b"before");
+        workspace.write_text("/observed", "after").await?;
+        observer
+            .sync_async(acyclic_fs::PublicationPermit::Unrestricted)
+            .await?;
+        observer.advance_to_head_async().await?;
+        observer.advance_to_head_async().await?;
+        assert_eq!(observer.read_range(&path, 0, 32)?.as_ref(), b"after");
+        assert!(matches!(
+            observer.write_range(&path, 0, bytes::Bytes::from_static(b"denied")),
+            Err(acyclic_fs::MountSourceError::ReadOnly)
+        ));
+        assert_eq!(
+            workspace
+                .read("/observed", 32, &work, &cancellation)
+                .await?
+                .as_ref(),
+            b"after"
+        );
         issuer.revoke_workload(&caller)?;
         let before = work.receipt();
         assert!(caller_guard.check(&work)?.await.is_err());
@@ -368,6 +399,8 @@ mod tests {
             work.receipt().backend_write_operations,
             before.backend_write_operations
         );
+        assert!(observer.read_range(&path, 0, 32).is_err());
+        observer.cancel();
         // Negative control: bootstrap custody is explicitly retained by the host,
         // while admitted above only retains the authenticated narrow workload.
         let bootstrap = port

@@ -125,8 +125,7 @@ where
         .check()
         .map_err(|error| T::from(crate::FsError::Cancelled(error)))?;
     let mode = checkout.mode().mutations;
-    if mode != MutationMode::PrivateOverlay
-        && (force || permit != PublicationPermit::Unrestricted || mode == MutationMode::None)
+    if mode != MutationMode::PrivateOverlay && (force || permit != PublicationPermit::Unrestricted)
     {
         return Err(T::from(MountSourceError::NativeUnsupported));
     }
@@ -149,6 +148,9 @@ where
     }
     if !force && !checkout.has_pending_mutations() {
         return Ok(Some((None, checkout.generation_id())));
+    }
+    if mode == MutationMode::None {
+        return Err(T::from(MountSourceError::NativeUnsupported));
     }
     if mode == MutationMode::PrivateOverlay {
         original

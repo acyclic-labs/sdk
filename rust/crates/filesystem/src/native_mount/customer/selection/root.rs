@@ -150,11 +150,7 @@ impl<'a> AdmittedRoot<'a> {
         drop(selected_custody);
 
         let options = self.selection.options;
-        let mode = if options.writable {
-            CheckoutMode::tracking_transaction()
-        } else {
-            CheckoutMode::read_only_pinned()
-        };
+        let mode = options.checkout_mode()?;
         let checkout = lazy
             .workspace()
             .checkout(GenerationSelector::Head, mode, work, work.cancellation())
