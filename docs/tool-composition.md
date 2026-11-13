@@ -80,6 +80,36 @@ resumption reruns deterministic JavaScript against the same inner call receipts.
 Programs should derive call order and arguments only from their code and tool
 results. Ambient time and randomness are absent.
 
+### Hook effect ownership and recovery
+
+`plugins::load_program(tree, "hooks/<name>")` selects a versioned hook manifest
+and its entries from the caller's immutable tree. `LoadedProgram::bind_hook`
+returns one owning `BoundHook`: its borrowed `on()` selector and `binding()`
+tool belong to that same selection. The host submits this ordinary tool through
+canonical shell admission, including source-independent execution permissions,
+approval and reconciliation. Loading or binding grants no source-read authority.
+The selector retains its original native allocation credit separately from the
+executable, including if binding fails. Raw scripts and declarations cannot be
+moved out of a loaded program independently of their owner; `definition()`
+borrows the declaration. This binding API does not register a subscription.
+
+`hooks::effects::run_once` requires the task's original execution journal.
+Before observing a durable start or outcome, it acquires child-effect ownership
+through that journal's existing filesystem operation registry. Another live
+attempt at the same effect returns a conflict. A later execution of the same
+agent shares this exclusion; changing the enclosing turn does not create a new
+effect identity. The journal authenticates its original execution independently
+of the hook's event identity, including session-start events shared by turns.
+
+The owner publishes the start marker before running a command, and retains its
+claim until the outcome is published. Reopening a completed effect returns its
+original outcome. Reopening an unfinished start records the hook's interrupted
+outcome and does not run the command again. An arbitrary external process effect
+cannot be atomically committed with a journal outcome: interruption may leave
+its external result unknown. The interrupted outcome preserves that uncertainty
+rather than repeating the effect or claiming successful execution. A missing
+original journal grants no execution ownership.
+
 ### File-authored tools
 
 An agent authors a tool in its home volume, at

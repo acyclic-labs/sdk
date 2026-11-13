@@ -2,6 +2,39 @@
 use super::*;
 use crate::OperationId;
 
+/// Stable delivery identity for one registered hook and one original record.
+/// The record must come from the host's authorized read, including its original
+/// account and selected stream. This identity grants no source or execution
+/// authority. Program revisions are deliberately excluded: editing a program
+/// cannot make an already delivered event execute again.
+/// This is an identity, not a claim: the host serializes delivery through its
+/// existing actor, and the ordinary hook outcome journal owns execution.
+pub fn record_operation(
+    account: &acyclic_auth::addressing::AccountId,
+    selected: &acyclic_stream::StreamPath,
+    record: &acyclic_stream::Record,
+    instance: &str,
+) -> OperationId {
+    let mut hash = blake3::Hasher::new_derive_key("acyclic.hooks.record/v1");
+    for bytes in [
+        account.as_bytes(),
+        selected.as_str().as_bytes(),
+        record.origin.as_str().as_bytes(),
+        instance.as_bytes(),
+    ] {
+        hash.update(&(bytes.len() as u64).to_be_bytes());
+        hash.update(bytes);
+    }
+    hash.update(&record.sequence.to_be_bytes());
+    hash.update(record.commit_id.as_bytes());
+    let mut operation = [0; 16];
+    hash.finalize_xof().fill(&mut operation);
+    OperationId::from_bytes(operation)
+}
+
+#[cfg(test)]
+mod tests;
+
 pub(crate) fn phase_operation(tool: OperationId, event: HookEvent) -> OperationId {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"harness:tool-hook:v1\0");
@@ -28,6 +61,8 @@ pub(crate) fn approval_identity(manifest: [u8; 32]) -> crate::registry::Componen
 /// so they do not run again, and the `interrupted` outcome (each hook's
 /// failure policy) is recorded in their place. A reconciling turn that finds
 /// no outcome returns `None`.
+/// The original execution journal's child-effect claim excludes concurrent
+/// attempts before any replay read; a live duplicate refuses with conflict.
 pub async fn run_once<F, Fut>(
     context: &crate::runtime::ToolContext,
     event: HookEvent,
@@ -39,13 +74,17 @@ where
     Fut: std::future::Future<Output = crate::Result<HookOutput>>,
 {
     let operation = phase_operation(context.operation_id(), event);
+    let owner = context.task().claim_effect(operation, None)?;
     if let (Some(file), _) = context.observe_staged_file_once(operation, None).await? {
         let bytes = context.task().read_file(&file, None).await?;
-        return serde_json::from_slice(&bytes)
+        let output = serde_json::from_slice(&bytes)
             .map(Some)
-            .map_err(|error| crate::Error::Invalid(format!("retained hook outcome: {error}")));
+            .map_err(|error| crate::Error::Invalid(format!("retained hook outcome: {error}")))?;
+        owner.release();
+        return Ok(output);
     }
     if reconcile_only {
+        owner.release();
         return Ok(None);
     }
     let started = start_operation(operation);
@@ -82,6 +121,7 @@ where
             None,
         )
         .await?;
+    owner.release();
     Ok(Some(output))
 }
 

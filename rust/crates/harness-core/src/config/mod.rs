@@ -21,7 +21,7 @@
 
 mod plugin;
 mod program;
-pub use program::{ProgramEntry, ProgramManifest};
+pub use program::{HookEvent, ProgramEntry, ProgramManifest, ProgramTrigger};
 pub mod policy;
 mod types;
 #[cfg(not(target_arch = "wasm32"))]
@@ -183,6 +183,8 @@ pub fn typescript() -> &'static str {
             PluginManifest,
             ProgramManifest,
             ProgramEntry,
+            ProgramTrigger,
+            HookEvent,
             AfterSource,
             Start,
             Event,

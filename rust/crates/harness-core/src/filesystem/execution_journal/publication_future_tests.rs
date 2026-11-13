@@ -106,5 +106,32 @@ async fn separately_composed_journals_exclude_the_same_live_operation() -> Resul
         finished.terminated().now_or_never(),
         Some(acyclic_fs::OperationTermination::Released)
     );
+    let first = first.with_turn(operation, operation);
+    let second = second.with_turn(operation, operation);
+    let effect = OperationId::new();
+    let child = first
+        .acquire_effect(operation, effect, None)?
+        .into_owner(None)?;
+    assert!(matches!(
+        second.acquire_effect(operation, effect, None)?,
+        crate::executor::ExecutionAttempt::Observed(_)
+    ));
+    assert!(matches!(
+        second.acquire_effect(OperationId::new(), effect, None),
+        Err(Error::Unauthorized(_))
+    ));
+    // A stable effect can be resumed by a later authenticated execution, but
+    // it cannot mistake the still-live original producer for crashed work.
+    let next = OperationId::new();
+    let second = second.with_turn(next, next);
+    assert!(matches!(
+        second.acquire_effect(next, effect, None)?,
+        crate::executor::ExecutionAttempt::Observed(_)
+    ));
+    child.release();
+    second
+        .acquire_effect(next, effect, None)?
+        .into_owner(None)?
+        .release();
     Ok(())
 }

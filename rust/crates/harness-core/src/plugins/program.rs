@@ -11,16 +11,72 @@ use crate::{
 /// Retain this value through admission and dispatch; do not reopen entry files.
 #[derive(Debug)]
 pub struct LoadedProgram {
+    /// The same declaration consumed by the stock tool registry.
     definition: ToolDefinition,
-    pub(crate) run: HookRun,
+    /// The same command consumed by the stock hook runner.
+    run: HookRun,
+    /// The admitted source selector for a hook; absent for a tool.
+    on: Option<config::ProgramTrigger>,
     // Retained manifest and entry bytes retire before their original credit.
     custody: acyclic_fs::NativeCustody,
 }
 
+/// A selected hook and its canonical executable binding. Source selection
+/// grants no authority; the host submits this binding through ordinary shell
+/// admission, approvals, execution ownership and receipts. No command bytes escape their
+/// original allocation owner.
+pub struct BoundHook {
+    selector: HookSelector,
+    binding: crate::tool::Tool,
+}
+
+struct HookSelector {
+    value: config::ProgramTrigger,
+    _custody: acyclic_fs::NativeCustody,
+}
+
+impl BoundHook {
+    /// The immutable source selector from the selected program revision.
+    pub fn on(&self) -> &config::ProgramTrigger {
+        &self.selector.value
+    }
+
+    /// The existing tool binding, for ordinary canonical call admission.
+    pub fn binding(&self) -> &crate::tool::Tool {
+        &self.binding
+    }
+}
+
 impl LoadedProgram {
-    /// The pinned declaration, borrowed without detaching its original credit.
+    /// Borrows the selected declaration without separating its allocation owner.
     pub fn definition(&self) -> &ToolDefinition {
         &self.definition
+    }
+
+    /// Binds a hook through the same canonical shell adapter as authored tools.
+    /// Retains the selected source and its original native credit independently
+    /// of the executable's transferred ownership, including on failed binding.
+    ///
+    /// # Errors
+    /// Refuses a tool manifest, an invalid shell binding, or an exhausted
+    /// original preparation allowance.
+    pub fn bind_hook(mut self, shell: std::sync::Arc<crate::tool::Tool>) -> Result<BoundHook> {
+        let value = self
+            .on
+            .take()
+            .ok_or_else(|| Error::Invalid("tool programs have no hook source".into()))?;
+        let mut selector = HookSelector {
+            value,
+            _custody: None,
+        };
+        let bytes = selector.value.owned_bytes()?;
+        selector._custody = self
+            .custody
+            .as_mut()
+            .map(|custody| custody.split_off(bytes))
+            .transpose()?;
+        let binding = self.bind(shell)?;
+        Ok(BoundHook { selector, binding })
     }
 
     /// Binds an authored tool to the host's ordinary shell capability. Every
@@ -31,6 +87,11 @@ impl LoadedProgram {
     /// # Errors
     /// Refuses a non-shell capability or an unsupported command form.
     pub fn bind(self, shell: std::sync::Arc<crate::tool::Tool>) -> Result<crate::tool::Tool> {
+        if self.on.is_some() {
+            return Err(Error::Invalid(
+                "hook programs cannot be bound as authored tools".into(),
+            ));
+        }
         let mut custody = self.custody;
         let io = custody
             .as_ref()
@@ -227,6 +288,15 @@ pub async fn load_program(tree: &dyn Tree, directory: &str) -> Result<LoadedProg
             "{path}: unsupported version or mismatched name"
         )));
     }
+    match (kind, &manifest.value.on) {
+        ("tools", None) => {}
+        ("hooks", Some(selector)) => selector.validate(io)?,
+        _ => {
+            return Err(Error::Invalid(format!(
+                "{path}: tools omit on; hooks require on"
+            )));
+        }
+    }
     let mut identity = blake3::Hasher::new_derive_key("acyclic.harness.program.v1");
     identity.update(&evaluated.digest);
     let mut native = None;
@@ -272,6 +342,11 @@ pub async fn load_program(tree: &dyn Tree, directory: &str) -> Result<LoadedProg
         manifest.value.name.capacity() as u64,
         manifest.value.description.capacity() as u64,
         crate::executor::json::json_value_retained_owned_bytes(&manifest.value.input_schema)?,
+        manifest
+            .value
+            .on
+            .as_ref()
+            .map_or(Ok(0), config::ProgramTrigger::owned_bytes)?,
     ])?;
     let revision = crate::executor::with_history_io(io, |work| {
         crate::executor::preparation_format(format_args!("{}", identity.finalize().to_hex()), work)
@@ -285,6 +360,7 @@ pub async fn load_program(tree: &dyn Tree, directory: &str) -> Result<LoadedProg
         output_schema: serde_json::json!({}),
         projection_schema: serde_json::json!({}),
     };
+    let on = manifest.value.on.take();
     crate::executor::stock_retire_text(path, io)?;
     crate::executor::with_history_io(tree.preparation_io(), |work| definition.validate(work))?;
     let selected_shell = if cfg!(windows) {
@@ -298,6 +374,7 @@ pub async fn load_program(tree: &dyn Tree, directory: &str) -> Result<LoadedProg
     }
     Ok(LoadedProgram {
         definition,
+        on,
         run: HookRun::Shell {
             command,
             shell: selected_shell,
