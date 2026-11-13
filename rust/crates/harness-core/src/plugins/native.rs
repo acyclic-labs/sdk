@@ -3,7 +3,7 @@ use crate::executor::{stock_string_copy, stock_vec_push};
 use crate::{
     Error, Result,
     config::{self, Surface, Tree},
-    hooks::{HookEvent, HookFailure, HookRule, HookRun, HookSpec, Hooks},
+    hooks::{HookEvent, HookFailure, HookRun, HookSpec, Hooks},
     layers::Layer,
 };
 use serde_json::Value;
@@ -391,13 +391,13 @@ async fn load_enabled(
             loaded
                 .value
                 .rules
-                .add_rules([HookRule {
-                    on: site,
-                    matcher: String::new(),
-                    hooks: vec![hook],
-                }])
-                .map_err(|error| {
-                    invalid(format!("{root}hooks/before-{}: {error}", event.name()))
+                .add_rule_with_io(site, String::new(), std::iter::once(hook), io)
+                .map_err(|error| match error {
+                    Error::Invalid(reason) => LoadFailure::Semantic(invalid(format!(
+                        "{root}hooks/before-{}: {reason}",
+                        event.name()
+                    ))),
+                    error => LoadFailure::decoding(error),
                 })?;
         }
         let name = stock_string_copy(name, io).map_err(LoadFailure::Operational)?;
