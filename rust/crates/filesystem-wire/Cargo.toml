@@ -13,7 +13,7 @@ acyclic-auth-action = { version = "=0.2.0", path = "../auth-action" }
 prost.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tonic.workspace = true
+tonic = { workspace = true, default-features = true, features = ["transport", "tls-ring", "tls-webpki-roots"] }
 tonic-prost.workspace = true
 
 [build-dependencies]

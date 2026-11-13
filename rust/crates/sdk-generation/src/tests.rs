@@ -601,7 +601,7 @@ fn file_hashes_keep_existing_artifact_and_tool_identities() {
         prop_assert_eq!(sha256_file(&path).unwrap(), sha256_bytes(bytes));
         prop_assert_eq!(
             sha256_bytes(bytes),
-            format!("sha256:{:x}", Sha256::digest(bytes))
+            format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
         );
         Ok(())
     };

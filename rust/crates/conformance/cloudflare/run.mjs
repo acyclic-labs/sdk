@@ -56,6 +56,21 @@ async function main() {
     ({ default: workerdPath } = toolchain("workerd"));
     persistence = await mkdtemp(join(tmpdir(), "acyclic-do-conformance-"));
     await start();
+    const selected = process.argv.slice(2);
+    if (selected.length) {
+      for (const path of selected) {
+        if (!path.startsWith("/") || path.startsWith("//")) throw new Error("qualification endpoint must be a local path");
+        const response = await fetch(`http://127.0.0.1:15420${path}`);
+        const output = await response.text();
+        if (!response.ok) throw new Error(`${path} HTTP ${response.status}: ${output}`);
+        console.log(`workerd ${path}: ${output}`);
+      }
+      return;
+    }
+    const discovery = await fetch("http://127.0.0.1:15420/actors-discovery");
+    const discoveryOutput = await discovery.text();
+    if (!discovery.ok) throw new Error(`discovery HTTP ${discovery.status}: ${discoveryOutput}`);
+    console.log(`workerd Actors discovery: ${discoveryOutput}`);
     const alarm = await fetch("http://127.0.0.1:15420/alarm-recovery");
     const alarmOutput = await alarm.text();
     if (!alarm.ok) throw new Error(`alarm recovery HTTP ${alarm.status}: ${alarmOutput}`);

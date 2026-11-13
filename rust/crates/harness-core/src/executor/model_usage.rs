@@ -74,6 +74,21 @@ impl ModelTokenUsage {
     }
 }
 
+/// Output of the transport attempts that one model step abandoned. Provider
+/// counters describe only the attempt that completed, so an abandoned attempt
+/// is known by exactly what it streamed before its restart.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub struct ModelAbandonedOutput {
+    /// Attempts restarted before the completed one.
+    pub attempts: u64,
+    /// Visible text delta bytes those attempts streamed.
+    pub content_bytes: u64,
+    /// Reasoning delta bytes those attempts streamed.
+    pub reasoning_bytes: u64,
+}
+
 /// One JSON value in a private per-call JSONL artifact. Strings are borrowed
 /// until the original journal stages its bytes; no provider payload is copied.
 #[derive(Serialize)]
@@ -107,6 +122,8 @@ pub(crate) struct ModelCallUsage<'a> {
     /// Original adapter cache policy and prefix identity, distinct from token hits.
     #[cfg(feature = "research")]
     pub cache: Option<ModelCacheObservation>,
+    /// Output of every attempt this step abandoned before completing.
+    pub abandoned: ModelAbandonedOutput,
 }
 
 /// Durable per-call usage view. The journal's terminal observation is the
@@ -115,7 +132,7 @@ pub(crate) struct ModelCallUsage<'a> {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelUsageRecord {
-    /// Record format, currently four; older layouts are not migrated.
+    /// Record format, currently five; older layouts are not migrated.
     pub version: u32,
     /// A terminal provider event was committed. False preserves an admitted
     /// call whose completion was not observed; its counters stay unknown.
@@ -158,6 +175,9 @@ pub struct ModelUsageRecord {
     /// Original research cache observation; absence does not mean a cache miss.
     #[serde(default)]
     pub cache: Option<ModelCacheObservation>,
+    /// Output of every attempt abandoned before the completed one, beside the
+    /// completed attempt's provider counters. Unknown until completion.
+    pub abandoned: Option<ModelAbandonedOutput>,
 }
 
 /// Borrowed identity shared by original-request and original-usage readers.
@@ -174,7 +194,7 @@ pub(crate) struct ModelUsageAdmission<'a> {
 
 impl ModelUsageRecord {
     /// The one per-call format accepted by producers, readers and aggregates.
-    pub const VERSION: u32 = 4;
+    pub const VERSION: u32 = 5;
 
     /// Whether both observations retain the same original admitted call.
     /// Completion counters, timing and provider response metadata may change;
@@ -216,6 +236,7 @@ pub(crate) fn validate(
     };
     if record.version != ModelUsageRecord::VERSION
         || !record.completed
+        || record.abandoned.is_none()
         || record.dispatch.step != step
         || record.purpose != purpose
         || record.dispatch.operation_id != purpose.attempt_operation(operation, io)?
@@ -383,6 +404,7 @@ pub(super) async fn project_record(
                 system_fingerprint: None,
                 ttft_ns: None,
                 cache: None,
+                abandoned: None,
             }))
         }
         ExecutionEvent::Model { usage: Some(_), .. }

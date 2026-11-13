@@ -50,7 +50,7 @@ fn archive_members_preserve_original_inventory_and_bodies() {
         let recorded = &inventory[&format!("sdk-file-identity-0.0.0/{name}")];
         assert_eq!(body.len() as u64, recorded["bytes"].as_u64().unwrap());
         assert_eq!(
-            format!("{:x}", Sha256::digest(body)),
+            hex::encode(Sha256::digest(body)),
             recorded["sha256"].as_str().unwrap()
         );
     }

@@ -279,11 +279,12 @@ async fn placement_finishes_failed_and_cancelled_custody_recovery() -> Result<()
     assert_eq!(counts.committed.load(Ordering::SeqCst), 0);
     let attempts = Arc::new(AtomicUsize::new(0));
     let runtime = super::super::runtime::Runtime::new(
+        crate::guest::Requests::default(),
         store.with_composer(Arc::new(InterruptedRecovery(attempts.clone()))),
         Arc::new(crate::conformance::Package::new()?),
         Arc::new(super::super::runtime::SystemClock),
     )
-    .with_external_placement();
+    .externally_placed();
     assert!(matches!(
         runtime.place(actor.clone(), 1).await,
         Err(Error::Handler(GuestError::Handler(message))) if message == "interrupted custody recovery"
@@ -587,11 +588,25 @@ async fn invocation_lost_ack_retains_the_original_reply_and_participant_through_
     assert_eq!(counts.seals.load(Ordering::SeqCst), 1);
     assert_eq!(counts.committed.load(Ordering::SeqCst), 1);
     assert_eq!(counts.dropped.load(Ordering::SeqCst), 1);
-    let result = store.invoke(&invocation).await?;
-    assert_eq!(
-        result, committed,
-        "reconciliation must return the original reply"
-    );
+    // Reopen the real store after each ownership transfer. The caller's
+    // completed result must remain the original terminal, independently of
+    // the actor's current state revision or the new owner's in-memory state.
+    for epoch in 2..=4 {
+        let reopened = Store::new(provider.clone(), path("participant/actors")?)
+            .with_composer(Arc::new(Participants(counts.clone())));
+        reopened
+            .claim(
+                &reopened.load(&actor).await?,
+                epoch,
+                key(&format!("completed-result-owner-{epoch}"))?,
+            )
+            .await?;
+        let result = reopened.invoke(&invocation).await?;
+        assert_eq!(
+            result, committed,
+            "ownership change must preserve the original completed result"
+        );
+    }
     assert_eq!(provider.tail(path("participant/child")?).await?, 1);
     assert_eq!(
         store
@@ -730,6 +745,114 @@ async fn lost_ack_keeps_participant_and_replays_the_sealed_request_once() -> Res
             .and_then(|state| state.cursor("inbox")),
         Some(1)
     );
+    Ok(())
+}
+
+/// A raw Streams fork inherits bytes, not the source's settlement obligation.
+#[tokio::test]
+async fn copied_actors_leave_committed_custody_with_the_source() -> Result<(), Failure> {
+    for settled in [false, true] {
+        let provider = Arc::new(Faulty {
+            inner: MemoryStream::default(),
+            plan: vec![Fault::None, Fault::None, Fault::LoseAck],
+            calls: AtomicUsize::new(0),
+        });
+        let counts = Arc::new(Counts::default());
+        let (store, actor) = placed(provider.clone(), counts.clone()).await?;
+        let result = store
+            .publish(
+                &store.load(&actor).await?,
+                1,
+                &Trigger::Record {
+                    subscription: "inbox".into(),
+                    sequence: 0,
+                },
+                None,
+                transition(false)?,
+                key("copy-source-publication")?,
+            )
+            .await;
+        let Err(Error::Unknown { publication, .. }) = result else {
+            return Err("source publication must commit with a lost acknowledgement".into());
+        };
+        drop(publication);
+        let source = store.load(&actor).await?;
+        if settled {
+            store.recover_custody(&source).await?;
+        }
+        for delete_first in [false, true] {
+            let child = ActorReference::new(
+                b"account",
+                b"agents",
+                if delete_first {
+                    b"delete-copy"
+                } else {
+                    b"active-copy"
+                },
+            )?;
+            let mut fork = PreparedPublish::foreign(key(if delete_first {
+                "copy-delete"
+            } else {
+                "copy-active"
+            })?);
+            fork.join(CommitEffect::hard(
+                vec![CommitCondition::Absent {
+                    path: store.path(&child)?,
+                }],
+                vec![CommitMutation::Fork {
+                    source: store.path(&actor)?,
+                    destination: store.path(&child)?,
+                    at_tail: source.tail,
+                    records: Vec::new(),
+                    exclude: Vec::new(),
+                }],
+            ))?;
+            store.submit(fork).await?;
+            let cut = store.load(&child).await?;
+            if delete_first {
+                store
+                    .submit(store.delete(&cut, key("delete-inherited-copy")?)?)
+                    .await?;
+            } else {
+                let claimed = store.claim(&cut, 2, key("claim-inherited-copy")?).await?;
+                store
+                    .publish(
+                        &claimed,
+                        2,
+                        &Trigger::Record {
+                            subscription: "inbox".into(),
+                            sequence: 1,
+                        },
+                        None,
+                        Transition {
+                            participant: None,
+                            effects: Vec::new(),
+                            ..transition(false)?
+                        },
+                        key("publish-inherited-copy")?,
+                    )
+                    .await?;
+                store
+                    .submit(store.delete(&store.load(&child).await?, key("delete-active-copy")?)?)
+                    .await?;
+            }
+            assert!(
+                store
+                    .load(&child)
+                    .await?
+                    .state()
+                    .is_some_and(State::deleted)
+            );
+            assert_eq!(
+                counts.committed.load(Ordering::SeqCst),
+                usize::from(settled),
+                "a copy must not settle source custody"
+            );
+        }
+        // Positive ownership control: the original source still must settle.
+        store.recover_custody(&source).await?;
+        assert_eq!(counts.committed.load(Ordering::SeqCst), 1);
+    }
     Ok(())
 }
 
@@ -893,7 +1016,10 @@ async fn rejected_companion_settles_without_consuming_the_actor_input() -> Resul
             key("rejected-participant")?,
         )
         .await;
-    assert!(matches!(result, Err(Error::Conflict)));
+    assert!(
+        matches!(result, Err(Error::Conflict)),
+        "a refused publication was reported as success: {result:?}"
+    );
     assert_eq!(counts.seals.load(Ordering::SeqCst), 1);
     assert_eq!(counts.committed.load(Ordering::SeqCst), 0);
     assert_eq!(counts.rejected.load(Ordering::SeqCst), 1);
@@ -1069,6 +1195,7 @@ async fn a_replay_with_nothing_to_deliver_settles_a_dead_owners_participant() ->
         let settled = usize::from(paused);
         assert_eq!(counts.committed.load(Ordering::SeqCst), settled);
         let runtime = super::super::runtime::Runtime::new(
+            crate::guest::Requests::default(),
             store.clone(),
             Arc::new(crate::conformance::Package::new()?),
             Arc::new(super::super::runtime::SystemClock),

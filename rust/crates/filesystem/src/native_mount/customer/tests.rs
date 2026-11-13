@@ -36,6 +36,18 @@ async fn cancelled_retirement_keeps_contending_async_controls_off_the_executor()
         _destination_custody: work.path(physical.path(), None)?.1,
         retiring: std::sync::atomic::AtomicBool::new(false),
     };
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    assert!(
+        matches!(
+            futures::poll!(std::pin::pin!(with_session_work_async(
+                &session,
+                &mount.source,
+                NativeSessionControl::FlushCallbacks,
+            ))),
+            std::task::Poll::Ready(Ok(()))
+        ),
+        "a no-op native control must not dispatch a worker"
+    );
     let (entered, entering) = tokio::sync::oneshot::channel();
     let (release, released) = std::sync::mpsc::channel();
     let (completed, completion) = tokio::sync::oneshot::channel();
@@ -243,17 +255,20 @@ async fn lifecycle_operations_reuse_the_mount_source_context()
         &work,
     )
     .await?;
-    let session = Mutex::new(Some(NativeMountSession::new(
-        NativeMountRequest {
-            mount_id: MountId::new(),
-            volume_id,
-            destination: physical.path().join("not-mounted"),
-            writable: true,
-            shared: false,
-        },
-        None,
-        None,
-    )));
+    let session = CustomerSession::new(
+        Some(NativeMountSession::new(
+            NativeMountRequest {
+                mount_id: MountId::new(),
+                volume_id,
+                destination: physical.path().join("not-mounted"),
+                writable: true,
+                shared: false,
+            },
+            None,
+            None,
+        )),
+        &work,
+    )?;
     let before = work.receipt();
     with_session_work(&session, source.as_ref(), |_, active| {
         assert!(active.shares_allocation_context(&work));
@@ -264,8 +279,36 @@ async fn lifecycle_operations_reuse_the_mount_source_context()
         Ok(())
     })?;
     assert_eq!(work.receipt().items_returned, before.items_returned + 1);
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let (schedule, _boundaries) = acyclic_native_runtime::testing::Schedule::seeded(97);
+        let mut control = std::pin::pin!(schedule.scope(with_session_work_async(
+            &session,
+            &source,
+            super::super::session::NativeSessionControl::FlushCallbacks,
+        )));
+        assert!(
+            matches!(
+                futures::poll!(control.as_mut()),
+                std::task::Poll::Ready(Ok(()))
+            ),
+            "a no-op control must finish without accepting a physical worker"
+        );
+    }
     // Revalidation must retain the constructor's cancellation as well as its ledger.
     cancellation.cancel();
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    assert!(
+        matches!(
+            futures::poll!(std::pin::pin!(with_session_work_async(
+                &session,
+                &source,
+                super::super::session::NativeSessionControl::FlushCallbacks,
+            ))),
+            std::task::Poll::Ready(Err(MountLifecycleError::Source(MountSourceError::Stale)))
+        ),
+        "the immediate control must retain the original cancellation"
+    );
     let error = with_session_work(&session, source.as_ref(), |_, active| {
         active.admit(crate::WorkCounters::UNCHARGED)?;
         Ok(())

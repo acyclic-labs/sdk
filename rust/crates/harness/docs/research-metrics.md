@@ -9,8 +9,11 @@ original request digest and survive request continuations and recovery. An absen
 sampling value delegates to the provider. A seed is a hint, not a determinism
 guarantee; protocols without a seed field refuse it.
 
-The private per-call JSONL record is version 2, committed with the original
-terminal model observation. Research records retain sampling, the requested
+The private per-call JSONL record is version 5, committed with the original
+terminal model observation. Provider counters cover only the attempt that
+completed; `abandoned` counts the restarted attempts before it and the exact
+text and reasoning delta bytes they streamed, so a discarded stream is never
+missing from the step's usage. Research records retain sampling, the requested
 output ceiling, `provider_request_id`, `system_fingerprint` and `ttft_ns`.
 The HTTP request identifier is distinct from the provider's generation `id`.
 TTFT measures dispatch to the first observed nonempty text or reasoning delta,

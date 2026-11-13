@@ -20,6 +20,7 @@ export const gateQualifications = [
   { args: ["--native-owner"] },
   { args: ["--native-host"] },
   { args: ["--stream-retry"] }, { args: ["--guest"] },
+  { args: ["--actors-core-mutations"] },
   { args: ["--fs-binding", "--all-features"] },
   { args: ["--fs-policy"] },
   { args: ["--session-fs"] }, { args: ["--ownership"] },
@@ -240,7 +241,9 @@ function qualifySourceMutationsLoom({ name, source, model, mutations, qualify, r
   catch (error) { fail("read production source", String(error)); }
   const hash = source => createHash("sha256").update(source).digest("hex");
   try {
-    console.log(`${name} unchanged model=${hash(readFileSync(new URL(model, import.meta.url)))}`);
+    for (const path of [model].flat()) {
+      console.log(`${name} unchanged model=${hash(readFileSync(new URL(path, import.meta.url)))}`);
+    }
     for (const [before, after, expectedFailure] of mutations) {
       if (original.split(before).length !== 2) fail("source mutation", "expected exactly one original source entrance");
       const planted = original.replace(before, after);
@@ -298,6 +301,83 @@ export function qualifyGuestLoom(run = runCommand) {
   return qualifyLoom("acyclic-actors", "main", [], run, {
     env: loomEnvironment(), targetCfg: [], suites: [["guest_loom::", 3]],
   });
+}
+
+// Reuse the production-source mutation runner and unchanged Actors oracles.
+// A compile error or a zero-test run is never a rejected negative control.
+function qualifyActorsMutation({ name, source, model, mutations, tests }, run) {
+  const recovery = "node scripts/qualify-mcp-loom.mjs --actors-core-mutations";
+  const qualify = (run, expectedFailure) => qualifyLoom("acyclic-actors", "acyclic_actors", [], run, {
+    kind: "--lib", modelFeatures: [], targetCfg: [], expectedFailure, recovery,
+    filters: expectedFailure ? [tests[expectedFailure]] : Object.values(tests),
+  });
+  return qualifySourceMutationsLoom({
+    name, source: `../rust/crates/actors/src/${source}`,
+    model: model.map(path => `../rust/crates/actors/src/${path}`), mutations, qualify,
+    restored: run => qualify(run), recovery,
+  }, run);
+}
+
+export function qualifyActorsCoreMutations(run = runCommand) {
+  const controls = [
+    {
+      name: "Actors publication", source: "local.rs",
+      model: ["local/runtime/tests.rs", "local/model/durability.rs", "local/model/composition.rs"],
+      mutations: [[
+        "let outcome = self.provider.commit(prepared.request.clone()).await;",
+        `let outcome = self.provider.commit({
+                    let mut request = prepared.request.clone();
+                    for effect in &mut request.effects {
+                        effect.conditions.retain(|condition|
+                            Some(CommitCondition::path(condition)) != prepared.own.as_ref());
+                    }
+                    request
+                }).await;`,
+        "a superseded activation published after ownership changed",
+      ], [
+        "if self.provider.context().deferred_durability()",
+        "if false",
+        "Actors acknowledged a publication before its device durable cut",
+      ], [
+        "if prepared.acknowledgement_unknown {", "if false {",
+        "retry refusal incorrectly settled an uncertain publication",
+      ], [
+        "CommitOutcome::Conflict(_) => Err(Error::Conflict),",
+        "CommitOutcome::Conflict(_) => Ok(()),",
+        "a refused publication was reported as success",
+      ]],
+      tests: {
+        "a superseded activation published after ownership changed":
+          "local::runtime::tests::placement_and_restart_admit_only_one_publishing_activation",
+        "Actors acknowledged a publication before its device durable cut":
+          "local::model::durability::every_actor_acknowledgement_is_covered_by_the_device_durable_cut",
+        "retry refusal incorrectly settled an uncertain publication":
+          "local::model::composition::a_retry_refusal_cannot_settle_an_earlier_lost_ack",
+        "a refused publication was reported as success":
+          "local::model::composition::rejected_companion_settles_without_consuming_the_actor_input",
+      },
+    },
+    {
+      name: "Actors observation", source: "local/invoke.rs",
+      model: ["local/model/durability.rs", "local/model/composition.rs"],
+      mutations: [[
+        "if let Err(source) = self.confirm_durability().await {",
+        "if let Err(source) = Ok::<(), StreamError>(()) {",
+        "Actors acknowledged a publication before its device durable cut",
+      ], [
+        "from: wire.revision - 1,",
+        "from: self.provider.tail(ticket.state.clone()).await?.saturating_sub(1),",
+        "invocation reply is not co-committed with consumed input",
+      ]],
+      tests: {
+        "Actors acknowledged a publication before its device durable cut":
+          "local::model::durability::every_actor_acknowledgement_is_covered_by_the_device_durable_cut",
+        "invocation reply is not co-committed with consumed input":
+          "local::model::composition::invocation_lost_ack_retains_the_original_reply_and_participant_through_a_retry_refusal",
+      },
+    },
+  ];
+  return controls.map(control => qualifyActorsMutation(control, run));
 }
 
 export function qualifyE2eProgressLoom(features = ["--features", "test-support"], run = runCommand) {
@@ -580,6 +660,7 @@ function qualifyLoom(crate, target, features, run, options = {}) {
 
 // Every model flag is named here; anything else is a cargo feature selection or an error.
 const fixedModels = {
+  "--actors-core-mutations": qualifyActorsCoreMutations,
   "--native-progress": qualifyNativeProgressLoom,
   "--stream-retry": qualifyStreamRetryLoom,
   "--native-signal": qualifyNativeSignalLoom,

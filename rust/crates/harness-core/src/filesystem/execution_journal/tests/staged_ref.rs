@@ -8,7 +8,7 @@ proptest! {
     #[test]
     fn staged_lookup_preserves_identity_and_requires_read(
         identity in any::<[u8; 16]>(),
-        key in prop_oneof!["[a-z]{1,12}", "tool:[0-9]:[a-z]{1,12}:result", "tool:[0-9]:[a-z]{1,12}:result:[0-9a-f]{64}"],
+        key in prop_oneof!["[a-z]{1,12}", "tool:[0-9]:[a-z]{1,12}:result", "tool:[0-9]:[a-z]{1,12}:result:[0-9a-f]{64}", "summary:[0-9]:output", "backstop:[0-9]:marker", "summary:[0-9]:output:[0-9a-f]{64}"],
         bytes in proptest::collection::vec(any::<u8>(), 0..128),
     ) {
         tokio::runtime::Builder::new_current_thread()
@@ -61,9 +61,18 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
         },
     )?;
     let operation = OperationId::from_bytes(identity);
+    if key.starts_with("summary:") || key.starts_with("backstop:") {
+        check_summary_namespace(&journal, operation, key, bytes).await?;
+    }
     let expected = journal
         .stage(operation, key, bytes, "application/octet-stream", None)?
         .await?;
+    assert_eq!(
+        journal
+            .stage(operation, key, bytes, "application/octet-stream", None)?
+            .await?,
+        expected
+    );
     let recovered = journal.staged_ref_with_io(operation, key, None).await?;
     assert_eq!(recovered, expected);
     assert_eq!(journal.load(&recovered, None)?.await?.as_ref(), bytes);
@@ -175,5 +184,64 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+async fn check_summary_namespace<P, A, O>(
+    journal: &FilesystemExecutionJournal<P, A, O>,
+    operation: OperationId,
+    key: &str,
+    bytes: &[u8],
+) -> Result<()>
+where
+    P: crate::store::JournalProvider + ?Sized,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    let digest = super::super::content::operation_digest(operation, key, None)?;
+    let original_key = IdempotencyKey::new(format!("journal-{}", digest.to_hex()))?;
+    let original_path = format!(".system/execution/{operation}/{}.json", digest.to_hex());
+    let grant = ContentGrant::verify(
+        &journal.verifier,
+        &journal.scope,
+        &journal.volume,
+        VolumeOperation::Write,
+        &mut None,
+    )?;
+    journal
+        .host
+        .put_internal_content(
+            &journal.volume,
+            &grant,
+            &original_path,
+            bytes,
+            "application/octet-stream",
+            "execution.json",
+            Some(super::super::MAXIMUM_PAYLOAD_BYTES),
+            &original_key,
+            InternalContentClass::Execution,
+            None,
+        )
+        .await?;
+    let (_, path) = journal.stage_identity_with_io(operation, key, None)?;
+    // Negative control: reusing the old upload key at the new path conflicts.
+    assert!(matches!(
+        journal
+            .host
+            .put_internal_content(
+                &journal.volume,
+                &grant,
+                &path,
+                bytes,
+                "application/octet-stream",
+                "execution.json",
+                Some(super::super::MAXIMUM_PAYLOAD_BYTES),
+                &original_key,
+                InternalContentClass::Summary,
+                None,
+            )
+            .await,
+        Err(Error::Conflict(_))
+    ));
     Ok(())
 }

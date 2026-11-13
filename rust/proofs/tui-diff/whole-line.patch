@@ -1,0 +1,14 @@
+diff --git a/rust/crates/harness-tui/src/diff.rs b/rust/crates/harness-tui/src/diff.rs
+--- a/rust/crates/harness-tui/src/diff.rs
++++ b/rust/crates/harness-tui/src/diff.rs
+@@ -224,8 +224,8 @@ fn changed(text: &str, range: Range<usize>, added: bool, theme: ThemeStyles) -> Line<
+     } else {
+         Token::DiffDel
+     });
+-    let start = range.start + 1;
+-    let end = range.end + 1;
++    let start = 1;
++    let end = text.len();
+     Line::from(vec![
+         Span::styled(text[..start].to_owned(), style),
+         Span::styled(

@@ -47,7 +47,7 @@ export async function localSessionAuthority(resources = [{ name: "streams:/", pr
   let credential: Uint8Array;
   try { credential = encodeCapability([toBinary(SignedBlockSchema, create(SignedBlockSchema, { payload, signature }))], privateTip.subarray(-32), false); }
   finally { privateTip.fill(0); }
-  const authority = new WasmSessionAuthority(JSON.stringify({ environment: "fixture", environment_keys: [Array.from(environment.publicBytes)], account: "account", issuer_keys: [Array.from(account.publicBytes)], minimum_key_epoch: 1, environment_keys_valid_until: null, revoked_key_ids: [], revoked_block_ids: [] }), "workers:/test", "account");
+  const authority = new WasmSessionAuthority(JSON.stringify({ environment: "fixture", environment_keys: [Array.from(environment.publicBytes)], account: "account", issuer_keys: [Array.from(account.publicBytes)], minimum_key_epoch: 1, not_before_unix_seconds: 0, environment_keys_valid_until: null, revoked_key_ids: [], revoked_block_ids: [] }), "workers:/test", "account");
   return { authority, credential };
 }
 

@@ -142,7 +142,6 @@ fn every_stream_category_survives_the_authority_wrapper() -> Result<(), Box<dyn 
 {
     use acyclic_stream::StreamError as E;
     let cases = [
-        (E::InvalidResponse, Code::DataLoss),
         (E::InvalidPath, Code::InvalidArgument),
         (E::InvalidArgument, Code::InvalidArgument),
         (E::InvalidResponse, Code::DataLoss),
@@ -365,6 +364,7 @@ fn every_native_materialization_category_keeps_its_wire_code() {
         (E::ExternalMutation, Code::Aborted),
         (E::UnexpectedBackup, Code::FailedPrecondition),
         (E::UnsupportedRename, Code::Unimplemented),
+        (E::MountBoundary, Code::FailedPrecondition),
         (E::Cancelled, Code::Cancelled),
         (E::OriginalWorkPoisoned, Code::Internal),
         (E::MissingCustody, Code::Internal),

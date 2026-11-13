@@ -416,6 +416,23 @@ fn project_message<'a>(
     if let ModelContent::Text(text) = &message.content {
         project_text(adapter, role, text.clone(), &mut texts, &mut ordered);
     }
+    // Responses pairs every reasoning run with the output that follows it
+    // (OAR-RSN-02). A page that stopped after reasoning retains its own empty
+    // assistant boundary message; that message is the pair, so it is sent as
+    // the empty output it was. Empty text inside an exchange is removed
+    // output and still leaves its reasoning unpaired.
+    if adapter == Adapter::Responses
+        && role == "assistant"
+        && matches!(
+            &message.content,
+            ModelContent::Part(ModelContentPart::Text { text, native: None }) if text.is_empty()
+        )
+    {
+        ordered.push(Item::Json(json!({
+            "type":"message", "role":"assistant",
+            "content":[{"type":"output_text","text":""}],
+        })));
+    }
     let parts = message
         .content
         .notice_parts()

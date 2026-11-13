@@ -1025,33 +1025,63 @@ pub async fn verify_page_tail_bytes(
     {
         return Err(violated!());
     }
-    let page = match provider
-        .children_page(ChildrenPageRequest {
-            offset: 0,
-            parent: Some(path("conformance/page-bytes")?),
-            after: None,
-            hierarchy_version: None,
-            limit: u32::try_from(count).map_err(|_| StreamError::LimitExceeded)?,
-            tail_stream: Some(path("status")?),
-        })
-        .await
-    {
-        Err(StreamError::LimitExceeded) => return Ok(()),
-        result => result?,
-    };
-    if page.children.is_empty()
-        || page.children.len() > count
-        || (page.children.len() < count && page.next_after.is_none())
-        || page.children.iter().any(|child| {
-            child
-                .tail_record
-                .as_ref()
-                .is_none_or(|record| record.value != value || record.headers != headers)
-        })
-        || prost::Message::encoded_len(&crate::wire_codec::children_page_to_wire(page))
-            > crate::MAX_COMMAND_BYTES
-    {
+    let Some(AppendOutcome::Committed(first)) = outcomes.first() else {
         return Err(violated!());
+    };
+    let selected = crate::RetainedRecord {
+        commit_id: first.commit_id,
+        path: path("conformance/page-bytes/0000/status")?,
+        sequence: 0,
+    };
+    let mut request = ChildrenPageRequest {
+        offset: 0,
+        parent: Some(path("conformance/page-bytes")?),
+        after: None,
+        hierarchy_version: None,
+        limit: u32::try_from(count).map_err(|_| StreamError::LimitExceeded)?,
+        tail_stream: Some(path("status")?),
+    };
+    let mut seen = 0;
+    while seen < count {
+        let heads_request = crate::HeadsRequest {
+            at: None,
+            retained: [selected.clone()].into_iter().collect(),
+            durable_through: None,
+            projection: crate::HeadProjection::Watermarks,
+            paths: [selected.path.clone()].into_iter().collect(),
+            children: Some(request.clone()),
+            limit: request.limit + 2,
+            at_least: Default::default(),
+        };
+        let view = provider.heads(heads_request.clone()).await?;
+        view.validate_for(&heads_request)?;
+        if prost::Message::encoded_len(&crate::wire_codec::heads_to_wire(view.clone())?)
+            > crate::MAX_COMMAND_BYTES
+        {
+            return Err(violated!());
+        }
+        let page = view.children.ok_or(violated!())?;
+        page.validate_for(&request)?;
+        if page.children.is_empty() || page.children.len() > count - seen {
+            return Err(violated!());
+        }
+        for child in &page.children {
+            if child.path != path(&format!("conformance/page-bytes/{seen:04}"))?
+                || child.tail != Some(1)
+                || child
+                    .tail_record
+                    .as_ref()
+                    .is_none_or(|record| record.value != value || record.headers != headers)
+            {
+                return Err(violated!());
+            }
+            seen += 1;
+        }
+        if page.next_after.is_some() != (seen < count) {
+            return Err(violated!());
+        }
+        request.after = page.next_after.clone();
+        request.hierarchy_version = Some(page.hierarchy_version);
     }
     Ok(())
 }

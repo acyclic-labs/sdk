@@ -88,7 +88,7 @@ proptest! {
                     tracked_paths: Some(BTreeSet::from([format!("/{path}")])),
                 });
                 prop_assert!(repository.resume(&executor).await.unwrap().is_none());
-                for command in [GitCommand::Status, GitCommand::Log { maximum: 10 }] {
+                for command in [GitCommand::Status, GitCommand::Log { maximum: 10, object: None }] {
                     repository.run(command, GitTreeRef::exact(main, generation(2)), &executor).await.unwrap();
                 }
                 let rejected = repository.run(GitCommand::Commit {

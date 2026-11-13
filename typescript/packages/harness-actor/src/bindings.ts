@@ -1,10 +1,8 @@
 /** The one place the application-selected environment names are spelled.
  * Each names an existing public SDK interface; none is a new binding kind. */
 export const HARNESS_BINDINGS = {
-  storage: "eventStorage",
   objects: "objects",
   streams: "sharedStreams",
-  access: "hostAccess",
   authority: "platformAuthority",
   workspace: "machinesWorkspace",
 } as const;

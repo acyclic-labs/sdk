@@ -176,14 +176,27 @@ pub(in crate::native_mount) async fn with_session_work_async<
     source: &Arc<F>,
     control: NativeSessionControl,
 ) -> Result<(), MountLifecycleError> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if matches!(control, NativeSessionControl::FlushCallbacks) {
+        // These drivers finish mutations in their original callbacks. There
+        // is no physical flush, but preserve retirement ordering and validate
+        // the original lifetime before completing an uncontended control.
+        let owner = match session.try_lock() {
+            Ok(owner) => Some(owner),
+            Err(std::sync::TryLockError::Poisoned(error)) => Some(error.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        };
+        if let Some(owner) = owner {
+            if owner.is_some() {
+                original_control_work(source.as_ref())?;
+            }
+            return Ok(());
+        }
+    }
     let source = source.clone();
     let completion = control_session(session.clone(), move |owner| {
         if let Some(session) = owner.as_ref() {
-            let work = source
-                .native_original_work()?
-                .ok_or(MountLifecycleError::NativePolicy(
-                    "mounted volume has no original native work",
-                ))?;
+            let work = original_control_work(source.as_ref())?;
             Ok(session
                 .start_control(&work, control)?
                 .map(|completion| (work, completion)))
@@ -198,4 +211,14 @@ pub(in crate::native_mount) async fn with_session_work_async<
             .map_err(|cause| NativeMountError::from(work.runtime_error(cause)))??;
     }
     Ok(())
+}
+
+fn original_control_work<F: MountFilesystem + ?Sized>(
+    source: &F,
+) -> Result<NativeMaterializationWork, MountLifecycleError> {
+    source
+        .native_original_work()?
+        .ok_or(MountLifecycleError::NativePolicy(
+            "mounted volume has no original native work",
+        ))
 }

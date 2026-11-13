@@ -168,7 +168,7 @@ pub fn spawned_child(parent: &AgentPath, name: &str) -> Result<AgentPath> {
     TurnEffect::child(parent, &intent).map_err(Error::from)
 }
 
-/// Resolves the child operand of diff, merge or discard exactly once. File
+/// Resolves the child operand of diff, merge, discard or show exactly once. File
 /// operands (including `add agents/file`) retain their ordinary path meaning.
 /// The driver supplies its existing child derivation; the repository key is
 /// always the complete canonical address, including the owning ancestry.
@@ -186,7 +186,7 @@ pub fn resolve_child_branch(
     } else if branch.starts_with("harness/agents/") {
         AgentPath::try_from(branch.to_owned()).map_err(Error::from)?
     } else {
-        return Ok(None);
+        resolve(parent, branch)?
     };
     if !child.is_child_of(parent) {
         return Err(Error::Invalid(
@@ -528,7 +528,9 @@ impl AgentTool {
             TurnEffect::Send { to, id, .. } => {
                 json!({"sent": to.as_str(), "id": id, "status": "queued"})
             }
-            TurnEffect::Archive { target, .. } => json!({"archived": target.as_str()}),
+            TurnEffect::Archive { target, .. } => {
+                json!({"archived": target.as_str(), "branch": target.as_str()})
+            }
         };
         Ok(ToolResult { value })
     }
@@ -778,7 +780,13 @@ impl AgentTool {
                 stranded.join(", ")
             ))));
         }
-        if released.is_none() && need != 0 {
+        // A settlement delivery may precede newer accepted child work. Only
+        // input and the original deadline can release an unmet condition.
+        let interrupted = matches!(
+            released.as_ref(),
+            Some(crate::agent::WaitReason::Deadline | crate::agent::WaitReason::Input { .. })
+        );
+        if !interrupted && need != 0 {
             return Ok(ToolPreparation::Deferred(crate::agent::Until {
                 operation: Some(operation),
                 input: on_input,
@@ -934,6 +942,42 @@ fn sent_result(sent: crate::agent::SentMessage) -> ToolResult {
 }
 
 impl ToolExecutor for AgentTool {
+    fn preparation_timeout(
+        &self,
+        invocation: &ToolInvocation,
+    ) -> Result<Option<(u64, ToolResult)>> {
+        if self.name != "wait" {
+            return Ok(None);
+        }
+        let Ok(input) = WaitAgentInput::deserialize(&invocation.arguments) else {
+            return Ok(None);
+        };
+        Ok(input.timeout_ms.map(|timeout| {
+            // The actor has already ordered an accepted input before its alarm.
+            // Preparation may expire while reopening that selected invocation;
+            // retain the input identity even when no observations can be read.
+            let reason = match self.release(invocation.operation_id) {
+                Some(reason @ crate::agent::WaitReason::Input { .. }) => reason,
+                _ => crate::agent::WaitReason::Deadline,
+            };
+            let unsettled: Vec<_> = input
+                .agents
+                .iter()
+                .map(|name| json!({"name": name, "phase": "unknown"}))
+                .collect();
+            (
+                timeout,
+                ToolResult {
+                    value: json!({
+                        "settled": [], "unsettled": unsettled, "sent": [],
+                        "unobserved_sent": input.sent,
+                        "reason": reason
+                    }),
+                },
+            )
+        }))
+    }
+
     fn requires_effect_commit(&self, result: &ToolResult) -> bool {
         self.name == "send" && result.value.get("status").and_then(Value::as_str) == Some("queued")
     }
@@ -1089,7 +1133,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "archive",
             definition::<ArchiveAgentInput>(
                 "archive",
-                "Archive an open child (by name or path) and its descendants; wait on it to see it archived",
+                "Archive an open child (by name or path) and its descendants; wait on it to see it archived. The returned branch retains its unmerged files: read fs show <branch>:PATH without merging after archive",
             )?,
         ),
         (
@@ -1242,7 +1286,9 @@ mod tests {
                 assert!(matches!(error, Error::Agent(_)));
                 assert_eq!(effects.0.load(Ordering::SeqCst), 0);
             } else {
-                assert_eq!(result?.value["archived"], child.as_str());
+                let result = result?;
+                assert_eq!(result.value["archived"], child.as_str());
+                assert_eq!(result.value["branch"], child.as_str());
                 assert_eq!(effects.0.load(Ordering::SeqCst), 1);
             }
             // A genuine bad reference is still ordinary feedback, even when

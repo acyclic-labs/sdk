@@ -87,9 +87,22 @@ impl<
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<SourceVersion>, LazyWorkspaceError> {
+        Ok(self
+            .current_source_node(path, ctx)
+            .await?
+            .map(|node| node.version))
+    }
+
+    /// Observes the current source node without consulting authored state or
+    /// retaining a new observation. Uncaptured host edits remain visible here.
+    pub async fn current_source_node(
+        &self,
+        path: &str,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Option<SourceNode>, LazyWorkspaceError> {
         let source = self.state(ctx).await?.source;
         match self.source_lookup(&source, path, ctx).await {
-            Ok(node) => Ok(node.map(|n| n.version)),
+            Ok(node) => Ok(node),
             Err(LazyWorkspaceError::Demand(DemandError::Absent | DemandError::NotDirectory)) => {
                 Ok(None)
             }

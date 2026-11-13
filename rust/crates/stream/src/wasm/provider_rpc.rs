@@ -38,8 +38,8 @@ async fn reply(promise: Result<Promise, JsValue>) -> Result<JsValue, StreamError
         .await
         .map_err(failed)?;
     let code = Reflect::get(&reply, &"code".into()).map_err(failed)?;
-    if let Some(code) = code.as_string() {
-        return Err(StreamError::from_code(&code).unwrap_or(StreamError::InvalidResponse));
+    if code.as_string().is_some() {
+        return Err(super::session_io::coded(&reply).unwrap_or(StreamError::InvalidResponse));
     }
     if !code.is_undefined() {
         return Err(StreamError::InvalidResponse);

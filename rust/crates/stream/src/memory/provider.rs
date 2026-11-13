@@ -1,3 +1,10 @@
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum HeadDurability {
+    Volatile,
+    Durable,
+    Deferred,
+}
+
 impl MemoryStream {
     pub(crate) async fn follow_inner(
         &self,
@@ -46,7 +53,9 @@ impl MemoryStream {
     ) -> Result<crate::Heads, StreamError> {
         request.validate()?;
         self.revisions.wait(&request.at_least).await?;
-        let view = self.capture_heads(&request, false).await?;
+        let view = self
+            .capture_heads(&request, HeadDurability::Volatile)
+            .await?;
         Ok(view)
     }
 
@@ -113,19 +122,19 @@ impl MemoryStream {
 impl MemoryStream {
     /// Captures an already validated request whose minimum cut was awaited
     /// outside any adapter publication lock. There is no boxed inner dispatch.
-    /// `durable` confirms this captured state was durably published; deferred
-    /// providers instead fill their independently captured durability cut.
+    /// Durable providers confirm the captured state. Deferred providers reserve
+    /// later watermark fields without claiming durability during capture.
     pub(crate) async fn capture_heads(
         &self,
         request: &crate::HeadsRequest,
-        durable: bool,
+        durability: HeadDurability,
     ) -> Result<crate::Heads, StreamError> {
         let mut allocation = None;
         let mut view = self.empty_heads(request);
         view.heads
             .try_reserve_exact(request.paths.len())
             .map_err(|_| StreamError::Capacity)?;
-        self.capture_heads_into(request, durable, &mut view, None, &mut allocation)
+        self.capture_heads_into(request, durability, &mut view, None, &mut allocation)
             .await?;
         Ok(view)
     }
@@ -145,7 +154,7 @@ impl MemoryStream {
     async fn capture_heads_into(
         &self,
         request: &crate::HeadsRequest,
-        durable: bool,
+        durability: HeadDurability,
         view: &mut crate::Heads,
         _work: CaptureWork<'_>,
         allocation: &mut Allocation,
@@ -217,7 +226,7 @@ impl MemoryStream {
                     path,
                     request.projection,
                     request.durable_through,
-                    durable,
+                    durability == HeadDurability::Durable,
                     _work,
                 )
             };
@@ -233,12 +242,17 @@ impl MemoryStream {
         }
         view.snapshot = self.revisions.at(index);
         view.applied = applied;
+        let deferred = durability == HeadDurability::Deferred
+            && request.projection != crate::HeadProjection::Tail;
+        let remaining = crate::MAX_COMMAND_BYTES.saturating_sub(
+            crate::wire_codec::requests::heads_len_with_durability(view, deferred),
+        );
         view.children = if let Some(children) = &request.children {
             let limit = children
                 .limit
                 .min(request.limit - request.selection_count()?);
             Some(children_at(
-                paths, hierarchy, children, limit, _work, allocation,
+                paths, hierarchy, children, limit, remaining, _work, allocation,
             )?)
         } else {
             None
@@ -355,7 +369,7 @@ impl NamespacePage<'_> {
     fn visit(
         &self,
         examine: &mut impl FnMut(&str) -> Result<(), StreamError>,
-        emit: &mut impl FnMut(&str) -> Result<(), StreamError>,
+        emit: &mut impl FnMut(&str) -> Result<bool, StreamError>,
     ) -> Result<(), StreamError> {
         let mut skip = self.start;
         let mut remaining = self.length;
@@ -367,7 +381,7 @@ fn namespace_rank_page(
     skip: &mut u64,
     remaining: &mut usize,
     examine: &mut impl FnMut(&str) -> Result<(), StreamError>,
-    emit: &mut impl FnMut(&str) -> Result<(), StreamError>,
+    emit: &mut impl FnMut(&str) -> Result<bool, StreamError>,
 ) -> Result<(), StreamError> {
     let Some(edge) = index else {
         return Ok(());
@@ -385,7 +399,10 @@ fn namespace_rank_page(
         return Ok(());
     }
     if *skip == 0 {
-        emit(&edge.name.text)?;
+        if !emit(&edge.name.text)? {
+            *remaining = 0;
+            return Ok(());
+        }
         *remaining -= 1;
     } else {
         *skip -= 1;
@@ -498,6 +515,7 @@ fn children_at(
     hierarchy_version: CommitId,
     request: &ChildrenPageRequest,
     limit: u32,
+    remaining: usize,
     work: CaptureWork<'_>,
     _allocation: &mut Allocation,
 ) -> Result<ChildrenPage, StreamError> {
@@ -541,7 +559,8 @@ fn children_at(
     };
     #[cfg(target_arch = "wasm32")]
     let mut rows = child_buffer(page.length)?;
-    let mut page_bytes = 64usize;
+    let mut page_bytes = 0usize;
+    let mut has_more = page.has_more;
     page.visit(&mut examine, &mut |name| {
         let path = capture_child_path(request.parent.as_ref(), name, work)?;
         let (tail, tail_record) = projected_tail(paths, &path, request.tail_stream.as_ref(), work)?;
@@ -561,10 +580,21 @@ fn children_at(
             };
         #[cfg(not(all(loom, not(target_arch = "wasm32"))))]
         let size = crate::wire_codec::requests::child_len(&child);
-        page_bytes = page_bytes.saturating_add(size).saturating_add(10);
-        if page_bytes > crate::MAX_COMMAND_BYTES {
-            return Err(StreamError::LimitExceeded);
+        let candidate_bytes =
+            page_bytes.saturating_add(crate::wire_codec::requests::block_len(size));
+        let continuation = (page.has_more || rows.len() + 1 < page.length).then_some(&child.path);
+        if crate::wire_codec::requests::block_len(crate::wire_codec::requests::children_page_len(
+            candidate_bytes,
+            continuation,
+        )) > remaining
+        {
+            if rows.is_empty() {
+                return Err(StreamError::LimitExceeded);
+            }
+            has_more = true;
+            return Ok(false);
         }
+        page_bytes = candidate_bytes;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = work {
             work.record(
@@ -580,16 +610,18 @@ fn children_at(
                     .record_examination(1, std::mem::size_of::<Child>() as u64),
             )?;
         }
-        Ok(())
+        Ok(true)
     })?;
-    let next_after = if page.has_more {
+    let next_after = if has_more {
         rows.last().map(|child| child.path.clone())
     } else {
         None
     };
-    page_bytes =
-        page_bytes.saturating_add(next_after.as_ref().map_or(0, |path| path.as_str().len()));
-    if page_bytes > crate::MAX_COMMAND_BYTES {
+    if crate::wire_codec::requests::block_len(crate::wire_codec::requests::children_page_len(
+        page_bytes,
+        next_after.as_ref(),
+    )) > remaining
+    {
         return Err(StreamError::LimitExceeded);
     }
     Ok(ChildrenPage {
@@ -1110,7 +1142,7 @@ impl MemoryStream {
         work.record(work.meter.check())?;
         self.capture_heads_into(
             request,
-            false,
+            HeadDurability::Volatile,
             &mut output.value,
             Some(work),
             &mut children_allocation,

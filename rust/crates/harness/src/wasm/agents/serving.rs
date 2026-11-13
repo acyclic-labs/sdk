@@ -120,12 +120,8 @@ impl WasmAgentServer {
                     maximum_bytes: limits.file_bytes,
                     history_turns: HISTORY_TURNS,
                 },
-                actors: ActorLimits::new(
-                    options.handler_timeout_ms.unwrap_or_default(),
-                    1 << 20,
-                    1 << 16,
-                )
-                .map_err(|error| js_error(Error::Invalid(error.to_string())))?,
+                actors: ActorLimits::new(options.handler_timeout_ms, 1 << 20, 1 << 16)
+                    .map_err(|error| js_error(Error::Invalid(error.to_string())))?,
                 clock: Arc::new(SystemClock),
                 approval_policy: options.preset.approval_policy.clone(),
             },
@@ -134,11 +130,14 @@ impl WasmAgentServer {
         let manifest = acyclic_actors::guest::wire::decode_manifest(&manifest)
             .map_err(|error| js_error(Error::Invalid(error.to_string())))?;
         let bound = bound
-            .hosting(Arc::new(acyclic_actors::guest::wire::Remote::new(
-                manifest,
-                guest::call(on_record),
-                guest::interrupt(on_interrupt),
-            )))
+            .hosting(
+                acyclic_actors::guest::Requests::default(),
+                Arc::new(acyclic_actors::guest::wire::Remote::new(
+                    manifest,
+                    guest::call(on_record),
+                    guest::interrupt(on_interrupt),
+                )),
+            )
             .map_err(agent_error)?;
         let observation = WasmAgents {
             agents: bound.agents().clone(),

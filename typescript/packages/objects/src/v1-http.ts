@@ -51,7 +51,7 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
         const ready = ensureObjectsWasm(controller.signal);
         if (ready !== undefined) await ready;
         yield* client.send(route, bytes, controller);
-      }, this.timeoutMs);
+      }, this.timeoutMs, this.maximumResponse);
     }
     return objectsRequest(input, async (bytes, controller) => {
       const ready = ensureObjectsWasm(controller.signal);

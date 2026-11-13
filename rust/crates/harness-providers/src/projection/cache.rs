@@ -616,14 +616,15 @@ mod tests {
                     String::from_utf8_lossy(&previous[same..previous.len().min(same + 160)])
                 );
                 let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-                assert!(
-                    body["messages"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .any(|message| message["reasoning_content"].is_string()),
-                    "the loop must replay native reasoning"
-                );
+                for earlier_step in 0..step {
+                    let expected = format!("think {earlier_step} é");
+                    assert!(
+                        body["messages"].as_array().unwrap().iter().any(|message| {
+                            message["reasoning_content"].as_str() == Some(expected.as_str())
+                        }),
+                        "missing reasoning from step {earlier_step}"
+                    );
+                }
             }
             previous = Some(bytes[..messages].to_vec());
 

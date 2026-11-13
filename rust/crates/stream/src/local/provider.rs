@@ -50,7 +50,11 @@ impl StreamProvider for LocalStream {
                 let through = request.durable_through;
                 let (mut view, revision) = self
                     .accepted(|| async {
-                        let mut view = self.inner.provider.capture_heads(&request, false).await?;
+                        let mut view = self
+                            .inner
+                            .provider
+                            .capture_heads(&request, crate::memory::HeadDurability::Deferred)
+                            .await?;
                         let revision = *self.inner.revision.borrow();
                         if projection == crate::HeadProjection::Tail || request.paths.is_empty() {
                             return Ok::<_, StreamError>((view, revision));

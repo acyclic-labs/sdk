@@ -56,8 +56,9 @@ pub use identity::{
     canonical_json_digest, json_byte_length, json_byte_length_at_depth, serialized_json_digest,
 };
 
-/// The existing producer depth contract, also used by saved-record readers.
-pub(crate) const RECORD_MAXIMUM_DEPTH: u32 = 256;
+/// The existing producer depth contract, also used by saved-record readers
+/// and literal model payloads.
+pub const RECORD_MAXIMUM_DEPTH: u32 = 256;
 mod diagnostics;
 pub(crate) use diagnostics::audited_serde_diagnostic_bytes;
 pub(crate) use diagnostics::json_typed_diagnostic_source_owned_bytes;

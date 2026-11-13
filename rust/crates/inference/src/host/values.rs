@@ -1,11 +1,6 @@
-fn authorization(api_key: &str) -> Result<Zeroizing<String>, Error> {
-    if api_key.is_empty() || api_key.len() > 8_192 {
-        return Err(Error::Invalid("invalid API key"));
-    }
-    let value = Zeroizing::new(format!("Bearer {api_key}"));
-    MetadataValue::<Ascii>::try_from(value.as_str())
-        .map_err(|_| Error::Invalid("invalid API key"))?;
-    Ok(value)
+fn authorization(api_key: &str) -> Result<MetadataValue<Ascii>, Error> {
+    acyclic_auth::credential::bearer_metadata(api_key)
+        .map_err(|_| Error::Invalid("invalid API key"))
 }
 
 fn nonzero<const N: usize>(value: &[u8; N]) -> Result<(), Error> {

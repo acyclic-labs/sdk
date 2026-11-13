@@ -1026,8 +1026,14 @@ impl LocalHarness {
         Box::pin(self.initialize_agents())
     }
 
-    async fn initialize_agents(self: &Arc<Self>) -> Result<Hosted> {
-        use crate::hosting::{Bound, RootRequest, Serving, Turns};
+    /// Binds this owner's custody and current agent volumes without hosting agents.
+    ///
+    /// State and file queries use the same admission as the running server.
+    /// This neither creates a root nor starts agent execution.
+    pub fn bound(
+        self: &Arc<Self>,
+    ) -> Result<crate::hosting::Bound<LocalStream, LocalObjectBackend>> {
+        use crate::hosting::{Bound, Turns};
         let authority = self.root_authority.clone().ok_or_else(|| {
             Error::Unsupported("an embedded harness has no agent signing custody".into())
         })?;
@@ -1065,7 +1071,7 @@ impl LocalHarness {
         });
         #[cfg(not(any(test, not(target_arch = "wasm32"))))]
         let cuts: Option<Arc<dyn crate::filesystem::VolumeResources>> = None;
-        let bound = if let Some(verifier) = &self.served {
+        if let Some(verifier) = &self.served {
             let caller = verifier.caller(
                 &super::Custody {
                     issuer: &authority,
@@ -1092,7 +1098,13 @@ impl LocalHarness {
                 configure,
             )
         }
-        .map_err(storage)?;
+        .map_err(storage)
+    }
+
+    async fn initialize_agents(self: &Arc<Self>) -> Result<Hosted> {
+        use crate::hosting::{RootRequest, Serving};
+        let id = crate::agent::AgentId::from_bytes(self.root.into_bytes());
+        let bound = self.bound()?;
         let platform: Arc<dyn crate::hosting::Platform> = Arc::new(LocalUser {
             sessions: bound.admit_sessions().is_ok(),
             harness: Arc::downgrade(self),

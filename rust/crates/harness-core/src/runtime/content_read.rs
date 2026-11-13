@@ -439,7 +439,7 @@ impl TaskContext {
                 crate::executor::stock_boundary(
                     io,
                     crate::wire::ErrorCode::NotFound,
-                    "selected file does not exist",
+                    crate::conversation::SELECTED_FILE_MISSING,
                 )
                 .tool_input()
             })?;

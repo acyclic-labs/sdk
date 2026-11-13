@@ -77,6 +77,7 @@ fn usage() -> ModelUsageRecord {
                 messages: 1,
             }),
         }),
+        abandoned: Some(Default::default()),
     }
 }
 

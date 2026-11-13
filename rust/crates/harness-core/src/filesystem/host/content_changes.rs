@@ -52,6 +52,99 @@ impl UploadRecord for ChangeReceipt {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
+    pub(in crate::filesystem) fn check_change_destinations<'a>(
+        &'a self,
+        volume: &'a VolumeRef,
+        grant: &'a ContentGrant,
+        changes: &'a [ContentChange<'a>],
+        access: ContentAccess<'a, 'a>,
+        inspect_destinations: bool,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        grant.require(volume, VolumeOperation::Write, access.io)?;
+        crate::conversation::BoundedContentFuture::new(access.io, || async move {
+            let ordinary;
+            let io = if let Some(io) = access.io {
+                io
+            } else {
+                ordinary = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                &ordinary
+            };
+            let mut checked_actions = [false; 2];
+            for change in changes {
+                require_change_ceiling(
+                    change.action(),
+                    volume,
+                    access.ceiling,
+                    &mut checked_actions,
+                    io,
+                )?;
+                crate::conversation::validate_content_path(
+                    change.path(),
+                    &mut Some(&mut io.history_io()),
+                )?;
+                InternalContentClass::require_path(None, change.path(), Some(io))?;
+            }
+            let reference = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
+            let root = self.open(&reference, Some(io)).await?;
+            let opened = self.select_current_workspace(&root, io).await?;
+            let payload = change_payload(grant.policy_scope(), volume, io)?;
+            let root_view = if root.id() != opened.id() {
+                Some(
+                    access::access_view(
+                        &root,
+                        grant.policy_scope(),
+                        None,
+                        payload,
+                        access.ceiling,
+                        io,
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
+            let view = access::access_view(
+                &opened,
+                grant.policy_scope(),
+                None,
+                payload,
+                access.ceiling,
+                io,
+            )
+            .await?;
+            // Authorize the complete batch before inspecting any destination.
+            // Create-only callers need Create even when the target is present.
+            for change in changes {
+                access::require(&view.0, change.action(), change.path(), io)?;
+                if let Some(root_view) = &root_view {
+                    access::require(&root_view.0, change.action(), change.path(), io)?;
+                }
+            }
+            if !inspect_destinations {
+                return Ok(());
+            }
+            let selected = io.sdk(opened.generation(view.2, io, io.cancellation()).await)?;
+            for change in changes {
+                if matches!(
+                    change,
+                    ContentChange::CreateAbsent { .. } | ContentChange::UpdateExpected { .. }
+                ) {
+                    let absolute = crate::executor::preparation_format(
+                        format_args!("/{}", change.path()),
+                        &mut Some(&mut io.history_io()),
+                    )?;
+                    if io
+                        .sdk_if_present(selected.stat(&absolute, io, io.cancellation()).await)?
+                        .is_some_and(|stat| stat.kind == acyclic_fs::kernel::FileKind::Directory)
+                    {
+                        return Err(io.invalid("path is a directory"));
+                    }
+                }
+            }
+            Ok(())
+        })
+    }
+
     pub(in crate::filesystem) fn observe_changes<'a>(
         &'a self,
         volume: &'a VolumeRef,
@@ -475,7 +568,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             // condition. Other SDK and accounting failures keep
                             // their original terminal cause; sdk checks the
                             // recorded native work before the condition result.
-                            io.sdk((
+                            let written = io.sdk((
                                 written.map_err(|error| match error {
                                     WorkspaceError::StaleIdentity => Error::ToolRejected {
                                         code: crate::wire::ErrorCode::Conflict,
@@ -484,7 +577,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                     error => Error::from(error),
                                 }),
                                 recorded,
-                            ))?;
+                            ));
+                            if let Err(error) = written {
+                                // Diagnose the rejected condition at its original
+                                // authorized cut. Successful creates need no extra read.
+                                if matches!(
+                                    error,
+                                    Error::ToolRejected {
+                                        code: crate::wire::ErrorCode::Conflict,
+                                        reason: "conditional file already exists",
+                                    }
+                                ) && io
+                                    .sdk_if_present(
+                                        selected.stat(&absolute, io, io.cancellation()).await,
+                                    )?
+                                    .is_some_and(|stat| {
+                                        stat.kind == acyclic_fs::kernel::FileKind::Directory
+                                    })
+                                {
+                                    return Err(io.invalid("path is a directory"));
+                                }
+                                return Err(error);
+                            }
                         }
                         ContentChange::UpdateExpected { bytes, .. } => {
                             io.sdk(

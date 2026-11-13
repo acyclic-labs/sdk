@@ -1,4 +1,5 @@
 use crate::RetrySpec;
+use acyclic_auth::operation::Backoff;
 use acyclic_harness_core::{Error, model::ModelDispatch, wire::ErrorCode};
 use std::time::Duration;
 
@@ -9,21 +10,30 @@ const fn retryable_status(status: u16) -> bool {
 /// One HTTP operation's recovery owner. Only transient transport failures retry.
 pub(crate) struct Attempt {
     status: Option<u16>,
-    redelivery: Redelivery,
+    redelivery: Backoff,
     #[cfg(not(target_arch = "wasm32"))]
     refreshed: bool,
 }
 
 impl Attempt {
     pub(crate) fn generation(spec: RetrySpec, dispatch: ModelDispatch) -> Self {
-        Self::new(Redelivery::new(spec, dispatch))
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"harness-providers:redelivery:dispatch:v1");
+        hasher.update(&dispatch.operation_id.into_bytes());
+        hasher.update(&dispatch.step.to_le_bytes());
+        Self::count(spec, *hasher.finalize().as_bytes())
     }
 
     pub(crate) fn count(spec: RetrySpec, request_digest: [u8; 32]) -> Self {
-        Self::new(Redelivery::for_request(spec, request_digest))
+        let [a, b, c, d, ..] = request_digest;
+        Self::new(Backoff::new(
+            spec.base_delay_ms,
+            spec.max_delay_ms,
+            u32::from_le_bytes([a, b, c, d]),
+        ))
     }
 
-    fn new(redelivery: Redelivery) -> Self {
+    fn new(redelivery: Backoff) -> Self {
         Self {
             status: None,
             redelivery,
@@ -59,7 +69,8 @@ impl Attempt {
         if !retryable {
             return None;
         }
-        let wait = self.redelivery.next(retry_after);
+        let computed = Duration::from_millis(u64::from(self.redelivery.delay_ms()));
+        let wait = retry_after.unwrap_or(computed);
         self.status = None;
         Some(wait)
     }
@@ -72,59 +83,6 @@ impl Attempt {
         self.refreshed = true;
         self.status = None;
         true
-    }
-}
-
-/// One operation's uncapped backoff schedule. Its owner retains permanent HTTP status.
-struct Redelivery {
-    spec: RetrySpec,
-    /// Jitter seed: concurrent exchanges spread out while one exchange's schedule replays.
-    seed: [u8; 32],
-    // Saturation bounds the backoff exponent, never the number of waits.
-    attempt: u8,
-}
-
-impl Redelivery {
-    /// The schedule of one model dispatch.
-    fn new(spec: RetrySpec, dispatch: ModelDispatch) -> Self {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(b"harness-providers:redelivery:dispatch:v1");
-        hasher.update(&dispatch.operation_id.into_bytes());
-        hasher.update(&dispatch.step.to_le_bytes());
-        Self::for_request(spec, *hasher.finalize().as_bytes())
-    }
-
-    /// Uses an existing identity digest only to spread retry waits, never for admission.
-    const fn for_request(spec: RetrySpec, seed: [u8; 32]) -> Self {
-        Self {
-            spec,
-            seed,
-            attempt: 0,
-        }
-    }
-
-    /// The wait before redelivering a classified transient failure.
-    fn next(&mut self, retry_after: Option<Duration>) -> Duration {
-        let wait = match retry_after {
-            Some(wait) => wait,
-            None => {
-                let ceiling = u64::from(self.spec.base_delay_ms)
-                    .saturating_mul(1 << self.attempt.min(16))
-                    .min(u64::from(self.spec.max_delay_ms));
-                // Equal jitter from the exchange's seed.
-                let mut hasher = blake3::Hasher::new_keyed(&self.seed);
-                hasher.update(&[self.attempt]);
-                let sample = hasher
-                    .finalize()
-                    .as_bytes()
-                    .split_first_chunk::<8>()
-                    .map_or(0, |(sample, _)| u64::from_le_bytes(*sample));
-                let half = ceiling / 2;
-                Duration::from_millis(half + sample % (ceiling - half + 1))
-            }
-        };
-        self.attempt = self.attempt.saturating_add(1);
-        wait
     }
 }
 

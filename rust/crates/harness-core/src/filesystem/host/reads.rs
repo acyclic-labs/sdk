@@ -291,7 +291,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 crate::executor::stock_boundary(
                     io,
                     crate::wire::ErrorCode::NotFound,
-                    "selected file does not exist",
+                    crate::conversation::SELECTED_FILE_MISSING,
                 )
                 .tool_input()
             })?;
@@ -747,7 +747,7 @@ fn path_read_refusal(error: Error) -> Error {
         let (code, reason) = match source.as_ref() {
             WorkspaceError::NotFound => (
                 crate::wire::ErrorCode::NotFound,
-                "selected file does not exist",
+                crate::conversation::SELECTED_FILE_MISSING,
             ),
             WorkspaceError::NotRegularFile | WorkspaceError::IsDirectory => (
                 crate::wire::ErrorCode::Invalid,

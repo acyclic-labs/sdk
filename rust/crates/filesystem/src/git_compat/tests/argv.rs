@@ -47,7 +47,14 @@ fn argv_parser_has_an_explicit_command_conformance_matrix() {
     let cases: &[(&[&str], &str)] = &[
         (&["status", "--short"], r#""Status""#),
         (&["diff", "--staged"], r#"{"Diff":{"cached":true}}"#),
-        (&["log", "--max-count=7"], r#"{"Log":{"maximum":7}}"#),
+        (
+            &["log", "--max-count=7"],
+            r#"{"Log":{"maximum":7,"object":null}}"#,
+        ),
+        (
+            &["log", "-n", "7", "HEAD"],
+            r#"{"Log":{"maximum":7,"object":"HEAD"}}"#,
+        ),
         (
             &["show", "HEAD"],
             r#"{"Show":{"object":"HEAD","offset":"0"}}"#,
@@ -105,6 +112,10 @@ fn argv_parser_has_an_explicit_command_conformance_matrix() {
         (
             &["checkout", "HEAD", "--", "src/lib.rs"],
             r#"{"Restore":{"source":"HEAD","paths":["src/lib.rs"]}}"#,
+        ),
+        (
+            &["checkout", "--", "src/lib.rs", "--literal"],
+            r#"{"Restore":{"source":null,"paths":["src/lib.rs","--literal"]}}"#,
         ),
         (
             &["rev-parse", "--abbrev-ref", "HEAD"],

@@ -771,6 +771,7 @@ mod tests {
             system_fingerprint: None,
             ttft_ns: None,
             cache: None,
+            abandoned: Some(Default::default()),
         }
     }
 

@@ -311,7 +311,7 @@ impl Cut<'_> {
         observation: &OwnedBytes,
         checkpoint: &OwnedBytes,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
-    ) -> Result<Option<acyclic_stream::CommitId>> {
+    ) -> Result<Option<(acyclic_stream::CommitId, u64)>> {
         let mut offset = 0;
         loop {
             let pending = records
@@ -368,7 +368,23 @@ impl Cut<'_> {
                     )
                     .await?;
                     let held = crate::wire_codec::CodecQuota::from_retained(work, retained);
-                    let result = self.confirm(&outcome, expected, pending, observation, checkpoint);
+                    let result = self
+                        .confirm(&outcome, expected, pending, observation, checkpoint)
+                        .map(|commit| {
+                            commit.map(|commit| {
+                                (
+                                    commit,
+                                    match &outcome {
+                                        CommitOutcome::Committed(receipt) => {
+                                            receipt.committed_at_micros
+                                        }
+                                        CommitOutcome::Conflict(_) => {
+                                            unreachable!("confirmed commit")
+                                        }
+                                    },
+                                )
+                            })
+                        });
                     drop(outcome);
                     drop(held);
                     return result;

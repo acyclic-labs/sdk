@@ -53,7 +53,7 @@ pub struct AgentHandler<P: crate::store::JournalProvider + ?Sized, D> {
     manifest: Manifest,
     volumes: Option<std::sync::Arc<dyn super::SpawnVolumes>>,
     closes: bool,
-    diagnostics: Mutex<BTreeMap<AgentPath, RetainedDiagnostic>>,
+    diagnostics: Arc<Mutex<BTreeMap<AgentPath, RetainedDiagnostic>>>,
 }
 
 /// A failed publication keeps the computed transition, including every byte
@@ -141,10 +141,22 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             },
             volumes: None,
             closes: false,
-            diagnostics: Mutex::new(BTreeMap::new()),
+            diagnostics: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
 
+    /// Retain computed failure results when rebinding an attempt-local driver.
+    /// Both handlers must use the same provider session and actor root. Only
+    /// diagnostic data is shared; neither handler retains the other's driver.
+    pub fn with_diagnostics_from(mut self, source: &Self) -> Result<Self, GuestError> {
+        if self.agents.store.root() != source.agents.store.root()
+            || !Arc::ptr_eq(self.agents.store.provider(), source.agents.store.provider())
+        {
+            return Err(GuestError::Handler("diagnostic store differs".into()));
+        }
+        self.diagnostics = Arc::clone(&source.diagnostics);
+        Ok(self)
+    }
     /// Asks the host, in each agent's closing step, to release what the agent
     /// holds ([`super::lifecycle::CLOSE`]) before that step commits.
     #[must_use]

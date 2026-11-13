@@ -223,6 +223,29 @@ mod tests {
 
     proptest! {
         #[test]
+        fn deferred_watermark_budget_covers_final_wire_encoding(
+            tails in prop::collection::vec(any::<u64>(), 0..8),
+            through in proptest::option::of(any::<u64>()),
+        ) {
+            let mut view = crate::Heads {
+                retained: Default::default(), projection: crate::HeadProjection::Watermarks,
+                snapshot: crate::Revision { scope: crate::RevisionScope::new(Vec::new()), incarnation: 1, index: 0 },
+                heads: tails.into_iter().map(|tail| Some(crate::PathHead {
+                    retained_through: through.filter(|through| *through <= tail),
+                    tail, last: None, durable: 0, origin: None,
+                })).collect(), children: None,
+            };
+            let reserved = crate::wire_codec::requests::heads_len_with_durability(&view, true);
+            for head in view.heads.iter_mut().flatten() { head.durable = head.tail; }
+            prop_assert_eq!(heads_to_wire(view.clone()).unwrap().encoded_len(), reserved);
+            for head in view.heads.iter_mut().flatten() {
+                head.durable /= 2;
+                head.retained_through = head.retained_through.filter(|through| *through <= head.durable);
+            }
+            prop_assert!(heads_to_wire(view).unwrap().encoded_len() <= reserved);
+        }
+
+        #[test]
         fn retained_positions_preserve_order_identity_and_sequence(
             positions in prop::collection::vec((any::<[u8; 32]>(), "[a-z]{1,24}", any::<u64>()), 0..8),
         ) {

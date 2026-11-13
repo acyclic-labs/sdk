@@ -1368,3 +1368,174 @@ async fn explanation_template_restricts_definitions_and_executable_authority() -
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn child_answer_wakes_parent_through_inbox_follow_without_wait() -> Result {
+    use acyclic_stream::{FollowRequest, records_only};
+    use futures::TryStreamExt as _;
+
+    for failed in [false, true] {
+        let (agents, stream, root, model) = fixture(
+            with_retrospectives([
+                spawn_call("reviewer", &[]),
+                ScriptedTurn::Text("delegated".into()),
+            ])
+            .collect(),
+            0,
+        )
+        .await?;
+        deliver(&agents, &root, requested("delegate", &root)).await?;
+        let child = named(&agents, &root, "reviewer").await?;
+        let before = inbox_tail(&*stream, &root).await?;
+        let mut events = records_only(
+            stream
+                .follow(FollowRequest::new(root.inbox()?, before))
+                .await?,
+        );
+        model.extend(if failed {
+            vec![ScriptedTurn::Events(vec![ScriptedEvent::Interrupted {
+                error: "review provider failed".into(),
+            }])]
+        } else {
+            with_retrospectives([ScriptedTurn::Text("Review complete".into())]).collect()
+        });
+        agents.drain(&child).await?;
+        assert_eq!(agents.state(&child).await?.phase, Phase::Idle);
+        let event = events.try_next().await?.ok_or("completion follow ended")?;
+        let InboxRecord::Notice {
+            id,
+            notice: NoticePayload::Waking(file),
+        } = InboxRecord::decode(&event.value)?
+        else {
+            return Err("child answer did not publish a waking primitive event".into());
+        };
+        assert!(id.as_str().starts_with("child-settled:"));
+        assert_eq!(file.descriptor().media_type(), NOTICE_MEDIA_TYPE);
+        let after = inbox_tail(&*stream, &root).await?;
+        assert_eq!(after, before + 1);
+        agents.drain(&child).await?;
+        assert_eq!(
+            inbox_tail(&*stream, &root).await?,
+            after,
+            "replay duplicated completion"
+        );
+
+        model.extend(with_retrospectives([ScriptedTurn::Text(
+            "Observed reviewer completion".into(),
+        )]));
+        agents.drain(&root).await?;
+        let entry = answer(&*stream, &child, 0).await?;
+        let requests = model.requests();
+        let notice = requests
+            .iter()
+            .flat_map(|request| &request.messages)
+            .flat_map(|message| message.content.parts())
+            .filter_map(|part| match part {
+                ModelContentPart::Notices { notices } => Some(notices),
+                _ => None,
+            })
+            .flatten()
+            .find(|notice| notice.kind == "child.settled")
+            .ok_or("parent model did not receive completion")?;
+        assert_eq!(notice.source, child.as_str());
+        assert_eq!(notice.body["output"], serde_json::to_value(&entry.output)?);
+        assert_eq!(
+            notice.body["outcome"],
+            serde_json::to_value(&entry.outcome)?
+        );
+        assert_eq!(matches!(entry.outcome, TurnOutcome::Failed { .. }), failed);
+        assert_eq!(notice.body["branch"], child.as_str());
+        assert!(
+            !agents.state(&child).await?.closed,
+            "completion closed the child"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn progress_send_reaches_waiting_parent_and_survives_settlement() -> Result {
+    let (agents, stream, root, model) = fixture(
+        with_retrospectives([
+            spawn_call("worker", &[]),
+            ScriptedTurn::Text("delegated".into()),
+        ])
+        .collect(),
+        0,
+    )
+    .await?;
+    deliver(&agents, &root, requested("delegate-progress", &root)).await?;
+    let child = named(&agents, &root, "worker").await?;
+    model.extend([call(
+        "wait",
+        json!({"agents": ["worker"], "need": 1, "input": false}),
+    )]);
+    let waiting = deliver(&agents, &root, requested("await-worker", &root)).await?;
+    assert!(matches!(waiting.phase, Phase::Waiting { input: false, .. }));
+    let before = inbox_tail(&*stream, &root).await?;
+    model.extend([
+        call(
+            "send",
+            json!({"agent": root.as_str(), "message": "Progress: review is in progress"}),
+        ),
+        ScriptedTurn::Text("work completed".into()),
+        ScriptedTurn::Text("none".into()),
+    ]);
+    agents.drain(&child).await?;
+    // Delivery reaches the parent before the child completion event, even
+    // though the parent's model is parked in a settlement-only wait.
+    let inbox = super::super::values(&*stream, root.inbox()?).await?;
+    let mut records = inbox
+        .iter()
+        .skip(before as usize)
+        .map(|bytes| InboxRecord::decode(bytes));
+    let InboxRecord::Message(message) = records.next().ok_or("missing progress delivery")?? else {
+        return Err("progress did not precede completion".into());
+    };
+    assert_eq!(
+        message.from,
+        Sender::Agent {
+            path: child.clone()
+        }
+    );
+    assert!(records.any(|record| matches!(
+        record,
+        Ok(InboxRecord::Notice {
+            notice: NoticePayload::Waking(_),
+            ..
+        })
+    )));
+    model.extend(with_retrospectives([ScriptedTurn::Text(
+        "progress and completion observed".into(),
+    )]));
+    agents.drain(&root).await?;
+    let requests = model.requests();
+    let notices: Vec<_> = requests
+        .iter()
+        .flat_map(|request| &request.messages)
+        .flat_map(|message| message.content.parts())
+        .filter_map(|part| match part {
+            ModelContentPart::Notices { notices } => Some(notices),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert!(notices.iter().any(|notice| notice.kind == "peer.message"
+        && notice.source == child.as_str()
+        && notice.body["id"] == message.id.as_str()));
+    assert!(
+        notices
+            .iter()
+            .any(|notice| notice.kind == "child.settled" && notice.source == child.as_str())
+    );
+    assert!(
+        requests
+            .iter()
+            .flat_map(|request| &request.messages)
+            .flat_map(|message| message.content.parts())
+            .any(|part| matches!(part,
+            ModelContentPart::ToolResult { name, content: ToolResultContent::Json { value }, .. }
+                if name == "wait" && value["settled"][0]["agent"] == child.as_str()))
+    );
+    Ok(())
+}

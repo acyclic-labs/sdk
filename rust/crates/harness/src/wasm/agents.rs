@@ -227,14 +227,16 @@ struct WasmAgentRecord {
 /// Model and tools of every agent turn. Callbacks are trusted host
 /// implementations, with the same contract as Rust providers and tools.
 #[wasm_bindgen]
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct WasmAgentRegistry {
     tools: ToolRegistry,
     model: Option<(Model, Arc<dyn ModelProvider>, CompactionPolicy)>,
     models: Option<Arc<crate::model::ModelResolver>>,
     workspace: Option<Workspace>,
+    workspace_source: Option<JsValue>,
 }
 
+#[derive(Clone)]
 struct Workspace {
     target: crate::agent::TargetRecord,
     executor: Arc<dyn crate::tool::ToolExecutor>,
@@ -257,6 +259,7 @@ impl WasmAgentRegistry {
         executor: Arc<dyn crate::tool::ToolExecutor>,
         tools: &'static [&'static str],
     ) {
+        self.workspace_source = None;
         self.workspace = Some(Workspace {
             target,
             executor,
@@ -307,6 +310,18 @@ impl WasmAgentRegistry {
         self.bind_workspace(workspace.target(), workspace.executor(), &["shell"]);
     }
 
+    /// Retain a host admission source, never a Machine shared by the heap.
+    /// AgentGuest calls admit(requestId) once inside each delivery attempt.
+    #[wasm_bindgen(js_name = bindMachinesWorkspaceSource)]
+    pub fn bind_machines_workspace_source(
+        &mut self,
+        #[wasm_bindgen(unchecked_param_type = "WasmMachinesWorkspaceAdmission")] source: JsValue,
+    ) -> std::result::Result<(), JsValue> {
+        js_sys::Reflect::get(&source, &"admit".into())?.dyn_into::<Function>()?;
+        self.workspace = None;
+        self.workspace_source = Some(source);
+        Ok(())
+    }
     /// Registers one immutable tool revision; turns may call it.
     #[wasm_bindgen(js_name = registerTool)]
     pub fn register_tool(
@@ -600,6 +615,7 @@ impl WasmAgents {
             stream, filesystem, ..
         } = providers;
         let agents = AgentHost::hosting(
+            acyclic_actors::guest::Requests::default(),
             stream,
             owner.within()?,
             handler,

@@ -33,6 +33,7 @@ pub use clock::{Clock, ClockControl, ClockError, ControlledClock, SystemClock};
 use completion::{Completion, Completions};
 use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 pub use limits::RuntimeLimits;
+pub use placement::PlacementRequests;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, hash_map::RandomState},
@@ -51,6 +52,8 @@ struct Slot {
     waker: Waker,
     inner: tokio::sync::Mutex<Inner>,
     refresh: AtomicBool,
+    /// Discovery retains custody without admitting execution before placement.
+    unplaced: AtomicBool,
     /// Just past its latest activation entry this dispatcher observed or
     /// carried; zero for none. A failed delivery's checkpoint bound.
     entry: AtomicU64,
@@ -210,6 +213,8 @@ pub struct Runtime<P: StreamProvider + ?Sized> {
     instance: uuid::Uuid,
     /// Whether this runtime is its store's local placement owner.
     places: bool,
+    /// The external owner told of due work for non-resident actors.
+    unplaced: Option<Arc<dyn PlacementRequests>>,
     limits: RuntimeLimits,
     admission: Option<tokio::sync::Semaphore>,
     completions: OnceLock<tokio::sync::mpsc::Sender<Completion>>,
@@ -220,8 +225,14 @@ pub struct Runtime<P: StreamProvider + ?Sized> {
 }
 
 impl<P: StreamProvider + ?Sized> Runtime<P> {
-    /// One runtime per state root and handler package.
-    pub fn new(store: Store<P>, handler: Arc<dyn Handler>, clock: Arc<dyn Clock>) -> Self {
+    /// One runtime per state root and handler package. Bind the guest capability
+    /// bridge to a clone of `requests` before constructing this runtime.
+    pub fn new(
+        requests: crate::guest::Requests,
+        store: Store<P>,
+        handler: Arc<dyn Handler>,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
         let shards = store.scheduling_shards;
         Self {
             scheduling_shards: (0..store.scheduling_shards()).collect(),
@@ -235,11 +246,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             shards: RandomState::new(),
             instance: crate::identity::fresh_uuid(),
             places: true,
+            unplaced: None,
             limits: RuntimeLimits::default(),
             admission: None,
             completions: OnceLock::new(),
             subscriptions: SyncMutex::new(subscriptions::Subscriptions::default()),
-            requests: crate::guest::Requests::default(),
+            requests,
             restored: tokio::sync::watch::Sender::new(false),
         }
     }
@@ -284,10 +296,47 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// among several sharing one state root. By default a runtime is the
     /// single local placement owner of its store, which holds the store's
     /// exclusive claim, and issues each resident actor's next command itself.
+    ///
+    /// `requests` is told of each non-resident actor of an assigned shard
+    /// with due work: a committed activation, an opened alarm window or a
+    /// restored interest. That is how a restarted host resumes dormant
+    /// actors without an invocation; the owner answers with [Self::place].
     #[must_use]
-    pub const fn with_external_placement(mut self) -> Self {
+    pub fn with_external_placement(mut self, requests: Arc<dyn PlacementRequests>) -> Self {
+        self.places = false;
+        self.unplaced = Some(requests);
+        self
+    }
+
+    /// External placement for a single-actor host, which never runs the
+    /// dispatcher and so has no due work to report.
+    #[must_use]
+    pub(crate) const fn externally_placed(mut self) -> Self {
         self.places = false;
         self
+    }
+
+    /// Admit `actor`'s due work: a placing runtime hosts it, and an external
+    /// owner is asked to place it unless it is already resident here. Under
+    /// external placement `custody` retains the work here until placement
+    /// admits it; a released actor's handoff entry takes none, because the
+    /// next placer owns it.
+    fn due(&self, actor: &ActorReference, custody: bool) -> Result<(), Error> {
+        if self.places {
+            return self.track(actor.clone());
+        }
+        if let Some(requests) = &self.unplaced {
+            if custody {
+                self.track_with_placement(actor.clone(), true)?;
+            }
+            if self
+                .slot(actor)
+                .is_none_or(|slot| slot.unplaced.load(Ordering::Acquire))
+            {
+                requests.unplaced(actor);
+            }
+        }
+        Ok(())
     }
 
     /// Select the stable scheduling partitions assigned by placement before
@@ -331,6 +380,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// Register a dormant slot. Registration queues no work and grants no ownership.
     /// Unassigned actors cannot claim themselves when input arrives.
     pub fn track(&self, actor: ActorReference) -> Result<(), Error> {
+        self.track_with_placement(actor, false)
+    }
+
+    fn track_with_placement(&self, actor: ActorReference, unplaced: bool) -> Result<(), Error> {
         if !self.includes(&actor) {
             return Err(Error::Invalid("actor is outside this runtime's scope"));
         }
@@ -342,6 +395,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             return Ok(());
         }
         let registration = self.ready.register(actor.clone())?;
+        if unplaced {
+            // An undelivered activation has the same checkpoint custody as an
+            // unfinished delivery. Placement alone does not consume its input.
+            drop(self.ready.flight(&actor));
+        }
         let waker = registration.waker();
         actors.insert(
             actor,
@@ -350,6 +408,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 waker,
                 inner: tokio::sync::Mutex::new(Inner::default()),
                 refresh: AtomicBool::new(false),
+                unplaced: AtomicBool::new(unplaced),
                 entry: AtomicU64::new(0),
                 event_deliveries: AtomicUsize::new(0),
                 control: tokio::sync::Mutex::new(()),
@@ -378,7 +437,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let Some(slot) = actors.get(actor) else {
             return true;
         };
-        if slot.event_deliveries.load(Ordering::Acquire) != 0 {
+        if slot.unplaced.load(Ordering::Acquire)
+            || slot.event_deliveries.load(Ordering::Acquire) != 0
+        {
             return false;
         }
         let Ok(mut inner) = slot.inner.try_lock() else {
@@ -408,7 +469,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     pub fn wake(&self, actor: &ActorReference) {
         if let Some(slot) = self.slot(actor) {
             slot.refresh.store(true, Ordering::Release);
-            slot.waker.wake_by_ref();
+            if !slot.unplaced.load(Ordering::Acquire) {
+                slot.waker.wake_by_ref();
+            }
         }
     }
 
@@ -664,6 +727,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let mut seen = BTreeMap::new();
         let mut stores = BTreeMap::new();
         let mut dispatchers = BTreeMap::new();
+        // Released actors whose one carried entry is still to be read back.
+        let mut handoffs = std::collections::HashSet::new();
         let mut created = futures::stream::SelectAll::new();
         // Every shard checkpoint loads in one snapshot request.
         let mut assigned = Vec::with_capacity(self.scheduling_shards.len());
@@ -718,14 +783,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let mut restoring: Option<
             BoxProviderFuture<'_, Result<(u16, Vec<ActorReference>, Option<StreamPath>), Error>>,
         > = None;
-        let mut restore: Vec<(u16, Option<StreamPath>)> = if self.places {
-            self.scheduling_shards
-                .iter()
-                .map(|&shard| (shard, None))
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let mut restore: Vec<(u16, Option<StreamPath>)> = self
+            .scheduling_shards
+            .iter()
+            .map(|&shard| (shard, None))
+            .collect();
         // Windows whose reads are in flight, as `(shard, window)`: a shard's
         // watermark never passes one of its windows still being read.
         let mut reading = BTreeSet::new();
@@ -873,7 +935,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 Event::Created(shard, record) => {
                     // Activation is a wake hint, not a placement command. The
                     // local placement owner hosts its shard's actors on demand;
-                    // under external placement only admitted residents wake.
+                    // under external placement only admitted residents wake,
+                    // and the owner is asked to place the rest.
                     let cursor = record
                         .sequence
                         .checked_add(1)
@@ -882,9 +945,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         && self.store.scheduling_shard(&actor) == shard
                         && self.includes(&actor)
                     {
-                        if self.places {
-                            self.track(actor.clone())?;
-                        }
+                        let handoff = handoffs.remove(&actor);
+                        self.due(&actor, !handoff)?;
                         if let Some(slot) = self.slot(&actor) {
                             slot.entry.fetch_max(cursor, Ordering::AcqRel);
                         }
@@ -956,9 +1018,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     } = opened?;
                     for actor in actors {
                         if self.store.scheduling_shard(&actor) == shard && self.includes(&actor) {
-                            if self.places {
-                                self.track(actor.clone())?;
-                            }
+                            self.due(&actor, true)?;
                             // The resident takes the filed alarm over before
                             // the window can be passed.
                             if let Some(slot) = self.slot(&actor) {
@@ -985,7 +1045,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     let (shard, actors, next) = page?;
                     for actor in actors {
                         if self.store.scheduling_shard(&actor) == shard && self.includes(&actor) {
-                            self.track(actor.clone())?;
+                            self.due(&actor, true)?;
                             self.wake(&actor);
                         }
                     }
@@ -1093,8 +1153,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                                     .fetch_max(cursor.saturating_add(1), Ordering::AcqRel);
                             }
                             // Released: this one entry is its handoff, which
-                            // the next placer's wake owns; the mark ends here.
-                            None => self.ready.forget(actor),
+                            // the next placer's wake owns; the mark ends here,
+                            // and reading the entry back retakes no custody.
+                            None => {
+                                self.ready.forget(actor);
+                                handoffs.insert(actor.clone());
+                            }
                         }
                     }
                     let store = &stores[&shard];

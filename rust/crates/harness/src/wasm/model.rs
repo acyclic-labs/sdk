@@ -224,6 +224,8 @@ pub fn admit_model_event(
         calls: state.calls,
         completed: state.completed,
         text_bytes: state.text_bytes,
+        // Abandoned-attempt usage is a journal record; this boundary keeps none.
+        ..ModelEventAdmission::default()
     };
     let mut admission =
         ModelEventAdmission::from_state(admission_state, limits).map_err(js_error)?;

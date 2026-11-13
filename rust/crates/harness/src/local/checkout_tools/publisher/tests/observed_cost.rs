@@ -1,6 +1,151 @@
 //! Rebinding a captured publication must reuse its authenticated content.
 use super::*;
 
+fn publication_source(root: &Path) -> Result<()> {
+    for index in 0..128 {
+        std::fs::write(root.join(format!("source-{index}.txt")), b"source\n").map_err(storage)?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn concurrent_publications_preserve_each_volume_payload() -> Result<()> {
+    let (_directory, _state, harness, publisher) = seeded_cost_fixture(publication_source).await?;
+    measure_publications(&[&publisher; 8], "shared_checkout").await?;
+    harness.disconnect().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn independent_agent_views_preserve_concurrent_project_and_home_writes() -> Result<()> {
+    acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
+    acyclic_fs::initialize_native_mount_services().map_err(storage)?;
+    let backing = tempfile::tempdir().map_err(storage)?;
+    let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(
+        backing.path().join("filesystem"),
+    ))
+    .await
+    .map_err(storage)?;
+    let store =
+        acyclic_fs::LocalCoreStateStore::open_shared_owner(backing.path().join("workspace"))
+            .map_err(storage)?;
+    let mut writers = Vec::new();
+    for index in 0..8_u8 {
+        let directory = tempfile::tempdir().map_err(storage)?;
+        publication_source(directory.path())?;
+        let (fixture, publisher) = open_fixture_shared(
+            directory.path(),
+            tempfile::tempdir().map_err(storage)?,
+            &filesystem,
+            store.clone(),
+            crate::AgentId::from_bytes([index + 1; 16]),
+            &format!("project-{index}"),
+        )
+        .await?;
+        // Production executor binding publishes the baseline before a model
+        // can request a command. Include that setup outside write timings.
+        publisher.tools.publish_baseline().await?;
+        writers.push((directory, fixture, publisher));
+    }
+    for (index, (_, _, writer)) in writers.iter().enumerate() {
+        for (_, _, earlier) in &writers[..index] {
+            assert_ne!(
+                writer.tools.workspace.view().workspace().id(),
+                earlier.tools.workspace.view().workspace().id()
+            );
+            assert_ne!(writer.tools.signed.agent(), earlier.tools.signed.agent());
+        }
+    }
+    let publishers = writers
+        .iter()
+        .map(|(_, _, publisher)| publisher)
+        .collect::<Vec<_>>();
+    measure_publications(&publishers, "agent_views").await
+}
+
+async fn measure_publications(publishers: &[&CheckoutPublisher], layout: &str) -> Result<()> {
+    measure_writer_batch(&publishers[..1], layout).await?;
+    measure_writer_batch(publishers, layout).await
+}
+
+async fn measure_writer_batch(publishers: &[&CheckoutPublisher], layout: &str) -> Result<()> {
+    let count = publishers.len();
+    for prefix in ["volume:///home/", ""] {
+        let barrier = tokio::sync::Barrier::new(publishers.len());
+        let results =
+            futures::future::join_all(publishers.iter().enumerate().map(|(index, publisher)| {
+                let barrier = &barrier;
+                async move {
+                    let display = format!("concurrent-{count}-{index}.txt");
+                    let path = format!("{prefix}{display}");
+                    let bytes = format!("writer {index}\n");
+                    barrier.wait().await;
+                    let started = std::time::Instant::now();
+                    let (file, _) = publisher
+                        .stage_once(
+                            OperationId::new(),
+                            &path,
+                            bytes.as_bytes(),
+                            "text/plain",
+                            &display,
+                            Default::default(),
+                        )?
+                        .await?;
+                    Ok::<_, Error>((started.elapsed(), file))
+                }
+            }))
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
+        let mut elapsed = results
+            .iter()
+            .map(|(elapsed, _)| *elapsed)
+            .collect::<Vec<_>>();
+        elapsed.sort_unstable();
+        eprintln!(
+            "PUBLICATION_LATENCY layout={layout} volume={} writers={} p50_us={} max_us={}",
+            if prefix.is_empty() { "project" } else { "home" },
+            publishers.len(),
+            elapsed[elapsed.len() / 2].as_micros(),
+            elapsed.last().expect("writers").as_micros()
+        );
+        // Verification begins only after every timed publication has finished,
+        // so verification reads cannot contend with the remaining writers.
+        for (index, (publisher, (_, file))) in publishers.iter().zip(results).enumerate() {
+            let path = format!("{prefix}concurrent-{count}-{index}.txt");
+            let bytes = format!("writer {index}\n");
+            let (mount, relative) = publisher.tools.workspace.mounts.file(None, &path)?;
+            let workspace = mount.view.source.as_ref().map_or_else(
+                || publisher.tools.workspace.view().workspace(),
+                |source| source.workspace.workspace(),
+            );
+            let host = publisher
+                .files
+                .for_workspace(&mount.view.volume, workspace.clone())?;
+            let grant = crate::conversation::ContentGrant::verify_directory_read(
+                &publisher.verifier,
+                &publisher.tools.signed,
+                &mount.view.volume,
+                "",
+                &mut None,
+            )?;
+            let (_, retained) = host
+                .read_private_path(
+                    &mount.view.volume,
+                    &grant,
+                    &relative,
+                    None,
+                    64,
+                    Default::default(),
+                )
+                .await?;
+            assert_eq!(retained.as_ref(), bytes.as_bytes());
+            assert_eq!(file.descriptor().byte_length(), bytes.len() as u64);
+        }
+    }
+    Ok(())
+}
+
 pub(super) async fn cost_fixture() -> Result<(
     tempfile::TempDir,
     tempfile::TempDir,

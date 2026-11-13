@@ -182,10 +182,11 @@ pub const FILE_DESCRIPTOR_SET: &[u8] = build_metadata::FILE_DESCRIPTOR_SET;
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::executor::json::json_from_value_bounded;
 pub use crate::executor::json::{
-    JsonBounds, JsonCodecCharge, JsonValueSchema, JsonValueShape, canonical_json_bytes_bounded,
-    json_bytes_bounded, json_from_slice_bounded, json_owned_value_conversion_additional_bytes,
-    json_typed_diagnostic_owned_bytes, json_value_bounded, json_value_decode_owned_bytes,
-    preparation_serde_diagnostic_label_bytes, sdk_json_diagnostic_bytes,
+    JsonBounds, JsonCodecCharge, JsonValueSchema, JsonValueShape, RECORD_MAXIMUM_DEPTH,
+    canonical_json_bytes_bounded, json_bytes_bounded, json_from_slice_bounded,
+    json_owned_value_conversion_additional_bytes, json_typed_diagnostic_owned_bytes,
+    json_value_bounded, json_value_decode_owned_bytes, preparation_serde_diagnostic_label_bytes,
+    sdk_json_diagnostic_bytes,
 };
 pub use contract::{
     Admission, AgentId, AuthorityLevel, AuthorityPolicy, BatchId, COMPONENT_LABEL_FORBIDDEN_EXACT,

@@ -86,13 +86,29 @@ fn revision_len(revision: &crate::Revision) -> usize {
     .saturating_add(uint_len((revision.index != 0).then_some(revision.index)))
 }
 
+/// Encoded page length from its framed children and optional continuation.
+pub(crate) fn children_page_len(
+    children_bytes: usize,
+    next_after: Option<&crate::StreamPath>,
+) -> usize {
+    block_len(32)
+        .saturating_add(children_bytes)
+        .saturating_add(next_after.map_or(0, |path| block_len(path.as_str().len())))
+}
+
 pub(crate) fn heads_len(view: &crate::Heads) -> usize {
+    heads_len_with_durability(view, false)
+}
+
+/// Reserves deferred durable watermarks without claiming them during capture.
+pub(crate) fn heads_len_with_durability(view: &crate::Heads, deferred: bool) -> usize {
     let snapshot = revision_len(&view.snapshot);
     let named = view
         .heads
         .iter()
         .map(|head| {
             block_len(head.as_ref().map_or(0, |head| {
+                let durable = if deferred { head.tail } else { head.durable };
                 block_len(
                     uint_len((head.tail != 0).then_some(head.tail))
                         .saturating_add(uint_len((head.changed_at != 0).then_some(head.changed_at)))
@@ -101,7 +117,7 @@ pub(crate) fn heads_len(view: &crate::Heads) -> usize {
                                 .as_ref()
                                 .map_or(0, |record| block_len(record_len(record, None))),
                         )
-                        .saturating_add(uint_len((head.durable != 0).then_some(head.durable)))
+                        .saturating_add(uint_len((durable != 0).then_some(durable)))
                         .saturating_add(uint_len(head.retained_through))
                         .saturating_add(
                             head.origin
@@ -113,20 +129,13 @@ pub(crate) fn heads_len(view: &crate::Heads) -> usize {
         })
         .fold(0usize, usize::saturating_add);
     let children = view.children.as_ref().map_or(0, |page| {
-        block_len(
-            block_len(page.hierarchy_version.as_bytes().len())
-                .saturating_add(
-                    page.children
-                        .iter()
-                        .map(|child| block_len(child_len(child)))
-                        .fold(0usize, usize::saturating_add),
-                )
-                .saturating_add(
-                    page.next_after
-                        .as_ref()
-                        .map_or(0, |path| block_len(path.as_str().len())),
-                ),
-        )
+        block_len(children_page_len(
+            page.children
+                .iter()
+                .map(|child| block_len(child_len(child)))
+                .fold(0usize, usize::saturating_add),
+            page.next_after.as_ref(),
+        ))
     });
     block_len(snapshot)
         .saturating_add(block_len(revision_len(&view.applied)))

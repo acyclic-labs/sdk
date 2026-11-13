@@ -147,14 +147,49 @@ async fn pinned_reader_batches_ranges_in_request_order() -> TestResult {
             .collect::<Vec<_>>(),
         vec![b"ab".as_slice(), b"XY"]
     );
-    assert_eq!(
-        reader
-            .read_symbolic_link(&path("link")?, B, &cancel)
-            .await?
-            .value
-            .as_ref(),
-        b"first"
-    );
+    let link_path = path("link")?;
+    let links = reader
+        .resolve_files(&[link_path.clone()], B, &cancel)
+        .await?
+        .value;
+    writer
+        .apply_authored_transaction(
+            vec![
+                AuthoredMutation::Remove {
+                    path: link_path.clone(),
+                    expected_file_id: None,
+                },
+                AuthoredMutation::CreateSymbolicLink {
+                    file_id: None,
+                    path: link_path.clone(),
+                    target: OwnedBytes::from_static(b"second"),
+                    metadata: FileMetadata::default(),
+                },
+            ],
+            B,
+            &cancel,
+        )
+        .await?;
+    let pinned = reader
+        .read_symbolic_link(&link_path, B, &cancel)
+        .await?
+        .value;
+    let resolved = links[0]
+        .as_ref()
+        .unwrap()
+        .read_symbolic_link(B, &cancel)
+        .await?
+        .value;
+    let current = writer
+        .read_symbolic_link(&link_path, B, &cancel)
+        .await?
+        .value;
+    assert_eq!(pinned.bytes.as_ref(), b"first");
+    assert_eq!(resolved.bytes.as_ref(), b"first");
+    assert_eq!(current.bytes.as_ref(), b"second");
+    for read in [pinned, resolved, current] {
+        assert!(read.logical_owned_bytes >= read.bytes.len() as u64);
+    }
     assert!(matches!(
         reader.read_symbolic_link(&path("first")?, B, &cancel).await,
         Err(OperationFailure {

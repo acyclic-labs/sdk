@@ -466,6 +466,7 @@ mod tests {
                 .map(|index| format!("{index:08}{}", "x".repeat(120)))
                 .collect(),
             completed: false,
+            ..ModelEventAdmission::default()
         });
         assert!(
             io.encode(

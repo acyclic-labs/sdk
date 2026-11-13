@@ -52,6 +52,8 @@ export async function blobDigest(bytes: Uint8Array): Promise<wire.Digest> {
 
 /** One original operation. Closing it settles a pending pull and releases its owner. */
 export interface ObjectsV1Request {
+  /** Optional payload capacity for each availability frame, not a stream total. */
+  readonly maximumFrameBytes?: number;
   next(): Promise<ObjectsV1BinaryReply | null>;
   /** The canonical decoder accepted the initial response. Ends an opening
    * deadline without imposing a deadline on subsequent subscription waits. */
@@ -85,7 +87,7 @@ export function objectsRequest(input: Uint8Array, start: (input: Uint8Array, con
 }
 
 /** Transport chunks retain one abort owner from opening through the final pull. */
-export function objectsStreamRequest(input: Uint8Array, start: (input: Uint8Array, controller: AbortController, opened: () => void) => AsyncIterable<Uint8Array>, timeoutMs?: number): ObjectsV1Request {
+export function objectsStreamRequest(input: Uint8Array, start: (input: Uint8Array, controller: AbortController, opened: () => void) => AsyncIterable<Uint8Array>, timeoutMs?: number, maximumFrameBytes?: number): ObjectsV1Request {
   let bytes: Uint8Array;
   try { bytes = snapshotBytes(input); }
   catch { throw new ObjectsV1Error(wire.ErrorCode.INVALID_ARGUMENT); }
@@ -103,6 +105,7 @@ export function objectsStreamRequest(input: Uint8Array, start: (input: Uint8Arra
     void source?.return?.().catch(() => {});
   };
   return {
+    maximumFrameBytes,
     async next() {
       if (closed) return null;
       if (pulling) throw new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE);

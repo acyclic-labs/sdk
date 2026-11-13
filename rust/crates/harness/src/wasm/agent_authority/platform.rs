@@ -309,7 +309,7 @@ export interface WasmAuthorityAdmission {
     /** Sealed public evidence. Restricted append authority is rejected. */
     scope: Scope;
     trust: { environment: string; environment_keys: number[][]; environment_keys_valid_until: bigint | null; account: string;
-        issuer_keys: number[][]; minimum_key_epoch: bigint;
+        issuer_keys: number[][]; minimum_key_epoch: bigint; not_before_unix_seconds: bigint;
         revoked_key_ids: string[]; revoked_block_ids: number[][] };
     /** Authenticated public verification key, never a signing key. */
     checkpoint_key: number[];

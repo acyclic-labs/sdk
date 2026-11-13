@@ -7,8 +7,9 @@
 //! cursor): one [`ConversationEntry`] naming the turn's input and its staged output.
 
 use super::{
-    AgentOutcome, AgentRecord, AgentState, ApprovalRequested, ContextAction, Error, InboxRecord,
-    IntentId, Out, Progress, Queued, TurnDriver, TurnFuture, TurnInput, TurnStep, Wait,
+    AgentOutcome, AgentPath, AgentRecord, AgentState, ApprovalRequested, ContextAction, Error,
+    InboxRecord, IntentId, Out, Progress, Queued, TurnDriver, TurnFuture, TurnInput, TurnStep,
+    Wait,
 };
 use crate::{
     OperationId,
@@ -217,6 +218,13 @@ pub trait TurnOutputs: acyclic_stream::ProviderPlatform {
         bytes: &'a [u8],
     ) -> BoxFuture<'a, crate::Result<FileRef>>;
 
+    /// Stages a primitive Notice once under this turn's immutable identity.
+    /// The actor publishes its file reference with the settled conversation.
+    fn stage_notice<'a>(
+        &'a self,
+        turn: OperationId,
+        bytes: &'a [u8],
+    ) -> BoxFuture<'a, crate::Result<FileRef>>;
     /// The answer `turn` streamed before it was cancelled, which its
     /// cancelled entry keeps; empty where the host streams none.
     fn partial(&self, turn: OperationId) -> BoxFuture<'_, crate::Result<String>> {
@@ -227,14 +235,21 @@ pub trait TurnOutputs: acyclic_stream::ProviderPlatform {
 
 /// Host binding of agent turns to an executor and journal.
 pub trait TurnHost: acyclic_stream::ProviderPlatform {
-    /// Publishes workspace effects before any terminal turn record.
+    /// Saves workspace effects before a pending operation releases the delivery.
+    /// Unlike settlement, this does not complete the turn or merge a child.
+    /// Required, so no wrapping host can silently drop a save.
+    fn park<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        operation: OperationId,
+    ) -> BoxFuture<'a, crate::Result<()>>;
+    /// Publishes workspace effects before any terminal turn record. Required
+    /// for the same reason as [`park`](Self::park).
     fn settle<'a>(
         &'a self,
-        _agent: &'a AgentState,
-        _turn: OperationId,
-    ) -> BoxFuture<'a, crate::Result<()>> {
-        Box::pin(async { Ok(()) })
-    }
+        agent: &'a AgentState,
+        turn: OperationId,
+    ) -> BoxFuture<'a, crate::Result<()>>;
     /// Open only the bounded resources a context control needs. Hosts without
     /// context controls refuse before opening an executor or dispatching a model.
     fn open_control<'a>(
@@ -270,6 +285,13 @@ pub trait TurnHost: acyclic_stream::ProviderPlatform {
 }
 
 impl<H: TurnHost + ?Sized> TurnHost for Arc<H> {
+    fn park<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        operation: OperationId,
+    ) -> BoxFuture<'a, crate::Result<()>> {
+        (**self).park(agent, operation)
+    }
     fn settle<'a>(
         &'a self,
         agent: &'a AgentState,
@@ -636,8 +658,27 @@ pub fn turn_notices(agent: &AgentState) -> Result<Option<super::NoticeSelection>
 /// part, followed by a message's attachment manifest by its exact version
 /// (which [`expand_attachments`] replaces with the files it lists). Primitive
 /// events use the common Notice block and retain their original typed files.
-pub fn model_input_at(inbox: u64, input: &TurnInput) -> Result<ModelContent, Error> {
-    let content = model_input(input)?;
+pub fn model_input_at(
+    receiver: &AgentPath,
+    inbox: u64,
+    input: &TurnInput,
+) -> Result<ModelContent, Error> {
+    let mut content = model_input(input)?;
+    if let TurnInput::Message {
+        from: super::Sender::Agent { path },
+        ..
+    } = input
+        && receiver.is_child_of(path)
+        && let ModelContent::Parts(parts) = &mut content
+        && let Some(ModelContentPart::Notices { notices }) = parts.first_mut()
+    {
+        for notice in notices {
+            notice.kind = "parent.message".into();
+            notice.body["authority"] = serde_json::json!(
+                "Instruction from your parent, the principal of this delegated task. Subject to your existing policy and approval requirements."
+            );
+        }
+    }
     if !matches!(input, TurnInput::Message { .. }) {
         return Ok(content);
     }
@@ -899,6 +940,45 @@ fn settled(entry: &ConversationEntry) -> Result<Vec<Out>, Error> {
     Ok(outs)
 }
 
+async fn settlement_notice(
+    agent: &AgentState,
+    outputs: &dyn TurnOutputs,
+    entry: &ConversationEntry,
+) -> Result<Option<Out>, Error> {
+    let Some(parent) = &agent.parent else {
+        return Ok(None);
+    };
+    if entry.input.context().is_some() || matches!(entry.outcome, TurnOutcome::Cancelled) {
+        return Ok(None);
+    }
+    let turn = turn_id(agent, &entry.input)?;
+    let notice = crate::conversation::wire::Notice {
+        source: agent.path.to_string(),
+        kind: "child.settled".into(),
+        body: serde_json::json!({
+            "child": agent.path,
+            "turn": turn,
+            "output": entry.output,
+            "outcome": entry.outcome,
+            "branch": agent.path,
+        }),
+        wake: true,
+        coalesce_key: None,
+    };
+    let bytes =
+        crate::contract::canonical_json_bytes(&notice).map_err(|error| host_error(error.into()))?;
+    let notice = outputs
+        .stage_notice(turn, &bytes)
+        .await
+        .map_err(host_error)?;
+    Ok(Some(Out::Send {
+        to: parent.clone(),
+        record: InboxRecord::Notice {
+            id: IntentId::try_from(format!("child-settled:{turn}"))?,
+            notice: super::NoticePayload::Waking(Box::new(notice)),
+        },
+    }))
+}
 /// The exact immutable delta originally selected by this turn.
 fn announced(open: &OpenTurn) -> Vec<super::AnnouncedDocument> {
     open.announcements.clone()
@@ -981,6 +1061,24 @@ async fn settle_effects(
     open: &OpenTurn,
     mut step: TurnStep,
 ) -> Result<TurnStep, Error> {
+    if agent.parent.is_some()
+        && let Some(bytes) = step.outs.iter().find_map(|out| match out {
+            Out::Conversation(bytes) => Some(bytes),
+            _ => None,
+        })
+    {
+        let entry = ConversationEntry::decode(bytes)?;
+        // Continuing goals publish their completion only with the final turn.
+        if (entry.goal.is_none()
+            || step
+                .outs
+                .iter()
+                .any(|out| matches!(out, Out::GoalCompleted { .. })))
+            && let Some(notice) = settlement_notice(agent, &*open.outputs, &entry).await?
+        {
+            step.outs.push(notice);
+        }
+    }
     if let Some(effects) = &open.effects {
         let mut outs = super::effect_outs(agent, effects.recorded().await.map_err(host_error)?);
         outs.append(&mut step.outs);
@@ -1069,7 +1167,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
             let notices = turn_notices(agent)?;
             let turn = turn_id(agent, &input)?;
             let stop = cancellation;
-            let content = model_input_at(inbox, &input)?;
+            let content = model_input_at(&agent.path, inbox, &input)?;
             let Some(open) = opened(
                 self.host
                     .open(agent, turn, inbox, cursor, &content, stop.clone())
@@ -1145,6 +1243,14 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 }
                 Err(error) => return Err(host_error(error)),
             };
+            if let ExecutionProgress::Pending(operation) = &progress {
+                // A parked delivery releases its workspace. Publish completed
+                // shell effects before a later delivery reopens the volume.
+                self.host
+                    .park(agent, *operation)
+                    .await
+                    .map_err(host_error)?;
+            }
             let step = match progress {
                 ExecutionProgress::Ready(output) => {
                     self.host.settle(agent, turn).await.map_err(host_error)?;

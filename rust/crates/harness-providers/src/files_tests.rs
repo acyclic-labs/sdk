@@ -519,26 +519,22 @@ async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> 
             );
             assert_eq!(reader.reads.load(Ordering::SeqCst), 2);
         }
-        // Event metadata cannot turn arbitrary text into an admitted event
-        // attachment. JSON references alone retain no file read authority.
-        assert!(
-            with_parts(
-                &provider,
-                vec![
-                    notice.clone(),
-                    ModelContentPart::text("synthetic user message".into())
-                ]
-            )
-            .is_err()
-        );
-        let metadata_only = with_parts(&provider, vec![notice])?;
-        assert_eq!(
-            metadata_only.request().messages[0]
-                .content
-                .file_refs()
-                .count(),
-            0
-        );
+        // An event keeps its ordered text, but neither that text nor the
+        // event's JSON references manufacture file read authority.
+        for parts in [
+            vec![
+                notice.clone(),
+                ModelContentPart::text("synthetic user message".into()),
+            ],
+            vec![notice.clone()],
+        ] {
+            let prepared = with_parts(&provider, parts.clone())?;
+            let content = &prepared.request().messages[0].content;
+            assert_eq!(content.parts(), parts.as_slice());
+            assert_eq!(content.file_refs().count(), 0);
+        }
+        // Negative control: one event boundary never carries a second event.
+        assert!(with_parts(&provider, vec![notice.clone(), notice]).is_err());
         assert_eq!(
             reader.reads.load(Ordering::SeqCst),
             if adapter == Adapter::Gemini { 2 } else { 1 }

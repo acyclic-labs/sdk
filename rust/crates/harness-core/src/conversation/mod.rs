@@ -11,6 +11,9 @@ use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 
+pub(crate) const SELECTED_FILE_MISSING: &str =
+    "selected file does not exist in this workspace; other forks are not searched";
+
 /// Largest integer that can be represented exactly by a JavaScript number.
 pub const MAX_EXACT_JS_INTEGER: u64 = (1_u64 << 53) - 1;
 #[allow(clippy::cast_precision_loss, reason = "2^53 - 1 is exact in f64")]

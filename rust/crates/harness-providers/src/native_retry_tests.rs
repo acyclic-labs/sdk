@@ -85,7 +85,9 @@ impl HttpTransport for RetryTransport {
                         "same prepared turn on every exchange"
                     );
                 } else {
-                    *original = Some(request.body);
+                    // A copy: the request's own buffer carries its ledger custody,
+                    // which must end with the exchange, not with this fixture.
+                    *original = Some(Bytes::copy_from_slice(&request.body));
                 }
             }
             if attempt < self.failures && self.backpressure {

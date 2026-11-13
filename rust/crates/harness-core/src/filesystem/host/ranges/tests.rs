@@ -407,6 +407,9 @@ async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
             .await
             .unwrap_err();
         assert_eq!(error.code(), code);
+        if code == crate::wire::ErrorCode::NotFound {
+            assert!(error.to_string().contains("other forks are not searched"));
+        }
         assert!(error.is_tool_failure(), "{error:?}");
         assert!(!error.is_native_failure(), "{error:?}");
     }

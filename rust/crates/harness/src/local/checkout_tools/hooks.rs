@@ -71,32 +71,55 @@ impl CheckoutTools {
             // A dropped turn stops its hooks; their workers still reap them.
             let _stop = shell::StopOnDrop(control.clone());
             let wake = control.wake();
-            let check = owner_check(Arc::clone(&workspace), control);
+            let check: crate::hooks::HookCheck =
+                Arc::new(owner_check(Arc::clone(&workspace), control));
             let mounts = Arc::clone(&workspace.mounts);
             let (result, mut state) = workspace::volumes::native_scope(&mounts, async |claims| {
                 // Pin the active projections, after native_scope has mounted
                 // them. Binding the dormant backing directory would fence a
                 // different object and refuse every projected-volume hook.
                 let mut environment = self.environment.clone();
-                let grant = match &self.execution_grant {
-                    Some(grant) => Some(grant.clone()),
-                    None => crate::filesystem::native_process::shell::workspace_grant(
-                        &mounts,
-                        &mut environment,
-                    )?,
-                };
-                let execution =
-                    grant.map(|grant| Arc::new(crate::hooks::HookExecution { grant, environment }));
-                let (result, (state, claims)) = with_workers((state, claims), check, |check| {
-                    hooks.run_checked(
-                        event,
-                        (&workspace.path, &workspace.path),
-                        input,
-                        registry,
-                        context.effective_scope().limits().file_bytes,
-                        (check, Some(wake), execution),
+                let grant = self.execution_grant.clone();
+                let preparation_mounts = Arc::clone(&mounts);
+                let preparation_check = Arc::clone(&check);
+                let (execution, (state, claims)) =
+                    crate::filesystem::native_process::prepare_with_custody(
+                        (state, claims),
+                        move |_| {
+                            preparation_check().map_err(Error::process_io)?;
+                            let grant = match grant {
+                                Some(grant) => {
+                                    crate::filesystem::native_process::shell::workspace_environment(
+                                        &preparation_mounts,
+                                        &mut environment,
+                                    )?;
+                                    Some(grant)
+                                }
+                                None => crate::filesystem::native_process::shell::workspace_grant(
+                                    &preparation_mounts,
+                                    &mut environment,
+                                )?,
+                            };
+                            Ok(grant.map(|grant| {
+                                Arc::new(crate::hooks::HookExecution { grant, environment })
+                            }))
+                        },
                     )
-                })
+                    .await?;
+                let (result, (state, claims)) = with_workers(
+                    (state, claims),
+                    move || check(),
+                    |check| {
+                        hooks.run_checked(
+                            event,
+                            (&workspace.path, &workspace.path),
+                            input,
+                            registry,
+                            context.effective_scope().limits().file_bytes,
+                            (check, Some(wake), execution),
+                        )
+                    },
+                )
                 .await?;
                 Ok(((result, state), claims))
             })
@@ -124,9 +147,9 @@ fn owner_check(
     control: ProcessControl,
 ) -> impl Fn() -> std::io::Result<()> + Send + Sync + 'static {
     move || {
-        if acyclic_fs::capture_root_identity(&workspace.path).map_err(std::io::Error::other)?
-            != workspace.identity
-        {
+        // A served root's witness comes from its original mount owner. Asking
+        // its kernel projection here can wait on callbacks owned by this check.
+        if workspace.root_identity().map_err(std::io::Error::other)? != workspace.identity {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "hook workspace root was replaced",
@@ -167,4 +190,50 @@ where
     let state = StateArc::try_unwrap(held)
         .map_err(|_| Error::Conflict("hook cleanup still owns its selected view".into()))?;
     Ok((result, state))
+}
+
+#[cfg(all(test, unix, not(loom)))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn owner_checks_reject_stopped_commands_and_replaced_physical_roots() -> Result<()> {
+        let directory = tempfile::tempdir().map_err(storage)?;
+        let root = directory.path().join("project");
+        std::fs::create_dir(&root).map_err(storage)?;
+        let harness = LocalHarness::open(
+            crate::LocalHarnessConfig::native_host(&root)
+                .workspace_mounting(WorkspaceMounting::Physical)
+                .state_directory(directory.path().join("runtime"))
+                .without_user_settings(),
+        )
+        .await?;
+        let workspace = harness
+            .workspace()
+            .ok_or_else(|| Error::NotFound("physical workspace".into()))?;
+        let control = ProcessControl::unbounded().map_err(storage)?;
+        let check = owner_check(Arc::clone(workspace), control.clone());
+        check().map_err(storage)?;
+        control.stop();
+        assert_eq!(
+            check()
+                .expect_err("stopped command retained authority")
+                .kind(),
+            std::io::ErrorKind::Interrupted
+        );
+
+        let check = owner_check(
+            Arc::clone(workspace),
+            ProcessControl::unbounded().map_err(storage)?,
+        );
+        std::fs::rename(&root, directory.path().join("retired")).map_err(storage)?;
+        std::fs::create_dir(&root).map_err(storage)?;
+        assert_eq!(
+            check()
+                .expect_err("replacement root retained authority")
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        Ok(())
+    }
 }

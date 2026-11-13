@@ -48,7 +48,7 @@ parking_lot.workspace = true
 proptest.workspace = true
 async-trait.workspace = true
 rcgen = "0.14.10"
-tonic.workspace = true
+tonic = { workspace = true, default-features = true, features = ["transport", "tls-ring", "tls-webpki-roots"] }
 rustls.workspace = true
 
 [lints]

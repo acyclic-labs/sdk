@@ -11,6 +11,27 @@ use acyclic_native_runtime::{ProcessCommand, ProcessStdio};
 use serde::Deserialize;
 use std::{fs, io::Write};
 
+#[cfg(feature = "local-runner")]
+#[test]
+fn qualification_refuses_invalid_seed_before_starting_cases()
+-> Result<(), Box<dyn std::error::Error>> {
+    for seed in ["", "invalid", "-1", "18446744073709551616"] {
+        let output = acyclic_native_runtime::process_output(
+            ProcessCommand::new(acyclic_test_support::cargo_binary!("qualify"))
+                .env("ACYCLIC_QUAL_SEED", seed),
+            std::time::Duration::from_secs(5),
+            4096,
+        )?;
+        assert_eq!(output.status.code(), Some(2));
+        assert!(
+            output.stdout.is_empty(),
+            "no qualification report may be emitted"
+        );
+        assert!(String::from_utf8(output.stderr)?.contains("ACYCLIC_QUAL_SEED"));
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 struct Suite {
     version: u32,

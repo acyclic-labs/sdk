@@ -12,8 +12,13 @@ pub enum GitCommandOutput {
     NoOp,
     /// Status result.
     Status(GitStatus),
-    /// Ordered commit records.
-    Commits(Vec<GitCommit>),
+    /// One bounded first-parent history page, or one inspected commit.
+    Commits {
+        /// Ordered commit records.
+        commits: Vec<GitCommit>,
+        /// First unread commit; pass its hexadecimal identity as the next log object.
+        next: Option<GitCommitId>,
+    },
     /// Branch catalog and active branch.
     Branches {
         /// Active branch name.

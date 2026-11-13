@@ -924,6 +924,7 @@ impl Follower {
                 account: account.into(),
                 issuer_keys: keyring.root.to_vec(),
                 minimum_key_epoch: keyring.minimum_key_epoch.max(floor),
+                not_before_unix_seconds: keyring.issued_at.max(revocations.published_at()),
                 revoked_key_ids: keyring.revoked_keys.iter().chain(keys).cloned().collect(),
                 revoked_block_ids: keyring
                     .revoked_blocks

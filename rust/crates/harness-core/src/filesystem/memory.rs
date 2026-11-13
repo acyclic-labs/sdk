@@ -572,7 +572,9 @@ impl<
             .and_then(|selected| {
                 selected
                     .map(|(file, bytes, _)| (file, bytes))
-                    .ok_or_else(|| Error::NotFound("selected file does not exist".into()))
+                    .ok_or_else(|| {
+                        Error::NotFound(crate::conversation::SELECTED_FILE_MISSING.into())
+                    })
             })
     }
 

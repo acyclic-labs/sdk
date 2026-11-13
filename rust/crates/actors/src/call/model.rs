@@ -948,35 +948,35 @@ pub async fn codec_seeds(
     let mut seeds = Vec::new();
     for (name, outcome, requested, accepted, fenced) in [
         (
-            "call-ok-v2",
+            "call-v2-ok",
             Outcome::Ok(OwnedBytes::from(&b"done"[..])),
             true,
             true,
             false,
         ),
         (
-            "call-error-v2",
+            "call-v2-error",
             Outcome::Error("refused: λ".into()),
             false,
             true,
             true,
         ),
         (
-            "call-cancelled-accepted-v2",
+            "call-v2-cancelled-accepted",
             Outcome::Cancelled("stop".into()),
             true,
             true,
             true,
         ),
         (
-            "call-cancelled-v2",
+            "call-v2-cancelled",
             Outcome::Cancelled("stop".into()),
             true,
             false,
             false,
         ),
         (
-            "call-indeterminate-v2",
+            "call-v2-indeterminate",
             Outcome::Indeterminate("unknown".into()),
             false,
             false,
@@ -1001,8 +1001,8 @@ pub async fn codec_seeds(
             steps.push((
                 call.request(body.clone(), hold)?,
                 vec![
-                    ("call-request-v2", Entry::Request(body)),
-                    ("call-hold-v2", Entry::Hold(hold)),
+                    ("call-v2-request", Entry::Request(body)),
+                    ("call-v2-hold", Entry::Hold(hold)),
                 ],
             ));
         }
@@ -1011,9 +1011,9 @@ pub async fn codec_seeds(
                 call.accept(&acceptance, requested)?,
                 vec![(
                     if fenced {
-                        "call-accepted-fenced-v2"
+                        "call-v2-accepted-fenced"
                     } else {
-                        "call-accepted-v2"
+                        "call-v2-accepted"
                     },
                     Entry::Accepted(acceptance.clone()),
                 )],
@@ -1023,9 +1023,9 @@ pub async fn codec_seeds(
                 call.chunk(acceptance.fence.as_ref(), body.clone())?,
                 vec![(
                     if fenced {
-                        "call-chunk-fenced-v2"
+                        "call-v2-chunk-fenced"
                     } else {
-                        "call-chunk-v2"
+                        "call-v2-chunk"
                     },
                     Entry::Chunk(body),
                 )],

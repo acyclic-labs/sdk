@@ -41,9 +41,11 @@ pub enum GitCommand {
     } => ("diff", r#"{ readonly kind: "diff"; readonly cached?: boolean }"#),
 /// Walk explicit compatibility history.
     Log {
-        /// Maximum first-parent commits to return.
+        /// Maximum first-parent commits in one page; the result names the next object.
         maximum: u32,
-    } => ("log", r#"{ readonly kind: "log"; readonly maximum: number }"#),
+        /// First commit to return, defaulting to the visible HEAD.
+        object: Option<String>,
+    } => ("log", r#"{ readonly kind: "log"; readonly maximum: number; readonly object?: string }"#),
 /// Inspect one compatibility commit.
     Show {
         /// Object to show, defaulting to `HEAD`.
@@ -191,4 +193,46 @@ pub enum GitCommand {
         paths: Vec<String>,
     } => ("check-ignore", r#"{ readonly kind: "check-ignore"; readonly paths: readonly string[] }"#)
 }
+}
+
+impl GitCommand {
+    /// Whether this command leaves both compatibility metadata and the workspace unchanged.
+    pub(in crate::git_compat) fn is_read_only(&self) -> bool {
+        match self {
+            Self::Status
+            | Self::Diff { .. }
+            | Self::Log { .. }
+            | Self::Show { .. }
+            | Self::RevParse { .. }
+            | Self::SymbolicRef { .. }
+            | Self::MergeBase { .. }
+            | Self::LsFiles
+            | Self::CheckIgnore { .. }
+            | Self::Branch { create: None }
+            | Self::Tag { name: None, .. }
+            | Self::Blame { .. }
+            | Self::Grep { .. }
+            | Self::Archive { .. }
+            | Self::Clean { dry_run: true }
+            | Self::Add { .. } => true,
+            Self::Bisect { .. }
+            | Self::Commit { .. }
+            | Self::Branch { create: Some(_) }
+            | Self::Switch { .. }
+            | Self::Restore { .. }
+            | Self::Reset { .. }
+            | Self::Merge { .. }
+            | Self::MergeContinue
+            | Self::MergeAbort
+            | Self::Discard { .. }
+            | Self::Rebase { .. }
+            | Self::StashPush
+            | Self::StashPop
+            | Self::CherryPick { .. }
+            | Self::Revert { .. }
+            | Self::Tag { name: Some(_), .. }
+            | Self::Clean { dry_run: false }
+            | Self::Apply { .. } => false,
+        }
+    }
 }

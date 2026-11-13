@@ -166,7 +166,8 @@ fn stream_error(error: &StreamError) -> NativeStreamErrorMetadata {
 fn connect_error(error: &grpc::ConnectError) -> NativeStreamErrorMetadata {
     let code = match &error {
         grpc::ConnectError::Endpoint(_) | grpc::ConnectError::PlatformVerifier(_) => "transport",
-        grpc::ConnectError::InsecureEndpoint
+        grpc::ConnectError::EndpointUrl(_)
+        | grpc::ConnectError::InsecureEndpoint
         | grpc::ConnectError::InvalidCredential
         | grpc::ConnectError::InvalidMetadata
         | grpc::ConnectError::InvalidCaCertificate => "configuration",

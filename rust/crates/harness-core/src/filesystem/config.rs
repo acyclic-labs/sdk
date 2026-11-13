@@ -56,6 +56,8 @@ pub(crate) enum InternalContentClass {
     ToolOutput,
     /// Settled turn outputs, inherited by an agent's forks.
     Conversation,
+    /// Compaction summaries, which the agent's own model provider reads back.
+    Summary,
 }
 
 impl InternalContentClass {
@@ -86,6 +88,7 @@ impl InternalContentClass {
             Self::ToolResult => "tools/.results/",
             Self::ToolOutput => "tools/",
             Self::Conversation => ".system/inherited-conversation/",
+            Self::Summary => ".system/summaries/",
         }
     }
 }

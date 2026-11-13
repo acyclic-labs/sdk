@@ -143,8 +143,11 @@ struct Fixture {
 }
 
 async fn fixture() -> Result<Fixture> {
+    fixture_in(Arc::new(MemoryStream::default())).await
+}
+
+async fn fixture_in(stream: Arc<MemoryStream>) -> Result<Fixture> {
     let path = AgentPath::root(&id(32));
-    let stream = Arc::new(MemoryStream::default());
     let (files, private) = private_in(&stream, &path).await?;
     let issuer = AuthorityRoot::new(
         "agents",
@@ -755,6 +758,12 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
     };
 
     for remove in [false, true] {
+        let (clock, mut control) = acyclic_actors::local::ControlledClock::new(100);
+        let clock = Arc::new(clock);
+        let timed_stream = Arc::new(MemoryStream::new_with_clock(
+            Default::default(),
+            Arc::new(super::preparation::JournalClock(clock.clone())),
+        ));
         let Fixture {
             path,
             stream,
@@ -763,7 +772,7 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
             issuer,
             users,
             instruction_files: _,
-        } = fixture().await?;
+        } = fixture_in(timed_stream).await?;
         let (extra, instruction_names) =
             large_instruction_selection(&files, &issuer, &users[0]).await?;
         let proof_files = files.clone();
@@ -780,6 +789,7 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
                     }),
                 ]),
                 ScriptedTurn::Text("resumed with the original instructions".into()),
+                ScriptedTurn::Text("none".into()),
             ])
             .reading_content(),
         );
@@ -801,23 +811,25 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
         .with_agent_tools(&["wait".into()]);
         let mut turns = exposed(Arc::new(turns))?;
         turns.policy.instruction_names.extend(instruction_names);
-        let driver = ExecutorDriver::new(FilesystemTurnHost::new(
-            stream.clone(),
-            within(),
-            files.clone(),
-            issuer,
-            TurnAdmission::LocalRoot,
-            Arc::new(turns),
-            LIMITS,
-            acyclic_harness_core::approvals::ApprovalPolicy::accept_all("owner"),
-        ));
-        let (clock, mut control) = acyclic_actors::local::ControlledClock::new(100);
+        let driver = ExecutorDriver::new(
+            FilesystemTurnHost::new(
+                stream.clone(),
+                within(),
+                files.clone(),
+                issuer,
+                TurnAdmission::LocalRoot,
+                Arc::new(turns),
+                LIMITS,
+                acyclic_harness_core::approvals::ApprovalPolicy::accept_all("owner"),
+            )
+            .with_clock(clock.clone()),
+        );
         let host = AgentHost::with_spawn_volumes(
             stream.clone(),
             driver,
             within(),
             acyclic_actors::domain::ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
-            Arc::new(clock),
+            clock,
             Arc::new(acyclic_harness_core::filesystem::FilesystemSpawnVolumes::new(files.clone())),
         )?;
         let mut adoption = adopted(path.id());
@@ -885,7 +897,7 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
         assert_eq!(entry.outcome, TurnOutcome::Completed);
         assert_eq!(entry.announcements, pinned);
         let requests = model.requests();
-        assert_eq!(requests.len(), 2);
+        assert_eq!(requests.len(), 3);
         assert!(requests[1].messages.starts_with(&requests[0].messages));
         let rendered = requests[0].messages[..requests[0].messages.len() - 1]
             .iter()

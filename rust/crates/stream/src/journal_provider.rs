@@ -223,6 +223,16 @@ impl JournalStream {
         Ok(stream)
     }
 
+    /// Install the authority-side time rule on the journal's shared provider.
+    /// Reinstalling the same rule is idempotent; a different rule is refused.
+    /// Replay uses committed stamps and does not re-run admission.
+    pub async fn install_commit_admission(
+        &self,
+        admission: Arc<dyn crate::CommitAdmission>,
+    ) -> Result<(), StreamError> {
+        self.query(async move |provider| provider.install_commit_admission(admission))
+            .await
+    }
     async fn cache(&self) -> Result<&Cache, StreamError> {
         self.0
             .cache
@@ -373,8 +383,12 @@ impl StreamProvider for JournalStream {
         if !request.at_least.is_empty() {
             self.wait_revision(&request.at_least).await?;
         }
-        self.query(async move |provider| provider.capture_heads(&request, true).await)
-            .await
+        self.query(async move |provider| {
+            provider
+                .capture_heads(&request, crate::memory::HeadDurability::Durable)
+                .await
+        })
+        .await
     }
 
     fn write(

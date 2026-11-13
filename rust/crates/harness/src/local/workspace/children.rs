@@ -224,7 +224,10 @@ impl LocalWorkspace {
         arguments: &mut [String],
     ) -> Result<()> {
         let named = crate::tools::child_branch_operand(arguments)
-            .and_then(|(_, branch, _)| branch.strip_prefix("agents/"))
+            .and_then(|(_, branch, _)| {
+                (!branch.starts_with("harness/agents/"))
+                    .then(|| branch.strip_prefix("agents/").unwrap_or(branch))
+            })
             .map(str::to_owned);
         let resolved = if let Some(name) = named {
             resolver.resolve(agent, &name).await?.live()

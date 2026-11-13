@@ -103,8 +103,6 @@ impl DeploymentRequest {
         limits: WorkerLimits,
         idempotency_key: String,
     ) -> Result<Self, DomainError> {
-        crate::addressing::validate_dns_label(name.as_str().as_bytes())
-            .map_err(|_| DomainError::Contract(crate::ContractError::InvalidArgument))?;
         Self::try_from(wire::DeploymentRequest {
             publication: Vec::new(),
             entry_source: None,

@@ -56,6 +56,7 @@ fn call() -> (ContextAdmission, ModelUsageRecord, ModelPriceRecord) {
         system_fingerprint: None,
         ttft_ns: None,
         cache: None,
+        abandoned: Some(Default::default()),
     };
     let price = ModelPriceRecord {
         version: 1,

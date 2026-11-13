@@ -12,7 +12,70 @@ impl CheckoutPublisher {
         access: ContentAccess<'a, 'io>,
         finish: fn(Option<ContentChanges>) -> Result<Output>,
     ) -> Result<BoundedContentFuture<'a, (Output, Option<ContentHold<'io>>)>> {
-        BoundedContentFuture::new(access.io, || {
+        BoundedContentFuture::new(access.io, || async move {
+            if let Some(changes) = changes {
+                let mount = self.tools.workspace.mounts.by_volume(volume, access.io)?;
+                for change in changes {
+                    mount.check_with_work(
+                        change.action(),
+                        change.path(),
+                        self.tools.clock.now_unix_millis() / 1000,
+                        access
+                            .io
+                            .as_ref()
+                            .and_then(crate::store::HistoryIo::original_native_work),
+                    )?;
+                }
+                let (selected, _) = self.tools.workspace.selected_view().await?;
+                let selected = selected
+                    .as_ref()
+                    .unwrap_or_else(|| self.tools.workspace.view());
+                let workspace = mount.view.source.as_ref().map_or_else(
+                    || selected.workspace(),
+                    |source| source.workspace.workspace(),
+                );
+                let writer = self.writer_for(volume, workspace)?;
+                let (original, hold) = writer
+                    .observe_changes(volume, operation, maximum, access)?
+                    .await?;
+                if original.is_none() {
+                    if mount.view.source.is_none() && self.tools.workspace.mounted.is_none() {
+                        writer.authorize_changes(changes, access)?.await?;
+                    } else {
+                        writer.check_change_destinations(changes, access)?.await?;
+                    }
+                    if mount.view.source.is_none() {
+                        for change in changes {
+                            if matches!(
+                                change,
+                                ContentChange::CreateAbsent { .. }
+                                    | ContentChange::UpdateExpected { .. }
+                            ) && self
+                                .inherited_directory(selected, change.path(), access.io)
+                                .await?
+                            {
+                                let (latest, latest_hold) = writer
+                                    .observe_changes(volume, operation, maximum, access)?
+                                    .await?;
+                                let published = latest.is_some();
+                                drop((latest, latest_hold));
+                                if !published {
+                                    if mount.view.source.is_none()
+                                        && self.tools.workspace.mounted.is_none()
+                                    {
+                                        writer.authorize_changes(changes, access)?.await?;
+                                    } else {
+                                        writer.check_change_destinations(changes, access)?.await?;
+                                    }
+                                    return Err(Error::Invalid("path is a directory".into()));
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                drop((original, hold));
+            }
             serialized(&self.tools.state, async move |mut state| {
                 let physical = self.selected_workspace(&state)?;
                 let mount = physical.mounts.by_volume(volume, access.io)?;
@@ -167,6 +230,7 @@ impl CheckoutPublisher {
                 }
                 Ok((finish(Some(receipt))?, hold))
             })
+            .await
         })
     }
 }

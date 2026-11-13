@@ -548,6 +548,8 @@ pub struct Until {
     /// Milliseconds after the committing step at which the turn resumes
     /// regardless; `None` waits for the condition alone.
     pub timeout_ms: Option<u64>,
+    /// Absolute deadline anchored to the original deferred tool start, when present.
+    pub deadline_unix_ms: Option<u64>,
     /// Also resume on inbox input; used by reply-or-alarm waits.
     pub input: bool,
 }
@@ -575,6 +577,7 @@ impl Until {
             replies: Vec::new(),
             need,
             timeout_ms: None,
+            deadline_unix_ms: None,
             input: false,
         }
     }
@@ -588,6 +591,7 @@ impl Until {
             replies: Vec::new(),
             need: 1,
             timeout_ms: Some(timeout_ms),
+            deadline_unix_ms: None,
             input: false,
         }
     }
@@ -601,6 +605,7 @@ impl Until {
             replies: Vec::new(),
             need: 1,
             timeout_ms,
+            deadline_unix_ms: None,
             input: true,
         }
     }
@@ -618,6 +623,8 @@ impl Until {
 pub struct WaitResume {
     /// Unrelated calls cannot consume this invocation's release.
     pub operation: crate::OperationId,
+    /// Original absolute deadline, retained when a stale settlement re-arms the call.
+    pub deadline_unix_ms: Option<u64>,
     /// Absent until the selected event occurs.
     pub reason: Option<WaitReason>,
 }
@@ -1439,7 +1446,7 @@ fn settle_condition(state: &mut AgentState, reason: WaitReason) {
 }
 
 /// Whether a driver's effect fits the record that carries it.
-fn admissible(out: &Out) -> bool {
+fn admissible(out: &Out, path: &AgentPath) -> bool {
     match out {
         Out::Diagnostic { .. } => false,
         Out::InputCancelled { .. } => true,
@@ -1456,11 +1463,19 @@ fn admissible(out: &Out) -> bool {
             ) && super::AgentRecord::check(record).is_ok()
                 && super::records::fits_frame(record)
         }
-        Out::Archive { .. }
-        | Out::Checkpoint
-        | Out::Announced(_)
-        | Out::Notices(_)
-        | Out::GoalCompleted { .. } => true,
+        Out::Archive { id, .. } => {
+            let by = super::Sender::Agent { path: path.clone() };
+            let archive = InboxRecord::Archive(super::Control {
+                by: by.clone(),
+                id: id.clone(),
+            });
+            let closed = super::Closed { by, id: id.clone() };
+            super::AgentRecord::check(&archive).is_ok()
+                && super::records::fits_frame(&archive)
+                && super::AgentRecord::check(&closed).is_ok()
+                && super::records::fits_frame(&closed)
+        }
+        Out::Checkpoint | Out::Announced(_) | Out::Notices(_) | Out::GoalCompleted { .. } => true,
         Out::Spawn { volumes, .. } => super::records::check_volumes(volumes.iter()).is_ok(),
     }
 }
@@ -1517,7 +1532,10 @@ fn admit_wait(
         }
         Phase::Done { outcome } => {
             let completion = report(state, &outcome);
-            if completion.as_ref().is_some_and(|out| !admissible(out)) {
+            if completion
+                .as_ref()
+                .is_some_and(|out| !admissible(out, &state.path))
+            {
                 return None;
             }
             Some((Wait::Done(outcome), staged, completion))
@@ -1627,7 +1645,7 @@ async fn run<T: TurnDriver + ?Sized>(
     }
     let base_conversation = conversation;
     let valid = turn.outs.iter().all(|out| {
-        if !admissible(out) {
+        if !admissible(out, &state.path) {
             return false;
         }
         if matches!(out, Out::Conversation(_)) {
@@ -1698,8 +1716,23 @@ async fn run<T: TurnDriver + ?Sized>(
             None,
         ),
         Wait::Until(until) => {
+            let deadline = state
+                .wait_resume
+                .as_ref()
+                .filter(|resume| Some(resume.operation) == until.operation)
+                .map_or_else(
+                    || {
+                        until.deadline_unix_ms.or_else(|| {
+                            until
+                                .timeout_ms
+                                .map(|timeout| now_unix_ms.saturating_add(timeout))
+                        })
+                    },
+                    |resume| resume.deadline_unix_ms,
+                );
             state.wait_resume = until.operation.map(|operation| WaitResume {
                 operation,
+                deadline_unix_ms: deadline,
                 reason: None,
             });
             // Only an open child can still settle; one already done has and
@@ -1715,9 +1748,6 @@ async fn run<T: TurnDriver + ?Sized>(
             }
             let settled = u32::try_from(until.awaited.len() - open.len()).unwrap_or(u32::MAX);
             let need = until.need.saturating_sub(settled);
-            let deadline = until
-                .timeout_ms
-                .map(|timeout| now_unix_ms.saturating_add(timeout));
             let sleep = until.awaited.is_empty() && until.replies.is_empty();
             let reachable = open.len().saturating_add(until.replies.len());
             let input = until.input;
@@ -1939,4 +1969,38 @@ async fn apply_spawns(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod generated_record_tests {
+    use super::super::AgentRecord as _;
+    use super::*;
+
+    #[test]
+    fn archive_effect_admission_accounts_for_the_sender_in_both_records() -> Result<(), Error> {
+        let root = AgentPath::root(&super::super::AgentId::from_bytes([1; 16]));
+        let segment = format!("/children/{}", root.id());
+        let oversized = AgentPath::try_from(format!(
+            "{}{}",
+            root.as_str(),
+            segment.repeat(super::super::records::MAX_RECORD_BYTES / segment.len() + 1)
+        ))?;
+        let id = IntentId::try_from("archive")?;
+        let effect = Out::Archive {
+            target: root.child(&root.id())?,
+            id: id.clone(),
+        };
+        for (path, fits) in [(&root, true), (&oversized, false)] {
+            let by = super::super::Sender::Agent { path: path.clone() };
+            let archive = InboxRecord::Archive(super::super::Control {
+                by: by.clone(),
+                id: id.clone(),
+            });
+            let closed = super::super::Closed { by, id: id.clone() };
+            assert_eq!(archive.encode().is_ok(), fits);
+            assert_eq!(closed.encode().is_ok(), fits);
+            assert_eq!(admissible(&effect, path), fits);
+        }
+        Ok(())
+    }
 }

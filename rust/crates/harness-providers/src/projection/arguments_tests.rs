@@ -542,12 +542,18 @@ fn checked_in_boundary_depth_runs_the_full_codec_fuzz_oracle() {
 
 #[test]
 fn literal_model_payloads_reject_depth_beyond_the_existing_record_bound() {
-    let arguments = (0..129).fold(json!(0), |inner, _| json!([inner]));
-    let event = acyclic_harness_core::model::ModelEvent::ToolCall(ToolCall::new(
-        "call".into(),
-        "echo".into(),
-        arguments,
-    ));
-    let value = serde_json::to_value(&event).unwrap();
-    assert!(serde_json::from_value::<acyclic_harness_core::model::ModelEvent>(value).is_err());
+    let decoded = |depth| {
+        let arguments = (0..depth).fold(json!(0), |inner, _| json!([inner]));
+        let event = acyclic_harness_core::model::ModelEvent::ToolCall(ToolCall::new(
+            "call".into(),
+            "echo".into(),
+            arguments,
+        ));
+        let value = serde_json::to_value(&event).unwrap();
+        serde_json::from_value::<acyclic_harness_core::model::ModelEvent>(value)
+    };
+    let bound = acyclic_harness_core::RECORD_MAXIMUM_DEPTH;
+    // The bound itself is admitted; one level beyond it is refused.
+    decoded(bound).unwrap();
+    assert!(decoded(bound + 1).is_err());
 }

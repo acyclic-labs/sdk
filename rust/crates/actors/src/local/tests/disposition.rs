@@ -329,6 +329,7 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
     let before = provider.requests();
     let limits = RuntimeLimits::new(1, 1)?;
     let host = crate::hosting::Host::new(
+        crate::guest::Requests::default(),
         Store::new(provider.clone(), state_root()?),
         owner.clone(),
         Arc::new(crate::conformance::Package::new()?),
@@ -336,6 +337,7 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
         limits,
     );
     let foreign_host = crate::hosting::Host::new(
+        crate::guest::Requests::default(),
         Store::new(provider.clone(), state_root()?),
         actor("another-failure-owner")?,
         Arc::new(crate::conformance::Package::new()?),

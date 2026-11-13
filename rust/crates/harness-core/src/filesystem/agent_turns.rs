@@ -580,6 +580,14 @@ pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
         None
     }
 
+    /// Saves each bound workspace before parking on a pending operation.
+    fn park<'a>(
+        &'a self,
+        _agent: &'a AgentState,
+        _operation: OperationId,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
     /// Publishes each bound workspace before the original turn becomes terminal.
     fn settle<'a>(
         &'a self,
@@ -649,6 +657,7 @@ pub struct TurnLimits {
 /// [`TurnHost`] binding every agent to its executor and a journal on its
 /// private volume, under a conversation authority named by the agent's id.
 pub struct FilesystemTurnHost<P: ?Sized, A: 'static, O: 'static> {
+    clock: Arc<dyn acyclic_actors::local::Clock>,
     stream: Arc<P>,
     within: acyclic_actors::addressing::ActorReference,
     host: Arc<FilesystemHost<A, O>>,
@@ -746,6 +755,7 @@ where
         Self {
             stream,
             within,
+            clock: Arc::new(acyclic_actors::local::SystemClock),
             host,
             issuer,
             templates,
@@ -759,6 +769,13 @@ where
             #[cfg(feature = "test-support")]
             binding_fault: None,
         }
+    }
+
+    /// Share the scheduler's original clock with journal deadline admission.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn acyclic_actors::local::Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Injects a deterministic failure before a turn binds or reads content.
@@ -1637,8 +1654,15 @@ impl<'a> TurnContext<'a> {
                 Ok(SettledTurn {
                     turn: crate::agent::turn_id(agent, &entry.input).map_err(Error::from)?,
                     announcements: entry.announcements,
-                    input: crate::agent::model_input_at(entry.inbox, &entry.input)
-                        .map_err(Error::from)?,
+                    input: crate::agent::model_input_at(
+                        lineage
+                            .iter()
+                            .find(|(id, _)| id == entry.output.volume().owner())
+                            .map_or(&agent.path, |(_, path)| path),
+                        entry.inbox,
+                        &entry.input,
+                    )
+                    .map_err(Error::from)?,
                     output: entry.output,
                     steering: entry.steering.map(|steering| steering.file),
                     steered: Vec::new(),
@@ -1992,6 +2016,13 @@ where
 {
     fn settle<'a>(&'a self, agent: &'a AgentState, turn: OperationId) -> BoxFuture<'a, Result<()>> {
         self.executors.settle(agent, turn)
+    }
+    fn park<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        operation: OperationId,
+    ) -> BoxFuture<'a, Result<()>> {
+        self.executors.park(agent, operation)
     }
     fn open_control<'a>(
         &'a self,
@@ -2350,6 +2381,7 @@ where
                 let journal = journal
                     .with_model_boundary(Arc::new(boundary))
                     .with_stop(stop)
+                    .with_clock(Arc::clone(&self.clock))
                     .with_agent_approvals(Arc::clone(&approvals));
                 // Only this agent's selected turns have a journal on its private
                 // volume; an inherited ancestor turn is not a local predecessor.

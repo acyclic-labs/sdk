@@ -677,6 +677,11 @@ pub async fn verify<T: Backend + ?Sized>(target: &T) -> Result<(), Failure> {
         StreamPath::new(format!("{root}/early-alarm")).map_err(Error::from)?,
     )
     .await?;
+    request_ledger(
+        provider.clone(),
+        StreamPath::new(format!("{root}/request-ledger")).map_err(Error::from)?,
+    )
+    .await?;
     let run = target.namespace();
     ordered(target, run).await?;
     applied(target, run).await?;
@@ -850,6 +855,75 @@ pub async fn fork_uniform<P: StreamProvider + ?Sized>(
     Ok(())
 }
 
+struct BindsRequests {
+    package: Package,
+    requests: crate::guest::Requests,
+    admitted: std::sync::Mutex<Vec<(crate::guest::RequestId, Option<(ActorReference, u64)>, u64)>>,
+}
+
+impl Handler for BindsRequests {
+    fn manifest(&self) -> &Manifest {
+        self.package.manifest()
+    }
+
+    fn on_record<'a>(
+        &'a self,
+        delivery: Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        cancellation: crate::guest::CancellationToken,
+    ) -> GuestFuture<'a, Transition> {
+        let bound = self.requests.admit(delivery.request).ok();
+        self.admitted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((delivery.request, bound, delivery.epoch));
+        self.package.on_record(delivery, checkpoint, cancellation)
+    }
+}
+
+/// A pre-bound capability bridge admits the first delivery, with a distinct
+/// request per attempt, and refuses every request after its attempt finishes.
+pub async fn request_ledger<P: StreamProvider + ?Sized>(
+    provider: std::sync::Arc<P>,
+    root: StreamPath,
+) -> Result<(), Failure> {
+    let suite = Isolated::new(provider, root, "request-ledger")?;
+    let actor = suite.spawn("bound", &["emit", "emit"]).await?;
+    let requests = crate::guest::Requests::default();
+    let handler = std::sync::Arc::new(BindsRequests {
+        package: Package::new().map_err(|_| Error::Invalid("conformance package"))?,
+        requests: requests.clone(),
+        admitted: std::sync::Mutex::new(Vec::new()),
+    });
+    let runtime = crate::local::Runtime::new(
+        requests.clone(),
+        suite.store.clone(),
+        handler.clone(),
+        std::sync::Arc::new(crate::local::SystemClock),
+    );
+    runtime.host(actor.clone())?;
+    suite.require(runtime.drain().await.is_empty(), "delivery failed")?;
+    let admitted = handler
+        .admitted
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    suite.require(admitted.len() == 2, "both attempts must run")?;
+    suite.require(
+        admitted[0].0 != admitted[1].0,
+        "attempts must have distinct requests",
+    )?;
+    for (request, bound, epoch) in admitted.iter() {
+        suite.require(
+            bound.as_ref() == Some(&(actor.clone(), *epoch)),
+            "pre-bound bridge refused or misbound a live attempt",
+        )?;
+        suite.require(
+            requests.admit(*request).is_err(),
+            "finished attempt retained authority",
+        )?;
+    }
+    Ok(())
+}
 /// One namespace of the provider under test that only the suite's own nodes
 /// serve: the target's host never discovers its actors, so the cases that
 /// drive nodes directly cannot race it.
@@ -975,6 +1049,7 @@ impl<P: StreamProvider + ?Sized> Isolated<P> {
     /// A node of this namespace running [`Package`] on `clock`.
     fn node(&self, clock: std::sync::Arc<dyn Clock>) -> Result<crate::local::Runtime<P>, Failure> {
         Ok(crate::local::Runtime::new(
+            crate::guest::Requests::default(),
             Store::new(self.store.provider().clone(), self.store.root().clone()),
             std::sync::Arc::new(Package::new().map_err(|_| Error::Invalid("conformance package"))?),
             clock,
@@ -1035,10 +1110,8 @@ pub async fn placement<P: StreamProvider + ?Sized>(
     let second = lab.spawn("second", &["emit"]).await?;
     let (clock, _time) = crate::local::ControlledClock::new(0);
     let clock: std::sync::Arc<dyn Clock> = std::sync::Arc::new(clock);
-    let owner = lab
-        .node(std::sync::Arc::clone(&clock))?
-        .with_external_placement();
-    let other = lab.node(clock)?.with_external_placement();
+    let owner = lab.node(std::sync::Arc::clone(&clock))?.externally_placed();
+    let other = lab.node(clock)?.externally_placed();
     other.track(first.clone())?;
     lab.require(
         matches!(other.drain_actor(&first).await, Err(Error::Conflict)),

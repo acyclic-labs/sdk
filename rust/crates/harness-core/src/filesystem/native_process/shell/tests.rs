@@ -5,9 +5,16 @@ use crate::{
     workspace::{VolumeView, compose},
 };
 use acyclic_fs::access::*;
-use std::{collections::BTreeMap, fs::OpenOptions, io::Write, path::PathBuf};
+use std::{collections::BTreeMap, path::PathBuf};
+#[cfg(unix)]
+use std::{fs::OpenOptions, io::Write};
 
+#[cfg(unix)]
 fn table(root: PathBuf) -> Result<MountTable<Arc<tempfile::TempDir>>> {
+    table_with_home(root, false)
+}
+
+fn table_with_home(root: PathBuf, home: bool) -> Result<MountTable<Arc<tempfile::TempDir>>> {
     let native = Arc::new(tempfile::tempdir().map_err(Error::process_io)?);
     let resource = ResourcePattern {
         lineage_root: None,
@@ -68,6 +75,10 @@ fn table(root: PathBuf) -> Result<MountTable<Arc<tempfile::TempDir>>> {
             source: Arc::clone(&native),
         })
     };
+    let mut volumes = vec![volume("data")?, volume("shared")?];
+    if home {
+        volumes.push(volume("home")?);
+    }
     let mut mounts = compose(
         root,
         &principal,
@@ -77,7 +88,7 @@ fn table(root: PathBuf) -> Result<MountTable<Arc<tempfile::TempDir>>> {
             approvals: 0,
         },
         volume("project")?,
-        [volume("data")?, volume("shared")?],
+        volumes,
     )?;
     for (relative, mount) in mounts.mounts_mut() {
         if relative == "volume:///shared" {
@@ -91,7 +102,14 @@ fn table(root: PathBuf) -> Result<MountTable<Arc<tempfile::TempDir>>> {
 
 fn invocation(root: &Path) -> Invocation {
     Invocation {
+        // Unix environment-isolation children deliberately cannot discover bash
+        // through PATH. Windows still resolves its own native shell.
+        #[cfg(unix)]
         executable: PathBuf::from("/bin/bash"),
+        #[cfg(windows)]
+        executable: acyclic_native_runtime::platform_shell()
+            .expect("native platform shell")
+            .to_path_buf(),
         argv: Vec::new(),
         cwd: root.into(),
         environment: BTreeMap::new(),
@@ -102,6 +120,232 @@ fn invocation(root: &Path) -> Invocation {
         process_custody: None,
         standard_input: None,
     }
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[tokio::test]
+async fn abandoned_preparation_retains_its_root_and_leaves_the_executor_available() -> Result<()> {
+    acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
+    struct Retired(Option<tokio::sync::oneshot::Sender<()>>);
+    impl Drop for Retired {
+        fn drop(&mut self) {
+            if let Some(retired) = self.0.take() {
+                let _ = retired.send(());
+            }
+        }
+    }
+
+    for refuse in [false, true] {
+        let project = tempfile::tempdir().map_err(Error::process_io)?;
+        let root = project.path().canonicalize().map_err(Error::process_io)?;
+        let mounts = Arc::new(table_with_home(root.clone(), true)?);
+        let home = mounts
+            .native_mounts()
+            .find(|(name, _, _)| *name == "volume:///home")
+            .expect("private home projection")
+            .1
+            .to_path_buf();
+        if refuse {
+            std::fs::write(home.join("tmp"), b"occupied").map_err(Error::process_io)?;
+        }
+        let native = invocation(&root);
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, released) = std::sync::mpsc::sync_channel(1);
+        let (retired, retirement) = tokio::sync::oneshot::channel();
+        let preparation_mounts = Arc::clone(&mounts);
+        let (completed, completion) = tokio::sync::oneshot::channel();
+        let mut preparation = Box::pin(super::super::prepare_with_custody(
+            // Tuple fields retire in order: the event follows physical root cleanup.
+            (project, Retired(Some(retired))),
+            move |_| {
+                let _ = entered.send(());
+                released
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .map_err(|cause| {
+                        Error::Storage(format!("preparation blocked its executor: {cause}"))
+                    })?;
+                let prepared = prepare(
+                    ShellInput {
+                        command: "echo prepared".into(),
+                        cwd: None,
+                        timeout_ms: None,
+                        background: false,
+                        target: None,
+                    },
+                    &preparation_mounts,
+                    native,
+                    1,
+                    std::time::Instant::now(),
+                );
+                let _ = completed.send(prepared.is_err());
+                prepared
+            },
+        ));
+        {
+            // Even a callback admitting inline I/O must dispatch this preparation.
+            // An inline implementation reaches its bounded refusal before this
+            // executor can observe the worker's entry event.
+            let _inline = acyclic_native_runtime::InlineBlocking::enter();
+            tokio::select! {
+                biased;
+                _ = &mut preparation => panic!("preparation ran on the executor"),
+                started = started => started.map_err(|cause| Error::Storage(cause.to_string()))?,
+            }
+        }
+        drop(preparation);
+        assert!(
+            root.is_dir(),
+            "caller loss released the admitted root early"
+        );
+        release
+            .send(())
+            .map_err(|cause| Error::Storage(cause.to_string()))?;
+        retirement
+            .await
+            .map_err(|cause| Error::Storage(cause.to_string()))?;
+        assert!(!root.exists(), "completed preparation retained its root");
+        assert_eq!(
+            completion
+                .await
+                .map_err(|cause| Error::Storage(cause.to_string()))?,
+            refuse,
+            "preparation did not preserve the original filesystem outcome"
+        );
+        assert_eq!(home.join("tmp").is_dir(), !refuse);
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[tokio::test]
+async fn temporary_files_use_private_home_with_default_and_explicit_grants() -> Result<()> {
+    let project = tempfile::tempdir().map_err(Error::process_io)?;
+    let mut mounts = table_with_home(
+        project.path().canonicalize().map_err(Error::process_io)?,
+        true,
+    )?;
+    let home = mounts
+        .native_mounts()
+        .find(|(name, _, _)| *name == "volume:///home")
+        .expect("private home")
+        .1
+        .to_path_buf();
+    #[cfg(target_os = "linux")]
+    let binding = tempfile::tempdir().map_err(Error::process_io)?;
+    #[cfg(target_os = "linux")]
+    let alias = binding.path().join("home");
+    #[cfg(target_os = "linux")]
+    std::os::unix::fs::symlink(&home, &alias).map_err(Error::process_io)?;
+    #[cfg(windows)]
+    let alias = home.clone();
+    for (name, mount) in mounts.mounts_mut() {
+        if name == "volume:///home" {
+            mount.native_root = crate::workspace::NativeRoot::Path(alias.clone());
+        }
+    }
+    #[cfg(target_os = "linux")]
+    let command = r#"test "$HOME" = "$ACYCLIC_VOLUME_HOME" && test "$TMPDIR" = "$HOME/tmp" && printf scratch > "$TMPDIR/receipt""#;
+    #[cfg(windows)]
+    let command = r#"if ($HOME -ne $env:ACYCLIC_VOLUME_HOME -or $env:HOME -ne $env:ACYCLIC_VOLUME_HOME -or $env:USERPROFILE -ne $env:ACYCLIC_VOLUME_HOME -or $env:TMPDIR -ne (Join-Path $HOME 'tmp') -or $env:TEMP -ne $env:TMPDIR -or $env:TMP -ne $env:TMPDIR) { exit 2 }; [System.IO.File]::WriteAllText((Join-Path $env:TMPDIR 'receipt'), 'scratch')"#;
+    for explicit in [false, true] {
+        let mut native = invocation(&mounts.root);
+        if explicit {
+            native.execution_grant = workspace_grant(&mounts, &mut native.environment)?;
+            // Grant selection must not be responsible for environment setup.
+            native.environment.clear();
+            #[cfg(windows)]
+            {
+                for name in ["home", "userprofile"] {
+                    native.environment.insert(
+                        name.into(),
+                        home.to_str().expect("UTF-8 private home").into(),
+                    );
+                }
+                for name in ["tmpdir", "temp", "tmp"] {
+                    native.environment.insert(
+                        name.into(),
+                        project.path().to_str().expect("UTF-8 project").into(),
+                    );
+                }
+            }
+        }
+        let result = run(
+            ShellInput {
+                command: command.into(),
+                cwd: None,
+                timeout_ms: None,
+                background: false,
+                target: None,
+            },
+            &mounts,
+            native,
+            1,
+            None,
+            || Ok(()),
+        )
+        .await?
+        .expect("completed shell");
+        assert!(result.success, "{result:?}");
+        assert_eq!(
+            std::fs::read(home.join("tmp/receipt")).map_err(Error::process_io)?,
+            b"scratch"
+        );
+        assert!(!project.path().join("tmp").exists());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // Scratch creation must not follow an authored link outside the volume.
+        std::fs::remove_file(home.join("tmp/receipt")).map_err(Error::process_io)?;
+        std::fs::remove_dir(home.join("tmp")).map_err(Error::process_io)?;
+        std::os::unix::fs::symlink(project.path(), home.join("tmp")).map_err(Error::process_io)?;
+        assert!(workspace_environment(&mounts, &mut BTreeMap::new()).is_err());
+        assert!(!project.path().join("receipt").exists());
+    }
+    Ok(())
+}
+
+// Admission failures must preserve their original error class.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn read_only_project_uses_its_writable_volume_for_temporary_files() -> Result<()> {
+    let project = tempfile::tempdir().map_err(Error::process_io)?;
+    let mut mounts = table(project.path().canonicalize().map_err(Error::process_io)?)?;
+    for (name, mount) in mounts.mounts_mut() {
+        if name.is_empty() {
+            mount.mode = MountMode::default();
+        }
+    }
+    let data = mounts
+        .native_mounts()
+        .find(|(name, _, _)| *name == "volume:///data")
+        .expect("writable data projection")
+        .1
+        .to_path_buf();
+    let result = run(
+        ShellInput {
+            command:
+                r#"test "$TMPDIR" = "$ACYCLIC_VOLUME_DATA" && printf scratch > "$TMPDIR/receipt""#
+                    .into(),
+            cwd: None,
+            timeout_ms: None,
+            background: false,
+            target: None,
+        },
+        &mounts,
+        invocation(&mounts.root),
+        1,
+        None,
+        || Ok(()),
+    )
+    .await?
+    .expect("completed shell");
+    assert!(result.success, "{result:?}");
+    assert_eq!(
+        std::fs::read(data.join("receipt")).map_err(Error::process_io)?,
+        b"scratch"
+    );
+    assert!(!project.path().join("receipt").exists());
+    Ok(())
 }
 
 // Admission failures must preserve their original error class.
@@ -331,6 +575,7 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
 
 // A declared native binding may leave the primary root, but resolving a
 // symlink within it must never leave that binding's own authorized root.
+#[cfg(unix)]
 #[test]
 fn bound_volume_cwd_keeps_its_authority() {
     use proptest::prelude::*;
@@ -432,6 +677,7 @@ fn bound_volume_cwd_keeps_its_authority() {
         .unwrap();
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() -> Result<()> {
     use proptest::prelude::*;
@@ -733,6 +979,7 @@ async fn command_uses_the_composed_cwd_and_streams_before_returning_its_exit_cod
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn missing_shell_inputs_are_preflight_results_with_paths() -> Result<()> {
     let directory = tempfile::tempdir().map_err(Error::process_io)?;

@@ -11,11 +11,11 @@ import { Inference } from "@acyclic-labs/inference";
 
 // Set ACYCLIC_INFERENCE_ENDPOINT (HTTPS) and ACYCLIC_API_KEY.
 const inference = await Inference.fromEnv();
-const { models } = await inference.models();
+const { models } = await inference.client.listModels();
 console.log(models);
 ```
 
-`Inference` is the identity-preserving high-level API. A `Context` points to an immutable revision: edits, forks, and transfers return new handles. Items read from a revision use the generated protobuf `Item` type. `Context.generate(...)` returns a `Run`; save `run.id()` so you can call `inference.recoverRun(id)` after an interrupted request, inspect progress, stream `run.events()`, or obtain `run.result()`. Warm commitments have separate retain, renew, inspect, and release operations.
+`Inference` retains a client-instance identity and prepares explicit mutation identities with `inference.identity()`. Its `client` is an `InferenceClient` over the configured transport. Use generated protobuf requests with `createContext`, `mutateContext`, and `generate`; Context revisions are immutable byte identities. Save the admitted Run ID to resume observation with `inspectRun`, `watchRun`, or `resultRun`. Items use the generated protobuf `Item` type. Warm commitments have separate `retainWarm`, `renewWarm`, `inspectWarm`, and `releaseWarm` operations on the client.
 
 For custom authentication, pass shared Auth credential options to `HttpInferenceTransport`, for example `{ credential: cache.provider }` for a `CredentialCache`. The transport retains that exact request lease through dispatch, body reads and each streamed event. Registering the source watch before resolution lets a source change cancel pending headers and the original body reader. Absolute expiry still uses the custodian's original checks and deadline; no timer is invented. HTTP 401 rejects only its original lease at headers and retires its diagnostic body, returning `credential rejected`; a late rejection cannot erase a replacement. HTTP 403, other service errors and caller cancellation leave the lease intact. No request is automatically retried. Raw header callbacks remain per-attempt callbacks without source validity or rejection custody.
 
@@ -23,14 +23,19 @@ The transport requires an absolute HTTPS URL and enforces bounded responses. The
 
 ## Idle KV pins (source contract)
 
-Discover an opaque policy in `models[].idleKvProfiles`, then call
-`context.retain({ idleKv: { profile, idleTimeoutMs }, identity })`. Rust uses
-`context.retain(Retention::idle_kv(profile, idle_timeout_ms))`. This paid KV pin
-does not guarantee capacity, throughput, or latency. Keep the request identity
-for retries; Rust admission and renewal builders preserve it when cloned.
+Discover an opaque policy in `models[].idleKvProfiles`, then pass a generated
+`RetainWarmRequest` with `identity`, `context` and `idleKv` to
+`inference.client.retainWarm(request)`. Use `inference.identity()` to prepare
+the request identity. Rust prepares the same policy with
+`inference.retention_request(revision, Retention::idle_kv(profile, idle_timeout_ms))`
+and submits it with `inference.retain_warm(&request).await`. This paid KV pin
+does not guarantee capacity, throughput, or latency. Keep the prepared request
+and identity for retries.
 
-`warm.renewIdle(timeout, { identity })` (Rust `renew_idle(timeout)`) changes the
-timeout measured from the last verified actual Run reuse, or from the initial
+Pass a generated `RenewWarmRequest` with the pin's `commitment`, a new `identity`,
+`idleTimeoutMs` and zero `expiresAtMs` to `inference.client.renewWarm(request)`.
+Rust uses `inference.renew_warm(&request).await` with the corresponding
+`wire::RenewWarmRequest`. Renewal changes the timeout measured from the last verified actual Run reuse, or from the initial
 verified pin time before first use. It does not reset the idle window. Only
 actual Run reuse of the pinned revision or descendant prefix advances last-use;
 admission, fork, edit, inspect and recovery do not. The pin stays on its original
@@ -48,4 +53,4 @@ policy. Unsupported wire-kind aliases are rejected.
 This v1 contract is available in the generated source. It is
 not yet published or evidence of Cloud service support.
 
-[API source](https://github.com/acyclic-labs/sdk/tree/main/typescript/packages/inference/src) · [Protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/inference)
+[API source](https://github.com/acyclic-labs/sdk/tree/main/typescript/packages/inference/src) · [Protocol](https://github.com/acyclic-labs/sdk/tree/main/rust/crates/inference/proto/inference)

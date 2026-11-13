@@ -62,21 +62,26 @@ pub(crate) fn count<'a>(
             .as_ref()
             .map_or(0, |spec| spec.framing_tokens),
     );
-    if let Some(bound) = provider
+    let bound = provider
         .accounting
         .usage
         .bound(request)
         .map_err(|_| boundary(work, "usage bound encoding failed"))?
-        .and_then(|tokens| tokens.checked_add(framing))
-        .filter(|tokens| *tokens <= ceiling || provider.config.token_counter.is_none())
-    {
+        .and_then(|tokens| tokens.checked_add(framing));
+    if let Some(bound) = bound.filter(|tokens| *tokens <= ceiling) {
         yield Event::Ready(local(provider, request, bound, work)?);
         return;
     }
+    // Codex's estimate stands in for its missing count route, so it precedes
+    // the above-ceiling bound kept for providers with no count at all.
     #[cfg(not(target_arch = "wasm32"))]
     if provider.codex_login.is_some() {
         let tokens = provider.accounting.usage.codex_estimate(request)?;
         yield Event::Ready(local(provider, request, tokens, work)?);
+        return;
+    }
+    if let Some(bound) = bound.filter(|_| provider.config.token_counter.is_none()) {
+        yield Event::Ready(local(provider, request, bound, work)?);
         return;
     }
     let spec = specification(&provider.config, work)?;

@@ -57,7 +57,7 @@ proptest! {
             oracle.update(path.as_bytes()); oracle.update([0]);
             oracle.update(value.as_bytes()); oracle.update([0]);
         }
-        prop_assert_eq!(crate::digest_map(&entries), format!("sha256:{:x}", oracle.finalize()));
+        prop_assert_eq!(crate::digest_map(&entries), format!("sha256:{}", hex::encode(oracle.finalize())));
     }
 
     // The real memoization transition runs over generated observations, without

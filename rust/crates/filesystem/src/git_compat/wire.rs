@@ -317,7 +317,10 @@ pub const GIT_COMPAT_RESULT_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
 /// Natural TypeScript projections for command output variants.
 pub const GIT_COMPAT_OUTPUT_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
     ("Status", r#"{ readonly Status: GitCompatStatus }"#),
-    ("Commits", r#"{ readonly Commits: readonly GitCommit[] }"#),
+    (
+        "Commits",
+        r#"{ readonly Commits: { readonly commits: readonly GitCommit[]; readonly next: GitCommitIdentity | undefined } }"#,
+    ),
     (
         "Branches",
         r#"{ readonly Branches: { readonly current: string; readonly branches: readonly GitBranch[] } }"#,
@@ -422,7 +425,7 @@ git_compat_enum_contract! {
     GitCommandOutput, GIT_COMPAT_OUTPUT_VARIANTS;
     [
         "Status" => GitCommandOutput::Status(_),
-        "Commits" => GitCommandOutput::Commits(_),
+        "Commits" => GitCommandOutput::Commits { .. },
         "Branches" => GitCommandOutput::Branches { .. },
         "Tags" => GitCommandOutput::Tags(_),
         "Committed" => GitCommandOutput::Committed(_),
