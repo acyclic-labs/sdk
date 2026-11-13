@@ -28,7 +28,7 @@ struct State {
     agent: AgentPath,
     private: WorkspaceEntry,
     steer: Option<crate::resources::GenerationRef>,
-    authority_sequence: Option<u64>,
+    source_sequence: Option<u64>,
     paused: bool,
 }
 
@@ -54,7 +54,7 @@ impl State {
 fn codec() -> CodecIdentity {
     CodecIdentity {
         name: "harness.file-controls".into(),
-        version: "4".into(),
+        version: "5".into(),
     }
 }
 fn guest(error: impl std::fmt::Display) -> GuestError {
@@ -152,7 +152,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
             .ok_or(Error::Record("control checkpoint codec"))?;
         let mut state: State = serde_json::from_slice(&checkpoint.bytes)
             .map_err(|_| Error::Record("control checkpoint"))?;
-        if state.version != 4 || self.actor(&delivery.actor, &state.agent)? != delivery.actor {
+        if state.version != 5 || self.actor(&delivery.actor, &state.agent)? != delivery.actor {
             return Err(Error::Record("control checkpoint identity"));
         }
         let (subscription, sequence) = delivery
@@ -216,9 +216,12 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                 .volumes
                 .generation_ref_id(publication.generation, None)
                 .map_err(turn)?;
+            // One publication can span several records. Deduplicate the same
+            // record selected by multiple control keys, never its whole
+            // authority revision: later records can carry another control.
             if state
-                .authority_sequence
-                .is_none_or(|through| publication.authority_sequence.get() > through)
+                .source_sequence
+                .is_none_or(|through| sequence > through)
             {
                 let bindings = [state.private.clone()];
                 let authority =
@@ -479,7 +482,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                         vec![CommitMutation::Append { path, records }],
                     ));
                 }
-                state.authority_sequence = Some(publication.authority_sequence.get());
+                state.source_sequence = Some(sequence);
             }
         }
         state.transition(effects, retired)
@@ -562,11 +565,11 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
         let source = self.source(private.volume()?).map_err(turn)?;
         let actor = self.actor(within, agent)?;
         let state = State {
-            version: 4,
+            version: 5,
             agent: agent.clone(),
             private: private.clone(),
             steer: Default::default(),
-            authority_sequence: None,
+            source_sequence: None,
             paused: false,
         };
         let subscriptions = [PAUSE, STOP, STEER]

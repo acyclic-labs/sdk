@@ -44,6 +44,17 @@ where
         self.host.manifest()
     }
 
+    fn accepts_interrupt<'a>(
+        &'a self,
+        delivery: &'a Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        subscription: &'a str,
+        record: &'a acyclic_stream::Record,
+    ) -> GuestFuture<'a, bool> {
+        self.host
+            .accepts_interrupt(delivery, checkpoint, subscription, record)
+    }
+
     fn admission_class(&self, actor: &ActorReference) -> AdmissionClass {
         self.host.admission_class(actor)
     }
