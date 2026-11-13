@@ -11,7 +11,7 @@ cleanup() {
 }
 trap cleanup EXIT
 cargo nextest run --locked -p acyclic-harness-tui -p acyclic-plugin --lib \
-  -E 'test(=diff::tests::diff_word_emphasis_preserves_unicode_context_across_themes) | test(=diff::tests::diff_wide_reflow_and_hunk_folding_retain_every_source_grapheme) | test(=runner::view::query::tests::query_controller_retains_reads_coalesces_turns_and_ends_on_original_events)'
+  -E 'test(=diff::tests::diff_word_emphasis_preserves_unicode_context_across_themes) | test(=diff::tests::diff_wide_reflow_and_hunk_folding_retain_every_source_grapheme) | test(=runner::view::query::tests::query_controller_retains_reads_coalesces_turns_and_ends_on_original_events) | test(=runner::view::query::tests::diff_hunk_keys_reveal_selected_wrapped_heading)'
 negative() {
   local patch=$1 package=$2 test=$3 assertion=$4 result=0
   git apply "rust/proofs/tui-diff/$patch.patch"
@@ -33,3 +33,6 @@ negative truncated-reflow acyclic-harness-tui \
 negative dropped-context acyclic-plugin \
   runner::view::query::tests::query_controller_retains_reads_coalesces_turns_and_ends_on_original_events \
   'the real diff query lost its admitted presentation'
+negative selected-hunk acyclic-plugin \
+  runner::view::query::tests::diff_hunk_keys_reveal_selected_wrapped_heading \
+  'selected diff hunk stayed outside the viewport'

@@ -1,0 +1,16 @@
+diff --git a/plugin/src/runner/view/query.rs b/plugin/src/runner/view/query.rs
+--- a/plugin/src/runner/view/query.rs
++++ b/plugin/src/runner/view/query.rs
+@@ -122,11 +122,7 @@ pub(super) fn diff_key(
+         present(panel, columns, wide, theme);
+         // Only the selected hunk has this line attribute; QueryPage preserves
+         // it through the one shared grapheme wrapper. Find it only on input.
+-        *top = panel
+-            .lines
+-            .iter()
+-            .position(|line| line.style.add_modifier.contains(super::Modifier::UNDERLINED))
+-            .unwrap_or(0);
++        *top = 0;
+     }
+     consumed
+ }
