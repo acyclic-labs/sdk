@@ -6,7 +6,7 @@
 
 use super::runner;
 use std::fs::File;
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::{Mutex, OnceLock};
@@ -23,23 +23,39 @@ impl PacketDevice {
     /// Frames in both directions begin with their total native-endian u32
     /// byte length. `capacity` is the device's negotiated receive envelope.
     pub fn host(device: File, capacity: u32) -> io::Result<Self> {
+        Self::admit(device, capacity, 1)
+    }
+
+    /// Admit an unopened namespace: only the host can mount this device.
+    pub fn prepare(device: File, capacity: u32) -> io::Result<Self> {
+        Self::admit(device, capacity, 2)
+    }
+
+    /// Receive a mount helper's descriptor directly into the host process.
+    pub fn receive_device(socket: UnixStream, capacity: u32) -> io::Result<Self> {
+        Self::admit(File::from(OwnedFd::from(socket)), capacity, 3)
+    }
+
+    fn admit(device: File, capacity: u32, mode: u32) -> io::Result<Self> {
         if capacity < 4 {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         let owner = owner_exit()?;
         let control = connect()?;
         let (stream, theirs) = UnixStream::pair()?;
-        let mut message = [0; 8];
+        let mut message = [0; 12];
         message[..4].copy_from_slice(&capacity.to_ne_bytes());
-        message[4..].copy_from_slice(&1_u32.to_ne_bytes());
+        message[4..8].copy_from_slice(&1_u32.to_ne_bytes());
+        message[8..12].copy_from_slice(&mode.to_ne_bytes());
         runner::send_message(
             &control,
             &[device.as_raw_fd(), theirs.as_raw_fd(), owner.as_raw_fd()],
             &message,
         )?;
-        let mut accepted = [0];
+        let mut accepted = [0; 4];
         (&control).read_exact(&mut accepted)?;
-        if accepted != [1] {
+        let host = u32::from_ne_bytes(accepted);
+        if host == 0 {
             return Err(io::ErrorKind::InvalidData.into());
         }
         // No consumer ever retains /dev/fuse after acknowledged transfer.
@@ -50,10 +66,42 @@ impl PacketDevice {
             retirement: PacketDeviceRetirement {
                 control,
                 retired: false,
+                host,
             },
         })
     }
 
+    /// Install FUSE from the external device owner. The caller never holds
+    /// the device while its mounted namespace can accept a request.
+    pub fn mount_fuse(
+        &self,
+        directory: &File,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        writable: bool,
+    ) -> io::Result<()> {
+        let mut request = [0; 20];
+        for (slot, word) in
+            request
+                .chunks_exact_mut(4)
+                .zip([1, mode, uid, gid, u32::from(writable)])
+        {
+            slot.copy_from_slice(&word.to_ne_bytes());
+        }
+        runner::send_message(&self.retirement.control, &[directory.as_raw_fd()], &request)?;
+        self.wait_mounted()
+    }
+    /// Join actual device receipt from a helper admitted before its spawn.
+    pub fn wait_mounted(&self) -> io::Result<()> {
+        let mut status = [0; 4];
+        (&self.retirement.control).read_exact(&mut status)?;
+        let status = i32::from_ne_bytes(status);
+        if status != 0 {
+            return Err(io::Error::from_raw_os_error(-status));
+        }
+        Ok(())
+    }
     /// Split the endpoint from the original physical-retirement obligation.
     pub fn into_parts(self) -> (File, PacketDeviceRetirement) {
         (self.stream, self.retirement)
@@ -64,27 +112,28 @@ impl PacketDevice {
 pub struct PacketDeviceRetirement {
     control: UnixStream,
     retired: bool,
+    host: u32,
 }
 
 impl PacketDeviceRetirement {
+    /// The original device host process, shared by all admitted owners.
+    pub fn host_id(&self) -> u32 {
+        self.host
+    }
+
     /// Stop admission and wait for EOF, published only after device closure.
     pub fn retire(&mut self) -> io::Result<()> {
         if self.retired {
             return Ok(());
         }
         self.control.shutdown(std::net::Shutdown::Write)?;
-        let mut byte = [0];
-        loop {
-            match self.control.read(&mut byte) {
-                Ok(0) => {
-                    self.retired = true;
-                    return Ok(());
-                }
-                Ok(_) => return Err(io::ErrorKind::InvalidData.into()),
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                Err(error) => return Err(error),
-            }
+        let mut byte = [1];
+        self.control.read_exact(&mut byte)?;
+        if byte != [0] {
+            return Err(io::ErrorKind::InvalidData.into());
         }
+        self.retired = true;
+        Ok(())
     }
 }
 
@@ -143,7 +192,10 @@ fn owner_exit() -> io::Result<&'static OwnedFd> {
 
 fn address() -> io::Result<(libc::sockaddr_un, libc::socklen_t)> {
     // SAFETY: getuid has no arguments or failure case.
-    let name = format!("acyclic-packet-device-v1-{}", unsafe { libc::geteuid() });
+    let namespace = std::os::unix::fs::MetadataExt::ino(&std::fs::metadata("/proc/self/ns/mnt")?);
+    let name = format!("acyclic-packet-device-v1-{}-{namespace}", unsafe {
+        libc::geteuid()
+    });
     // SAFETY: all-zero is valid address storage, including the abstract NUL.
     let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
     address.sun_family = libc::AF_UNIX as _;

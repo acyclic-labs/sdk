@@ -45,6 +45,10 @@ struct Session {
     next: *mut Session,
     garbage: *mut Session,
     active: bool,
+    mounted: bool,
+    waiting_helper: bool,
+    device_registered: bool,
+    stream_registered: bool,
     control: Fd,
     owner: Fd,
     device: Fd,
@@ -63,6 +67,10 @@ impl Session {
                 next: ptr::null_mut(),
                 garbage: ptr::null_mut(),
                 active: true,
+                mounted: false,
+                waiting_helper: false,
+                device_registered: false,
+                stream_registered: false,
                 control,
                 owner: -1,
                 device: -1,
@@ -74,26 +82,48 @@ impl Session {
         Ok(base)
     }
 
-    fn interest(&self, queue: Fd, add: bool) -> Result<(), Errno> {
+    fn interest(&mut self, queue: Fd) -> Result<(), Errno> {
         let base = ptr::from_ref(self).addr() as u64;
-        if add {
-            sys::interest(queue, self.owner, true, sys::EPOLL_IN, base | OWNER)?;
+        if self.waiting_helper {
+            sys::interest(
+                queue,
+                self.device,
+                !self.device_registered,
+                sys::EPOLL_IN,
+                base | DEVICE,
+            )?;
+            self.device_registered = true;
+        } else if self.mounted {
+            let input = self.input.as_ref().ok_or(Errno(sys::EINVAL))?;
+            let output = self.output.as_ref().ok_or(Errno(sys::EINVAL))?;
+            let complete = output.filled >= 4 && output.filled == frame_length(output);
+            let device_events = if input.filled == 0 { sys::EPOLL_IN } else { 0 }
+                | if complete { sys::EPOLL_OUT } else { 0 };
+            let stream_events = if complete { 0 } else { sys::EPOLL_IN }
+                | if input.filled != 0 { sys::EPOLL_OUT } else { 0 };
+            sys::interest(
+                queue,
+                self.device,
+                !self.device_registered,
+                device_events,
+                base | DEVICE,
+            )?;
+            self.device_registered = true;
+            sys::interest(
+                queue,
+                self.stream,
+                !self.stream_registered,
+                stream_events,
+                base | STREAM,
+            )?;
+            self.stream_registered = true;
         }
-        let input = self.input.as_ref().ok_or(Errno(sys::EINVAL))?;
-        let output = self.output.as_ref().ok_or(Errno(sys::EINVAL))?;
-        let complete = output.filled >= 4 && output.filled == frame_length(output);
-        let device_events = if input.filled == 0 { sys::EPOLL_IN } else { 0 }
-            | if complete { sys::EPOLL_OUT } else { 0 };
-        let stream_events = if complete { 0 } else { sys::EPOLL_IN }
-            | if input.filled != 0 { sys::EPOLL_OUT } else { 0 };
-        sys::interest(queue, self.device, add, device_events, base | DEVICE)?;
-        sys::interest(queue, self.stream, add, stream_events, base | STREAM)
+        Ok(())
     }
-
     fn admit(&mut self, queue: Fd) -> Result<(), Errno> {
-        let mut body = [0; 8];
+        let mut body = [0; 12];
         let request = receive_handles(self.control, &mut body)?.ok_or(Errno(sys::EPIPE))?;
-        if request.length != 8 || request.count != 3 || body[4..] != 1_u32.to_ne_bytes() {
+        if request.length != 12 || request.count != 3 || body[4..8] != 1_u32.to_ne_bytes() {
             request.close();
             return Err(Errno(sys::EINVAL));
         }
@@ -105,18 +135,106 @@ impl Session {
         if capacity < 4 {
             return Err(Errno(sys::EINVAL));
         }
+        match u32::from_ne_bytes(body[8..12].try_into().map_err(|_| Errno(sys::EINVAL))?) {
+            1 => self.mounted = true,
+            2 => {}
+            3 => self.waiting_helper = true,
+            _ => return Err(Errno(sys::EINVAL)),
+        }
         self.input = Some(Packet::new(capacity)?);
         self.output = Some(Packet::new(capacity)?);
         sys::nonblocking(self.device)?;
         sys::nonblocking(self.stream)?;
-        self.interest(queue, true)?;
+        sys::interest(
+            queue,
+            self.owner,
+            true,
+            sys::EPOLL_IN,
+            ptr::from_ref(self).addr() as u64 | OWNER,
+        )?;
+        self.interest(queue)?;
         // Acceptance proves that this host owns all three original handles.
-        if sys::write(self.control, &[1])? != 1 {
+        if sys::write(self.control, &sys::getpid().to_ne_bytes())? != 4 {
             return Err(Errno(sys::EPIPE));
         }
         Ok(())
     }
 
+    fn command(&mut self, queue: Fd) -> Result<(), Errno> {
+        let mut body = [0_u8; 20];
+        let request = receive_handles(self.control, &mut body)?.ok_or(Errno(sys::EPIPE))?;
+        if request.count != 1 || request.length != 20 || self.mounted || self.waiting_helper {
+            request.close();
+            return Err(Errno(sys::EINVAL));
+        }
+        let result = (|| {
+            let word = |offset| u32::from_ne_bytes(super::array4(&body[offset..offset + 4]));
+            if word(0) != 1 {
+                return Err(Errno(sys::EINVAL));
+            }
+            use core::fmt::Write;
+            let mut target = Options {
+                bytes: [0; 128],
+                length: 0,
+            };
+            // The original already-open directory is the target. No lookup
+            // through an owner's FUSE namespace can block this event loop.
+            write!(&mut target, "/proc/self/fd/{}", request.descriptors[0])
+                .map_err(|_| Errno(sys::EINVAL))?;
+            let target = core::ffi::CStr::from_bytes_with_nul(&target.bytes[..target.length + 1])
+                .map_err(|_| Errno(sys::EINVAL))?;
+            let mut options = Options {
+                bytes: [0; 128],
+                length: 0,
+            };
+            write!(
+                &mut options,
+                "fd={},rootmode={:o},user_id={},group_id={},default_permissions",
+                self.device,
+                word(4),
+                word(8),
+                word(12)
+            )
+            .map_err(|_| Errno(sys::EINVAL))?;
+            let options =
+                core::ffi::CStr::from_bytes_with_nul(&options.bytes[..options.length + 1])
+                    .map_err(|_| Errno(sys::EINVAL))?;
+            sys::mount_fuse(target, options, word(16) != 0)
+        })();
+        request.close();
+        if result.is_ok() {
+            self.mounted = true;
+            self.interest(queue)?;
+        }
+        let status = match result {
+            Ok(()) => 0,
+            Err(Errno(error)) => -error,
+        };
+        if sys::write(self.control, &status.to_ne_bytes())? != 4 {
+            return Err(Errno(sys::EPIPE));
+        }
+        Ok(())
+    }
+    fn helper_ready(&mut self, queue: Fd) -> Result<(), Errno> {
+        let mut body = [0; 5];
+        let request = receive_handles(self.device, &mut body)?.ok_or(Errno(sys::EPIPE))?;
+        if request.count != 1 {
+            request.close();
+            return Err(Errno(sys::EINVAL));
+        }
+        sys::unwatch(queue, self.device);
+        sys::close(self.device);
+        self.device = request.descriptors[0];
+        self.device_registered = false;
+        self.waiting_helper = false;
+        self.mounted = true;
+        sys::nonblocking(self.device)?;
+        self.interest(queue)?;
+        if sys::write(self.control, &0_i32.to_ne_bytes())? != 4 {
+            return Err(Errno(sys::EPIPE));
+        }
+        Ok(())
+    }
     fn progress(&mut self) -> Result<(), Errno> {
         let input = self.input.as_mut().ok_or(Errno(sys::EINVAL))?;
         if input.filled == 0 {
@@ -177,12 +295,7 @@ impl Session {
     fn close(&mut self, queue: Fd) {
         self.active = false;
         // Device closure must precede the control EOF acknowledging retirement.
-        for file in [
-            &mut self.device,
-            &mut self.stream,
-            &mut self.owner,
-            &mut self.control,
-        ] {
+        for file in [&mut self.device, &mut self.stream, &mut self.owner] {
             if *file >= 0 {
                 sys::unwatch(queue, *file);
                 sys::close(*file);
@@ -282,18 +395,21 @@ pub(super) fn serve(listener: Fd) -> Result<(), Errno> {
                     continue;
                 }
                 let kind = token & 3;
-                let result = if kind == OWNER || event.events & sys::EPOLL_HUP != 0 {
+                let result = if kind == OWNER
+                    || (event.events & sys::EPOLL_HUP != 0
+                        && !(kind == DEVICE && current.waiting_helper))
+                {
                     Err(Errno(sys::EPIPE))
                 } else if kind == CONTROL {
                     if current.owner < 0 {
                         current.admit(queue)
                     } else {
-                        Err(Errno(sys::EPIPE))
+                        current.command(queue)
                     }
+                } else if current.waiting_helper {
+                    current.helper_ready(queue)
                 } else {
-                    current
-                        .progress()
-                        .and_then(|()| current.interest(queue, false))
+                    current.progress().and_then(|()| current.interest(queue))
                 };
                 // An accepted stream that has not sent its first message waits
                 // on the same readable event; other sessions keep progressing.
@@ -319,8 +435,13 @@ pub(super) fn serve(listener: Fd) -> Result<(), Errno> {
             // SAFETY: all event borrowers have retired; unlink and unmap exactly once.
             unsafe {
                 let next = (*garbage).garbage;
+                let control = (*garbage).control;
+                sys::unwatch(queue, control);
                 ptr::drop_in_place(garbage);
                 sys::unmap(garbage.cast(), core::mem::size_of::<Session>());
+                // Receipt follows physical device closure and buffer destruction.
+                let _ = sys::write(control, &[0]);
+                sys::close(control);
                 garbage = next;
             }
         }
@@ -331,5 +452,25 @@ pub(super) fn serve(listener: Fd) -> Result<(), Errno> {
                 return Ok(());
             }
         }
+    }
+}
+
+struct Options {
+    bytes: [u8; 128],
+    length: usize,
+}
+
+impl core::fmt::Write for Options {
+    fn write_str(&mut self, value: &str) -> core::fmt::Result {
+        let end = self
+            .length
+            .checked_add(value.len())
+            .ok_or(core::fmt::Error)?;
+        if end >= self.bytes.len() {
+            return Err(core::fmt::Error);
+        }
+        self.bytes[self.length..end].copy_from_slice(value.as_bytes());
+        self.length = end;
+        Ok(())
     }
 }

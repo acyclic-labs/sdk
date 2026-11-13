@@ -170,9 +170,7 @@ impl SharedFuseInstance {
             &work,
         );
         state.device = received
-            .map(|descriptor| {
-                super::host_io::HostIo::host(std::fs::File::from(descriptor), &work).map(Arc::new)
-            })
+            .map(|descriptor| super::host_io::HostIo::host(descriptor, &work).map(Arc::new))
             .transpose()?;
         opened?;
         let descriptor = Arc::clone(
