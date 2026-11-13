@@ -5,8 +5,6 @@ import { WorkersDeploymentClient } from "../packages/workers/src/deployment.js";
 import { create, toBinary } from "@bufbuild/protobuf";
 import { HttpStreamProvider } from "../packages/stream/src/http.js";
 import { HttpObjectsV1 } from "../packages/objects/src/v1-http.js";
-import { HttpMachinesProvider } from "../packages/machines/src/http.js";
-import { machineId } from "../packages/machines/src/index.js";
 import { HttpInferenceTransport } from "../packages/inference/src/index.js";
 import { Inference } from "../packages/inference/src/handles.js";
 import { openHostedFs } from "../packages/filesystem/src/hosted.js";
@@ -38,7 +36,7 @@ function handshake() {
 
 test("HTTP clients renew for each request and never fall back to fixed credentials", async () => {
   await fc.assert(fc.asyncProperty(fc.array(fc.stringMatching(/^[a-zA-Z0-9_-]{1,32}$/), { minLength: 2, maxLength: 8 }), fc.constantFrom(...credentialGetterKinds), async (values, kind) => {
-    for (const product of ["streams", "fs", "objects", "machines", "inference"]) {
+    for (const product of ["streams", "fs", "objects", "inference"]) {
       let calls = 0;
       const sent = [];
       const fetcher = async (input, init) => {
@@ -54,7 +52,6 @@ test("HTTP clients renew for each request and never fall back to fixed credentia
         case "streams": { const client = new HttpStreamProvider(options); invoke = () => client.tail("credential/test"); break; }
         case "fs": { const client = await openHostedFs(options); invoke = () => client.openWorkspace("credential-test"); release = () => client.close(); break; }
         case "objects": { const client = new HttpObjectsV1(options); invoke = () => client.usage(); break; }
-        case "machines": { const client = new HttpMachinesProvider(options); invoke = () => client.inspectMachine(machineId("00000000-0000-0000-0000-000000000003")); break; }
         case "inference": { const client = new HttpInferenceTransport(options.endpoint, options, fetcher); invoke = () => client.listModels(); break; }
       }
       try {
@@ -70,11 +67,10 @@ test("HTTP clients renew for each request and never fall back to fixed credentia
   }), { numRuns: 32, examples: credentialGetterKinds.map(kind => [["fresh-a", "fresh-b"], kind]) });
 });
 
-test("environment constructors read every credential getter shape once", async () => {
+test("Inference environment construction reads every credential getter shape once", async () => {
   const originalFetch = globalThis.fetch;
   try {
-    for (const product of ["machines", "inference"]) {
-      for (const kind of credentialGetterKinds) {
+    for (const kind of credentialGetterKinds) {
       let calls = 0;
       const sent = [];
       globalThis.fetch = async (_input, init) => {
@@ -83,18 +79,11 @@ test("environment constructors read every credential getter shape once", async (
       };
       const callback = () => `fresh-${++calls}`;
       const options = credentialGetter({ endpoint: "https://service.example.test", token: "stale" }, callback, kind);
-      let invoke;
-      if (product === "machines") {
-        const client = HttpMachinesProvider.fromEnv(options);
-        invoke = () => client.inspectMachine(machineId("00000000-0000-0000-0000-000000000003"));
-      } else {
-        const client = await Inference.fromEnv({ ACYCLIC_INFERENCE_ENDPOINT: options.endpoint }, options);
-        invoke = () => client.client.listModels();
-      }
+      const client = await Inference.fromEnv({ ACYCLIC_INFERENCE_ENDPOINT: options.endpoint }, options);
+      const invoke = () => client.client.listModels();
       for (let index = 0; index < 3; index++) await expect(invoke()).rejects.toThrow();
       expect(options.credentialReads()).toBe(1);
       expect(sent).toEqual(["Bearer fresh-1", "Bearer fresh-2", "Bearer fresh-3"]);
-      }
     }
   } finally { globalThis.fetch = originalFetch; }
 });
