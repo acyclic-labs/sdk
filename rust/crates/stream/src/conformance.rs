@@ -8,7 +8,7 @@ macro_rules! violated {
 }
 
 mod absence;
-mod atomic;
+pub(crate) mod atomic;
 mod backend;
 pub(crate) mod key_seek;
 pub(crate) mod selected;

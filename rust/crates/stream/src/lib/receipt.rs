@@ -48,8 +48,6 @@ impl CommitReceipt {
     pub fn validate_request(&self, request: &CommitRequest) -> Result<(), StreamError> {
         use crate::request::effect_conditions;
         if !crate::preparation::shaped(request)
-            || request.mutations().count() > MAX_ITEMS
-            || request.conditions().count() > MAX_ITEMS
             || request.effects.iter().any(|effect| {
                 effect.conditions.windows(2).any(|pair| {
                     crate::CommitCondition::path(&pair[0]) >= crate::CommitCondition::path(&pair[1])
@@ -88,7 +86,7 @@ impl CommitReceipt {
                 let condition = condition_for(path);
                 let matches = match mutation {
                     CommitMutation::Append { records, .. } => {
-                        if records.is_empty() || records.len() > MAX_ITEMS {
+                        if records.is_empty() {
                             return Err(StreamError::InvalidArgument);
                         }
                         let start = match condition {
@@ -118,7 +116,6 @@ impl CommitReceipt {
                         ..
                     } => {
                         if source == path
-                            || records.len() > MAX_ITEMS
                             || !matches!(condition, Some(CommitCondition::Absent { .. }))
                         {
                             return Err(StreamError::InvalidArgument);
@@ -249,8 +246,6 @@ impl CommitReceipt {
             .ok_or(StreamError::InvalidArgument)?;
         // A commit that published nothing skipped every effect it had.
         if (count == 0 && self.skipped.is_empty())
-            || count > MAX_ITEMS
-            || self.skipped.len() > MAX_ITEMS
             || self.skipped.windows(2).any(|pair| pair[0] >= pair[1])
             || self
                 .appends
@@ -262,7 +257,6 @@ impl CommitReceipt {
                 .any(|pair| pair[0].destination >= pair[1].destination)
             || self.appends.iter().any(|a| {
                 a.start >= a.tail
-                    || a.tail - a.start > MAX_ITEMS as u64
                     || self
                         .forks
                         .binary_search_by(|f| f.destination.cmp(&a.path))
@@ -271,7 +265,6 @@ impl CommitReceipt {
             || self.forks.iter().any(|f| {
                 f.source == f.destination
                     || f.forked_at > f.tail
-                    || f.tail - f.forked_at > MAX_ITEMS as u64
                     || f.commit_id != self.commit_id
                     || f.revision != self.revision
             })
