@@ -256,7 +256,7 @@ impl HostIo {
                             return Err(io::ErrorKind::InvalidData.into());
                         }
                     }
-                    if filled != needed {
+                    if self.framed && filled != needed {
                         continue;
                     }
                     #[cfg(test)]
