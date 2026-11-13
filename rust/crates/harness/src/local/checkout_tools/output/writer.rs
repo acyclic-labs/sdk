@@ -117,9 +117,7 @@ impl Writer {
             .checked_add(1)
             .ok_or_else(|| Error::Storage("tool output sequence overflow".into()))?;
         let name = format!("{stream}/{sequence:016x}");
-        self.output
-            .publish_chunk(&name, pending, operation(&self.context, &name))
-            .await?;
+        self.output.publish_chunk(&name, pending).await?;
         if stderr {
             self.pending.1.clear();
             self.sequence.1 = next;
