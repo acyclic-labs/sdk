@@ -1,5 +1,59 @@
 use super::*;
 
+/// The producer's receipt and the dispatcher's delayed follow are one event.
+/// A fresh committed activation is the control that still permits recovery.
+#[tokio::test]
+async fn delayed_activation_cannot_redeliver_a_failed_attempt() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let handler = Arc::new(Gated::new()?);
+    let runtime = Runtime::new(store.clone(), handler.clone(), Arc::new(SystemClock));
+    let address = spawn_with(&store, "one-activation", &[b"emit"]).await?;
+    runtime.track(address.clone())?;
+    for recover in [false, true] {
+        let mut request = CommitRequest::new(key(if recover { "recover" } else { "deliver" })?);
+        request.effects.push(store.activation(&address)?);
+        let outcome = provider.commit(request).await?;
+        let acyclic_stream::CommitOutcome::Committed(receipt) = outcome else {
+            return Err(format!("activation did not commit: {outcome:?}").into());
+        };
+        runtime.wake_committed(&address, &receipt)?;
+        let work = runtime.ready.take().ok_or("activation did not wake")?;
+        let mut delivery = Box::pin(runtime.execute(work));
+        assert!(futures::poll!(delivery.as_mut()).is_pending());
+        // Deliver the same original activation through the shared dispatcher
+        // path while its handler is running. It must not queue a second attempt.
+        let path = store.scheduling_path(store.scheduling_shard(&address))?;
+        let cursor = receipt
+            .appends
+            .iter()
+            .find(|append| append.path == path)
+            .ok_or("activation receipt missing")?
+            .tail;
+        runtime.activate(&address, cursor);
+        if recover {
+            handler.gate.add_permits(1);
+            delivery.await.map_err(|(_, error)| error)?;
+        } else {
+            drop(delivery);
+            assert_eq!(
+                store
+                    .load(&address)
+                    .await?
+                    .state()
+                    .and_then(|state| state.cursor("inbox")),
+                Some(0)
+            );
+        }
+        assert!(
+            runtime.ready.take().is_none(),
+            "duplicate activation queued another delivery"
+        );
+    }
+    assert_eq!(records(&*provider, "out/one-activation").await?.len(), 1);
+    Ok(())
+}
+
 #[tokio::test]
 async fn failure_observers_survive_hibernation_and_unpolled_recovery() -> TestResult {
     let provider = Arc::new(MemoryStream::default());

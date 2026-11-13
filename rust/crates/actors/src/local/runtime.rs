@@ -459,6 +459,39 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         }
     }
 
+    /// Notify a resident actor of the activation in a confirmed publication.
+    /// The direct producer and the activation follow share its committed cursor,
+    /// so a delayed copy cannot redeliver an input after its producer failed.
+    /// The caller must have included this actor's activation in the commit.
+    ///
+    /// # Errors
+    /// The receipt omits the actor's activation log append.
+    pub fn wake_committed(
+        &self,
+        actor: &ActorReference,
+        receipt: &acyclic_stream::CommitReceipt,
+    ) -> Result<(), Error> {
+        let path = self
+            .store
+            .scheduling_path(self.store.scheduling_shard(actor))?;
+        let append = receipt
+            .appends
+            .iter()
+            .find(|append| append.path == path)
+            .ok_or(Error::Invalid("receipt omits the actor activation"))?;
+        self.activate(actor, append.tail);
+        Ok(())
+    }
+
+    fn activate(&self, actor: &ActorReference, cursor: u64) {
+        if let Some(slot) = self.slot(actor)
+            && slot.entry.fetch_max(cursor, Ordering::AcqRel) < cursor
+        {
+            slot.refresh.store(true, Ordering::Release);
+            slot.waker.wake_by_ref();
+        }
+    }
+
     /// Durably pause or resume. Pause closes admission, lets the active delivery
     /// finish and settles its retained publication before parking resources.
     /// Once admitted, the operation outlives its waiter. An uncertain publication
@@ -932,10 +965,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         if self.places {
                             self.track(actor.clone())?;
                         }
-                        if let Some(slot) = self.slot(&actor) {
-                            slot.entry.fetch_max(cursor, Ordering::AcqRel);
-                        }
-                        self.wake(&actor);
+                        self.activate(&actor, cursor);
                     }
                     seen.insert(shard, cursor);
                 }
