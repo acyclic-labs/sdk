@@ -178,7 +178,13 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
     async fn read_request(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         #[cfg(feature = "serde")]
         let keyed = request.key.is_some();
+        #[cfg(feature = "serde")]
+        let diagnostic = crate::trace::is_source(&request.path);
         let work = self.provider.read(request);
+        #[cfg(feature = "serde")]
+        if diagnostic {
+            return work.await;
+        }
         #[cfg(feature = "serde")]
         return crate::trace::observe(
             crate::trace::Request {
@@ -198,7 +204,8 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
             work,
             |_| None,
         )
-        .await;
+        .await
+        .map(crate::trace::records);
         #[cfg(not(feature = "serde"))]
         work.await
     }

@@ -544,10 +544,21 @@ async fn last_owner_interest_revokes_inherited_producer_during_original_work()
         assert_eq!(data.head().await?, original);
         drop(first);
         assert_eq!(data.head().await?, original);
+        let mut retained = data.read(0, 1).await?;
         drop(last);
         // The unrelated owner remains followed: a global subscriber count is
         // insufficient to decide whether this retained producer can emit.
         assert_eq!(data.head().await?, original);
+        assert_eq!(
+            retained
+                .try_next()
+                .await?
+                .expect("original retained row")
+                .value
+                .as_ref(),
+            b"original"
+        );
+        assert!(retained.try_next().await?.is_none());
         Ok::<_, crate::StreamError>(())
     })
     .await?;
@@ -567,10 +578,15 @@ async fn last_owner_interest_revokes_inherited_producer_during_original_work()
             if start.name == "stream.head" && start.parent == Some(parent))
         );
     }
+    query.next().await?;
+    assert!(
+        matches!(query.next().await?, Some(Observation::Completed { start, .. })
+        if start.name == "stream.read_open" && start.parent == Some(parent))
+    );
     assert!(matches!(query.next().await?, Some(Observation::Completed { id, .. }) if id == parent));
     assert_eq!(
         traces.tail().await?,
-        6,
+        8,
         "unfollowed owner retained inherited observation work"
     );
     Ok(())

@@ -134,6 +134,15 @@ still retains its recorder or another agent remains followed. This is an inline
 atomic check without a registry lock, allocation or scan; overlapping leases keep
 the same producer active. Already-admitted spans retain their terminal custody.
 Standalone explicitly constructed recorders remain explicit producer capabilities.
+Admitted read cursors retain that original owner for lazy record delivery after
+opening. `stream.record_delivery` waits on the original next result, reports the
+actual delivered value bytes (zero at normal finite exhaustion), and submits its
+terminal without another suspension. The original snapshot/selection and cursor
+are preserved through `Opened::map_cursor`; an unfollowed open adds no wrapper.
+Each next operation checks the original owner's demand, so a retained cursor adds
+no new spans after final unsubscribe. Reading the active trace source bypasses
+self-observation to prevent diagnostic-query feedback. Errors without retained
+cause evidence and abandoned in-flight observations remain incomplete coverage.
 Harness Stream failures use one source-owning `StreamFailure` on ordinary,
 native and WebAssembly paths. Request-boundary classification remains explicit;
 native provenance and admitted allocation custody remain attached. Journal

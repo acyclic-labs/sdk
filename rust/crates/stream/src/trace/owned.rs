@@ -89,6 +89,9 @@ impl<P: StreamProvider + ?Sized> super::context::Producer for super::Recorder<P>
         self.has_demand()
     }
 
+    fn is_source(&self, path: &crate::StreamPath) -> bool {
+        self.stream.path() == path
+    }
     fn start(
         self: std::sync::Arc<Self>,
         request: super::Request,

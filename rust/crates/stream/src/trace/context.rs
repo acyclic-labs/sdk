@@ -5,6 +5,7 @@ use std::{cell::RefCell, future::Future, sync::Arc};
 
 pub(super) trait Producer: ProviderPlatform {
     fn enabled(&self) -> bool;
+    fn is_source(&self, path: &crate::StreamPath) -> bool;
     fn start(
         self: Arc<Self>,
         request: Request,
@@ -85,4 +86,56 @@ pub async fn observe<T, E>(
     #[cfg(all(target_arch = "wasm32", not(feature = "wasm")))]
     let _ = bytes;
     result
+}
+
+/// Preserve the original cursor and snapshot; only admitted readers acquire an
+/// observation wrapper. Pending diagnostic publication never owns delivery.
+pub(crate) fn records(records: crate::RecordStream) -> crate::RecordStream {
+    use futures::StreamExt as _;
+    let active = CURRENT.with_borrow(|active| {
+        active
+            .as_ref()
+            .filter(|active| active.producer.enabled())
+            .cloned()
+    });
+    let Some(active) = active else {
+        return records;
+    };
+    records.map_cursor(|cursor| {
+        Box::pin(futures::stream::unfold(
+            (cursor, active),
+            |(mut cursor, active)| async move {
+                let admission = active.producer.enabled().then(|| {
+                    active.producer.clone().start(Request {
+                        name: "stream.record_delivery",
+                        mechanism: super::Mechanism::Wait,
+                        parent: Some(active.id),
+                        guarantee: Some("ordered_cursor_delivery"),
+                    })
+                });
+                let (next, recording) = OwnedRecording::accompany(admission, cursor.next()).await;
+                #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+                if let Some(recording) = recording {
+                    let bytes = match &next {
+                        Some(Ok(record)) => u64::try_from(record.value.len()).ok(),
+                        None => Some(0),
+                        Some(Err(_)) => None,
+                    };
+                    if !matches!(next, Some(Err(_))) {
+                        let _completion =
+                            recording.finish_submitted(bytes, super::Outcome::Succeeded);
+                    }
+                }
+                next.map(|value| (value, (cursor, active)))
+            },
+        ))
+    })
+}
+
+pub(crate) fn is_source(path: &crate::StreamPath) -> bool {
+    CURRENT.with_borrow(|active| {
+        active
+            .as_ref()
+            .is_some_and(|active| active.producer.is_source(path))
+    })
 }

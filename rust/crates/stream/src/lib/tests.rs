@@ -524,22 +524,34 @@ mod replay_tests {
             original_row
         );
         assert!(selected.next().await.is_none());
+        let mut diagnostic = root.within(trace.read(0, 1)).await?;
+        assert!(
+            diagnostic
+                .next()
+                .await
+                .ok_or("original diagnostic record missing")?
+                .is_ok()
+        );
         let _completion = root.finish_submitted(None, Outcome::Succeeded)?;
         let mut query = TraceQuery::new(
             trace.follow(0, Default::default()).await?,
             Default::default(),
         );
         query.next().await?;
-        for (name, guarantee) in [
-            ("stream.head", "atomic_history_durability_origin"),
-            ("stream.read_open", "bounded_ordered_record_cursor"),
-            ("stream.seek_open", "bounded_header_key_selection"),
+        for (name, guarantee, bytes) in [
+            ("stream.head", "atomic_history_durability_origin", None),
+            ("stream.read_open", "bounded_ordered_record_cursor", None),
+            ("stream.record_delivery", "ordered_cursor_delivery", Some(8)),
+            ("stream.record_delivery", "ordered_cursor_delivery", Some(0)),
+            ("stream.seek_open", "bounded_header_key_selection", None),
+            ("stream.record_delivery", "ordered_cursor_delivery", Some(8)),
+            ("stream.record_delivery", "ordered_cursor_delivery", Some(0)),
         ] {
             query.next().await?;
             assert!(
-                matches!(query.next().await?, Some(Observation::Completed { start, bytes: None, result: Outcome::Succeeded, .. })
+                matches!(query.next().await?, Some(Observation::Completed { start, bytes: observed_bytes, result: Outcome::Succeeded, .. })
                 if start.name == name && start.parent == Some(parent)
-                    && start.guarantee.as_deref() == Some(guarantee))
+                    && start.guarantee.as_deref() == Some(guarantee) && observed_bytes == bytes)
             );
         }
         assert!(
@@ -547,14 +559,14 @@ mod replay_tests {
         );
         assert_eq!(
             trace.tail().await?,
-            8,
+            16,
             "diagnostic publication recursively traced its own head check"
         );
         assert_eq!(data.head().await?, original);
         drop(data.read(0, 1).await?);
         assert_eq!(
             trace.tail().await?,
-            8,
+            16,
             "completed scope leaked its owner into unrelated work"
         );
         Ok(())
@@ -614,6 +626,55 @@ mod replay_tests {
             trace.tail().await?,
             2,
             "abandoned diagnostic admission fabricated child settlement"
+        );
+        Ok(())
+    }
+    #[cfg(feature = "serde")]
+    #[tokio::test]
+    async fn ready_cursor_record_is_not_held_by_diagnostic_admission()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::trace::{Mechanism, Outcome, Recorder};
+        let trace = Stream::new(
+            Arc::new(Gapped {
+                inner: MemoryStream::default(),
+                missing: u64::MAX,
+                extra_records: 0,
+                inspect_on_write: false,
+                pause_at: 3,
+                pause_write: Some(Arc::new(std::sync::atomic::AtomicUsize::new(0))),
+                resume_write: None,
+            }),
+            "agents/worker/trace",
+        )?;
+        let data = Stream::new(Arc::new(MemoryStream::default()), "agents/worker/data")?;
+        data.append(b"original".to_vec(), IdempotencyKey::unique())
+            .await?;
+        let recorder = Arc::new(Recorder::new(trace.clone(), [17; 16]));
+        let root = recorder
+            .start(
+                "request",
+                Mechanism::ToolCall,
+                None,
+                Some("original_request"),
+            )
+            .await?
+            .into_owned();
+        let mut records = root.within(data.read(0, 1)).await?;
+        let mut next = Box::pin(records.next());
+        let std::task::Poll::Ready(record) = futures::poll!(&mut next) else {
+            return Err("diagnostic admission retained an original ready record".into());
+        };
+        assert_eq!(
+            record.ok_or("original record missing")??.value.as_ref(),
+            b"original"
+        );
+        drop(next);
+        drop(records);
+        let _completion = root.finish_submitted(None, Outcome::Succeeded)?;
+        assert_eq!(
+            trace.tail().await?,
+            4,
+            "abandoned record admission fabricated a diagnostic terminal"
         );
         Ok(())
     }
@@ -707,7 +768,7 @@ mod replay_tests {
         let rows = observed.result?.ok_or("original page missing")?;
         assert_eq!(rows[0].value.as_ref(), b"original payload");
         assert!(matches!(observed.observation?, Settlement::Finished(_)));
-        let mut query = TraceQuery::new(traces.read(0, 4).await?, Default::default());
+        let mut query = TraceQuery::new(traces.read(0, 8).await?, Default::default());
         let Some(Observation::Started { id: page_id, .. }) = query.next().await? else {
             return Err("replay parent admission missing".into());
         };
@@ -716,6 +777,13 @@ mod replay_tests {
             matches!(query.next().await?, Some(Observation::Completed { start, bytes: None, .. })
             if start.name == "stream.read_open" && start.parent == Some(page_id))
         );
+        for expected in [Some(16), Some(0)] {
+            query.next().await?;
+            assert!(
+                matches!(query.next().await?, Some(Observation::Completed { start, bytes, .. })
+                if start.name == "stream.record_delivery" && start.parent == Some(page_id) && bytes == expected)
+            );
+        }
         assert!(matches!(query.next().await?, Some(Observation::Completed {
             start, bytes: Some(16), ..
         }) if start.parent == Some(parent) && start.mechanism == Mechanism::Io
@@ -723,7 +791,7 @@ mod replay_tests {
         let disabled = replay.next_page_observed(None, None).await;
         assert!(disabled.result?.is_none());
         assert!(matches!(disabled.observation?, Settlement::Disabled));
-        assert_eq!(traces.tail().await?, 4);
+        assert_eq!(traces.tail().await?, 8);
 
         let mut incomplete = data.replay(1).until(2);
         let observed = incomplete
@@ -748,12 +816,13 @@ mod replay_tests {
             return Err("unretained failure fabricated a terminal".into());
         };
         drop(recording);
-        let mut query = TraceQuery::new(traces.read(4, 3).await?, Default::default());
+        let mut query = TraceQuery::new(traces.read(8, 5).await?, Default::default());
         query.next().await?;
         assert_eq!(query.active().len(), 1);
         while query.next().await?.is_some() {}
         assert_eq!(query.active().len(), 1);
         assert_eq!(query.totals()[&Mechanism::Io].completed, 1);
+        assert_eq!(query.totals()[&Mechanism::Wait].completed, 1);
 
         // A real producer-capacity refusal must not replace the successful
         // read, consume its payload or turn its cursor into a retry.
@@ -795,7 +864,7 @@ mod replay_tests {
             missing: u64::MAX,
             extra_records: 0,
             inspect_on_write: false,
-            pause_at: 3,
+            pause_at: 7,
             pause_write: Some(writes.clone()),
             resume_write: None,
         });
@@ -805,10 +874,10 @@ mod replay_tests {
         let mut replay = data.replay(0);
         let mut cancelled = Box::pin(replay.next_page_observed(Some(&recorder), None));
         assert!(futures::poll!(&mut cancelled).is_pending());
-        assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 4);
+        assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 8);
         drop(cancelled);
         assert_eq!(replay.cursor(), 0);
-        assert_eq!(traces.tail().await?, 3);
+        assert_eq!(traces.tail().await?, 7);
         let retried = replay.next_page_observed(Some(&recorder), None).await;
         assert_eq!(
             retried.result?.ok_or("cancelled read skipped page")?[0]
