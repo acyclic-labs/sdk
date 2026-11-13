@@ -1794,16 +1794,19 @@ where
         let mut hasher = blake3::Hasher::new();
         for part in 0..parts {
             let intent = part_intent(digest, part)?;
-            let file = self
+            let text = self
                 .bound
-                .staged_text(agent, STAGED_PART, by, &intent, intent.as_str())
+                .staged_text_bytes(
+                    agent,
+                    STAGED_PART,
+                    by,
+                    &intent,
+                    intent.as_str(),
+                    MAX_AGENT_COMMAND_BYTES as u64,
+                )
                 .await?
                 .ok_or(Error::Record("a staged command part is missing"))?;
-            let (text, length) = self
-                .bound
-                .read_file(agent, &file, 0, MAX_AGENT_COMMAND_BYTES as u64)
-                .await?;
-            if text.len() as u64 != length || (whole.len() + text.len()) as u64 > bytes {
+            if (whole.len() + text.len()) as u64 > bytes {
                 return Err(Error::Record("staged command parts exceed their length"));
             }
             hasher.update(&text);
