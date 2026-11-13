@@ -164,6 +164,16 @@ pub enum WatchBatch {
     },
 }
 
+/// A finite prefix of hints already delivered to one watcher epoch.
+/// Later arrivals remain queued for a subsequent cut. Retaining a cut shares
+/// the watch's existing controls and allocates no new subscription or queue.
+#[derive(Debug)]
+pub struct NativeWatchCut {
+    shared: Arc<WatchState>,
+    epoch: u64,
+    end_sequence: u64,
+}
+
 /// Physical allocation custody moved with a native hint interval.
 #[derive(Debug, Default)]
 pub struct WatchBatchOriginal {
@@ -3892,6 +3902,52 @@ impl NativeWatch {
         }
     }
 
+    /// Captures the finite interval already delivered, without waiting for new
+    /// events. Fence native delivery first when a completed host effect must
+    /// belong to this interval. Drain with `poll_through` and retain its final
+    /// empty batch's continuity check before acknowledging capture.
+    pub fn ready_cut(&self) -> Result<NativeWatchCut, NativeWatchError> {
+        let end_sequence = self
+            .next_sequence
+            .checked_add(self.queued.load(Ordering::Acquire) as u64)
+            .ok_or(NativeWatchError::SequenceExhausted)?;
+        Ok(NativeWatchCut {
+            shared: Arc::clone(&self.shared),
+            epoch: self.epoch,
+            end_sequence,
+        })
+    }
+
+    /// Moves at most one page from a fixed delivered interval. At its end,
+    /// returns an empty batch after checking root identity and continuity;
+    /// invalidation still returns `RescanRequired`, including after the last
+    /// nonempty page. A cut cannot be used on another watcher or epoch.
+    pub fn poll_through(
+        &mut self,
+        cut: &NativeWatchCut,
+        maximum_changes: u32,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> MeasuredResult<OperationReceipt<WatchBatch>, NativeWatchError> {
+        if maximum_changes == 0 {
+            return Err(OperationFailure::new(
+                NativeWatchError::ZeroPollLimit,
+                WorkCounters::UNCHARGED,
+            ));
+        }
+        if !Arc::ptr_eq(&self.shared, &cut.shared)
+            || self.epoch != cut.epoch
+            || self.next_sequence > cut.end_sequence
+        {
+            return Err(OperationFailure::new(
+                NativeWatchError::WatchCutMismatch,
+                WorkCounters::UNCHARGED,
+            ));
+        }
+        let maximum = u64::from(maximum_changes).min(cut.end_sequence - self.next_sequence) as u32;
+        self.poll_limit(maximum, budget, cancellation)
+    }
+
     /// Moves at most `maximum_changes` contiguous hints from the native queue.
     pub fn poll(
         &mut self,
@@ -3899,14 +3955,30 @@ impl NativeWatch {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> MeasuredResult<OperationReceipt<WatchBatch>, NativeWatchError> {
+        if maximum_changes == 0 {
+            return Err(OperationFailure::new(
+                NativeWatchError::ZeroPollLimit,
+                WorkCounters::UNCHARGED,
+            ));
+        }
+        self.poll_limit(maximum_changes, budget, cancellation)
+    }
+
+    fn poll_limit(
+        &mut self,
+        maximum_changes: u32,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> MeasuredResult<OperationReceipt<WatchBatch>, NativeWatchError> {
         let original = crate::NativeMaterializationWork::new(budget, cancellation)
             .map_err(|(error, spent)| OperationFailure::new(error.into(), *spent))?;
-        let result = self.poll_with_native_work_guarded(maximum_changes, &original, |_| Ok(()));
+        let mut work = crate::NativeMaterializationWork::clone(&original);
+        let result = self.poll_with_work(maximum_changes, &mut work, Some(&original), |_| Ok(()));
         let spent = original.receipt();
         result
             .map(|(mut value, allocation)| {
                 if let WatchBatch::Changes { original, .. } = &mut value {
-                    original.storage = Some(allocation);
+                    original.storage = allocation;
                 }
                 OperationReceipt { value, work: spent }
             })
@@ -3923,6 +3995,9 @@ impl NativeWatch {
     where
         F: FnMut(&WatchBatch) -> Result<(), crate::demand::DemandError>,
     {
+        if maximum_changes == 0 {
+            return Err(NativeWatchError::ZeroPollLimit);
+        }
         let mut work = crate::NativeMaterializationWork::clone(original);
         let (batch, allocation) =
             self.poll_with_work(maximum_changes, &mut work, Some(original), before_publish)?;
@@ -3950,9 +4025,6 @@ impl NativeWatch {
         F: FnMut(&WatchBatch) -> Result<(), crate::demand::DemandError>,
     {
         work.check().map_err(demand_watch_error)?;
-        if maximum_changes == 0 {
-            return Err(NativeWatchError::ZeroPollLimit);
-        }
         if self
             .shared
             .state
@@ -4713,6 +4785,9 @@ pub enum NativeWatchError {
     /// Poll output must have a positive bound.
     #[error("native watcher poll limit must be non-zero")]
     ZeroPollLimit,
+    /// A ready interval belongs to another watcher, epoch, or consumed prefix.
+    #[error("native watcher ready interval does not match its current cursor")]
+    WatchCutMismatch,
     /// Process-local cursor arithmetic overflowed.
     #[error("native watcher sequence is exhausted")]
     SequenceExhausted,
