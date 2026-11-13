@@ -48,7 +48,7 @@ use std::{
 };
 
 struct Slot {
-    failure: tokio::sync::watch::Sender<Option<DeliveryFailure>>,
+    failure: OnceLock<tokio::sync::watch::Sender<Option<DeliveryFailure>>>,
     registration: Registration<ActorReference>,
     waker: Waker,
     inner: tokio::sync::Mutex<Inner>,
@@ -89,6 +89,7 @@ impl Drop for EventDelivery {
 /// alarm; its flight then keeps the actor's failure mark. The work it was
 /// taken for settles with it.
 struct Settlement<'a> {
+    actor: &'a ActorReference,
     slot: &'a Slot,
     flight: Option<Flight<ActorReference>>,
     work: Option<Work<ActorReference>>,
@@ -103,14 +104,17 @@ impl Drop for Settlement<'_> {
         if self.failed {
             self.slot
                 .failure
+                .get_or_init(|| tokio::sync::watch::channel(None).0)
                 .send_replace(Some(self.cause.take().unwrap_or_else(|| DeliveryFailure {
-                    message:
-                        "actor delivery producer disappeared before reporting an outcome".into(),
+                    message: format!(
+                        "actor {:?}: delivery producer disappeared before reporting an outcome",
+                        self.actor
+                    ),
                 })));
             self.slot.refresh.store(true, Ordering::Release);
             self.slot.registration.suspend_alarm();
-        } else {
-            self.slot.failure.send_replace(None);
+        } else if let Some(failure) = self.slot.failure.get() {
+            failure.send_if_modified(|cause| cause.take().is_some());
         }
         flight.finish(self.failed);
         if let Some(work) = self.work.take() {
@@ -423,7 +427,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         actors.insert(
             actor,
             Arc::new(Slot {
-                failure: tokio::sync::watch::channel(None).0,
+                failure: OnceLock::new(),
                 registration,
                 waker,
                 inner: tokio::sync::Mutex::new(Inner::default()),
@@ -447,7 +451,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     ) -> Result<BoxProviderFuture<'static, DeliveryFailure>, Error> {
         self.track(actor.clone())?;
         let slot = self.slot(actor).ok_or(Error::CompletionStopped)?;
-        let mut failure = slot.failure.subscribe();
+        let mut failure = slot
+            .failure
+            .get_or_init(|| tokio::sync::watch::channel(None).0)
+            .subscribe();
         let actor = actor.clone();
         Ok(Box::pin(async move {
             loop {
@@ -1293,15 +1300,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 // until it settles; a failed or unfinished one keeps its
                 // actor's wake past every later checkpoint.
                 let mut settlement = Settlement {
+                    actor,
                     slot,
                     flight: Some(self.ready.flight(actor)),
                     work,
                     failed: true,
-                    cause: Some(DeliveryFailure {
-                        message: format!(
-                            "actor {actor:?}: delivery producer disappeared before reporting an outcome"
-                        ),
-                    }),
+                    cause: None,
                 };
                 let result = match &self.admission {
                     Some(admission) => admission
