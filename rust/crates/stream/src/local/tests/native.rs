@@ -1063,11 +1063,7 @@ async fn guard_drift_case<P: crate::NativeStreamProvider + Clone + 'static>(
     };
     assert!(matches!(committed.value(), CommitOutcome::Committed(_)));
     drop(committed);
-    let invoked = if drifts && intervening != Intervening::Key {
-        2
-    } else {
-        1
-    };
+    let invoked = 1 + u64::from(drifts && intervening != Intervening::Key);
     assert_eq!(calls.load(Ordering::SeqCst), invoked, "{intervening:?}");
     Ok(())
 }
