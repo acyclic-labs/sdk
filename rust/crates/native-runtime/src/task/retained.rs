@@ -58,6 +58,11 @@ struct Inner {
 /// `stop` observes destruction of this frame, including a concurrent poll's
 /// retained state. Effects detached by the future need their own completion
 /// owner; frame retirement cannot certify their physical completion.
+/// The owner and prepaid admission-node credit remain funded through their
+/// last aliases. An accepted queued poll or an externally retained event waker
+/// can hold that control credit after `stop` returns; a queued poll releases
+/// its alias when the shared worker receives it. Neither can poll the retired
+/// frame after stop, and neither permits its credit to be reused early.
 pub struct OwnedFuture {
     inner: Arc<Inner>,
 }

@@ -75,8 +75,30 @@ pub fn check(bytes: &[u8]) -> bool {
 
 #[test]
 fn seeded_continuations_preserve_scalar_and_composite_cuts() {
+    let cancellation = CancellationToken::new();
+    let work = work(&cancellation).unwrap();
+    let baseline = work.live_allocation_bytes();
     for (_, seed) in seeds().unwrap() {
+        let mut decoded = false;
+        for profile in PROFILES {
+            if let Ok(cursor) =
+                LazyDirectoryCursor::decode(&seed, profile, crate::VolumeLimits::default(), &work)
+            {
+                decoded = true;
+                cursor
+                    .retire(&mut KernelAccounting::NativeOriginal {
+                        work: &work,
+                        cancellation: &cancellation,
+                    })
+                    .unwrap();
+            }
+        }
+        assert!(
+            decoded,
+            "no admitted profile could decode a generated continuation"
+        );
         assert!(check(&seed));
+        assert_eq!(work.live_allocation_bytes(), baseline);
     }
 }
 

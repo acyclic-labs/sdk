@@ -51,20 +51,31 @@ async fn input_revisions_follow_only_own_history_membership_and_grafts_across_re
         } else {
             memory.clone()
         };
-        // Rejected decisions are retained for idempotency but do not advance
-        // publication revisions, including when derived indexes are rebuilt.
+        // A refused conditional append spends neither its retry key nor a
+        // publication revision; snapshot/log replay preserves the accepted cuts.
+        let opening = observe(&*provider, &["stable/source"]).await?.snapshot;
+        let refused_key = crate::IdempotencyKey::unique();
         assert_eq!(
             provider
                 .append(AppendRequest {
                     path: StreamPath::new("stable/source")?,
                     records: vec![Bytes::from_static(b"rejected").into()],
                     if_tail: Some(1),
-                    idempotency_key: crate::IdempotencyKey::unique(),
+                    idempotency_key: refused_key.clone(),
                 })
                 .await?,
             crate::AppendOutcome::TailConflict { actual_tail: 0 }
         );
+        assert!(provider.inspect_idempotency(refused_key).await?.is_none());
+        assert_eq!(
+            observe(&*provider, &["stable/source"]).await?.snapshot,
+            opening
+        );
         let created = put(&*provider, "stable/source").await?;
+        assert_eq!(
+            created, 1,
+            "refused append spent the first publication revision"
+        );
         let initial = observe(&*provider, &["stable", "stable/source"]).await?;
         assert_eq!(indexes(&initial), vec![Some(created); 2]);
         let membership = put(&*provider, "stable/source/kids/a/status").await?;
