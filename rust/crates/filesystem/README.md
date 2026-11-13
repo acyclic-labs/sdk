@@ -10,6 +10,11 @@ cargo add acyclic-fs
 
 Choose the backend for your deployment: embedded storage for local durability, hosted authority and Objects for a remote workspace, or embedded native mount integration. Transactions stage edits before commit; forks branch from a generation. The provider determines persistence, isolation, and mount guarantees.
 
+Hosted handshakes require the compiled protocol version and descriptor identity.
+Every required capability must name an exact advertised version. Durable engines
+advertise `filesystem.durable` version `1`, covering both authority and object
+acknowledgements across backend restart. Clients can require it during admission.
+
 Named attributes include an `annotation` class for application metadata stored
 in the authenticated object tree. Annotations use the same sparse attribute
 index, mutations, generations and retention as native attributes. Native mounts

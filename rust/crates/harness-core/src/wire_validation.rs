@@ -19,32 +19,35 @@ pub fn negotiate(
     supported: &wire::CapabilitySet,
 ) -> Result<wire::HandshakeResponse> {
     let expected = current_protocol();
-    validate_protocol(
-        request.protocol.as_ref(),
+    acyclic_protocol::negotiate(
+        request.protocol.as_ref().map(|identity| {
+            (
+                identity.version.as_str(),
+                identity.descriptor_digest.as_str(),
+            )
+        }),
         (&expected.version, &expected.descriptor_digest),
-        wire::ErrorCode::Invalid,
-        &None,
-    )?;
-    let available = supported
-        .capabilities
-        .iter()
-        .map(|capability| (capability.name.as_str(), capability.version.as_str()))
-        .collect::<std::collections::BTreeSet<_>>();
-    for required in request
-        .required
-        .as_ref()
-        .map_or(&[][..], |set| set.capabilities.as_slice())
-    {
-        if required.name.is_empty()
-            || required.version.is_empty()
-            || !available.contains(&(required.name.as_str(), required.version.as_str()))
-        {
-            return Err(Error::Unsupported(format!(
-                "unsupported capability {}@{}",
-                required.name, required.version
-            )));
+        request.required.as_ref().into_iter().flat_map(|set| {
+            set.capabilities
+                .iter()
+                .map(|capability| (capability.name.as_str(), capability.version.as_str()))
+        }),
+        supported
+            .capabilities
+            .iter()
+            .map(|capability| (capability.name.as_str(), capability.version.as_str())),
+    )
+    .map_err(|error| match error {
+        acyclic_protocol::Error::MissingIdentity => {
+            Error::from_code(wire::ErrorCode::Invalid, "protocol identity is missing")
         }
-    }
+        acyclic_protocol::Error::IdentityMismatch => {
+            Error::from_code(wire::ErrorCode::Unsupported, "protocol identity mismatch")
+        }
+        acyclic_protocol::Error::UnsupportedCapability { .. } => {
+            Error::Unsupported(error.to_string())
+        }
+    })?;
     Ok(wire::HandshakeResponse {
         protocol: Some(expected),
         supported: Some(supported.clone()),

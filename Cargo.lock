@@ -338,6 +338,7 @@ dependencies = [
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-observability",
+ "acyclic-protocol",
  "acyclic-stream",
  "acyclic-test-support",
  "async-trait",
@@ -686,6 +687,7 @@ dependencies = [
  "acyclic-objects",
  "acyclic-observability",
  "acyclic-proto-build",
+ "acyclic-protocol",
  "acyclic-stream",
  "acyclic-test-support",
  "arrayvec",
@@ -1395,6 +1397,10 @@ dependencies = [
  "prost-reflect",
  "serde_json",
 ]
+
+[[package]]
+name = "acyclic-protocol"
+version = "0.2.0"
 
 [[package]]
 name = "acyclic-sdk-fuzz"

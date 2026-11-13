@@ -47,6 +47,7 @@ harness = false
 name = "native_capture"
 harness = false
 [dependencies]
+acyclic-protocol = { version = "=0.2.0", path = "../protocol" }
 acyclic-collections = { version = "=0.2.0", path = "../collections" }
 acyclic-fs-wire = { version = "=0.2.0", path = "../filesystem-wire" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }

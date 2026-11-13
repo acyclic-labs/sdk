@@ -35,7 +35,7 @@ fn record<Q: prost::Message, R: prost::Message>(
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let service = FilesystemWireService::new(MemoryFs::memory(), FilesystemWireLimits::default())?;
     let mut cases = Vec::new();
-    let request = wire::HandshakeRequest::default();
+    let request = contract::handshake();
     let response = service
         .handshake(Request::new(request.clone()))
         .await?
