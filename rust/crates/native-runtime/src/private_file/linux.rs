@@ -67,7 +67,7 @@ pub fn initialize_isolated_user_runtime() -> io::Result<()> {
     if unsafe {
         libc::mount(
             c"tmpfs".as_ptr(),
-            c"/run/user".as_ptr(),
+            c"/run".as_ptr(),
             c"tmpfs".as_ptr(),
             libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
             c"mode=0755".as_ptr().cast(),
@@ -76,6 +76,9 @@ pub fn initialize_isolated_user_runtime() -> io::Result<()> {
     {
         return Err(io::Error::last_os_error());
     }
+    // /run exists even on minimal hosts that have no login-session subtree.
+    // Its new private mount owns this target; never mkdir on the host's /run.
+    super::create_directory(std::path::Path::new("/run/user"))?;
     super::create_directory(&PathBuf::from(format!(
         "/run/user/{}",
         super::effective_user()
