@@ -48,6 +48,9 @@ pub enum StreamError {
     /// follows [`Self::category`]; diagnostics never grant retry permission.
     #[error("stream member refused{0}")]
     Refused(#[source] acyclic_auth::refusal::Refusal),
+    /// Original typed local failure, retained independently of recovery classification.
+    #[error("{0}")]
+    Caused(#[source] acyclic_auth::failure::Failure<Self>),
     /// A provider-evaluated commit deadline elapsed before linearization.
     #[error("stream commit deadline elapsed")]
     DeadlineElapsed,
@@ -89,6 +92,14 @@ impl<'de> serde::Deserialize<'de> for StreamError {
 const NOT_BEFORE: &str = "not_before";
 
 impl StreamError {
+    /// Attach the original concrete local cause without changing classification.
+    /// Clones retain its type and source chain. Canonical serde intentionally
+    /// serializes only the category; it cannot reconstruct process-local types.
+    #[must_use]
+    pub fn with_source(self, source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::Caused(acyclic_auth::failure::Failure::new(self, source))
+    }
+
     /// Every failure, in canonical code order.
     pub const ALL: [Self; 16] = [
         Self::InvalidResponse,
@@ -139,6 +150,9 @@ impl StreamError {
     /// The authority time a [`Self::not_before`] refusal carries.
     #[must_use]
     pub fn not_before_authority(&self) -> Option<u64> {
+        if let Self::Caused(failure) = self {
+            return failure.category().not_before_authority();
+        }
         let Self::Refused(refusal) = self else {
             return None;
         };
@@ -159,6 +173,7 @@ impl StreamError {
     #[must_use]
     pub fn category(&self) -> Self {
         match self {
+            Self::Caused(failure) => failure.category().category(),
             Self::Refused(refusal) => refusal.original().map_or(Self::Unavailable, |parts| {
                 Self::from_grpc_status(parts.code, &parts.message)
             }),
@@ -205,6 +220,7 @@ impl StreamError {
             Self::AccessDenied => "access_denied",
             Self::Unavailable => "unavailable",
             Self::Refused(_) => self.category().code(),
+            Self::Caused(failure) => failure.category().code(),
             Self::HierarchyChanged => "hierarchy_changed",
             Self::DeadlineElapsed => "deadline_elapsed",
             Self::Unsupported => "unsupported",

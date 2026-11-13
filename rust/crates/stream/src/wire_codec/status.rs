@@ -31,6 +31,7 @@ pub(crate) fn category(error: &Status) -> StreamError {
 
 fn canonical(error: &StreamError) -> Canonical<'static> {
     let (code, message) = match error {
+        StreamError::Caused(failure) => return canonical(failure.category()),
         StreamError::InvalidResponse => (Code::DataLoss, "invalid_response"),
         StreamError::InvalidPath => (Code::InvalidArgument, "invalid_path"),
         StreamError::InvalidArgument => (Code::InvalidArgument, "invalid_argument"),
@@ -79,6 +80,9 @@ impl From<StreamError> for Status {
 /// Encodes a Stream failure, reproducing its retained member diagnostics.
 #[must_use]
 fn error_status(error: &StreamError) -> Status {
+    if let StreamError::Caused(failure) = error {
+        return error_status(failure.category());
+    }
     let refusal = match error {
         StreamError::Refused(refusal) => Some(refusal),
         _ => None,
