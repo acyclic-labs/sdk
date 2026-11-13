@@ -69,8 +69,10 @@ The current owner.v14 record admits external native preparation, host-owned
 journals, pinned hook configurations, frozen manifests and context delivery
 frontiers with read-only selected inputs, retains the same store-owned seed
 reference and v1 actor records, and excludes native-only opaque subtrees from
-captured generations. Native skill-source metadata is a versioned indexed
-record in the original owner's Streams state. Settings decisions, including
+captured generations. Native skill-source metadata uses versioned indexed
+records in the original owner's Streams state, split by the shared value-and-header
+frame size. Sorted source keys fix chunk boundaries and retry identities; a
+catalog is returned only after every chunk commits. Settings decisions, including
 invalid and rejected startup, are versioned indexed records in that same owner
 state. Ordinary bounded reads and follows expose the decision query without
 creating an agent root or publishing private admission files. Lifecycle markers

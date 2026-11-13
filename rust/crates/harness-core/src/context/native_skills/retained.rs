@@ -1,6 +1,6 @@
 //! Content-addressed source metadata in the original owner's Streams state.
-//! One indexed record retains a discovery batch atomically; sibling lookups
-//! share one bounded read and decode, without native sidecar files.
+//! Each indexed record retains a frame-sized discovery chunk atomically;
+//! sibling lookups share its bounded read and decode, without native sidecars.
 use super::*;
 use acyclic_stream::{
     AppendRecord, AppendRequest, NativeStreamProvider, RecordHeaders, StreamPath, WriteOutcome,
@@ -70,7 +70,7 @@ impl RecordCache {
 
 #[derive(Default)]
 pub(super) struct RetainedBatch {
-    records: BTreeMap<String, RetainedSource>,
+    records: BTreeMap<String, (RetainedSource, usize)>,
 }
 
 impl RetainedBatch {
@@ -79,8 +79,10 @@ impl RetainedBatch {
         journal: &VolumeRef,
         record: RetainedSource,
     ) -> Result<PinnedContextPath> {
-        let digest = blake3::hash(&serde_json::to_vec(&record).map_err(storage)?);
-        self.records.insert(digest.to_string(), record);
+        let bytes = serde_json::to_vec(&record).map_err(storage)?;
+        let digest = blake3::hash(&bytes);
+        self.records
+            .insert(digest.to_string(), (record, bytes.len()));
         Ok(PinnedContextPath {
             root: ContextRoot {
                 volume: journal.clone(),
@@ -105,26 +107,71 @@ impl RetainedBatch {
         if self.records.is_empty() {
             return Ok(());
         }
-        // Sorted keys also make the serialized batch and retry identity stable
-        // across independently rebuilt catalogs and discovery orderings.
-        let keys = self
-            .records
+        // Account for the exact JSON envelope, map punctuation and indexed
+        // header keys. Lengths were measured while hashing each source, so
+        // chunking is linear in the catalog, without repeatedly encoding it.
+        let empty_bytes = serde_json::to_vec(&RetainedRecords {
+            version: 1,
+            sources: RetainedSource::Batch(BTreeMap::new()),
+        })
+        .map_err(storage)?
+        .len();
+        let mut chunk = BTreeMap::new();
+        let mut bytes = empty_bytes;
+        for (key, (record, length)) in self.records {
+            // Digests are ASCII hex: JSON quotes, a colon, and the header key.
+            let entry = key.len() * 2 + 3 + length;
+            let separator = usize::from(!chunk.is_empty());
+            if !chunk.is_empty() && bytes + entry + separator > acyclic_stream::MAX_RECORD_BYTES {
+                Self::publish_chunk(std::mem::take(&mut chunk), cache, work).await?;
+                bytes = empty_bytes;
+            }
+            // A singleton uses the source directly, without a Batch map. This
+            // also allows a source that fits only without the map's overhead.
+            if empty_bytes + entry > acyclic_stream::MAX_RECORD_BYTES {
+                Self::publish_chunk(BTreeMap::from([(key, record)]), cache, work).await?;
+            } else {
+                bytes += entry + usize::from(!chunk.is_empty());
+                chunk.insert(key, record);
+            }
+        }
+        if !chunk.is_empty() {
+            Self::publish_chunk(chunk, cache, work).await?;
+        }
+        Ok(())
+    }
+
+    async fn publish_chunk(
+        records: BTreeMap<String, RetainedSource>,
+        cache: &RecordCache,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        // Sorted keys make both chunk boundaries and each retry identity
+        // independent of discovery order. Catalog pins become visible only
+        // after all chunks commit; a partial retry reuses committed chunks.
+        let keys = records
             .keys()
             .map(|key| key.as_bytes().to_vec().into())
             .collect();
-        let sources = if self.records.len() == 1 {
-            self.records
+        let sources = if records.len() == 1 {
+            records
                 .into_values()
                 .next()
                 .ok_or_else(|| Error::Invalid("retained skill batch is empty".into()))?
         } else {
-            RetainedSource::Batch(self.records)
+            RetainedSource::Batch(records)
         };
         let bytes = serde_json::to_vec(&RetainedRecords {
             version: 1,
             sources,
         })
         .map_err(storage)?;
+        let headers = RecordHeaders::new(keys, vec![]).map_err(storage)?;
+        if bytes.len().saturating_add(headers.payload_bytes()) > acyclic_stream::MAX_RECORD_BYTES {
+            return Err(Error::Invalid(
+                "retained skill source exceeds the Streams record frame".into(),
+            ));
+        }
         let key = acyclic_stream::IdempotencyKey::new(format!(
             "native-skill-sources:v1:{}",
             blake3::hash(&bytes)
@@ -134,7 +181,7 @@ impl RetainedBatch {
             path: path()?,
             records: vec![AppendRecord {
                 value: bytes.into(),
-                headers: RecordHeaders::new(keys, vec![]).map_err(storage)?,
+                headers,
             }],
             if_tail: None,
             idempotency_key: key,
