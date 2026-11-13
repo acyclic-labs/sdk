@@ -346,3 +346,106 @@ fn json_module_exports_preserve_json_property_semantics() -> Result<()> {
     assert_eq!(value.value["__proto__"]["x"], 1);
     Ok(())
 }
+
+#[tokio::test]
+async fn native_result_reparenting_preserves_original_owners_on_refusal() -> Result<()> {
+    let cancel = acyclic_fs::CancellationToken::new();
+    let make_work = || {
+        acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget {
+                peak_allocation_bytes: 16 * 1024 * 1024,
+                ..acyclic_fs::WorkBudget::UNBOUNDED
+            },
+            &cancel,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
+    };
+    let first = make_work()?;
+    let second = make_work()?;
+    let baseline = (
+        first.live_allocation_bytes(),
+        second.live_allocation_bytes(),
+    );
+    let first_io = crate::filesystem::PreparationIo::from_native_work(&first)?;
+    let second_io = crate::filesystem::PreparationIo::from_native_work(&second)?;
+    let first_cache = Mutex::new(None);
+    let second_cache = Mutex::new(None);
+    let source = b"export default 'value'.repeat(16384);";
+    let first_value = evaluate_cached(
+        "value.ts",
+        source,
+        &Metered(&first_io),
+        &Value::Null,
+        Surface::Data,
+        &first_cache,
+    )
+    .await?;
+    let second_value = evaluate_cached(
+        "value.ts",
+        source,
+        &Metered(&second_io),
+        &Value::Null,
+        Surface::Data,
+        &second_cache,
+    )
+    .await?;
+    let mut first_record = first_value.value.record::<String>()?;
+    let mut second_record = second_value.value.record::<String>()?;
+    let retained = (
+        first.live_allocation_bytes(),
+        second.live_allocation_bytes(),
+    );
+    let second_bytes = second_record.custody.as_ref().unwrap().bytes();
+    let refusal = crate::javascript_allocator::transfer(
+        &mut second_record.custody,
+        second_record.value.capacity() as u64,
+        &mut first_record,
+    )
+    .expect_err("another original operation cannot receive this credit");
+    assert!(matches!(
+        refusal,
+        Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+            ..
+        }
+    ));
+    drop(refusal);
+    assert_eq!(
+        second_record.custody.as_ref().unwrap().bytes(),
+        second_bytes
+    );
+    assert_eq!(
+        (
+            first.live_allocation_bytes(),
+            second.live_allocation_bytes()
+        ),
+        retained
+    );
+    assert_eq!(second_record.value.len(), 81920);
+    *first_cache.lock().unwrap() = None;
+    *second_cache.lock().unwrap() = None;
+    drop(first_value);
+    drop(second_value);
+    let crate::javascript_allocator::EngineResult {
+        value: body,
+        custody,
+    } = second_record;
+    let refusal = first_record
+        .absorb(custody)
+        .expect_err("absorption also preserves the original failure owner");
+    assert!(matches!(
+        refusal,
+        Error::NativeWork {
+            custody: Some(_),
+            ..
+        }
+    ));
+    assert_eq!(second.live_allocation_bytes(), baseline.1 + second_bytes);
+    drop(body);
+    assert_eq!(second.live_allocation_bytes(), baseline.1 + second_bytes);
+    drop(refusal);
+    assert_eq!(second.live_allocation_bytes(), baseline.1);
+    drop(first_record);
+    assert_eq!(first.live_allocation_bytes(), baseline.0);
+    Ok(())
+}
