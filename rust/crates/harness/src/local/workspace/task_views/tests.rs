@@ -896,47 +896,52 @@ async fn child_projection_work(
     );
     if repository {
         let original = std::fs::read(checkout.path().join(".git/config")).map_err(storage)?;
-        let invocation = crate::filesystem::native_process::shell::prepare(
-            crate::tools::ShellInput {
-                command: "git rev-parse --show-toplevel && ! printf forbidden > .git/config".into(),
-                cwd: None,
-                timeout_ms: None,
-                background: false,
-                target: None,
-            },
-            &bound.mounts,
-            crate::filesystem::native_process::Invocation {
-                executable: acyclic_native_runtime::platform_shell()
-                    .map_err(storage)?
-                    .to_path_buf(),
-                argv: Vec::new(),
-                cwd: bound.path.clone(),
-                environment: crate::native_environment::tool_environment(
-                    acyclic_native_runtime::platform_shell,
+        let output = volumes::native_scope(&bound.mounts, async |claims| {
+            let invocation = crate::filesystem::native_process::shell::prepare(
+                crate::tools::ShellInput {
+                    command: "git rev-parse --show-toplevel && ! printf forbidden > .git/config"
+                        .into(),
+                    cwd: None,
+                    timeout_ms: None,
+                    background: false,
+                    target: None,
+                },
+                &bound.mounts,
+                crate::filesystem::native_process::Invocation {
+                    executable: acyclic_native_runtime::platform_shell()
+                        .map_err(storage)?
+                        .to_path_buf(),
+                    argv: Vec::new(),
+                    cwd: bound.path.clone(),
+                    environment: crate::native_environment::tool_environment(
+                        acyclic_native_runtime::platform_shell,
+                    )
+                    .map_err(storage)?,
+                    inherit_environment: false,
+                    execution_grant: None,
+                    schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
+                    maximum_output_bytes: None,
+                    process_custody: bound.processes.clone(),
+                    standard_input: None,
+                },
+                acyclic_stream::UnixMillisClock::now_unix_millis(
+                    &acyclic_stream::SystemUnixMillisClock,
+                ) / 1000,
+                std::time::Instant::now(),
+            )?;
+            let (output, claims) =
+                crate::filesystem::native_process::capture::capture_with_custody(
+                    invocation,
+                    |_: &mut volumes::Claims, _| Ok(()),
+                    || Ok(()),
+                    claims,
+                    None,
+                    crate::filesystem::native_process::capture::OutputRetention::Collect,
                 )
-                .map_err(storage)?,
-                inherit_environment: false,
-                execution_grant: None,
-                schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
-                maximum_output_bytes: None,
-                process_custody: bound.processes.clone(),
-                standard_input: None,
-            },
-            acyclic_stream::UnixMillisClock::now_unix_millis(
-                &acyclic_stream::SystemUnixMillisClock,
-            ) / 1000,
-            std::time::Instant::now(),
-        )?;
-        let (output, ()) = crate::filesystem::native_process::capture::capture_with_custody(
-            invocation,
-            |_: &mut (), _| Ok(()),
-            || Ok(()),
-            (),
-            None,
-            crate::filesystem::native_process::capture::OutputRetention::Collect,
-        )
+                .await?;
+            Ok((output?.expect("completed repository probe"), claims))
+        })
         .await?;
-        let output = output?.expect("completed repository probe");
         assert!(output.success, "{output:?}");
         assert_eq!(
             std::str::from_utf8(&output.stdout).map_err(storage)?.trim(),
