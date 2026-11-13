@@ -190,6 +190,22 @@ async fn fixture_with_pause(
     Arc<ScriptedModelProvider>,
     Host,
 )> {
+    fixture_with_route(turns, setup_failures, project, pause, None).await
+}
+
+async fn fixture_with_route(
+    turns: Vec<ScriptedTurn>,
+    setup_failures: usize,
+    project: bool,
+    pause: Option<Arc<send_files::PublicationPause>>,
+    routing: Option<Routing>,
+) -> Result<(
+    AgentHost<MemoryStream>,
+    Arc<MemoryStream>,
+    AgentPath,
+    Arc<ScriptedModelProvider>,
+    Host,
+)> {
     let root = AgentPath::root(&id(81));
     let stream = Arc::new(MemoryStream::default());
     let model = Arc::new(ScriptedModelProvider::new(turns));
@@ -282,7 +298,35 @@ async fn fixture_with_pause(
         Ok(())
     });
     let templates = turns.templates().ok_or("missing creation templates")?;
-    let agents = committing(&stream, &files, ExecutorDriver::new(turns))?.with_templates(templates);
+    let driver = ExecutorDriver::new(turns);
+    let agents = match routing {
+        None => committing(&stream, &files, driver)?,
+        Some(routing) => {
+            let volumes: Arc<dyn SpawnVolumes> = Arc::new(
+                acyclic_harness_core::filesystem::FilesystemSpawnVolumes::new(files.clone()),
+            );
+            let handler = AgentHandler::new(
+                actor_store(&stream)?,
+                driver,
+                acyclic_actors::domain::ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+            )?
+            .with_spawn_volumes(volumes.clone())
+            .with_close()
+            .with_routing(routing);
+            AgentHost::hosting(
+                stream.clone(),
+                within(),
+                Arc::new(handler),
+                Arc::new(acyclic_actors::local::SystemClock),
+                Some(Arc::new(AgentComposer::new(
+                    stream.clone(),
+                    Some(volumes),
+                    None,
+                ))),
+            )?
+        }
+    }
+    .with_templates(templates);
     let mut adoption = adopted(root.id());
     adoption.volumes = vec![binding];
     adoption.volumes.push(
@@ -789,6 +833,132 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
         assert_eq!(model.request_count(), requests);
         assert_eq!(super::super::values(&*stream, child.inbox()?).await?, inbox);
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn remote_send_yields_its_original_tool_until_account_admission() -> Result {
+    use acyclic_actors::route::{self, NodeId, Paths};
+    use acyclic_stream::{CommitMutation, FollowRequest, StreamPath, WhenAbsent};
+    use futures::TryStreamExt as _;
+    let peer = AgentPath::root(&id(82));
+    let routing = Routing {
+        paths: Paths::new(StreamPath::new("routing")?),
+        node: NodeId::new(b"source")?,
+    };
+    let destination = NodeId::new(b"destination")?;
+    let account = MemoryStream::default();
+    let (agents, stream, root, model, _) = fixture_with_route(
+        vec![
+            call("send", json!({"agent":peer.as_str(),"message":"request"})),
+            ScriptedTurn::Text("admitted".into()),
+        ],
+        0,
+        false,
+        None,
+        Some(routing.clone()),
+    )
+    .await?;
+    // A directory member is known without owning that actor's runtime state.
+    submit(
+        &*stream,
+        create_root(&intent("remote-root"), adopted(peer.id()))?.request,
+    )
+    .await?;
+    assert!(
+        !actor_store(&stream)?
+            .contains(&agents.actor(&peer)?)
+            .await?
+    );
+    let state = deliver(&agents, &root, requested("send-request", &root)).await?;
+    assert!(
+        matches!(state.phase, Phase::Waiting { .. }),
+        "{:?}",
+        model.requests()
+    );
+    assert_eq!(
+        model.request_count(),
+        1,
+        "pending admission reached the model"
+    );
+    let outbox = routing.paths.outbox(&routing.node)?;
+    assert_eq!(stream.tail(outbox.clone()).await?, 1);
+    assert_eq!(stream.tail(peer.inbox()?).await?, 1);
+    let record = stream
+        .record_at(outbox.clone(), 0)
+        .await?
+        .ok_or("outbox missing")?;
+    let original = route::Envelope::decode(&record.value)?;
+    let CommitMutation::Append { records, .. } = &original.request.effects[0].mutations[0] else {
+        return Err("message missing".into());
+    };
+    let InboxRecord::Message(message) = InboxRecord::decode(&records[0].value)? else {
+        return Err("peer message missing".into());
+    };
+    let id = message.id;
+    assert!(matches!(
+        sent(&*stream, &root, &id)
+            .await?
+            .ok_or("sender receipt missing")?
+            .delivery,
+        SentDelivery::Pending { from: 0, .. }
+    ));
+    let mut changes = acyclic_stream::records_only(
+        stream
+            .follow(FollowRequest {
+                when_absent: WhenAbsent::Wait,
+                ..FollowRequest::new(routing.paths.outbox_cursor(&routing.node)?, 0)
+            })
+            .await?,
+    );
+    let forward = route::forward(&*stream, &routing.paths, &routing.node, async |envelope| {
+        envelope
+            .publish_relay(&account, &routing.paths, &destination, Vec::new())
+            .await
+    });
+    let acknowledged = changes.try_next();
+    futures::pin_mut!(forward, acknowledged);
+    match futures::future::select(forward, acknowledged).await {
+        futures::future::Either::Right((record, _)) => assert!(record?.is_some()),
+        futures::future::Either::Left((result, _)) => {
+            return Err(format!("forward stopped: {result:?}").into());
+        }
+    }
+    agents.drain(&root).await?;
+    assert_eq!(
+        agents.state(&root).await?.phase,
+        Phase::Idle,
+        "{:?}",
+        model.requests()
+    );
+    let requests = model.requests();
+    let results: Vec<_> = requests
+        .iter()
+        .flat_map(|request| &request.messages)
+        .flat_map(|message| message.content.parts())
+        .filter_map(|part| match part {
+            ModelContentPart::ToolResult {
+                name,
+                content: ToolResultContent::Json { value },
+                ..
+            } if name == "send" => Some(value),
+            _ => None,
+        })
+        .collect();
+    assert!(!results.is_empty(), "model never observed admission");
+    for result in results {
+        assert_eq!(result["kind"], "relayed");
+        assert_eq!(result["relay_seq"], 0);
+        assert_eq!(result["id"], id.as_str());
+        assert!(
+            result.get("status").is_none(),
+            "provisional result reached model history"
+        );
+    }
+    deliver(&agents, &root, requested("send-request", &root)).await?;
+    assert_eq!(stream.tail(outbox).await?, 1);
+    assert_eq!(account.tail(routing.paths.relay(&destination)?).await?, 1);
+    assert_eq!(stream.tail(peer.inbox()?).await?, 1);
     Ok(())
 }
 
