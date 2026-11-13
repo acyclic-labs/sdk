@@ -147,6 +147,7 @@ pub(crate) const TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES: u64 = {
         "SpillIdentity",
         "output_spill",
         "omitted_bytes",
+        "omitted_range",
         "FileReadSource",
         "FilePathSelection",
         "PathSelection",

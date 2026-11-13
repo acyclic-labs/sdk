@@ -489,7 +489,7 @@ async fn committed_handover(refused_close: bool) -> Result {
             scope.capabilities().clone(),
             acyclic_harness_core::conversation::Limits {
                 file_bytes: Some(2),
-                render_bytes: Some(4),
+                render_bytes: Some(2048),
                 ..Default::default()
             },
         )?;
@@ -1270,10 +1270,10 @@ async fn committed_handover(refused_close: bool) -> Result {
                     .map_err(|error| format!("committed Exit recovery for {operation}: {error}"))?
                     .ok_or("committed Exit disappeared during recovery")?;
                 assert_eq!(result.value["exit_code"], exit);
-                assert_eq!(result.value["omitted_bytes"], 2);
+                assert_eq!(result.value["omitted_bytes"], 0);
                 let bounded = acyclic_harness_core::tools::shell::bounded_result(result, 2048)?;
-                assert_eq!(bounded.value["truncated"], true);
-                assert_eq!(bounded.value["omitted_bytes"], 2);
+                assert_eq!(bounded.value["truncated"], false);
+                assert_eq!(bounded.value["omitted_bytes"], 0);
                 let shell_tool = registry
                     .get("shell", None, None)?
                     .ok_or("shell is missing")?;

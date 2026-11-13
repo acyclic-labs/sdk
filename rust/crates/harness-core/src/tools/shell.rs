@@ -108,20 +108,72 @@ pub fn project_result(
             "shell result is not an object; recovery: bind the shared workspace executor".into(),
         )
     })?;
-    crate::tool::schema::project_text(presentation(fields), work)
+    crate::tool::schema::project_text(presentation(fields)?, work)
 }
 
-pub(super) struct Presentation<'a>(&'a serde_json::Map<String, serde_json::Value>);
+pub(super) struct Presentation<'a> {
+    fields: &'a serde_json::Map<String, serde_json::Value>,
+    head: [&'a str; 2],
+    tail: [&'a str; 2],
+}
 
 pub(super) fn presentation(
     fields: &serde_json::Map<String, serde_json::Value>,
-) -> Presentation<'_> {
-    Presentation(fields)
+) -> Result<Presentation<'_>> {
+    let mut head = [""; 2];
+    let mut tail = [""; 2];
+    let omitted = fields
+        .get("omitted_bytes")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_default();
+    if omitted > 0 {
+        let range = fields.get("omitted_range");
+        let start = range
+            .and_then(|range| range.get("start"))
+            .and_then(serde_json::Value::as_u64);
+        let end = range
+            .and_then(|range| range.get("end"))
+            .and_then(serde_json::Value::as_u64);
+        if !matches!((start, end), (Some(start), Some(end)) if end.checked_sub(start) == Some(omitted))
+        {
+            return Err(Error::Invalid("shell output has no valid original omitted range; bind the shared OutputWindow collector".into()));
+        }
+    }
+    for (index, channel) in ["stdout", "stderr"].into_iter().enumerate() {
+        let text = fields
+            .get(channel)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let end = if omitted == 0 {
+            text.len()
+        } else {
+            fields.get("retained_head")
+                .and_then(|head| head.get(channel))
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|count| usize::try_from(count).ok())
+                .filter(|&count| count <= text.len() && text.is_char_boundary(count))
+                .ok_or_else(|| Error::Invalid("shell output has no valid retained head; bind the shared OutputWindow collector".into()))?
+        };
+        (head[index], tail[index]) = text.split_at(end);
+    }
+    Ok(Presentation { fields, head, tail })
+}
+
+pub(super) fn window_presentation<'a>(
+    fields: &'a serde_json::Map<String, serde_json::Value>,
+    head: &'a str,
+    tail: &'a str,
+) -> Presentation<'a> {
+    Presentation {
+        fields,
+        head: [head, ""],
+        tail: [tail, ""],
+    }
 }
 
 impl std::fmt::Display for Presentation<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let fields = self.0;
+        let fields = self.fields;
         if let Some(error) = fields.get("error").and_then(serde_json::Value::as_str) {
             return write!(f, "Tool failed: {error}");
         }
@@ -134,29 +186,28 @@ impl std::fmt::Display for Presentation<'_> {
             return f.write_str(text);
         }
         let exit = fields.get("exit_code").and_then(serde_json::Value::as_i64);
-        let stdout = fields
-            .get("stdout")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
-        let stderr = fields
-            .get("stderr")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
         match exit {
             Some(exit) => write!(f, "Exit code: {exit}")?,
             None => f.write_str("Exit code: unavailable")?,
         }
+        write!(f, "\n{}{}", self.head[0], self.head[1])?;
         if let Some(omitted) = fields
             .get("omitted_bytes")
             .and_then(serde_json::Value::as_u64)
             .filter(|omitted| *omitted > 0)
         {
+            let start = fields["omitted_range"]["start"]
+                .as_u64()
+                .unwrap_or_default();
+            let end = fields["omitted_range"]["end"]
+                .as_u64()
+                .unwrap_or(start.saturating_add(omitted));
             write!(
                 f,
-                "\n[{omitted} earlier bytes omitted; stdout tail then stderr tail follow"
+                "\n[{omitted} bytes omitted in [{start}, {end}); read this byte range from"
             )?;
             if let Some(spill) = fields.get("spill").and_then(serde_json::Value::as_str) {
-                write!(f, "; complete output: {spill}")?;
+                write!(f, " {spill}")?;
             } else if let (Some(volume), Some(directory)) = (
                 fields.get("output_volume"),
                 fields
@@ -165,12 +216,12 @@ impl std::fmt::Display for Presentation<'_> {
             ) {
                 write!(
                     f,
-                    "; complete output: volume {volume}, directory {directory}"
+                    " volume {volume}, directory {directory} in capture order"
                 )?;
             }
-            f.write_str("]")?;
+            f.write_str("]\n")?;
         }
-        write!(f, "\n{stdout}{stderr}")?;
+        write!(f, "{}{}", self.tail[0], self.tail[1])?;
         if let Some(message) = fields
             .get("stop")
             .and_then(|stop| stop.get("message"))

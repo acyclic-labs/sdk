@@ -11,21 +11,19 @@ pub(super) fn directory(operation: OperationId) -> String {
 /// byte stream is retained in separately named files, never in this collector.
 pub(super) struct Output {
     operation: OperationId,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-    remaining: Option<u64>,
-    omitted: u64,
+    window: crate::tool::OutputWindow,
+    maximum: u64,
     destination: Option<(VolumeRef, String)>,
 }
 
 impl Output {
     pub(super) fn new(context: &ToolContext) -> Self {
+        let maximum =
+            crate::tool::output::view_bytes(context.effective_scope().limits().render_bytes);
         Self {
             operation: context.operation_id(),
-            stdout: Vec::new(),
-            stderr: Vec::new(),
-            remaining: context.effective_scope().limits().render_bytes,
-            omitted: 0,
+            window: crate::tool::OutputWindow::new(usize::try_from(maximum).unwrap_or(usize::MAX)),
+            maximum,
             destination: None,
         }
     }
@@ -85,20 +83,9 @@ impl Output {
                 self.destination = Some((file.volume().clone(), parent.to_owned()));
             }
         }
-        let take = self
-            .remaining
-            .map_or(data.len() as u64, |maximum| maximum.min(data.len() as u64))
-            as usize;
-        if let Some(remaining) = &mut self.remaining {
-            *remaining -= take as u64;
-        }
-        self.omitted = self.omitted.saturating_add((data.len() - take) as u64);
-        let output = if stderr {
-            &mut self.stderr
-        } else {
-            &mut self.stdout
-        };
-        output.extend_from_slice(&data[..take]);
+        self.window
+            .observe(data, stderr)
+            .map_err(Error::process_io)?;
         Ok(())
     }
 
@@ -107,10 +94,6 @@ impl Output {
             .value
             .as_object_mut()
             .ok_or_else(|| Error::Invalid("device terminal result is not an object".into()))?;
-        fields.insert("stdout".into(), preview(self.stdout).into());
-        fields.insert("stderr".into(), preview(self.stderr).into());
-        fields.insert("omitted_bytes".into(), self.omitted.into());
-        fields.insert("truncated".into(), (self.omitted > 0).into());
         if let Some((volume, path)) = &self.destination {
             fields.insert("output_directory".into(), path.clone().into());
             fields.insert(
@@ -118,13 +101,8 @@ impl Output {
                 serde_json::to_value(volume).map_err(|error| Error::Invalid(error.to_string()))?,
             );
         }
-        Ok(result)
+        self.window.render(result, self.maximum)
     }
-}
-
-fn preview(bytes: Vec<u8>) -> String {
-    String::from_utf8(bytes)
-        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned())
 }
 
 #[cfg(test)]
@@ -146,7 +124,7 @@ mod tests {
             storage.owner_scope().capabilities().clone(),
             Limits {
                 file_bytes: Some(2),
-                render_bytes: Some(4),
+                render_bytes: Some(2048),
                 ..Limits::default()
             },
         )?;
@@ -158,6 +136,9 @@ mod tests {
         let operation = OperationId::new();
         let context = ToolContext::new(Arc::clone(&task), operation, "original-call")?;
         let mut first = Output::new(&context);
+        // Four source bytes exercise elision while the actual model envelope
+        // retains enough credit for its source identity and range metadata.
+        first.window = crate::tool::OutputWindow::new(4);
         first.append(&context, 1, false, b"out").await?;
         let path = format!(
             "{}/00000000000000000001-00000000000000000000-stdout.bin",
@@ -198,8 +179,8 @@ mod tests {
             value: serde_json::json!({"exit_code": 7}),
         };
         let result = first.finish(terminal.clone())?;
-        assert_eq!(result.value["stdout"], "out");
-        assert_eq!(result.value["stderr"], "e");
+        assert_eq!(result.value["stdout"], "ou");
+        assert_eq!(result.value["stderr"], "rr");
         assert_eq!(result.value["truncated"], true);
         assert_eq!(result.value["omitted_bytes"], 2);
         assert_eq!(result.value["output_directory"], directory(operation));
@@ -208,17 +189,11 @@ mod tests {
             serde_json::to_value(storage.volume())
                 .map_err(|error| Error::Invalid(error.to_string()))?
         );
-        // Use the real shared model projection: the original collector's
-        // omission and immutable log location survive even without further
-        // shortening, and a tighter presentation adds only its own omissions.
-        for (maximum, preview) in [(2048, "out".to_owned()), (1024, "o".repeat(4096))] {
-            let mut candidate = result.clone();
-            candidate.value["stdout"] = preview.clone().into();
-            let bounded = crate::tools::shell::bounded_result(candidate, maximum)?;
-            let removed = preview.len() - bounded.value["stdout"].as_str().expect("stdout").len()
-                + 1
-                - bounded.value["stderr"].as_str().expect("stderr").len();
-            assert_eq!(bounded.value["omitted_bytes"], (2 + removed) as u64);
+        // Prepared windows retain their original coordinates through the
+        // shared model projection; already shortened channels are not recut.
+        for maximum in [2048, 1024] {
+            let bounded = crate::tools::shell::bounded_result(result.clone(), maximum)?;
+            assert_eq!(bounded.value["omitted_bytes"], 2);
             assert_eq!(bounded.value["truncated"], true);
             let invocation = crate::tool::ToolInvocation {
                 operation_id: operation,
@@ -247,6 +222,7 @@ mod tests {
             )
             .await?;
         let mut replay = Output::new(&context);
+        replay.window = crate::tool::OutputWindow::new(4);
         replay.append(&context, 1, false, b"out").await?;
         replay.append(&context, 2, true, b"err").await?;
         assert_eq!(replay.finish(terminal)?, result);

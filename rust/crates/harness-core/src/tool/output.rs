@@ -1,5 +1,9 @@
 //! One lossless spill envelope and one encoded-byte window for all tools.
 use super::*;
+mod window;
+pub use window::OutputWindow;
+pub(crate) use window::notice as omission_notice;
+pub(crate) use window::select as select_window;
 
 /// A shared rendering quantum, not a capacity limit. Omitted bytes remain in
 /// an immutable volume file and are read through the ordinary file reader.
@@ -25,6 +29,7 @@ struct SpillView<'a> {
     output_spill: SpillRef<'a>,
     text: &'a str,
     omitted_bytes: u64,
+    omitted_range: super::text::TextRange,
 }
 
 pub(crate) fn schema() -> Result<Value> {
@@ -75,8 +80,8 @@ struct SpillPreview<'a> {
     output_spill: SpillIdentity<'a>,
     #[serde(borrow)]
     text: &'a serde_json::value::RawValue,
-    #[serde(rename = "omitted_bytes")]
-    _omitted_bytes: u64,
+    omitted_bytes: u64,
+    omitted_range: super::text::TextRange,
 }
 
 #[derive(Deserialize, crate::HeapLayout)]
@@ -98,6 +103,11 @@ fn valid_preview(preview: &SpillPreview<'_>) -> bool {
         && string(identity.version)
         && identity.version.get().len() > 2
         && string(preview.text)
+        && preview
+            .omitted_range
+            .end
+            .checked_sub(preview.omitted_range.start)
+            == Some(preview.omitted_bytes)
 }
 
 pub(super) fn check_preview(
@@ -294,6 +304,10 @@ fn render(
         },
         text: "",
         omitted_bytes: u64::MAX,
+        omitted_range: super::text::TextRange {
+            start: u64::MAX,
+            end: u64::MAX,
+        },
     };
     let media = projection
         .get("parts")
@@ -326,14 +340,32 @@ fn render(
     // A multipart preview is JSON inside a text part. Every escaped byte can
     // at most double at the second string boundary.
     let budget = if media.is_some() { budget / 2 } else { budget };
-    let shown = crate::tools::bounds::prefix(text, usize::try_from(budget).unwrap_or(usize::MAX));
+    let notice_credit = window::notice(u64::MAX, u64::MAX, u64::MAX);
+    let budget = budget.saturating_sub(crate::tools::bounds::escaped_len(&notice_credit) as u64);
+    let omitted = select_window(
+        encoded,
+        encoded.len(),
+        encoded.len() as u64,
+        usize::try_from(budget).unwrap_or(usize::MAX),
+    );
+    let omitted_bytes = (omitted.end - omitted.start) as u64;
+    let shown = format!(
+        "{}{}{}",
+        &text[..omitted.start],
+        window::notice(omitted_bytes, omitted.start as u64, omitted.end as u64),
+        &text[omitted.end..]
+    );
     let view = SpillView {
         output_spill: SpillRef {
             path: source.path,
             version: source.version,
         },
-        text: shown,
-        omitted_bytes: (text.len() - shown.len()) as u64,
+        text: &shown,
+        omitted_bytes,
+        omitted_range: super::text::TextRange {
+            start: omitted.start as u64,
+            end: omitted.end as u64,
+        },
     };
     if let Some(parts) = media {
         with_media(&view, parts, io, |view| super::value(view, None, work))
