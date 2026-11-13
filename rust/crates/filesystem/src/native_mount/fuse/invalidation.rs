@@ -387,6 +387,7 @@ mod tests {
             let first = queue.deferred_target().unwrap();
             let first_batch = queue.take_deferred().unwrap();
             assert!(queue.pending_through(None, first));
+            fuse_reserve(&mut queue.deferred, 1, &work).unwrap();
             queue.deferred.push(KernelCacheItem::Inode(20));
             let second = queue.deferred_target().unwrap();
             drop(first_batch);
