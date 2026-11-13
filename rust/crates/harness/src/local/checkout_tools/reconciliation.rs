@@ -59,17 +59,12 @@ pub(in crate::local) fn recover<'a, F, Fut>(
     workspace: &'a LocalWorkspace,
     view: &'a workspace::View,
     before_effect: &'a F,
-) -> impl Future<Output = Result<bool>> + Send + 'a
+) -> BoxProviderFuture<'a, Result<bool>>
 where
     F: Fn() -> Fut + Send + Sync,
     Fut: Future<Output = Result<()>> + Send + 'a,
 {
-    // Prove the producer's Send contract here rather than expanding native
-    // storage auto-traits inside each caller's already-bounded future.
-    async move {
-        let (_, pending) = workspace.checkout_selection().await?;
-        recover_pending(workspace, view, pending, before_effect).await
-    }
+    recover_selected(workspace, view, RecoverySelection::Current, before_effect)
 }
 
 pub(in crate::local) fn recover_pending<'a, F, Fut>(
@@ -82,9 +77,37 @@ where
     F: Fn() -> Fut + Send + Sync,
     Fut: Future<Output = Result<()>> + Send + 'a,
 {
-    // Mount binding and tool initialization share this recovery producer.
-    // Keep its rebase and publication futures out of both layouts.
+    recover_selected(
+        workspace,
+        view,
+        RecoverySelection::Observed(pending),
+        before_effect,
+    )
+}
+
+enum RecoverySelection {
+    Current,
+    Observed(Option<Pending>),
+}
+
+fn recover_selected<'a, F, Fut>(
+    workspace: &'a LocalWorkspace,
+    view: &'a workspace::View,
+    selection: RecoverySelection,
+    before_effect: &'a F,
+) -> BoxProviderFuture<'a, Result<bool>>
+where
+    F: Fn() -> Fut + Send + Sync,
+    Fut: Future<Output = Result<()>> + Send + 'a,
+{
+    // Selection and reconciliation share the existing recovery allocation.
+    // Both entry points expose one erased future instead of nesting a concrete
+    // selection wrapper around the recovery frame at each caller's Send bound.
     Box::pin(async move {
+        let pending = match selection {
+            RecoverySelection::Current => workspace.checkout_selection().await?.1,
+            RecoverySelection::Observed(pending) => pending,
+        };
         let coordinator = acyclic_fs::OperationWindowCoordinator::new(
             workspace.filesystem.operation_window_store(),
         );
