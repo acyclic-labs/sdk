@@ -430,69 +430,73 @@ async fn hard_links_survive_exactification_across_batch_boundaries() {
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn sealed_exactification_skips_saved_entries_and_reopens_on_source_invalidation() {
-    let directory = tempfile::tempdir().unwrap();
-    for index in 0..256 {
-        std::fs::write(directory.path().join(format!("file-{index:03}")), b"source").unwrap();
+    let mut costs = Vec::new();
+    for entries in [1, 256] {
+        let directory = tempfile::tempdir().unwrap();
+        for index in 0..entries {
+            std::fs::write(directory.path().join(format!("file-{index:03}")), b"source").unwrap();
+        }
+        let source = native_source(directory.path(), crate::FilesystemProfile::Portable).await;
+        let root = attach(
+            &Fs::memory(),
+            Arc::clone(&source),
+            MemoryLazyWorkspaceStore::default(),
+        )
+        .await
+        .unwrap();
+        let first = root
+            .exactify("/", crate::PublicationPermit::Unrestricted, accounting!())
+            .await
+            .unwrap();
+        root.write(
+            "/file-000",
+            acyclic_stream::OwnedBytes::from_static(b"authored"),
+            IdempotencyKey::new(),
+            crate::PublicationPermit::Unrestricted,
+            accounting!(),
+        )
+        .await
+        .unwrap();
+        // Saved directory entries must not be returned or source entries visited.
+        let cancellation = CancellationToken::new();
+        let mut bounded = KernelAccounting::standalone(
+            WorkBudget {
+                source_entries_visited: 0,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        );
+        let repeated = root
+            .exactify("/", crate::PublicationPermit::Unrestricted, &mut bounded)
+            .await
+            .unwrap();
+        costs.push(bounded.spent());
+        assert_ne!(repeated.id(), first.id());
+        assert_eq!(
+            repeated
+                .read("/file-000", 16, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .unwrap()
+                .value
+                .as_slice(),
+            b"authored"
+        );
+        std::fs::write(directory.path().join("added"), b"new source").unwrap();
+        source.invalidate();
+        let refreshed = root
+            .exactify("/", crate::PublicationPermit::Unrestricted, accounting!())
+            .await
+            .unwrap();
+        assert_eq!(
+            refreshed
+                .read("/added", 16, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .unwrap()
+                .value
+                .as_slice(),
+            b"new source"
+        );
     }
-    let source = native_source(directory.path(), crate::FilesystemProfile::Portable).await;
-    let root = attach(
-        &Fs::memory(),
-        Arc::clone(&source),
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await
-    .unwrap();
-    let first = root
-        .exactify("/", crate::PublicationPermit::Unrestricted, accounting!())
-        .await
-        .unwrap();
-    root.write(
-        "/file-000",
-        acyclic_stream::OwnedBytes::from_static(b"authored"),
-        IdempotencyKey::new(),
-        crate::PublicationPermit::Unrestricted,
-        accounting!(),
-    )
-    .await
-    .unwrap();
-    // Enough for the root and its authenticated completion proof, but not a
-    // directory walk. The bound is independent of the number of saved files.
-    let cancellation = CancellationToken::new();
-    let mut bounded = KernelAccounting::standalone(
-        WorkBudget {
-            items_examined: 64,
-            source_entries_visited: 0,
-            ..WorkBudget::UNBOUNDED
-        },
-        &cancellation,
-    );
-    let repeated = root
-        .exactify("/", crate::PublicationPermit::Unrestricted, &mut bounded)
-        .await
-        .unwrap();
-    assert_ne!(repeated.id(), first.id());
-    assert_eq!(
-        repeated
-            .read("/file-000", 16, WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .unwrap()
-            .value
-            .as_slice(),
-        b"authored"
-    );
-    std::fs::write(directory.path().join("added"), b"new source").unwrap();
-    source.invalidate();
-    let refreshed = root
-        .exactify("/", crate::PublicationPermit::Unrestricted, accounting!())
-        .await
-        .unwrap();
-    assert_eq!(
-        refreshed
-            .read("/added", 16, WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .unwrap()
-            .value
-            .as_slice(),
-        b"new source"
-    );
+    eprintln!("sealed exactification work: {costs:?}");
+    assert_eq!(costs[0].items_returned, costs[1].items_returned);
 }
