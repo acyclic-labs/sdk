@@ -41,7 +41,7 @@ use serde_json::{Value, json};
 use std::{collections::BTreeSet, sync::Arc};
 
 /// Revision of the agent tools, selected for the model over other revisions.
-pub const REVISION: &str = "agent-4";
+pub const REVISION: &str = "agent-5";
 /// Names of the agent tools; every agent turn is granted them.
 pub const AGENT_TOOLS: [&str; 4] = ["spawn", "send", "archive", "wait"];
 
@@ -213,10 +213,9 @@ impl AgentTool {
             Error::tool_rejected("send files requires the sender's workspace context")
         })?;
         let writer = &self.turn.writer;
-        let access = ContentAccess {
-            ceiling: Some(context.effective_scope().grants()),
-            io: None,
-        };
+        // The destination is host-owned input storage. Source reads below
+        // still use the sender's original tool context and effective scope.
+        let access = ContentAccess::default();
         let identity = |part: &[u8]| {
             let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.send-files/v1");
             hash.update(&operation.into_bytes());
@@ -252,7 +251,7 @@ impl AgentTool {
                 let mut sources = Vec::new();
                 let mut remaining = self.turn.maximum_bytes;
                 for (index, path) in paths.iter().enumerate() {
-                    let destination = format!("messages/{operation}/files/{index}");
+                    let destination = format!("inputs/messages/{operation}/files/{index}");
                     let exhausted =
                         || Error::tool_rejected("selected files exceed the send byte budget");
                     if let Some(budget) = remaining {
@@ -307,7 +306,7 @@ impl AgentTool {
         let manifest = writer
             .stage_once(
                 manifest_operation,
-                &format!("messages/{operation}/files/manifest.json"),
+                &format!("inputs/messages/{operation}/files/manifest.json"),
                 &bytes,
                 crate::conversation::ATTACHMENT_MANIFEST_MEDIA_TYPE,
                 "attachments.json",
@@ -432,7 +431,7 @@ impl AgentTool {
                     .writer
                     .stage_once(
                         invocation.operation_id,
-                        &format!("briefs/{operation}.md"),
+                        &format!("inputs/briefs/{operation}.md"),
                         input.task.as_bytes(),
                         "text/markdown",
                         "brief",
@@ -479,7 +478,7 @@ impl AgentTool {
                     .writer
                     .stage_once(
                         invocation.operation_id,
-                        &format!("messages/{operation}.md"),
+                        &format!("inputs/messages/{operation}.md"),
                         input.message.as_bytes(),
                         "text/markdown",
                         "message",
@@ -1109,8 +1108,8 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
 }
 
 /// Registers `agent`'s tools for one turn into `registry`, bound to the turn's
-/// `effects`, the `observer` its `wait` reads, and its private `writer`, and selects them for the model over any
-/// other revision of the same names. Only the agent tools `names` selects are
+/// `effects`, the `observer` its `wait` reads, and its host-owned input `writer`.
+/// Selects them for the model over any other revision of the same names. Only the agent tools `names` selects are
 /// bound, so a host omits or swaps each one like any standard tool. `spawn`
 /// admits a child only through `templates`, under `agent`'s creation snapshot.
 pub fn bind_agent_tools(

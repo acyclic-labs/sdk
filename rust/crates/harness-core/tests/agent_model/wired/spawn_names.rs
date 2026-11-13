@@ -32,6 +32,19 @@ fn spawn_call(name: &str, peers: &[&str]) -> ScriptedTurn {
     )
 }
 
+// Stock templates ask for a retrospective after each settled answer. Keep
+// those responses beside the work script so they cannot consume another
+// agent's next action or a later setup retry.
+fn with_retrospectives(
+    turns: impl IntoIterator<Item = ScriptedTurn>,
+) -> impl Iterator<Item = ScriptedTurn> {
+    turns.into_iter().flat_map(|turn| {
+        let feedback =
+            matches!(&turn, ScriptedTurn::Text(_)).then(|| ScriptedTurn::Text("none".into()));
+        std::iter::once(turn).chain(feedback)
+    })
+}
+
 async fn fixture(
     turns: Vec<ScriptedTurn>,
     setup_failures: usize,
@@ -102,9 +115,15 @@ impl acyclic_harness_core::filesystem::TurnContext for ProjectTasks {
                         authority.children.clone(),
                     ),
                     Arc::new(send_files::PausedPublisher {
-                        inner: authority.content.writer.clone().ok_or_else(|| {
-                            acyclic_harness_core::Error::Invalid("missing writer".into())
-                        })?,
+                        inner: authority
+                            .journal
+                            .output_content(turn)?
+                            .and_then(|content| content.writer)
+                            .ok_or_else(|| {
+                                acyclic_harness_core::Error::Invalid(
+                                    "missing journal writer".into(),
+                                )
+                            })?,
                         pause: pause.clone(),
                     }),
                     limits.file_bytes,
@@ -362,6 +381,7 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
     };
     use acyclic_harness_core::filesystem::{
         FilesystemContentPublisher, FilesystemContentVerifier, agent_authority,
+        agent_journal_authority,
     };
 
     const PATH: &str = "research/findings/api-evaluation-request-not-snapshotted.md";
@@ -375,10 +395,11 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
         let pause = interrupted_manifest
             .map(|manifest| Arc::new(send_files::PublicationPause::new(manifest)));
         let (agents, stream, root, model, files) = fixture_with_pause(
-            vec![
+            with_retrospectives([
                 spawn_call("finding-review", &[]),
                 ScriptedTurn::Text("spawned".into()),
-            ],
+            ])
+            .collect(),
             0,
             true,
             pause.clone(),
@@ -388,6 +409,17 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
         let child = named(&agents, &root, "finding-review").await?;
         let sender = agents.state(&root).await?;
         let recipient = agents.state(&child).await?;
+        let child_inbox = super::super::values(&*stream, child.inbox()?).await?;
+        let mut brief = None;
+        for bytes in &child_inbox {
+            if let InboxRecord::ForkAdopted(adoption) = InboxRecord::decode(bytes)?
+                && adoption.agent == child.id()
+            {
+                brief = adoption.brief;
+                break;
+            }
+        }
+        let brief = brief.ok_or("spawn lost its brief")?;
         let project = WorkspaceTable::primary_in(&sender.volumes)
             .ok_or("sender project")?
             .volume()?;
@@ -408,6 +440,44 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
             },
         )
         .into();
+        let (journal, host_authority) = agent_journal_authority(
+            &files,
+            &issuer,
+            &TurnAdmission::LocalRoot,
+            &root,
+            &sender.volumes,
+            &[],
+        )
+        .await?;
+        assert_eq!(brief.volume(), &journal);
+        assert!(brief.path().starts_with("inputs/briefs/"));
+        let journal_writer = FilesystemContentPublisher::new(
+            files.clone(),
+            &journal,
+            &host_authority.verifier,
+            &host_authority.scope,
+            LIMITS.maximum_bytes,
+            None,
+        )?;
+        let mut unselected = Vec::new();
+        for path in [
+            "inputs/messages/unselected/files/0",
+            ".system/execution/private-control.json",
+        ] {
+            unselected.push(
+                journal_writer
+                    .stage_once(
+                        OperationId::new(),
+                        path,
+                        b"unselected host content",
+                        "text/plain",
+                        "unselected",
+                        ContentAccess::default(),
+                    )?
+                    .await?
+                    .0,
+            );
+        }
         let authority = agent_authority(
             &issuer,
             &TurnAdmission::LocalRoot,
@@ -451,7 +521,7 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
                 ContentAccess::default(),
             )?
             .await?;
-        model.extend([
+        model.extend(with_retrospectives([
             call(
                 "send",
                 json!({"agent":"finding-review", "message":"incomplete selection",
@@ -464,7 +534,7 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
                 "files":["large.md", "large.md", "large.md"]}),
             ),
             ScriptedTurn::Text("combined selection refused".into()),
-        ]);
+        ]));
         deliver(&agents, &root, requested("missing-member", &root)).await?;
         deliver(&agents, &root, requested("combined-budget", &root)).await?;
         assert_eq!(
@@ -472,7 +542,7 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
             before
         );
 
-        model.extend([
+        model.extend(with_retrospectives([
             call("send", json!({
                 "agent":"finding-review",
                 "message":format!("One additional candidate is now ready: {PATH}. Please PASS/FAIL it too."),
@@ -480,7 +550,7 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
                 "delivery":delivery,
             })),
             ScriptedTurn::Text("sent".into()),
-        ]);
+        ]));
         if let Some(pause) = pause {
             let entered = pause.arm();
             let mut sending = Box::pin(deliver(&agents, &root, requested("send-late-file", &root)));
@@ -516,12 +586,15 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
             .attachments
             .as_deref()
             .ok_or("send lost selected files")?;
+        assert_eq!(message.body.volume(), &journal);
+        assert!(message.body.path().starts_with("inputs/messages/"));
+        assert_eq!(manifest.volume(), &journal);
         let admitted = agent_authority(
             &issuer,
             &TurnAdmission::LocalRoot,
             &child,
             &recipient.volumes,
-            &[(*message.body).clone(), manifest.clone()],
+            &[brief.clone(), (*message.body).clone(), manifest.clone()],
         )
         .await?;
         let reader = FilesystemContentVerifier::new(
@@ -531,6 +604,26 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
             LIMITS.maximum_bytes,
             None,
         )?;
+        assert_eq!(
+            reader
+                .read(&brief, brief.descriptor().byte_length(), None, None)?
+                .await?
+                .as_ref(),
+            b"Work on the assigned brief"
+        );
+        for file in &unselected {
+            let denied = async {
+                reader
+                    .read(file, file.descriptor().byte_length(), None, None)?
+                    .await
+            }
+            .await
+            .expect_err("a message granted unrelated journal content");
+            assert_eq!(
+                denied.code(),
+                acyclic_harness_core::wire::ErrorCode::Unauthorized
+            );
+        }
         let bytes = reader
             .read(manifest, manifest.descriptor().byte_length(), None, None)?
             .await?;
@@ -540,6 +633,7 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
         let [item] = items.as_slice() else {
             return Err("attachment selection changed".into());
         };
+        assert_eq!(item.file.volume(), &journal);
         assert_eq!(
             reader
                 .read(&item.file, item.file.descriptor().byte_length(), None, None)?
@@ -573,7 +667,9 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
                 None,
             )?
             .await?;
-        model.extend([ScriptedTurn::Text("reviewed the original finding".into())]);
+        model.extend(with_retrospectives([ScriptedTurn::Text(
+            "reviewed the original finding".into(),
+        )]));
         agents.drain(&child).await?;
         let request = model.last_request().ok_or("child did not run")?;
         // Steering pins newly admitted files into the recipient's private
@@ -953,7 +1049,7 @@ async fn named(
         .resolve_spawn_name(parent, name)
         .await?
         .live()
-        .ok_or_else(|| "missing named child".into())
+        .ok_or_else(|| format!("missing named child {name}").into())
 }
 
 #[tokio::test]
@@ -1044,7 +1140,7 @@ async fn waits_report_setup_failure_before_and_after_it_settles() -> Result {
 async fn atomic_spawn_retries_setup_and_preserves_references_and_sibling_grants() -> Result {
     let text = || ScriptedTurn::Text("ready".into());
     let (agents, stream, root, model) = fixture(
-        vec![
+        with_retrospectives([
             spawn_call("w", &[]),
             spawn_call("s", &["w"]),
             text(),
@@ -1060,7 +1156,8 @@ async fn atomic_spawn_retries_setup_and_preserves_references_and_sibling_grants(
             text(),
             call("archive", json!({"agent": "w"})),
             text(),
-        ],
+        ])
+        .collect(),
         1,
     )
     .await?;

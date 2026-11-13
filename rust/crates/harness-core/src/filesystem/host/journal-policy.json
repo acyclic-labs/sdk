@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "version": 4,
+  "version": 5,
   "layers": [[{
     "id": "host-custody",
     "effect": "allow",
@@ -14,6 +14,20 @@
     "principal": {"attributes": {}},
     "actions": ["read", "read-history"],
     "resource": {"lineage_root": null, "volume": null, "generations": "all", "path": "inputs/*"},
+    "conditions": {}
+  }, {
+    "id": "published-brief",
+    "effect": "allow",
+    "principal": {"attributes": {}},
+    "actions": ["read", "read-history"],
+    "resource": {"lineage_root": null, "volume": null, "generations": "all", "path": "inputs/briefs/*"},
+    "conditions": {}
+  }, {
+    "id": "published-message",
+    "effect": "allow",
+    "principal": {"attributes": {}},
+    "actions": ["read", "read-history"],
+    "resource": {"lineage_root": null, "volume": null, "generations": "all", "path": "inputs/messages/**"},
     "conditions": {}
   }, {
     "id": "published-context",

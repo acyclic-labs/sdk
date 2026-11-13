@@ -377,15 +377,15 @@ impl TurnExecutors for StockExecutors {
                 && !self.agent_tools.is_empty()
             {
                 let writer = authority
-                    .content
-                    .writer
-                    .as_ref()
-                    .ok_or_else(|| Error::Invalid("agent turn has no private writer".into()))?;
+                    .journal
+                    .output_content(turn)?
+                    .and_then(|content| content.writer)
+                    .ok_or_else(|| Error::Invalid("agent turn has no journal writer".into()))?;
                 crate::tools::bind_agent_tools(
                     &mut tools,
                     agent,
                     (Arc::clone(effects), authority.children.clone()),
-                    Arc::clone(writer),
+                    writer,
                     self.limits.file_bytes,
                     (&agent_tools, authority.templates.clone()),
                 )?;
