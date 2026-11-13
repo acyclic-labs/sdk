@@ -16,6 +16,7 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    let started = std::time::Instant::now();
     let results: Vec<TestResult> =
         futures::future::join_all(cases.iter().map(|(path, case, expected)| {
             let files = files.clone();
@@ -46,8 +47,9 @@ where
         result?;
     }
     eprintln!(
-        "substrate matrix {name}: {} shared cases passed",
-        cases.len()
+        "substrate matrix {name}: {} shared cases passed in {:?}",
+        cases.len(),
+        started.elapsed()
     );
     Ok(())
 }
