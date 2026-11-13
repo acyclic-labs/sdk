@@ -17,9 +17,19 @@ mod model;
 mod model_selection;
 mod workspace;
 
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
+thread_local! {
+    static TEMPORARY_HOME_ALLOCATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Production native settings boundaries for decoder conformance.
 #[cfg(feature = "test-support")]
 pub mod test_support {
+    /// Successful temporary settings-home allocations on this thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn temporary_home_allocations() -> usize {
+        super::TEMPORARY_HOME_ALLOCATIONS.with(std::cell::Cell::get)
+    }
     #[cfg(not(target_arch = "wasm32"))]
     pub use super::validation::check_settings;
     pub use super::validation::{check_model_selection, check_workspace};
@@ -121,6 +131,7 @@ impl SettingsConfig {
     #[doc(hidden)]
     pub fn for_test(workspace: impl Into<PathBuf>) -> Result<Self> {
         let home = tempfile::tempdir().map_err(Error::process_io)?;
+        TEMPORARY_HOME_ALLOCATIONS.with(|count| count.set(count.get() + 1));
         let mut settings = Self::with_roots(
             workspace.into(),
             home.path().to_owned(),

@@ -9,7 +9,7 @@ use acyclic_harness::{
     },
     model::{Model, ModelContent},
     native_settings::SettingsConfig,
-    test_support::{ScriptedModelProvider, ScriptedTurn, local_harness_config},
+    test_support::{ScriptedModelProvider, ScriptedTurn, local_harness_config_with_settings},
 };
 use std::{path::Path, sync::Arc};
 
@@ -26,19 +26,27 @@ fn config(
     state: &Path,
     provider: Arc<ScriptedModelProvider>,
 ) -> TestResult<LocalHarnessConfig> {
-    Ok(local_harness_config(
+    let temporary_homes =
+        acyclic_harness::native_settings::test_support::temporary_home_allocations();
+    let config = local_harness_config_with_settings(
         root,
         (
             Model::new("scripted".into(), "test".into(), "1".into())?,
             provider,
         ),
-    )?
+        SettingsConfig::new(root, home).codex_home(home.join(".codex")),
+    )
     .feedback_plugin(false)
     .state_directory(state)
     .without_default_tools()
     .compaction(CompactionPolicy::Disabled)
-    .goal_continuations(None)
-    .settings(SettingsConfig::new(root, home).codex_home(home.join(".codex"))))
+    .goal_continuations(None);
+    assert_eq!(
+        acyclic_harness::native_settings::test_support::temporary_home_allocations(),
+        temporary_homes,
+        "explicit skill settings allocated an unused temporary home"
+    );
+    Ok(config)
 }
 
 async fn open(config: LocalHarnessConfig) -> TestResult<Arc<LocalHarness>> {

@@ -191,6 +191,23 @@ pub fn local_harness_config(
     let workspace = workspace.into();
     #[cfg(any(test, not(target_arch = "wasm32")))]
     let settings = crate::native_settings::SettingsConfig::for_test(&workspace)?;
+    Ok(local_harness_config_with_settings(
+        workspace, model, settings,
+    ))
+}
+
+/// Local test composition using the caller's existing isolated settings roots.
+/// The caller retains its home directory; no unused temporary home is allocated.
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub fn local_harness_config_with_settings(
+    workspace: impl Into<std::path::PathBuf>,
+    model: (
+        crate::model::Model,
+        std::sync::Arc<dyn crate::model::ModelProvider>,
+    ),
+    settings: crate::native_settings::SettingsConfig,
+) -> crate::LocalHarnessConfig {
     // Store opening supplies temporary state only when no explicit root was selected.
     let policy = crate::approvals::ApprovalPolicy::accept_all("graphcoder-default");
     let models = fixture_models(model);
@@ -211,7 +228,35 @@ pub fn local_harness_config(
     };
     #[cfg(any(test, not(target_arch = "wasm32")))]
     let config = config.settings(settings);
-    Ok(config)
+    config
+}
+
+#[cfg(all(
+    test,
+    not(target_arch = "wasm32"),
+    any(feature = "test-support", feature = "conformance")
+))]
+#[test]
+fn explicit_settings_allocate_no_temporary_home() -> crate::Result<()> {
+    use crate::native_settings::{SettingsConfig, test_support::temporary_home_allocations};
+    let directory = tempfile::tempdir().map_err(crate::Error::process_io)?;
+    let model = (
+        crate::model::Model::new("scripted".into(), "settings".into(), "1".into())?,
+        std::sync::Arc::new(ScriptedModelProvider::new([]))
+            as std::sync::Arc<dyn crate::model::ModelProvider>,
+    );
+    let before = temporary_home_allocations();
+    let explicit = local_harness_config_with_settings(
+        directory.path(),
+        model.clone(),
+        SettingsConfig::new(directory.path(), directory.path()),
+    );
+    assert_eq!(temporary_home_allocations(), before);
+    // Negative control: the default constructor must still own an isolated home.
+    let default = local_harness_config(directory.path(), model)?;
+    assert_eq!(temporary_home_allocations(), before + 1);
+    drop((explicit, default));
+    Ok(())
 }
 
 /// How one root-agent prompt settled.

@@ -12,8 +12,8 @@ use acyclic_harness::{
     model::{Model, ModelContentPart, ModelEvent, ModelRequest, ModelRole},
     native_settings::SettingsConfig,
     test_support::{
-        PromptOutcome, ScriptedEvent, ScriptedModelProvider, ScriptedTurn, local_harness_config,
-        prompt_settled,
+        PromptOutcome, ScriptedEvent, ScriptedModelProvider, ScriptedTurn,
+        local_harness_config_with_settings, prompt_settled,
     },
 };
 use serde_json::Value;
@@ -421,12 +421,22 @@ async fn open_harness(
     provider: &Arc<ScriptedModelProvider>,
 ) -> TestResult<LocalHarness> {
     let model = Model::new("scripted".into(), "local".into(), "1".into())?;
-    let config = local_harness_config(directory, (model, provider.clone()))?
-        .settings(SettingsConfig::new(directory, home).codex_home(home.join(".codex")))
-        .state_directory(state)
-        .volume(volume.clone())
-        .compaction(CompactionPolicy::Disabled)
-        .feedback_plugin(false)
-        .goal_continuations(None);
+    let temporary_homes =
+        acyclic_harness::native_settings::test_support::temporary_home_allocations();
+    let config = local_harness_config_with_settings(
+        directory,
+        (model, provider.clone()),
+        SettingsConfig::new(directory, home).codex_home(home.join(".codex")),
+    )
+    .state_directory(state)
+    .volume(volume.clone())
+    .compaction(CompactionPolicy::Disabled)
+    .feedback_plugin(false)
+    .goal_continuations(None);
+    assert_eq!(
+        acyclic_harness::native_settings::test_support::temporary_home_allocations(),
+        temporary_homes,
+        "explicit scenario settings allocated an unused temporary home"
+    );
     Ok(LocalHarness::open(config).await?)
 }
