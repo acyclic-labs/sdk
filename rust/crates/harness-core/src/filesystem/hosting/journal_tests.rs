@@ -185,15 +185,23 @@ async fn partial_private_pages_resume_the_original_cut_without_skipping_retained
     bound
         .publish_agent_files(&root, OperationId::new(), &files)
         .await?;
+    let advertised = std::sync::atomic::AtomicUsize::new(0);
     let first = bound
         .directory_page_select(&root, query(None, None), |page, estimate| {
             assert_eq!(page.entries.len(), 3);
-            assert!(estimate(&page.entries[0].name).is_some());
+            advertised.store(
+                estimate(&page.entries[0].name).ok_or(Error::Record("missing token bound"))?,
+                std::sync::atomic::Ordering::Relaxed,
+            );
             Ok(1)
         })
         .await?;
     assert_eq!(first.entries[0].name, "a");
     let cursor = first.next.as_deref().ok_or("missing retained suffix")?;
+    assert!(
+        cursor.len() <= advertised.load(std::sync::atomic::Ordering::Relaxed),
+        "retained cursor exceeded the continuation bytes reserved by the selector"
+    );
     assert!(cursor.starts_with("page-v1:"));
     let changed = bound
         .publish_agent_files(
@@ -228,7 +236,11 @@ async fn partial_private_pages_resume_the_original_cut_without_skipping_retained
         .directory_page_select(
             &root,
             query(Some(&first.generation), Some(cursor)),
-            |page, _| {
+            |page, estimate| {
+                advertised.store(
+                    estimate(&page.entries[0].name).ok_or(Error::Record("missing token bound"))?,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
                 assert_eq!(
                     page.entries
                         .iter()
@@ -242,6 +254,10 @@ async fn partial_private_pages_resume_the_original_cut_without_skipping_retained
         .await?;
     assert_eq!(second.generation, first.generation);
     assert_eq!(second.entries[0].name, "b");
+    assert!(
+        second.next.as_ref().ok_or("missing second suffix")?.len()
+            <= advertised.load(std::sync::atomic::Ordering::Relaxed)
+    );
     let third = bound
         .directory_page(
             &root,
