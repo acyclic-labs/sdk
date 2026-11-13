@@ -3,7 +3,7 @@ use super::*;
 use crate::agent::SessionPublication;
 
 impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Controls<P, O> {
-    async fn metadata_effects(
+    pub(super) async fn metadata_effects(
         &self,
         delivery: &Delivery,
         state: &State,
