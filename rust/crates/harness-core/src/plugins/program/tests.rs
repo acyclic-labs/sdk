@@ -478,8 +478,15 @@ async fn hook_bindings_retain_source_and_executable_credit_through_canonical_adm
                 .map_err(|error| Error::Invalid(error.to_string()))?,
             call.arguments
         );
+        let binding = Arc::clone(hook.binding());
+        let selector_credit = hook.selector._custody.as_ref().unwrap().bytes();
         let before = work.live_allocation_bytes();
         drop(hook);
+        assert_eq!(work.live_allocation_bytes(), before - selector_credit);
+        let retained_call = binding.executor.canonical(&call, Some(&work))?.unwrap();
+        assert_eq!(retained_call.invocation.name, "shell");
+        drop(retained_call);
+        drop(binding);
         assert!(before - work.live_allocation_bytes() >= retained);
     }
     Ok(())
