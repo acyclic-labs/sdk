@@ -311,16 +311,21 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     }
 
     /// Admit `actor`'s due work: a placing runtime hosts it, and an external
-    /// owner is asked to place it unless it is already resident here.
-    fn due(&self, actor: &ActorReference) -> Result<(), Error> {
+    /// owner is asked to place it unless it is already resident here. Under
+    /// external placement `custody` retains the work here until placement
+    /// admits it; a released actor's handoff entry takes none, because the
+    /// next placer owns it.
+    fn due(&self, actor: &ActorReference, custody: bool) -> Result<(), Error> {
         if self.places {
             return self.track(actor.clone());
         }
         if let Some(requests) = &self.unplaced {
-            self.track_with_placement(actor.clone(), true)?;
+            if custody {
+                self.track_with_placement(actor.clone(), true)?;
+            }
             if self
                 .slot(actor)
-                .is_some_and(|slot| slot.unplaced.load(Ordering::Acquire))
+                .is_none_or(|slot| slot.unplaced.load(Ordering::Acquire))
             {
                 requests.unplaced(actor);
             }
@@ -716,6 +721,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let mut seen = BTreeMap::new();
         let mut stores = BTreeMap::new();
         let mut dispatchers = BTreeMap::new();
+        // Released actors whose one carried entry is still to be read back.
+        let mut handoffs = std::collections::HashSet::new();
         let mut created = futures::stream::SelectAll::new();
         // Every shard checkpoint loads in one snapshot request.
         let mut assigned = Vec::with_capacity(self.scheduling_shards.len());
@@ -932,7 +939,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         && self.store.scheduling_shard(&actor) == shard
                         && self.includes(&actor)
                     {
-                        self.due(&actor)?;
+                        let handoff = handoffs.remove(&actor);
+                        self.due(&actor, !handoff)?;
                         if let Some(slot) = self.slot(&actor) {
                             slot.entry.fetch_max(cursor, Ordering::AcqRel);
                         }
@@ -1004,7 +1012,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     } = opened?;
                     for actor in actors {
                         if self.store.scheduling_shard(&actor) == shard && self.includes(&actor) {
-                            self.due(&actor)?;
+                            self.due(&actor, true)?;
                             // The resident takes the filed alarm over before
                             // the window can be passed.
                             if let Some(slot) = self.slot(&actor) {
@@ -1031,7 +1039,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     let (shard, actors, next) = page?;
                     for actor in actors {
                         if self.store.scheduling_shard(&actor) == shard && self.includes(&actor) {
-                            self.due(&actor)?;
+                            self.due(&actor, true)?;
                             self.wake(&actor);
                         }
                     }
@@ -1138,8 +1146,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                                     .fetch_max(cursor.saturating_add(1), Ordering::AcqRel);
                             }
                             // Released: this one entry is its handoff, which
-                            // the next placer's wake owns; the mark ends here.
-                            None => self.ready.forget(actor),
+                            // the next placer's wake owns; the mark ends here,
+                            // and reading the entry back retakes no custody.
+                            None => {
+                                self.ready.forget(actor);
+                                handoffs.insert(actor.clone());
+                            }
                         }
                     }
                     let store = &stores[&shard];

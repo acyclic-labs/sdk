@@ -779,8 +779,13 @@ async fn an_unplaced_alarm_retains_its_window_across_restart() -> TestResult {
 /// actor's wake exactly once, then no more however many checkpoints pass,
 /// and the input stays unconsumed for the next placer, which delivers it.
 ///
-/// Negative control: keeping the released actor's failure mark carried a
-/// fresh entry at every checkpoint, each one's observation forcing the next.
+/// Reading that handoff entry back asks the owner to place the actor and
+/// recreates no slot here.
+///
+/// Negative controls: keeping the released actor's failure mark carried a
+/// fresh entry at every checkpoint, each one's observation forcing the next;
+/// taking custody of the read-back handoff recreated an unplaced slot whose
+/// failure mark carried the actor again.
 #[tokio::test]
 async fn a_released_failed_actor_is_carried_once() -> TestResult {
     const ROUNDS: usize = 4;
@@ -788,6 +793,7 @@ async fn a_released_failed_actor_is_carried_once() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let store = Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one);
     let poisoned = spawn_with(&store, "released", &[b"emit"]).await?;
+    let (sender, mut requested) = tokio::sync::mpsc::unbounded_channel();
     let healthy = spawn_with(&store, "resident", &[b"emit"]).await?;
     let log = store.scheduling_path(0)?;
     let runtime = Runtime::new(
@@ -798,7 +804,9 @@ async fn a_released_failed_actor_is_carried_once() -> TestResult {
         }),
         Arc::new(SystemClock),
     )
-    .with_external_placement(Arc::new(|_: &ActorReference| {}));
+    .with_external_placement(Arc::new(move |actor: &ActorReference| {
+        sender.send(actor.clone()).ok();
+    }));
     runtime.place(poisoned.clone(), 1).await?;
     runtime.place(healthy.clone(), 1).await?;
     let mut serving = Box::pin(runtime.run(|actor, error| {
@@ -837,7 +845,20 @@ async fn a_released_failed_actor_is_carried_once() -> TestResult {
             from = Some(provider.tail(log.clone()).await?);
         }
     }
+    assert!(
+        runtime.slot(&poisoned).is_none(),
+        "reading the handoff entry back rehosted the released actor"
+    );
     drop(serving);
+    let mut requests = Vec::new();
+    while let Ok(actor) = requested.try_recv() {
+        requests.push(actor);
+    }
+    assert_eq!(
+        requests,
+        [poisoned.clone()],
+        "the owner was not asked once to place the handoff"
+    );
     let from = usize::try_from(from.ok_or("no release")?)?;
     let entries = records(&*provider, log.as_str()).await?;
     assert_eq!(
