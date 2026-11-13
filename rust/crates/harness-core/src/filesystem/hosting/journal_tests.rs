@@ -1143,6 +1143,7 @@ async fn prompt_history_streams_original_human_messages_in_bounded_ranges() -> T
     use crate::model::{ModelContent, ModelContentPart};
     use futures::StreamExt as _;
     let (bound, root) = binding().await?;
+    let structured_text = "structured🙂\n\"\\\0".repeat(64);
     for (name, from, content) in [
         (
             "first",
@@ -1164,7 +1165,7 @@ async fn prompt_history_streams_original_human_messages_in_bounded_ranges() -> T
                 principal: "owner".into(),
             },
             ModelContent::Parts(vec![
-                ModelContentPart::text("structured🙂".into()),
+                ModelContentPart::text(structured_text.clone()),
                 ModelContentPart::text("content".into()),
             ]),
         ),
@@ -1199,13 +1200,35 @@ async fn prompt_history_streams_original_human_messages_in_bounded_ranges() -> T
                 }),
             )
             .await?;
+        if name == "structured" {
+            let mut source = bound.input_preview_steps(root.clone(), 4, InputSelection::Latest);
+            let mut work = 0;
+            let preview = loop {
+                let step = source
+                    .next()
+                    .await
+                    .transpose()?
+                    .ok_or("structured preview ended before selection")?;
+                match step {
+                    InputPreviewStep::Progress => work += 1,
+                    InputPreviewStep::Selected(Some(preview)) => {
+                        break preview;
+                    }
+                    _ => panic!("latest structured preview returned a history range"),
+                }
+            };
+            assert!(work > 1, "structured source work did not yield credit");
+            assert_eq!(preview.text, "stru");
+            assert_eq!(preview.bytes, structured_text.len() as u64 + 7);
+        }
     }
     let source = bound.input_preview_steps(root, 4, InputSelection::History);
     futures::pin_mut!(source);
     let mut messages: Vec<(u64, String)> = Vec::new();
+    let mut progress = 0;
     while let Some(step) = source.next().await.transpose()? {
         match step {
-            InputPreviewStep::Progress => {}
+            InputPreviewStep::Progress => progress += 1,
             InputPreviewStep::MessageRange {
                 inbox,
                 offset,
@@ -1213,8 +1236,12 @@ async fn prompt_history_streams_original_human_messages_in_bounded_ranges() -> T
             } => {
                 assert!(preview.text.len() <= 4);
                 if offset == 0 {
+                    if messages.len() == 1 {
+                        assert!(progress > 1, "structured source was not credited in chunks");
+                    }
                     messages.push((inbox, String::new()));
                 }
+                progress = 0;
                 let (selected, text) = messages.last_mut().expect("range has an original message");
                 assert_eq!(*selected, inbox);
                 assert_eq!(text.len() as u64, offset);
@@ -1228,7 +1255,7 @@ async fn prompt_history_streams_original_human_messages_in_bounded_ranges() -> T
     assert_eq!(messages.len(), 3);
     assert!(messages[0].0 > messages[1].0);
     assert_eq!(messages[0].1, "same🙂");
-    assert_eq!(messages[1].1, "structured🙂content");
+    assert_eq!(messages[1].1, format!("{structured_text}content"));
     assert_eq!(messages[2].1, "same🙂");
     Ok(())
 }
