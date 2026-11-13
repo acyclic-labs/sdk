@@ -467,7 +467,6 @@ async fn retirement_continues_past_a_volume_a_session_still_uses() -> Result<()>
         task_view_admission: Arc::clone(&scratch.task_view_admission),
         native: StateArc::new(AsyncMutex::new(None)),
         users: StateArc::new(projection::Users::default()),
-        authority: None,
         shared_views: tokio::sync::OnceCell::new(),
         _binding: None,
     });
@@ -527,7 +526,6 @@ async fn projection_lock_order_ignores_alias_order_and_duplicate_bindings() -> R
         task_view_admission: Arc::clone(&first.task_view_admission),
         native: StateArc::new(AsyncMutex::new(None)),
         users: StateArc::new(projection::Users::default()),
-        authority: None,
         shared_views: tokio::sync::OnceCell::new(),
         _binding: None,
     });

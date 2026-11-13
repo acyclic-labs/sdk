@@ -74,6 +74,11 @@ where
     /// Publishes one verified native command and optionally retires its projection.
     /// The filesystem owns both destination cleanup and namespace-fence release.
     pub async fn complete_command(&self, retire: bool) -> Result<(), MountLifecycleError> {
+        if self.source.is_private_command() {
+            return Err(MountLifecycleError::NativePolicy(
+                "a private command must transfer its fork through complete_private_command",
+            ));
+        }
         if self.is_retiring() {
             return self.detach_async().await;
         }
@@ -85,6 +90,33 @@ where
             self.advance_to_head().await?;
         }
         Ok(())
+    }
+
+    /// Drains and retires a verified private command before publishing its
+    /// effects. Returns its one fork for an explicit atomic join, or None
+    /// when the command never mutated. Custody stays live through the join.
+    pub async fn complete_private_command(
+        &self,
+    ) -> Result<Option<(Workspace<A, O>, crate::EphemeralFork)>, MountLifecycleError> {
+        if !self.source.is_private_command() {
+            return Err(MountLifecycleError::NativePolicy(
+                "view is not a private command",
+            ));
+        }
+        if !self.is_retiring() {
+            with_session_work_async(
+                &self.session,
+                &self.source,
+                NativeSessionControl::FlushCallbacks,
+            )
+            .await?;
+            self.prepare_command_cleanup().await?;
+        }
+        self.detach_async().await?;
+        self.source
+            .finish_retired_command()
+            .await
+            .map_err(MountLifecycleError::Source)
     }
 
     /// Publishes pending effects and detaches the native namespace exactly once.
@@ -154,15 +186,14 @@ where
         owner: &mut Option<NativeMountSession>,
         source: &CheckoutMountSource<A, O>,
     ) -> Result<(), MountLifecycleError> {
-        let Some(session) = owner.as_mut() else {
-            return Ok(());
-        };
-        let wait = crate::CancellationToken::new();
-        let cleanup = super::super::session::NativeSessionStopWork::AcceptedWait(&wait);
-        #[cfg(windows)]
-        session.prepare_projection_cleanup()?;
-        session.stop_with_context(&cleanup)?;
-        owner.take();
+        if let Some(session) = owner.as_mut() {
+            let wait = crate::CancellationToken::new();
+            let cleanup = super::super::session::NativeSessionStopWork::AcceptedWait(&wait);
+            #[cfg(windows)]
+            session.prepare_projection_cleanup()?;
+            session.stop_with_context(&cleanup)?;
+            owner.take();
+        }
         source.cancel();
         Ok(())
     }
@@ -184,7 +215,7 @@ where
         if let Some(guard) = options.callback_guard.as_ref() {
             guard.check(work)?.await?;
         }
-        let mode = if options.writable {
+        let mode = if options.writable && !options.private_command {
             CheckoutMode::tracking_transaction()
         } else {
             CheckoutMode::read_only_pinned()
@@ -192,10 +223,14 @@ where
         let checkout = self
             .checkout(options.data_selector()?, mode, work, work.cancellation())
             .await?;
-        AdmittedRoot::admit(options, self, checkout.generation_id(), work)
+        let mut source = AdmittedRoot::admit(options, self, checkout.generation_id(), work)
             .await?
             .checkout_source(checkout, work)
-            .await
+            .await?;
+        if options.private_command {
+            CheckoutMountSource::configure_command(&mut source, self.clone(), options.writable)?;
+        }
+        Ok(source)
     }
 
     /// Mounts the workspace as a task view: the one public way to mount a

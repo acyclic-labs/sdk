@@ -14,6 +14,139 @@ fn take_trace() -> Vec<&'static str> {
     TRACE.with_borrow_mut(std::mem::take)
 }
 
+type MemoryCommand = Mount<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>;
+
+async fn private_command(
+    workspace: &Workspace<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>,
+    work: &NativeMaterializationWork,
+    destination: &Path,
+    read_only: bool,
+) -> Result<MemoryCommand, Box<dyn std::error::Error>> {
+    let mut options =
+        super::tests::fixture_options(workspace, MountOptions::read_write().private_command())
+            .await?
+            .native_context(work, None, None);
+    if read_only {
+        options = options.restrict_to_read_only();
+    }
+    let source = workspace.native_source(&options).await?;
+    Ok(Mount {
+        source,
+        session: CustomerSession::new(None, work)?,
+        destination: destination.to_owned(),
+        _destination_custody: work.path(destination, None)?.1,
+        retiring: std::sync::atomic::AtomicBool::new(false),
+    })
+}
+
+#[tokio::test]
+async fn private_commands_fork_at_first_write_and_keep_the_authorized_source()
+-> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_native_mount_services()?;
+    let cancellation = crate::CancellationToken::new();
+    let work = test_work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
+    let filesystem = crate::Fs::memory();
+    let workspace = filesystem
+        .create_workspace(
+            "private-command",
+            crate::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?
+        .value;
+    workspace.write_text("/result.txt", "original").await?;
+    let origin = workspace.head(&work, &cancellation).await?.id();
+    let destination = tempfile::tempdir()?;
+    let path = crate::native_mount::adapter::tests::native_test_path("result.txt");
+    let write = |mount: &MemoryCommand, bytes: &'static [u8]| {
+        mount.source.open_file(&path)?.write_range_with_meter(
+            0,
+            crate::kernel::OwnedSourceChunk::claimed(
+                acyclic_stream::OwnedBytes::from_static(bytes),
+                0,
+            ),
+            false,
+            &work,
+        )
+    };
+
+    let no_write = private_command(&workspace, &work, destination.path(), false).await?;
+    assert_eq!(no_write.source.volume_id()?, workspace.id().volume_id());
+    assert_eq!(
+        no_write.source.read_range(&path, 0, 8)?.as_ref(),
+        b"original"
+    );
+    assert!(
+        no_write.complete_private_command().await?.is_none(),
+        "read-only work created a fork"
+    );
+
+    let first = private_command(&workspace, &work, destination.path(), false).await?;
+    let second = private_command(&workspace, &work, destination.path(), false).await?;
+    write(&first, b"first!!!")?;
+    write(&first, b"again!!!")?;
+    write(&second, b"second!!")?;
+    assert_eq!(first.source.volume_id()?, workspace.id().volume_id());
+    assert_eq!(first.source.read_range(&path, 0, 8)?.as_ref(), b"again!!!");
+    assert_eq!(second.source.read_range(&path, 0, 8)?.as_ref(), b"second!!");
+    assert_eq!(workspace.head(&work, &cancellation).await?.id(), origin);
+    let (first_fork, first_custody) = first
+        .complete_private_command()
+        .await?
+        .ok_or("missing first fork")?;
+    let (second_fork, second_custody) = second
+        .complete_private_command()
+        .await?
+        .ok_or("missing second fork")?;
+    assert_ne!(first_fork.id(), second_fork.id());
+    assert_eq!(
+        first_fork
+            .read("/result.txt", 8, &work, &cancellation)
+            .await?
+            .as_ref(),
+        b"again!!!"
+    );
+    assert_eq!(
+        second_fork
+            .read("/result.txt", 8, &work, &cancellation)
+            .await?
+            .as_ref(),
+        b"second!!"
+    );
+    assert_eq!(workspace.head(&work, &cancellation).await?.id(), origin);
+    first_custody.settle().await?;
+    second_custody.settle().await?;
+
+    let read_only = private_command(&workspace, &work, destination.path(), true).await?;
+    assert!(matches!(
+        write(&read_only, b"forbidden"),
+        Err(MountSourceError::ReadOnly)
+    ));
+    assert!(read_only.complete_private_command().await?.is_none());
+
+    // Independent ordinary-view control proves the source-head oracle sees
+    // publication, rather than merely observing an unchanging fixture.
+    let options = super::tests::fixture_options(
+        &workspace,
+        MountOptions::read_write().publication(MountPublication::Manual),
+    )
+    .await?
+    .native_context(&work, None, None);
+    let control = workspace.native_source(&options).await?;
+    control.open_file(&path)?.write_range_with_meter(
+        0,
+        crate::kernel::OwnedSourceChunk::claimed(
+            acyclic_stream::OwnedBytes::from_static(b"control!"),
+            0,
+        ),
+        false,
+        &work,
+    )?;
+    control.sync_async(PublicationPermit::Unrestricted).await?;
+    assert_ne!(workspace.head(&work, &cancellation).await?.id(), origin);
+    Ok(())
+}
+
 // Each candidate/control has its own filesystem, checkout, source and journal.
 // No native driver is needed to test the real command publication dispatch;
 // destination retirement is proved separately against the actual fence packet.

@@ -133,7 +133,6 @@ pub(super) async fn attach(
             task_view_admission: Arc::clone(admission),
             native: StateArc::new(AsyncMutex::new(None)),
             users: StateArc::new(projection::Users::default()),
-            authority: authority.cloned(),
             shared_views: tokio::sync::OnceCell::new(),
             _binding: binding.cloned().map(|binding| binding.erase()),
         }));
@@ -176,26 +175,17 @@ fn ordered_mounts(mounts: &Mounts) -> Result<Vec<(&str, &BoundMount)>> {
 
 type VolumeWorkspace = acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>;
 
-/// One command's own view of a native volume. A read-only command sees the
-/// volume itself. A writable command sees an O(1) fork of the volume's head:
-/// no copy and no scan, and only this command writes it. Its verified exit
-/// hands the fork back with a compare-and-swap join of only its own changes;
-/// any other exit discards the fork whole. No command waits on another's view.
+/// One command's private projection. Entry and reads share the authorized
+/// volume head; the shared filesystem adapter creates its ephemeral data fork
+/// at the first mutation. Only verified completion hands that fork back.
 struct CommandView {
-    /// The volume's address in the mount table, which names its conflicts.
     address: String,
     source: Arc<MountedVolume>,
     mount: acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>,
-    fork: Option<(VolumeWorkspace, acyclic_fs::EphemeralFork)>,
 }
 
 impl MountedVolume {
-    async fn command_view(
-        self: &Arc<Self>,
-        address: &str,
-        volume: &VolumeRef,
-        read_only: bool,
-    ) -> Result<CommandView> {
+    async fn command_view(self: &Arc<Self>, address: &str, read_only: bool) -> Result<CommandView> {
         let options = self
             .options
             .clone()
@@ -206,98 +196,41 @@ impl MountedVolume {
             })
             .await
             .map_err(|error| Error::from(acyclic_fs::MountLifecycleError::from(error)))?;
-        let workspace = self.workspace.workspace();
-        if read_only {
-            let mount = workspace
-                .mount_view(super::task_views::view_options(
-                    &self.task_view_admission,
-                    options.restrict_to_read_only(),
-                ))
-                .await
-                .map_err(Error::from)?;
-            return Ok(CommandView {
-                address: address.to_owned(),
-                source: Arc::clone(self),
-                mount,
-                fork: None,
-            });
-        }
-        let authority = self
-            .authority
-            .as_ref()
-            .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?;
-        let cancellation = CancellationToken::new();
-        let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let key = acyclic_fs::IdempotencyKey::new();
-        let head = workspace
-            .head(WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map_err(|failure| Error::from(failure.error))?
-            .value;
-        // The fork is all-or-nothing scratch, so it is ephemeral: never
-        // journalled, listed or flushed, and gone with its custody, whether
-        // the command settles or its owner dies. Only the hand-back join is
-        // committed work.
-        let (fork, custody) = workspace
-            .fork_ephemeral(
-                hex::encode(key.into_bytes()),
-                acyclic_fs::ForkOptions::from_generation(head, key),
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .map_err(|failure| Error::from(failure.error))?
-            .value;
-        let mount = async {
-            let options = authority
-                .mount_options(&fork, Some(volume), true, &work)
-                .await?
-                .publication(MountPublication::Manual);
-            fork.mount_view(super::task_views::view_options(
+        let options = if read_only {
+            options.restrict_to_read_only()
+        } else {
+            options
+        };
+        let mount = self
+            .workspace
+            .workspace()
+            .mount_view(super::task_views::view_options(
                 &self.task_view_admission,
-                options,
+                options.private_command(),
             ))
             .await
-            .map_err(Error::from)
-        }
-        .await;
-        // A failed mount drops the custody, which ends the fork.
+            .map_err(Error::from)?;
         Ok(CommandView {
             address: address.to_owned(),
             source: Arc::clone(self),
-            mount: mount?,
-            fork: Some((fork, custody)),
+            mount,
         })
     }
 }
 
 impl CommandView {
-    /// Discards every effect of a command that never verified: all or nothing.
     async fn discard(self) {
         if let Err(error) = self.mount.abandon_command().await {
             tracing::error!(?error, "command volume view retirement failed");
         }
-        if let Some((_, custody)) = self.fork {
-            settle(custody).await;
-        }
     }
 
-    /// Publishes a verified command's own changes into its volume. A target
-    /// that moved is replanned on the new head; overlapping text writes land
-    /// as git conflict markers and are reported, never silently overwritten.
     async fn hand_back(self) -> Result<Vec<String>> {
-        let Some((fork, custody)) = self.fork else {
-            self.mount.complete_command(true).await?;
+        let Some((fork, custody)) = self.mount.complete_private_command().await? else {
             return Ok(Vec::new());
         };
-        let merged = match self.mount.complete_command(true).await {
-            Ok(()) => {
-                let target = self.source.workspace.workspace();
-                projection::compare_and_swap(|| hand_back(&fork, target)).await
-            }
-            Err(error) => Err(error.into()),
-        };
+        let target = self.source.workspace.workspace();
+        let merged = projection::compare_and_swap(|| hand_back(&fork, target)).await;
         settle(custody).await;
         merged
     }
@@ -444,11 +377,7 @@ pub(in crate::local) async fn native_scope<T>(
                 .as_ref()
                 .filter(|source| source.options.is_some())?;
             let read_only = mount.mode.read_only();
-            Some(Box::pin(source.command_view(
-                address,
-                &mount.view.volume,
-                read_only,
-            )))
+            Some(Box::pin(source.command_view(address, read_only)))
         });
     for view in futures::future::join_all(entries).await {
         match view {
