@@ -1093,6 +1093,7 @@ async fn transaction_policy_sources(
                     std::future::ready(Ok::<(), FsError>(()))
                 };
                 let committed = policy
+                    .clone()
                     .scope(transaction.commit_with_native_work::<FsError, _, _>(
                         None,
                         crate::PublicationPermit::Unrestricted,
