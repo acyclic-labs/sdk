@@ -254,6 +254,145 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
 }
 
 #[tokio::test]
+async fn authored_programs_wait_for_the_original_shell_approval_before_native_dispatch()
+-> Result<()> {
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    std::fs::create_dir(directory.path().join(".git"))
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let provider = scripted([ScriptedTurn::Text("ready".into())]);
+    let policy = crate::approvals::ApprovalPolicy {
+        approvers: vec![
+            crate::approvals::Approver::Rules {
+                principal: "owner".into(),
+                rules: vec![crate::approvals::ApprovalRule {
+                    tool: Some("shell".into()),
+                    arguments: None,
+                    selectors: Vec::new(),
+                    target: None,
+                    verdict: crate::approvals::RuleVerdict::Ask,
+                }],
+                fallback: crate::approvals::RuleVerdict::Allow,
+            },
+            crate::approvals::Approver::Human {
+                principal: crate::approvals::HUMAN_APPROVER.into(),
+            },
+        ],
+    };
+    let config = checkout_config(directory.path(), (model()?, provider.clone()))?
+        .approval_policy(policy)
+        .home_file("tools/echo/program.ts", acyclic_stream::OwnedBytes::from_static(
+            b"export default {version: 1, name: 'echo', description: 'Echo data', inputSchema: {type: 'object'}, entry: {sh: 'main.sh', ps1: 'main.ps1'}};"
+        ))
+        .home_file("tools/echo/main.sh", acyclic_stream::OwnedBytes::from_static(b"cat"))
+        .home_file("tools/echo/main.ps1", acyclic_stream::OwnedBytes::from_static(
+            b"[Console]::Out.Write([Console]::In.ReadToEnd())"
+        ));
+    let harness = Arc::new(super::open_scripted(config).await?);
+    let connection = harness.connect().await?;
+    let AgentReply::Spawned { agent: worker, .. } = connection
+        .execute(&AgentCommand::Spawn {
+            parent: connection.root().clone(),
+            id: crate::agent::IntentId::try_from("approved-program")
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            brief: ModelContent::Text("Prepare to call a program".into()),
+            role: "worker".into(),
+        })
+        .await?
+    else {
+        return Err(Error::Invalid("program worker did not open".into()));
+    };
+    agents::settled(&harness, &worker).await?;
+    let first = provider.request_count();
+    provider.extend([
+        code(
+            "approved-program-call",
+            "export default await tools.echo({text: 'approved-🦀'});",
+        ),
+        ScriptedTurn::Text("approved".into()),
+    ]);
+    let conversation = Conversation::open(connection.select(worker).await?);
+    let mut observed = ObservedConversation::observe(conversation.clone(), None).await?;
+    let inbox = conversation
+        .send("approve-program", "Call the authored program")
+        .await?;
+    let (id, binding) = loop {
+        match observed.observer.next().await? {
+            Event::Status(crate::agent::StatusRecord {
+                phase:
+                    crate::agent::Phase::WaitingApproval {
+                        id,
+                        binding: Some(binding),
+                    },
+                ..
+            }) => break (id, binding),
+            Event::Turn { entry, .. } if entry.inbox == inbox => {
+                return Err(Error::Invalid(format!(
+                    "program settled before approval: {:?}",
+                    entry.outcome
+                )));
+            }
+            Event::Status(crate::agent::StatusRecord {
+                phase: crate::agent::Phase::Done { outcome },
+                ..
+            }) => {
+                return Err(Error::Invalid(format!(
+                    "program ended before approval: {outcome:?}"
+                )));
+            }
+            Event::Status(crate::agent::StatusRecord {
+                phase: crate::agent::Phase::WaitingApproval { binding: None, .. },
+                ..
+            }) => {
+                return Err(Error::Invalid(
+                    "program approval has no original binding".into(),
+                ));
+            }
+            _ => {}
+        }
+    };
+    assert_eq!(provider.request_count(), first + 1);
+    let page = conversation.execution_page(inbox, 0, false).await?;
+    let mut started = 0;
+    for record in page.page.iter().flat_map(|page| &page.items) {
+        if let crate::executor::ExecutionEvent::ToolStarted { call_id, .. } = &record.event {
+            started += 1;
+            assert_eq!(
+                call_id, "approved-program-call",
+                "inner native shell started before approval"
+            );
+        }
+    }
+    assert_eq!(started, 1, "original outer code start is absent");
+    let pending = conversation
+        .pending_approval(&id)
+        .await?
+        .ok_or_else(|| Error::Invalid("program approval is absent".into()))?;
+    assert_eq!(pending.binding, binding);
+    let mut different = binding.clone();
+    different.action_digest[0] ^= 1;
+    assert!(
+        conversation
+            .decide_with_binding(&id, different, true.into())
+            .await
+            .is_err()
+    );
+    assert_eq!(provider.request_count(), first + 1);
+    conversation
+        .decide_with_binding(&id, binding, true.into())
+        .await?;
+    let entry = observed.settled(inbox).await?;
+    assert!(entry.outcome.is_completed(), "{:?}", entry.outcome);
+    assert!(conversation.pending_approval(&id).await?.is_none());
+    assert_eq!(provider.request_count(), first + 2);
+    echoed(
+        &provider.request(first + 1).unwrap(),
+        "approved-program-call",
+        "approved-🦀",
+    )?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn authored_settings_select_the_next_provider_without_restarting_the_turn() -> Result<()> {
     use crate::model::{
         ModelDispatch, ModelRequest, ModelStream, NativeToolProfile, PreparedModelRequest,
