@@ -119,28 +119,49 @@ fn seal_group<P: PublicationOwner>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(), crate::FsError> {
-    let count = group
+    let (count, cut_count) = group
         .state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .selected()
-        .count();
+        .try_fold((0_usize, 0_usize), |(count, cuts), proposal| {
+            accounting.charge_items(1)?;
+            Ok::<_, crate::FsError>((
+                count.checked_add(1).ok_or(WorkError::Overflow)?,
+                cuts.checked_add(
+                    proposal
+                        .core
+                        .cut
+                        .as_ref()
+                        .map_or(0, |cuts| cuts.as_slice().len()),
+                )
+                .ok_or(WorkError::Overflow)?,
+            ))
+        })?;
+    let copy_cuts = WorkCounters {
+        bytes_copied: cut_count
+            .checked_mul(std::mem::size_of::<crate::PolicyCut>())
+            .ok_or(WorkError::Overflow)? as u64,
+        ..WorkCounters::UNCHARGED
+    };
+    accounting.admit(copy_cuts)?;
     let requests = Owned::<Vec<GuardedAppend>>::allocate(count, accounting)?;
     let mut requests = Retained::from_owned(requests, accounting)?;
-    let cuts = Owned::<Vec<crate::PolicyCut>>::allocate(count, accounting)?;
+    let cuts = Owned::<Vec<crate::PolicyCut>>::allocate(cut_count, accounting)?;
     let mut cuts = Retained::from_owned(cuts, accounting)?;
     let mut preparation_work = crate::async_storage::AuthorityFrame::borrow(accounting)?;
     let result = prepare_requests(group, &mut requests.value, &mut preparation_work);
     drop(preparation_work);
     let head = result?;
+    accounting.charge(copy_cuts)?;
     {
         let state = group
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         for proposal in state.selected() {
-            if let Some(cut) = proposal.core.cut {
-                cuts.value.push(cut);
+            if let Some(captured) = &proposal.core.cut {
+                cuts.value.extend_from_slice(captured.as_slice());
             }
         }
     }
