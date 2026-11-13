@@ -5420,3 +5420,174 @@ async fn an_instruction_edit_appends_a_notice_and_keeps_the_cached_prefix() -> R
     assert_eq!(delivered["sent"], 3);
     Ok(())
 }
+
+#[tokio::test]
+async fn failed_child_keeps_siblings_and_the_served_session_alive() -> Result<()> {
+    use acyclic_harness_client::{AgentCommand, AgentReply};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let dispatches = AtomicUsize::new(0);
+    let provider = Arc::new(
+        ScriptedModelProvider::new([
+            super::ScriptedTurn::Events(Vec::new()),
+            super::ScriptedTurn::Events(Vec::new()),
+            super::ScriptedTurn::Text("sibling done".into()),
+            super::ScriptedTurn::Text("parent still running".into()),
+        ])
+        .with_context_capacity(super::capacity())
+        // The accepted Awaited record reconciles the original dispatch. Keep
+        // that outcome unknown instead of reporting definitive unavailability.
+        .with_reconciliation_observer(|_| {
+            Err(Error::Storage("undecided child reconciliation".into()))
+        })
+        .with_dispatch_observer(move |_| {
+            let dispatch = dispatches.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                match dispatch {
+                    0 => Err(Error::Storage("undecided child producer".into())),
+                    1 => Err(Error::Invalid("definitive child failure".into())),
+                    _ => Ok(()),
+                }
+            })
+        }),
+    );
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let harness = Arc::new(
+        super::open_scripted(
+            volume_config(
+                directory.path(),
+                volume(directory.path()).await?,
+                provider.clone(),
+            )?
+            .without_default_tools()
+            .workspace_mounting(crate::local::WorkspaceMounting::Physical)
+            .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
+    let connection = harness.connect().await?;
+    let root = connection.root().clone();
+    let (agents, _) = harness.agents().await?;
+    for (id, failed) in [
+        ("pending-child", false),
+        ("failed-child", true),
+        ("healthy-sibling", false),
+    ] {
+        let AgentReply::Spawned { agent: child, .. } = connection
+            .execute(&AgentCommand::Spawn {
+                parent: root.clone(),
+                id: crate::agent::IntentId::try_from(id).map_err(agent)?,
+                brief: crate::model::ModelContent::Text(id.into()),
+                role: "worker".into(),
+            })
+            .await?
+        else {
+            return Err(Error::Invalid("child spawn refused".into()));
+        };
+        if id == "pending-child" {
+            let completed = agents.runtime().complete().await;
+            assert!(matches!(
+                &completed,
+                Err(acyclic_actors::local::Error::CompletionFailed(_))
+            ));
+            let tail = crate::agent::inbox_tail(&**agents.provider(), &child)
+                .await
+                .map_err(agent)?;
+            let progress = agents
+                .input_progress(&child, tail - 1)
+                .await
+                .map_err(agent)?;
+            let outcomes = records(agents.provider(), child.conversation().map_err(agent)?)
+                .await?
+                .iter()
+                .map(|bytes| {
+                    crate::agent::ConversationEntry::decode(bytes).map(|entry| entry.outcome)
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(agent)?;
+            assert_eq!(provider.reconciliations(), provider.dispatches());
+            assert_eq!(provider.request_count(), 1, "pending work was regenerated");
+            assert!(
+                !progress.settled,
+                "unknown work must retain its original input: tail={tail}, completion={completed:?}, outcomes={outcomes:?}, dispatches={:?}, state={:?}",
+                provider.dispatches(),
+                agents.state(&child).await.map_err(agent)?
+            );
+            assert!(harness.agents.get().unwrap().runtime.failure().is_none());
+            continue;
+        }
+        let entries = settled(&harness, &child).await?;
+        let state = agents.state(&child).await.map_err(agent)?;
+        if failed {
+            assert_eq!(entries.len(), 1, "{state:?}");
+            let entry = crate::agent::ConversationEntry::decode(&entries[0]).map_err(agent)?;
+            assert!(
+                matches!(entry.outcome, crate::agent::TurnOutcome::Failed { ref message }
+                if message.contains("definitive child failure")),
+                "{entry:?}"
+            );
+            // A malformed retained input cannot even enter the failure
+            // transition. Wait for the real dispatcher to report it, then
+            // prove that its host still admits the next sibling and parent.
+            let store = crate::agent::actor_store(agents.provider()).map_err(agent)?;
+            let actor = agents.actor(&child).map_err(agent)?;
+            let committed = agents
+                .provider()
+                .commit(acyclic_stream::CommitRequest {
+                    idempotency_key: acyclic_stream::IdempotencyKey::new(
+                        b"malformed-child".to_vec(),
+                    )
+                    .map_err(agent)?,
+                    deadline_unix_millis: None,
+                    effects: vec![
+                        acyclic_stream::CommitEffect::hard(
+                            Vec::new(),
+                            vec![acyclic_stream::CommitMutation::Append {
+                                path: child.inbox().map_err(agent)?,
+                                records: vec![
+                                    bytes::Bytes::from_static(b"invalid-agent-record").into(),
+                                ],
+                            }],
+                        ),
+                        store.activation(&actor).map_err(agent)?,
+                    ],
+                })
+                .await
+                .map_err(agent)?;
+            assert!(matches!(
+                committed,
+                acyclic_stream::CommitOutcome::Committed(_)
+            ));
+            assert!(matches!(
+                agents.runtime().complete().await,
+                Err(acyclic_actors::local::Error::CompletionFailed(_))
+            ));
+        } else {
+            assert_eq!(entries.len(), 1, "{state:?}");
+            let entry = crate::agent::ConversationEntry::decode(&entries[0]).map_err(agent)?;
+            assert!(matches!(
+                entry.outcome,
+                crate::agent::TurnOutcome::Completed
+            ));
+        }
+        let runtime = &harness.agents.get().unwrap().runtime;
+        assert!(runtime.failure().is_none());
+        assert!(futures::poll!(core::pin::pin!(runtime.completion())).is_pending());
+        assert!(matches!(
+            connection.execute(&AgentCommand::Root {}).await?,
+            AgentReply::Root { .. }
+        ));
+        harness.connect().await?;
+    }
+    let mut observed = ObservedConversation::open(&harness).await?;
+    let inbox = observed
+        .conversation
+        .send("parent-after-failure", "continue")
+        .await?;
+    let entry = observed.settled(inbox).await?;
+    assert!(matches!(
+        entry.outcome,
+        crate::agent::TurnOutcome::Completed
+    ));
+    Ok(())
+}

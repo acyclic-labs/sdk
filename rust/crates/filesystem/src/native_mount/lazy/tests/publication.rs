@@ -178,6 +178,15 @@ async fn an_advance_records_only_a_moved_head_or_source() -> Result<(), Box<dyn 
         "a rebind to a new source epoch changes the view"
     );
     assert_ne!(view.binding_epoch(), binding);
+    let binding = view.binding_epoch();
+    let notifications = changes().map_err(|_| "poisoned observer")?;
+    view.advance_to_head_async().await?;
+    assert_eq!(
+        view.binding_epoch(),
+        binding,
+        "the source was already adopted"
+    );
+    assert_eq!(changes().map_err(|_| "poisoned observer")?, notifications);
     Ok(())
 }
 

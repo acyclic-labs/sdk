@@ -151,6 +151,7 @@ fn terminal(error: &Error) -> bool {
             !error.uncertain() && !matches!(error.category(), StreamError::Capacity)
         }
         Error::PreconditionUnchanged => true,
+        Error::Handler(failure) => !matches!(failure, crate::guest::GuestError::Pending(_)),
         _ => false,
     }
 }

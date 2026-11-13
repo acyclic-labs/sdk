@@ -1,9 +1,18 @@
 //! Validate only unresolved identities retained in the pending Git join.
 use super::*;
 
-/// Returns the live Git-relative tracked paths, or `None` while markers remain.
-/// Retained conflict identities follow renames. Only conflicted regular files
-/// are streamed; removing a conflict is a valid explicit deletion resolution.
+/// The current projection of a retained Git join's conflicted identities.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GitMergeResolution {
+    /// All conflict identities were repaired or explicitly deleted.
+    Resolved(BTreeSet<String>),
+    /// Current absolute paths that still contain unresolved markers.
+    Conflicts(Vec<String>),
+}
+
+/// Returns live tracked paths after repair, or the live unresolved marker paths.
+/// Retained identities follow renames. Only conflicted regular files are
+/// streamed; removing a conflict is a valid explicit deletion resolution.
 pub async fn git_merge_resolution<
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
@@ -11,7 +20,7 @@ pub async fn git_merge_resolution<
     current: &Generation<A, O>,
     conflicts: &BTreeMap<String, Option<crate::FileId>>,
     tracked: &BTreeSet<String>,
-) -> Result<Option<BTreeSet<String>>, GitCaptureError> {
+) -> Result<GitMergeResolution, GitCaptureError> {
     let cancellation = CancellationToken::new();
     let mut paths: BTreeMap<_, _> = tracked
         .iter()
@@ -36,6 +45,7 @@ pub async fn git_merge_resolution<
         }
     }
     let mut resolved = BTreeSet::new();
+    let mut unresolved = Vec::new();
     for (mut path, conflicted) in paths {
         let stat = match current
             .stat(&path, WorkBudget::UNBOUNDED, &cancellation)
@@ -71,11 +81,12 @@ pub async fn git_merge_resolution<
                 }
                 offset += bytes.bytes.len() as u64;
                 if scanner.push(&bytes.bytes) {
-                    return Ok(None);
+                    break;
                 }
             }
             if scanner.finish() {
-                return Ok(None);
+                unresolved.push(path);
+                continue;
             }
         }
         if path.starts_with('/') {
@@ -83,7 +94,11 @@ pub async fn git_merge_resolution<
         }
         resolved.insert(path);
     }
-    Ok(Some(resolved))
+    if unresolved.is_empty() {
+        Ok(GitMergeResolution::Resolved(resolved))
+    } else {
+        Ok(GitMergeResolution::Conflicts(unresolved))
+    }
 }
 
 #[cfg(test)]
@@ -152,11 +167,9 @@ mod tests {
                 .await
                 .unwrap()
                 .value;
-            assert!(
-                git_merge_resolution(&head, &paths, &tracked)
-                    .await
-                    .unwrap()
-                    .is_none()
+            assert_eq!(
+                git_merge_resolution(&head, &paths, &tracked).await.unwrap(),
+                GitMergeResolution::Conflicts(vec!["/note".into()])
             );
             workspace.write_text("/note", "resolved\n").await.unwrap();
             let head = workspace
@@ -166,7 +179,7 @@ mod tests {
                 .value;
             assert_eq!(
                 git_merge_resolution(&head, &paths, &tracked).await.unwrap(),
-                Some(tracked)
+                GitMergeResolution::Resolved(tracked)
             );
         });
     }
@@ -207,10 +220,11 @@ mod tests {
                 let current = workspace.head(WorkBudget::UNBOUNDED, &stop).await.unwrap().value;
                 let resolved = git_merge_resolution(&current, &BTreeMap::from([("/note".into(), Some(id))]), &BTreeSet::from(["note".into()])).await.unwrap();
                 let expected = match mutation {
-                    1 => Some(BTreeSet::from(["note".into()])),
-                    3 => Some(BTreeSet::new()),
-                    9 => Some(BTreeSet::from([format!("renamed-{suffix}")])),
-                    _ => None,
+                    1 => GitMergeResolution::Resolved(BTreeSet::from(["note".into()])),
+                    3 => GitMergeResolution::Resolved(BTreeSet::new()),
+                    9 => GitMergeResolution::Resolved(BTreeSet::from([format!("renamed-{suffix}")])),
+                    8 => GitMergeResolution::Conflicts(vec![renamed]),
+                    _ => GitMergeResolution::Conflicts(vec!["/note".into()]),
                 };
                 prop_assert_eq!(resolved, expected);
                 Ok(())
