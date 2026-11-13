@@ -525,7 +525,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 .expect_err("a turn input route granted another turn or host controls");
             assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
         }
-        assert!(
+        assert_eq!(
             ContentGrant::verify(
                 &task.verifier,
                 &task.scope,
@@ -533,7 +533,10 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 VolumeOperation::Write,
                 &mut None,
             )
-            .is_err()
+            .err()
+            .expect("a turn input route granted journal writes")
+            .code(),
+            crate::wire::ErrorCode::Unauthorized
         );
         assert!(
             host_reader

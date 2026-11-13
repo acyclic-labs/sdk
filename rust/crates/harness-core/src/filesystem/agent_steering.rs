@@ -255,14 +255,18 @@ where
                 ModelContent::Part(part) => std::slice::from_mut(part),
                 ModelContent::Parts(parts) => parts.as_mut_slice(),
             };
-            // Pin newly authorized content into this turn's journal input
-            // directory. The running reader already holds its read-only route;
-            // ordinary workspace authority and the original scope stay fixed.
+            // Validate every source under its original admission. Local roots
+            // pin newly authorized content into their prebound input route;
+            // admitted turns keep the immutable reference their fixed scope
+            // already reads, without requiring or issuing a journal grant.
             for part in parts {
                 if let ModelContentPart::File { file, .. } = part {
                     let bytes = reader
                         .read(file, file.descriptor().byte_length(), None, None)?
                         .await?;
+                    if matches!(&self.admission, TurnAdmission::Admitted { .. }) {
+                        continue;
+                    }
                     let operation = self.operation;
                     let id = identity(operation, step, item);
                     let destination = format!("{TURN_INPUTS}/{operation}/{step:010}/{item:020}");
