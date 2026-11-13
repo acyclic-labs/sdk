@@ -154,7 +154,7 @@ fn provider(adapter: Adapter, fixture: &JsValue) -> Result<WasmModelProvider, Js
             "max_event_bytes":4096,
         }))?,
     )?;
-    registry.resolve("fixture/model", None)
+    registry.resolve("fixture/model")
 }
 
 fn request(
@@ -224,7 +224,7 @@ async fn transient_refusal_headers_recover_without_reading_bodies_until_a_perman
                 "max_event_bytes":4096,
                 "retry":{"base_delay_ms":0,"max_delay_ms":0}
             }))?)?;
-            let provider = registry.resolve("fixture/model", None)?;
+            let provider = registry.resolve("fixture/model")?;
             let prepared = provider.prepare(request(&provider, None)?).await?;
             let failure = JsFuture::from(collect_model(prepared.generate(dispatch()?)?))
                 .await
@@ -382,7 +382,7 @@ async fn browser_reader_is_verified_for_counting_and_generation() -> Result<(), 
             "token_counter":{"path":"count_tokens","adapter":"chat","response_field":"input_tokens","framing_tokens":0},
         }))?,
     )?;
-    let provider = registry.resolve("local/fixture", Some(to_js(&json!({"temperature":0.1}))?))?;
+    let provider = registry.resolve("local/fixture")?;
     let file = FileRef::new(
         from_js(to_js(&json!({"provider":{"namespace":"test","family":"filesystem","version":"2"},"id":"project","class":"project","owner":{"kind":"project","id":"project"}}))?)?,
         "file.txt".into(), "1".into(), FileDescriptor::from_bytes(data,"text/plain",&mut None).map_err(error)?, "file.txt".into(), &mut None,
@@ -400,7 +400,10 @@ async fn browser_reader_is_verified_for_counting_and_generation() -> Result<(), 
                 }),
             }],
             tools: vec![],
-            sampling: Default::default(),
+            sampling: acyclic_harness_core::model::ModelSampling {
+                temperature: Some(0.1),
+                ..Default::default()
+            },
         },
         Limits::default(),
         None,

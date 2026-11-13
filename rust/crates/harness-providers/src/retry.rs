@@ -194,6 +194,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn recovery_timer_excludes_observer_latency_and_does_not_require_a_wall_clock() {
         use crate::{HttpRequest, HttpResponse, HttpTransport};

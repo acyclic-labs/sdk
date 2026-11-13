@@ -1,4 +1,5 @@
 use super::*;
+use crate::http::BrowserTransport;
 use acyclic_harness_core::wire::ErrorCode;
 use futures::TryStreamExt as _;
 use js_sys::Promise;
