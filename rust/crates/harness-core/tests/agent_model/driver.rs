@@ -752,12 +752,12 @@ fn distinct_inputs_start_distinct_turns() -> Result {
     let state = AgentState::adopted(path, &adopted(id(1))).expect("adopts");
     let input = |id: &str| -> Result<TurnInput> { Ok(request(id)?.1) };
     assert_eq!(
-        turn_id(&state, &input("a")?)?,
-        turn_id(&state, &input("a")?)?
+        turn_id(&state.path, &input("a")?)?,
+        turn_id(&state.path, &input("a")?)?
     );
     assert_ne!(
-        turn_id(&state, &input("a")?)?,
-        turn_id(&state, &input("b")?)?
+        turn_id(&state.path, &input("a")?)?,
+        turn_id(&state.path, &input("b")?)?
     );
     Ok(())
 }

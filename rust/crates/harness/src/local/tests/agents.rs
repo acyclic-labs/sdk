@@ -2021,7 +2021,7 @@ async fn a_shell_call_stages_its_output_on_the_journal_volume() -> Result<()> {
     );
     let state = agents.state(&root).await.map_err(agent)?;
     // Each turn's calls share one directory, named by the turn.
-    let turn = crate::agent::turn_id(&state, &entry.input).map_err(agent)?;
+    let turn = crate::agent::turn_id(&state.path, &entry.input).map_err(agent)?;
     let private = state
         .volumes
         .iter()
@@ -2383,7 +2383,7 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
     // The outcome is the one file recorded under the turn, beside its marker.
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let state = agents.state(&root).await.map_err(agent)?;
-    let turn = crate::agent::turn_id(&state, &entry.input).map_err(agent)?;
+    let turn = crate::agent::turn_id(&state.path, &entry.input).map_err(agent)?;
     let private = state
         .volumes
         .iter()
