@@ -136,6 +136,7 @@ pub struct FilesystemExecutionJournal<P: ?Sized, A: 'static, O: 'static> {
     execution: Option<(OperationId, OperationId)>,
     /// Owning agent/run; bound once by the shared turn host, never by a model.
     agent_events: Option<(crate::agent::AgentPath, OperationId, u64, bool)>,
+    clock: Arc<dyn acyclic_actors::local::Clock>,
     actor_admission: Option<acyclic_stream::StreamPath>,
     run_admission: Option<crate::supervision::RunAdmissionSource>,
     verified: tokio::sync::Mutex<SummaryCache>,
