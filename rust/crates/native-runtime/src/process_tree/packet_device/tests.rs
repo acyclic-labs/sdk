@@ -278,13 +278,24 @@ fn runtime_appearance_and_read_only_home() -> Result<(), Box<dyn std::error::Err
             std::ptr::null(),
             target.as_ptr(),
             std::ptr::null(),
-            flags | libc::MS_REMOUNT | libc::MS_RDONLY,
+            flags | libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY,
             std::ptr::null(),
         )
     } < 0
     {
-        return Err(io::Error::last_os_error().into());
+        return Err(format!(
+            "make original home mount read-only: {}",
+            io::Error::last_os_error()
+        )
+        .into());
     }
+    assert_eq!(
+        File::create(home.join("read-only-proof"))
+            .unwrap_err()
+            .raw_os_error(),
+        Some(libc::EROFS),
+        "the original home mount must actually refuse writes"
+    );
     let joined = device()?;
     assert_eq!(
         joined.retirement.host_id(),
