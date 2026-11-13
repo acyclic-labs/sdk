@@ -241,10 +241,7 @@ impl StockExecution<'_> {
             })?;
             stock_vec_push(
                 messages,
-                ModelMessage {
-                    role: ModelRole::System,
-                    content: ModelContent::Text(stock_string_copy(text, self.io)?),
-                },
+                super::tool_hooks::hook_context(stock_string_copy(text, self.io)?),
                 self.io,
             )?;
         }
@@ -482,10 +479,7 @@ impl StockExecution<'_> {
                 };
                 stock_vec_push(
                     hook_context,
-                    ModelMessage {
-                        role: ModelRole::System,
-                        content: ModelContent::Text(stock_string_copy(&text, self.io)?),
-                    },
+                    super::tool_hooks::hook_context(stock_string_copy(&text, self.io)?),
                     self.io,
                 )?;
                 stock_vec_push(&mut context, Value::String(text), self.io)?;
