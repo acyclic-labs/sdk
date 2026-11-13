@@ -230,17 +230,44 @@ pub fn validate_add_subscription(
 pub fn validate_remove_subscription(
     request: &wire::RemoveSubscriptionRequest,
 ) -> Result<(), ContractError> {
-    if !valid_actor_scope(
+    validate_subscription_control(
         &request.account_id,
         request.namespace.as_deref(),
         &request.actor_id,
-    ) || !valid_idempotency_key(&request.idempotency_key)
-        || request.subscription_id.is_empty()
+        &request.subscription_id,
+        &request.idempotency_key,
+    )
+}
+
+/// Validates resumption under the same scope and retry rules as removal.
+pub fn validate_resume_subscription(
+    request: &wire::ResumeSubscriptionRequest,
+) -> Result<(), ContractError> {
+    validate_subscription_control(
+        &request.account_id,
+        request.namespace.as_deref(),
+        &request.actor_id,
+        &request.subscription_id,
+        &request.idempotency_key,
+    )
+}
+
+fn validate_subscription_control(
+    account: &[u8],
+    namespace: Option<&str>,
+    actor: &str,
+    subscription: &str,
+    identity: &str,
+) -> Result<(), ContractError> {
+    if !valid_actor_scope(account, namespace, actor)
+        || !valid_idempotency_key(identity)
+        || subscription.is_empty()
     {
         return Err(ContractError::InvalidArgument);
     }
     Ok(())
 }
+
 /// Validates a fork: both Actors share one account and namespace, the child
 /// differs from the parent, and each child subscription id occurs once.
 pub fn validate_fork(request: &wire::ForkActorRequest) -> Result<(), ContractError> {

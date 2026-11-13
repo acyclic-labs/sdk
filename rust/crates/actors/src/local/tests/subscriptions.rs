@@ -74,11 +74,76 @@ async fn subscription_controls_recover_original_intent_after_reopen_and_removal(
         Err(Error::Conflict)
     ));
     provider.append(append("after")?).await?;
+    // A source waiting for an independent approval holds its own cursor,
+    // while external resumption shares the existing control receipt and CAS.
+    let current = store.load(&address).await?;
+    let mut held = current.state().ok_or("missing actor")?.clone();
+    held.subscriptions
+        .get_mut("events")
+        .ok_or("missing input")?
+        .paused = true;
+    store
+        .submit(store.prepare(&current, held.clone(), Vec::new(), key("hold")?, false)?)
+        .await?;
+    let resume = crate::wire::ResumeSubscriptionRequest {
+        namespace: add.namespace.clone(),
+        account_id: add.account_id.clone(),
+        actor_id: add.actor_id.clone(),
+        subscription_id: "events".into(),
+        idempotency_key: "resume".into(),
+    };
+    let paused = store.load(&address).await?;
+    let activations = provider.tail(schedule.clone()).await?;
+    let mut empty_input = resume.clone();
+    empty_input.subscription_id.clear();
+    let mut empty_identity = resume.clone();
+    empty_identity.idempotency_key.clear();
+    let mut oversized_identity = resume.clone();
+    oversized_identity.idempotency_key = "r".repeat(257);
+    for rejected in [empty_input, empty_identity, oversized_identity] {
+        assert!(matches!(
+            store.resume_subscription(&[], &rejected).await,
+            Err(Error::Invalid("invalid resume subscription request"))
+        ));
+    }
+    assert_eq!(store.load(&address).await?.tail, paused.tail);
+    assert_eq!(provider.tail(schedule.clone()).await?, activations);
+    store.resume_subscription(&[], &resume).await?;
+    let resumed = store.load(&address).await?;
+    let mut changed_resume = resume.clone();
+    changed_resume.subscription_id = "inbox".into();
+    assert!(matches!(
+        store.resume_subscription(&[], &changed_resume).await,
+        Err(Error::Stream(StreamError::IdempotencyMismatch))
+    ));
+    assert_eq!(store.load(&address).await?.tail, resumed.tail);
+    held.subscriptions
+        .get_mut("events")
+        .ok_or("missing input")?
+        .paused = false;
+    assert_eq!(resumed.state(), Some(&held));
+    assert_eq!(provider.tail(schedule.clone()).await?, activations + 1);
+    // A resume receipt cannot release a subsequent wait on the same input.
+    held.subscriptions
+        .get_mut("events")
+        .ok_or("missing input")?
+        .paused = true;
+    store
+        .submit(store.prepare(&resumed, held, Vec::new(), key("hold-again")?, false)?)
+        .await?;
+    let held_again = store.load(&address).await?;
+    store.resume_subscription(&[], &resume).await?;
+    assert_eq!(store.load(&address).await?.tail, held_again.tail);
+    let mut new_resume = resume.clone();
+    new_resume.idempotency_key = "resume-again".into();
+    store.resume_subscription(&[], &new_resume).await?;
+    let accepted = store.load(&address).await?;
     drop(store);
     drop(provider);
 
     let provider = Arc::new(LocalStream::open(root.path(), Default::default()).await?);
     let store = Store::new(provider.clone(), state_root()?);
+    store.resume_subscription(&[], &new_resume).await?;
     store.add_subscription(&[], &add).await?;
     assert_eq!(store.load(&address).await?.tail, accepted.tail);
     let mut changed = add.clone();
@@ -120,6 +185,17 @@ async fn subscription_controls_recover_original_intent_after_reopen_and_removal(
     store.remove_subscription(&[], &remove).await?;
     let removed = store.load(&address).await?;
     assert_eq!(removed.state(), before.state());
+    let mut absent_resume = resume.clone();
+    absent_resume.idempotency_key = "resume-absent".into();
+    assert!(
+        store
+            .resume_subscription(&[], &absent_resume)
+            .await
+            .is_err()
+    );
+    assert_eq!(store.load(&address).await?.tail, removed.tail);
+    store.resume_subscription(&[], &resume).await?;
+    assert_eq!(store.load(&address).await?.tail, removed.tail);
     store.add_subscription(&[], &add).await?;
     store.remove_subscription(&[], &remove).await?;
     assert_eq!(store.load(&address).await?.tail, removed.tail);
