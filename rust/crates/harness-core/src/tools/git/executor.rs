@@ -96,12 +96,13 @@ where
             ));
         };
         let current = self.generation(tree).await?;
-        let resolved = match acyclic_fs::git_merge_resolution(&current, paths, tracked_paths).await? {
-            acyclic_fs::GitMergeResolution::Resolved(paths) => paths,
-            acyclic_fs::GitMergeResolution::Conflicts(paths) => {
-                return Err(Error::MergeConflict { paths });
-            }
-        };
+        let resolved =
+            match acyclic_fs::git_merge_resolution(&current, paths, tracked_paths).await? {
+                acyclic_fs::GitMergeResolution::Resolved(paths) => paths,
+                acyclic_fs::GitMergeResolution::Conflicts(paths) => {
+                    return Err(Error::MergeConflict { paths });
+                }
+            };
         // A continued join tracks the paths the join itself published, as an
         // unconflicted join does: never a file the
         // resolution added or edited. The joined generation is the immutable
