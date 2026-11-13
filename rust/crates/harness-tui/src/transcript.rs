@@ -148,6 +148,7 @@ impl TranscriptRows {
     /// A streamed preview of that source is replaced by these settled blocks.
     /// Replaying the source changes no rows, even if a different source has
     /// identical text. State grows only with sources loaded into this view.
+    /// `None` denotes anonymous UI blocks rather than an immutable event.
     pub fn append_source(
         &mut self,
         source: Option<&str>,
@@ -167,6 +168,7 @@ impl TranscriptRows {
 
     /// Page original immutable sources before the current window. Sources
     /// already loaded by a settled event or another page are not duplicated.
+    /// Anonymous UI blocks (`None`) retain their supplied order.
     pub fn prepend_sources(
         &mut self,
         sources: impl IntoIterator<Item = (Option<String>, Vec<(BlockKind, String)>)>,
