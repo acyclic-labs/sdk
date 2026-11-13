@@ -212,8 +212,7 @@ impl Conversation {
 mod tests {
     use super::*;
     use crate::{
-        LocalHarness,
-        local::tests::{volume, volume_config},
+        local::tests::{open_scripted, volume, volume_config},
         test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn},
     };
     use std::sync::Mutex;
@@ -241,7 +240,7 @@ mod tests {
         let directory = tempfile::tempdir().map_err(failed)?;
         let project = volume(directory.path()).await?;
         let harness = Arc::new(
-            LocalHarness::open(volume_config(directory.path(), project, provider.clone())?).await?,
+            open_scripted(volume_config(directory.path(), project, provider.clone())?).await?,
         );
         let conversation = Conversation::open(harness.connect().await?);
         let operation = crate::OperationId::new();
@@ -342,9 +341,8 @@ mod tests {
         );
         let directory = tempfile::tempdir().map_err(failed)?;
         let project = volume(directory.path()).await?;
-        let harness = Arc::new(
-            LocalHarness::open(volume_config(directory.path(), project, provider)?).await?,
-        );
+        let harness =
+            Arc::new(open_scripted(volume_config(directory.path(), project, provider)?).await?);
         let conversation = Conversation::open(harness.connect().await?);
         assert!(
             matches!(conversation.run_until_goal(crate::OperationId::new(), "Finish the objective.", &Policy::default()).await,
@@ -371,12 +369,8 @@ mod tests {
                     let directory = tempfile::tempdir().map_err(failed)?;
                     let project = volume(directory.path()).await?;
                     let harness = Arc::new(
-                        LocalHarness::open(volume_config(
-                            directory.path(),
-                            project,
-                            provider.clone(),
-                        )?)
-                        .await?,
+                        open_scripted(volume_config(directory.path(), project, provider.clone())?)
+                            .await?,
                     );
                     let conversation = Conversation::open(harness.connect().await?);
                     let policy = Policy {
@@ -485,8 +479,7 @@ mod tests {
             let directory = tempfile::tempdir().map_err(failed)?;
             let project = volume(directory.path()).await?;
             let harness = Arc::new(
-                LocalHarness::open(volume_config(directory.path(), project, provider.clone())?)
-                    .await?,
+                open_scripted(volume_config(directory.path(), project, provider.clone())?).await?,
             );
             let conversation = Conversation::open(harness.connect().await?);
             assert!(matches!(
@@ -584,8 +577,7 @@ mod tests {
             let directory = tempfile::tempdir().map_err(failed)?;
             let project = volume(directory.path()).await?;
             let harness = Arc::new(
-                LocalHarness::open(volume_config(directory.path(), project, provider.clone())?)
-                    .await?,
+                open_scripted(volume_config(directory.path(), project, provider.clone())?).await?,
             );
             let conversation = Conversation::open(harness.connect().await?);
             let policy = Policy {
@@ -740,7 +732,7 @@ mod tests {
         let directory = tempfile::tempdir().map_err(failed)?;
         let project = volume(directory.path()).await?;
         let harness = Arc::new(
-            LocalHarness::open(volume_config(directory.path(), project, provider.clone())?).await?,
+            open_scripted(volume_config(directory.path(), project, provider.clone())?).await?,
         );
         let conversation = Conversation::open(harness.connect().await?);
         let operation = crate::OperationId::new();

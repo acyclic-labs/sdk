@@ -14,6 +14,7 @@ async fn remote_headless_run_and_json_supervisor_share_file_controls() {
 
     let fixture = fixture();
     let model = model(fixture._directory.path()).await;
+    let plugins = task_plugins(&fixture);
     let mut server = graphcoder_command(&fixture);
     server
         .arg("--settings-root")
@@ -24,6 +25,8 @@ async fn remote_headless_run_and_json_supervisor_share_file_controls() {
         .arg("physical")
         .arg("--catalog")
         .arg(&model.catalog)
+        .arg("--home-file")
+        .arg(&plugins)
         .args(["--model", "graphcoder-qual/tiny", "serve", "127.0.0.1:0"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -238,6 +241,7 @@ async fn local_supervisor_attaches_without_model_setup_and_refuses_to_create_an_
     .await;
     let goal = fixture._directory.path().join("observer-goal.md");
     let policy = fixture._directory.path().join("observer-policy.json");
+    let plugins = task_plugins(&fixture);
     std::fs::write(&goal, "Finish this task\n").unwrap();
     let mut selected = Policy {
         no_progress_turns: Some(1),
@@ -249,6 +253,8 @@ async fn local_supervisor_attaches_without_model_setup_and_refuses_to_create_an_
         &fixture,
         &model.catalog,
         vec![
+            "--home-file",
+            &plugins,
             "--host-state-directory",
             state.to_str().unwrap(),
             "run",
@@ -690,6 +696,23 @@ async fn headless_role_models_and_mixed_catalog_use_only_process_credentials() {
     const ROOT_KEY: &str = "fixture-root-process-credential";
     const WORKER_KEY: &str = "fixture-worker-process-credential";
     let fixture = fixture();
+    let plugins = task_plugins(&fixture);
+    let root_selection = acyclic_harness::templates::root()
+        .unwrap()
+        .model
+        .unwrap_or_else(|| "graphcoder-qual/tiny".into());
+    let (root_provider, root_model) = root_selection.split_once('/').unwrap();
+    let root_environment = format!(
+        "{}_API_KEY",
+        root_provider
+            .chars()
+            .map(|character| if character.is_ascii_alphanumeric() {
+                character.to_ascii_uppercase()
+            } else {
+                '_'
+            })
+            .collect::<String>()
+    );
     let role = "---\nversion: 1\ncontext: fork\nmay_spawn: []\nmodel: alternate/drifted\n---\nComplete the assigned audit.\n";
     let script = vec![
         tool_response(
@@ -711,19 +734,23 @@ async fn headless_role_models_and_mixed_catalog_use_only_process_credentials() {
         ANSWER.into(),
     ];
     let roots = Arc::new(AtomicUsize::new(0));
+    let authentication = Arc::new(Mutex::new(Vec::new()));
+    let observed_authentication = authentication.clone();
+    let scripted_root = root_model.to_owned();
     let model = model_with(
         fixture._directory.path(),
         "responses",
         move |headers, body, _| {
             let worker = body["model"] == "drifted";
             let expected = format!("Bearer {}", if worker { WORKER_KEY } else { ROOT_KEY });
-            assert!(
-                headers
-                    .get("authorization")
-                    .is_some_and(|header| header.as_bytes() == expected.as_bytes()),
-                "provider did not receive the configured process credential"
-            );
-            if worker {
+            let authenticated = headers
+                .get("authorization")
+                .is_some_and(|header| header.as_bytes() == expected.as_bytes());
+            observed_authentication.lock().unwrap().push((
+                body["model"].as_str().unwrap_or("").to_owned(),
+                authenticated,
+            ));
+            if worker || body["model"] != scripted_root {
                 ANSWER.into()
             } else {
                 let index = roots.fetch_add(1, Ordering::SeqCst);
@@ -734,8 +761,12 @@ async fn headless_role_models_and_mixed_catalog_use_only_process_credentials() {
     .await;
     let mut catalog: Value =
         serde_json::from_slice(&std::fs::read(&model.catalog).unwrap()).unwrap();
-    catalog["graphcoder-qual"]["authentication"] = json!("api_key");
+    catalog[root_provider] = catalog["graphcoder-qual"].clone();
+    catalog[root_provider]["authentication"] = json!("api_key");
+    catalog[root_provider]["models"][root_model] =
+        catalog["graphcoder-qual"]["models"]["tiny"].clone();
     catalog["alternate"] = catalog["graphcoder-qual"].clone();
+    catalog["alternate"]["authentication"] = json!("api_key");
     std::fs::write(&model.catalog, serde_json::to_vec(&catalog).unwrap()).unwrap();
     std::fs::write(
         fixture.settings.join(".codex/config.toml"),
@@ -748,18 +779,29 @@ async fn headless_role_models_and_mixed_catalog_use_only_process_credentials() {
     std::fs::write(&policy, serde_json::to_vec(&Policy::default()).unwrap()).unwrap();
     let mut command = graphcoder_command(&fixture);
     command
-        .env("GRAPHCODER_QUAL_API_KEY", ROOT_KEY)
+        .env(&root_environment, ROOT_KEY)
         .env("ALTERNATE_API_KEY", WORKER_KEY)
         .arg("--settings-root")
         .arg(&fixture.settings)
         .arg("--catalog")
         .arg(&model.catalog)
+        .arg("--home-file")
+        .arg(&plugins)
         .arg("run")
         .arg("--goal")
         .arg(&goal)
         .arg("--policy")
         .arg(&policy);
     let output = capture(command, "").await;
+    {
+        let authentication = authentication.lock().unwrap();
+        assert!(
+            authentication
+                .iter()
+                .all(|(model, accepted)| (model == root_model || model == "drifted") && *accepted),
+            "configured provider model or process credential differed: {authentication:?}"
+        );
+    }
     let stdout = succeeded(&output);
     let result: Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(result["result"]["goal"]["status"], "done");
@@ -767,7 +809,7 @@ async fn headless_role_models_and_mixed_catalog_use_only_process_credentials() {
     assert_eq!(
         requests
             .iter()
-            .filter(|request| request["model"] == "tiny")
+            .filter(|request| request["model"] == root_model)
             .count(),
         5
     );
