@@ -12,11 +12,14 @@ without confinement.
 | Unrelated files become readable or writable | `execution::tests::sandbox_policy`: ordinary-process control succeeds, confined absolute, `../outside` and workspace-symlink reads/writes receive PermissionDenied; host sentinel remains unchanged. |
 | A descendant sheds its parent's sandbox | The same matrix launches the test executable through ordinary `std::process::Command`; the descendant runs the entire probe, including symlink/traversal denial, admitted workspace/volume operations, metadata, the real shell and TCP denial, without a second grant or adapter call. |
 | Read-only primary or auxiliary grants regain writes | The same matrix covers writable primary/volume, read-only primary with writable volume, and both read-only, with and without process custody. |
-| Required shell dependencies or workspace metadata are denied | The same matrix runs the real platform shell, reads the workspace/volume, stats its parent and enumerates `.cargo`; Linux also executes `ls -la && rg --files`. |
+| Required shell dependencies or workspace metadata are denied | The same matrix runs the real platform shell, reads the workspace/volume, stats every ancestor and enumerates `.cargo`; Linux also executes `ls -la && rg --files`. |
 | A default confined process reaches a host TCP listener | The same matrix proves the unconfined connection first; confined connection is denied and the listener receives nothing. |
-| An inherited writable output handle bypasses pathname confinement | `execution::tests::inherited_file_stdio_cannot_bypass_the_workspace_boundary` rejects outside-file stdout with and without custody, preserves the sentinel and runs the identical unconfined shell as a positive control. |
+| Inherited file handles bypass pathname confinement | `execution::tests::inherited_file_stdio_cannot_bypass_the_workspace_boundary` rejects outside-file stdin and stdout with and without custody, preserves the sentinel and runs the identical unconfined shell as a positive control for each direction. |
 | A host-composed read scope exceeds its retained parent | `execution::tests::scoped_native_reads_pin_the_original_parent_and_refuse_escape` rejects foreign scopes; Unix also checks symlink/replacement, Windows checks the original directory cannot be renamed while pinned. |
 | A missing native enforcement capability is silently skipped | `sandbox_policy` unwraps the confined launch: no ignored test, capability skip or unconfined fallback. Windows requires native PSEC 1.1. |
+
+Native stdio refusal preserves `PermissionDenied` or `Unsupported` without
+equating typed preparation refusals with `Unsupported`.
 
 Additional existing Unix proof `execution::tests::sandbox_denies_outside_write`
 covers a workspace symlink to an outside file and an inheritable outside file
