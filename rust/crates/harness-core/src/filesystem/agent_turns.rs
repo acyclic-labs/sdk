@@ -2284,6 +2284,14 @@ where
                     .with_model_boundary(Arc::new(boundary))
                     .with_stop(stop)
                     .with_agent_approvals(Arc::clone(&approvals));
+                // Only this agent's selected turns have a journal on its private
+                // volume; an inherited ancestor turn is not a local predecessor.
+                let preceding_turn = context
+                    .settled
+                    .get(context.fork.unwrap_or(0)..)
+                    .and_then(|turns| turns.last())
+                    .map(|turn| turn.turn);
+                let journal = journal.with_preceding_turn(preceding_turn).await?;
                 let selected = context
                     .select(
                         &*self.stream,
