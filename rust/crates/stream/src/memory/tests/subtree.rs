@@ -61,7 +61,7 @@ proptest! {
                     &mut |_| { visited += 1; Ok(()) })?;
                 page.visit(&mut |_| { visited += 1; Ok(()) }, &mut |name| {
                         selected.push(StreamPath::new(format!("{prefix}/{name}"))?);
-                        Ok(())
+                        Ok(true)
                     })?;
                 assert_eq!(selected, expected[..expected.len().min(limit)]);
                 assert_eq!(page.has_more, expected.len() > limit);

@@ -4,7 +4,7 @@ use crate::agent::InboxRecord;
 #[cfg(test)]
 mod tests;
 
-pub(super) async fn capture_creation<P, O>(
+pub(in crate::filesystem) async fn capture_creation<P, O>(
     fs: &Fs<StreamAuthorityStore<P>, O>,
     agent: &AgentPath,
     prepared: &[acyclic_fs::PreparedGeneration],

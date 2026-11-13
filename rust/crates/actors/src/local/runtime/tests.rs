@@ -1764,8 +1764,13 @@ async fn placement_and_restart_admit_only_one_publishing_activation() -> TestRes
     publication.join(store.activation(&address)?)?;
     store.submit(publication).await?;
     let handler = Arc::new(Gated::new()?);
-    let restarted = Runtime::new(store, handler.clone(), Arc::new(SystemClock))
-        .with_external_placement(unrequested());
+    let restarted = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        handler.clone(),
+        Arc::new(SystemClock),
+    )
+    .with_external_placement(unrequested());
     restarted.place(address.clone(), 3).await?;
     handler.gate.add_permits(1);
     restarted.drain_actor(&address).await?;
@@ -1783,12 +1788,14 @@ async fn activation_transfer<P: StreamProvider>(provider: Arc<P>) -> TestResult 
     let handler = Arc::new(Gated::new()?);
     let next_handler = Arc::new(Gated::new()?);
     let original = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(provider.clone(), root()?),
         handler.clone(),
         Arc::new(SystemClock),
     )
     .with_external_placement(unrequested());
     let replacement = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(provider.clone(), root()?),
         next_handler.clone(),
         Arc::new(SystemClock),
