@@ -41,6 +41,7 @@ type Failure = Box<dyn std::error::Error>;
 use acyclic_harness::completion::Exit;
 mod capabilities;
 mod diff;
+mod prompt_history;
 mod query;
 mod session;
 mod tree;
@@ -996,6 +997,8 @@ async fn run_current(
     let mut older_future = std::pin::pin!(None);
     let mut output_rows = Vec::new();
     let mut input = PromptInput::default();
+    input.use_history_query();
+    let mut prompt_history = prompt_history::History::new(Arc::clone(&conversation));
     ui.config
         .apply(&mut input, &profile)
         .map_err(|errors| format!("UI configuration: {errors:?}"))?;
@@ -1288,6 +1291,12 @@ async fn run_current(
         let mut files_changed = false;
         let tree_deadline = sidebar.source.next_deadline();
         tokio::select! {
+            recalled = futures::future::poll_fn(|cx| prompt_history.poll(cx)) => {
+                match recalled {
+                    Ok(reply) => { if input.resolve_history(reply.request, &reply.expected, reply.text.as_deref(), reply.previous, now) { input.refresh_completions(); } },
+                    Err(error) => { view.notice = Some(error); },
+                }
+            }
             Some((id, settled)) = settlement_queries.next(), if !settlement_queries.is_empty() => {
                 let settled: acyclic_harness::Result<acyclic_harness::local::agent_conversation::InputSettlement> = settled;
                 settlement_replies.push((id, settled?));
@@ -1516,6 +1525,8 @@ async fn run_current(
                             usage_future.set(Some(usage(conversation.usage_query_with_prices(Arc::clone(&usage_prices)))));
                             sidebar.focused = false;
                             input.editor = Editor::default();
+                            input.use_history_query();
+                            prompt_history = prompt_history::History::new(Arc::clone(&conversation));
                             unsent = None;
                             files_changed = true;
                         }
@@ -1527,7 +1538,13 @@ async fn run_current(
                         .collect::<Vec<_>>();
                     for effect in effects.into_iter().map(|effect| paged(effect, page)) {
                         match effect {
+                            InputEffect::History { request, previous, search } => {
+                                if view.prompt.is_none() {
+                                    prompt_history.request(request, input.editor.text().to_owned(), previous, search);
+                                }
+                            }
                             InputEffect::Submit { text, .. } => {
+                                prompt_history = prompt_history::History::new(Arc::clone(&conversation));
                                 view.notice = None;
                                 // The view's own prompt is the visible one:
                                 // it takes this answer, never the approval.
@@ -2185,6 +2202,7 @@ mod tests {
             use acyclic_harness::tui::key_event::{KeyCode, KeyEvent, KeyModifiers};
             let key = KeyEvent::new(KeyCode::Char(key), KeyModifiers::CONTROL);
             let mut input = PromptInput::default();
+
             input.busy = true;
             assert!(
                 sidebar
@@ -2217,6 +2235,7 @@ mod tests {
                 ..Screen::default()
             };
             let mut input = PromptInput::default();
+
             let wide = screen.areas(Rect::new(0, 0, 100, 24), &input).tree;
             let discard = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
             sidebar.focused = true;

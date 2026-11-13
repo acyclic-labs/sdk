@@ -21,6 +21,15 @@ pub enum InputEffect {
         /// Existing user-message identifier when replacing a message.
         edit: Option<String>,
     },
+    /// Navigate the host's credited original prompt query.
+    History {
+        /// Reply identity; later edits invalidate it.
+        request: u64,
+        /// Older when true, newer when false.
+        previous: bool,
+        /// Reverse-search literal, absent for ordinary recall.
+        search: Option<String>,
+    },
     /// Copy text through the host clipboard adapter.
     Copy(String),
     /// Read text or image data from the clipboard.
@@ -73,9 +82,11 @@ pub struct PromptInput {
     pub editor: Editor,
     /// Semantic UI roles resolved against the detected terminal profile.
     pub theme: crate::config::ThemeStyles,
-    /// Shared input-history file projection; load/save with the history codecs.
+    /// The standalone editor history projection; query-backed hosts retain it at the source.
     /// Message edits and search previews never own or replace these entries.
     history: PromptHistory,
+    history_query: bool,
+    history_epoch: u64,
     /// Whether a submission is queued behind active host work.
     pub busy: bool,
     /// Whether Tab and empty-input Up/Down navigate approval/question items.
@@ -135,12 +146,42 @@ impl PromptInput {
         true
     }
 
-    /// Current history-file projection, shared by every editor context.
+    /// Delegate navigation to the host query instead of retaining submitted text.
+    pub fn use_history_query(&mut self) {
+        self.history_query = true;
+        self.history = PromptHistory::default();
+        self.history_epoch = self.history_epoch.wrapping_add(1);
+    }
+
+    /// Apply only the latest navigation reply, preserving edits made during IO.
+    pub fn resolve_history(
+        &mut self,
+        request: u64,
+        expected: &str,
+        text: Option<&str>,
+        previous: bool,
+        now_ms: u64,
+    ) -> bool {
+        if request != self.history_epoch || self.editor.text() != expected {
+            return false;
+        }
+        if let Some(search) = &mut self.search {
+            search.matched = text.is_some();
+        }
+        if let Some(text) = text {
+            self.editor.set_text(text, now_ms);
+            if previous {
+                self.editor.set_cursor(0, false);
+            }
+        }
+        true
+    }
+    /// Current standalone history projection, shared by every editor context.
     pub fn history(&self) -> &PromptHistory {
         &self.history
     }
 
-    /// Fold a loaded history-file snapshot, invalidating older navigation.
+    /// Fold a loaded history snapshot, invalidating older navigation.
     pub fn replace_history(&mut self, snapshot: PromptHistory) {
         self.history.replace(snapshot);
     }
@@ -225,13 +266,14 @@ impl PromptInput {
 
     /// Accept one whole committed text event. No timing heuristic is applied.
     pub fn committed_text(&mut self, text: &str, now_ms: u64) -> Vec<InputEffect> {
-        let effects = self.flush_chord();
+        let mut effects = self.flush_chord();
+        self.history_epoch = self.history_epoch.wrapping_add(1);
         self.last_interrupt = None;
         self.last_activity = now_ms;
         if let Some(search) = self.search.as_mut() {
             search.query.push_str(text);
             self.history.reset();
-            self.search_previous();
+            self.search_previous(&mut effects);
         } else {
             self.editor.insert(text, now_ms);
         }
@@ -240,6 +282,7 @@ impl PromptInput {
 
     /// Accept bracketed paste or explicitly identified clipboard text.
     pub fn paste(&mut self, text: &str, now_ms: u64) -> Vec<InputEffect> {
+        self.history_epoch = self.history_epoch.wrapping_add(1);
         let effects = self.flush_chord();
         self.last_interrupt = None;
         if self.question {
@@ -275,6 +318,9 @@ impl PromptInput {
     /// Process a crossterm key. Page keys and application escape routing remain
     /// host effects, so editor shortcuts cannot accidentally scroll the input.
     pub fn key(&mut self, key: KeyEvent, now_ms: u64, width: usize) -> Vec<InputEffect> {
+        if key.kind != KeyEventKind::Release {
+            self.history_epoch = self.history_epoch.wrapping_add(1);
+        }
         self.input_width = width;
         if key.kind == KeyEventKind::Release {
             return vec![];
@@ -393,7 +439,7 @@ impl PromptInput {
             DecodedKey::Action { action, .. } => action,
         };
         match action {
-            Action::ReverseSearch => self.search_previous(),
+            Action::ReverseSearch => self.search_previous(effects),
             Action::Escape => self.finish_search(now_ms, false),
             Action::Submit => self.finish_search(now_ms, true),
             Action::Delete(true) => {
@@ -406,7 +452,7 @@ impl PromptInput {
                     search.query.truncate(end);
                     self.history.reset();
                 }
-                self.search_previous();
+                self.search_previous(effects);
             }
             _ => {
                 self.finish_search(now_ms, true);
@@ -474,7 +520,7 @@ impl PromptInput {
                 effects.push(InputEffect::Paste);
             }
             Action::ExternalEditor => effects.push(InputEffect::ExternalEditor),
-            Action::ReverseSearch => self.start_search(),
+            Action::ReverseSearch => self.start_search(effects),
             Action::Escape if self.editing.is_some() => {
                 if let Some(edit) = self.editing.take() {
                     self.editor = edit.draft;
@@ -517,6 +563,25 @@ impl PromptInput {
             return;
         }
         let previous = motion == Motion::Up;
+        if self.history_query
+            && !select
+            && matches!(motion, Motion::Up | Motion::Down)
+            && self.editor.selection().is_empty()
+            && self.editor.cursor()
+                == if previous {
+                    0
+                } else {
+                    self.editor.text().len()
+                }
+        {
+            self.history_epoch = self.history_epoch.wrapping_add(1);
+            effects.push(InputEffect::History {
+                request: self.history_epoch,
+                previous,
+                search: None,
+            });
+            return;
+        }
         let history = !select
             && matches!(motion, Motion::Up | Motion::Down)
             && self.editor.recall(&mut self.history, previous, now_ms);
@@ -527,7 +592,9 @@ impl PromptInput {
 
     fn submit(&mut self, now_ms: u64, effects: &mut Vec<InputEffect>) {
         if let Some(text) = self.editor.enter(false, now_ms) {
-            self.history.push(text.clone());
+            if !self.history_query {
+                self.history.push(text.clone());
+            }
             let edit = self.editing.take().map(|edit| {
                 self.editor = edit.draft;
                 self.history.restore_navigation(edit.navigation);
@@ -571,7 +638,7 @@ impl PromptInput {
         }
     }
 
-    fn start_search(&mut self) {
+    fn start_search(&mut self, effects: &mut Vec<InputEffect>) {
         let original = self.editor.clone();
         let navigation = self.history.navigation.clone();
         self.history.reset();
@@ -581,10 +648,21 @@ impl PromptInput {
             query: String::new(),
             matched: false,
         });
-        self.search_previous();
+        self.search_previous(effects);
     }
 
-    fn search_previous(&mut self) {
+    fn search_previous(&mut self, effects: &mut Vec<InputEffect>) {
+        if self.history_query {
+            if let Some(search) = &self.search {
+                self.history_epoch = self.history_epoch.wrapping_add(1);
+                effects.push(InputEffect::History {
+                    request: self.history_epoch,
+                    previous: true,
+                    search: Some(search.query.clone()),
+                });
+            }
+            return;
+        }
         if let Some(search) = self.search.as_mut() {
             if let Some(text) = self.history.reverse_search(&search.query) {
                 let settings = *self.editor.settings();
@@ -598,6 +676,9 @@ impl PromptInput {
     }
 
     fn finish_search(&mut self, now_ms: u64, accept: bool) {
+        if self.search.is_some() {
+            self.history_epoch = self.history_epoch.wrapping_add(1);
+        }
         if let Some(search) = self.search.take() {
             let chosen = self.editor.text().to_owned();
             self.editor = search.original;
