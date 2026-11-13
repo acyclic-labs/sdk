@@ -68,8 +68,7 @@ export default async function initialize() { throw new Error(String(new URL('./a
     writeFileSync(entry, "export {ready} from './auth/generated/wasm/acyclic_auth_wasm.js';");
     const closure = wasmAssetClosure('retain original artifact');
     const built = await Bun.build({entrypoints:[entry], target:'browser', format:'esm', plugins:[closure.plugin]});
-    assert.equal(built.success, true, built.logs.join('
-'));
+    assert.equal(built.success, true, built.logs.join('\n'));
     // Bun caches transpiled sources above 50 KB by content, including resolved imports.
     const artifact = closure.rewrite(await built.outputs[0].text()) + `
 // ${'x'.repeat(64 * 1024)}
