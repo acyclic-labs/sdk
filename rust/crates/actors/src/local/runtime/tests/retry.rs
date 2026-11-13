@@ -446,6 +446,7 @@ async fn each_handler_invocation_gets_its_own_capability_binding() -> TestResult
         failures: std::sync::Mutex::new(Vec::new()),
     });
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(provider), root()?).with_composer(Arc::new(Guard {
             refusal: Refusal::StaleGuard,
             seals: Arc::new(AtomicUsize::new(0)),

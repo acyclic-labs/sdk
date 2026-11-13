@@ -795,6 +795,7 @@ async fn placement_observation_tracks_committed_commands_and_runtime_replacement
         create.join(store.create(None, &address, crate::local::Creation::default())?)?;
         store.submit(create).await?;
         let runtime = crate::hosting::Host::new(
+            crate::guest::Requests::default(),
             Store::new(provider.clone(), root()?),
             address.clone(),
             Arc::new(Package::new()?),
@@ -803,6 +804,7 @@ async fn placement_observation_tracks_committed_commands_and_runtime_replacement
         )
         .with_external_placement();
         let replacement = crate::hosting::Host::new(
+            crate::guest::Requests::default(),
             Store::new(provider.clone(), root()?),
             address.clone(),
             Arc::new(Package::new()?),
@@ -822,6 +824,7 @@ async fn placement_observation_tracks_committed_commands_and_runtime_replacement
     }
     let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
     let restored = crate::hosting::Host::new(
+        crate::guest::Requests::default(),
         Store::new(provider, root()?),
         address.clone(),
         Arc::new(Package::new()?),
@@ -856,6 +859,7 @@ async fn first_fork_placement_resumes_once_and_preserves_later_pause() -> TestRe
         .await?;
     assert!(store.load(&child).await?.state().unwrap().paused());
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(provider.clone(), root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -873,6 +877,7 @@ async fn first_fork_placement_resumes_once_and_preserves_later_pause() -> TestRe
         .await?;
     assert!(store.load(&replay).await?.state().unwrap().paused());
     let replacement = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(provider.clone(), root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -1886,6 +1891,7 @@ async fn a_cancelled_waiter_leaves_the_active_delivery_alarm() -> TestResult {
     let store = Store::new(Arc::clone(&provider), root()?);
     let address = spawn_with(&store, "waiter-alarm", &[b"set 100"]).await?;
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         store,
         Arc::new(Package::new()?),
         Arc::new(Manual(AtomicU64::new(1))),

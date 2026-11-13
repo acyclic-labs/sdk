@@ -41,6 +41,7 @@ async fn shard_assignment_isolates_wakes_and_checkpoint_progress() -> TestResult
     .with_scheduling_shards([shard])?;
     assert!(matches!(
         Runtime::new(
+            crate::guest::Requests::default(),
             Store::new(Arc::clone(&provider), root()?),
             Arc::new(Package::new()?),
             Arc::new(SystemClock),
@@ -204,6 +205,7 @@ async fn after_wake(
     let target = spawn_with(&store, "forged-target", &[b"emit"]).await?;
     let host = || {
         Ok::<_, Box<dyn std::error::Error>>(Runtime::new(
+            crate::guest::Requests::default(),
             Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one),
             Arc::new(Package::new()?),
             Arc::new(SystemClock),
