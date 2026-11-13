@@ -115,7 +115,7 @@ async fn direct_writer_rejects_empty_and_unrelated_callers() -> Result<(), Box<d
 }
 
 #[tokio::test]
-async fn cached_reply_checks_the_callers_list_ceiling() -> Result<(), Box<dyn Error>> {
+async fn cached_write_receipt_requires_a_live_writer_ceiling() -> Result<(), Box<dyn Error>> {
     let fixture = Fixture::new().await?;
     let writer = acyclic_harness::filesystem::FilesystemContentPublisher::new(
         fixture.host.clone(),
@@ -136,16 +136,20 @@ async fn cached_reply_checks_the_callers_list_ceiling() -> Result<(), Box<dyn Er
             acyclic_harness::conversation::ContentAccess::default(),
         )?
         .await?;
-    for (list, expired, allowed) in [
-        (false, false, false),
-        (true, true, false),
-        (true, false, true),
+    for (actions, path, expired, allowed) in [
+        (&[Action::Read, Action::ReadHistory][..], true, false, false),
+        (
+            &[Action::Read, Action::ReadHistory, Action::List][..],
+            true,
+            false,
+            false,
+        ),
+        (&[Action::Write][..], true, true, false),
+        (&[Action::Write][..], false, false, false),
+        (&[Action::Create][..], true, false, true),
+        (&[Action::Write][..], true, false, true),
     ] {
-        let mut actions = vec![Action::Read, Action::ReadHistory];
-        if list {
-            actions.push(Action::List);
-        }
-        let caller = fixture.narrowed_for(&actions, true, expired)?;
+        let caller = fixture.narrowed_for(actions, path, expired)?;
         let task = context::content_context(
             fixture.reader(&fixture.scope)?,
             Some(writer.clone()),
@@ -156,6 +160,11 @@ async fn cached_reply_checks_the_callers_list_ceiling() -> Result<(), Box<dyn Er
         assert_eq!(result.is_ok(), allowed, "{result:?}");
         if allowed {
             assert_eq!(result?.0, Some(created.clone()));
+        } else {
+            assert_eq!(
+                result.unwrap_err().code(),
+                acyclic_harness::wire::ErrorCode::Unauthorized
+            );
         }
     }
     Ok(())

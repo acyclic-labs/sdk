@@ -93,11 +93,15 @@ async fn racing_observation(revoke: bool, range: bool) -> Result<(), Box<dyn Err
     };
     let (result, published) = futures::join!(read, publication);
     published?;
-    // Either publication invalidates the captured observation. The return
-    // fence must refuse these bytes instead of waiting for a quiet Head.
-    assert!(
-        matches!(result, Err(error) if error.code() == acyclic_harness::wire::ErrorCode::Conflict)
-    );
+    // A policy change invalidates the return cut. An unrelated data write
+    // must neither refuse the original bytes nor wait for a quiet Head.
+    if revoke {
+        assert!(
+            matches!(result, Err(error) if error.code() == acyclic_harness::wire::ErrorCode::Unauthorized)
+        );
+    } else {
+        assert_eq!(result?.as_ref(), contents.as_bytes());
+    }
     assert_eq!(
         objects
             .content_reads
@@ -110,8 +114,8 @@ async fn racing_observation(revoke: bool, range: bool) -> Result<(), Box<dyn Err
 }
 
 #[tokio::test]
-async fn overtaken_return_observation_refuses_without_rereading_data() -> Result<(), Box<dyn Error>>
-{
+async fn return_observation_fences_policy_without_retrying_unrelated_writes()
+-> Result<(), Box<dyn Error>> {
     for range in [false, true] {
         for revoke in [false, true] {
             racing_observation(revoke, range).await?;
