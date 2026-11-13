@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { sha256File } from "./file-digest.mjs";
 import { constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { copyFile, open } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
@@ -197,7 +198,7 @@ export async function readArchivePayload(input, options = {}) {
 
 export async function copyVerifiedArchive(source, destination, expected) {
   await copyFile(source, destination, constants.COPYFILE_EXCL);
-  if ((await readTarGzip(destination, () => {})).digest !== expected) throw new Error("archive evidence changed");
+  if (await sha256File(destination) !== expected) throw new Error("archive evidence changed");
 }
 
 export function isCanonicalRelativePath(path) {

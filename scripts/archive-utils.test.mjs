@@ -10,7 +10,7 @@ import { validateArchive } from "./validate-npm-package.mjs";
 import { createHash } from "node:crypto";
 import { gzipSync, gunzipSync } from "node:zlib";
 import { fuzz, fuzzGzip, fuzzDeclared, fuzzPayload, fuzzArtifactTree } from "./archive-utils.fuzz.mjs";
-import { collectBody, hashBody, isCanonicalRelativePath, readPayloadEntries, readTarGzip, sha256, visitTar, copyWasmArtifacts, preserveWasmArtifacts, wasmArtifactFiles, wasmArtifactInventory } from "./archive-utils.mjs";
+import { collectBody, hashBody, isCanonicalRelativePath, readPayloadEntries, readTarGzip, sha256, visitTar, copyVerifiedArchive, copyWasmArtifacts, preserveWasmArtifacts, wasmArtifactFiles, wasmArtifactInventory } from "./archive-utils.mjs";
 
 const seed = readFileSync(new URL("./test-support/archive-corpus/native-ustar.tar", import.meta.url));
 
@@ -296,6 +296,7 @@ async function planted(removed, replacement = "") {
     assert.ok(source.includes(defect), "planted defect no longer matches production");
     source = source.replace(defect, replacement);
   }
+  source = source.replace('"./file-digest.mjs"', JSON.stringify(new URL("./file-digest.mjs", import.meta.url).href));
   const production = `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
   return import(`data:text/javascript;base64,${Buffer.from(target.replace('"./archive-utils.mjs"', JSON.stringify(production))).toString("base64")}`);
 }
@@ -453,4 +454,19 @@ test("plugin qualification streams large manifests and binds the original archiv
     assert.notEqual(changed.status, 0);
     assert.match(changed.stderr, /bytes differ/);
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("archive copies retain exact admitted bytes and refuse replacement or digest drift", async () => {
+  const root = await mkdtemp(join(tmpdir(), "verified-archive-copy-"));
+  const source = join(root, "source.tgz"), destination = join(root, "copy.tgz");
+  const bytes = gzipSync(seed);
+  try {
+    await writeFile(source, bytes);
+    await copyVerifiedArchive(source, destination, sha256(bytes));
+    assert.deepEqual(readFileSync(destination), bytes);
+    await assert.rejects(copyVerifiedArchive(source, destination, sha256(bytes)), { code: "EEXIST" });
+    assert.deepEqual(readFileSync(destination), bytes);
+    await writeFile(source, Buffer.concat([bytes, Buffer.from("changed")]));
+    await assert.rejects(copyVerifiedArchive(source, join(root, "changed.tgz"), sha256(bytes)), /archive evidence changed/);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

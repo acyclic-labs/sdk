@@ -1,7 +1,7 @@
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { open } from "node:fs/promises";
+import { digestFile } from "../../../scripts/file-digest.mjs";
 import { basename, delimiter, dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -121,23 +121,10 @@ export function readInput(root, name, digest) {
 // Keep large pinned files on disk and bind evidence to the actual open file.
 export async function hashInput(root, name, digest) {
   if (!/^[a-f0-9]{64}$/.test(digest)) throw new Error("authority input digest mismatch");
-  const path = inputPath(root, name), file = await open(path, "r");
-  try {
-    const before = await file.stat({ bigint: true });
-    if (!before.isFile()) throw new Error("authority input is not a regular file");
-    const hash = createHash("sha256");
-    let size = 0n;
-    for await (const chunk of file.createReadStream({ autoClose: false })) {
-      hash.update(chunk);
-      size += BigInt(chunk.length);
-    }
-    const after = await file.stat({ bigint: true });
-    if (size !== before.size || after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) throw new Error("authority input changed while reading");
-    if (hash.digest("hex") !== digest) throw new Error("authority input digest mismatch");
-    return { path, digest, size };
-  } finally {
-    await file.close();
-  }
+  const path = inputPath(root, name);
+  const evidence = await digestFile(path);
+  if (evidence.digest !== digest) throw new Error("authority input digest mismatch");
+  return { path, ...evidence };
 }
 
 export function loadAuthority(root) {
