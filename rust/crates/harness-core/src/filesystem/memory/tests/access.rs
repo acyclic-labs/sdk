@@ -140,12 +140,24 @@ async fn filesystem_roles_require_signed_scope_and_caller_ceiling() -> Result<()
             })
             .transpose()
             .map_err(|error| Error::Invalid(error.to_string()))?;
+        let inherited = VolumeRef::new(
+            storage.volume.provider().clone(),
+            "role-fork".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+            &mut None,
+        )?;
+        let inherited_capabilities = [
+            inherited.capability(VolumeOperation::Read, &mut None)?,
+            inherited.capability(VolumeOperation::Write, &mut None)?,
+        ];
         let guest_capabilities = Capabilities::new(
             storage
                 .scope
                 .capabilities()
                 .iter()
-                .chain(structured.as_deref()),
+                .chain(structured.as_deref())
+                .chain(inherited_capabilities.iter().map(String::as_str)),
         );
         let capabilities = Capabilities::new(guest_capabilities.iter().chain(["role:control"]));
         let owner = storage.issuer.bootstrap_scope(
@@ -174,6 +186,32 @@ async fn filesystem_roles_require_signed_scope_and_caller_ceiling() -> Result<()
         };
         let owner_directory = directory_read(&owner)?;
         let guest_directory = directory_read(&guest)?;
+        let inherited_owner =
+            ContentGrant::verify_directory_read(&verifier, &owner, &inherited, "", &mut None)?;
+        let inherited_guest =
+            ContentGrant::verify_directory_read(&verifier, &guest, &inherited, "", &mut None)?;
+        let inherited_write = ContentGrant::verify(
+            &verifier,
+            &owner,
+            &inherited,
+            VolumeOperation::Write,
+            &mut None,
+        )?;
+        // The destination keeps its original unrestricted policy. Only the
+        // source policy below requires the role, so a destination-only ceiling
+        // check cannot satisfy these inherited metadata controls.
+        let fork = storage
+            .host
+            .fork_volume(
+                &storage.volume,
+                &owner_read,
+                &storage.host.file_generation(&file, None)?,
+                &inherited,
+                &inherited_write,
+                None,
+                &IdempotencyKey::new("inherited-role-ceiling")?,
+            )
+            .await?;
         let mut restricted: Policy =
             serde_json::from_slice(super::super::super::access::INITIAL_POLICY)
                 .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -187,6 +225,71 @@ async fn filesystem_roles_require_signed_scope_and_caller_ceiling() -> Result<()
         let owned = PreparationIo::from_budget(budget, &cancel)?;
         let original = PreparationIo::from_native_work(&native)?;
         for io in [None, Some(&owned), Some(&original)] {
+            for path in ["ordinary", "absent"] {
+                let selected = storage
+                    .host
+                    .select_private_generation(
+                        &inherited,
+                        &inherited_owner,
+                        path,
+                        Some(&fork.generation),
+                        crate::conversation::ContentAccess {
+                            ceiling: Some(owner.capabilities()),
+                            io,
+                        },
+                    )
+                    .await?;
+                let stat = storage
+                    .host
+                    .stat_private_path(
+                        &inherited,
+                        &inherited_owner,
+                        path,
+                        Some(&selected),
+                        crate::conversation::ContentAccess {
+                            ceiling: Some(owner.capabilities()),
+                            io,
+                        },
+                    )
+                    .await?;
+                assert_eq!(stat.is_some(), path == "ordinary");
+                for (grant, ceiling) in [
+                    (&inherited_owner, guest.capabilities()),
+                    (&inherited_guest, owner.capabilities()),
+                ] {
+                    let access = crate::conversation::ContentAccess {
+                        ceiling: Some(ceiling),
+                        io,
+                    };
+                    let error = storage
+                        .host
+                        .select_private_generation(
+                            &inherited,
+                            grant,
+                            path,
+                            Some(&fork.generation),
+                            access,
+                        )
+                        .await
+                        .expect_err("inherited generation bypassed caller ceiling");
+                    assert_eq!(error.code(), crate::wire::ErrorCode::Unauthorized);
+                    let error = storage
+                        .host
+                        .stat_private_path(
+                            &inherited,
+                            grant,
+                            path,
+                            Some(&selected),
+                            crate::conversation::ContentAccess {
+                                ceiling: Some(ceiling),
+                                io,
+                            },
+                        )
+                        .await
+                        .expect_err("inherited metadata bypassed caller ceiling");
+                    assert_eq!(error.code(), crate::wire::ErrorCode::Unauthorized);
+                }
+            }
             assert_eq!(
                 storage
                     .host
