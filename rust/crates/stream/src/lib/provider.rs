@@ -205,12 +205,25 @@ impl EphemeralLease {
         &self.root
     }
 
-    /// Releases the subtree and waits until it is gone.
+    /// Releases the subtree and waits until it is gone. Once started, cleanup
+    /// remains owned even if this waiter is cancelled.
     pub async fn settle(mut self) -> Result<(), StreamError> {
-        match take_release(&mut self.release) {
-            Some(release) => release.await,
-            None => Ok(()),
+        let Some(release) = take_release(&mut self.release) else {
+            return Ok(());
+        };
+        #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+        {
+            let (send, receive) = futures::channel::oneshot::channel();
+            crate::runtime::PlatformExecutor.spawn_owned(futures::FutureExt::map(
+                release,
+                move |result| {
+                    let _ = send.send(result);
+                },
+            ));
+            receive.await.map_err(|_| StreamError::Unavailable)?
         }
+        #[cfg(all(target_arch = "wasm32", not(feature = "wasm")))]
+        release.await
     }
 }
 

@@ -19,6 +19,11 @@ struct CommitPublication {
     _scratch: Allocation,
 }
 
+enum PublicationRetention<'a> {
+    Durable(RetainedFactRef),
+    Ephemeral(&'a MemoryStream, EphemeralRetention),
+}
+
 impl CommitPlan {
     fn bind(
         &mut self,
@@ -78,26 +83,41 @@ impl CommitPublication {
         key: IdempotencyKey,
         digest: [u8; 32],
         scope: &Scope,
-        retained: Option<RetainedFactRef>,
+        retained: PublicationRetention<'_>,
     ) -> Result<(CommitOutcome, Allocation), StreamError> {
         install_namespace(state, self.namespace, &self.envelope, scope)?;
         state.advance(scope, self.time);
         let result = IdempotencyOutcome::Commit(self.envelope);
-        if let Some(retained) = retained {
-            retain(
-                state,
-                probe,
-                None,
-                Some(key),
-                digest,
-                result,
-                (self.resident, retained),
-            );
-        } else {
-            let index = state.decision;
-            state
-                .ephemeral
-                .retain(scope, &key, digest, result, index, self.resident);
+        match retained {
+            PublicationRetention::Durable(retained) => {
+                retain(
+                    state,
+                    probe,
+                    None,
+                    Some(key),
+                    digest,
+                    result,
+                    (self.resident, retained),
+                );
+            }
+            PublicationRetention::Ephemeral(stream, retention) => {
+                let index = state.decision;
+                state.ephemeral.retain(
+                    stream,
+                    scope,
+                    retention,
+                    EphemeralReplay {
+                        live: None,
+                        key,
+                        next: None,
+                        digest,
+                        result,
+                        envelope: None,
+                        index,
+                        _allocation: self.resident,
+                    },
+                );
+            }
         }
         Ok((self.result, self.output_claim))
     }
@@ -507,7 +527,7 @@ impl MemoryStream {
     > {
         let scope = state.ephemeral.commit_scope(&state.paths, request)?;
         if let Some((replayed, result, index)) =
-            self.replay_in(state, &scope, request.idempotency_key.as_bytes())?
+            self.replay_in(state, request.idempotency_key.as_bytes())?
         {
             if *replayed != digest {
                 return Err(StreamError::IdempotencyMismatch);
@@ -534,7 +554,12 @@ impl MemoryStream {
             }
         };
         check_deadline()?;
-        let mut probes = self.replay_insertion_probes(request.idempotency_key.as_bytes())?;
+        let durable = matches!(scope, Scope::Durable);
+        let mut probes = if durable {
+            self.replay_insertion_probes(request.idempotency_key.as_bytes())?
+        } else {
+            ReplayProbes::default()
+        };
         let (conflicts, output_claim) =
             self.vector(crate::preparation::hard_conditions(request))?;
         // The receipt carries the skipped soft effects, so their claim joins
@@ -594,12 +619,13 @@ impl MemoryStream {
                 }
             }),
         )?;
-        let durable = matches!(scope, Scope::Durable);
         if durable {
             admit_replay(state, self.limits)?;
         }
         reserve_coordinated(state, &applied, self.limits)?;
-        self.reserve_commit_index(&mut probes)?;
+        if durable {
+            self.reserve_commit_index(&mut probes)?;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
             work.record(work.meter.admit_codec(0, 0, identity_bytes()))?;
@@ -610,6 +636,7 @@ impl MemoryStream {
             work.record(work.meter.record_codec(0, 0, identity_bytes()))?;
         }
         let retained = durable.then(|| self.reserve_retained(state)).transpose()?;
+        let ephemeral = self.reserve_ephemeral(&scope, &request.idempotency_key)?;
         let mut plan = self.plan_commit(state, &applied, commit_id, time)?;
         drop((applied, applied_claim));
         self.absorb(&mut plan.output_claim, skipped_claim)?;
@@ -636,9 +663,16 @@ impl MemoryStream {
                 if let Some(envelope) = &mut envelope {
                     bind_envelope(envelope, commit_id, time);
                 }
-                let retained = retained
-                    .map(|retained| self.install_retained(state, retained))
-                    .transpose()?;
+                let retained = match retained {
+                    Some(retained) => {
+                        PublicationRetention::Durable(self.install_retained(state, retained)?)
+                    }
+                    None => PublicationRetention::Ephemeral(
+                        self,
+                        ephemeral
+                            .unwrap_or_else(|| unreachable!("leased write reserves its indexes")),
+                    ),
+                };
                 let (outcome, allocation) = publication.publish(
                     state,
                     &mut |items| self.record_replay_probe(&mut probes, items),

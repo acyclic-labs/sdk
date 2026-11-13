@@ -56,12 +56,12 @@ impl MemoryStream {
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
         let state = self.state.read().await;
         Ok(self
-            .replay(&state, idempotency_key.as_bytes())?
-            .map(|replay| IdempotencyObservation {
+            .replay_in(&state, idempotency_key.as_bytes())?
+            .map(|(digest, result, index)| IdempotencyObservation {
                 idempotency_key,
-                request_digest: replay.digest,
-                outcome: replay.result.clone(),
-                revision: Some(self.revisions.at(replay.index)),
+                request_digest: *digest,
+                outcome: result.clone(),
+                revision: Some(self.revisions.at(index)),
             }))
     }
 
@@ -834,22 +834,18 @@ impl MemoryStream {
                             let digest = provider.digest(&mut request).map_err(E::from)?;
                             let cut = {
                                 let state = provider.state.read().await;
-                                if let Some(replay) = provider
-                                    .replay(&state, request.idempotency_key.as_bytes())
+                                if let Some((replayed, result, index)) = provider
+                                    .replay_in(&state, request.idempotency_key.as_bytes())
                                     .map_err(E::from)?
                                 {
-                                    if replay.digest != digest {
+                                    if *replayed != digest {
                                         return Err(E::from(StreamError::IdempotencyMismatch));
                                     }
-                                    let IdempotencyOutcome::Commit(value) = &replay.result else {
+                                    let IdempotencyOutcome::Commit(value) = result else {
                                         return Err(E::from(StreamError::IdempotencyMismatch));
                                     };
                                     let (receipt, mut claim) = provider
-                                        .replayed(
-                                            &request,
-                                            value,
-                                            provider.revisions.at(replay.index),
-                                        )
+                                        .replayed(&request, value, provider.revisions.at(index))
                                         .map_err(E::from)?;
                                     let envelope = provider
                                         .selected_envelope(value, accepted, &mut claim)
@@ -1057,17 +1053,19 @@ impl MemoryStream {
     ) -> crate::NativeStreamResult<Option<IdempotencyObservation>> {
         let state = self.state.read().await;
         let replay = inspect(&meter, || {
-            state.replay(key.as_bytes(), |items| meter.examine(items, 0))
+            state.lookup_replay(key.as_bytes(), |items| meter.examine(items, 0))
         })??;
         let output = match replay {
-            Some(replay) => crate::native::clone_outcome(&replay.result, &meter)?.map(|outcome| {
-                Some(IdempotencyObservation {
-                    idempotency_key: key,
-                    request_digest: replay.digest,
-                    outcome,
-                    revision: Some(self.revisions.at(replay.index)),
+            Some((digest, result, index)) => {
+                crate::native::clone_outcome(result, &meter)?.map(|outcome| {
+                    Some(IdempotencyObservation {
+                        idempotency_key: key,
+                        request_digest: *digest,
+                        outcome,
+                        revision: Some(self.revisions.at(index)),
+                    })
                 })
-            }),
+            }
             None => crate::NativeStreamOutput::new(None, ReadAllocation::empty(&meter)),
         };
         meter.check()?;

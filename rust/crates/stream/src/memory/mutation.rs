@@ -27,11 +27,10 @@ impl MemoryStream {
     fn replay_outcome<'a>(
         &self,
         state: &'a State,
-        scope: &Scope,
         key: &crate::IdempotencyKey,
         digest: [u8; 32],
     ) -> Result<Option<&'a IdempotencyOutcome>, StreamError> {
-        let Some((replayed, result, _)) = self.replay_in(state, scope, key.as_bytes())? else {
+        let Some((replayed, result, _)) = self.replay_in(state, key.as_bytes())? else {
             return Ok(None);
         };
         if *replayed != digest {
@@ -43,11 +42,10 @@ impl MemoryStream {
     fn replay_append(
         &self,
         state: &State,
-        scope: &Scope,
         key: &crate::IdempotencyKey,
         digest: [u8; 32],
     ) -> Result<Option<AppendOutcome>, StreamError> {
-        match self.replay_outcome(state, scope, key, digest)? {
+        match self.replay_outcome(state, key, digest)? {
             Some(IdempotencyOutcome::Append(result)) => {
                 let mut result = result.clone();
                 if let AppendOutcome::Committed(receipt) = &mut result {
@@ -63,11 +61,10 @@ impl MemoryStream {
     fn replay_fork(
         &self,
         state: &State,
-        scope: &Scope,
         key: &crate::IdempotencyKey,
         digest: [u8; 32],
     ) -> Result<Option<ForkReceipt>, StreamError> {
-        match self.replay_outcome(state, scope, key, digest)? {
+        match self.replay_outcome(state, key, digest)? {
             Some(IdempotencyOutcome::Fork(result)) => Ok(Some(ForkReceipt {
                 revision: self.revisions.at(result.revision.index),
                 ..result.clone()

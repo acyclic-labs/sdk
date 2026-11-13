@@ -21,27 +21,22 @@ struct Ephemeral {
     owned: std::collections::BTreeMap<StreamPath, StreamPath>,
     /// Lease and ephemeral commit identities issued by this incarnation.
     issued: u64,
+    receipts: EphemeralReceipts,
 }
 
 struct EphemeralRoot {
     lease: u64,
+    live: Arc<std::sync::atomic::AtomicBool>,
     /// Subtrees this lease created outside its root, released with it.
     adopted: Vec<StreamPath>,
     /// Retry identities of this subtree's publications, released with it.
-    replays: std::collections::HashMap<Vec<u8>, EphemeralReplay>,
+    first_commit: Option<CommitId>,
     records: usize,
     payload_bytes: usize,
 }
 
 /// A retained retry result: its request digest, outcome and revision index.
 type Replayed<'a> = (&'a [u8; 32], &'a IdempotencyOutcome, u64);
-
-struct EphemeralReplay {
-    digest: [u8; 32],
-    result: IdempotencyOutcome,
-    index: u64,
-    _allocation: Allocation,
-}
 
 impl Ephemeral {
     /// The root of the lease owning `path`: through the path itself or its
@@ -196,37 +191,6 @@ impl Ephemeral {
         }
     }
 
-    fn replay(&self, scope: &Scope, key: &[u8]) -> Option<&EphemeralReplay> {
-        let Scope::Ephemeral(root) = scope else {
-            return None;
-        };
-        self.roots.get(root)?.replays.get(key)
-    }
-
-    fn retain(
-        &mut self,
-        scope: &Scope,
-        key: &IdempotencyKey,
-        digest: [u8; 32],
-        result: IdempotencyOutcome,
-        index: u64,
-        allocation: Allocation,
-    ) {
-        if let Scope::Ephemeral(root) = scope
-            && let Some(lease) = self.roots.get_mut(root)
-        {
-            lease.replays.insert(
-                key.as_bytes().to_vec(),
-                EphemeralReplay {
-                    digest,
-                    result,
-                    index,
-                    _allocation: allocation,
-                },
-            );
-        }
-    }
-
     /// `paths` without any owned subtree: exactly the durable namespace.
     fn without(&self, paths: &Namespace) -> Namespace {
         let mut durable = paths.clone();
@@ -289,17 +253,15 @@ impl MemoryStream {
     fn replay_in<'a>(
         &self,
         state: &'a State,
-        scope: &Scope,
         key: &[u8],
     ) -> Result<Option<Replayed<'a>>, StreamError> {
-        Ok(match scope {
-            Scope::Durable => self
-                .replay(state, key)?
-                .map(|replay| (&replay.digest, &replay.result, replay.index)),
-            Scope::Ephemeral(_) => state
-                .ephemeral
-                .replay(scope, key)
-                .map(|replay| (&replay.digest, &replay.result, replay.index)),
+        state.lookup_replay(key, |items| {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = &self.work {
+                work.record(work.meter.examine(items, 0))?;
+            }
+            let _ = items;
+            Ok(())
         })
     }
 
@@ -344,8 +306,9 @@ impl MemoryStream {
             root.clone(),
             EphemeralRoot {
                 lease,
+                live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 adopted: Vec::new(),
-                replays: Default::default(),
+                first_commit: None,
                 records: 0,
                 payload_bytes: 0,
             },
@@ -378,36 +341,58 @@ impl MemoryStream {
         let held = state
             .ephemeral
             .roots
-            .remove(root)
+            .get(root)
             .ok_or(StreamError::Unavailable)?;
-        state.record_count = state.record_count.saturating_sub(held.records);
-        state.payload_bytes = state.payload_bytes.saturating_sub(held.payload_bytes);
         let mut next = state.paths.clone();
         let mut gone = Vec::new();
-        for top in std::iter::once(root.clone()).chain(held.adopted) {
-            state.ephemeral.owned.remove(&top);
-            if !next.contains_key(&top) {
+        for top in std::iter::once(root).chain(held.adopted.iter()) {
+            if !next.contains_key(top) {
                 continue;
             }
-            next.remove(&top, &mut NamespaceBuilder::new(&|_| Ok(None)))?;
+            next.remove(top, &mut NamespaceBuilder::new(&|_| Ok(None)))?;
             let lower = format!("{}/", top.as_str());
             let upper = format!("{}0", top.as_str());
             gone.extend(state.signals.keys_in::<str, _>((
                 std::ops::Bound::Included(lower.as_str()),
                 std::ops::Bound::Excluded(upper.as_str()),
             ))?);
-            gone.push(top);
+            gone.push(top.clone());
         }
-        state.path_bytes = next.bytes();
-        let previous = std::mem::replace(&mut state.paths, next);
+        let (mut notify, _notification_claim) = self.vector(gone.len())?;
         for path in gone {
             if let Some(signals) = state.signals.get(&path)? {
-                signals.changed.send_replace(0);
-                crate::follow_index::FollowIndex::created(&signals.follows, 0);
+                notify.push(signals);
             }
         }
+        // All fallible namespace preparation precedes the visibility change.
+        let held = state
+            .ephemeral
+            .roots
+            .remove(root)
+            .ok_or(StreamError::Unavailable)?;
+        held.live.store(false, std::sync::atomic::Ordering::Release);
+        for top in std::iter::once(root).chain(held.adopted.iter()) {
+            state.ephemeral.owned.remove(top);
+        }
+        state.record_count = state.record_count.saturating_sub(held.records);
+        state.payload_bytes = state.payload_bytes.saturating_sub(held.payload_bytes);
+        state.path_bytes = next.bytes();
+        let previous = std::mem::replace(&mut state.paths, next);
+        for signals in notify {
+            signals.changed.send_replace(0);
+            crate::follow_index::FollowIndex::created(&signals.follows, 0);
+        }
         drop(state);
+        drop(_publication);
         drop(previous);
+        // Facts are already invisible. Retire one bounded pair of index
+        // entries per lock hold, dropping payloads outside every store lock.
+        let mut first = held.first_commit;
+        while let Some(id) = first {
+            let retired = self.state.write().await.ephemeral.receipts.release_one(id);
+            first = retired.value().next;
+            drop(retired);
+        }
         Ok(())
     }
 }

@@ -116,6 +116,7 @@ impl MemoryStream {
                 .ok_or(StreamError::Capacity)?,
         )?;
         self.reserve_commit_index(&mut probes)?;
+        self.extend_replay_probes(&mut probes, ephemeral_lookup_bound()?)?;
         let mut plan = self.plan_commit(
             &mut state,
             &[prepared_mutation(&request)?],
@@ -221,6 +222,12 @@ impl MemoryStream {
             }
             return Ok(None);
         }
+        let work = self.work.as_ref().ok_or(StreamError::Unavailable)?;
+        if state.ephemeral_key_is_spent(request.idempotency_key.as_bytes(), |items| {
+            work.record(work.meter.examine(items, 0))
+        })? {
+            return Err(StreamError::IdempotencyMismatch);
+        }
         for condition in request.conditions() {
             if !state
                 .paths
@@ -285,6 +292,7 @@ impl MemoryStream {
                 .and_then(|items| items.checked_add(8))
                 .ok_or(StreamError::Capacity)?,
         )?;
+        self.extend_replay_probes(&mut probes, ephemeral_lookup_bound()?)?;
         let recovery_meter = Arc::clone(&meter);
         let recovery = work.record(NativeProviderFuture::try_observed(
             &meter,
@@ -292,11 +300,20 @@ impl MemoryStream {
             async move {
                 let state = state.read().await;
                 let (stored, observed) = read.attempt(|| {
-                    state.replay(recovery_key.as_bytes(), |items| probes.record(items))
+                    let stored =
+                        state.replay(recovery_key.as_bytes(), |items| probes.record(items))?;
+                    let collision = stored.is_none()
+                        && state.ephemeral_key_is_spent(recovery_key.as_bytes(), |items| {
+                            probes.record(items)
+                        })?;
+                    Ok::<_, std::io::Error>((stored, collision))
                 });
-                let stored = stored?;
+                let (stored, collision) = stored?;
                 let mut observed = observed.err();
                 let result = (|| {
+                    if collision {
+                        return Err(StreamError::IdempotencyMismatch);
+                    }
                     let Some(stored) = stored else {
                         return Ok((None, None));
                     };
@@ -427,6 +444,12 @@ impl PreparedCommit {
                 let _ = work.record(record_codec(&mut self.codec, copied_bytes(&result.0), 0));
                 return Ok(result);
             }
+            if state.ephemeral_key_is_spent(self.key.as_bytes(), |items| {
+                self.provider.record_replay_probe(&mut self.probes, items);
+                Ok::<_, StreamError>(())
+            })? {
+                return Err(StreamError::IdempotencyMismatch);
+            }
             if self
                 .deadline
                 .is_some_and(|deadline| self.provider.clock.now_unix_millis() >= deadline)
@@ -496,7 +519,7 @@ impl PreparedCommit {
                         self.key,
                         digest,
                         &Scope::Durable,
-                        Some(retained),
+                        PublicationRetention::Durable(retained),
                     )
                 },
             }

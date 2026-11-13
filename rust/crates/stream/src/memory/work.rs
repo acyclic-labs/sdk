@@ -97,7 +97,7 @@ impl MemoryStream {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn has_replay(&self, key: &IdempotencyKey) -> Result<bool, StreamError> {
-        self.replay(&*self.state.read().await, key.as_bytes())
+        self.replay_in(&*self.state.read().await, key.as_bytes())
             .map(|entry| entry.is_some())
     }
 
@@ -123,7 +123,7 @@ impl MemoryStream {
         reads: &[StreamPath],
     ) -> Result<GuardCut, StreamError> {
         let replayed = self
-            .replay(state, request.idempotency_key.as_bytes())?
+            .replay_in(state, request.idempotency_key.as_bytes())?
             .is_some();
         let tails = request
             .conditions()
