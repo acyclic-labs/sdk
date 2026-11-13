@@ -189,8 +189,19 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
     };
     use std::sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     };
+    struct RefuseReturn(AtomicBool);
+    impl acyclic_stream::CommitAdmission for RefuseReturn {
+        fn not_before(&self, value: &[u8]) -> Option<u64> {
+            (self.0.load(Ordering::SeqCst)
+                && matches!(
+                    route::Publication::decode(value),
+                    Ok(route::Publication::Delivery(_))
+                ))
+            .then_some(u64::MAX)
+        }
+    }
     struct Recipient(Arc<AtomicUsize>);
     impl TurnDriver for Recipient {
         fn step<'a>(
@@ -315,6 +326,29 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
             let activation = actor_store(&destination)?.activation(&host.actor(&recipient)?)?;
             let activation_path = activation.mutations[0].path().clone();
             let before_activation = destination.tail(activation_path.clone()).await?;
+            if opt_out_before_delivery {
+                // Stop exactly between the retained refusal and its return
+                // publication. A rejoin before replay must not deliver input.
+                let failure = Arc::new(RefuseReturn(AtomicBool::new(true)));
+                destination.install_commit_admission(failure.clone())?;
+                assert!(peer.deliver(&host, &receiving, &receipt).await.is_err());
+                assert!(
+                    destination
+                        .inspect_idempotency(envelope.request.idempotency_key.clone())
+                        .await?
+                        .is_some(),
+                    "the refusal must already be retained at this failure cut"
+                );
+                assert!(matches!(
+                    destination
+                        .tail(receiving.paths.outbox(&receiving.node)?)
+                        .await,
+                    Err(StreamError::NotFound)
+                ));
+                host.set_peer_membership(&recipient, &user(), &intent("rejoin"), true)
+                    .await?;
+                failure.0.store(false, Ordering::SeqCst);
+            }
             assert_eq!(peer.deliver(&host, &receiving, &receipt).await?, expected);
             assert_eq!(
                 destination.tail(activation_path).await?,
