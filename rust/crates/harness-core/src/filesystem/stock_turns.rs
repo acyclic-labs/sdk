@@ -442,7 +442,7 @@ impl TurnExecutors for StockExecutors {
                     Some(plugins) => Arc::clone(plugins),
                     None => crate::plugins::seed().await?,
                 };
-                executor.with_plugins(&plugins)?
+                executor.with_plugins(plugins)?
             };
             // Context preparation may set the final output bound or an explicit
             // policy. Derive automatic budgets only after both are known.

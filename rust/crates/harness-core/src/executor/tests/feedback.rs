@@ -23,21 +23,21 @@ async fn headless_feedback_retrospective_runs_once_per_settlement_and_preserves_
         let override_source = format!(
             "export default {{ feedback: {{ enabled: true, config: {{ retrospective: {retrospective} }} }} }};"
         );
-        let disabled;
         let plugins = if retrospective {
-            seeded.as_ref()
+            Arc::clone(&seeded)
         } else {
-            disabled = crate::plugins::load(
-                &Seed,
-                &[crate::layers::Layer {
-                    name: "home",
-                    generation: "test",
-                    bytes: Some(override_source.as_bytes()),
-                }],
-                "headless",
+            Arc::new(
+                crate::plugins::load(
+                    &Seed,
+                    &[crate::layers::Layer {
+                        name: "home",
+                        generation: "test",
+                        bytes: Some(override_source.as_bytes()),
+                    }],
+                    "headless",
+                )
+                .await?,
             )
-            .await?;
-            &disabled
         };
         let per_settlement = if retrospective { 2 } else { 1 };
         let provider = Arc::new(
@@ -190,7 +190,7 @@ async fn settlement_fallback_only_absorbs_definitive_provider_failures() -> Resu
             ContextPipeline::default(),
             ToolRegistry::default(),
         )
-        .with_plugins(crate::plugins::seed().await?.as_ref())?;
+        .with_plugins(crate::plugins::seed().await?)?;
         let input = TurnInput {
             max_steps: maximum,
             operation_id: operation,

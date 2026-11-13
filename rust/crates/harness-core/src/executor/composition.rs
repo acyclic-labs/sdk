@@ -47,7 +47,7 @@ impl StockExecutor {
             #[cfg(not(target_arch = "wasm32"))]
             hooks: self.hooks,
             #[cfg(not(target_arch = "wasm32"))]
-            after_hooks: self.after_hooks,
+            plugin_set: self.plugin_set,
             #[cfg(not(target_arch = "wasm32"))]
             prompt_block: self.prompt_block,
             _custody: custody,
@@ -68,7 +68,7 @@ impl StockExecutor {
             #[cfg(not(target_arch = "wasm32"))]
             hooks: self.hooks.clone(),
             #[cfg(not(target_arch = "wasm32"))]
-            after_hooks: self.after_hooks.clone(),
+            plugin_set: self.plugin_set.clone(),
             #[cfg(not(target_arch = "wasm32"))]
             prompt_block: self.prompt_block.clone(),
             _custody: None,
@@ -85,9 +85,11 @@ impl StockExecutor {
 
     /// Install admitted plugin descriptions and pure after-hooks. Descriptions
     /// are a stable prefix; settlement notices append to the journaled turn.
+    /// Turn and step snapshots share the original admitted owner; executable
+    /// hooks and their allocation custody are never copied into a snapshot.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn with_plugins(mut self, plugins: &crate::plugins::Enabled) -> Result<Self> {
-        self.after_hooks = plugins.after.clone();
+    pub fn with_plugins(mut self, plugins: Arc<crate::plugins::Enabled>) -> Result<Self> {
+        self.plugin_set = Some(Arc::clone(&plugins));
         if plugins.descriptions.is_empty() {
             return Ok(self);
         }
@@ -158,7 +160,7 @@ impl StockExecutor {
             #[cfg(not(target_arch = "wasm32"))]
             hooks: None,
             #[cfg(not(target_arch = "wasm32"))]
-            after_hooks: Vec::new(),
+            plugin_set: None,
             #[cfg(not(target_arch = "wasm32"))]
             prompt_block: None,
             limits: Limits::default(),
@@ -495,9 +497,7 @@ impl StepBinding {
         #[cfg(not(target_arch = "wasm32"))]
         {
             executor.hooks = self.hooks.clone();
-            for hook in &self.after_hooks {
-                stock_vec_push(&mut executor.after_hooks, hook.clone(), temporary)?;
-            }
+            executor.plugin_set = self.plugin_set.clone();
             executor.prompt_block = self
                 .prompt_block
                 .as_ref()

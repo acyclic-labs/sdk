@@ -746,7 +746,8 @@ pub struct StepBinding {
     #[cfg(not(target_arch = "wasm32"))]
     hooks: Option<Arc<crate::hooks::BoundHooks>>,
     #[cfg(not(target_arch = "wasm32"))]
-    after_hooks: Vec<crate::plugins::AfterHook>,
+    // Retain the admitted data and its original engine/allocation custody together.
+    plugin_set: Option<Arc<crate::plugins::Enabled>>,
     #[cfg(not(target_arch = "wasm32"))]
     prompt_block: Option<String>,
     // All selected values retire before the original owner's shared storage.
@@ -767,7 +768,7 @@ pub struct StockExecutor {
     #[cfg(not(target_arch = "wasm32"))]
     hooks: Option<Arc<crate::hooks::BoundHooks>>,
     #[cfg(not(target_arch = "wasm32"))]
-    after_hooks: Vec<crate::plugins::AfterHook>,
+    plugin_set: Option<Arc<crate::plugins::Enabled>>,
     /// A prompt hook's block: the turn fails with it before any model request.
     #[cfg(not(target_arch = "wasm32"))]
     prompt_block: Option<String>,
