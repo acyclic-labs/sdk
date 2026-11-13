@@ -257,15 +257,23 @@ impl StockExecution<'_> {
                     completion,
                     parts,
                 } = collected;
+                // The task answer is already accepted during settlement. Its
+                // audit can drain without preparing another context review.
+                #[cfg(not(target_arch = "wasm32"))]
+                let reviewing_work = after_answer.is_none();
+                #[cfg(target_arch = "wasm32")]
+                let reviewing_work = true;
                 if completion == StepCompletion::Incomplete {
-                    self.request_context_review(
-                        journal,
-                        input,
-                        step,
-                        &prior_messages[..source_messages],
-                        &metadata,
-                    )
-                    .await?;
+                    if reviewing_work {
+                        self.request_context_review(
+                            journal,
+                            input,
+                            step,
+                            &prior_messages[..source_messages],
+                            &metadata,
+                        )
+                        .await?;
+                    }
                     if !parts {
                         self.append_assistant_part(
                             &mut prior_messages,
@@ -318,14 +326,16 @@ impl StockExecution<'_> {
                     }
                     #[cfg(not(target_arch = "wasm32"))]
                     if let Some(reason) = stop {
-                        self.request_context_review(
-                            journal,
-                            input,
-                            step,
-                            &prior_messages[..source_messages],
-                            &metadata,
-                        )
-                        .await?;
+                        if reviewing_work {
+                            self.request_context_review(
+                                journal,
+                                input,
+                                step,
+                                &prior_messages[..source_messages],
+                                &metadata,
+                            )
+                            .await?;
+                        }
                         let answer = if parts { "" } else { text.as_str() };
                         self.continue_after_stop(&mut prior_messages, answer, reason)?;
                         stock_retire_text(text, self.io)?;
@@ -343,14 +353,6 @@ impl StockExecution<'_> {
                             }
                         }
                         if !notices.is_empty() {
-                            self.request_context_review(
-                                journal,
-                                input,
-                                step,
-                                &prior_messages[..source_messages],
-                                &metadata,
-                            )
-                            .await?;
                             let answer = if parts { "" } else { text.as_str() };
                             self.continue_after_stop(
                                 &mut prior_messages,
@@ -372,14 +374,16 @@ impl StockExecution<'_> {
                     }
                     return Ok(ExecutionProgress::Ready((text, metadata, parts)));
                 }
-                self.request_context_review(
-                    journal,
-                    input,
-                    step,
-                    &prior_messages[..source_messages],
-                    &metadata,
-                )
-                .await?;
+                if reviewing_work {
+                    self.request_context_review(
+                        journal,
+                        input,
+                        step,
+                        &prior_messages[..source_messages],
+                        &metadata,
+                    )
+                    .await?;
+                }
                 stock_retire_text(text, self.io)?;
                 stock_retire_text(std::mem::take(&mut unfinished), self.io)?;
                 for (invocation, invocation_index) in stock_into_iter(calls, self.io)? {

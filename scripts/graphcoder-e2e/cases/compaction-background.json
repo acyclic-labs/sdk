@@ -77,6 +77,27 @@
         "text": [
           "BACKGROUND_DONE"
         ]
+      },
+      {
+        "when": {
+          "user": "remember BACKGROUND_FACT",
+          "contains": "What slowed you down or blocked you? Append feedback records; reply none if nothing."
+        },
+        "text": ["none"]
+      },
+      {
+        "when": {
+          "user": "BACKGROUND_RECENT_TASK",
+          "contains": "What slowed you down or blocked you? Append feedback records; reply none if nothing."
+        },
+        "text": ["none"]
+      },
+      {
+        "when": {
+          "user": "continue BACKGROUND_FACT",
+          "contains": "What slowed you down or blocked you? Append feedback records; reply none if nothing."
+        },
+        "text": ["none"]
       }
     ]
   },
@@ -116,7 +137,7 @@
     }
   ],
   "assert": {
-    "requests": 6,
+    "requests": 9,
     "last_model_contains": [
       "BACKGROUND_CURRENT_TASK",
       "BACKGROUND_SAVED_FACT",

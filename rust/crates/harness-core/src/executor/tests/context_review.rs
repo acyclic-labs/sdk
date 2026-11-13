@@ -22,22 +22,30 @@ fn original_metadata(events: &[ModelEvent]) -> &Value {
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn terminal_replies_prepare_no_review_source_at_any_history_size() -> Result<()> {
-    for count in [2, 64] {
-        let provider = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Events(vec![
-            ScriptedEvent::Event(ModelEvent::Content {
-                delta: "done".into(),
+    let plugins = crate::plugins::seed().await?;
+    for (count, retrospective) in [(2, false), (64, false), (2, true), (64, true)] {
+        let provider = Arc::new(ScriptedModelProvider::new(
+            (0..1 + usize::from(retrospective)).map(|_| {
+                ScriptedTurn::Events(vec![
+                    ScriptedEvent::Event(ModelEvent::Content {
+                        delta: "done".into(),
+                    }),
+                    ScriptedEvent::Event(ModelEvent::Completed {
+                        metadata: json!({"usage":{"prompt_tokens":1024,"completion_tokens":1}}),
+                    }),
+                ])
             }),
-            ScriptedEvent::Event(ModelEvent::Completed {
-                metadata: json!({"usage":{"prompt_tokens":1024,"completion_tokens":1}}),
-            }),
-        ])]));
-        let stock = StockExecutor::new(
+        ));
+        let mut stock = StockExecutor::new(
             Model::new("fixture".into(), "selected".into(), "1".into())?,
             provider.clone(),
             ContextPipeline::default(),
             ToolRegistry::default(),
         )
         .with_automatic_compaction()?;
+        if retrospective {
+            stock = stock.with_plugins(plugins.as_ref())?;
+        }
         let mut messages: Vec<_> = (0..count)
             .map(|index| ModelMessage {
                 role: if index % 2 == 0 {
@@ -106,7 +114,7 @@ async fn terminal_replies_prepare_no_review_source_at_any_history_size() -> Resu
         );
         assert_eq!(
             provider.request_count(),
-            1,
+            1 + usize::from(retrospective),
             "the negative control wastes preparation without generating another request"
         );
     }
