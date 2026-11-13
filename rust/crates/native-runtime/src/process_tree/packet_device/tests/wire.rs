@@ -70,6 +70,43 @@ fn host() -> io::Result<(UnixStream, PacketDeviceRetirement, UnixStream)> {
 }
 
 #[test]
+fn reply_and_notification_receipts_keep_their_original_publication_class()
+-> Result<(), Box<dyn std::error::Error>> {
+    if crate::private_file::with_isolated_user_runtime(
+        "process_tree::packet_device::tests::wire::reply_and_notification_receipts_keep_their_original_publication_class",
+    )? {
+        return Ok(());
+    }
+    let (mut source, custody, mut kernel) = host()?;
+    let mut reply = [0; OUTPUT_HEADER];
+    fuse_protocol::reply_header(&mut reply, OUTPUT_HEADER, 2, None)
+        .map_err(io::Error::from_raw_os_error)?;
+    let mut notification = [0; 40];
+    notification[..4].copy_from_slice(&40_u32.to_ne_bytes());
+    notification[4..8].copy_from_slice(&2_i32.to_ne_bytes());
+    notification[16..24].copy_from_slice(&1_u64.to_ne_bytes());
+    source.write_all(&reply)?;
+    source.write_all(&notification)?;
+    let mut physical_reply = [0; OUTPUT_HEADER];
+    let mut physical_notification = [0; 40];
+    kernel.read_exact(&mut physical_reply)?;
+    kernel.read_exact(&mut physical_notification)?;
+    assert_eq!(physical_reply, reply);
+    assert_eq!(physical_notification, notification);
+    // The notification waiter consumes a reply receipt first, retaining it
+    // for its original producer rather than claiming socket acceptance.
+    assert_eq!(
+        custody.publication(true)?,
+        PacketDevicePublication::Published
+    );
+    assert_eq!(
+        custody.publication(false)?,
+        PacketDevicePublication::Published
+    );
+    Ok(())
+}
+
+#[test]
 fn foreign_flush_uses_handle_authority_while_foreign_lookup_is_refused()
 -> Result<(), Box<dyn std::error::Error>> {
     if crate::private_file::with_isolated_user_runtime(
@@ -112,7 +149,10 @@ fn foreign_flush_uses_handle_authority_while_foreign_lookup_is_refused()
         .map_err(io::Error::from_raw_os_error)?;
     source.write_all(&reply)?;
     kernel.read_exact(&mut reply)?;
-    assert_eq!(custody.publication()?, PacketDevicePublication::Published);
+    assert_eq!(
+        custody.publication(false)?,
+        PacketDevicePublication::Published
+    );
     kernel.write_all(&request(1, 3, foreign, b"untrusted\0"))?;
     kernel.read_exact(&mut reply)?;
     assert_eq!(&reply[4..8], &(-libc::EACCES).to_ne_bytes());

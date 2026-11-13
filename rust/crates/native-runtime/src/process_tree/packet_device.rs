@@ -11,7 +11,7 @@ use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
 
 #[cfg(test)]
 #[path = "packet_device/tests.rs"]
@@ -92,6 +92,8 @@ impl PacketDevice {
             retirement: PacketDeviceRetirement {
                 control,
                 retired: AtomicBool::new(false),
+                receipts: Mutex::new(PublicationReceipts::default()),
+                receipt_ready: Condvar::new(),
                 host,
             },
         })
@@ -145,7 +147,19 @@ impl PacketDevice {
 pub struct PacketDeviceRetirement {
     control: UnixStream,
     retired: AtomicBool,
+    receipts: Mutex<PublicationReceipts>,
+    receipt_ready: Condvar,
     host: u32,
+}
+
+#[derive(Default)]
+struct PublicationReceipts {
+    reading: bool,
+    // Each producer holds its own class's publication claim through receipt.
+    // Replies and notifications therefore need one slot each, not a growing
+    // map or an additional receiver thread for every device.
+    completed: [Option<PacketDevicePublication>; 2],
+    failure: Option<(io::ErrorKind, Option<i32>)>,
 }
 
 /// An acknowledged physical device-write outcome, distinct from transport loss.
@@ -203,16 +217,59 @@ impl PacketDeviceRetirement {
 
     /// Joins one physical reply publication. Callers retain the original
     /// payload and work until this receipt, not merely until socket acceptance.
-    pub fn publication(&self) -> io::Result<PacketDevicePublication> {
-        let mut receipt = [0; Receipt::SIZE];
-        (&self.control).read_exact(&mut receipt)?;
-        match Receipt::try_from(receipt).map_err(|()| io::ErrorKind::InvalidData)? {
-            Receipt::Published => Ok(PacketDevicePublication::Published),
-            Receipt::Rejected(errno) => Ok(PacketDevicePublication::Rejected(errno)),
-            Receipt::Retired => {
-                self.retired.store(true, Ordering::Release);
-                Err(io::Error::from_raw_os_error(libc::ENODEV))
+    /// `notification` selects the FUSE unique-zero publication class. The
+    /// caller serializes publications within each class, but can await one
+    /// notification concurrently with a reply. No receipt is socket acceptance.
+    pub fn publication(&self, notification: bool) -> io::Result<PacketDevicePublication> {
+        let mut state = self.receipts.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            if let Some(receipt) = state.completed[usize::from(notification)].take() {
+                return Ok(receipt);
             }
+            if self.retired.load(Ordering::Acquire) {
+                return Err(io::Error::from_raw_os_error(libc::ENODEV));
+            }
+            if let Some((kind, errno)) = state.failure {
+                return Err(errno.map_or_else(|| kind.into(), io::Error::from_raw_os_error));
+            }
+            if state.reading {
+                state = self
+                    .receipt_ready
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner);
+                continue;
+            }
+            state.reading = true;
+            drop(state);
+            let mut bytes = [0; Receipt::SIZE];
+            let receipt = (&self.control).read_exact(&mut bytes).and_then(|()| {
+                Receipt::try_from(bytes).map_err(|()| io::ErrorKind::InvalidData.into())
+            });
+            state = self.receipts.lock().unwrap_or_else(PoisonError::into_inner);
+            state.reading = false;
+            let completed = match receipt {
+                Ok(Receipt::Published(class)) => Some((class, PacketDevicePublication::Published)),
+                Ok(Receipt::Rejected(class, errno)) => {
+                    Some((class, PacketDevicePublication::Rejected(errno)))
+                }
+                Ok(Receipt::Retired) => {
+                    self.retired.store(true, Ordering::Release);
+                    None
+                }
+                Err(error) => {
+                    state.failure = Some((error.kind(), error.raw_os_error()));
+                    None
+                }
+            };
+            if let Some((class, receipt)) = completed {
+                if state.completed[usize::from(class)]
+                    .replace(receipt)
+                    .is_some()
+                {
+                    state.failure = Some((io::ErrorKind::InvalidData, None));
+                }
+            }
+            self.receipt_ready.notify_all();
         }
     }
 
@@ -239,7 +296,7 @@ impl PacketDeviceRetirement {
                 Receipt::Retired => break,
                 // Stop may interrupt the publisher after the host has already
                 // completed its reply. Drain that receipt before retirement.
-                Receipt::Published | Receipt::Rejected(_) => {}
+                Receipt::Published(_) | Receipt::Rejected(_, _) => {}
             }
         }
         self.retired.store(true, Ordering::Release);

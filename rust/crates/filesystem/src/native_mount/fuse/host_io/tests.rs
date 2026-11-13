@@ -232,7 +232,7 @@ fn hosted_publication_keeps_original_payload_until_device_write_and_stop_joins_i
             } else {
                 // Drain the receipt the deliberately broken client skipped.
                 assert_eq!(
-                    io.publication()?,
+                    io.publication(false)?,
                     acyclic_native_runtime::PacketDevicePublication::Published
                 );
             }
