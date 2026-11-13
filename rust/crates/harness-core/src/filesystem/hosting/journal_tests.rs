@@ -574,7 +574,7 @@ async fn call_output_uses_the_journal_without_granting_tools_its_writer() -> Tes
     );
     let mut activity_context = context.clone();
     activity_context.output_activity = true;
-    let mut log = crate::runtime::ToolOutputLog::new(activity_context);
+    let mut log = crate::runtime::ToolOutputLog::new(activity_context.clone());
     let chunk = log.publish_chunk("stderr/0", b"observed").await?;
     assert_eq!(chunk.volume(), file.volume());
     let activity_path = crate::runtime::tool_output_activity_path(turn, context.operation_id());
@@ -583,6 +583,25 @@ async fn call_output_uses_the_journal_without_granting_tools_its_writer() -> Tes
         .await?;
     let activity: crate::runtime::ToolOutputActivity = serde_json::from_slice(&bytes)?;
     assert_eq!(activity.through, 1);
+    assert_eq!(log.publish_chunk("stderr/0", b"observed").await?, chunk);
+    let second = log.publish_chunk("stderr/1", b"next").await?;
+    assert_eq!(log.publish_chunk("stderr/0", b"observed").await?, chunk);
+    let third = log.publish_chunk("stderr/2", b"last").await?;
+    let mut recovered = crate::runtime::ToolOutputLog::new(activity_context);
+    assert_eq!(
+        recovered.publish_chunk("stderr/0", b"observed").await?,
+        chunk
+    );
+    assert_eq!(recovered.publish_chunk("stderr/1", b"next").await?, second);
+    assert_eq!(recovered.publish_chunk("stderr/2", b"last").await?, third);
+    let (_, bytes, _) = reader
+        .read_tool_path(&format!("volume:///output/{activity_path}"), None, None)
+        .await?;
+    let activity: crate::runtime::ToolOutputActivity = serde_json::from_slice(&bytes)?;
+    assert_eq!(
+        activity.through, 3,
+        "chunk replay changed the activity cursor"
+    );
     assert!(log.publish_chunk("stderr/0", b"replacement").await.is_err());
     assert!(
         task.stage_file(
