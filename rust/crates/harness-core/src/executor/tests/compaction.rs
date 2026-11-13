@@ -359,18 +359,18 @@ fn capacity_rewrite_publishes_its_own_context_occupancy() -> Result<()> {
             output_capacity
         );
         assert_eq!(requests[0].messages.len(), 3);
+        assert_eq!(
+            requests[0].messages[0].content,
+            ModelContent::Text("keep".into())
+        );
         let ModelContent::Part(ModelContentPart::File { file, .. }) =
-            &requests[0].messages[0].content
+            &requests[0].messages[1].content
         else {
-            panic!("the backstop marker opens the request");
+            panic!("the backstop marker follows the leading system message");
         };
         assert!(
             runtime.block_on(journal.load(file, None)?)?.as_ref()
                 == super::super::compaction::BACKSTOP_MARKER.as_bytes()
-        );
-        assert_eq!(
-            requests[0].messages[1].content,
-            ModelContent::Text("keep".into())
         );
         assert_eq!(
             requests[0].messages.last().map(|message| &message.content),
