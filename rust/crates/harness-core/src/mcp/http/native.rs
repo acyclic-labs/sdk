@@ -6,6 +6,34 @@ use acyclic_stream::BoxProviderFuture;
 use futures::StreamExt as _;
 use std::time::Duration;
 
+fn exchange_failure(
+    operation: OperationId,
+    read: bool,
+    code: crate::wire::ErrorCode,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> Error {
+    let decision = if read {
+        Error::Boundary {
+            code,
+            reason: "MCP HTTP read failed",
+        }
+    } else {
+        // A failed POST may have reached the server. Its transport cause never
+        // authorizes replay or changes the original uncertain operation.
+        Error::Indeterminate(operation)
+    };
+    Error::external_for_request(operation, decision.classification(), source)
+}
+
+fn transport_failure(operation: OperationId, read: bool, error: reqwest::Error) -> Error {
+    let code = if read {
+        crate::http::transport_failure(&error).0
+    } else {
+        crate::wire::ErrorCode::Indeterminate
+    };
+    exchange_failure(operation, read, code, error.without_url())
+}
+
 /// Native network capability with explicit host credentials.
 pub struct NativeMcpHttpProvider(reqwest::Client);
 
@@ -49,8 +77,15 @@ impl McpHttpProvider for NativeMcpHttpProvider {
                 builder.send(),
             )
             .await
-            .map_err(|_| Error::Indeterminate(operation))?
-            .map_err(|_| Error::Indeterminate(operation))?;
+            .map_err(|error| {
+                exchange_failure(
+                    operation,
+                    streaming,
+                    crate::wire::ErrorCode::Unavailable,
+                    error,
+                )
+            })?
+            .map_err(|error| transport_failure(operation, streaming, error))?;
             let status = response.status().as_u16();
             let headers = response
                 .headers()
@@ -62,9 +97,9 @@ impl McpHttpProvider for NativeMcpHttpProvider {
                         .map_err(|e| Error::Invalid(e.to_string()))
                 })
                 .collect::<Result<_>>()?;
-            let body = response
-                .bytes_stream()
-                .map(move |chunk| chunk.map_err(|_| Error::Indeterminate(operation)));
+            let body = response.bytes_stream().map(move |chunk| {
+                chunk.map_err(|error| transport_failure(operation, streaming, error))
+            });
             Ok(McpHttpResponse {
                 status,
                 headers,
@@ -139,7 +174,8 @@ mod tests {
                     3 => "405 Method Not Allowed",
                     _ => "200 OK",
                 };
-                socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Type: text/event-stream\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.map_err(Error::process_io)?;
+                let body = if index == 2 { "data: {" } else { "" };
+                socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.map_err(Error::process_io)?;
                 socket.shutdown().await.map_err(Error::process_io)?;
             }
             Ok::<_, Error>(())
@@ -255,6 +291,91 @@ mod tests {
             server
                 .await
                 .map_err(|error| Error::Storage(error.to_string()))??;
+        }
+        Ok(())
+    }
+
+    async fn failed_exchange(
+        scheme: &'static str,
+        method: &'static str,
+        reply: &'static [u8],
+    ) -> Result<Error> {
+        use futures::TryStreamExt as _;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(Error::process_io)?;
+        let address = listener.local_addr().map_err(Error::process_io)?;
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.map_err(Error::process_io)?;
+            // Receive the request or ClientHello before replying, then drain
+            // after write-half closure so the reply is not reset away.
+            let mut input = [0; 4096];
+            assert_ne!(socket.read(&mut input).await.map_err(Error::process_io)?, 0);
+            socket.write_all(reply).await.map_err(Error::process_io)?;
+            socket.shutdown().await.map_err(Error::process_io)?;
+            tokio::io::copy(&mut socket, &mut tokio::io::sink())
+                .await
+                .map_err(Error::process_io)?;
+            Ok::<_, Error>(())
+        });
+        let provider = NativeMcpHttpProvider::new(reqwest::header::HeaderMap::new())?;
+        let operation = OperationId::new();
+        let result = provider
+            .exchange(
+                operation,
+                McpHttpRequest {
+                    endpoint: format!("{scheme}://{address}/mcp?opaque=query-marker"),
+                    method: method.into(),
+                    headers: Default::default(),
+                    body: Vec::new(),
+                    timeout_ms: None,
+                    maximum_response_bytes: Some(8192),
+                },
+            )
+            .await;
+        let error = match result {
+            Err(error) => error,
+            Ok(response) => response
+                .body
+                .try_collect::<Vec<_>>()
+                .await
+                .expect_err("body was cut off"),
+        };
+        if method == "POST" {
+            assert_eq!(error.operation_id(), Some(operation));
+            assert!(error.leaves_effect_uncertain());
+        } else {
+            assert!(!error.leaves_effect_uncertain());
+        }
+        assert!(!error.to_string().contains("query-marker"));
+        drop(provider);
+        server
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))??;
+        Ok(error)
+    }
+
+    #[tokio::test]
+    async fn native_read_failures_keep_their_causes_without_authorizing_write_replay() -> Result<()>
+    {
+        use crate::wire::ErrorCode;
+        for (scheme, reply, code) in [
+            ("http", b"not an HTTP status\r\n\r\n".as_slice(), ErrorCode::Invalid),
+            ("https", b"not a TLS record\r\n\r\n".as_slice(), ErrorCode::Unauthorized),
+            ("http", b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 1024\r\nConnection: close\r\n\r\ndata: {".as_slice(), ErrorCode::Unavailable),
+        ] {
+            for method in ["GET", "POST"] {
+                let error = failed_exchange(scheme, method, reply).await?;
+                assert_eq!(error.code(), if method == "GET" { code } else { ErrorCode::Indeterminate });
+                let mut cause: &(dyn std::error::Error + 'static) = &error;
+                loop {
+                    if let Some(cause) = cause.downcast_ref::<reqwest::Error>() {
+                        assert!(cause.url().is_none(), "transport URL must not enter diagnostics");
+                        break;
+                    }
+                    cause = cause.source().expect("original reqwest cause retained");
+                }
+            }
         }
         Ok(())
     }

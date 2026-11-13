@@ -57,6 +57,8 @@ pub struct McpHttpResponse {
 /// Platform I/O for admitted HTTP operations.
 pub trait McpHttpProvider: acyclic_stream::ProviderPlatform {
     /// Performs one exchange with the original selected policies.
+    /// A read's positively classified transient transport failure is Unavailable;
+    /// other read failures are terminal. Possible write effects retain their uncertainty.
     fn exchange<'a>(
         &'a self,
         operation: OperationId,
@@ -216,7 +218,10 @@ impl HttpMcpTransport {
                         match response.status {
                             200 => {}
                             408 | 425 | 429 | 500 | 502 | 503 | 504 => {
-                                return Err(Error::Indeterminate(operation));
+                                return Err(Error::Boundary {
+                                    code: crate::wire::ErrorCode::Unavailable,
+                                    reason: "MCP notification endpoint temporarily unavailable",
+                                });
                             }
                             401 | 403 => {
                                 return Err(Error::Unauthorized(format!(
@@ -265,7 +270,7 @@ impl HttpMcpTransport {
                     .await;
                     match result {
                         Ok(false) => return,
-                        Err(error) if !matches!(&error, Error::Indeterminate(_)) => {
+                        Err(error) if error.code() != crate::wire::ErrorCode::Unavailable => {
                             let _ = terminal.set((operation, Arc::new(error)));
                             generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                             return;
