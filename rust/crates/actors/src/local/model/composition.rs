@@ -1028,7 +1028,7 @@ async fn composition_extends_activation_prefix_but_cannot_rewrite_it_or_grow_act
         let (store, actor) = placed(provider.clone(), counts.clone()).await?;
         let before = store.load(&actor).await?;
         let mut transition = transition(false)?;
-        transition.effects.push(store.activation(&actor));
+        transition.effects.push(store.activation(&actor)?);
         transition
             .participant
             .as_mut()

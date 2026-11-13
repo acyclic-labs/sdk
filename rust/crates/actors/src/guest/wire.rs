@@ -84,7 +84,7 @@ struct DeliveryWire {
     epoch: u64,
     #[prost(uint64, tag = "3")]
     now_unix_ms: u64,
-    #[prost(oneof = "TriggerWire", tags = "4, 5, 11")]
+    #[prost(oneof = "TriggerWire", tags = "4, 5, 12")]
     trigger: Option<TriggerWire>,
     #[prost(message, optional, tag = "6")]
     record: Option<wire::Record>,
@@ -153,7 +153,7 @@ enum TriggerWire {
     Record(RecordTrigger),
     #[prost(message, tag = "5")]
     Alarm(AlarmTrigger),
-    #[prost(message, tag = "11")]
+    #[prost(message, tag = "12")]
     KeyedRecord(KeyedRecordTrigger),
 }
 
