@@ -1,7 +1,7 @@
 //! Versioned continuation data. Authority is checked by the original provider
 //! on every use; the serialized cursor is never a bearer capability.
 use super::{Cursor, Frame};
-use crate::{Revision, RevisionScope, StreamPath};
+use crate::{Revision, RevisionScope};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]

@@ -244,7 +244,7 @@ impl FileCursor {
         )?;
         let (file, bytes, _hold) = match read.await {
             Ok(read) => read,
-            Err(Error::Unauthorized(_)) => return Ok(()),
+            Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized => return Ok(()),
             Err(error) => return Err(error),
         };
         if self

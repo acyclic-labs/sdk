@@ -232,12 +232,16 @@ impl<'a> ContentMatcher<'a> {
             return Ok(Inspection::done(None, true));
         }
         let position = position(after, io)?;
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let standalone = || KernelAccounting::Standalone {
-            allocations: Default::default(),
-            work: acyclic_fs::WorkCounters::UNCHARGED,
-            budget: acyclic_fs::WorkBudget::UNBOUNDED,
-            cancellation: &cancellation,
+        let cancellation = io.is_none().then(acyclic_fs::CancellationToken::new);
+        let standalone = || {
+            Ok::<_, Error>(KernelAccounting::Standalone {
+                allocations: Default::default(),
+                work: acyclic_fs::WorkCounters::UNCHARGED,
+                budget: acyclic_fs::WorkBudget::UNBOUNDED,
+                cancellation: cancellation
+                    .as_ref()
+                    .ok_or_else(|| invalid(io, "search accounting has no original cancellation"))?,
+            })
         };
         #[cfg(not(target_arch = "wasm32"))]
         let mut ctx = match io.and_then(PreparationIo::original_native_work) {
@@ -245,10 +249,10 @@ impl<'a> ContentMatcher<'a> {
                 work,
                 cancellation: work.cancellation(),
             },
-            None => standalone(),
+            None => standalone()?,
         };
         #[cfg(target_arch = "wasm32")]
-        let mut ctx = standalone();
+        let mut ctx = standalone()?;
         let selected = reference(record, position.file, io, &mut ctx)?;
         let Some(file) = selected.file else {
             if after.is_some() {
@@ -281,7 +285,9 @@ impl<'a> ContentMatcher<'a> {
             .await
         {
             Ok(bytes) => bytes,
-            Err(Error::Unauthorized(_)) => return progress(next_file, selected.more, io),
+            Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized => {
+                return progress(next_file, selected.more, io);
+            }
             Err(error) => return Err(error),
         };
         if let Some(io) = io {
