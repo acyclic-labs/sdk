@@ -727,6 +727,7 @@ async fn file_control_journey(guest: bool) -> Result {
     let bound = if guest {
         use acyclic_actors::guest::{GuestFuture, wire};
         let native = bound.handler();
+        let interrupt_handler = native.clone();
         let manifest = wire::decode_manifest(&wire::encode_manifest(native.manifest()))?;
         let calls = guest_calls.clone();
         bound.hosting(Arc::new(wire::Remote::new(
@@ -747,6 +748,10 @@ async fn file_control_journey(guest: bool) -> Result {
                             .await?,
                     )
                 })
+            },
+            move |query| -> GuestFuture<'static, bool> {
+                let handler = interrupt_handler.clone();
+                Box::pin(async move { wire::accepts_interrupt(handler.as_ref(), &query).await })
             },
         )))?
     } else {
@@ -1293,7 +1298,7 @@ async fn guest_spawn_creates_host_controls_with_original_child_and_volume_public
                         vec![Out::Spawn {
                             profile: None,
                             history: None,
-                            intent: intent("worker"),
+                            intent: "worker".into(),
                             brief: None,
                             volumes: Vec::new(),
                         }]
@@ -1327,6 +1332,7 @@ async fn guest_spawn_creates_host_controls_with_original_child_and_volume_public
         ),
     );
     let manifest = wire::decode_manifest(&wire::encode_manifest(guest.manifest()))?;
+    let interrupt_handler = guest.clone();
     let bound = bound.hosting(Arc::new(wire::Remote::new(
         manifest,
         move |bytes, cancellation| -> GuestFuture<'static, Vec<u8>> {
@@ -1340,6 +1346,10 @@ async fn guest_spawn_creates_host_controls_with_original_child_and_volume_public
                         .await?,
                 )
             })
+        },
+        move |query| -> GuestFuture<'static, bool> {
+            let handler = interrupt_handler.clone();
+            Box::pin(async move { wire::accepts_interrupt(handler.as_ref(), &query).await })
         },
     )))?;
     let RootSubmission::Created(root) = bound
