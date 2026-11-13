@@ -2115,11 +2115,12 @@ mod tests {
     #[tokio::test]
     async fn restore_receipts_cannot_reopen_observed_settlement() -> Result<(), Failure> {
         use acyclic_harness::{
-            LocalHarness,
             context::{CompactionPolicy, ModelContextCapacity},
             local::WorkspaceMounting,
             model::Model,
-            test_support::{ScriptedModelProvider, ScriptedTurn, local_harness_config},
+            test_support::{
+                ScriptedModelProvider, ScriptedTurn, local_harness_config, open_scripted,
+            },
         };
         let directory = tempfile::tempdir()?;
         let workspace = directory.path().join("workspace");
@@ -2136,7 +2137,7 @@ mod tests {
             }),
         );
         let harness = Arc::new(
-            LocalHarness::open(
+            open_scripted(
                 local_harness_config(
                     &workspace,
                     (
