@@ -862,10 +862,18 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
     // Both original channel credits remain held. Losing the real host still
     // closes the incomplete reply without waiting for either fragment to drop.
     drop(host);
-    assert!(matches!(
-        stopped.next().await,
-        Some(Err(StreamError::Unavailable))
-    ));
+    let error = match stopped.next().await {
+        Some(Err(error)) => error,
+        _ => return Err("lost host completed an incomplete reply".into()),
+    };
+    assert_eq!(error.category(), StreamError::Unavailable);
+    use std::error::Error as _;
+    assert!(
+        std::iter::successors(error.source(), |source| source.source()).any(|source| source
+            .downcast_ref::<StreamError>()
+            .is_some_and(|source| source.category() == StreamError::Unavailable)),
+        "reply failure discarded the original session source"
+    );
     assert_eq!(first.1.as_ref(), &body[..crate::MAX_RECORD_BYTES]);
     assert_eq!(
         second.1.as_ref(),
