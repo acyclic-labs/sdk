@@ -465,8 +465,8 @@ impl RemoveSubscriptionRequest {
     }
 }
 
-/// Resume has no canonical validator yet; the wire strings stay unbranded.
-#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
+/// Resume subscription request after canonical scope, identifier and retry admission.
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = ResumeSubscriptionRequest::validate_from_proto)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ResumeSubscriptionRequest.ts")]
 #[ts(rename_all = "camelCase")]
@@ -487,15 +487,22 @@ pub struct ResumeSubscriptionRequest {
 }
 
 impl ResumeSubscriptionRequest {
-    /// Creates a resume request; no additional canonical validator exists yet.
-    pub fn new(actor_id: ActorId, subscription_id: String, idempotency_key: String) -> Self {
-        Self {
+    /// Creates and validates resumption through the canonical request validator.
+    pub fn new(
+        actor_id: ActorId,
+        subscription_id: String,
+        idempotency_key: String,
+    ) -> Result<Self, DomainError> {
+        Self::try_from(wire::ResumeSubscriptionRequest {
             namespace: None,
             account_id: Vec::new(),
-            actor_id,
+            actor_id: actor_id.as_str().to_owned(),
             subscription_id,
             idempotency_key,
-        }
+        })
+    }
+    fn validate_from_proto(&self) -> Result<(), DomainError> {
+        crate::validate_resume_subscription(&self.clone().into()).map_err(DomainError::Contract)
     }
     /// Returns the Actor identity.
     pub fn actor_id(&self) -> &ActorId {

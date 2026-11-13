@@ -248,7 +248,7 @@ pub(super) fn seeds() -> Result<Vec<(&'static str, &'static str, Vec<u8>)>, d::D
     );
     seed!(
         ResumeSubscriptionRequest,
-        d::ResumeSubscriptionRequest::new(actor.clone(), "inbox".into(), "resume".into())
+        d::ResumeSubscriptionRequest::new(actor.clone(), "inbox".into(), "resume".into())?
     );
     seed!(
         CheckpointActorRequest,
