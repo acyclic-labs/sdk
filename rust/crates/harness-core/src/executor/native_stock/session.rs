@@ -99,7 +99,9 @@ impl<'a> StockExecution<'a> {
     pub(in crate::executor) fn selected_after_hooks(&self) -> &[crate::plugins::AfterHook] {
         self.selected
             .as_ref()
-            .map_or(&self.stock.after_hooks, |selected| &selected.after_hooks)
+            .map_or(&self.stock.plugin_set, |selected| &selected.plugin_set)
+            .as_ref()
+            .map_or(&[], |plugins| plugins.after.as_slice())
     }
     #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::executor) fn check_prompt_admission(&self) -> Result<()> {
