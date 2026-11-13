@@ -214,6 +214,26 @@ impl<S: Stream<Item = Result<Record, StreamError>> + Unpin> TraceQuery<S> {
         self.project(event, evidence).map(Some)
     }
 
+    fn start(&mut self, id: SpanId, span: ActiveSpan) -> Result<Observation, QueryError> {
+        let Entry::Vacant(entry) = self.active.entry(id) else {
+            return Err(QueryError::Invalid {
+                evidence: span.evidence,
+                source: QueryViolation::RepeatedStart,
+            });
+        };
+        let missing_guarantee = span
+            .guarantee
+            .as_deref()
+            .is_none_or(|value| value.trim().is_empty());
+        self.missing_guarantees += u128::from(missing_guarantee);
+        self.active_waits += usize::from(span.mechanism == Mechanism::Wait);
+        entry.insert(span);
+        Ok(Observation::Started {
+            id,
+            missing_guarantee,
+        })
+    }
+
     fn project(
         &mut self,
         event: SpanEvent,
@@ -227,31 +247,17 @@ impl<S: Stream<Item = Result<Record, StreamError>> + Unpin> TraceQuery<S> {
                 mechanism,
                 at_ns,
                 guarantee,
-            } => {
-                let Entry::Vacant(entry) = self.active.entry(id) else {
-                    return Err(QueryError::Invalid {
-                        evidence,
-                        source: QueryViolation::RepeatedStart,
-                    });
-                };
-                let missing_guarantee = guarantee
-                    .as_deref()
-                    .is_none_or(|value| value.trim().is_empty());
-                entry.insert(ActiveSpan {
+            } => self.start(
+                id,
+                ActiveSpan {
                     evidence,
                     parent,
                     name,
                     mechanism,
                     at_ns,
                     guarantee,
-                });
-                self.missing_guarantees += u128::from(missing_guarantee);
-                self.active_waits += usize::from(mechanism == Mechanism::Wait);
-                Observation::Started {
-                    id,
-                    missing_guarantee,
-                }
-            }
+                },
+            )?,
             SpanEvent::Finished {
                 id,
                 at_ns,
