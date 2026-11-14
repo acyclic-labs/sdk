@@ -109,18 +109,13 @@ where
     };
     let requests = provider.requests();
     let mut request_files = Vec::new();
-    for request in &requests {
-        let mut contents = Vec::new();
-        for file in request
-            .messages
-            .iter()
-            .flat_map(|message| message.content.file_refs())
-        {
-            contents.push(String::from_utf8(
-                journal.load(file, None)?.await?.to_vec(),
-            )?);
-        }
-        request_files.push(contents);
+    for contents in super::request_files(storage.content_reader(), &requests).await? {
+        request_files.push(
+            contents
+                .into_iter()
+                .map(|bytes| String::from_utf8(bytes.to_vec()))
+                .collect::<Result<_, _>>()?,
+        );
     }
     let mut files = BTreeMap::new();
     for path in paths {

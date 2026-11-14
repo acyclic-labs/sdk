@@ -282,6 +282,34 @@ async fn run_turn(
     Ok(())
 }
 
+/// The one oracle read of request attachments, in message order. A request
+/// source keeps its own owner and volume (instructions live on the file volume,
+/// summaries on the journal's), so it is read through the agent's content
+/// reader under the same capability check the provider used. The execution
+/// journal resolves only its own private payloads and refuses every other ref.
+async fn request_files(
+    reader: &dyn acyclic_harness::conversation::ContentResidencyVerifier,
+    requests: &[acyclic_harness::model::ModelRequest],
+) -> TestResult<Vec<Vec<acyclic_stream::OwnedBytes>>> {
+    let mut loaded = Vec::with_capacity(requests.len());
+    for request in requests {
+        let mut contents = Vec::new();
+        for file in request
+            .messages
+            .iter()
+            .flat_map(|message| message.content.file_refs())
+        {
+            contents.push(
+                reader
+                    .read(file, file.descriptor().byte_length(), None, None)?
+                    .await?,
+            );
+        }
+        loaded.push(contents);
+    }
+    Ok(loaded)
+}
+
 async fn check_provider(
     expected: &Expectations,
     provider: &ScriptedModelProvider,
@@ -329,20 +357,16 @@ async fn check_provider(
         if expected.len() != requests.len() {
             return Err("request_files must match the number of observed requests".into());
         }
-        for (index, (expected, request)) in expected.iter().zip(&requests).enumerate() {
-            let mut files = request
-                .messages
-                .iter()
-                .flat_map(|message| message.content.file_refs());
+        for (index, (expected, actual)) in expected
+            .iter()
+            .zip(request_files(reader, &requests).await?)
+            .enumerate()
+        {
+            let mut files = actual.into_iter();
             for (file_index, expected) in expected.iter().enumerate() {
-                let file = files
+                let actual = files
                     .next()
                     .ok_or_else(|| format!("request_files[{index}][{file_index}]: missing file"))?;
-                // Request sources retain their own owner; the journal grants
-                // only its private payloads, not arbitrary model input files.
-                let actual = reader
-                    .read(file, file.descriptor().byte_length(), None, None)?
-                    .await?;
                 if actual.as_ref() != expected.as_bytes() {
                     return Err(format!(
                         "request_files[{index}][{file_index}]: expected {expected:?}, got {:?}",
