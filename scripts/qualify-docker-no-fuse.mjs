@@ -65,7 +65,7 @@ async function inside(binary, mock, output, ...requested) {
   try {
     await withOwnedCase({ processes, signal: cancellation.signal, run: async () => {
       const result = await processes.run("timeout",
-        ["--signal=TERM", "--kill-after=2s", "10s", process.execPath,
+        ["--foreground", "--signal=TERM", "--kill-after=2s", "10s", process.execPath,
           join(directory, "run.mjs"), binary, mock, ...cases], {
           cwd: root, env: { ...environment, E2E_OUTPUT: join(output, "acceptance") },
         });
