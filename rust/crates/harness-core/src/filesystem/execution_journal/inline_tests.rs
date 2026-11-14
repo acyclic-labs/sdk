@@ -643,16 +643,16 @@ async fn resumed_exhausted_reservation_refuses_new_dispatch_but_keeps_original_r
         }))
         .with_agent_events(agent.clone(), operation, 0, true);
     initialize(&journal, operation).await?;
-    let completed = ModelEvent::Completed {
-        metadata: serde_json::json!({"usage":{"input_tokens":1,"output_tokens":1}}),
-    };
+    let metadata = serde_json::json!({"usage":{"input_tokens":1,"output_tokens":1}});
+    let usage = terminal_usage(operation, &metadata, Some(1))?;
+    let completed = ModelEvent::Completed { metadata };
     crate::executor::append_model_event(
         &journal,
         operation,
         "terminal",
         (0, ModelPurpose::Response),
         &completed,
-        None,
+        Some(&usage),
         None,
     )
     .await?;
@@ -738,7 +738,7 @@ async fn resumed_exhausted_reservation_refuses_new_dispatch_but_keeps_original_r
             "terminal",
             (0, ModelPurpose::Response),
             &completed,
-            None,
+            Some(&usage),
             None,
         )
         .await?;
@@ -1165,18 +1165,12 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
     Ok(())
 }
 
-async fn terminal_usage_case(
-    metadata: serde_json::Value,
+fn terminal_usage(
+    operation: OperationId,
+    metadata: &serde_json::Value,
     complete_input_tokens: Option<u64>,
-    expected_tokens: Option<u64>,
-) -> Result<()> {
-    let (journal, _issuer) = test_support::journal().await?;
-    let operation = OperationId::new();
-    let agent = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([69; 16]));
-    let journal = journal.with_agent_events(agent.clone(), operation, 0, false);
-    initialize(&journal, operation).await?;
-    let completed = ModelEvent::Completed { metadata };
-    let mut usage = crate::executor::model_usage::ModelCallUsage {
+) -> Result<crate::executor::model_usage::ModelCallUsage<'static>> {
+    Ok(crate::executor::model_usage::ModelCallUsage {
         version: crate::executor::ModelUsageRecord::VERSION,
         completed: true,
         dispatch: crate::model::ModelDispatch {
@@ -1196,15 +1190,26 @@ async fn terminal_usage_case(
         #[cfg(feature = "research")]
         cache: None,
         abandoned: Default::default(),
-        tokens: crate::executor::ModelTokenUsage::reported(match &completed {
-            ModelEvent::Completed { metadata } => metadata,
-            _ => unreachable!(),
-        }),
+        tokens: crate::executor::ModelTokenUsage::reported(metadata),
         complete_input_tokens,
         started_at: None,
         completed_at: None,
         latency_ns: Some(123),
-    };
+    })
+}
+
+async fn terminal_usage_case(
+    metadata: serde_json::Value,
+    complete_input_tokens: Option<u64>,
+    expected_tokens: Option<u64>,
+) -> Result<()> {
+    let (journal, _issuer) = test_support::journal().await?;
+    let operation = OperationId::new();
+    let agent = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([69; 16]));
+    let journal = journal.with_agent_events(agent.clone(), operation, 0, false);
+    initialize(&journal, operation).await?;
+    let mut usage = terminal_usage(operation, &metadata, complete_input_tokens)?;
+    let completed = ModelEvent::Completed { metadata };
     let partial = ModelEvent::Content {
         delta: "partial".into(),
     };
