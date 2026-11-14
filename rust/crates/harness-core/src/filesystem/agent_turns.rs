@@ -1701,7 +1701,7 @@ async fn selected_notices<P: StreamProvider + ?Sized>(
         }
         other => Some(other),
     };
-    Ok((pending.finish(), input))
+    Ok((pending.finish()?, input))
 }
 
 /// Partition before coalescing: individually admitted notices cannot grow one
@@ -1749,7 +1749,7 @@ impl NoticeBlocks {
             )?;
             let separator = u64::from(self.count != 0);
             if bytes + separator > maximum - self.bytes {
-                self.flush();
+                self.flush()?;
             }
             self.bytes += bytes + u64::from(self.count != 0);
         }
@@ -1760,20 +1760,23 @@ impl NoticeBlocks {
         Ok(())
     }
 
-    fn flush(&mut self) {
+    fn flush(&mut self) -> Result<()> {
         if self.count != 0 {
-            let notices = std::mem::take(&mut self.pending).finish();
+            let notices = std::mem::take(&mut self.pending)
+                .finish()
+                .map_err(|error| Error::Invalid(error.to_string()))?;
             self.blocks.push(ModelContent::Part(
                 crate::model::ModelContentPart::Notices { notices },
             ));
             self.bytes = self.envelope;
             self.count = 0;
         }
+        Ok(())
     }
 
-    pub(super) fn finish(mut self) -> Vec<ModelContent> {
-        self.flush();
-        self.blocks
+    pub(super) fn finish(mut self) -> Result<Vec<ModelContent>> {
+        self.flush()?;
+        Ok(self.blocks)
     }
 }
 

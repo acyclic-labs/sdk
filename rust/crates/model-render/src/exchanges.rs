@@ -1,5 +1,7 @@
 //! Complete dependency groups over already admitted, borrowed message semantics.
-use acyclic_collections::{CompiledPrefixError, CompiledPrefixIndex, IndexReadWork, IndexWork};
+use acyclic_collections::{
+    CompiledPrefixError, CompiledPrefixIndex, IndexReadWork, IndexWork, PrefixKey,
+};
 use std::cell::Cell;
 
 /// Dependency semantics of one admitted content part, without parsing its bytes.
@@ -60,7 +62,6 @@ pub struct Group {
 
 impl Group {
     /// Independent declaration dependencies, without counting a shared group twice.
-    #[must_use]
     pub fn sources(self) -> impl Iterator<Item = usize> {
         self.source.into_iter().chain(
             self.native_source
@@ -135,6 +136,91 @@ pub fn exchange_groups<M: Message, W: IndexWork>(
     }
     let pending =
         CompiledPrefixIndex::from_repeated_entries(pending, |entry| entry.0.as_bytes(), work)?;
+    let (declaration_start, native_declaration_start) =
+        visit_messages(messages, groups, &pending, work)?;
+    for (_, slot) in pending.entries() {
+        work.examine(1).map_err(Work)?;
+        let Some(position) = slot.get() else { continue };
+        let root = root(groups, position, work)?;
+        // An unfinished exchange has no valid cut after its first message.
+        group_mut(groups, root)?.end = messages.len();
+    }
+    for start in [declaration_start, native_declaration_start]
+        .into_iter()
+        .flatten()
+    {
+        let root = root(groups, start, work)?;
+        group_mut(groups, root)?.end = messages.len();
+    }
+    finalize_groups(groups, work)?;
+    Ok(())
+}
+
+fn finalize_groups<E>(
+    groups: &mut [Group],
+    work: &mut impl IndexReadWork<Error = E>,
+) -> Result<(), CompiledPrefixError<E>> {
+    use CompiledPrefixError::Work;
+    for position in 0..groups.len() {
+        root(groups, position, work)?;
+    }
+    for position in 0..groups.len() {
+        work.examine(1).map_err(Work)?;
+        for native in [false, true] {
+            work.examine(1).map_err(Work)?;
+            if let Some(source) = if native {
+                group_mut(groups, position)?.native_source
+            } else {
+                group_mut(groups, position)?.source
+            } {
+                let source = root(groups, source, work)?;
+                let owner = group_mut(groups, position)?.root;
+                let prior = if native {
+                    group_mut(groups, owner)?.native_source
+                } else {
+                    group_mut(groups, owner)?.source
+                };
+                let prior = prior
+                    .map(|prior| group_mut(groups, prior).map(|group| group.root))
+                    .transpose()?;
+                if source >= owner || prior.is_some_and(|prior| prior != source) {
+                    return Err(CompiledPrefixError::Invariant);
+                }
+                if native {
+                    group_mut(groups, owner)?.native_source = Some(source);
+                } else {
+                    group_mut(groups, owner)?.source = Some(source);
+                }
+            }
+        }
+        group_mut(groups, position)?.retained_through = group_mut(groups, position)?.end;
+    }
+    for position in 0..groups.len() {
+        work.examine(1).map_err(Work)?;
+        if group_mut(groups, position)?.size > 0 {
+            for source in group_mut(groups, position)?.sources() {
+                work.examine(1).map_err(Work)?;
+                if group_mut(groups, source)?.sources().next().is_some() {
+                    return Err(CompiledPrefixError::Invariant);
+                }
+                group_mut(groups, source)?.retained_through = group_mut(groups, source)?
+                    .retained_through
+                    .max(group_mut(groups, position)?.end);
+            }
+        }
+    }
+    Ok(())
+}
+
+type PendingCall<'a> = (&'a str, Cell<Option<usize>>);
+
+fn visit_messages<'a, M: Message, W: IndexWork, K: PrefixKey<PendingCall<'a>>>(
+    messages: &[M],
+    groups: &mut [Group],
+    pending: &CompiledPrefixIndex<PendingCall<'a>, W::Allocation, K>,
+    work: &mut W,
+) -> Result<(Option<usize>, Option<usize>), CompiledPrefixError<W::Error>> {
+    use CompiledPrefixError::{Capacity, Work};
     let mut reasoning_start = None;
     let mut declaration_start = None;
     let mut declarations = None;
@@ -148,23 +234,7 @@ pub fn exchange_groups<M: Message, W: IndexWork>(
         for part in message.parts() {
             work.examine(1).map_err(Work)?;
             if message.assistant() {
-                match part {
-                    Part::Native => {
-                        let first = *reasoning_start.get_or_insert(position);
-                        link(groups, first, position, work).map_err(Work)?;
-                    }
-                    Part::Call { native, .. } => {
-                        let first = if native {
-                            Some(*reasoning_start.get_or_insert(position))
-                        } else {
-                            reasoning_start
-                        };
-                        if let Some(first) = first {
-                            link(groups, first, position, work).map_err(Work)?;
-                        }
-                    }
-                    _ => {}
-                }
+                link_native_part(groups, position, part, &mut reasoning_start, work)?;
             }
             match part {
                 Part::Declarations {
@@ -181,15 +251,15 @@ pub fn exchange_groups<M: Message, W: IndexWork>(
                         *declaration_start = Some(position);
                     }
                     let first = (*declaration_start).ok_or(CompiledPrefixError::Invariant)?;
-                    link(groups, first, position, work).map_err(Work)?;
+                    link(groups, first, position, work)?;
                     if complete {
                         *declarations = Some(first);
                         *declaration_start = None;
                     }
                 }
                 Part::Call { id, .. } => {
-                    groups[position].source = declarations;
-                    groups[position].native_source = native_declarations;
+                    group_mut(groups, position)?.source = declarations;
+                    group_mut(groups, position)?.native_source = native_declarations;
                     let entry = pending
                         .matches(id.as_bytes(), |_| false, work)?
                         .exact
@@ -200,87 +270,53 @@ pub fn exchange_groups<M: Message, W: IndexWork>(
                     if let Some(first) = slot.get() {
                         // Reusing an outstanding id cannot make its earlier
                         // call independently evictable from the same result.
-                        link(groups, first, position, work).map_err(Work)?;
+                        link(groups, first, position, work)?;
                     } else {
                         slot.set(Some(position));
                     }
                 }
                 Part::Result { id } => {
-                    match pending
+                    if let Some(first) = pending
                         .matches(id.as_bytes(), |_| false, work)?
                         .exact
                         .and_then(|matched| matched.entry.1.take())
                     {
-                        Some(first) => {
-                            link(groups, first, position, work).map_err(Work)?;
-                        }
-                        None => {
-                            let root = root(groups, position, work).map_err(Work)?;
-                            groups[root].end = messages.len();
-                        }
+                        link(groups, first, position, work)?;
+                    } else {
+                        let root = root(groups, position, work)?;
+                        group_mut(groups, root)?.end = messages.len();
                     }
                 }
                 _ => {}
             }
         }
     }
-    for (_, slot) in pending.entries() {
-        work.examine(1).map_err(Work)?;
-        let Some(position) = slot.get() else { continue };
-        let root = root(groups, position, work).map_err(Work)?;
-        // An unfinished exchange has no valid cut after its first message.
-        groups[root].end = messages.len();
-    }
-    for start in [declaration_start, native_declaration_start]
-        .into_iter()
-        .flatten()
-    {
-        let root = root(groups, start, work).map_err(Work)?;
-        groups[root].end = messages.len();
-    }
-    for position in 0..groups.len() {
-        root(groups, position, work).map_err(Work)?;
-    }
-    for position in 0..groups.len() {
-        work.examine(1).map_err(Work)?;
-        for native in [false, true] {
-            work.examine(1).map_err(Work)?;
-            if let Some(source) = if native {
-                groups[position].native_source
+    Ok((declaration_start, native_declaration_start))
+}
+
+fn link_native_part<E>(
+    groups: &mut [Group],
+    position: usize,
+    part: Part<'_>,
+    reasoning_start: &mut Option<usize>,
+    work: &mut impl IndexReadWork<Error = E>,
+) -> Result<(), CompiledPrefixError<E>> {
+    match part {
+        Part::Native => {
+            let first = *reasoning_start.get_or_insert(position);
+            link(groups, first, position, work)?;
+        }
+        Part::Call { native, .. } => {
+            let first = if native {
+                Some(*reasoning_start.get_or_insert(position))
             } else {
-                groups[position].source
-            } {
-                let source = root(groups, source, work).map_err(Work)?;
-                let owner = groups[position].root;
-                let prior = if native {
-                    groups[owner].native_source
-                } else {
-                    groups[owner].source
-                };
-                if source >= owner || prior.is_some_and(|prior| groups[prior].root != source) {
-                    return Err(CompiledPrefixError::Invariant);
-                }
-                if native {
-                    groups[owner].native_source = Some(source);
-                } else {
-                    groups[owner].source = Some(source);
-                }
+                *reasoning_start
+            };
+            if let Some(first) = first {
+                link(groups, first, position, work)?;
             }
         }
-        groups[position].retained_through = groups[position].end;
-    }
-    for position in 0..groups.len() {
-        work.examine(1).map_err(Work)?;
-        if groups[position].size > 0 {
-            for source in groups[position].sources() {
-                work.examine(1).map_err(Work)?;
-                if groups[source].sources().next().is_some() {
-                    return Err(CompiledPrefixError::Invariant);
-                }
-                groups[source].retained_through =
-                    groups[source].retained_through.max(groups[position].end);
-            }
-        }
+        _ => {}
     }
     Ok(())
 }
@@ -289,21 +325,22 @@ fn root<E>(
     groups: &mut [Group],
     position: usize,
     work: &mut impl IndexReadWork<Error = E>,
-) -> Result<usize, E> {
-    work.examine(1)?;
+) -> Result<usize, CompiledPrefixError<E>> {
+    use CompiledPrefixError::Work;
+    work.examine(1).map_err(Work)?;
     let mut root = position;
-    while groups[root].root != root {
-        work.examine(1)?;
-        root = groups[root].root;
+    while group_mut(groups, root)?.root != root {
+        work.examine(1).map_err(Work)?;
+        root = group_mut(groups, root)?.root;
     }
     let mut next = position;
-    while groups[next].root != root {
-        work.examine(1)?;
-        let parent = groups[next].root;
-        groups[next].root = root;
+    while group_mut(groups, next)?.root != root {
+        work.examine(1).map_err(Work)?;
+        let parent = group_mut(groups, next)?.root;
+        group_mut(groups, next)?.root = root;
         next = parent;
     }
-    groups[position].root = root;
+    group_mut(groups, position)?.root = root;
     Ok(root)
 }
 
@@ -312,16 +349,31 @@ fn link<E>(
     first: usize,
     last: usize,
     work: &mut impl IndexReadWork<Error = E>,
-) -> Result<(), E> {
+) -> Result<(), CompiledPrefixError<E>> {
     let a = root(groups, first, work)?;
     let b = root(groups, last, work)?;
     if a != b {
         // Minimum roots let selection propagate dependencies in two linear passes.
         let (first, last) = (a.min(b), a.max(b));
-        groups[last].root = first;
-        groups[first].end = groups[first].end.max(groups[last].end);
-        groups[first].size += groups[last].size;
-        groups[last].size = 0;
+        group_mut(groups, last)?.root = first;
+        group_mut(groups, first)?.end = group_mut(groups, first)?
+            .end
+            .max(group_mut(groups, last)?.end);
+        let size = group_mut(groups, last)?.size;
+        group_mut(groups, first)?.size = group_mut(groups, first)?
+            .size
+            .checked_add(size)
+            .ok_or(CompiledPrefixError::Capacity)?;
+        group_mut(groups, last)?.size = 0;
     }
     Ok(())
+}
+
+fn group_mut<E>(
+    groups: &mut [Group],
+    position: usize,
+) -> Result<&mut Group, CompiledPrefixError<E>> {
+    groups
+        .get_mut(position)
+        .ok_or(CompiledPrefixError::Invariant)
 }
