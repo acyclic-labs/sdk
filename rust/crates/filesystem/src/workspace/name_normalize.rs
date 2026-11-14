@@ -42,7 +42,7 @@ pub(super) fn parse<T, P: FnMut(u8, u64, u64)>(
             let end = length
                 .checked_add(character.len_utf8())
                 .ok_or(crate::WorkError::Overflow)?;
-            let slot = output.slot(length, end, accounting)?;
+            let slot = output.slot(length, end, accounting, probe)?;
             encode(character, slot, accounting, probe)?;
             length = end;
         }
@@ -125,6 +125,7 @@ impl NameBuffer {
         start: usize,
         end: usize,
         accounting: &mut KernelAccounting<'_>,
+        probe: &mut impl FnMut(u8, u64, u64),
     ) -> Result<&mut [u8], WorkspaceError> {
         let capacity = self
             .spill
@@ -142,7 +143,9 @@ impl NameBuffer {
             accounting.admit(copied)?;
             let mut replacement = crate::kernel::Owned::<Vec<u8>>::allocate(capacity, accounting)?;
             replacement.value.resize(capacity, 0);
+            probe(4, replacement.value.len() as u64, 0);
             replacement.value[..start].copy_from_slice(self.bytes(start));
+            probe(4, replacement.value[..start].len() as u64, 0);
             accounting.record_completed(copied)?;
             if let Some(previous) = self.spill.replace(replacement) {
                 previous.retire(accounting)?;

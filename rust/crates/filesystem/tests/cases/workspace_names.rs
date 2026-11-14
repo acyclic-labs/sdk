@@ -33,4 +33,9 @@ fn seed_corpus_covers_unicode_ordering_truncation_and_name_boundaries() {
     ] {
         check_workspace_name(seed);
     }
+    // Spill normalization on both ledgers, with admitted and refused copies.
+    for prefix in ['p', 'r', 't', 'v'] {
+        let spilling = format!("{prefix}{}", "é".repeat(128));
+        check_workspace_name(spilling.as_bytes());
+    }
 }
