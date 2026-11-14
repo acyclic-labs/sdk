@@ -1150,7 +1150,8 @@ async fn authored_lifecycle_hooks_run_once_through_the_original_turn() -> Result
     };
     assert_eq!(contributions(&before), 0);
     assert_eq!(contributions(&after), 1);
-    assert_eq!(before.operation_id, after.operation_id);
+    let dispatches = provider.dispatches();
+    assert_eq!(dispatches[2].operation_id, dispatches[3].operation_id);
     assert_eq!(system_prefix(&before)?, system_prefix(&after)?);
     assert_eq!(
         observed
