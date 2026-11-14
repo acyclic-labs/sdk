@@ -195,7 +195,33 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
         snapshot.state().ok_or("missing original state")?.alarm()
     );
     let reopened = Store::new(Arc::clone(&provider), root()?);
-    match reopened.invoke(&invocation).await {
+    // Only diagnostic readiness is controlled: this real MemoryStream completes
+    // admission inline, while the actor journal/receipt remain on the original
+    // durable provider. A settled actor retry must not race diagnostic storage.
+    let traces = acyclic_stream::Stream::new(
+        Arc::new(MemoryStream::default()),
+        format!("{}/trace", invocation.caller().as_str()),
+    )?;
+    let recorder = Arc::new(acyclic_stream::trace::Recorder::new(
+        traces.clone(),
+        [21; 16],
+    ));
+    let root_span = recorder
+        .start(
+            "caller.failure",
+            acyclic_stream::trace::Mechanism::ActorDelivery,
+            None,
+            Some("original_actor_failure"),
+        )
+        .await?;
+    let parent = root_span.id();
+    let root_span = root_span.into_owned();
+    let cause = acyclic_stream::RetainedRecord {
+        commit_id: receipt.call().terminal.commit_id,
+        path: receipt.call().log.clone(),
+        sequence: receipt.call().terminal.sequence,
+    };
+    match root_span.within(reopened.invoke(&invocation)).await {
         Err(Error::InvocationFailed {
             source: repeated,
             receipt: original,
@@ -204,6 +230,77 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
             assert_eq!(original, receipt);
         }
         _ => return Err("reconciliation did not retain the original failure".into()),
+    }
+    let _terminal = root_span.finish_submitted(
+        None,
+        acyclic_stream::trace::Outcome::Failed {
+            cause: cause.clone(),
+        },
+    )?;
+    let mut query = acyclic_stream::trace::TraceQuery::new(
+        traces.follow(0, Default::default()).await?,
+        Default::default(),
+    );
+    let mut children = std::collections::BTreeMap::new();
+    let mut root_finished = false;
+    while !root_finished || children.len() != 3 {
+        match query.next().await? {
+            Some(acyclic_stream::trace::Observation::Completed {
+                id,
+                start,
+                result,
+                bytes,
+                ..
+            }) => {
+                if id == parent {
+                    root_finished = true;
+                    continue;
+                }
+                match start.name.as_str() {
+                    "actors.invoke" | "actors.wait_invocation" => {
+                        let (mechanism, guarantee) = if start.name == "actors.invoke" {
+                            (
+                                acyclic_stream::trace::Mechanism::ActorDelivery,
+                                "journaled_actor_result",
+                            )
+                        } else {
+                            (
+                                acyclic_stream::trace::Mechanism::Wait,
+                                "original_actor_terminal_receipt",
+                            )
+                        };
+                        assert_eq!(start.mechanism, mechanism);
+                        assert_eq!(start.guarantee.as_deref(), Some(guarantee));
+                        assert_eq!(bytes, None);
+                        assert_eq!(
+                            result,
+                            acyclic_stream::trace::Outcome::Failed {
+                                cause: cause.clone()
+                            }
+                        );
+                        assert!(children.insert(start.name, (id, start.parent)).is_none());
+                    }
+                    "actors.enqueue_invoke" => {
+                        assert_eq!(start.mechanism, acyclic_stream::trace::Mechanism::Commit);
+                        assert_eq!(
+                            start.guarantee.as_deref(),
+                            Some("stable_actor_input_identity")
+                        );
+                        assert_eq!(bytes, u64::try_from(ticket.record().value.len()).ok());
+                        assert_eq!(result, acyclic_stream::trace::Outcome::Succeeded);
+                        assert!(children.insert(start.name, (id, start.parent)).is_none());
+                    }
+                    _ => {}
+                }
+            }
+            None => return Err("original actor failure trace ended".into()),
+            _ => {}
+        }
+    }
+    let (invoked, owner) = children["actors.invoke"];
+    assert_eq!(owner, Some(parent));
+    for child in ["actors.enqueue_invoke", "actors.wait_invocation"] {
+        assert_eq!(children[child].1, Some(invoked));
     }
     runtime.drain_actor(&address).await?;
     assert_eq!(
@@ -322,7 +419,19 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
         provider.commit(cancel).await?,
         acyclic_stream::CommitOutcome::Committed(_)
     ));
-    let Err(Error::InvocationTerminated { receipt }) = store.wait_invocation(ticket).await else {
+    let continuation = recorder
+        .start(
+            "caller.remaining_terminals",
+            acyclic_stream::trace::Mechanism::ActorDelivery,
+            None,
+            Some("original_actor_terminal_decisions"),
+        )
+        .await?
+        .into_owned();
+    let continuation_id = continuation.id();
+    let Err(Error::InvocationTerminated { receipt }) =
+        continuation.within(store.wait_invocation(ticket)).await
+    else {
         return Err("call cancellation did not terminate the invocation observer".into());
     };
     assert!(matches!(
@@ -331,11 +440,44 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
     ));
     let next = store.enqueue_invoke(&request(b"next")?).await?;
     runtime.drain_actor(&cancelled_actor).await?;
-    let completed = store.wait_invocation(next).await?;
+    let completed = continuation.within(store.wait_invocation(next)).await?;
     assert!(matches!(
         completed.receipt().call().outcome,
         crate::call::Outcome::Ok(_)
     ));
+    let terminal =
+        continuation.finish_submitted(None, acyclic_stream::trace::Outcome::Succeeded)?;
+    assert!(matches!(
+        terminal.result().await?,
+        Ok(acyclic_stream::AppendOutcome::Committed(_))
+    ));
+    let mut outcomes = Vec::new();
+    while outcomes.len() != 2 {
+        match query.next().await? {
+            Some(acyclic_stream::trace::Observation::Completed {
+                start,
+                bytes,
+                result,
+                ..
+            }) if start.name == "actors.wait_invocation"
+                && start.parent == Some(continuation_id) =>
+            {
+                assert_eq!(start.mechanism, acyclic_stream::trace::Mechanism::Wait);
+                assert_eq!(
+                    start.guarantee.as_deref(),
+                    Some("original_actor_terminal_receipt")
+                );
+                outcomes.push((result, bytes));
+            }
+            None => return Err("original invocation terminal traces ended".into()),
+            _ => {}
+        }
+    }
+    assert!(outcomes.contains(&(acyclic_stream::trace::Outcome::Cancelled, None)));
+    assert!(outcomes.contains(&(
+        acyclic_stream::trace::Outcome::Succeeded,
+        u64::try_from(completed.response().len()).ok(),
+    )));
     assert_eq!(
         provider.tail(output).await?,
         1,

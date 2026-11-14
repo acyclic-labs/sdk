@@ -1,5 +1,22 @@
 # Observability
 
+## Actor invocation accounting
+
+The original Store invocation path emits `actors.invoke` for the journaled
+result, `actors.enqueue_invoke` for stable actor-input identity, and
+`actors.wait_invocation` for the original terminal receipt. The enqueue and
+wait spans inherit the invocation as their parent beneath the owning request.
+The same SDK recorder appends them to that request's selected agent trace
+stream; an unfollowed request retains no diagnostic task or history.
+
+Enqueue counts the original input-record bytes; successful results count the
+returned response bytes. A committed failure references the original durable
+call-terminal publication instead of copying its error payload. A cancelled
+terminal reports cancellation. Other failures and abandoned waits remain
+unsettled rather than certifying a result without its receipt. The original
+enqueue, durability confirmation and reconciliation operations still determine
+when a result is available.
+
 ## Original model recovery observations
 
 Generation recovery emits `ModelEvent::Wait` through the original model stream.
