@@ -73,209 +73,212 @@ fn assert_chat_usage(input: &[u8], events: &[ModelEvent]) {
 
 /// Chunking cannot change acceptance, errors or the decoded events. Accepted
 /// events must round-trip through the durable model codec without losing data.
+///
+/// # Panics
+/// If chunking, replay, identity binding or a durable codec changes an admitted value.
 pub fn assert_stream_invariants(input: &[u8]) {
+    assert_eq!(
+        stream_invariants(input).map_err(|error| format!("{error:?}")),
+        Ok(())
+    );
+}
+
+type ProofResult = Result<(), Box<dyn std::error::Error>>;
+
+fn adapter_for(kind: u8) -> Adapter {
+    match kind % 4 {
+        0 => Adapter::Anthropic,
+        1 => Adapter::Responses,
+        2 => Adapter::Chat,
+        _ => Adapter::Gemini,
+    }
+}
+
+fn stream_invariants(input: &[u8]) -> ProofResult {
     let Some((&kind, input)) = input.split_first() else {
-        return;
+        return Ok(());
     };
     if kind == b'H' {
-        if let Ok(header) = std::str::from_utf8(input) {
-            let clock = || std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
-            let wait = crate::retry::retry_after_at(header, clock);
-            let digits = header.trim();
-            if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
-                assert!(wait.is_some());
-            }
-            if let Some(wait) = wait {
-                // Normalize either accepted form to delta-seconds without losing its delay.
-                assert_eq!(
-                    crate::retry::retry_after_at(&wait.as_secs().to_string(), clock),
-                    Some(wait)
-                );
-            }
-        }
-        return;
+        retry_after_round_trip(input);
+        return Ok(());
     }
     if kind == b'F' {
-        if let Ok(file) =
-            serde_json::from_slice::<acyclic_harness_core::conversation::FileRef>(input)
-        {
-            let marker = crate::files::FileText::default()
-                .project(
-                    &file,
-                    &acyclic_harness_core::model::FileProjectionPolicy::Reference,
-                )
-                .unwrap();
-            let restored: acyclic_harness_core::conversation::FileRef = serde_json::from_str(
-                marker
-                    .strip_prefix("[file: ")
-                    .unwrap()
-                    .strip_suffix(']')
-                    .unwrap(),
-            )
-            .unwrap();
-            assert_eq!(file, restored);
-        }
-        return;
+        return file_round_trip(input);
     }
     if kind == b'T' {
         if let Ok(fragments) = serde_json::from_slice::<Vec<String>>(input) {
             crate::projection::text::assert_normalization(&fragments);
         }
-        return;
+        return Ok(());
     }
     if kind == b'V' {
         let Some((&kind, input)) = input.split_first() else {
-            return;
+            return Ok(());
         };
-        let adapter = [
-            Adapter::Anthropic,
-            Adapter::Responses,
-            Adapter::Chat,
-            Adapter::Gemini,
-        ][usize::from(kind) % 4];
+        let adapter = adapter_for(kind);
         assert!(
             input_round_trip(adapter, input) || crate::json(input).is_err(),
             "production-accepted input skipped fuzz validation"
         );
-        return;
+        return Ok(());
     }
     if kind == b'L' {
         assert_alloy_invariants(input);
-        return;
+        return Ok(());
     }
     if kind == b'P' {
         if let Ok(value) = crate::projection::arguments::literal(input) {
             crate::projection::arguments::assert_normalization(&value);
         }
-        return;
+        return Ok(());
     }
     if kind == b'K' {
-        use crate::counting::wire::{TokenCountField, TokenCounterSpec, response};
-        for field in [
-            TokenCountField::InputTokens,
-            TokenCountField::TotalTokens,
-            TokenCountField::Count,
-        ] {
-            let spec = TokenCounterSpec {
-                path: "count".into(),
-                adapter: Adapter::Responses,
-                response_field: field,
-                framing_tokens: 0,
-            };
-            if let Ok(count) = response(input, &spec) {
-                let encoded = match field {
-                    TokenCountField::InputTokens => serde_json::json!({"input_tokens":count}),
-                    TokenCountField::TotalTokens => serde_json::json!({"totalTokens":count}),
-                    TokenCountField::Count => serde_json::json!({"count":count}),
-                };
-                assert_eq!(
-                    response(&serde_json::to_vec(&encoded).unwrap(), &spec).unwrap(),
-                    count
-                );
-            }
-        }
-        return;
+        return count_round_trip(input);
     }
     if kind == b'R' {
-        if let Ok(block) =
-            serde_json::from_slice::<acyclic_harness_core::model::ReasoningBlock>(input)
-        {
-            let encoded = serde_json::to_vec(&block).unwrap();
-            let replay: acyclic_harness_core::model::ReasoningBlock =
-                serde_json::from_slice(&encoded).unwrap();
-            assert_eq!(block, replay);
-            for adapter in [crate::Adapter::Responses, crate::Adapter::Anthropic] {
-                if let Some(raw) =
-                    crate::projection::native_reasoning::validated(adapter, &block.continuity)
-                {
-                    // Independent bounded literal decoder: native admission must
-                    // reject invalid strings, including inside skipped fields.
-                    let bounds = acyclic_harness_core::JsonBounds {
-                        maximum_bytes: Some(block.continuity.len() as u64),
-                        maximum_items: Some(block.continuity.len() as u64),
-                        maximum_depth: 128,
-                    };
-                    assert!(
-                        acyclic_harness_core::json_value_bounded(
-                            raw,
-                            bounds,
-                            None,
-                            &mut |_| Ok(()),
-                        )
-                        .is_ok()
-                    );
-                    assert_eq!(serde_json::to_vec(raw).unwrap(), block.continuity);
-                }
-            }
-            for family in ["anthropic", "responses", "gemini", "chat"] {
-                let mut target = block.origin.clone();
-                target.provider = family.into();
-                assert_eq!(
-                    crate::project_reasoning(&block, &target),
-                    crate::project_reasoning(&replay, &target)
-                );
-            }
-            let event = ModelEvent::ReasoningBlock { block: replay };
-            let encoded = serde_json::to_vec(&event).unwrap();
-            assert_eq!(
-                serde_json::from_slice::<ModelEvent>(&encoded).unwrap(),
-                event
-            );
-        }
-        return;
+        return reasoning_round_trip(input);
     }
     if kind == b'C' {
         catalog_round_trip(input);
-        return;
+        return Ok(());
     }
     if kind == b'N' {
-        if let Ok(request) =
-            serde_json::from_slice::<acyclic_harness_core::model::ModelRequest>(input)
-        {
-            assert_eq!(
-                crate::tool_names::Names::assert_round_trip(&request)
-                    .map_err(|error| format!("{error:?}")),
-                Ok(())
-            );
-            assert_eq!(
-                crate::call_ids::CallIds::assert_round_trip(&request)
-                    .map_err(|error| format!("{error:?}")),
-                Ok(())
-            );
-            let encoded = serde_json::to_vec(&request).unwrap();
-            let replay = serde_json::from_slice(&encoded).unwrap();
-            assert_eq!(
-                crate::tool_names::Names::assert_round_trip(&replay)
-                    .map_err(|error| format!("{error:?}")),
-                Ok(())
-            );
-            assert_eq!(
-                crate::call_ids::CallIds::assert_round_trip(&replay)
-                    .map_err(|error| format!("{error:?}")),
-                Ok(())
-            );
-        }
-        return;
+        return names_round_trip(input);
     }
     if kind == b'A' {
-        if let Ok(auth) = crate::codex::decode_auth(input) {
-            let refresh = crate::codex::needs_refresh(&auth, time::OffsetDateTime::UNIX_EPOCH);
-            let canonical = serde_json::to_vec(&auth).unwrap();
-            let restored = crate::codex::decode_auth(&canonical).unwrap();
-            assert_eq!(
-                crate::codex::needs_refresh(&restored, time::OffsetDateTime::UNIX_EPOCH),
-                refresh
-            );
-            assert_eq!(restored, auth);
-        }
-        return;
+        return auth_round_trip(input);
     }
-    let adapter = [
-        Adapter::Anthropic,
-        Adapter::Responses,
-        Adapter::Chat,
-        Adapter::Gemini,
-    ][usize::from(kind) % 4];
+    stream_round_trip(adapter_for(kind), input)
+}
+
+fn file_round_trip(input: &[u8]) -> ProofResult {
+    if let Ok(file) = serde_json::from_slice::<acyclic_harness_core::conversation::FileRef>(input) {
+        let marker = crate::files::FileText::default().project(
+            &file,
+            &acyclic_harness_core::model::FileProjectionPolicy::Reference,
+        )?;
+        let restored: acyclic_harness_core::conversation::FileRef = serde_json::from_str(
+            marker
+                .strip_prefix("[file: ")
+                .ok_or_else(|| crate::invalid("file marker has no prefix"))?
+                .strip_suffix(']')
+                .ok_or_else(|| crate::invalid("file marker has no suffix"))?,
+        )?;
+        assert_eq!(file, restored);
+    }
+    Ok(())
+}
+
+fn count_round_trip(input: &[u8]) -> ProofResult {
+    use crate::counting::wire::{TokenCountField, TokenCounterSpec, response};
+    for field in [
+        TokenCountField::InputTokens,
+        TokenCountField::TotalTokens,
+        TokenCountField::Count,
+    ] {
+        let spec = TokenCounterSpec {
+            path: "count".into(),
+            adapter: Adapter::Responses,
+            response_field: field,
+            framing_tokens: 0,
+        };
+        if let Ok(count) = response(input, &spec) {
+            let encoded = match field {
+                TokenCountField::InputTokens => serde_json::json!({"input_tokens":count}),
+                TokenCountField::TotalTokens => serde_json::json!({"totalTokens":count}),
+                TokenCountField::Count => serde_json::json!({"count":count}),
+            };
+            assert_eq!(response(&serde_json::to_vec(&encoded)?, &spec)?, count);
+        }
+    }
+    Ok(())
+}
+
+fn reasoning_round_trip(input: &[u8]) -> ProofResult {
+    if let Ok(block) = serde_json::from_slice::<acyclic_harness_core::model::ReasoningBlock>(input)
+    {
+        let encoded = serde_json::to_vec(&block)?;
+        let replay: acyclic_harness_core::model::ReasoningBlock = serde_json::from_slice(&encoded)?;
+        assert_eq!(block, replay);
+        for adapter in [crate::Adapter::Responses, crate::Adapter::Anthropic] {
+            if let Some(raw) =
+                crate::projection::native_reasoning::validated(adapter, &block.continuity)
+            {
+                // Independent bounded literal decoder: native admission must
+                // reject invalid strings, including inside skipped fields.
+                let bounds = acyclic_harness_core::JsonBounds {
+                    maximum_bytes: Some(block.continuity.len() as u64),
+                    maximum_items: Some(block.continuity.len() as u64),
+                    maximum_depth: 128,
+                };
+                assert!(
+                    acyclic_harness_core::json_value_bounded(raw, bounds, None, &mut |_| Ok(()),)
+                        .is_ok()
+                );
+                assert_eq!(serde_json::to_vec(raw)?, block.continuity);
+            }
+        }
+        for family in ["anthropic", "responses", "gemini", "chat"] {
+            let mut target = block.origin.clone();
+            target.provider = family.into();
+            assert_eq!(
+                crate::project_reasoning(&block, &target),
+                crate::project_reasoning(&replay, &target)
+            );
+        }
+        let event = ModelEvent::ReasoningBlock { block: replay };
+        let encoded = serde_json::to_vec(&event)?;
+        assert_eq!(serde_json::from_slice::<ModelEvent>(&encoded)?, event);
+    }
+    Ok(())
+}
+
+fn names_round_trip(input: &[u8]) -> ProofResult {
+    if let Ok(request) = serde_json::from_slice::<acyclic_harness_core::model::ModelRequest>(input)
+    {
+        crate::tool_names::Names::assert_round_trip(&request)?;
+        crate::call_ids::CallIds::assert_round_trip(&request)?;
+        let encoded = serde_json::to_vec(&request)?;
+        let replay = serde_json::from_slice(&encoded)?;
+        crate::tool_names::Names::assert_round_trip(&replay)?;
+        crate::call_ids::CallIds::assert_round_trip(&replay)?;
+    }
+    Ok(())
+}
+
+fn auth_round_trip(input: &[u8]) -> ProofResult {
+    if let Ok(auth) = crate::codex::decode_auth(input) {
+        let refresh = crate::codex::needs_refresh(&auth, time::OffsetDateTime::UNIX_EPOCH);
+        let canonical = serde_json::to_vec(&auth)?;
+        let restored = crate::codex::decode_auth(&canonical)?;
+        assert_eq!(
+            crate::codex::needs_refresh(&restored, time::OffsetDateTime::UNIX_EPOCH),
+            refresh
+        );
+        assert_eq!(restored, auth);
+    }
+    Ok(())
+}
+
+fn retry_after_round_trip(input: &[u8]) {
+    if let Ok(header) = std::str::from_utf8(input) {
+        let clock = || std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let wait = crate::retry::retry_after_at(header, clock);
+        let digits = header.trim();
+        if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            assert!(wait.is_some());
+        }
+        if let Some(wait) = wait {
+            // Normalize either accepted form to delta-seconds without losing its delay.
+            assert_eq!(
+                crate::retry::retry_after_at(&wait.as_secs().to_string(), clock),
+                Some(wait)
+            );
+        }
+    }
+}
+
+fn stream_round_trip(adapter: Adapter, input: &[u8]) -> ProofResult {
     let whole = parse(adapter, input, input.len().max(1));
     assert_eq!(whole, parse(adapter, input, 1));
     if let Ok(events) = whole {
@@ -287,7 +290,8 @@ pub fn assert_stream_invariants(input: &[u8]) {
         }
         // Identical provider bytes in a different turn must never reuse canonical
         // IDs. Bindings remain byte-for-byte equal, independently of chunking.
-        let other = parse_at(adapter, input, input.len().max(1), [2; 16]).unwrap();
+        let other =
+            parse_at(adapter, input, input.len().max(1), [2; 16]).map_err(crate::invalid)?;
         let first: Vec<_> = events
             .iter()
             .filter_map(|event| match event {
@@ -329,11 +333,12 @@ pub fn assert_stream_invariants(input: &[u8]) {
             if let ModelEvent::Completed { metadata } = &event {
                 acyclic_harness_core::executor::model_usage_codec_fuzz::check_metadata(metadata);
             }
-            let bytes = serde_json::to_vec(&event).unwrap();
-            let restored: ModelEvent = serde_json::from_slice(&bytes).unwrap();
+            let bytes = serde_json::to_vec(&event)?;
+            let restored: ModelEvent = serde_json::from_slice(&bytes)?;
             assert_eq!(restored, event);
         }
     }
+    Ok(())
 }
 
 pub(crate) fn input_round_trip(adapter: Adapter, input: &[u8]) -> bool {
