@@ -5,8 +5,7 @@
 // Features come from one whole-workspace resolution and are fixed per target, so a target's
 // action keys never depend on which targets a build selects (Cargo's -p unification rebuilt
 // unchanged units whenever the selection changed).
-// Members listed in [workspace.metadata.bazel] build with Bazel; the list must be closed under
-// first-party dependencies and grows until it names every member.
+// Every workspace member builds with Bazel.
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -60,7 +59,6 @@ const dir = p => path.relative(root, path.dirname(p.manifest_path)).replaceAll("
 const label = p => `//${dir(p)}`;
 const libOf = p => p.targets.find(t => t.kind.some(k => k === "lib" || k === "rlib" || k === "proc-macro"));
 const crateName = target => target.name.replaceAll("-", "_");
-const selected = new Set(base.metadata?.bazel?.members ?? []);
 
 const cargo = tables("Cargo.toml");
 const dev = cargo["profile.dev"] ?? {};
@@ -84,7 +82,6 @@ function edges(p, kinds) {
     for (const dep of byId.get(p.id)?.deps ?? []) {
       if (!members.has(dep.pkg) || !dep.dep_kinds.some(k => kinds.includes(k.kind))) continue;
       const target = packages.get(dep.pkg);
-      if (!selected.has(dir(target))) throw new Error(`STEP_FAILED bazel-build-files: ${dir(p)} depends on ${dir(target)}, which [workspace.metadata.bazel] members omits`);
       const lib = libOf(target), name = `${label(target)}:${crateName(lib)}`;
       (lib.kind.includes("proc-macro") ? procMacros : deps).push(name);
       if (dep.name !== crateName(lib)) aliases[name] = dep.name;
@@ -231,12 +228,10 @@ function moduleFile() {
 }
 
 const files = new Map([["cargo.MODULE.bazel", moduleFile()]]);
-for (const id of members) if (selected.has(dir(packages.get(id)))) files.set(`${dir(packages.get(id))}/BUILD.bazel`, buildFile(packages.get(id)));
-for (const member of selected) if (!files.has(`${member}/BUILD.bazel`)) throw new Error(`STEP_FAILED bazel-build-files: [workspace.metadata.bazel] member ${member} is not a workspace member`);
-// The generated file of a workspace member that left the Bazel list is stale.
-for (const id of members) {
-  const file = `${dir(packages.get(id))}/BUILD.bazel`, target = path.join(root, file);
-  if (!files.has(file) && fs.existsSync(target) && fs.readFileSync(target, "utf8").startsWith(HEADER)) files.set(file, null);
+for (const id of members) files.set(`${dir(packages.get(id))}/BUILD.bazel`, buildFile(packages.get(id)));
+// A generated file whose package left the workspace is stale.
+for (const file of execFileSync("git", ["ls-files", "*BUILD.bazel"], { cwd: root, encoding: "utf8" }).split("\n").filter(Boolean)) {
+  if (!files.has(file) && fs.readFileSync(path.join(root, file), "utf8").startsWith(HEADER)) files.set(file, null);
 }
 const stale = [];
 for (const [file, text] of files) {
