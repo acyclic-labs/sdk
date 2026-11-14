@@ -150,6 +150,11 @@ pub fn decode_delivery(bytes: &[u8]) -> Result<JsValue, JsValue> {
             guest::Trigger::Record {
                 subscription,
                 sequence,
+            }
+            | guest::Trigger::KeyedRecord {
+                subscription,
+                sequence,
+                ..
             },
             Some(record),
         ) => object(&[
@@ -204,6 +209,97 @@ pub fn decode_delivery(bytes: &[u8]) -> Result<JsValue, JsValue> {
         ("trigger", trigger),
         ("checkpoint", checkpoint),
     ]))
+}
+
+/// The HTTP request of one `InvokeActor` delivery, for a host whose every
+/// invocation is a front-door `InvokeActorRequest`: method, URL, ordered header
+/// pairs and body. Ordinary records and alarms yield null. Only such a host
+/// calls this; elsewhere invocation payloads are application-defined bytes
+/// that stay on the guest's event path.
+#[wasm_bindgen(js_name = decodeInvokeRequest)]
+pub fn decode_invoke_request(bytes: &[u8]) -> Result<JsValue, JsValue> {
+    use prost::Message as _;
+    let (delivery, _) = guest::wire::decode_delivery(bytes).map_err(guest_error)?;
+    let Some(invocation) = delivery.invocation().map_err(guest_error)? else {
+        return Ok(JsValue::NULL);
+    };
+    let request = acyclic_actors::wire::InvokeActorRequest::decode(invocation.request().as_ref())
+        .map_err(|_| {
+        js_error(
+            "invalid_argument",
+            "invocation request is not InvokeActorRequest",
+        )
+    })?;
+    let headers = js_sys::Array::new();
+    for header in request.headers {
+        headers.push(&js_sys::Array::of2(
+            &header.name.into(),
+            &header.value.into(),
+        ));
+    }
+    Ok(object(&[
+        ("method", request.method.into()),
+        ("url", request.url.into()),
+        ("headers", headers.into()),
+        ("body", Uint8Array::from(request.body.as_slice()).into()),
+    ]))
+}
+
+/// The canonical `InvokeActorResponse` reply of one invocation: an HTTP status,
+/// ordered header pairs and the complete body. `names` and `values` pair by index.
+#[wasm_bindgen(js_name = encodeInvokeResponse)]
+pub fn encode_invoke_response(
+    status: u16,
+    names: Vec<String>,
+    values: Vec<String>,
+    body: Vec<u8>,
+) -> Result<Vec<u8>, JsValue> {
+    use prost::Message as _;
+    if names.len() != values.len() {
+        return Err(js_error(
+            "invalid_argument",
+            "response header names and values differ in length",
+        ));
+    }
+    Ok(acyclic_actors::wire::InvokeActorResponse {
+        status: status.into(),
+        body,
+        headers: names
+            .into_iter()
+            .zip(values)
+            .map(|(name, value)| acyclic_actors::wire::Header { name, value })
+            .collect(),
+        ..Default::default()
+    }
+    .encode_to_vec())
+}
+
+/// The strict-wire manifest of a JavaScript `ActorDefinition` package: the
+/// deployment's admitted code digest and subscription ids, the definition's
+/// codec, and the deployment's optional limits. It declares no interrupts and
+/// no bindings; a definition reaches its bindings through its environment.
+#[wasm_bindgen(js_name = encodeManifest)]
+pub fn encode_manifest(
+    code: Vec<u8>,
+    codec_name: String,
+    codec_version: String,
+    subscriptions: Vec<String>,
+    handler_timeout_millis: Option<u64>,
+    memory_bytes: Option<u64>,
+    checkpoint_bytes: Option<u64>,
+) -> Result<Vec<u8>, JsValue> {
+    Ok(guest::wire::encode_manifest(&guest::Manifest {
+        code: domain::CodeSha256::try_from(code).map_err(nominal_error)?,
+        codec: guest::CodecIdentity {
+            name: codec_name,
+            version: codec_version,
+        },
+        subscriptions,
+        interrupts: Vec::new(),
+        bindings: Vec::new(),
+        limits: domain::ActorLimits::new(handler_timeout_millis, memory_bytes, checkpoint_bytes)
+            .map_err(nominal_error)?,
+    }))
 }
 
 /// Encode a JavaScript guest's transition: its checkpoint and optional reply,
@@ -379,4 +475,63 @@ operation_wrappers! {
     (fork_actor, "ForkActor"),
     (invoke_actor, "InvokeActor"),
     (delete_all, "DeleteAll"),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use prost::Message as _;
+
+    #[test]
+    fn definition_manifest_is_the_strict_wire_the_core_admits() -> Result<(), guest::GuestError> {
+        let code = vec![7; 32];
+        let bytes = encode_manifest(
+            code.clone(),
+            "routes".into(),
+            "1".into(),
+            vec!["routes".into(), "inbox".into()],
+            Some(5_000),
+            None,
+            Some(1 << 20),
+        )
+        .map_err(|_| guest::GuestError::Decode("manifest refused".into()))?;
+        let manifest = guest::wire::decode_manifest(&bytes)?;
+        assert_eq!(manifest.code.as_bytes().as_slice(), code.as_slice());
+        assert_eq!(
+            manifest.codec,
+            guest::CodecIdentity {
+                name: "routes".into(),
+                version: "1".into()
+            }
+        );
+        assert_eq!(manifest.subscriptions, ["routes", "inbox"]);
+        assert!(manifest.interrupts.is_empty() && manifest.bindings.is_empty());
+        assert_eq!(manifest.limits.handler_timeout_millis(), Some(5_000));
+        assert_eq!(manifest.limits.memory_bytes(), None);
+        assert_eq!(manifest.limits.checkpoint_bytes(), Some(1 << 20));
+        Ok(())
+    }
+
+    #[test]
+    fn invocation_reply_is_the_front_door_response() -> Result<(), prost::DecodeError> {
+        let bytes = encode_invoke_response(
+            201,
+            vec!["location".into(), "x-a".into()],
+            vec!["/result".into(), "b".into()],
+            b"body".to_vec(),
+        )
+        .unwrap_or_default();
+        let response = acyclic_actors::wire::InvokeActorResponse::decode(bytes.as_slice())?;
+        assert_eq!(response.status, 201);
+        assert_eq!(response.body, b"body");
+        assert_eq!(
+            response
+                .headers
+                .iter()
+                .map(|header| (header.name.as_str(), header.value.as_str()))
+                .collect::<Vec<_>>(),
+            [("location", "/result"), ("x-a", "b")]
+        );
+        Ok(())
+    }
 }
