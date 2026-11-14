@@ -20,7 +20,7 @@ struct Busy {
     failing: ActorReference,
     refusals: usize,
     attempts: AtomicUsize,
-    failures: AtomicUsize,
+    failures: std::sync::Mutex<Vec<String>>,
     held: AtomicUsize,
     entered: tokio::sync::watch::Sender<usize>,
     gate: tokio::sync::Semaphore,
@@ -67,9 +67,11 @@ impl Handler for Busy {
         &'a self,
         delivery: Delivery,
         checkpoint: Option<&'a Checkpoint>,
-        _: String,
+        failure: String,
     ) -> GuestFuture<'a, Option<Transition>> {
-        self.failures.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut failures) = self.failures.lock() {
+            failures.push(failure);
+        }
         Box::pin(async move {
             self.package
                 .on_record(delivery, checkpoint, CancellationToken::new())
@@ -77,6 +79,14 @@ impl Handler for Busy {
                 .map(Some)
         })
     }
+}
+
+fn failures(handler: &Busy) -> Vec<String> {
+    handler
+        .failures
+        .lock()
+        .map(|failures| failures.clone())
+        .unwrap_or_default()
 }
 
 async fn history() -> TestResult {
@@ -92,7 +102,7 @@ async fn history() -> TestResult {
         failing: actor(FAILING)?,
         refusals,
         attempts: AtomicUsize::new(0),
-        failures: AtomicUsize::new(0),
+        failures: std::sync::Mutex::default(),
         held: AtomicUsize::new(0),
         entered,
         gate: tokio::sync::Semaphore::new(0),
@@ -129,7 +139,7 @@ async fn history() -> TestResult {
             "actor idled with its input while {busy} actors stayed busy \
              (undecided failures: {}, failure transitions: {})",
             handler.attempts.load(Ordering::SeqCst),
-            handler.failures.load(Ordering::SeqCst)
+            failures(&handler).len()
         )
         .into());
     }
@@ -140,11 +150,20 @@ async fn history() -> TestResult {
         "the failing actor's settlement waited for busy actors"
     );
     assert_eq!(handler.attempts.load(Ordering::SeqCst), 2);
-    assert_eq!(
-        handler.failures.load(Ordering::SeqCst),
-        usize::from(refusals != 1),
-        "a persistent undecided failure settles visibly, a transient one by redelivery"
-    );
+    // A transient undecided failure settles by redelivery; a persistent one
+    // fails visibly, as exactly the unchanged undecided error.
+    let expected: Vec<String> = if refusals == 1 {
+        Vec::new()
+    } else {
+        vec![
+            crate::local::Error::UndecidedUnchanged(
+                GuestError::Pending("undecided storage outcome".into())
+                    .with_context("context prepared, model not started"),
+            )
+            .to_string(),
+        ]
+    };
+    assert_eq!(failures(&handler), expected);
     assert_eq!(
         records(provider.as_ref(), &format!("out/{FAILING}")).await?,
         vec![Bytes::from_static(b"r0")]
