@@ -102,7 +102,7 @@ async fn unchanged_fork_base_skips_inherited_observations_but_keeps_source_delet
                 .unwrap();
         }
         let cut = root.snapshot(accounting!()).await.unwrap();
-        let (child, _) = root
+        let (child, initial) = root
             .fork(
                 "child",
                 IdempotencyKey::new(),
@@ -138,7 +138,7 @@ async fn unchanged_fork_base_skips_inherited_observations_but_keeps_source_delet
                 .await
                 .unwrap()
                 .authored_generation,
-            cut.authored_generation
+            initial.authored_generation
         );
         let deleted = root
             .exactify_observed_base(cut, &[], &child, accounting!())
