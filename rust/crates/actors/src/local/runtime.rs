@@ -181,6 +181,8 @@ struct Inner {
     pending: Option<(Arc<Snapshot>, PreparedPublish, Option<String>)>,
     /// Conflicts of the last composed-guard refusal since a publication.
     refused: Option<Vec<acyclic_stream::CommitConflict>>,
+    /// The input whose handler failure was last undecided, since a publication.
+    undecided: Option<Trigger>,
     /// This resident actor's interest marker is durable (or not needed).
     interests_marked: bool,
 }
@@ -201,6 +203,32 @@ impl Inner {
         self.refused = Some(conflicts);
         Ok(())
     }
+
+    /// An undecided handler failure retains its input, and nothing else owes
+    /// the actor a wake: its own failure is the event that redelivers it, at
+    /// once. The same input undecided again, with no publication between,
+    /// settles through the handler's failure path instead of idling with the
+    /// input or retrying without bound. The mark names its input (an alarm by
+    /// generation, not by clock reading), so a work-budget yield keeps it and
+    /// a different input selected in between gets its own retry.
+    fn undecided(
+        &mut self,
+        trigger: &Trigger,
+        failure: crate::guest::GuestError,
+    ) -> Result<(), Error> {
+        let input = match trigger {
+            Trigger::Alarm { generation, .. } => Trigger::Alarm {
+                generation: *generation,
+                now_unix_ms: 0,
+            },
+            other => other.clone(),
+        };
+        if self.undecided.take().is_some_and(|last| last == input) {
+            return Err(Error::UndecidedUnchanged(failure));
+        }
+        self.undecided = Some(input);
+        Ok(())
+    }
 }
 
 /// Only a decided refusal can be replaced with a failure transition. Capacity
@@ -210,7 +238,7 @@ fn terminal(error: &Error) -> bool {
         Error::Stream(error) => {
             !error.uncertain() && !matches!(error.category(), StreamError::Capacity)
         }
-        Error::PreconditionUnchanged => true,
+        Error::PreconditionUnchanged | Error::UndecidedUnchanged(_) => true,
         Error::Handler(failure) => !matches!(failure, crate::guest::GuestError::Pending(_)),
         _ => false,
     }
@@ -1882,6 +1910,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 Err(Error::PreconditionChanged(conflicts)) => {
                     inner.refused(conflicts).map(|()| true)
                 }
+                Err(Error::Handler(failure @ crate::guest::GuestError::Pending(_)))
+                    if !cancellation.is_cancelled() =>
+                {
+                    inner.undecided(&trigger, failure).map(|()| true)
+                }
                 Err(error) => Err(error),
             };
             if let Err(error) = &result {
@@ -2222,6 +2255,7 @@ async fn settle_pending<P: StreamProvider + ?Sized>(
                 inner.last_input = subscription;
             }
             inner.refused = None;
+            inner.undecided = None;
             inner.observed = Some(Arc::new(
                 observed.ok_or(Error::Invalid("actor receipt has no state"))?,
             ));
