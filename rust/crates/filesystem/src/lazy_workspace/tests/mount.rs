@@ -183,14 +183,13 @@ async fn source_before_images_collection<S: LazyWorkspaceStore>(
         root.retire_lookup(lookup, &mut ctx)?;
         let mut checkout = root
             .workspace()
-            .checkout(
+            .checkout_accounted(
                 crate::model::GenerationSelector::Head,
                 crate::model::CheckoutMode::tracking_transaction(),
-                WorkBudget::UNBOUNDED,
+                &mut ctx,
                 &cancellation,
             )
-            .await?
-            .value;
+            .await?;
         assert!(
             root.stage_into_checkout(&mut checkout, "/file", id, original.len() as u64, &mut ctx)
                 .await?
@@ -198,18 +197,26 @@ async fn source_before_images_collection<S: LazyWorkspaceStore>(
         // This real unpublished payload gives collection reclaimable work.
         // Neither it nor the source copy-up becomes an authored generation.
         let orphan = root.namespace_path("/orphan", &mut ctx)?;
-        checkout
-            .apply_authored_transaction(
-                vec![AuthoredMutation::CreateFile {
-                    file_id: None,
-                    path: orphan.value,
-                    bytes: acyclic_stream::OwnedBytes::from(vec![0x6e; 65_537]),
-                    metadata: FileMetadata::default(),
-                }],
-                WorkBudget::UNBOUNDED,
+        let mut mutations = Owned::allocate(1, &mut ctx)?;
+        mutations.value.push(AuthoredMutation::CreateFile {
+            file_id: None,
+            path: orphan.value,
+            bytes: acyclic_stream::OwnedBytes::from(vec![0x6e; 65_537]),
+            metadata: FileMetadata::default(),
+        });
+        let KernelOwnedAllocation::NativeOriginal(slots) = &mutations.allocation else {
+            unreachable!("native input retains its original slots")
+        };
+        let output = checkout
+            .apply_borrowed_authored_transaction_with_native_work(
+                &mutations.value,
+                slots,
+                &work,
                 &cancellation,
             )
             .await?;
+        drop(output);
+        mutations.retire(&mut ctx)?;
         crate::kernel::retire_allocation(orphan.allocation, orphan.bytes, &mut ctx)?;
         drop(checkout);
         cut = root.snapshot(&mut ctx).await?;
