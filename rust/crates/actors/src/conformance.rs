@@ -459,7 +459,6 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
     }
 
     async fn send(&mut self, command: &str) -> Result<(), Failure> {
-        let store = self.target.store();
         let condition = if self.sent == 0 {
             CommitCondition::Absent {
                 path: self.inbox.clone(),
@@ -470,8 +469,29 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
                 expected: self.sent,
             }
         };
-        let mut prepared =
-            PreparedPublish::foreign(idempotency(&format!("{}/send/{}", self.inbox, self.sent))?);
+        self.deliver(acyclic_stream::CommitRequest {
+            deadline_unix_millis: None,
+            idempotency_key: idempotency(&format!("{}/send/{}", self.inbox, self.sent))?,
+            effects: vec![CommitEffect::hard(
+                vec![condition],
+                vec![CommitMutation::Append {
+                    path: self.inbox.clone(),
+                    records: vec![AppendRecord::from(Bytes::from(command.to_owned()))],
+                }],
+            )],
+        })
+        .await?;
+        self.sent += 1;
+        Ok(())
+    }
+
+    /// Direct and relayed inputs use the same durable activation publication.
+    async fn deliver(&mut self, request: acyclic_stream::CommitRequest) -> Result<(), Error> {
+        if request.deadline_unix_millis.is_some() {
+            return Err(Error::Invalid("conformance input has a deadline"));
+        }
+        let store = self.target.store();
+        let mut prepared = PreparedPublish::foreign(request.idempotency_key);
         // The creation carries the activation entry; every later input wakes
         // the actor with its own same-commit entry.
         match self.creation.take() {
@@ -482,21 +502,10 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
             }
             None => prepared.join(store.activation(&self.actor)?)?,
         }
-        prepared.join(acyclic_stream::CommitEffect::hard(
-            vec![condition],
-            vec![CommitMutation::Append {
-                path: self.inbox.clone(),
-                records: vec![AppendRecord::from(Bytes::from(command.to_owned()))],
-            }],
-        ))?;
-        let outcome = store
-            .provider()
-            .commit(prepared.into_request()?)
-            .await
-            .map_err(Error::from)?;
-        PreparedPublish::settle(&outcome)?;
-        self.sent += 1;
-        Ok(())
+        for effect in request.effects {
+            prepared.join(effect)?;
+        }
+        store.submit(prepared).await
     }
 
     /// Inspect the finite output prefix after the original host completes.
@@ -697,6 +706,7 @@ pub async fn verify<T: Backend + ?Sized>(target: &T) -> Result<(), Failure> {
     )
     .await?;
     let run = target.namespace();
+    routing::replayed_delivery(target, run).await?;
     ordered(target, run).await?;
     applied(target, run).await?;
     invoked(target, run).await?;

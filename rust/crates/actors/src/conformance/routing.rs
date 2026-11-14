@@ -1,5 +1,5 @@
 //! Routing transaction invariants use the original backend, not a mock router.
-use super::{Error, Failure};
+use super::{Backend, Error, Failure, Fixture};
 use crate::{
     addressing::ActorReference,
     route::{Envelope, NodeId, Paths, Placement, Rejection, Routed},
@@ -9,6 +9,105 @@ use acyclic_stream::{
     ReadRequest, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
 };
 use futures::TryStreamExt as _;
+
+/// A destination restart after inbox commit but before relay acknowledgement
+/// replays through ordinary activation without running the input twice. Every
+/// backend executes its real package and scheduler, not just inbox appends.
+pub async fn replayed_delivery<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
+    let mut receiver = Fixture::create(target, run, "routing-replay").await?;
+    receiver.send("emit").await?;
+    receiver.expect(&["r0"]).await?;
+    let provider = target.store().provider();
+    let root = StreamPath::new(format!("{}/routing-replay", target.store().root()))
+        .map_err(Error::from)?;
+    let paths = Paths::new(root.clone());
+    let source = NodeId::new(b"source").map_err(violation)?;
+    let destination = NodeId::new(b"destination").map_err(violation)?;
+    let sender =
+        ActorReference::new(b"conformance", b"actors", b"routing-sender").map_err(violation)?;
+    let mut messages = Vec::new();
+    for index in 0..2 {
+        let message = Envelope {
+            source: source.clone(),
+            sender: sender.clone(),
+            to: receiver.actor.clone(),
+            request: CommitRequest {
+                deadline_unix_millis: None,
+                idempotency_key: key(&root, &format!("input-{index}"))?,
+                effects: vec![CommitEffect::hard(
+                    Vec::new(),
+                    vec![CommitMutation::Append {
+                        path: receiver.inbox.clone(),
+                        records: vec!["emit".into()],
+                    }],
+                )],
+            },
+        };
+        message
+            .publish_relay(provider.as_ref(), &paths, &destination, Vec::new())
+            .await
+            .map_err(violation)?;
+        messages.push(message);
+    }
+    receiver.expect(&["r0"]).await?;
+    let interrupted =
+        crate::route::drain(provider.as_ref(), &paths, &destination, async |record| {
+            if record.envelope != messages[0] {
+                return Err(crate::route::Error::InvalidRecord);
+            }
+            receiver.deliver(record.envelope.request).await?;
+            // The inbox publication is durable; the drain has not committed
+            // its acknowledgement. End this consumer at exactly that boundary.
+            Err(StreamError::Unavailable.into())
+        })
+        .await;
+    require(
+        matches!(
+            interrupted,
+            Err(crate::route::Error::Stream(StreamError::Unavailable))
+        ),
+        "drain did not stop at the pre-ack boundary",
+    )?;
+    require(
+        matches!(
+            provider
+                .tail(paths.relay_cursor(&destination).map_err(Error::from)?)
+                .await,
+            Err(StreamError::NotFound)
+        ),
+        "interrupted delivery was acknowledged",
+    )?;
+    receiver.expect(&["r0", "r1"]).await?;
+    target.restart().await?;
+    let mut replayed = 0;
+    let drain = crate::route::drain(provider.as_ref(), &paths, &destination, async |record| {
+        if messages.get(replayed) != Some(&record.envelope) {
+            return Err(crate::route::Error::InvalidRecord);
+        }
+        receiver.deliver(record.envelope.request).await?;
+        replayed += 1;
+        Ok(())
+    });
+    // Wait for both durable ack records, rather than cancelling the drain at
+    // its first (replayed) record or relying on a readiness delay.
+    until_ack(
+        provider.as_ref(),
+        paths.relay_cursor(&destination).map_err(Error::from)?,
+        1,
+        drain,
+    )
+    .await?;
+    require(replayed == 2, "reconnect skipped a relay input")?;
+    receiver.expect(&["r0", "r1", "r2"]).await?;
+    require(
+        provider
+            .tail(receiver.inbox.clone())
+            .await
+            .map_err(Error::from)?
+            == 3,
+        "replay appended another inbox record",
+    )
+}
 
 async fn drain_one<P: StreamProvider + ?Sized>(
     provider: &P,
