@@ -79,6 +79,7 @@ async fn scenario(steps: usize) -> Result<(), Box<dyn Error>> {
         let operation = choice() % 5;
         let path = format!("/file-{}", choice() % 4);
         let bytes = vec![choice(); 1 + usize::from(choice() % 32)];
+        eprintln!("volume step={step} operation={operation} path={path}");
         match operation {
             0 => {
                 let mut transaction = unbounded!(parent, begin_transaction(IdempotencyKey::new()))?;
@@ -195,8 +196,10 @@ async fn scenario(steps: usize) -> Result<(), Box<dyn Error>> {
 }
 
 fn run(seed: u64, steps: usize) -> Result<(), Box<dyn Error>> {
+    eprintln!("volume seed={seed} steps={steps}");
     let runtime = seeded_runtime(seed)?;
     runtime.block_on(async {
+        tokio::time::pause();
         let (schedule, mut events) = Schedule::seeded(seed);
         let world = schedule.scope(scenario(steps));
         tokio::pin!(world);

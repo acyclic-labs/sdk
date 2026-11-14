@@ -68,10 +68,20 @@ pub(super) async fn publish(
     Ok(())
 }
 
-async fn seed(root: &Path) -> TestResult {
-    let fs = Fs::local(crate::LocalOptions::new(root)).await?;
-    drop(unbounded!(fs, create_workspace("repo"))?);
-    close_local(fs).await
+async fn seed(root: &Path, value: u64) -> TestResult {
+    let (schedule, mut events) = Schedule::seeded(value);
+    let initialize = schedule.scope(async {
+        let fs = Fs::local(crate::LocalOptions::new(root)).await?;
+        drop(unbounded!(fs, create_workspace("repo"))?);
+        close_local(fs).await
+    });
+    tokio::pin!(initialize);
+    loop {
+        tokio::select! {
+            result = &mut initialize => return result,
+            boundary = events.recv() => boundary.ok_or("history initialization producer dropped")?.release(),
+        }
+    }
 }
 
 async fn recover(root: &Path) -> TestResult {
@@ -126,9 +136,10 @@ fn seeded_physical_crash_history() -> TestResult {
         let runtime = seeded_runtime(seed_value)?;
         runtime
             .block_on(async {
+                tokio::time::pause();
                 let directory = tempfile::tempdir()?;
                 let baseline = directory.path().join("baseline");
-                seed(&baseline).await?;
+                seed(&baseline, seed_value).await?;
                 let count =
                     run_seeded_child(&baseline, PublicationKind::History, None, seed_value)?;
                 assert!(count > 0, "history bypassed physical fault sites");
@@ -136,14 +147,16 @@ fn seeded_physical_crash_history() -> TestResult {
                 let (schedule, _events) = Schedule::seeded(seed_value);
                 let (ordinal, fault) = schedule
                     .scope(async {
-                        (
-                            usize::from(random()) % count,
+                        let mut selection = [0; 8];
+                        assert!(fill_seeded(&mut selection));
+                        Ok::<_, Box<dyn Error>>((
+                            usize::try_from(u64::from_le_bytes(selection) % u64::try_from(count)?)?,
                             ["before", "after", "torn"][usize::from(random() % 3)],
-                        )
+                        ))
                     })
-                    .await;
+                    .await?;
                 let cut = directory.path().join("cut");
-                seed(&cut).await?;
+                seed(&cut, seed_value).await?;
                 run_seeded_child(
                     &cut,
                     PublicationKind::History,

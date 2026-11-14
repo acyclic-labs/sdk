@@ -175,6 +175,7 @@ fn seeded_command_range_publications() -> Result<(), Box<dyn std::error::Error>>
     for seed in 0..4 {
         let runtime = seeded_runtime(seed)?;
         runtime.block_on(async {
+            tokio::time::pause();
             let (schedule, mut events) = Schedule::seeded(seed);
             let operation = schedule.scope(async {
                 let mut input = [0; 33];

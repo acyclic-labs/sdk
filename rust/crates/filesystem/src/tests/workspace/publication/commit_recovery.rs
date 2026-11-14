@@ -212,10 +212,10 @@ fn commit_crash_child() -> TestResult {
         "history" => PublicationKind::History,
         _ => return Err("unknown workspace publication kind".into()),
     };
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
+    let seed = std::env::var("ACYCLIC_WORKSPACE_CRASH_SEED")?.parse()?;
+    let runtime = acyclic_native_runtime::testing::seeded_runtime(seed)?;
     runtime.block_on(async {
+        tokio::time::pause();
         let fs = Fs::local(crate::LocalOptions::new(&root)).await?;
         let workspace = unbounded!(fs, open_workspace("repo"))?;
         let coordinator = if matches!(kind, PublicationKind::MultiRoot) {
@@ -226,7 +226,6 @@ fn commit_crash_child() -> TestResult {
         } else {
             None
         };
-        let seed = std::env::var("ACYCLIC_WORKSPACE_CRASH_SEED")?.parse()?;
         let (schedule, mut events) = Schedule::seeded(seed);
         let mut returned_fault = None;
         if let Ok(ordinal) = std::env::var("ACYCLIC_WORKSPACE_CRASH_ORDINAL") {
