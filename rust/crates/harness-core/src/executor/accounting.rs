@@ -25,6 +25,14 @@ pub(crate) struct ContextCount {
     pub(super) request_digest: [u8; 32],
     pub(super) input_tokens: u64,
     message_count: u64,
+    /// Largest assistant message weight in the counted request: the response
+    /// evidence a shared output window reserves. Zero before any response.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub(super) response_tokens: u32,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 impl From<crate::context::ModelTokenCount> for ContextCount {
@@ -39,11 +47,37 @@ impl From<&crate::context::ModelTokenCount> for ContextCount {
             request_digest: count.request_digest,
             input_tokens: count.input_tokens,
             message_count: count.message_tokens.len() as u64,
+            response_tokens: 0,
         }
     }
 }
 
 impl ContextCount {
+    /// Retains the counted request's largest response alongside its total.
+    pub(super) fn admitted(
+        count: &crate::context::ModelTokenCount,
+        request: &crate::model::PreparedModelRequest,
+    ) -> Self {
+        let response_tokens = request
+            .request()
+            .messages
+            .iter()
+            .zip(&count.message_tokens)
+            .filter(|(message, _)| message.role == crate::model::ModelRole::Assistant)
+            .map(|(_, tokens)| *tokens)
+            .max()
+            .unwrap_or(0);
+        Self {
+            response_tokens,
+            ..Self::from(count)
+        }
+    }
+
+    /// Response evidence for [`crate::context::CapacityCompaction::input_ceiling`].
+    pub(super) fn response_tokens(&self) -> u64 {
+        u64::from(self.response_tokens)
+    }
+
     pub(super) fn validate(
         &self,
         request: &crate::model::PreparedModelRequest,
@@ -172,7 +206,7 @@ pub(super) async fn stock_count_tokens(
                 })?;
             }
             ModelEvent::Counted { count } => {
-                let counted = ContextCount::from(count);
+                let counted = ContextCount::admitted(count, request);
                 // Planning weights are not retained in durable accounting.
                 // Return their original credit as the actual DTO is dropped.
                 stock_retire_event(event, io)?;
@@ -279,6 +313,8 @@ impl StockExecution<'_> {
     }
 
     /// The most input this execution admits without compacting or refusing.
+    /// A shared window's response evidence arrives with the count itself, so
+    /// this pre-count ceiling is the widest one any later decision can use.
     pub(super) fn input_ceiling(
         &self,
         capacity: crate::context::ModelContextCapacity,
@@ -288,7 +324,7 @@ impl StockExecution<'_> {
             return Ok(u64::from(capacity.context_tokens));
         }
         match self.compaction_policy()? {
-            crate::context::CompactionPolicy::Capacity(policy) => policy.input_ceiling(capacity),
+            crate::context::CompactionPolicy::Capacity(policy) => policy.input_ceiling(capacity, 0),
             crate::context::CompactionPolicy::Disabled => Ok(u64::from(capacity.context_tokens)),
         }
     }
@@ -335,11 +371,11 @@ impl StockExecution<'_> {
         let mut prepared = executor.prepare_request(input, step, &[]).await?;
         self.verify_model_request_content(journal, &mut prepared)
             .await?;
-        let ceiling = crate::context::CapacityCompaction::default().input_ceiling(capacity)?;
+        let policy = crate::context::CapacityCompaction::default();
         let count = match stock_count_tokens(
             self.selected_provider().as_ref(),
             &prepared,
-            ceiling,
+            policy.input_ceiling(capacity, 0)?,
             self.io,
             journal,
             (input.operation_id, step),
@@ -353,8 +389,9 @@ impl StockExecution<'_> {
             }
             Err(error) => return Err(error),
         };
+        let response_tokens = count.response_tokens();
         let count = with_history_io(self.io, |work| count.validate(&prepared, work))?;
-        if count > ceiling {
+        if policy.needs_compaction(capacity, count, response_tokens)? {
             return Err(Error::ModelContextOverflow);
         }
         Ok(Some(prepared))

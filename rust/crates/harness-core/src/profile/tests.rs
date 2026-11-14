@@ -109,6 +109,7 @@ fn profile(family: &str, output_tokens: Option<u32>) -> Result<ModelProfile> {
         ModelContextCapacity {
             context_tokens: 1_000,
             output_tokens,
+            output_shares_context: false,
         },
         "renderer-v1",
     )
@@ -207,7 +208,7 @@ proptest! {
         let output = 1 + seed % (budget / 4);
         let family = format!("---\nversion: 1\ntools: []\nreasoning: {{mode: adaptive, effort: medium}}\ncache: automatic\nwatermark_tokens: {watermark}\n---\n");
         let model = ModelProfile::parse(&family, MODEL,
-            ModelContextCapacity { context_tokens: context, output_tokens: Some(output) }, "renderer-v1").unwrap();
+            ModelContextCapacity { context_tokens: context, output_tokens: Some(output), output_shares_context: false }, "renderer-v1").unwrap();
         let project = ProjectLayer::parse(EMPTY).unwrap();
         let role = RoleFile::parse(WORKER).unwrap();
         let override_source = format!("---\nversion: 1\nbudget_tokens: {budget}\n---\n");

@@ -13,30 +13,57 @@ use serde::{Deserialize, Serialize};
 pub struct CapacityCompaction {}
 
 impl CapacityCompaction {
-    /// Only actual model capacity can require a rewrite.
+    /// Only actual model capacity can require a rewrite. `response_tokens` is
+    /// the admitted request's response evidence; see [`Self::input_ceiling`].
     pub fn needs_compaction(
         &self,
         capacity: ModelContextCapacity,
         input_tokens: u64,
+        response_tokens: u64,
     ) -> Result<bool> {
-        Ok(input_tokens > self.input_ceiling(capacity)?)
+        Ok(input_tokens > self.input_ceiling(capacity, response_tokens)?)
     }
 
-    /// Input room after reserving the provider's verified maximum response.
-    /// Unknown response capacity cannot authorize a smaller, guessed reserve.
-    pub fn input_ceiling(&self, capacity: ModelContextCapacity) -> Result<u64> {
+    /// The most input that still leaves room for the next response. The
+    /// catalog states how the provider budgets that response:
+    ///
+    /// - **Reserved** (`output_tokens` without `output_shares_context`): the
+    ///   provider sets its published maximum response aside ahead of input,
+    ///   so the ceiling is `context_tokens - output_tokens`.
+    /// - **Shared** (`output_shares_context`): the response draws on whatever
+    ///   window the input leaves, and its published maximum may be the whole
+    ///   window, so nothing fixed is reserved. The ceiling is
+    ///   `context_tokens - response_tokens`, where `response_tokens` is the
+    ///   largest response this agent's admitted request retains: the largest
+    ///   assistant message by the verified count's per-message weight. It is
+    ///   zero before any response exists, grows only with observed responses,
+    ///   and is never a constant or a request output cap.
+    /// - **Unknown** (neither): refused, because any reserve would be a guess.
+    ///
+    /// Either way, a reserve that leaves no input room is an error.
+    pub fn input_ceiling(
+        &self,
+        capacity: ModelContextCapacity,
+        response_tokens: u64,
+    ) -> Result<u64> {
         capacity.validate()?;
-        let reserve = capacity.output_tokens.ok_or_else(|| {
-            Error::Invalid("context management requires a verified response capacity".into())
-        })?;
-        let ceiling = capacity
-            .context_tokens
+        let reserve = if capacity.output_shares_context {
+            response_tokens
+        } else {
+            u64::from(capacity.output_tokens.ok_or_else(|| {
+                Error::Invalid(
+                    "context management requires a verified response capacity: the catalog must \
+                     publish the model's reserved output_tokens or declare output_shares_context"
+                        .into(),
+                )
+            })?)
+        };
+        u64::from(capacity.context_tokens)
             .checked_sub(reserve)
             .filter(|value| *value > 0)
             .ok_or_else(|| {
                 Error::Invalid("response reserve exhausts the model context window".into())
-            })?;
-        Ok(u64::from(ceiling))
+            })
     }
 }
 
@@ -67,9 +94,14 @@ impl CompactionPolicy {
         if matches!(selected, Some(Self::Disabled)) {
             return Ok(Self::Disabled);
         }
+        let policy = selected.unwrap_or_default();
         let capacity = provider.context_capacity(model)?;
+        if let Self::Capacity(compaction) = &policy {
+            // An unknown response capacity refuses here, before any turn.
+            compaction.input_ceiling(capacity, 0)?;
+        }
         capacity.validate()?;
-        Ok(selected.unwrap_or_default())
+        Ok(policy)
     }
 }
 

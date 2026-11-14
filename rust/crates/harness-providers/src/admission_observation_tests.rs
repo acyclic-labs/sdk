@@ -170,6 +170,7 @@ async fn agent_journals_admission_start_before_generation_or_token_count_is_admi
             let capacity = acyclic_harness_core::context::ModelContextCapacity {
                 context_tokens: 1_024,
                 output_tokens: Some(128),
+                output_shares_context: false,
             };
             let mut specification = fixture.config.as_ref().clone();
             specification.authentication = crate::Authentication::Optional;

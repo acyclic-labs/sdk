@@ -60,12 +60,22 @@ const TOOLS_AND_IMAGES: ModelFeatures = ModelFeatures {
     images: true,
 };
 
-const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
+/// How a model budgets its response against its context window.
+#[derive(Clone, Copy)]
+enum Output {
+    /// The provider sets this published maximum aside ahead of input.
+    Reserved(u32),
+    /// The response draws on the window the input leaves; this published
+    /// maximum may be the whole window.
+    Shared(u32),
+}
+
+const MODELS: &[(&str, &str, u32, Output, ModelFeatures, bool)] = &[
     (
         "morph",
         "morph-kimik31",
         1_048_576,
-        8_192,
+        Output::Shared(1_048_576),
         ModelFeatures {
             tools: true,
             images: false,
@@ -76,7 +86,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
         "morph",
         "morph-dsv41flash",
         1_048_576,
-        8_192,
+        Output::Shared(1_048_576),
         ModelFeatures {
             tools: true,
             images: false,
@@ -88,7 +98,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
         "anthropic",
         "claude-fable-5-1",
         1_000_000,
-        128_000,
+        Output::Reserved(128_000),
         TOOLS_AND_IMAGES,
         false,
     ),
@@ -96,7 +106,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
         "anthropic",
         "claude-opus-5-5",
         1_000_000,
-        128_000,
+        Output::Reserved(128_000),
         TOOLS_AND_IMAGES,
         false,
     ),
@@ -104,7 +114,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
         "anthropic",
         "claude-sonnet-5-5",
         1_000_000,
-        128_000,
+        Output::Reserved(128_000),
         TOOLS_AND_IMAGES,
         false,
     ),
@@ -112,7 +122,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
         "anthropic",
         "claude-haiku-5-5",
         1_000_000,
-        128_000,
+        Output::Reserved(128_000),
         TOOLS_AND_IMAGES,
         false,
     ),
@@ -121,7 +131,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
         "openai",
         "gpt-6-astra",
         1_050_000,
-        128_000,
+        Output::Reserved(128_000),
         TOOLS_AND_IMAGES,
         false,
     ),
@@ -129,7 +139,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
         "openai",
         "gpt-6.1-sol",
         1_050_000,
-        128_000,
+        Output::Reserved(128_000),
         TOOLS_AND_IMAGES,
         false,
     ),
@@ -137,7 +147,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
         "openai",
         "gpt-6.1-terra",
         1_050_000,
-        128_000,
+        Output::Reserved(128_000),
         TOOLS_AND_IMAGES,
         false,
     ),
@@ -145,7 +155,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
         "openai",
         "gpt-6-luna",
         1_050_000,
-        128_000,
+        Output::Reserved(128_000),
         TOOLS_AND_IMAGES,
         false,
     ),
@@ -153,7 +163,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
         "anthropic",
         "claude-sonnet-4-5",
         200_000,
-        64_000,
+        Output::Reserved(64_000),
         TOOLS_AND_IMAGES,
         false,
     ),
@@ -161,7 +171,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
         "anthropic",
         "claude-sonnet-4-5-20250929",
         200_000,
-        64_000,
+        Output::Reserved(64_000),
         TOOLS_AND_IMAGES,
         false,
     ),
@@ -175,7 +185,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
         "gemini",
         "gemini-4-argon",
         1_048_576,
-        65_536,
+        Output::Reserved(65_536),
         TOOLS_AND_IMAGES,
         true,
     ),
@@ -183,7 +193,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
         "gemini",
         "gemini-3.8-flash",
         1_048_576,
-        65_536,
+        Output::Reserved(65_536),
         TOOLS_AND_IMAGES,
         true,
     ),
@@ -191,7 +201,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
         "gemini",
         "gemini-3.6-flash",
         1_048_576,
-        65_536,
+        Output::Reserved(65_536),
         TOOLS_AND_IMAGES,
         true,
     ),
@@ -199,7 +209,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
         "gemini",
         "gemini-3.5-flash-lite",
         1_048_576,
-        65_536,
+        Output::Reserved(65_536),
         TOOLS_AND_IMAGES,
         true,
     ),
@@ -207,7 +217,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
         "gemini",
         "gemini-3.1-flash-lite",
         1_048_576,
-        65_536,
+        Output::Reserved(65_536),
         TOOLS_AND_IMAGES,
         true,
     ),
@@ -215,7 +225,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
         "gemini",
         "gemini-3.1-pro-preview",
         1_048_576,
-        65_536,
+        Output::Reserved(65_536),
         TOOLS_AND_IMAGES,
         true,
     ),
@@ -223,7 +233,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
         "gemini",
         "gemini-3-flash-preview",
         1_048_576,
-        65_536,
+        Output::Reserved(65_536),
         TOOLS_AND_IMAGES,
         true,
     ),
@@ -231,7 +241,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
         "gemini",
         "gemini-2.5-pro",
         1_048_576,
-        65_536,
+        Output::Reserved(65_536),
         TOOLS_AND_IMAGES,
         false,
     ),
@@ -239,7 +249,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
         "gemini",
         "gemini-2.5-flash",
         1_048_576,
-        65_536,
+        Output::Reserved(65_536),
         TOOLS_AND_IMAGES,
         false,
     ),
@@ -247,7 +257,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
         "openai",
         "gpt-4.1",
         1_047_576,
-        32_768,
+        Output::Reserved(32_768),
         TOOLS_AND_IMAGES,
         false,
     ),
@@ -255,16 +265,23 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
         "openai",
         "gpt-4.1-2025-04-14",
         1_047_576,
-        32_768,
+        Output::Reserved(32_768),
         TOOLS_AND_IMAGES,
         false,
     ),
-    ("openai", "gpt-5", 400_000, 128_000, TOOLS_AND_IMAGES, false),
+    (
+        "openai",
+        "gpt-5",
+        400_000,
+        Output::Reserved(128_000),
+        TOOLS_AND_IMAGES,
+        false,
+    ),
     (
         "openai",
         "gpt-5-2025-08-07",
         400_000,
-        128_000,
+        Output::Reserved(128_000),
         TOOLS_AND_IMAGES,
         false,
     ),
@@ -284,7 +301,11 @@ pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
                 .iter()
                 .filter(|(provider, ..)| *provider == id)
                 .map(
-                    |&(_, name, context_tokens, output_tokens, features, thinking_levels)| {
+                    |&(_, name, context_tokens, output, features, thinking_levels)| {
+                        let (output_tokens, output_shares_context) = match output {
+                            Output::Reserved(tokens) => (tokens, false),
+                            Output::Shared(tokens) => (tokens, true),
+                        };
                         (
                             name.into(),
                             crate::ModelSpec {
@@ -305,6 +326,7 @@ pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
                                 capacity: ModelContextCapacity {
                                     context_tokens,
                                     output_tokens: Some(output_tokens),
+                                    output_shares_context,
                                 },
                                 features,
                             },

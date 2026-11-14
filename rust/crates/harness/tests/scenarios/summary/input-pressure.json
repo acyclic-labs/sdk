@@ -1,2 +1,2 @@
 {"capacity":{"context_tokens":29},"turns":[],
-  "expect":{"error":"summary input exceeds selected model capacity","request_count":0}}
+  "expect":{"error":"model context capacity exceeded","request_count":0}}

@@ -210,6 +210,7 @@ pub(super) fn resolve(case: &ProviderCase, transport: Arc<Recorded>) -> Result<R
                     capacity: ModelContextCapacity {
                         context_tokens: 8192,
                         output_tokens: Some(1024),
+                        output_shares_context: false,
                     },
                     features: ModelFeatures {
                         tools: true,

@@ -69,6 +69,7 @@ fn counted_model(
         .with_context_capacity(crate::context::ModelContextCapacity {
             context_tokens: capacity,
             output_tokens: Some(4_096),
+            output_shares_context: false,
         })
         .with_token_counter(move |request| {
             #[cfg(not(target_arch = "wasm32"))]

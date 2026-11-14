@@ -67,6 +67,7 @@ fn executor() -> Result<StockExecutor> {
         .with_context_capacity(ModelContextCapacity {
             context_tokens: 65_536,
             output_tokens: Some(64),
+            output_shares_context: false,
         })
         .with_token_counter(|request| {
             Ok(ModelTokenCount::from_upper_bounds(

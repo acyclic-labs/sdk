@@ -294,6 +294,7 @@ fn capacity_rewrite_publishes_its_own_context_occupancy() -> Result<()> {
                 .with_context_capacity(crate::context::ModelContextCapacity {
                     context_tokens: 65_536,
                     output_tokens: output_capacity,
+                    output_shares_context: false,
                 }),
         );
         let source = crate::context::Context {
@@ -384,6 +385,106 @@ fn capacity_rewrite_publishes_its_own_context_occupancy() -> Result<()> {
             Some(&ModelContent::Text("c".repeat(20_000)))
         );
     }
+    Ok(())
+}
+
+/// Morph publishes output = context = 1,048,576 tokens: its response shares the
+/// window. The request fits that raw window but not after leaving room for the
+/// largest retained response, so the agent starts and compacts. The negative
+/// control reserves the published maximum, the rule before the shared case,
+/// and must refuse at startup.
+#[tokio::test]
+async fn shared_output_window_starts_and_compacts_from_observed_responses() -> Result<()> {
+    const MORPH: u32 = 1_048_576;
+    let morph = |shared| crate::context::ModelContextCapacity {
+        context_tokens: MORPH,
+        output_tokens: Some(MORPH),
+        output_shares_context: shared,
+    };
+    let model = Model::new("synthetic".into(), "byte-counter".into(), "1".into())?;
+    let (reserved, _) = counted_model(MORPH, None, [], []);
+    let reserved = Arc::into_inner(reserved)
+        .expect("unique fixture model")
+        .with_context_capacity(morph(false));
+    assert!(matches!(
+        crate::context::CompactionPolicy::for_model(None, &model, &reserved),
+        Err(Error::Invalid(reason)) if reason == "response reserve exhausts the model context window"
+    ));
+    let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+    let journal = storage.journal();
+    let (provider, _) = counted_model(
+        MORPH,
+        None,
+        [
+            ScriptedTurn::Text(
+                r#"{"version":1,"drop_through":3,"summary":"MORPH_SUMMARY"}"#.into(),
+            ),
+            ScriptedTurn::Text("answer".into()),
+        ],
+        [],
+    );
+    let provider = Arc::new(
+        Arc::into_inner(provider)
+            .expect("unique fixture model")
+            .with_context_capacity(morph(true)),
+    );
+    let policy = crate::context::CompactionPolicy::for_model(None, &model, provider.as_ref())?;
+    // Input of 800,040 counted tokens fits 1,048,576, but not beside the
+    // 300,010-token response this history already shows the model produces.
+    let source = crate::context::Context {
+        messages: vec![
+            ModelMessage {
+                role: ModelRole::System,
+                content: ModelContent::Text("keep".into()),
+            },
+            ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("o".repeat(300_000)),
+            },
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Text("a".repeat(300_000)),
+            },
+        ],
+        ..crate::context::Context::default()
+    };
+    let executor = StockExecutor::new(
+        model,
+        provider.clone(),
+        ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
+            "history",
+            "1",
+            Arc::new(source),
+            crate::context::ContextPlacement::Prepend,
+        )) as Arc<dyn crate::context::ContextStage>]),
+        ToolRegistry::default(),
+    )
+    .with_compaction_policy(policy);
+    let input = TurnInput {
+        max_steps: None,
+        operation_id: OperationId::new(),
+        input: ModelContent::Text("c".repeat(200_000)),
+        selected_context: None,
+    };
+    let output = executor.execute(input, journal.as_ref()).await?;
+    assert_eq!(output.text, "answer");
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests[0].summary,
+        "observed response room requires a rewrite"
+    );
+    let response = &requests[1];
+    assert!(!response.summary);
+    assert_eq!(response.messages.len(), 3);
+    assert!(matches!(
+        &response.messages[1].content,
+        ModelContent::Part(ModelContentPart::File { .. })
+    ));
+    assert_eq!(
+        response.messages.last().map(|message| &message.content),
+        Some(&ModelContent::Text("c".repeat(200_000)))
+    );
     Ok(())
 }
 
@@ -1093,6 +1194,7 @@ async fn counting_context_refusal_compacts_and_replays_without_recounting() -> R
             .with_context_capacity(crate::context::ModelContextCapacity {
                 context_tokens: 65_536,
                 output_tokens: Some(4096),
+                output_shares_context: false,
             })
             .with_token_counter(move |request| {
                 seen.lock().unwrap().push(request.request_digest());
@@ -1220,6 +1322,7 @@ async fn response_reserve_requests_a_tighter_count_before_rewriting() -> Result<
             crate::context::ModelContextCapacity {
                 context_tokens: 65_536,
                 output_tokens: Some(8192),
+                output_shares_context: false,
             },
         ),
     ));

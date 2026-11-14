@@ -6,7 +6,7 @@ The context manifest selects `context/notes.md`, `context/summary.md` and all fi
 
 Between context checkpoints the initial prefix remains frozen. A changed document appends a `context.changed` notice identifying its immutable revision. A small textual change includes its contents; larger content remains an immutable file reference. Changes never mutate an earlier request. Compaction retains the latest change notice for each source outside the summary cut until a new epoch manifest incorporates it, including pin revisions and removal notices. Superseded notices can be summarized. The optional `context` skill teaches the worker to append notes and pin evidence; no housekeeping worker turn is required.
 
-Capacity management reserves the selected provider's verified maximum response size. Input admission uses `context_tokens - output_tokens`; unknown response capacity or an exhausted window is an error. There is no threshold percentage or fixed recent-message budget.
+Capacity management leaves room for the next response in one of two catalog-declared ways. A reserved output budget (`output_tokens`) is set aside ahead of input, so admission uses `context_tokens - output_tokens`. A shared window (`output_shares_context`), where the response draws on whatever the input leaves and the published maximum may be the whole window, reserves no fixed amount: admission uses `context_tokens` minus the largest response retained in the counted request. A catalog that declares neither, or a reserve that exhausts the window, is an error. There is no threshold percentage, fixed recent-message budget or request output cap.
 
 At capacity pressure a separate summary-purpose inference selects a rewrite of the eligible older prefix. Its response is versioned JSON:
 

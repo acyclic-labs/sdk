@@ -214,6 +214,7 @@ mod tests {
                         .with_context_capacity(ModelContextCapacity {
                             context_tokens: if case == 6 { 32 } else { 8192 },
                             output_tokens: Some(16),
+                            output_shares_context: false,
                         })
                         .with_token_counter(move |request| {
                             counter.fetch_add(1, Ordering::SeqCst);

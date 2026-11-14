@@ -289,6 +289,7 @@ fn cli_credentials_cannot_be_forwarded_to_custom_endpoints() -> acyclic_harness_
                     capacity: acyclic_harness_core::context::ModelContextCapacity {
                         context_tokens: 8192,
                         output_tokens: Some(1024),
+                        output_shares_context: false,
                     },
                     features: ModelFeatures::default(),
                 },

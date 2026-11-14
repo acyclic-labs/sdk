@@ -1,2 +1,2 @@
-{"turns":[],"expect":{"error":"unknown output capacity requires a role reservation","request_count":0},
+{"turns":[],"expect":{"error":"context management requires a verified response capacity","request_count":0},
   "capacity":{"output_tokens":null}}

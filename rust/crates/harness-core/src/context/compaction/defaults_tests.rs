@@ -3,19 +3,64 @@ use proptest::prelude::*;
 
 proptest! {
     #[test]
-    fn context_admission_preserves_verified_response_room(
+    fn reserved_output_leaves_its_published_maximum(
         context in 1u32..=u32::MAX, output in prop::option::of(any::<u32>()),
+        observed in any::<u32>(),
     ) {
-        let capacity = ModelContextCapacity { context_tokens: context, output_tokens: output };
+        let capacity = ModelContextCapacity {
+            context_tokens: context,
+            output_tokens: output,
+            output_shares_context: false,
+        };
         let policy = CapacityCompaction::default();
+        let observed = u64::from(observed);
         if let Some(output) = output.filter(|output| *output < context) {
             let boundary = u64::from(context - output);
-            prop_assert!(!policy.needs_compaction(capacity, boundary).unwrap());
-            prop_assert!(policy.needs_compaction(capacity, boundary + 1).unwrap());
+            prop_assert!(!policy.needs_compaction(capacity, boundary, observed).unwrap());
+            prop_assert!(policy.needs_compaction(capacity, boundary + 1, observed).unwrap());
         } else {
-            prop_assert!(policy.input_ceiling(capacity).is_err());
+            prop_assert!(policy.input_ceiling(capacity, observed).is_err());
         }
     }
+
+    #[test]
+    fn shared_output_leaves_the_largest_observed_response(
+        context in 1u32..=u32::MAX, output in prop::option::of(any::<u32>()),
+        observed in any::<u32>(),
+    ) {
+        let capacity = ModelContextCapacity {
+            context_tokens: context,
+            output_tokens: output,
+            output_shares_context: true,
+        };
+        let policy = CapacityCompaction::default();
+        if observed < context {
+            let boundary = u64::from(context - observed);
+            let observed = u64::from(observed);
+            prop_assert!(!policy.needs_compaction(capacity, boundary, observed).unwrap());
+            prop_assert!(policy.needs_compaction(capacity, boundary + 1, observed).unwrap());
+        } else {
+            prop_assert!(policy.input_ceiling(capacity, u64::from(observed)).is_err());
+        }
+    }
+}
+
+/// Morph's published capacity: output = context = 1,048,576 tokens.
+#[test]
+fn morph_shared_window_admits_input_beside_observed_responses() -> Result<()> {
+    let morph = |shared| ModelContextCapacity {
+        context_tokens: 1_048_576,
+        output_tokens: Some(1_048_576),
+        output_shares_context: shared,
+    };
+    let policy = CapacityCompaction::default();
+    assert_eq!(policy.input_ceiling(morph(true), 0)?, 1_048_576);
+    assert_eq!(policy.input_ceiling(morph(true), 48_576)?, 1_000_000);
+    assert!(!policy.needs_compaction(morph(true), 1_000_000, 48_576)?);
+    assert!(policy.needs_compaction(morph(true), 1_000_001, 48_576)?);
+    // Negative control: reserving the published maximum leaves no input.
+    assert!(policy.input_ceiling(morph(false), 0).is_err());
+    Ok(())
 }
 
 #[test]

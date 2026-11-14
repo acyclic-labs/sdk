@@ -36,6 +36,7 @@ async fn segmented_projection_recovers_accounting_and_checkpoint_with_original_c
             capacity: crate::context::ModelContextCapacity {
                 context_tokens: 65_536,
                 output_tokens: Some(4_096),
+                output_shares_context: false,
             },
             count: if counted {
                 InputAccounting::Counted(
@@ -236,6 +237,7 @@ async fn projection_append_writes_only_new_content_and_metadata_reads_skip_histo
             capacity: crate::context::ModelContextCapacity {
                 context_tokens: u32::MAX,
                 output_tokens: Some(4096),
+                output_shares_context: false,
             },
             count: InputAccounting::Counted(
                 crate::context::ModelTokenCount::from_upper_bounds(

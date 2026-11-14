@@ -126,15 +126,13 @@ impl StockExecution<'_> {
             match admitted {
                 Ok(()) => break,
                 Err(Error::ModelContextOverflow) if end > start => {
+                    // Narrow to complete dependency boundaries only. A window
+                    // may end where a projection would evict nothing.
                     let policy = crate::context::CapacityCompaction::default();
-                    let first = crate::context::plan_compaction_budget(
-                        &policy,
-                        context,
-                        None,
-                        start + 1,
-                        self.io,
-                    )?
-                    .0;
+                    let boundary = |cut: usize| {
+                        with_history_io(self.io, |work| policy.window_boundary(context, cut, work))
+                    };
+                    let first = boundary(start + 1)?.unwrap_or(end);
                     if first >= end {
                         if previous.is_some() {
                             end = start;
@@ -143,14 +141,7 @@ impl StockExecution<'_> {
                         return Err(Error::ModelContextOverflow);
                     }
                     let middle = start + (end - start) / 2;
-                    let selected = crate::context::plan_compaction_budget(
-                        &policy,
-                        context,
-                        None,
-                        middle.max(start + 1),
-                        self.io,
-                    )?
-                    .0;
+                    let selected = boundary(middle.max(start + 1))?.unwrap_or(end);
                     end = if selected < end { selected } else { first };
                 }
                 Err(error) => return Err(error),

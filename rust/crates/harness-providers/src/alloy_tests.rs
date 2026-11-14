@@ -94,6 +94,7 @@ fn registry(capacities: &[u32]) -> (Registry, Arc<Routing>) {
                             capacity: ModelContextCapacity {
                                 context_tokens,
                                 output_tokens: Some(context_tokens / 4),
+                                output_shares_context: false,
                             },
                             features: ModelFeatures {
                                 tools: true,
@@ -165,7 +166,8 @@ fn all_policies_resolve_to_real_models_and_reject_unsupported_members() -> Resul
             alloy.capacity(),
             ModelContextCapacity {
                 context_tokens: 4096,
-                output_tokens: Some(1024)
+                output_tokens: Some(1024),
+                output_shares_context: false
             }
         );
         #[cfg(not(target_arch = "wasm32"))]

@@ -71,6 +71,7 @@ async fn reasoning_only_length_stops_continue_through_real_protocol_encoding() -
         provider.capacity = acyclic_harness_core::context::ModelContextCapacity {
             context_tokens: 1_048_576,
             output_tokens: Some(1_048_576),
+            output_shares_context: true,
         };
         Arc::make_mut(&mut provider.config).token_counter = None;
         let model = provider.model.clone();

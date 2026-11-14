@@ -70,6 +70,7 @@ impl<'a> AgentProfile<'a> {
             capacity: crate::context::ModelContextCapacity {
                 context_tokens: self.prefix().capacity.budget_tokens,
                 output_tokens: capacity.output_tokens,
+                output_shares_context: capacity.output_shares_context,
             },
             overlay_effort: self.overlay().effort,
         })

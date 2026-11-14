@@ -392,6 +392,7 @@ async fn inline_projection_custody_releases_decoder_scratch_before_checkpoint_re
                 capacity: crate::context::ModelContextCapacity {
                     context_tokens: 65_536,
                     output_tokens: Some(4096),
+                    output_shares_context: false,
                 },
                 count: InputAccounting::Counted(
                     crate::context::ModelTokenCount {

@@ -12,12 +12,15 @@ pub struct ResolvedAlloy {
 impl Registry {
     /// Resolves every member and required feature before any turn is dispatched.
     /// Every selected provider uses the alloy's minimum context/output capacity.
+    /// Output shares the window only when every member's does; otherwise the
+    /// smallest published maximum is reserved for whichever member answers.
     pub fn resolve_alloy(&self, spec: AlloySpec, required: ModelFeatures) -> Result<ResolvedAlloy> {
         spec.validate()?;
         let mut models = Vec::with_capacity(spec.models.len());
         let mut capacity = ModelContextCapacity {
             context_tokens: u32::MAX,
             output_tokens: None,
+            output_shares_context: true,
         };
         for selection in &spec.models {
             let (provider, name) = selection.split_once('/').expect("validated model identity");
@@ -36,6 +39,7 @@ impl Registry {
                 .into_iter()
                 .chain(model.capacity.output_tokens)
                 .min();
+            capacity.output_shares_context &= model.capacity.output_shares_context;
             models.push(model);
         }
         capacity.output_tokens = capacity
