@@ -480,7 +480,7 @@ impl<'io> StockExecution<'io> {
                             &original.0.invocation,
                             result,
                             projection,
-                            (definition, false),
+                            (definition, None, None),
                             _hook_context,
                         )
                         .await?;
@@ -682,20 +682,13 @@ impl<'io> StockExecution<'io> {
             RecordedCall::Completed {
                 result, projection, ..
             } => {
-                if let Some(authorization) = tool.executor.authorize_replay(
-                    context.as_ref(),
-                    &invocation,
-                    self.native_work(),
-                ) {
-                    authorization.await?;
-                }
                 self.replay_tool_output(
                     journal,
                     operation_id,
                     &invocation,
                     result,
                     projection,
-                    (&tool.definition, tool.executor.is_code_mode()),
+                    (&tool.definition, Some(&tool), context.as_ref()),
                     _hook_context,
                 )
                 .await?
