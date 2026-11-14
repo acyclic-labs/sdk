@@ -10,11 +10,12 @@
 use super::*;
 use acyclic_harness::{
     agent::{AgentPath, ConversationEntry, TurnOutcome, decode_record, inbox_tail},
-    model::{ModelEvent, ModelRequest, ModelRole, ToolCall},
+    model::{ModelContent, ModelContentPart, ModelEvent, ModelRequest, ModelRole, ToolCall},
     test_support::ScriptedEvent,
 };
 use acyclic_native_runtime::testing::sweep;
 use serde_json::json;
+use sha2::Digest as _;
 use std::collections::BTreeSet;
 
 /// Seeds in the fast suite. `DST_SEEDS=<a>..<b>` runs a deeper sweep.
@@ -119,26 +120,54 @@ fn agent_steps(plan: &[Step], node: &str) -> Vec<Action> {
         .collect()
 }
 
-/// The node an agent's request belongs to: the marker of its newest brief
-/// (a forked worker's history also holds its ancestors' briefs, earlier).
-/// Notices are never briefs, whatever their bodies quote.
-fn node_of(request: &ModelRequest) -> Option<(String, usize)> {
+/// The task text that briefs `node`.
+fn brief(node: &str) -> String {
+    format!("{MARKER}{node} plays its seeded steps")
+}
+
+/// The node an agent's request belongs to: its newest brief (a forked
+/// worker's history also holds its ancestors' briefs, earlier). A brief is
+/// user text naming the marker, or a staged input file whose content digest
+/// is a plan node's brief, as the harness projects user input. A notice part
+/// is never a brief, whatever its body quotes.
+fn node_of(plan: &[Step], request: &ModelRequest) -> Option<(String, usize)> {
+    let mut nodes = vec!["root".to_owned()];
+    for (owner, action) in plan {
+        if let Action::Spawn(names) = action {
+            nodes.extend(names.iter().map(|name| format!("{owner}/{name}")));
+        }
+    }
+    let digests: std::collections::BTreeMap<[u8; 32], String> = nodes
+        .into_iter()
+        .map(|node| (sha2::Sha256::digest(brief(&node)).into(), node))
+        .collect();
+    let named = |text: &str| {
+        let start = text.find(MARKER)? + MARKER.len();
+        Some(
+            text[start..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '/')
+                .collect::<String>(),
+        )
+    };
     request
         .messages
         .iter()
         .enumerate()
         .rev()
-        .filter(|(_, message)| {
-            message.role == ModelRole::User && message.content.notice_parts().is_none()
-        })
+        .filter(|(_, message)| message.role == ModelRole::User)
         .find_map(|(index, message)| {
-            let text = serde_json::to_string(&message.content).ok()?;
-            let start = text.find(MARKER)? + MARKER.len();
-            let node: String = text[start..]
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '/')
-                .collect();
-            Some((node, index))
+            let node = match &message.content {
+                ModelContent::Text(text) => named(text),
+                content => content.parts().iter().find_map(|part| match part {
+                    ModelContentPart::Text { text, .. } => named(text),
+                    ModelContentPart::File { file, .. } => {
+                        digests.get(file.descriptor().sha256()).cloned()
+                    }
+                    _ => None,
+                }),
+            };
+            node.map(|node| (node, index))
         })
 }
 
@@ -146,13 +175,21 @@ fn node_of(request: &ModelRequest) -> Option<(String, usize)> {
 /// final answer once its steps are done (including turns that settled
 /// children's notices wake later).
 fn respond(plan: &[Step], request: &ModelRequest) -> Result<ScriptedTurn> {
-    let (node, brief) = node_of(request).ok_or_else(|| {
+    let (node, briefed) = node_of(plan, request).ok_or_else(|| {
         Error::Invalid(format!(
-            "swarm request names no node: {}",
-            serde_json::to_string(&request.messages).unwrap_or_default()
+            "swarm request names no node; user messages: {}",
+            serde_json::to_string(
+                &request
+                    .messages
+                    .iter()
+                    .filter(|message| message.role == ModelRole::User)
+                    .map(|message| &message.content)
+                    .collect::<Vec<_>>()
+            )
+            .unwrap_or_default()
         ))
     })?;
-    let step = request.messages[brief..]
+    let step = request.messages[briefed..]
         .iter()
         .filter(|message| message.role == ModelRole::Assistant)
         .count();
@@ -169,7 +206,7 @@ fn respond(plan: &[Step], request: &ModelRequest) -> Result<ScriptedTurn> {
             .iter()
             .enumerate()
             .map(|(index, name)| {
-                let task = format!("{MARKER}{node}/{name} plays its seeded steps");
+                let task = brief(&format!("{node}/{name}"));
                 call(
                     index,
                     "spawn",
@@ -352,7 +389,7 @@ fn swarm<'a>(directory: &'a Path, plan: &'a [Step]) -> EntryFuture<'a, Result<()
         let seen = Seen::default();
         let recorded = Arc::clone(&seen);
         let provider = Arc::new(ScriptedModelProvider::responding(move |request| {
-            if let Some((node, _)) = node_of(request) {
+            if let Some((node, _)) = node_of(&owned, request) {
                 recorded
                     .lock()
                     .map_err(storage)?
@@ -365,7 +402,7 @@ fn swarm<'a>(directory: &'a Path, plan: &'a [Step]) -> EntryFuture<'a, Result<()
             .volume(volume)
             .state_directory(directory.join("state"));
         let harness = Arc::new(entry(LocalHarness::open(config)).await?);
-        let prompt = format!("{MARKER}root plays its seeded steps");
+        let prompt = brief("root");
         if let PromptOutcome::Failed(message) =
             entry(prompt_settled(&harness, "swarm", &prompt)).await?
         {
