@@ -212,7 +212,36 @@ test("a memoized generation restores exactly what its run projected and pruned, 
     await memoizedGeneration(root, { ...actors, name: "actors+native", native: true }, generate, { key: "k" });
     await memoizedGeneration(root, actors, generate, { key: "other" });
     assert.deepEqual(runs, ["run", "run", "run"]);
-    // A damaged entry is an error, never a hit.
+    // An action owning only its artifacts neither overwrites nor prunes the source-owned files beside them on a hit.
+    const { isWasmArtifactPath } = await import("./archive-utils.mjs");
+    const owns = path => isWasmArtifactPath(path.slice("wasm/".length));
+    writeChanged(join(root, "wasm/package.json"), "source");
+    const place = async () => {
+      runs.push("run");
+      writeChanged(join(root, "wasm/module.js"), "module");
+      recordGeneration("P", join(root, "wasm"));
+      recordGeneration("W", join(root, "wasm/package.json"));
+    };
+    await memoizedGeneration(root, actors, place, { key: "owned", owns });
+    writeFileSync(join(root, "wasm/package.json"), "edited");
+    writeFileSync(join(root, "wasm/.npmignore"), "added");
+    writeFileSync(join(root, "wasm/stale.js"), "stale");
+    await memoizedGeneration(root, actors, place, { key: "owned", owns });
+    assert.deepEqual(runs, ["run", "run", "run", "run"]);
+    assert.equal(readFileSync(join(root, "wasm/package.json"), "utf8"), "edited");
+    assert.equal(readFileSync(join(root, "wasm/.npmignore"), "utf8"), "added");
+    assert.throws(() => readFileSync(join(root, "wasm/stale.js")), { code: "ENOENT" });
+    // A concurrent publisher of the same key, in another checkout, keeps its own outputs; the first entry serves hits.
+    const elsewhere = mkdtempSync(join(tmpdir(), "sdk-memo-elsewhere-"));
+    try {
+      await memoizedGeneration(root, actors, async () => {
+        writeChanged(join(root, "a.txt"), `checkout ${root}`);
+        await memoizedGeneration(elsewhere, actors, async () => writeChanged(join(elsewhere, "a.txt"), `checkout ${elsewhere}`), { key: "race" });
+      }, { key: "race" });
+      assert.equal(readFileSync(join(root, "a.txt"), "utf8"), `checkout ${root}`);
+      await memoizedGeneration(root, actors, generate, { key: "race" });
+      assert.equal(readFileSync(join(root, "a.txt"), "utf8"), `checkout ${elsewhere}`);
+    } finally { rmSync(elsewhere, { recursive: true, force: true }); }    // A damaged entry is an error, never a hit.
     writeFileSync(join(store, "other", "actors", "files", "a.txt"), "tampered");
     await assert.rejects(memoizedGeneration(root, actors, generate, { key: "other" }), /damaged entry/);
   } finally {

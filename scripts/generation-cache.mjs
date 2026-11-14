@@ -128,7 +128,7 @@ function readEntry(directory) {
   return { ...entry, contents: files };
 }
 
-function restore(root, entry) {
+function restore(root, entry, owns) {
   const outputs = new Set(entry.files.map(file => file.path));
   for (const directory of entry.pruned) {
     let names;
@@ -136,19 +136,19 @@ function restore(root, entry) {
     catch (error) { if (error.code === "ENOENT") continue; throw error; }
     for (const item of names) {
       const path = relative(root, join(item.parentPath, item.name)).replaceAll("\\", "/");
-      if (!item.isDirectory() && !outputs.has(path)) rmSync(join(root, path));
+      if (!item.isDirectory() && !outputs.has(path) && owns(path)) rmSync(join(root, path));
     }
   }
   for (const [path, bytes] of entry.contents) writeChanged(join(root, path), bytes);
 }
 
-function recorded(root, journal) {
+function recorded(root, journal, owns) {
   const writes = new Set(), pruned = new Set();
   for (const line of readFileSync(journal, "utf8").split("\n").filter(Boolean)) {
     const [kind, path] = line.split("\t");
     const name = relative(root, path).replaceAll("\\", "/");
     if (name.startsWith("..") || name.startsWith("/")) continue;
-    (kind === "P" ? pruned : writes).add(name);
+    if (kind === "P") pruned.add(name); else if (owns(name)) writes.add(name);
   }
   // A projection a later prune removed is not an output.
   const files = [...writes].filter(name => { try { return lstatSync(join(root, name)).isFile(); } catch { return false; } }).sort();
@@ -156,8 +156,9 @@ function recorded(root, journal) {
 }
 
 /** @param {string} root @param {{name: string, packages: string[], native: boolean}} request @param {() => Promise<void>} generate
- * @param {{key?: string}} [options] */
-export async function memoizedGeneration(root, request, generate, { key: given } = {}) {
+ * @param {{key?: string, owns?: (path: string) => boolean}} [options] An action owns every file it writes or prunes
+ * unless `owns` names the repository-relative paths it does: a hit neither overwrites nor prunes any other file. */
+export async function memoizedGeneration(root, request, generate, { key: given, owns = () => true } = {}) {
   const started = performance.now();
   const key = given ?? await generationKey(root);
   const keyed = performance.now();
@@ -167,7 +168,7 @@ export async function memoizedGeneration(root, request, generate, { key: given }
   for (const name of readdirSync(store).filter(name => !name.includes(".partial-")).sort()) {
     const covered = JSON.parse(readFileSync(join(store, name, "entry.json"), "utf8"));
     if (!covers(covered, request)) continue;
-    restore(root, readEntry(join(store, name)));
+    restore(root, readEntry(join(store, name)), owns);
     return report("hit", name);
   }
   const scratch = mkdtempSync(join(tmpdir(), "sdk-generation-journal-"));
@@ -177,7 +178,7 @@ export async function memoizedGeneration(root, request, generate, { key: given }
     writeFileSync(journal, "");
     process.env.SDK_GENERATION_JOURNAL = journal;
     try { await generate(); } finally { delete process.env.SDK_GENERATION_JOURNAL; }
-    const { files, pruned } = recorded(root, journal);
+    const { files, pruned } = recorded(root, journal, owns);
     const manifest = files.map(path => {
       const bytes = readFileSync(join(root, path));
       mkdirSync(dirname(join(partial, "files", path)), { recursive: true });
@@ -185,15 +186,11 @@ export async function memoizedGeneration(root, request, generate, { key: given }
       return { path, sha256: sha256(bytes) };
     });
     writeFileSync(join(partial, "entry.json"), JSON.stringify({ key, covers: { packages: request.packages, native: request.native }, files: manifest, pruned }));
-    // Rename is the publication decision. A concurrent publisher of the same selection must have produced the same bytes.
+    // Rename is the publication decision: the first entry under a key serves every later hit. A concurrent publisher
+    // keeps its own outputs. Its bytes may differ only where outputs name their own checkout (a WASM receipt records
+    // its build's paths), which the key leaves out so that every checkout shares the entry.
     try { renameSync(partial, join(store, request.name)); }
-    catch (error) {
-      if (!["EEXIST", "ENOTEMPTY", "EPERM"].includes(error.code)) throw error;
-      const published = readEntry(join(store, request.name));
-      if (JSON.stringify(published.files) !== JSON.stringify(manifest)) {
-        throw new Error(`STEP_FAILED generation-cache: nondeterministic generation for ${request.name} at ${key}`, { cause: error });
-      }
-    }
+    catch (error) { if (!["EEXIST", "ENOTEMPTY", "EPERM"].includes(error.code)) throw error; }
     report("miss", request.name);
   } finally {
     rmSync(scratch, { recursive: true, force: true });

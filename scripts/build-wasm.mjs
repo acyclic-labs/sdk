@@ -6,7 +6,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkByteSnapshotBoundary } from "./wasm-source-policy.mjs";
 import { packageClosure } from "./package-closure.mjs";
-import { copyWasmArtifacts } from "./archive-utils.mjs";
+import { copyWasmArtifacts, isWasmArtifactPath } from "./archive-utils.mjs";
 import { generationKey, memoizedGeneration } from "./generation-cache.mjs";
 import { recordGeneration } from "./generated-bindings.mjs";
 
@@ -175,7 +175,8 @@ for (const name of targets) {
     }
   };
   // One build is one memoized action (generation-cache.mjs): its key is the selected crates' workspace closure, the
-  // toolchain, wasm-bindgen and the output it fills.
+  // toolchain, wasm-bindgen and the output it fills. It owns only the artifacts there: a hit neither overwrites nor prunes
+  // the source-owned files beside them (package.json, .npmignore), exactly as copyWasmArtifacts leaves them.
   const placed = relative(root, output).replaceAll("\\", "/");
   if (placed.startsWith("../") || isAbsolute(placed)) await build();
   else await memoizedGeneration(root, { name: `wasm-${name}`, packages: [name], native: false }, build, {
@@ -186,6 +187,7 @@ for (const name of targets) {
       paths: family?.sourceRoots ?? [],
       parts: [name, profile, expectedVersion, placed],
     }),
+    owns: path => isWasmArtifactPath(path.slice(placed.length + 1)),
   });
   // A family's receipt names the source digest it was built from; whether built or restored, it is this checkout's.
   if (producer) {

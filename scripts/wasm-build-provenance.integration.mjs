@@ -48,7 +48,8 @@ for (const name of ["actors", "stream"]) {
       const module = join(directory, `${family.wasm.artifact}.wasm`);
       let coldModule, coldDependencies;
       for (const phase of ["cold", "warm"]) {
-        run(process.execPath, ["scripts/build-wasm.mjs", name, output], env);
+        // Each phase gets an empty generation store: a memoized hit would restore the cold build instead of compiling.
+        run(process.execPath, ["scripts/build-wasm.mjs", name, output], { ...env, SDK_GENERATION_CACHE: join(temporary, `store-${phase}`) });
         const receipt = JSON.parse(await readFile(join(output, "producer-receipt.json"), "utf8"));
         assert.equal(receipt.source_sha256, source.sha256, `${phase} source digest`);
         assert.deepEqual(receipt.source_files, source.files, `${phase} source inventory`);
