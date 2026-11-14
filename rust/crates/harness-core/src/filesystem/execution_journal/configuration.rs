@@ -38,6 +38,7 @@ where
         input: u64,
         start: bool,
     ) -> Self {
+        self.agent_lineage = Some(agent.clone());
         self.agent_events = Some((agent, run, input, start));
         self.invalidate_execution_caches();
         self
@@ -45,6 +46,12 @@ where
 
     pub(crate) fn with_actor_admissions(mut self, paths: Vec<acyclic_stream::StreamPath>) -> Self {
         self.actor_admissions = paths;
+        self.invalidate_execution_caches();
+        self
+    }
+
+    pub(crate) fn with_agent_lineage(mut self, agent: crate::agent::AgentPath) -> Self {
+        self.agent_lineage = Some(agent);
         self.invalidate_execution_caches();
         self
     }
@@ -186,6 +193,7 @@ where
             execution: None,
             agent_events: None,
             actor_admissions: Vec::new(),
+            agent_lineage: None,
             run_admission: None,
             verified: tokio::sync::Mutex::new(SummaryCache::default()),
             history_read_limits: None,

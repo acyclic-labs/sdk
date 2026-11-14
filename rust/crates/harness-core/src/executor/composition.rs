@@ -120,6 +120,12 @@ impl StockExecutor {
         self.tools = self.tools.with_source(source);
         self
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn with_programs(mut self, programs: Arc<crate::plugins::ProgramFiles>) -> Self {
+        self.programs = Some(Arc::clone(&programs));
+        self.with_tool_source(programs)
+    }
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn with_hooks(mut self, hooks: Option<Arc<crate::hooks::BoundHooks>>) -> Self {
         self.hooks = hooks.filter(|hooks| hooks.rules.has_execution_hooks());
@@ -161,6 +167,8 @@ impl StockExecutor {
             context,
             tools,
             epoch_tools: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            programs: None,
             #[cfg(not(target_arch = "wasm32"))]
             hooks: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -414,6 +422,10 @@ impl StockExecutor {
 }
 
 impl Executor for StockExecutor {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn programs(&self) -> Option<&crate::plugins::ProgramFiles> {
+        self.programs.as_deref()
+    }
     fn settle_invocation<'a, 'io: 'a>(
         &'io self,
         journal: &'a dyn ExecutionJournal,

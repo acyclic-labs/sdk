@@ -143,6 +143,9 @@ pub struct FilesystemExecutionJournal<P: ?Sized, A: 'static, O: 'static> {
     agent_events: Option<(crate::agent::AgentPath, OperationId, u64, bool)>,
     /// Host-authenticated actor state paths from the tree root through this agent.
     actor_admissions: Vec<acyclic_stream::StreamPath>,
+    /// Original owner whose archive fences every fresh dispatch, including
+    /// source events that create no model turn or lifecycle observation.
+    agent_lineage: Option<crate::agent::AgentPath>,
     run_admission: Option<crate::supervision::RunAdmissionSource>,
     verified: tokio::sync::Mutex<SummaryCache>,
     history_read_limits: Option<crate::store::HistoryReadLimits>,

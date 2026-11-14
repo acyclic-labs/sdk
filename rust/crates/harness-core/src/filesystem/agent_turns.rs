@@ -46,6 +46,8 @@ pub(super) const TURN_INPUTS: &str = "inputs/turns";
 #[path = "agent_turns/admission_tests.rs"]
 mod admission_tests;
 mod approval_triage;
+#[cfg(not(target_arch = "wasm32"))]
+mod invocation;
 
 /// The authority of one agent turn: the agent's conversation issuer, its scope
 /// over every bound volume, and the agent's content bound to that scope.
@@ -683,6 +685,22 @@ pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
         input: &'a ModelContent,
         authority: &'a TurnAuthority,
     ) -> BoxFuture<'a, Result<Arc<dyn Executor>>>;
+
+    /// Prepare the same issued tools for a host-selected call. This creates no
+    /// model input, context epoch or prompt lifecycle event. Unsupported hosts
+    /// refuse before dispatch; a selected program never supplies authority.
+    fn invocation_executor<'a>(
+        &'a self,
+        _agent: &'a AgentState,
+        _operation: OperationId,
+        _authority: &'a TurnAuthority,
+    ) -> BoxFuture<'a, Result<Arc<dyn Executor>>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "host-selected calls are not bound".into(),
+            ))
+        })
+    }
 
     /// Admitted workspace exposures and instructions not yet present in this
     /// selected conversation. `seen` binds each slot to its latest discovered
@@ -1332,6 +1350,56 @@ where
     /// `agent`'s verified admission; it performs no IO.
     fn admit<'v>(&'v self, agent: &'v AgentState) -> Result<AdmittedAgent<'v, 'v>> {
         AdmittedAgent::verify(&self.issuer, &self.admission, &agent.path, &agent.volumes)
+    }
+
+    async fn run_admission(
+        &self,
+        agent: &AgentState,
+        bindings: &Bindings<A, O>,
+    ) -> Result<Option<crate::supervision::RunAdmissionSource>> {
+        Ok(
+            match (
+                agent.run_admission,
+                agent
+                    .volumes
+                    .iter()
+                    .find(|binding| binding.role == crate::agent::WorkspaceRole::Home),
+            ) {
+                (Some(operation), Some(home)) => {
+                    self.host
+                        .original_run_admission(
+                            home.volume()?,
+                            &bindings.scope,
+                            &bindings.issuer.verifier(&mut None)?,
+                            operation,
+                            self.limits.maximum_bytes,
+                        )
+                        .await?
+                }
+                _ => None,
+            },
+        )
+    }
+
+    fn actor_admissions(&self, agent: &AgentState) -> Result<Vec<acyclic_stream::StreamPath>> {
+        Ok(self
+            .actor_root
+            .as_ref()
+            .map(|root| {
+                let store = acyclic_actors::local::Store::new(self.stream.clone(), root.clone());
+                crate::agent::Agents::<P>::actor_lineage(&self.within, &agent.path)
+                    .map(|actor| {
+                        actor.and_then(|actor| {
+                            store
+                                .path(&actor)
+                                .map_err(|error| crate::agent::Error::Actor(Box::new(error)))
+                        })
+                    })
+                    .collect::<std::result::Result<Vec<_>, crate::agent::Error>>()
+            })
+            .transpose()
+            .map_err(|error| Error::Invalid(error.to_string()))?
+            .unwrap_or_default())
     }
 
     /// The journal and authority of `agent`'s turns. Each `external` input
@@ -2521,26 +2589,7 @@ where
                         Some(stop.clone()),
                     )
                     .await?;
-                let run_admission = match (
-                    agent.run_admission,
-                    agent
-                        .volumes
-                        .iter()
-                        .find(|binding| binding.role == crate::agent::WorkspaceRole::Home),
-                ) {
-                    (Some(operation), Some(home)) => {
-                        self.host
-                            .original_run_admission(
-                                home.volume()?,
-                                &bindings.scope,
-                                &bindings.issuer.verifier(&mut None)?,
-                                operation,
-                                self.limits.maximum_bytes,
-                            )
-                            .await?
-                    }
-                    _ => None,
-                };
+                let run_admission = self.run_admission(agent, &bindings).await?;
                 let journal = journal.with_run_admission(run_admission);
                 let input =
                     std::mem::replace(&mut context.input, ModelContent::Text(String::new()));
@@ -2687,28 +2736,7 @@ where
                 );
                 let journal = journal
                     .with_agent_events(agent.path.clone(), run, inbox, segment == 0 && run == turn)
-                    .with_actor_admissions(
-                        self.actor_root
-                            .as_ref()
-                            .map(|root| {
-                                let store = acyclic_actors::local::Store::new(
-                                    self.stream.clone(),
-                                    root.clone(),
-                                );
-                                crate::agent::Agents::<P>::actor_lineage(&self.within, &agent.path)
-                                    .map(|actor| {
-                                        actor.and_then(|actor| {
-                                            store.path(&actor).map_err(|error| {
-                                                crate::agent::Error::Actor(Box::new(error))
-                                            })
-                                        })
-                                    })
-                                    .collect::<std::result::Result<Vec<_>, crate::agent::Error>>()
-                            })
-                            .transpose()
-                            .map_err(|error| Error::Invalid(error.to_string()))?
-                            .unwrap_or_default(),
-                    )
+                    .with_actor_admissions(self.actor_admissions(agent)?)
                     .with_model_boundary(Arc::new(boundary))
                     .with_stop(stop)
                     .with_clock(Arc::clone(&self.clock))

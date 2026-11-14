@@ -13,6 +13,7 @@ type Binding = Bound<MemoryStream, acyclic_fs::LogicalObjectStore<acyclic_object
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
+
 async fn private_metadata_uses_the_session_cut_before_and_after_an_authored_override() -> TestResult
 {
     use crate::conversation::{ContentAccess, ContentGrant};
@@ -96,6 +97,184 @@ async fn private_metadata_uses_the_session_cut_before_and_after_an_authored_over
         .await?,
         Some(before)
     );
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn source_invocations_use_original_agent_grants_policy_and_receipts_without_a_prompt()
+-> TestResult {
+    use crate::{
+        conversation::{ContentAccess, ContentResidencyVerifier as _, Limits},
+        executor::{ExecutionProgress, StockExecutor},
+        filesystem::{Grants, StockExecutors, TurnContext},
+        model::{Model, ModelContent, ToolResultContent},
+        test_support::ScriptedModelProvider,
+        tool::{ToolInvocation, ToolRegistry},
+    };
+    struct NoPrompt;
+    impl TurnContext for NoPrompt {
+        fn prepare<'a>(
+            &'a self,
+            _: (StockExecutor, Limits),
+            _: &'a crate::agent::AgentState,
+            _: OperationId,
+            _: &'a ModelContent,
+            _: &'a TurnAuthority,
+        ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<StockExecutor>> {
+            Box::pin(async {
+                Err(crate::Error::Invalid(
+                    "source event opened prompt context".into(),
+                ))
+            })
+        }
+        fn prepare_invocation<'a>(
+            &'a self,
+            composed: (StockExecutor, Limits),
+            agent: &'a crate::agent::AgentState,
+            operation: OperationId,
+            authority: &'a TurnAuthority,
+        ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<StockExecutor>> {
+            Box::pin(async move {
+                Grants(vec!["tool:call:write".into()])
+                    .prepare_invocation(composed, agent, operation, authority)
+                    .await
+            })
+        }
+    }
+    for allow in [false, true] {
+        let model = Arc::new(ScriptedModelProvider::new([]));
+        let mut tools = ToolRegistry::default();
+        tools.register((crate::tool::files::write()?, None), &mut None, None)?;
+        let binding = tools
+            .get_shared("write", None, None)?
+            .ok_or("missing write binding")?
+            .clone();
+        let executors = StockExecutors::new(
+            (
+                Model::new("test".into(), "source-event".into(), "1".into())?,
+                model.clone(),
+            ),
+            tools,
+            (Limits::default(), None::<crate::context::CompactionPolicy>),
+            Arc::new(NoPrompt),
+        );
+        let policy = if allow {
+            crate::approvals::ApprovalPolicy::accept_all("source-test")
+        } else {
+            crate::approvals::ApprovalPolicy::deny_all("source-test")
+        };
+        let (bound, root) = binding_with(Arc::new(executors), policy).await?;
+        let state = bound.agents().state(&root).await?;
+        let operation = OperationId::new();
+        let call = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "source-receipt".into(),
+            name: "write".into(),
+            arguments: serde_json::json!({"path":"source.txt","content":"original event"}),
+        };
+        // Reopening the exact session execution must recover its receipt.
+        for _ in 0..2 {
+            let issued = bound
+                .turns()
+                .invocation(
+                    &state,
+                    operation,
+                    acyclic_actors::guest::CancellationToken::new(),
+                )
+                .await?;
+            let mut context = Vec::new();
+            let result = issued
+                .executor
+                .settle_invocation(
+                    issued.authority.journal.as_ref(),
+                    (operation, 0),
+                    (call.clone(), Arc::clone(&binding)),
+                    &serde_json::Value::Null,
+                    &mut context,
+                    None,
+                )?
+                .await?;
+            let ExecutionProgress::Ready(Some(result)) = result else {
+                return Err("source call did not settle".into());
+            };
+            assert_eq!(
+                matches!(result.content(), ToolResultContent::Error { .. }),
+                !allow
+            );
+        }
+        let reader = bound.content_reader(&root).await?;
+        let private = state
+            .volumes
+            .iter()
+            .find(|volume| volume.role == crate::agent::WorkspaceRole::Private)
+            .ok_or("missing private binding")?
+            .volume()?;
+        let read = reader
+            .read_private_path(
+                private,
+                "",
+                "source.txt",
+                None,
+                None,
+                ContentAccess::default(),
+            )?
+            .await?;
+        assert_eq!(read.is_some(), allow);
+        if let Some((_, bytes, _)) = read {
+            assert_eq!(bytes.as_slice(), b"original event");
+        }
+        if allow {
+            bound.agents().pause(&root, true).await?;
+            let paused_operation = OperationId::new();
+            let issued = bound
+                .turns()
+                .invocation(
+                    &state,
+                    paused_operation,
+                    acyclic_actors::guest::CancellationToken::new(),
+                )
+                .await?;
+            let paused = ToolInvocation {
+                operation_id: OperationId::new(),
+                call_id: "paused-source".into(),
+                name: "write".into(),
+                arguments: serde_json::json!({"path":"paused.txt","content":"must not dispatch"}),
+            };
+            let mut context = Vec::new();
+            let result = issued
+                .executor
+                .settle_invocation(
+                    issued.authority.journal.as_ref(),
+                    (paused_operation, 0),
+                    (paused, Arc::clone(&binding)),
+                    &serde_json::Value::Null,
+                    &mut context,
+                    None,
+                )?
+                .await;
+            assert!(matches!(
+                result,
+                Ok(ExecutionProgress::Controlled(_)) | Err(crate::Error::ExecutionControlled(_))
+            ));
+            assert!(
+                reader
+                    .read_private_path(
+                        private,
+                        "",
+                        "paused.txt",
+                        None,
+                        None,
+                        ContentAccess::default()
+                    )?
+                    .await?
+                    .is_none()
+            );
+        }
+        assert_eq!(model.request_count(), 0);
+        assert_eq!(bound.agents().state(&root).await?.conversation_tail, 0);
+    }
+
     Ok(())
 }
 

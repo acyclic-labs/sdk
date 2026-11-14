@@ -34,7 +34,7 @@ where
             crate::executor::stock_vec_push(&mut paths, path.clone(), io)?;
         }
         let closed_start = paths.len();
-        if let Some((agent, ..)) = &self.agent_events {
+        if let Some(agent) = &self.agent_lineage {
             for ancestor in agent.ancestors() {
                 let mut text = crate::executor::stock_string_copy(ancestor, io)?;
                 crate::executor::stock_string_push(
@@ -315,7 +315,7 @@ where
         if matches!(
             event,
             ExecutionEvent::ModelStarted { .. } | ExecutionEvent::ToolStarted { .. }
-        ) && (!self.actor_admissions.is_empty() || self.agent_events.is_some())
+        ) && (!self.actor_admissions.is_empty() || self.agent_lineage.is_some())
         {
             let effect = derived
                 .get_or_insert_with(|| acyclic_stream::CommitEffect::hard(Vec::new(), Vec::new()));
