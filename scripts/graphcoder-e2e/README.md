@@ -14,6 +14,8 @@ before turn settlement. Cancelled input never reaches storage or the model. It t
 removes that isolated service entry through the shared credentials API. On Linux run in
 an isolated unlocked Secret Service session (for example a private D-Bus
 session with gnome-keyring); unavailable keychains fail this acceptance case.
+This credential and terminal case uses physical workspace mounting, so it also
+works without a native mount service.
 The fixture key is never allowed in terminal captures or model context.
 Each child process selects its unique native service with `ACYCLIC_KEYCHAIN_SERVICE`;
 attaching clients carry no credential option. Explicit credential documents may

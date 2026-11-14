@@ -3,6 +3,7 @@
   "workspace": { "kind": "plain", "files": {} },
   "keychain": true,
   "first_run": true,
+  "extra_args": ["--workspace-mounting", "physical"],
   "authentication": "api_key",
   "models": ["tiny", "alternate"],
   "model": { "steps": [
