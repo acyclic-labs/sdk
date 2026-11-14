@@ -69,7 +69,7 @@ async fn linked_search_keeps_the_original_session_input_after_later_turns() -> R
             }
         )
         .await?,
-        input.as_bytes(),
+        crate::agent::encode_user_input(&crate::model::ModelContent::Text(input.into()))?,
     );
     Ok(())
 }
