@@ -77,7 +77,7 @@ async fn authenticated_peer_delivery_pins_attribution_opt_out_and_exact_retry() 
                 operation: crate::OperationId::new(),
                 changes: vec![crate::client_files::ClientFileChange {
                     path: "notes.json".into(),
-                    text: note.into(),
+                    text: Some(note.into()),
                     expected: None,
                 }],
             }

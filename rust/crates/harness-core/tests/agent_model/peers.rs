@@ -1583,8 +1583,7 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                         body: Box::new(super::driver::file("ordinary.md")?),
                         attachments: None,
                     });
-                    host.deliver(&recipient, send(&recipient, &from, &message)?)
-                        .await?;
+                    host.send(&recipient, &from, &message).await?;
                     host.drain(&recipient).await?;
                     assert_eq!(
                         destination

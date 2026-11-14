@@ -18,7 +18,7 @@ mod publication;
 mod reply;
 mod roots;
 pub use roots::verify as verify_roots;
-mod vectors;
+pub(crate) mod vectors;
 mod wire;
 
 use acyclic_actors::guest::Handler;

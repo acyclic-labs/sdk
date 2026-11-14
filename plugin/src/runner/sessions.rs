@@ -80,7 +80,7 @@ mod tests {
             .await?
             .last
             .ok_or("missing membership")?;
-        assert!(PeerMembership::decode(&head.value)?.enabled);
+        assert!(PeerMembership::decode(&head.value)?.enabled());
         assert_eq!(head.sequence, 1, "replay must not append a new opt-out");
         let picker_args = Args::try_parse_from(["graphcoder", "--no-peer", "--resume"])?;
         let (picked, created) = choose_entry(&owner, None, !picker_args.no_peer, false).await?;
@@ -91,7 +91,7 @@ mod tests {
             .await?
             .last
             .ok_or("missing picker membership")?;
-        assert!(!PeerMembership::decode(&initial.value)?.enabled);
+        assert!(!PeerMembership::decode(&initial.value)?.enabled());
         assert_eq!(
             initial.sequence, 0,
             "picker must commit opt-out with creation"
@@ -104,7 +104,7 @@ mod tests {
             .await?
             .last
             .ok_or("missing picker membership")?;
-        assert!(PeerMembership::decode(&current.value)?.enabled);
+        assert!(PeerMembership::decode(&current.value)?.enabled());
         assert_eq!(
             current.sequence, 1,
             "creation must not issue a later opt-out"
