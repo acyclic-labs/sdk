@@ -416,6 +416,19 @@ fn declared_method_credentials_match_session_admission() {
     }
 }
 
+pub(in crate::session) fn assert_verifier_denial(result: Result<(), StreamError>) {
+    let error = result.unwrap_err();
+    assert_eq!(error.category(), StreamError::AccessDenied);
+    let mut source = std::error::Error::source(&error);
+    while let Some(cause) = source {
+        if cause.downcast_ref::<verify::VerifyError>().is_some() {
+            return;
+        }
+        source = cause.source();
+    }
+    panic!("authorization denial lost its original verifier cause: {error:?}");
+}
+
 #[test]
 fn product_call_targets_retain_exact_action_resource_and_live_credential() {
     let attributes = RecordAttributes::try_new(vec![]).unwrap();
@@ -466,12 +479,12 @@ fn product_call_targets_retain_exact_action_resource_and_live_credential() {
                 .map_err(|error| error.category()),
             Err(StreamError::AccessDenied)
         );
-        assert_eq!(
-            original
-                .authorize(resource, &[], &attributes, PolicyDecision::Deny)
-                .map_err(|error| error.category()),
-            Err(StreamError::AccessDenied)
-        );
+        assert_verifier_denial(original.authorize(
+            resource,
+            &[],
+            &attributes,
+            PolicyDecision::Deny,
+        ));
         // A slot replacement cannot substitute another action for the admitted
         // operation, even while the original provider still holds its context.
         let replacement = testing::credential_with_grants(vec![ResourceGrant {
@@ -498,12 +511,12 @@ fn product_call_targets_retain_exact_action_resource_and_live_credential() {
             Err(StreamError::InvalidArgument)
         ));
         state.publish(signed::Snapshot::default(), u64::MAX);
-        assert_eq!(
-            original
-                .authorize(resource, &[], &attributes, PolicyDecision::Allow)
-                .map_err(|error| error.category()),
-            Err(StreamError::AccessDenied)
-        );
+        assert_verifier_denial(original.authorize(
+            resource,
+            &[],
+            &attributes,
+            PolicyDecision::Allow,
+        ));
     }
 }
 
