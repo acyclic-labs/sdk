@@ -1732,11 +1732,14 @@ mod cleanup_tests {
             assert_eq!(error.uncertain(), uncertain);
             assert_eq!(error.leaves_outcome_uncertain(), uncertain);
             assert_eq!(error.leaves_effect_uncertain(), uncertain);
-            let original = retained
-                .source()
-                .unwrap()
-                .downcast_ref::<std::io::Error>()
-                .unwrap();
+            let mut before = retained.source();
+            let original = loop {
+                let cause = before.ok_or("original stream source disappeared")?;
+                if let Some(original) = cause.downcast_ref::<std::io::Error>() {
+                    break original;
+                }
+                before = cause.source();
+            };
             let mut source = error.source();
             let mut shared = false;
             while let Some(cause) = source {
