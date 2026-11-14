@@ -1345,8 +1345,13 @@ async fn post_ack_reads_keep_operation_custody_until_real_companion_settlement()
         );
         let view = Arc::new(mounted_native_view_of(lazy, &work).await?);
         let source_path = mounted(&["source-only"]);
+        // Native reads may advance access time. Custody retains the stable
+        // node and exact external content pin, not a frozen host stat record.
+        let pinned_identity =
+            |(lookup, pin): (MountLookup, Option<MountContentPin>)| (lookup.node, pin);
         let expected_source = view
             .lookup_pinned_with_meter(&source_path, &work)?
+            .map(pinned_identity)
             .ok_or("source-only lookup")?;
         let source_pin = expected_source.1.ok_or("source content pin")?;
         let authored_path = mounted(&["authored"]);
@@ -1396,7 +1401,8 @@ async fn post_ack_reads_keep_operation_custody_until_real_companion_settlement()
             ));
             assert!(acknowledged.is_none());
             assert_eq!(
-                view.lookup_pinned_with_meter(&source_path, &work)?,
+                view.lookup_pinned_with_meter(&source_path, &work)?
+                    .map(pinned_identity),
                 Some(expected_source)
             );
             let mut carrier = adapter::NativeDemandCarrier::Native(&work);
@@ -1462,7 +1468,9 @@ async fn post_ack_reads_keep_operation_custody_until_real_companion_settlement()
         let observed_operation = observation.retained_operation();
         let observed_root = observation.root().file_table;
         let observed_generation = observation.generation_id();
-        let source_lookup = view.lookup_pinned_with_meter(&source_path, &work);
+        let source_lookup = view
+            .lookup_pinned_with_meter(&source_path, &work)
+            .map(|lookup| lookup.map(pinned_identity));
         let source_bytes = view.read_range_with_meter(&source_path, 0, 6, &work);
         let mut pinned_delivered = 0;
         let mut pinned_packets_match = true;
@@ -1577,7 +1585,7 @@ async fn post_ack_reads_keep_operation_custody_until_real_companion_settlement()
         let mut expected = [
             (
                 source_path.components()[0].clone(),
-                expected_source.0.node.file_id,
+                expected_source.0.file_id,
             ),
             (
                 authored_path.components()[0].clone(),
@@ -1618,7 +1626,8 @@ async fn post_ack_reads_keep_operation_custody_until_real_companion_settlement()
             );
             drop(retained);
             assert_eq!(
-                view.lookup_pinned_with_meter(&source_path, &retry_work)?,
+                view.lookup_pinned_with_meter(&source_path, &retry_work)?
+                    .map(pinned_identity),
                 Some(expected_source)
             );
             assert!(matches!(
