@@ -135,10 +135,14 @@ impl HttpStream {
             let token = provider
                 .resolve()
                 .await
-                .map_err(|_| StreamError::AccessDenied)?;
-            token.check().await.map_err(|_| StreamError::AccessDenied)?;
+                .map_err(|error| StreamError::AccessDenied.with_source(error))?;
+            token
+                .check()
+                .await
+                .map_err(|error| StreamError::AccessDenied.with_source(error))?;
             Ok((
-                credential_header(&token).map_err(|_| StreamError::AccessDenied)?,
+                credential_header(&token)
+                    .map_err(|error| StreamError::AccessDenied.with_source(error))?,
                 Some(token),
             ))
         } else {
@@ -190,7 +194,7 @@ impl HttpStream {
         let url = self
             .endpoint
             .join(&format!("v1/stream/{route}"))
-            .map_err(|_| StreamError::Unavailable)?;
+            .map_err(|error| StreamError::Unavailable.with_source(error))?;
         let (authorization, lease) = self.authorization().await?;
         let mut response = self
             .client
@@ -200,13 +204,13 @@ impl HttpStream {
             .body(body)
             .send()
             .await
-            .map_err(|_| StreamError::Unavailable)?;
+            .map_err(|error| StreamError::Unavailable.with_source(error))?;
         if response.status().as_u16() == 401 {
             if let Some(lease) = &lease {
                 lease
                     .reject()
                     .await
-                    .map_err(|_| StreamError::AccessDenied)?;
+                    .map_err(|error| StreamError::AccessDenied.with_source(error))?;
             }
         }
         let success = response.status().is_success();
@@ -221,7 +225,7 @@ impl HttpStream {
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|_| StreamError::Unavailable)?
+            .map_err(|error| StreamError::Unavailable.with_source(error))?
         {
             if chunk.len() > self.maximum.saturating_sub(body.len()) {
                 return Err(StreamError::Unavailable);
@@ -230,9 +234,13 @@ impl HttpStream {
         }
         span.record("bytes", body.len());
         if success && let Some(lease) = &lease {
-            lease.check().await.map_err(|_| StreamError::AccessDenied)?;
+            lease
+                .check()
+                .await
+                .map_err(|error| StreamError::AccessDenied.with_source(error))?;
         }
-        let value: Value = serde_json::from_slice(&body).map_err(|_| StreamError::Unavailable)?;
+        let value: Value = serde_json::from_slice(&body)
+            .map_err(|error| StreamError::Unavailable.with_source(error))?;
         if !success {
             let code = value
                 .as_str()
@@ -246,9 +254,17 @@ impl HttpStream {
             return Err(code.map_or(StreamError::Unavailable, contract_error));
         }
         // A well-formed body that breaks the response contract is the peer's fault.
-        http_validation::validate(route, &value).map_err(|_| StreamError::InvalidResponse)?;
+        http_validation::validate(route, &value).map_err(|reason| {
+            StreamError::InvalidResponse.with_source(acyclic_auth::refusal::Cause::new(
+                "stream.http.response",
+                reason,
+            ))
+        })?;
         if let Some(lease) = &lease {
-            lease.check().await.map_err(|_| StreamError::AccessDenied)?;
+            lease
+                .check()
+                .await
+                .map_err(|error| StreamError::AccessDenied.with_source(error))?;
         }
         Ok(value)
     }
@@ -292,7 +308,9 @@ impl HttpStream {
                     None => Vec::new(),
                 },
             };
-            receipt.validate().map_err(|_| StreamError::Unavailable)?;
+            receipt
+                .validate()
+                .map_err(|error| StreamError::Unavailable.with_source(error))?;
             Ok(CommitOutcome::Committed(receipt))
         } else {
             let conflicts = value["conflicts"]
@@ -362,7 +380,7 @@ impl StreamProvider for HttpStream {
         let request_digest = parse_bytes(field(&value, "requestDigest")?)?
             .as_ref()
             .try_into()
-            .map_err(|_| StreamError::Unavailable)?;
+            .map_err(|error| StreamError::Unavailable.with_source(error))?;
         let outcome = field(&value, "outcome")?;
         let outcome = match parse_string(&outcome["type"])? {
             "append" => IdempotencyOutcome::Append(parse_append(&outcome["outcome"])?),
@@ -684,6 +702,11 @@ mod tests {
             let error = result.expect_err("the closed connection cannot return a tail");
             assert_eq!(error.code(), StreamError::Unavailable.code());
             assert!(error.uncertain());
+            drop(provider);
+            assert!(
+                std::error::Error::source(&error)
+                    .is_some_and(|source| source.is::<reqwest::Error>())
+            );
             Ok(())
         }
         .with_subscriber(subscriber)

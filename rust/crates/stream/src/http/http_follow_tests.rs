@@ -243,11 +243,18 @@ async fn json_heads_refuses_incoherent_cuts_without_another_provider_request()
             .unwrap()
             .unwrap()
         });
-        assert_eq!(actual, expected);
+        assert_eq!(
+            actual.as_ref().map_err(|error| error.category()),
+            expected.as_ref().map_err(|error| error.category())
+        );
         if valid {
             assert_eq!(parse_u64(&actual?["tail"])?, tail);
         } else {
-            assert_eq!(actual, Err(StreamError::InvalidResponse));
+            assert_eq!(
+                actual.as_ref().map_err(|error| error.category()),
+                Err(StreamError::InvalidResponse)
+            );
+            assert!(std::error::Error::source(actual.as_ref().unwrap_err()).is_some());
         }
         let requests = server.requests();
         assert_eq!(requests.len(), 1);
@@ -318,11 +325,16 @@ async fn request_path_typed_append_preserves_json_responses_and_validation_trace
 async fn truncated_unary_body_fails_without_retry() {
     let (key, reply) = missing_idempotency().await;
     let server = Server::with_body_mode(vec![reply], Some(BodyMode::Truncated)).await;
-    assert!(matches!(
-        server.client.inspect_idempotency(key).await,
-        Err(StreamError::Unavailable)
-    ));
+    let error = server
+        .client
+        .inspect_idempotency(key)
+        .await
+        .expect_err("truncated original body cannot settle");
+    assert_eq!(error.category(), StreamError::Unavailable);
+    assert!(error.uncertain());
     assert_eq!(server.requests().len(), 1);
+    drop(server);
+    assert!(std::error::Error::source(&error).is_some_and(|source| source.is::<reqwest::Error>()));
 }
 
 #[tokio::test(start_paused = true)]
