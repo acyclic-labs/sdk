@@ -7,7 +7,7 @@ type Failure = Box<dyn std::error::Error>;
 async fn history() -> Result<(), Failure> {
     let store = Store::new(MemoryMedium::default());
     let blobs = store.account(b"simulation")?;
-    let mut known: Vec<Vec<u8>> = Vec::new();
+    let mut known: Vec<(Vec<u8>, Vec<Digest>)> = Vec::new();
     for step in 0..32u8 {
         let mut choices = [0; 8];
         assert!(fill_seeded(&mut choices));
@@ -15,32 +15,40 @@ async fn history() -> Result<(), Failure> {
         let duplicate = known
             .get(usize::from(choices[1]) % known.len().max(1))
             .cloned()
-            .unwrap_or_else(|| body.clone());
+            .unwrap_or_else(|| (body.clone(), Vec::new()));
         let digest = Digest::of(&body);
+        let child = vec![b'c', b'h', b'i', b'l', b'd', step];
         // Repeated digests and an earlier-member reference exercise dependency
         // ordering in the real batch driver, alongside independent admissions.
-        let inputs = [body.clone(), duplicate, body.clone()];
+        let inputs = [
+            (body.clone(), Vec::new()),
+            (child.clone(), vec![digest]),
+            duplicate,
+            (body.clone(), Vec::new()),
+        ];
         let puts = blobs
-            .put_batch(vec![
-                (inputs[0].clone().into(), Vec::new()),
-                (inputs[1].clone().into(), vec![digest]),
-                (inputs[2].clone().into(), Vec::new()),
-            ])
+            .put_batch(
+                inputs
+                    .iter()
+                    .map(|(body, references)| (body.clone().into(), references.clone()))
+                    .collect(),
+            )
             .await;
         assert_eq!(puts.len(), inputs.len());
-        for (put, input) in puts.into_iter().zip(&inputs) {
+        for (put, (input, _)) in puts.into_iter().zip(&inputs) {
             assert_eq!(
                 put?.verified().ok_or("unverified put")?.digest,
                 Digest::of(input)
             );
         }
-        known.push(body);
+        known.push((body, Vec::new()));
+        known.push((child, vec![digest]));
         // Verify the entire acknowledged prefix after every operation, with
         // independently computed ranges and deliberately permuted read order.
         let mut expected = Vec::new();
         let mut requests = Vec::new();
         for index in 0..known.len() {
-            let input = &known[(index + usize::from(choices[2])) % known.len()];
+            let (input, _) = &known[(index + usize::from(choices[2])) % known.len()];
             let start = usize::from(choices[3]) % input.len();
             let end = start + 1 + usize::from(choices[4]) % (input.len() - start);
             requests.push((
@@ -67,6 +75,7 @@ async fn history() -> Result<(), Failure> {
 fn replay(seed: u64) -> Result<(), Failure> {
     eprintln!("seed={seed}");
     seeded_runtime(seed)?.block_on(async {
+        tokio::time::pause();
         let (schedule, mut boundaries) = Schedule::seeded(seed);
         let turn = schedule.scope(history());
         tokio::pin!(turn);

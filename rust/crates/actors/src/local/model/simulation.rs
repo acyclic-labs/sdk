@@ -4,6 +4,7 @@ use acyclic_native_runtime::testing::{Schedule, fill_seeded, seeded_runtime};
 
 fn replay(seed: u64) -> Result<(), Failure> {
     seeded_runtime(seed)?.block_on(async {
+        tokio::time::pause();
         let (schedule, mut boundaries) = Schedule::seeded(seed);
         let turn = schedule.scope(async {
             let mut choices = [0; 8];
@@ -17,7 +18,8 @@ fn replay(seed: u64) -> Result<(), Failure> {
                 })
                 .collect();
             run(Shape::Atomic, plan).await?;
-            composition::activation_extensions(choices.into_iter().map(|choice| 3 + choice % 3)).await
+            composition::activation_extensions(choices.into_iter().map(|choice| 3 + choice % 3)).await?;
+            composition::copied_custody(choices[..2].iter().map(|choice| choice % 2 == 0)).await
         });
         tokio::pin!(turn);
         loop {

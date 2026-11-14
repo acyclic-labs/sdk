@@ -884,7 +884,13 @@ async fn lost_ack_keeps_participant_and_replays_the_sealed_request_once() -> Res
 /// A raw Streams fork inherits bytes, not the source's settlement obligation.
 #[tokio::test]
 async fn copied_actors_leave_committed_custody_with_the_source() -> Result<(), Failure> {
-    for settled in [false, true] {
+    copied_custody([false, true]).await
+}
+
+pub(super) async fn copied_custody(
+    settlements: impl IntoIterator<Item = bool>,
+) -> Result<(), Failure> {
+    for settled in settlements {
         let provider = Arc::new(Faulty {
             inner: MemoryStream::default(),
             plan: vec![Fault::None, Fault::None, Fault::LoseAck],

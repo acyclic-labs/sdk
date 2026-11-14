@@ -102,6 +102,9 @@ async fn history(schedule: &Schedule) -> TestResult {
         }
         // Independent actors run concurrently; their conditional publications
         // and shared provider remain the production implementations.
+        for address in &addresses {
+            runtime.track(address.clone())?;
+        }
         futures::future::try_join_all(addresses.iter().map(|address| runtime.drain_actor(address)))
             .await?;
         for (address, model) in addresses.iter().zip(&mut expected) {
@@ -160,12 +163,98 @@ async fn history(schedule: &Schedule) -> TestResult {
             );
         }
     }
+    let mut choice = [0];
+    assert!(fill_seeded(&mut choice));
+    admission_close(usize::from(choice[0] % 3) + 1).await
+}
+
+async fn admission_close(credit: usize) -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(provider.clone(), root()?);
+    let handler = Arc::new(Gated::new()?);
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store.clone(),
+        handler.clone(),
+        Arc::new(SystemClock),
+    )
+    .with_limits(RuntimeLimits::new(credit, 64)?);
+    let mut addresses = Vec::new();
+    for index in 0..credit + 2 {
+        let address = spawn_with(&store, &format!("admission-{index}"), &[b"emit"]).await?;
+        runtime.host(address.clone())?;
+        addresses.push(address);
+    }
+    let mut entered = handler.entered.subscribe();
+    let mut running = futures::stream::FuturesUnordered::new();
+    for address in &addresses {
+        let runtime = &runtime;
+        running.push(async move { (address, runtime.drain_actor(address).await) });
+    }
+    tokio::select! {
+        observed = entered.wait_for(|active| *active == credit) => { assert_eq!(*observed?, credit); }
+        result = running.next() => return Err(format!("delivery escaped held admission: {result:?}").into()),
+    }
+    runtime.admission[0]
+        .as_ref()
+        .ok_or("missing admission credit")?
+        .close();
+    handler.gate.add_permits(credit);
+    let mut accepted = 0;
+    let mut refused = 0;
+    while let Some((address, result)) = running.next().await {
+        let delivered = match result {
+            Ok(()) => {
+                accepted += 1;
+                true
+            }
+            Err(Error::AdmissionClosed(_)) => {
+                refused += 1;
+                false
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let cut = store.load(address).await?;
+        assert_eq!(
+            cut.state().and_then(|state| state.cursor("inbox")),
+            Some(u64::from(delivered))
+        );
+        assert_eq!(
+            records(provider.as_ref(), &format!("out/{}", address.id()))
+                .await?
+                .len(),
+            usize::from(delivered)
+        );
+    }
+    assert_eq!(accepted, credit);
+    assert_eq!(refused, 2);
+    drop(running);
+    drop(runtime);
+    // A new owner can deliver the refused inputs; accepted inputs remain
+    // exactly once. Closing one incarnation never discards committed input.
+    let reopened = open(&store, &addresses).await?;
+    for address in &addresses {
+        reopened.drain_actor(address).await?;
+        assert_eq!(
+            records(provider.as_ref(), &format!("out/{}", address.id())).await?,
+            vec![Bytes::from_static(b"r0")]
+        );
+        assert_eq!(
+            store
+                .load(address)
+                .await?
+                .state()
+                .and_then(|state| state.cursor("inbox")),
+            Some(1)
+        );
+    }
     Ok(())
 }
 
 fn replay(seed: u64) -> TestResult {
     eprintln!("seed={seed}");
     seeded_runtime(seed)?.block_on(async {
+        tokio::time::pause();
             let (schedule, mut boundaries) = Schedule::seeded(seed);
             let turn = schedule.scope(history(&schedule));
             tokio::pin!(turn);
