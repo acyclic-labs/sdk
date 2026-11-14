@@ -67,11 +67,17 @@ async fn discarded_source_promotion_retains_before_images_without_overriding_liv
                 root.read("/alias", 64, &mut ctx).await?.bytes.as_ref(),
                 b"external"
             );
-            assert!(matches!(
-                root.read_at_snapshot(&original, "/alias", None, 64, &mut ctx)
-                    .await,
-                Err(LazyWorkspaceError::StaleSource)
-            ));
+            let alias = root
+                .read_at_snapshot(&original, "/alias", None, 64, &mut ctx)
+                .await;
+            assert!(
+                matches!(
+                    alias,
+                    Err(LazyWorkspaceError::Demand(DemandError::StaleSource))
+                ),
+                "unobserved alias: {:?}",
+                alias.as_ref().map(|(chunk, _)| chunk.bytes.as_ref())
+            );
         }
         let (bytes, used_source) = root
             .read_at_snapshot(&original, "/file", None, 64, &mut ctx)
@@ -161,23 +167,19 @@ async fn source_before_images_require_their_original_collection_roots_after_rest
                 )
                 .await?
             );
-            // This real unpublished payload gives collection reclaimable work.
-            // Neither it nor the source copy-up becomes an authored generation.
-            let orphan = root.namespace_path("/orphan", &mut ctx)?;
-            checkout
-                .apply_authored_transaction(
-                    vec![AuthoredMutation::CreateFile {
-                        file_id: None,
-                        path: orphan.value,
-                        bytes: acyclic_stream::OwnedBytes::from(vec![0x6e; 65_537]),
-                        metadata: FileMetadata::default(),
-                    }],
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .await?;
-            crate::kernel::retire_allocation(orphan.allocation, orphan.bytes, &mut ctx)?;
             drop(checkout);
+            // Publish and retire an independent control so reclamation observes
+            // durable garbage, rather than private data discarded before upload.
+            let control = fs
+                .create_workspace("collection-control", WorkBudget::UNBOUNDED, &cancellation)
+                .await?
+                .value;
+            control.write_text("/orphan", &"n".repeat(65_537)).await?;
+            assert_eq!(
+                control.delete(crate::IdempotencyKey::new()).await?,
+                crate::WorkspaceDelete::Deleted
+            );
+            drop(control);
             cut = root.snapshot(&mut ctx).await?;
             assert!(
                 root.workspace()
@@ -210,7 +212,7 @@ async fn source_before_images_require_their_original_collection_roots_after_rest
             .await?;
         assert!(
             collected.removed > 0,
-            "collection did not reclaim the unpublished control"
+            "collection did not reclaim the retired control"
         );
         let read = root
             .read_at_snapshot(&cut, "/file", None, None, &mut ctx)

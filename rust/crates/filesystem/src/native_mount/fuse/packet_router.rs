@@ -133,7 +133,7 @@ fn shared_root(
                     let attributes = view.node_attributes(view_root_inode(serial), None, work)?;
                     Ok((attributes, work.clone()))
                 });
-                let ((attr, ttl), work) = match attributes {
+                let ((attr, _), work) = match attributes {
                     Ok(value) => value,
                     Err(failure) => {
                         return Err(PacketFailure::from_callback(&view.core, failure)
@@ -141,7 +141,9 @@ fn shared_root(
                             .retaining_view(view));
                     }
                 };
-                output.entry(&attr, &ttl)?;
+                // A view name is a revocable lease. Never let a cached binding
+                // outlive withdrawal or require a reverse notification to retire.
+                output.entry(&attr, &Duration::ZERO)?;
                 return Ok(
                     PacketCompletion::reply(output.finish(request.unique, None)?)
                         .retaining_work(work)
@@ -279,8 +281,13 @@ fn shared_listing(
                 let mut retained_work = None;
                 let result = core.request(|work| {
                     retained_work = Some(work.clone());
-                    let (attr, ttl) = view.node_attributes(view_root_inode(serial), None, work)?;
-                    if output.directory_entry(offset, OsStr::from_bytes(&name), &attr, &ttl)? {
+                    let (attr, _) = view.node_attributes(view_root_inode(serial), None, work)?;
+                    if output.directory_entry(
+                        offset,
+                        OsStr::from_bytes(&name),
+                        &attr,
+                        &Duration::ZERO,
+                    )? {
                         return Ok(true);
                     }
                     completion.retain_view(view, work)?;

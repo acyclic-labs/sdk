@@ -30,6 +30,7 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
         assert_eq!(acknowledged, Some(receipt.clone()));
         Ok::<_, MountSourceError>(receipt)
     };
+    let source_cut = view.lazy.snapshot(&mut accounting).await?;
     view.write_range(&mounted(&["same"]), 0, Bytes::from_static(b"same bytes"))?;
     let unchanged = publish().await?;
     let (unchanged_before, unchanged_after) = view
@@ -55,7 +56,7 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
     );
     assert_eq!(
         view.lazy
-            .content_changed_at_snapshots(&unchanged_before, &unchanged_after, &mut accounting,)
+            .content_changed_at_snapshots(&source_cut, &unchanged_after, &mut accounting)
             .await?,
         None,
         "source identity promotion invented complete alias coverage"

@@ -170,13 +170,14 @@ pub(super) fn linux_shared_views_are_independent_namespaces_of_one_mount()
     let held_last = std::fs::File::open(root.join("b"))?;
     assert!(b.stop()?);
     let worker_retired = worker.upgrade().is_none();
-    // Retain main's original-handle control: after readers retire, the same
-    // kernel connection must refuse a call instead of waiting forever.
+    // Open the existing child directory so a fresh OPENDIR must reach the
+    // connection. The earlier missing-file probe has a negative dentry that
+    // the kernel can answer without consulting a disconnected connection.
     let unserved = worker_retired.then(|| {
         rustix::fs::openat(
             &held_last,
-            "file",
-            rustix::fs::OFlags::RDONLY,
+            "directory",
+            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY,
             rustix::fs::Mode::empty(),
         )
     });
