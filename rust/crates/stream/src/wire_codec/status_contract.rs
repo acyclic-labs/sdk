@@ -209,7 +209,7 @@ mod tests {
                 proptest::prop_assert!(check_with(&input, broken).is_err());
             }
             let stripped = wire_codec::status::category;
-            proptest::prop_assert_eq!(check_with(&input, stripped), Err("original refusal diagnostics"));
+            proptest::prop_assert_eq!(check_with(&input, stripped), Err("wrapped original authority-time refusal"));
             // The removed round-trip-only property accepts this symmetric
             // path/limit swap. The independent contract must reject it.
             let swap = |error| match error {
