@@ -504,24 +504,24 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
         &self,
         request: ChildrenPageRequest,
     ) -> impl std::future::Future<Output = Result<ChildrenPage, StreamError>> + ProviderTask {
-        #[cfg(feature = "serde")]
-        let diagnostic = request.parent.as_ref().is_some_and(crate::trace::is_source);
-        let work = async move {
-            let selection = HeadsRequest {
-                at: None,
-                retained: Default::default(),
-                durable_through: None,
-                projection: HeadProjection::Watermarks,
-                paths: Default::default(),
-                limit: request.limit,
-                children: Some(request),
-                at_least: Default::default(),
-            };
-            let view = self.heads(selection.clone()).await?;
-            view.validate_for(&selection)?;
-            view.children.ok_or(StreamError::InvalidResponse)
-        };
         async move {
+            #[cfg(feature = "serde")]
+            let diagnostic = request.parent.as_ref().is_some_and(crate::trace::is_source);
+            let work = async move {
+                let selection = HeadsRequest {
+                    at: None,
+                    retained: Default::default(),
+                    durable_through: None,
+                    projection: HeadProjection::Watermarks,
+                    paths: Default::default(),
+                    limit: request.limit,
+                    children: Some(request),
+                    at_least: Default::default(),
+                };
+                let view = self.heads(selection.clone()).await?;
+                view.validate_for(&selection)?;
+                view.children.ok_or(StreamError::InvalidResponse)
+            };
             #[cfg(feature = "serde")]
             if !diagnostic {
                 return crate::trace::observe(
