@@ -53,8 +53,6 @@ async fn actor_state_hot_path_counts_and_reopen() -> TestResult {
     observation_work().await?;
     alarm_replacement().await?;
     alarm_publication_wakes().await?;
-    source_alarm_publication().await?;
-    source_control_publication().await?;
     futures::try_join!(
         publication_and_reopen(),
         physical_loss(0),
@@ -1200,6 +1198,7 @@ async fn alarm_replacement() -> TestResult {
     Ok(())
 }
 
+#[tokio::test]
 async fn source_alarm_publication() -> TestResult {
     for refuse_source in [false, true] {
         let provider = Arc::new(Counted::new(MemoryStream::default()));
@@ -1209,7 +1208,8 @@ async fn source_alarm_publication() -> TestResult {
         let before = store.load(&address).await?;
         let replay_cut = store.load(&address).await?;
         let original_anchor = before.anchor;
-        let wakes = provider.tail(store.root().clone()).await?;
+        let activation = store.activation_record(&address)?;
+        let wakes = provider.tail(activation.0.clone()).await?;
         let source = StreamPath::new("source/output")?;
         let prepare = |snapshot| -> Result<PreparedPublish, Error> {
             let mut binding = store.bind_state(snapshot, 1)?;
@@ -1251,7 +1251,7 @@ async fn source_alarm_publication() -> TestResult {
             assert!(matches!(result, Err(Error::Conflict)));
             assert_eq!(snapshot.anchor, original_anchor);
             assert_eq!(
-                provider.tail(store.root().clone()).await?,
+                provider.tail(activation.0.clone()).await?,
                 wakes,
                 "a refused activity record must not rearm or wake its actor"
             );
@@ -1276,7 +1276,12 @@ async fn source_alarm_publication() -> TestResult {
                 accepted.anchor,
                 "activity and the new deadline must share the source commit"
             );
-            assert_eq!(provider.tail(store.root().clone()).await?, wakes + 1);
+            assert_eq!(
+                provider.tail(activation.0.clone()).await?,
+                wakes + 1,
+                "accepted alarm publication must append one canonical activation"
+            );
+            original_activation(&*provider, &activation, wakes, accepted.anchor).await?;
             let replay = store
                 .submit_retained(prepare(replay_cut)?)
                 .await?
@@ -1288,7 +1293,7 @@ async fn source_alarm_publication() -> TestResult {
                 "replay duplicated activity"
             );
             assert_eq!(
-                provider.tail(store.root().clone()).await?,
+                provider.tail(activation.0.clone()).await?,
                 wakes + 1,
                 "replay duplicated the deadline activation"
             );
@@ -1297,6 +1302,7 @@ async fn source_alarm_publication() -> TestResult {
     Ok(())
 }
 
+#[tokio::test]
 async fn source_control_publication() -> TestResult {
     for paused in [false, true] {
         for refuse_source in [false, true] {
@@ -1313,7 +1319,9 @@ async fn source_control_publication() -> TestResult {
             let before = store.load(&address).await?;
             let replay_cut = store.load(&address).await?;
             let original_anchor = before.anchor;
-            let wakes = provider.tail(store.root().clone()).await?;
+            let activation = store.activation_record(&address)?;
+            let wakes = provider.tail(activation.0.clone()).await?;
+            let expected_wakes = wakes + u64::from(!paused);
             let source = StreamPath::new("source/control")?;
             let prepare = |snapshot: &Snapshot| -> Result<PreparedPublish, Error> {
                 let mut publication =
@@ -1351,7 +1359,7 @@ async fn source_control_publication() -> TestResult {
                 assert!(matches!(result, Err(Error::Conflict)));
                 assert_eq!(observed.anchor, original_anchor);
                 assert_eq!(observed.state().ok_or("no actor")?.paused(), !paused);
-                assert_eq!(provider.tail(store.root().clone()).await?, wakes);
+                assert_eq!(provider.tail(activation.0.clone()).await?, wakes);
             } else {
                 let accepted = result?.ok_or("missing control receipt")?;
                 assert_eq!(observed.state().ok_or("no actor")?.paused(), paused);
@@ -1369,17 +1377,48 @@ async fn source_control_publication() -> TestResult {
                     .await?
                     .ok_or("missing original control")?;
                 assert_eq!(Some(original.commit_id), accepted.anchor);
-                assert_eq!(provider.tail(store.root().clone()).await?, wakes + 1);
+                assert_eq!(provider.tail(activation.0.clone()).await?, expected_wakes);
+                if !paused {
+                    original_activation(&*provider, &activation, wakes, accepted.anchor).await?;
+                }
                 let replay = store
                     .submit_retained(prepare(&replay_cut)?)
                     .await?
                     .ok_or("missing replay")?;
                 assert_eq!(replay.anchor, accepted.anchor);
                 assert_eq!(provider.tail(source).await?, 1);
-                assert_eq!(provider.tail(store.root().clone()).await?, wakes + 1);
+                assert_eq!(provider.tail(activation.0.clone()).await?, expected_wakes);
             }
         }
     }
+    Ok(())
+}
+
+async fn original_activation(
+    provider: &impl StreamProvider,
+    activation: &(StreamPath, acyclic_stream::OwnedBytes),
+    from: u64,
+    source_commit: Option<acyclic_stream::CommitId>,
+) -> TestResult {
+    let mut records = provider
+        .read(ReadRequest {
+            path: activation.0.clone(),
+            from,
+            limit: 1,
+            key: None,
+            at_least: Default::default(),
+        })
+        .await?;
+    let wake = records
+        .try_next()
+        .await?
+        .ok_or("missing original activation")?;
+    assert_eq!(wake.value.as_ref(), activation.1.as_ref());
+    assert_eq!(
+        Some(wake.commit_id),
+        source_commit,
+        "activation and source must share their original publication"
+    );
     Ok(())
 }
 

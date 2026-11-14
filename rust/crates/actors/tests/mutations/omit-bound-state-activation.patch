@@ -1,0 +1,16 @@
+diff --git a/rust/crates/actors/src/local/state_binding.rs b/rust/crates/actors/src/local/state_binding.rs
+index 4aa67dde0ea..c6b3d253805 100644
+--- a/rust/crates/actors/src/local/state_binding.rs
++++ b/rust/crates/actors/src/local/state_binding.rs
+@@ -476,10 +476,7 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
+             // ready index and sole timer. A new deadline (or clear) must wake
+             // an already idle actor, whether staged here or in the delivery's
+             // transition. Both changes share one activation entry and commit.
+-            effects.push(
+-                self.store
+-                    .activation(&self.store.actor(self.snapshot.path())?)?,
+-            );
++            let _activation = self.store.activation(&self.store.actor(self.snapshot.path())?)?;
+         }
+         Ok(effects)
+     }

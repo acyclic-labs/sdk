@@ -1345,8 +1345,9 @@ impl<P: StreamProvider + ?Sized> Store<P> {
 
     /// Prepare the existing pause/resume decision without submitting it.
     /// A source producer can join its original conditional file/event write
-    /// through [`PreparedPublish::join`]; the source, admission change and
-    /// activation then commit together or not at all. Refusal leaves the
+    /// through [`PreparedPublish::join`]; the source and admission change
+    /// commit together or not at all. A resume joins its activation to that
+    /// same publication. Refusal leaves the
     /// observed actor untouched; Unknown retains this exact publication.
     /// This operation performs no I/O and grants no authority over the actor.
     pub fn prepare_paused(
