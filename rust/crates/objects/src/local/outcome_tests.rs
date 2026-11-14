@@ -62,16 +62,27 @@ async fn empty_ranges_preserve_native_presence_without_dispatch()
     assert_eq!(result?.as_deref(), Some(&b"rigi"[..]));
     assert_eq!(jobs, 1);
 
-    // Hold the same index lock an append or compaction owns during I/O.
-    // One caller turn must yield to the existing worker, never wait on it.
-    let contended = {
+    // A writer holds the log over disk work. Presence and listings take one
+    // path regardless: they read the index in the caller's first poll, so a
+    // seeded schedule never branches on another thread's lock timing.
+    {
         let _log = medium.shared.log();
-        let mut read = Box::pin(medium.read("key", Some(8..8)));
         let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-        assert!(read.as_mut().poll(&mut context).is_pending());
-        read
-    };
-    assert_eq!(contended.await?.as_deref(), Some(&b""[..]));
+        let std::task::Poll::Ready(present) = Box::pin(medium.read("key", Some(8..8)))
+            .as_mut()
+            .poll(&mut context)
+        else {
+            panic!("presence check depended on the writer's log lock");
+        };
+        assert_eq!(present?.as_deref(), Some(&b""[..]));
+        let std::task::Poll::Ready(listed) = Box::pin(medium.list("", None, 8))
+            .as_mut()
+            .poll(&mut context)
+        else {
+            panic!("listing depended on the writer's log lock");
+        };
+        assert_eq!(listed?, [("empty".to_owned(), 0), ("key".to_owned(), 8)]);
+    }
 
     assert!(medium.remove("key").await?);
     let (result, jobs) = counted(medium.read("key", Some(8..8))).await;

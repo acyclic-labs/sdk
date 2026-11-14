@@ -5,6 +5,8 @@
 //! by one replay at open, maps each key to its value in the log. One process
 //! owns the root, and one lock orders every write, so compare-and-replace and
 //! compare-and-remove are atomic; create never replaces an existing key.
+//! The index has its own lock, never held over disk work, so a presence check
+//! or listing takes one path whatever a writer is doing.
 //!
 //! A write is visible at once, and [`Medium::flush`] makes every write so far
 //! durable with one data flush of the log. Explicit close flushes once
@@ -204,12 +206,11 @@ impl Slot {
     }
 }
 
-/// The log and its index, under the one lock that orders every write.
+/// The log, under the one lock that orders every write.
 struct Log {
     file: Arc<std::fs::File>,
     /// Where the next frame goes.
     end: u64,
-    index: BTreeMap<String, Slot>,
     /// Frame bytes of live puts; the rest of the log is dead.
     live: u64,
     /// Writes appended so far, compared against [`Shared::synced`].
@@ -223,6 +224,9 @@ struct Shared {
     root: PathBuf,
     durability: LocalDurability,
     log: Mutex<Log>,
+    /// Each key's slot in the current log. Changed only under `log`, after
+    /// it; never held over disk work, callbacks or awaits.
+    index: Mutex<BTreeMap<String, Slot>>,
     /// Writes made durable so far.
     synced: AtomicU64,
     /// Whether the root opened unclean and its repair has not settled.
@@ -261,6 +265,15 @@ impl Shared {
 
     fn log(&self) -> MutexGuard<'_, Log> {
         self.log.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn index(&self) -> MutexGuard<'_, BTreeMap<String, Slot>> {
+        self.index.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The current slot of `key`, without waiting on any writer's disk work.
+    fn slot(&self, key: &str) -> Option<Slot> {
+        self.index().get(key).copied()
     }
 
     fn sync_file(&self, file: &std::fs::File) -> std::io::Result<()> {
@@ -347,7 +360,8 @@ impl Shared {
             sequence: log.written,
         };
         log.live += slot.bytes;
-        if let Some(old) = log.index.insert(key.to_owned(), slot) {
+        let old = self.index().insert(key.to_owned(), slot);
+        if let Some(old) = old {
             log.live -= old.bytes;
             self.compact_if_due(log);
         }
@@ -355,11 +369,12 @@ impl Shared {
     }
 
     fn remove(&self, log: &mut Log, key: &str) -> Result<bool, MediumError> {
-        if !log.index.contains_key(key) {
+        if self.slot(key).is_none() {
             return Ok(false);
         }
         self.append(log, &encode(REMOVE, key, &[]).map_err(failed)?)?;
-        if let Some(old) = log.index.remove(key) {
+        let old = self.index().remove(key);
+        if let Some(old) = old {
             log.live -= old.bytes;
         }
         self.compact_if_due(log);
@@ -391,7 +406,13 @@ impl Shared {
         let mut end = 0;
         let mut index = BTreeMap::new();
         let mut frame = Vec::new();
-        for (key, slot) in &log.index {
+        // Writers are excluded by `log`; the index lock is not held over I/O.
+        let live: Vec<(String, Slot)> = self
+            .index()
+            .iter()
+            .map(|(key, slot)| (key.clone(), *slot))
+            .collect();
+        for (key, slot) in &live {
             frame.resize(
                 usize::try_from(slot.bytes).map_err(std::io::Error::other)?,
                 0,
@@ -417,7 +438,7 @@ impl Shared {
         self.counts.flushed.fetch_add(1, Ordering::Relaxed);
         log.file = Arc::new(file);
         log.end = end;
-        log.index = index;
+        *self.index() = index;
         self.synced.fetch_max(log.written, Ordering::AcqRel);
         Ok(())
     }
@@ -533,8 +554,9 @@ impl LocalMedium {
         let shared = Arc::clone(&self.shared);
         blocking(self, "read", key.as_ptr() as usize, move || {
             let (file, slot) = {
+                // `log` pairs the slot with the file a compaction moved it to.
                 let log = shared.log();
-                let Some(&slot) = log.index.get(&key) else {
+                let Some(slot) = shared.slot(&key) else {
                     return Ok(None);
                 };
                 (Arc::clone(&log.file), slot)
@@ -687,10 +709,10 @@ fn open_root(
         log: Mutex::new(Log {
             file: Arc::new(log),
             end,
-            index,
             live,
             written: 0,
         }),
+        index: Mutex::new(index),
         synced: AtomicU64::new(0),
         recovered: AtomicBool::new(recovered),
         stopped: AtomicBool::new(false),
@@ -714,7 +736,7 @@ impl Medium for LocalMedium {
         let (shared, key) = (Arc::clone(&self.shared), key.to_owned());
         blocking(self, "create", key.as_ptr() as usize, move || {
             let mut log = shared.log();
-            if log.index.contains_key(&key) {
+            if shared.slot(&key).is_some() {
                 return Ok(false);
             }
             shared.put(&mut log, &key, &bytes)?;
@@ -729,13 +751,10 @@ impl Medium for LocalMedium {
         key: &str,
         range: Option<Range<u64>>,
     ) -> Result<Option<OwnedBytes>, MediumError> {
-        // Presence at the requested end is already certified by the original
-        // index. Never wait here: a writer can hold the lock over physical I/O.
-        // Contention and poison use the same original worker below.
-        if let Some(range) = range.as_ref().filter(|range| range.start == range.end)
-            && let Ok(log) = self.shared.log.try_lock()
-        {
-            let Some(&slot) = log.index.get(key) else {
+        // Presence at the requested end is certified by the index alone,
+        // whose lock no writer holds over disk work.
+        if let Some(range) = range.as_ref().filter(|range| range.start == range.end) {
+            let Some(slot) = self.shared.slot(key) else {
                 return Ok(None);
             };
             return slot
@@ -783,9 +802,8 @@ impl Medium for LocalMedium {
         let (shared, key) = (Arc::clone(&self.shared), observed.into_key());
         let accepted = blocking(self, "replace", key.as_ptr() as usize, move || {
             let mut log = shared.log();
-            if !log
-                .index
-                .get(&key)
+            if !shared
+                .slot(&key)
                 .is_some_and(|slot| slot.sequence == sequence)
             {
                 return Ok(None);
@@ -810,9 +828,8 @@ impl Medium for LocalMedium {
         let (shared, key) = (Arc::clone(&self.shared), observed.into_key());
         blocking(self, "remove-if", key.as_ptr() as usize, move || {
             let mut log = shared.log();
-            if !log
-                .index
-                .get(&key)
+            if !shared
+                .slot(&key)
                 .is_some_and(|slot| slot.sequence == sequence)
             {
                 return Ok(false);
@@ -853,30 +870,18 @@ impl Medium for LocalMedium {
         if !prefix.is_empty() && !prefix.ends_with('/') {
             return Err(failed(std::io::ErrorKind::InvalidInput.into()));
         }
-        let (shared, prefix, after) = (
-            Arc::clone(&self.shared),
-            prefix.to_owned(),
-            after.map(str::to_owned),
-        );
-        // Writers hold the lock across disk work, so it is taken off the
-        // async thread.
-        blocking(self, "list", prefix.as_ptr() as usize, move || {
-            let log = shared.log();
-            let start = match after.as_deref() {
-                Some(after) if after >= prefix.as_str() => std::ops::Bound::Excluded(after),
-                _ => std::ops::Bound::Included(prefix.as_str()),
-            };
-            Ok(log
-                .index
-                .range::<str, _>((start, std::ops::Bound::Unbounded))
-                .take_while(|(key, _)| key.starts_with(prefix.as_str()))
-                .take(limit)
-                .map(|(key, slot)| (key.clone(), slot.length))
-                .collect())
-        })
-        .await
-        .and_then(std::convert::identity)
-        .map_err(failed)
+        // The index is never held over disk work, so a listing reads it here.
+        let index = self.shared.index();
+        let start = match after {
+            Some(after) if after >= prefix => std::ops::Bound::Excluded(after),
+            _ => std::ops::Bound::Included(prefix),
+        };
+        Ok(index
+            .range::<str, _>((start, std::ops::Bound::Unbounded))
+            .take_while(|(key, _)| key.starts_with(prefix))
+            .take(limit)
+            .map(|(key, slot)| (key.clone(), slot.length))
+            .collect())
     }
 }
 
@@ -933,7 +938,7 @@ mod isolation_tests {
         );
         let (original_file, original_slot) = {
             let log = medium.shared.log();
-            (Arc::clone(&log.file), log.index["kept"])
+            (Arc::clone(&log.file), medium.shared.index()["kept"])
         };
         let kept = observation(&medium, "kept").await;
         let stale = observation(&medium, "kept").await;
