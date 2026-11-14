@@ -103,20 +103,9 @@ where
         request: Request<wire::OpenWorkspaceRequest>,
     ) -> Result<Response<wire::WorkspaceResponse>, Status> {
         self.admit(&request)?;
-        let workspace = match required(request.into_inner().selector, "workspace selector")? {
-            wire::open_workspace_request::Selector::Workspace(reference) => {
-                self.workspace(Some(reference)).await?
-            }
-            wire::open_workspace_request::Selector::Name(name) => self
-                .filesystem
-                .open_workspace(name, WorkBudget::UNBOUNDED, &CancellationToken::new())
-                .await
-                .map_err(|failure| status(&failure.error))?
-                .value
-                .bind_coarse_access(&crate::access::Action::ALL, &CancellationToken::new())
-                .await
-                .map_err(|error| status(&error))?,
-        };
+        let workspace = self
+            .open_workspace_with_access(request.into_inner(), &crate::access::Action::ALL)
+            .await?;
         Ok(Response::new(wire::WorkspaceResponse {
             workspace: Some(workspace_message(&workspace).await?),
             status: wire::MutationStatus::Committed as i32,

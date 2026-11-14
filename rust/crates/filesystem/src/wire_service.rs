@@ -293,31 +293,37 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         &self,
         reference: Option<wire::WorkspaceRef>,
     ) -> Result<Workspace<A, O>, Status> {
-        self.workspace_with_access(reference, &crate::access::Action::ALL)
-            .await
+        self.open_workspace_with_access(
+            wire::OpenWorkspaceRequest {
+                selector: reference.map(wire::open_workspace_request::Selector::Workspace),
+            },
+            &crate::access::Action::ALL,
+        )
+        .await
     }
 
     /// Resolve an already authenticated deployment request to its canonical
     /// workspace and intersect its action ceiling with persisted policy.
     /// Native consumers use this same name/identity validation as RPCs; the
     /// deployment retains its original account and revocation admission.
-    pub async fn workspace_with_access(
+    pub async fn open_workspace_with_access(
         &self,
-        reference: Option<wire::WorkspaceRef>,
+        request: wire::OpenWorkspaceRequest,
         actions: &[crate::access::Action],
     ) -> Result<Workspace<A, O>, Status> {
-        let reference = required(reference, "workspace")?;
+        let (name, expected) = match required(request.selector, "workspace selector")? {
+            wire::open_workspace_request::Selector::Name(name) => (name, None),
+            wire::open_workspace_request::Selector::Workspace(reference) => {
+                (reference.name, Some(reference.workspace_id))
+            }
+        };
         let workspace = self
             .filesystem
-            .open_workspace(
-                &reference.name,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
+            .open_workspace(&name, WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
             .map_err(|failure| status(&failure.error))?
             .value;
-        if workspace.id().into_bytes().as_slice() != reference.workspace_id {
+        if expected.is_some_and(|expected| workspace.id().into_bytes().as_slice() != expected) {
             return Err(Status::failed_precondition(
                 "workspace name and identity disagree",
             ));
