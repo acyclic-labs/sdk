@@ -127,7 +127,11 @@ async fn concurrent_original_publications_have_no_default_credit_ceiling()
         original.push(recorder.submit_start(request())?);
     }
     for span in original {
-        span.finish(Some(0), Outcome::Succeeded).await?;
+        let terminal = span.finish_submitted(Some(0), Outcome::Succeeded)?;
+        assert!(matches!(
+            terminal.result().await?,
+            Ok(AppendOutcome::Committed(_))
+        ));
     }
     assert_eq!(recorder.suppressed_spans(), 0);
     let mut query = TraceQuery::new(stream.read(0, 130).await?, Default::default());
@@ -151,12 +155,18 @@ async fn concurrent_original_publications_have_no_default_credit_ceiling()
         .ok_or("explicit credit was ignored")?;
     assert_eq!(error.category(), StreamError::Capacity);
     assert_eq!(bounded.suppressed_spans(), 1);
-    held.finish(Some(0), Outcome::Succeeded).await?;
-    bounded
+    let terminal = held.finish_submitted(Some(0), Outcome::Succeeded)?;
+    assert!(matches!(
+        terminal.result().await?,
+        Ok(AppendOutcome::Committed(_))
+    ));
+    let terminal = bounded
         .submit_start(request())?
-        .finish(Some(0), Outcome::Succeeded)
-        .await?;
-
+        .finish_submitted(Some(0), Outcome::Succeeded)?;
+    assert!(matches!(
+        terminal.result().await?,
+        Ok(AppendOutcome::Committed(_))
+    ));
     Ok(())
 }
 
