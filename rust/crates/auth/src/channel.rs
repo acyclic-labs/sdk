@@ -96,7 +96,8 @@ impl CredentialChannel {
     }
 }
 
-/// Dispatch adds no allocation to the maintained channel's future.
+/// Immediate credential checks and direct transport calls add no allocation.
+/// Waiting for a credential owner allocates one admission state.
 /// A foreign owner retains the already-ready channel until admission completes.
 pub struct CredentialDispatch(Dispatch);
 
