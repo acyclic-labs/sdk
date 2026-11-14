@@ -55,6 +55,7 @@ const HAS_GID: u8 = 4;
 const HAS_BOUNDARY: u8 = 8;
 const UNRECORDED: u8 = 32;
 const ON_RELEASE: u8 = 16;
+const ON_OWNER_EXIT: u8 = 64;
 
 /// Resource limits a request carries: every Linux limit, 0..`RLIM_NLIMITS`.
 const LIMITS: u32 = 16;
@@ -173,6 +174,7 @@ fn encode(
     environment: &BTreeMap<&OsStr, &OsStr>,
     on_release: bool,
     unrecorded: bool,
+    owner_exit: bool,
 ) -> io::Result<Option<RawFd>> {
     let identity = &command.unix;
     let flags = [
@@ -182,6 +184,7 @@ fn encode(
         (command.boundary.is_some(), HAS_BOUNDARY),
         (on_release, ON_RELEASE),
         (unrecorded, UNRECORDED),
+        (owner_exit, ON_OWNER_EXIT),
     ]
     .iter()
     .filter(|(set, _)| *set)
@@ -227,26 +230,28 @@ pub(super) fn start(
     command: &ProcessCommand,
     directory: &File,
 ) -> io::Result<(Child, io::Result<()>)> {
-    start_inner(command, Some(directory), None)
+    start_inner(command, Some(directory), None, false)
 }
 
 pub(super) fn start_with_release(
     command: &ProcessCommand,
     directory: &File,
     activity: Option<&File>,
+    owner_exit: bool,
 ) -> io::Result<(Child, io::Result<()>)> {
-    start_inner(command, Some(directory), activity)
+    start_inner(command, Some(directory), activity, owner_exit)
 }
 
 /// Uses the same supervised launch without a persistent custody record.
 pub(super) fn start_unrecorded(command: &ProcessCommand) -> io::Result<(Child, io::Result<()>)> {
-    start_inner(command, None, None)
+    start_inner(command, None, None, false)
 }
 
 fn start_inner(
     command: &ProcessCommand,
     directory: Option<&File>,
     activity: Option<&File>,
+    owner_exit: bool,
 ) -> io::Result<(Child, io::Result<()>)> {
     let identity = &command.unix;
     // The tree always leads its own group, which the warden's PID names.
@@ -315,6 +320,7 @@ fn start_inner(
         &environment,
         activity.is_some(),
         directory.is_none(),
+        owner_exit,
     )? {
         *descriptors
             .get_mut(count)
@@ -330,6 +336,12 @@ fn start_inner(
         *descriptors
             .get_mut(count)
             .ok_or(io::ErrorKind::InvalidInput)? = activity.as_raw_fd();
+        count += 1;
+    }
+    if owner_exit {
+        *descriptors
+            .get_mut(count)
+            .ok_or(io::ErrorKind::InvalidInput)? = super::owner_exit::event()?.as_raw_fd();
         count += 1;
     }
     let length = u64::try_from(message.len() - 8).map_err(|_| io::ErrorKind::InvalidInput)?;

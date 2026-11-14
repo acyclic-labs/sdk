@@ -173,6 +173,15 @@ impl HostIo {
 
     pub(super) fn stop(&self) {
         let _ = self.wake.stop();
+        // Abort before acquiring device/publication custody: a kernel
+        // notification can retain that custody while an unanswered request
+        // holds its inode lock. The external host closes the device when
+        // fusectl is unavailable.
+        if let Some(connection) = self.connection.get()
+            && let Err(error) = connection.abort()
+        {
+            tracing::error!(%error, "FUSE connection abort failed during retirement");
+        }
         // Wake the physical borrower before closing the device and its queue.
         // Other receivers observe closure through the same receive lock.
         self.device

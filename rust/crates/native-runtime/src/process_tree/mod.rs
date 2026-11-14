@@ -87,6 +87,8 @@ pub use custody::{ProcessCustody, ProcessCustodyLease};
 mod storage;
 pub use storage::{ProcessDrain, ProcessTreeIo, ProcessTreeStorage};
 #[cfg(target_os = "linux")]
+mod owner_exit;
+#[cfg(target_os = "linux")]
 mod packet_device;
 #[cfg(target_os = "linux")]
 mod packet_device_receipt;

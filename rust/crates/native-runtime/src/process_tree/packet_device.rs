@@ -11,7 +11,7 @@ use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
+use std::sync::{Condvar, Mutex, PoisonError};
 
 #[cfg(test)]
 #[path = "packet_device/tests.rs"]
@@ -67,7 +67,7 @@ impl PacketDevice {
         if capacity < 4 {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        let owner = owner_exit()?;
+        let owner = super::owner_exit::event()?;
         let control = connect()?;
         let (stream, theirs) = UnixStream::pair()?;
         let mut message = [0; 12];
@@ -131,7 +131,7 @@ impl PacketDevice {
     /// Original mount-free thread identity for real process-death proofs.
     #[cfg(feature = "test-support")]
     pub fn owner_thread_for_test() -> io::Result<u32> {
-        let original = owner_exit()?;
+        let original = super::owner_exit::event()?;
         let info = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", original.as_raw_fd()))?;
         info.lines()
             .find_map(|line| line.strip_prefix("Pid:"))
@@ -319,51 +319,6 @@ fn operation_status(status: i32) -> io::Result<()> {
         Some(errno) if errno > 0 => Err(io::Error::from_raw_os_error(errno)),
         _ => Err(io::ErrorKind::InvalidData.into()),
     }
-}
-
-fn owner_exit() -> io::Result<&'static OwnedFd> {
-    static OWNER: OnceLock<OwnedFd> = OnceLock::new();
-    static MAKING: Mutex<()> = Mutex::new(());
-    let _making = MAKING
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(owner) = OWNER.get() {
-        return Ok(owner);
-    }
-    let (started, ready) = std::sync::mpsc::sync_channel(1);
-    let (keep, parked) = std::sync::mpsc::channel::<()>();
-    let thread = std::thread::Builder::new()
-        .name("acyclic-device-owner".into())
-        .spawn(move || {
-            // This thread never accesses a volume. SIGKILL therefore ends it even
-            // while another thread is waiting uninterruptibly on its own mount.
-            // SAFETY: gettid has no arguments; pidfd_open transfers a fresh fd.
-            let tid = unsafe { libc::syscall(libc::SYS_gettid) };
-            let file = unsafe { libc::syscall(libc::SYS_pidfd_open, tid, libc::PIDFD_THREAD) };
-            let result = if file < 0 {
-                Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    format!(
-                        "thread pidfd required for packet-device owner death: {}",
-                        io::Error::last_os_error()
-                    ),
-                ))
-            } else {
-                // SAFETY: pidfd_open returned this fresh descriptor.
-                Ok(unsafe { OwnedFd::from_raw_fd(file as i32) })
-            };
-            if started.send(result).is_ok() {
-                let _ = parked.recv();
-            }
-        })?;
-    let descriptor = ready
-        .recv()
-        .map_err(|_| io::Error::other("device owner thread exited during admission"))??;
-    // Process lifetime owns these two handles, once per owner, never per view.
-    static LIFETIME: OnceLock<(std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>)> =
-        OnceLock::new();
-    let _ = LIFETIME.set((keep, thread));
-    Ok(OWNER.get_or_init(|| descriptor))
 }
 
 fn address(path: &std::path::Path) -> io::Result<(libc::sockaddr_un, libc::socklen_t)> {

@@ -5,7 +5,7 @@ use core::ffi::{CStr, c_char};
 use sys::{Errno, Fd, Pid};
 
 /// Descriptors one request carries: custody directory, reply, the owner's
-/// working directory, up to three streams and one boundary or activity handle.
+/// working directory, up to three streams, and boundary or release-event handles.
 pub(super) const DESCRIPTORS: usize = 8;
 /// Stream slots in a request.
 const NULL: u8 = 0;
@@ -18,6 +18,7 @@ const HAS_GID: u8 = 4;
 const HAS_BOUNDARY: u8 = 8;
 const UNRECORDED: u8 = 32;
 const ON_RELEASE: u8 = 16;
+const ON_OWNER_EXIT: u8 = 64;
 /// Resource limits a request carries, as soft and hard pairs.
 const LIMITS: usize = 16;
 /// The fixed fields before a request's strings: slots, flags, user, group,
@@ -122,6 +123,7 @@ pub(super) struct Spec {
     pub(super) boundary: Option<Boundary>,
     pub(super) completion_report: Fd,
     pub(super) activity: Option<Fd>,
+    pub(super) owner_exit: Option<Fd>,
 }
 
 /// Borrowed native policy in this original request's mapping. Remapping is
@@ -169,10 +171,13 @@ pub(super) fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno
     };
     // A confined request's original `here` descriptor is its bound cwd.
     // Reject a second path-based selection before any warden is created.
-    if flags & !(HAS_CWD | HAS_UID | HAS_GID | HAS_BOUNDARY | ON_RELEASE | UNRECORDED) != 0
+    if flags
+        & !(HAS_CWD | HAS_UID | HAS_GID | HAS_BOUNDARY | ON_RELEASE | UNRECORDED | ON_OWNER_EXIT)
+        != 0
         || flags & (HAS_BOUNDARY | HAS_CWD) == (HAS_BOUNDARY | HAS_CWD)
         || flags & (HAS_BOUNDARY | ON_RELEASE) == (HAS_BOUNDARY | ON_RELEASE)
         || (flags & UNRECORDED != 0 && flags & HAS_BOUNDARY == 0)
+        || (flags & ON_OWNER_EXIT != 0 && flags & ON_RELEASE == 0)
     {
         return Err(invalid);
     }
@@ -215,7 +220,16 @@ pub(super) fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno
     } else {
         None
     };
-    if received.count != next + 2 * usize::from(policy.is_some()) + usize::from(activity.is_some())
+    let owner_exit = if flags & ON_OWNER_EXIT != 0 {
+        Some(descriptor(next + usize::from(activity.is_some()))?)
+    } else {
+        None
+    };
+    if received.count
+        != next
+            + 2 * usize::from(policy.is_some())
+            + usize::from(activity.is_some())
+            + usize::from(owner_exit.is_some())
     {
         return Err(invalid);
     }
@@ -320,6 +334,7 @@ pub(super) fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno
             count,
         }),
         activity,
+        owner_exit,
     })
 }
 

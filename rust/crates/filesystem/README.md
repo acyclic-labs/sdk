@@ -28,8 +28,9 @@ select plain directories explicitly with `--workspace-mounting physical`; run
 as the task. Native mode refuses unavailable FUSE and startup failures remain
 errors; they never switch a running task to physical directories. On Linux,
 direct mounts need `/dev/fuse` and mount authority. Their stale-mount recovery
-uses `umount2(MNT_DETACH)`; owner-exit cleanup uses `umount -i -l` (internal
-kernel unmount, with filesystem helpers disabled). Neither requires fusermount.
+uses `umount2(MNT_DETACH)`; owner-exit cleanup uses `umount -i -f -l` (internal
+kernel connection abort followed by namespace detach, with filesystem helpers
+disabled). Neither requires fusermount.
 Only an unprivileged mount denied by the kernel uses the setuid FUSE helper.
 
 Linux FUSE devices and kernel sessions belong to one external mount-host process
@@ -44,7 +45,10 @@ The host watches a mount-free owner thread through a thread pidfd. Killing an
 owner therefore closes its devices even when another owner thread is blocked in
 a request to its own mount. Admission requires Linux thread-pidfd support and
 refuses unsupported kernels before mounting. Other owners keep their connections;
-the host exits after its last connection retires. Canonical OS runtime and account
+the host exits after its last connection retires. After mount publication finishes,
+owner-exit cleanup watches that same thread event instead of process-owned pipe
+closure. Direct-mount cleanup aborts outstanding requests even if the device host
+also exits during a reverse cache notification. Canonical OS runtime and account
 home directories supply trusted private admission authorities independently of
 HOME/XDG settings. Clients acquire every usable authority in fixed order and join
 any existing host before creating one, so login-directory changes cannot split

@@ -352,14 +352,36 @@ fn released(spec: &Spec, activity: Fd) -> ! {
         sys::close(CONTROL);
         report(spec.reply, STARTED, sys::getpid());
         sys::close(spec.reply);
-        let execute = released_byte(spec.directory)?;
-        loop {
-            match sys::read(activity, &mut [0; 256]) {
-                Ok(0) => break,
-                Ok(_) | Err(Errno(sys::EINTR)) => {}
-                Err(error) => return Err(error),
+        let execute = if let Some(owner) = spec.owner_exit {
+            let mut events = [
+                sys::PollFd::readable(spec.directory),
+                sys::PollFd::readable(owner),
+            ];
+            loop {
+                match sys::poll(&mut events) {
+                    Ok(_) => break,
+                    Err(Errno(sys::EINTR)) => {}
+                    Err(error) => return Err(error),
+                }
             }
-        }
+            let execute = if events[0].ready() {
+                released_byte(spec.directory)?
+            } else {
+                true
+            };
+            sys::close(owner);
+            execute
+        } else {
+            let execute = released_byte(spec.directory)?;
+            loop {
+                match sys::read(activity, &mut [0; 256]) {
+                    Ok(0) => break,
+                    Ok(_) | Err(Errno(sys::EINTR)) => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            execute
+        };
         sys::close(spec.directory);
         sys::close(activity);
         if execute {

@@ -55,10 +55,10 @@ impl InstanceState {
     fn detach(&mut self, path: &std::ffi::CStr, root: &Path) -> bool {
         let mut detached = !self.mount.needs_unmount();
         if !detached {
-            let result = self.mount.stop(path);
             if let Some(device) = self.device.as_ref() {
                 device.stop();
             }
+            let result = self.mount.stop(path);
             match result {
                 Ok(()) => {
                     // Namespace removal is accepted even while a held file

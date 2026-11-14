@@ -34,6 +34,25 @@ impl ProcessExitAction {
     /// Admits `command` and waits for its original runner acknowledgement.
     /// Failure precedes the caller's external effect. No shell is involved.
     pub fn spawn(command: &ProcessCommand, meter: &Arc<dyn NativeReadMeter>) -> io::Result<Self> {
+        Self::spawn_inner(command, meter, false)
+    }
+
+    /// Runs after explicit release or the mount-free owner thread's exit,
+    /// even if other owner threads remain blocked in kernel requests.
+    /// All external producers must already have finished; this action cannot
+    /// admit activity descriptors. Arm it before publishing access to a resource.
+    pub fn spawn_on_owner_exit(
+        command: &ProcessCommand,
+        meter: &Arc<dyn NativeReadMeter>,
+    ) -> io::Result<Self> {
+        Self::spawn_inner(command, meter, true)
+    }
+
+    fn spawn_inner(
+        command: &ProcessCommand,
+        meter: &Arc<dyn NativeReadMeter>,
+        owner_exit: bool,
+    ) -> io::Result<Self> {
         if command.boundary.is_some()
             || [&command.stdin, &command.stdout, &command.stderr]
                 .into_iter()
@@ -74,13 +93,14 @@ impl ProcessExitAction {
                     command,
                     &File::from(released),
                     Some(&File::from(producers)),
+                    owner_exit,
                 )
             },
         )?;
         let (child, admitted) = started?;
         let action = Self {
             release: Some(release.into()),
-            activity: Some(activity.into()),
+            activity: (!owner_exit).then(|| activity.into()),
             child,
             cancel: Some(cancel),
             cancel_byte: Some(cancel_byte),

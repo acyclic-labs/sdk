@@ -433,7 +433,7 @@ fn killed_owner_with_pending_request_retires_without_fusectl()
             }
             return controller(&root);
         }
-        return pending_owner(&root, case == "old");
+        return pending_owner(&root, case == "embedded");
     }
     let temporary = tempfile::tempdir()?;
     let output = Command::new("unshare")
@@ -476,7 +476,7 @@ fn transport(session: &crate::NativeMountSession) -> Arc<super::super::host_io::
     )
 }
 
-fn pending_owner(root: &Path, old: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn pending_owner(root: &Path, embedded: bool) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{Read, Write};
     use std::os::fd::BorrowedFd;
     crate::initialize_native_mount_services()?;
@@ -494,7 +494,7 @@ fn pending_owner(root: &Path, old: bool) -> Result<(), Box<dyn std::error::Error
         released: Mutex::new(released),
     });
     let start = || mount(source, volume_id, root);
-    let mut session = if old {
+    let mut session = if embedded {
         super::super::mount::in_process_negative_control(start)
     } else {
         start()
@@ -507,8 +507,8 @@ fn pending_owner(root: &Path, old: bool) -> Result<(), Box<dyn std::error::Error
         .count();
     assert_eq!(
         devices,
-        usize::from(old),
-        "only the old-path control may retain the mounted FUSE device"
+        usize::from(embedded),
+        "only the embedded-path control may retain the mounted FUSE device"
     );
     let device = session
         .native_root_identity()
@@ -543,7 +543,7 @@ fn pending_owner(root: &Path, old: bool) -> Result<(), Box<dyn std::error::Error
     // possible until the producer is released; no wall clock creates this cut.
     let observed = pending.recv();
     let io = observed.map_err(std::io::Error::other).and_then(|()| {
-        if !old {
+        if !embedded {
             let transport = transport(&session);
             let parent = session
                 .driver
@@ -631,7 +631,7 @@ fn controller(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     use std::os::{fd::OwnedFd, unix::net::UnixStream};
     use std::process::{Command, Stdio};
     crate::initialize_native_mount_services()?;
-    for (case, (old, keep_survivor, kill_host)) in [
+    for (case, (embedded, keep_survivor, kill_host)) in [
         (false, false, false),
         (false, true, false),
         (false, false, true),
@@ -651,7 +651,7 @@ fn controller(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
         control.set_read_timeout(Some(Duration::from_secs(5)))?;
         let child = Command::new("/proc/self/exe")
             .args([OWNER_TEST, "--exact", "--nocapture"])
-            .env(OWNER_CASE, if old { "old" } else { "hosted" })
+            .env(OWNER_CASE, if embedded { "embedded" } else { "hosted" })
             .env(OWNER_ROOT, &owner_root)
             .stdin(Stdio::from(OwnedFd::from(input)))
             .spawn()?;
@@ -679,7 +679,7 @@ fn controller(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
             u32::try_from(info[0])?
         };
         let host_exit = process_event(host_id, false)?;
-        if old {
+        if embedded {
             assert_eq!(info[0], 0);
         } else {
             assert_eq!(
@@ -706,22 +706,6 @@ fn controller(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
         }
         child.kill()?;
         wait_exit(&thread_exit)?;
-        if old {
-            // The original device is still owned by the killed process's
-            // blocked caller, even though its mount-free thread has exited.
-            assert!(
-                child.try_wait()?.is_none(),
-                "old-path negative control exited before its pending request was answered"
-            );
-            let waiting: u64 = std::fs::read_to_string(connection.join("waiting"))?
-                .trim()
-                .parse()?;
-            assert!(
-                waiting > 0,
-                "negative control lost the actual unanswered kernel request"
-            );
-            std::fs::write(connection.join("abort"), b"1")?;
-        }
         let exited = acyclic_native_runtime::wait_child_until(
             &mut child,
             std::time::Instant::now() + Duration::from_secs(5),
@@ -752,7 +736,7 @@ fn controller(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// A failed proof must not strand the deliberately blocked old-path owner.
+/// A failed proof must not strand the deliberately blocked embedded-path owner.
 /// Discover its actual connection from kernel metadata even if startup failed
 /// before the child could send its information record.
 struct OwnerProcess {

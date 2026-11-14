@@ -70,11 +70,12 @@ impl FuseSessionState {
             core.stop();
             let path = std::ffi::CStr::from_bytes_with_nul(&self.path)
                 .map_err(|_| NativeMountError::FuseShutdownFailed)?;
-            let result = self.mount.stop(path);
+            // Retire the connection before unmount can wait on a request or
+            // reverse notification that still owns kernel mount resources.
             if let Some(device) = self.device.as_ref() {
                 device.stop();
             }
-            result?;
+            self.mount.stop(path)?;
         }
         if let Some(device) = self.device.as_ref() {
             started(ReadOperations.delta(1))?;

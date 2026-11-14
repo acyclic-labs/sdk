@@ -67,8 +67,18 @@ impl Mount {
     ) -> Result<(), super::NativeMountError> {
         // A privileged mount and its crash cleanup use the kernel directly.
         // In particular, do not ask fusermount to interpret a Sysbox mount.
-        self.arm_exit_action(c"/bin/umount", &["-i", "-l", "--"], path, fence, work)
-            .map_err(|error| error.during("arm kernel unmount owner-exit action", path))?;
+        // Force invokes FUSE's umount_begin connection abort before namespace
+        // detach. Closing a device cannot abort a notification syscall that
+        // still borrows it while waiting for a request's directory lock.
+        self.arm_exit_action(
+            c"/bin/umount",
+            &["-i", "-f", "-l", "--"],
+            path,
+            fence,
+            work,
+            false,
+        )
+        .map_err(|error| error.during("arm kernel unmount owner-exit action", path))?;
         self.phase = MountPhase::Mounted;
         let directory = File::open(path).map_err(|error| {
             super::NativeMountError::host_operation("open mountpoint before mount", path, error)
@@ -97,6 +107,14 @@ impl Mount {
         if tests::in_process() {
             tests::mount_in_process(path, writable, &file, mode)?;
             *device = Some(Device::InProcess(file));
+            self.arm_exit_action(
+                c"/bin/umount",
+                &["-i", "-f", "-l", "--"],
+                path,
+                fence,
+                work,
+                true,
+            )?;
             return Ok(());
         }
         let funded = super::host_io::fund_device(work)?;
@@ -114,6 +132,16 @@ impl Mount {
                     allocation: funded.allocation,
                     maximum_write: funded.maximum_write,
                 });
+                // The physical mount is complete; no producer can mount late.
+                // Follow owner death before any kernel callback is admitted.
+                self.arm_exit_action(
+                    c"/bin/umount",
+                    &["-i", "-f", "-l", "--"],
+                    path,
+                    fence,
+                    work,
+                    true,
+                )?;
                 return Ok(());
             }
             Err(error) if error.raw_os_error() == Some(libc::EPERM) => {}
@@ -138,10 +166,11 @@ impl Mount {
         })?;
         let program = program()?;
         self.program = Some(program);
-        self.arm_exit_action(program, &["-u", "-q", "-z", "--"], path, fence, work)
+        self.arm_exit_action(program, &["-u", "-q", "-z", "--"], path, fence, work, false)
             .map_err(|error| error.during("arm unprivileged FUSE owner-exit action", path))?;
         self.open_helper(program, path, writable, device, work)
-            .map_err(|error| error.during("mount FUSE via unprivileged helper", path))
+            .map_err(|error| error.during("mount FUSE via unprivileged helper", path))?;
+        self.arm_exit_action(program, &["-u", "-q", "-z", "--"], path, fence, work, true)
     }
 
     fn arm_exit_action(
@@ -151,6 +180,7 @@ impl Mount {
         path: &Path,
         fence: &File,
         work: &crate::NativeMaterializationWork,
+        owner_exit: bool,
     ) -> Result<(), super::NativeMountError> {
         let mut cleanup = acyclic_native_runtime::ProcessCommand::new(std::ffi::OsStr::from_bytes(
             program.to_bytes(),
@@ -164,10 +194,17 @@ impl Mount {
             .stdin(fence.try_clone()?)
             .stdout(acyclic_native_runtime::ProcessStdio::null())
             .stderr(acyclic_native_runtime::ProcessStdio::null());
-        self.exit_action = Some(acyclic_native_runtime::ProcessExitAction::spawn(
-            &cleanup,
-            &work.runtime_meter(),
-        )?);
+        let action = if owner_exit {
+            acyclic_native_runtime::ProcessExitAction::spawn_on_owner_exit(
+                &cleanup,
+                &work.runtime_meter(),
+            )?
+        } else {
+            acyclic_native_runtime::ProcessExitAction::spawn(&cleanup, &work.runtime_meter())?
+        };
+        if let Some(mut previous) = self.exit_action.replace(action) {
+            previous.cancel()?;
+        }
         Ok(())
     }
 
