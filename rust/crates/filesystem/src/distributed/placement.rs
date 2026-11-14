@@ -10,6 +10,7 @@ use super::*;
 pub struct AuthorityPlacement {
     authorities: Box<[u8]>,
     operations: Box<[u8]>,
+    operation_parent: StreamPath,
     parent: StreamPath,
     key_scope: Box<[u8]>,
     actor_scope: [u8; 16],
@@ -27,7 +28,8 @@ impl AuthorityPlacement {
                 "authority placement root is not canonical",
             ));
         }
-        StreamPath::new(format!("{root}/operations")).map_err(map_stream_error)?;
+        let operation_parent =
+            StreamPath::new(format!("{root}/operations")).map_err(map_stream_error)?;
         // Store-generated retry keys and actor registries are scoped by a
         // fixed-size placement id, a digest of the root, so separate placements
         // on one provider never share a key or a cached head, and every root
@@ -53,6 +55,7 @@ impl AuthorityPlacement {
                 .into_bytes()
                 .into_boxed_slice(),
             parent,
+            operation_parent,
             key_scope,
             actor_scope,
         })
@@ -80,6 +83,10 @@ impl AuthorityPlacement {
 
     pub(super) fn operations_prefix(&self) -> &[u8] {
         &self.operations
+    }
+
+    pub(super) fn operation_parent(&self) -> &StreamPath {
+        &self.operation_parent
     }
 
     /// Exact Stream path of one authority stream in this placement.

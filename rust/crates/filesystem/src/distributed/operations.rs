@@ -55,6 +55,68 @@ impl OperationRecordProof {
 }
 
 impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
+    /// An ephemeral commit may adopt new locator leaves, but cannot create
+    /// their durable parent outside its lease. Establish that namespace once
+    /// per shared store, including stores with only first-record authorities.
+    /// The conditional marker also admits concurrent cold owners without a
+    /// retry, an authority rewrite, or a format-dependent upgrade path.
+    pub(super) async fn ensure_operation_parent(
+        &self,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(), AuthorityStoreError> {
+        work.check()?;
+        self.operation_parent
+            .get_or_try_init(|| async {
+                let path = work.own_path(self.placement.operation_parent().as_str())?;
+                match self.tail(path.clone(), work).await {
+                    Ok(_) => return Ok(()),
+                    Err(error) if authority_missing(&error) => {}
+                    Err(error) => return Err(error),
+                }
+                let mut conditions = work.vec(1)?;
+                conditions.push(CommitCondition::Absent { path: path.clone() });
+                let mut mutations = work.vec(1)?;
+                work.append_record(
+                    &mut mutations,
+                    path,
+                    [acyclic_stream::OwnedBytes::from_static(
+                        b"acyclic-fs-operation-parent-v1\0",
+                    )],
+                )?;
+                let request = CommitRequest {
+                    effects: crate::distributed::composition::funded_effect(
+                        acyclic_stream::CommitEffect {
+                            conditions,
+                            mutations,
+                            soft: true,
+                        },
+                        work,
+                    )?,
+                    idempotency_key: work.key(
+                        self.placement.key_scope(),
+                        b"operation-parent-v1\0",
+                        &[],
+                    )?,
+                    deadline_unix_millis: None,
+                };
+                let outcome = self
+                    .commit(request, None, work, None::<&mut ()>)
+                    .await
+                    .map_err(|error| error.into_error(std::convert::identity))?;
+                if !work.is_native() {
+                    work.release_request()?;
+                }
+                match outcome.0 {
+                    CommitOutcome::Committed(_) => Ok(()),
+                    CommitOutcome::Conflict(_) => Err(AuthorityStoreError::RejectedStatic(
+                        "operation parent initialization conflicted without a hard condition",
+                    )),
+                }
+            })
+            .await?;
+        work.check()
+    }
+
     pub(super) async fn verify_recovered_operation(
         &self,
         authority: AuthorityId,

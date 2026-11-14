@@ -61,6 +61,7 @@ impl<P: acyclic_stream::StreamProvider + ?Sized> AuthorityProvider for P {}
 pub struct StreamAuthorityStore<P: ?Sized> {
     provider: Arc<P>,
     placement: Arc<AuthorityPlacement>,
+    operation_parent: Arc<tokio::sync::OnceCell<()>>,
 }
 
 impl<P: ?Sized> Clone for StreamAuthorityStore<P> {
@@ -68,6 +69,7 @@ impl<P: ?Sized> Clone for StreamAuthorityStore<P> {
         Self {
             provider: Arc::clone(&self.provider),
             placement: Arc::clone(&self.placement),
+            operation_parent: Arc::clone(&self.operation_parent),
         }
     }
 }
@@ -85,6 +87,7 @@ impl<P: ?Sized> StreamAuthorityStore<P> {
         Self {
             provider,
             placement: Arc::new(placement),
+            operation_parent: Arc::new(tokio::sync::OnceCell::new()),
         }
     }
 

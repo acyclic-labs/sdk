@@ -11,6 +11,120 @@ fn fork() -> WorkspaceForkCommit {
 }
 
 #[tokio::test]
+async fn private_forks_bootstrap_the_operation_parent_before_leasing_after_reopen() -> TestResult {
+    fn creation(
+        store: &StreamAuthorityStore<MemoryStream>,
+        id: u8,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<CommitRequest, AuthorityStoreError> {
+        let mut request = CommitRequest {
+            deadline_unix_millis: None,
+            idempotency_key: IdempotencyKey::unique(),
+            effects: crate::distributed::composition::funded_effect(
+                acyclic_stream::CommitEffect::hard(work.vec(10)?, work.vec(10)?),
+                work,
+            )?,
+        };
+        store.creation_request(
+            &mut request,
+            AuthorityId::from_bytes([id; 16]),
+            Epoch::GENESIS,
+            Some(&proposed(id)),
+            None,
+            work,
+        )?;
+        Ok(request)
+    }
+    for native in [false, true] {
+        let stream = Arc::new(MemoryStream::default());
+        let store = StreamAuthorityStore::new(stream.clone());
+        let token = CancellationToken::new();
+        let mut setup = AuthorityWork::new(BUDGET, &token);
+        // The original creation had no locator. Persist that exact namespace
+        // shape, then reopen it without performing a later authority write.
+        let mut request = creation(&store, 70, &mut setup)?;
+        let parent = store.placement.operation_parent().clone();
+        for effect in &mut request.effects {
+            effect
+                .conditions
+                .retain(|condition| condition.path().parent().as_ref() != Some(&parent));
+            effect
+                .mutations
+                .retain(|mutation| mutation.path().parent().as_ref() != Some(&parent));
+        }
+        assert!(matches!(
+            stream.commit(request).await?,
+            CommitOutcome::Committed(_)
+        ));
+        setup.release_request()?;
+        assert_eq!(
+            stream.tail(parent.clone()).await,
+            Err(StreamError::NotFound)
+        );
+
+        // Negative control: the former lease-then-create ordering cannot
+        // publish a new locator whose durable parent is still absent.
+        let root = store
+            .placement
+            .stream_path(AuthorityId::from_bytes([71; 16]), "")?;
+        let lease = stream.lease_ephemeral(root).await?;
+        assert_eq!(
+            stream.commit(creation(&store, 71, &mut setup)?).await,
+            Err(StreamError::NotFound)
+        );
+        setup.release_request()?;
+        lease.settle().await?;
+        drop(store);
+
+        let original =
+            crate::NativeMaterializationWork::new(BUDGET, &token).map_err(|(error, _)| error)?;
+        let mut work = if native {
+            AuthorityWork::native(&original, &token)
+        } else {
+            AuthorityWork::new(BUDGET, &token)
+        };
+        for id in [72, 73] {
+            let reopened = StreamAuthorityStore::new(stream.clone());
+            let authority = AuthorityId::from_bytes([id; 16]);
+            let lease = reopened
+                .ephemeral_records(
+                    crate::EphemeralForkCommit {
+                        lineage: None,
+                        destination: authority,
+                        creation: proposed(id),
+                    },
+                    &mut work,
+                )
+                .await?;
+            assert_eq!(
+                reopened.head(authority, &mut work).await?.sequence,
+                Sequence::new(1)
+            );
+            let root = lease.root().clone();
+            let locator =
+                work.operation_path(&reopened.placement, authority, proposed(id).operation_id)?;
+            assert_eq!(stream.tail(locator.clone()).await?, 1);
+            lease.settle().await?;
+            assert_eq!(stream.tail(root).await, Err(StreamError::NotFound));
+            assert_eq!(stream.tail(locator).await, Err(StreamError::NotFound));
+            assert_eq!(
+                stream.tail(parent.clone()).await?,
+                1,
+                "reopen duplicated the namespace marker"
+            );
+            assert_eq!(
+                reopened
+                    .head(AuthorityId::from_bytes([70; 16]), &mut work)
+                    .await?
+                    .sequence,
+                Sequence::new(1)
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn indexed_authority_record_size_admission_covers_creation_and_append() -> TestResult {
     let empty = crate::streams_record::BorrowedStreamsDurableRecord {
         epoch: Epoch::GENESIS,

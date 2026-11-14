@@ -577,6 +577,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         fork: crate::EphemeralForkCommit,
         work: &mut AuthorityWork<'_>,
     ) -> Result<acyclic_stream::EphemeralLease, AuthorityStoreError> {
+        self.ensure_operation_parent(work).await?;
         let actor = self.actor(fork.destination, work)?;
         let journal = actor.lease(work).await?;
         let revision = actor.begin(journal)?;
