@@ -207,9 +207,25 @@ async fn auto_staging_commit_and_machine_readable_history() {
             .execute(command, tree(2))
             .await
             .expect("restore from HEAD");
-        assert!(matches!(output,
-            GitCommandOutput::Action(GitFilesystemAction::RestorePaths { tree: source, paths })
+        let GitCommandOutput::Prepared { transition, action } = output else {
+            panic!("restore did not prepare its original transition");
+        };
+        assert!(matches!(action,
+            GitFilesystemAction::RestorePaths { tree: source, paths }
                 if source == tree(1) && paths == vec!["tracked.txt".to_owned()]
+        ));
+        assert!(matches!(
+            repository
+                .complete_transition_result(
+                    transition,
+                    &GitFilesystemResult::Applied {
+                        tree: Some(tree(1)),
+                        tracked_paths: None,
+                    },
+                )
+                .await
+                .expect("acknowledge restored paths"),
+            GitCommandOutput::NoOp
         ));
     }
 }
