@@ -287,6 +287,9 @@ pub fn durable_operation<T>(
         return work();
     };
     let _open = Open::enter(operation);
+    if operation.contains("sync") {
+        super::ledger::charge(crate::cost::Cost::Fsync, 0);
+    }
     let call = begin(context.schedule, operation, 0)?;
     let result = call.before().and_then(|()| {
         if let Some(fault) = &call.fault
