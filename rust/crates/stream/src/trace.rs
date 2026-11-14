@@ -13,9 +13,13 @@ pub(crate) use context::{inherit, is_source, records};
 #[cfg(feature = "serde")]
 pub use context::{observe, observe_outcome, observe_sync, observe_value};
 #[cfg(feature = "serde")]
+mod guard;
+#[cfg(feature = "serde")]
 mod interest;
 #[cfg(feature = "serde")]
 mod owned;
+#[cfg(feature = "serde")]
+pub use guard::{ObservedGuard, observe_guard};
 #[cfg(feature = "serde")]
 mod recorder;
 #[cfg(feature = "serde")]

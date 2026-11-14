@@ -47,8 +47,19 @@ impl JournalWrites<'_> {
         JournalWrites::Borrowed(self.mutex())
     }
 
-    pub(in crate::executor) async fn lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.mutex().lock().await
+    pub(in crate::executor) async fn lock(
+        &self,
+    ) -> acyclic_stream::trace::ObservedGuard<tokio::sync::MutexGuard<'_, ()>> {
+        acyclic_stream::trace::observe_guard(
+            acyclic_stream::trace::Request {
+                name: "harness.journal_transition_lock",
+                mechanism: acyclic_stream::trace::Mechanism::Lock,
+                parent: None,
+                guarantee: Some("exclusive_original_journal_tail_transition"),
+            },
+            self.mutex().lock(),
+        )
+        .await
     }
 }
 
