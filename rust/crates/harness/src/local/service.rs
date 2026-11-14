@@ -1187,19 +1187,21 @@ mod tests {
                 },
             ),
         );
-        let local = super::super::LocalHarness::open(
-            local_harness_config(
-                checkout.path(),
-                (
-                    Model::new("scripted".into(), "test".into(), "1".into())?,
-                    provider,
-                ),
-            )?
-            .state_directory(state_dir.path())
-            .compaction(crate::context::CompactionPolicy::Disabled)
-            .workspace_mounting(WorkspaceMounting::Physical),
-        )
-        .await?;
+        let local = Arc::new(
+            super::super::LocalHarness::open(
+                local_harness_config(
+                    checkout.path(),
+                    (
+                        Model::new("scripted".into(), "test".into(), "1".into())?,
+                        provider,
+                    ),
+                )?
+                .state_directory(state_dir.path())
+                .compaction(crate::context::CompactionPolicy::Disabled)
+                .workspace_mounting(WorkspaceMounting::Physical),
+            )
+            .await?,
+        );
         let directory = local.connect_sessions().await?;
         let parent = sessions::create(&directory, "parent", None).await?;
         let crate::client::AgentReply::Spawned { agent, .. } = parent
