@@ -807,34 +807,59 @@ impl<'io> StockExecution<'io> {
                     }
                     None => {}
                 }
-                match self
-                    .execute_tool_invocation(
-                        journal,
-                        (operation_id, step),
-                        crate::tool::RecordedInvocation {
-                            invocation: &invocation,
-                            metadata,
-                            target: if started {
-                                None // Reconciliation does not publish another start.
-                            } else {
-                                target
-                                    .map(|target| stock_string_copy(&target.name, self.io))
-                                    .transpose()?
-                            },
-                            filesystem: if started || target.is_some() {
-                                None
-                            } else {
-                                filesystem
-                            },
+                let observation = journal.trace_request(acyclic_stream::trace::Request {
+                    name: "harness.tool_invocation",
+                    mechanism: acyclic_stream::trace::Mechanism::ToolCall,
+                    parent: None,
+                    guarantee: Some("journaled_tool_effect_settlement"),
+                });
+                let execution = self.execute_tool_invocation(
+                    journal,
+                    (operation_id, step),
+                    crate::tool::RecordedInvocation {
+                        invocation: &invocation,
+                        metadata,
+                        target: if started {
+                            None // Reconciliation does not publish another start.
+                        } else {
+                            target
+                                .map(|target| stock_string_copy(&target.name, self.io))
+                                .transpose()?
                         },
-                        tool,
-                        &mut context,
-                        started,
-                        original_started_at,
-                        _hook_context,
-                    )
-                    .await?
+                        filesystem: if started || target.is_some() {
+                            None
+                        } else {
+                            filesystem
+                        },
+                    },
+                    tool,
+                    &mut context,
+                    started,
+                    original_started_at,
+                    _hook_context,
+                );
+                let (outcome, recording) =
+                    acyclic_stream::trace::OwnedRecording::accompany(observation, execution).await;
+                #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+                if let Some(recording) = recording
+                    && let Ok(value) = &outcome
                 {
+                    let result = match value {
+                        ToolInvocationOutcome::Settled(_, Some(_)) => {
+                            acyclic_stream::trace::Outcome::Succeeded
+                        }
+                        ToolInvocationOutcome::Interrupted => {
+                            acyclic_stream::trace::Outcome::Cancelled
+                        }
+                        ToolInvocationOutcome::Settled(_, None)
+                        | ToolInvocationOutcome::Pending(_)
+                        | ToolInvocationOutcome::Controlled(_) => {
+                            acyclic_stream::trace::Outcome::Unsettled
+                        }
+                    };
+                    let _completion = recording.finish_submitted(None, result);
+                }
+                match outcome? {
                     ToolInvocationOutcome::Settled(content, receipt) => (content, receipt),
                     ToolInvocationOutcome::Controlled(control) => {
                         return Ok(ExecutionProgress::Controlled(control));

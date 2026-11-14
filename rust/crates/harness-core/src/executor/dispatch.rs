@@ -201,107 +201,132 @@ impl StockExecution<'_> {
                 step,
                 request_digest,
             };
-            let _continuation_hold;
             let forced = self
                 .stock
                 .intervention
                 .as_deref()
                 .filter(|_| step == 0 && purpose == ModelPurpose::Response)
                 .and_then(crate::agent::ContinuationOverride::events);
-            let continuation = if let Some(mut events) = forced {
-                if !events.starts_with(&replayed) {
-                    return Err(Error::Conflict(
-                        "forced action differs from its journal prefix".into(),
-                    ));
-                }
-                if !started {
-                    self.claim_model_dispatch(
-                        journal,
-                        input,
-                        (step, scope, purpose_key),
-                        &request,
-                        phase,
-                    )
-                    .await?;
-                }
-                Some(events.split_off(replayed.len()))
-            } else if started {
-                self.reconcile_model_events(dispatch, &replayed).await?
+            let observation = if forced.is_none() {
+                journal.trace_request(acyclic_stream::trace::Request {
+                    name: "harness.provider_call",
+                    mechanism: acyclic_stream::trace::Mechanism::ProviderCall,
+                    parent: None,
+                    guarantee: Some("journaled_model_attempt_settlement"),
+                })
             } else {
                 None
             };
-            // Only a fresh provider generation streams; a continuation replays.
-            let live = publish_reply && continuation.is_none() && purpose == ModelPurpose::Response;
-            let mut clock = super::model_usage::CallClock::unknown();
-            let (stream, source) = if let Some(continuation) = continuation {
-                {
-                    _continuation_hold = self.hold_continuation(&continuation)?;
-                }
-                (Either::Left(continuation.into_iter()), None)
-            } else {
-                {
-                    _continuation_hold = None;
-                }
-                if started {
-                    return Err(self.unreconciled_attempt(input.operation_id));
-                }
-                let (attempt, source) =
-                    super::phase::claim(super::phase::Publication::ModelDispatch.observe(
-                        input.operation_id,
-                        step,
+            let execution = async {
+                let _continuation_hold;
+                let continuation = if let Some(mut events) = forced {
+                    if !events.starts_with(&replayed) {
+                        return Err(Error::Conflict(
+                            "forced action differs from its journal prefix".into(),
+                        ));
+                    }
+                    if !started {
                         self.claim_model_dispatch(
                             journal,
                             input,
                             (step, scope, purpose_key),
                             &request,
                             phase,
-                        ),
-                    ))
-                    .await?;
-                clock.start();
-                #[cfg(not(target_arch = "wasm32"))]
-                let generated = if let Some(work) = self.native_work() {
-                    Either::Right(
-                        attempt
-                            .generate_native(
-                                self.selected_provider().as_ref(),
-                                &request,
-                                dispatch,
-                                work,
-                            )?
-                            .await?
-                            .map(|result| stock_admit_model_event(result, self.io)),
-                    )
+                        )
+                        .await?;
+                    }
+                    Some(events.split_off(replayed.len()))
+                } else if started {
+                    self.reconcile_model_events(dispatch, &replayed).await?
                 } else {
-                    Either::Left(attempt.generate(
-                        self.selected_provider().as_ref(),
-                        &request,
-                        dispatch,
-                    ))
+                    None
                 };
-                #[cfg(target_arch = "wasm32")]
-                let generated =
-                    attempt.generate(self.selected_provider().as_ref(), &request, dispatch);
-                (Either::Right(generated), live.then_some(source))
+                // Only a fresh provider generation streams; a continuation replays.
+                let live = publish_reply && continuation.is_none() && purpose == ModelPurpose::Response;
+                let mut clock = super::model_usage::CallClock::unknown();
+                let (stream, source) = if let Some(continuation) = continuation {
+                    {
+                        _continuation_hold = self.hold_continuation(&continuation)?;
+                    }
+                    (Either::Left(continuation.into_iter()), None)
+                } else {
+                    {
+                        _continuation_hold = None;
+                    }
+                    if started {
+                        return Err(self.unreconciled_attempt(input.operation_id));
+                    }
+                    let (attempt, source) =
+                        super::phase::claim(super::phase::Publication::ModelDispatch.observe(
+                            input.operation_id,
+                            step,
+                            self.claim_model_dispatch(
+                                journal,
+                                input,
+                                (step, scope, purpose_key),
+                                &request,
+                                phase,
+                            ),
+                        ))
+                        .await?;
+                    clock.start();
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let generated = if let Some(work) = self.native_work() {
+                        Either::Right(
+                            attempt
+                                .generate_native(
+                                    self.selected_provider().as_ref(),
+                                    &request,
+                                    dispatch,
+                                    work,
+                                )?
+                                .await?
+                                .map(|result| stock_admit_model_event(result, self.io)),
+                        )
+                    } else {
+                        Either::Left(attempt.generate(
+                            self.selected_provider().as_ref(),
+                            &request,
+                            dispatch,
+                        ))
+                    };
+                    #[cfg(target_arch = "wasm32")]
+                    let generated =
+                        attempt.generate(self.selected_provider().as_ref(), &request, dispatch);
+                    (Either::Right(generated), live.then_some(source))
+                };
+                let observed = self
+                    .record_model_events(
+                        journal,
+                        ObservedCall {
+                            operation_id: input.operation_id,
+                            dispatch,
+                            model: &request.request().model,
+                            sampling: request.request().sampling,
+                            purpose,
+                            clock,
+                        },
+                        stock_active_model_events(replayed, io)?,
+                        &mut admission,
+                        (stream, source),
+                        #[cfg(feature = "research")]
+                        phase,
+                    )
+                    .await?;
+                Ok::<_, Error>(observed)
             };
-            let observed = self
-                .record_model_events(
-                    journal,
-                    ObservedCall {
-                        operation_id: input.operation_id,
-                        dispatch,
-                        model: &request.request().model,
-                        sampling: request.request().sampling,
-                        purpose,
-                        clock,
-                    },
-                    stock_active_model_events(replayed, io)?,
-                    &mut admission,
-                    (stream, source),
-                    #[cfg(feature = "research")]
-                    phase,
-                )
-                .await?;
+            let (observed, recording) =
+                acyclic_stream::trace::OwnedRecording::accompany(observation, execution).await;
+            let observed = observed?;
+            #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+            if let Some(recording) = recording {
+                let outcome = if admission.completed {
+                    acyclic_stream::trace::Outcome::Succeeded
+                } else {
+                    acyclic_stream::trace::Outcome::Unsettled
+                };
+                let _completion = recording.finish_submitted(None, outcome);
+            }
             if purpose == ModelPurpose::Response && admission.completed {
                 self.retain_response_request(journal, input, step, prior_messages.len(), request)
                     .await?;
@@ -310,6 +335,38 @@ impl StockExecution<'_> {
             Ok(observed)
         })?
         .await
+    }
+
+    /// Diagnostic admission cannot delay the original provider event.
+    async fn wait_provider_event(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation: OperationId,
+        event: impl std::future::Future<Output = Option<Result<ModelEvent>>>,
+    ) -> Option<Result<ModelEvent>> {
+        let observation = journal.trace_request(acyclic_stream::trace::Request {
+            name: "harness.provider_event_wait",
+            mechanism: acyclic_stream::trace::Mechanism::Wait,
+            parent: None,
+            guarantee: Some("provider_event_delivery"),
+        });
+        let (next, recording) = acyclic_stream::trace::OwnedRecording::accompany(
+            observation,
+            crate::obs::waiting("provider-event", operation, event),
+        )
+        .await;
+        #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+        if let Some(recording) = recording {
+            let outcome = match &next {
+                Some(Ok(_)) => Some(acyclic_stream::trace::Outcome::Succeeded),
+                None => Some(acyclic_stream::trace::Outcome::Unsettled),
+                Some(Err(_)) => None,
+            };
+            if let Some(outcome) = outcome {
+                let _completion = recording.finish_submitted(None, outcome);
+            }
+        }
+        next
     }
 
     async fn prepare_dispatch_step(
@@ -609,7 +666,7 @@ impl StockExecution<'_> {
                 let next = match &mut stream {
                     Either::Left(continuation) => continuation.next().map(Ok),
                     Either::Right(stream) => {
-                        crate::obs::waiting("provider-event", operation_id, stream.next()).await
+                        self.wait_provider_event(journal, operation_id, stream.next()).await
                     }
                 };
                 let Some(event) = next else {
