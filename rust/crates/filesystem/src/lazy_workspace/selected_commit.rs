@@ -41,7 +41,7 @@ impl<
             return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
         };
         ctx.charge(WorkCounters {
-            bytes_hashed: LazySnapshotRef::hash_bytes(publication.generation),
+            bytes_hashed: LazySnapshotRef::hash_bytes(publication.generation, &cut.source),
             ..WorkCounters::UNCHARGED
         })?;
         Ok((
@@ -139,8 +139,8 @@ impl<
                 return Err(LazyWorkspaceError::StaleIdentity);
             }
             if let NativeSnapshotContext::Lazy(cut) | NativeSnapshotContext::Selected { cut, .. } =
-                context
-                && cut.source.identity != self.source.reference().identity
+                &context
+                && cut.source.identity != self.source.identity()
             {
                 return Err(LazyWorkspaceError::StaleIdentity);
             }
@@ -205,7 +205,7 @@ impl<
             revision: revision.checked_add(1).ok_or(crate::WorkError::Overflow)?,
             pending_remove: None,
             selected_import_roots: Some([
-                (snapshot, self.workspace.volume.config),
+                (snapshot.clone(), self.workspace.volume.config),
                 (destination, self.workspace.volume.config),
                 (source, config),
             ]),

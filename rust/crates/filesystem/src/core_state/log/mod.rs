@@ -90,17 +90,24 @@ impl CoreLog {
             native_records::check(work, cancellation.unwrap_or(work.cancellation()))?;
         }
         if root.inspection {
-            return records::read_recoverable_mode::<Option<T>>(&paths, false).map(|value| {
-                value.and_then(|(value, allocation)| value.map(|value| (value, allocation)))
-            });
+            let mut decoded = records::read_recoverable_mode::<Option<T>>(&paths, false)?;
+            if let Some((Some(value), Some(allocation))) = &mut decoded {
+                value.retain_decoded(allocation)?;
+            }
+            return Ok(
+                decoded.and_then(|(value, allocation)| value.map(|value| (value, allocation)))
+            );
         }
-        let value = match work {
+        let mut value = match work {
             Some(work) => read_file::<Option<T>>(&paths.current, work, maximum_bytes)?
                 .and_then(|(value, allocation)| value.map(|value| (value, Some(allocation)))),
             None => read_json::<Option<T>>(&paths.current, maximum_bytes)?
                 .flatten()
                 .map(|value| (value, None)),
         };
+        if let Some((value, Some(allocation))) = &mut value {
+            value.retain_decoded(allocation)?;
+        }
         let (value, allocation) = match value {
             Some((value, allocation)) => (Some(value.into_value()), allocation),
             None => (

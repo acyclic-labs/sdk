@@ -324,7 +324,7 @@ async fn workspace_wait_follows_branch_commits_and_checkout_changes() -> TestRes
             path: "",
             generation: None,
             after_generation: after,
-            after_name: None,
+            after: None,
             maximum_entries: 8,
         }
     }
@@ -368,9 +368,9 @@ async fn workspace_wait_follows_branch_commits_and_checkout_changes() -> TestRes
         .write_text("/before-wait", "initial branch file")
         .await?;
     eprintln!("branch-wait: initial branch file published without a pending query");
-    let selected = bound.directory_page(&agent, query(None)).await?;
+    let selected = bound.directory_page(&agent, query(None), None).await?;
     eprintln!("branch-wait: original branch directory selected");
-    let waiting = bound.directory_page(&agent, query(Some(&selected.generation)));
+    let waiting = bound.directory_page(&agent, query(Some(&selected.generation)), None);
     futures::pin_mut!(waiting);
     assert!(futures::poll!(waiting.as_mut()).is_pending());
     eprintln!("branch-wait: directory pending; publishing branch file");
@@ -387,7 +387,7 @@ async fn workspace_wait_follows_branch_commits_and_checkout_changes() -> TestRes
             .iter()
             .any(|entry| entry.name == "branch-only")
     );
-    let waiting = bound.directory_page(&agent, query(Some(&changed.generation)));
+    let waiting = bound.directory_page(&agent, query(Some(&changed.generation)), None);
     futures::pin_mut!(waiting);
     assert!(futures::poll!(waiting.as_mut()).is_pending());
     // Switching back changes no volume's publication stream. Only the original
@@ -465,10 +465,10 @@ async fn workspace_queries_keep_subdirectory_read_grants_without_widening_them()
         path,
         generation: Some(&generation),
         after_generation: None,
-        after_name: None,
+        after: None,
         maximum_entries: 4,
     };
-    let page = bound.directory_page(&root, query("ui")).await?;
+    let page = bound.directory_page(&root, query("ui"), None).await?;
     assert_eq!(page.entries[0].name, "title");
     let (bytes, _) = bound
         .read_path(
@@ -484,7 +484,12 @@ async fn workspace_queries_keep_subdirectory_read_grants_without_widening_them()
         .await?;
     assert_eq!(bytes.as_slice(), b"scoped title");
     for path in ["", "outside", "ui/../outside"] {
-        assert!(bound.directory_page(&root, query(path)).await.is_err());
+        assert!(
+            bound
+                .directory_page(&root, query(path), None)
+                .await
+                .is_err()
+        );
         assert!(
             bound
                 .read_path(

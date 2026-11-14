@@ -40,21 +40,22 @@ pub const MAX_READ_BYTES: u64 = 32 * 1024;
 /// returns a page; the cursor binds the exact query, authorization and cut.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-pub struct AgentPageRequest {
+pub struct AgentPageRequest<C = String> {
     items: u32,
     bytes: u32,
-    cursor: Option<String>,
+    cursor: Option<C>,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PageWire {
+#[serde(bound(deserialize = "C: Deserialize<'de>"))]
+struct PageWire<C> {
     #[serde(default = "default_items")]
     items: u32,
     #[serde(default = "default_bytes")]
     bytes: u32,
     #[serde(default)]
-    cursor: Option<String>,
+    cursor: Option<C>,
 }
 
 const fn default_items() -> u32 {
@@ -65,7 +66,7 @@ const fn default_bytes() -> u32 {
     32 * 1024
 }
 
-impl Default for AgentPageRequest {
+impl<C> Default for AgentPageRequest<C> {
     fn default() -> Self {
         Self {
             items: default_items(),
@@ -75,10 +76,18 @@ impl Default for AgentPageRequest {
     }
 }
 
-impl AgentPageRequest {
+impl<C> AgentPageRequest<C> {
     /// Validate finite page ceilings and retain the host's opaque cursor intact.
-    pub fn new(items: u32, bytes: u32, cursor: Option<String>) -> Result<Self, CommandError> {
-        if items == 0 || bytes == 0 || cursor.as_ref().is_some_and(|cursor| cursor.is_empty()) {
+    pub fn new(items: u32, bytes: u32, cursor: Option<C>) -> Result<Self, CommandError>
+    where
+        C: AsRef<[u8]>,
+    {
+        if items == 0
+            || bytes == 0
+            || cursor
+                .as_ref()
+                .is_some_and(|cursor| cursor.as_ref().is_empty())
+        {
             return Err(CommandError::Capacity);
         }
         Ok(Self {
@@ -102,20 +111,23 @@ impl AgentPageRequest {
 
     /// Host-owned exclusive continuation; the client never edits it.
     #[must_use]
-    pub fn cursor(&self) -> Option<&str> {
+    pub fn cursor(&self) -> Option<&C::Target>
+    where
+        C: std::ops::Deref,
+    {
         self.cursor.as_deref()
     }
 }
 
-impl TryFrom<PageWire> for AgentPageRequest {
+impl<C: AsRef<[u8]>> TryFrom<PageWire<C>> for AgentPageRequest<C> {
     type Error = CommandError;
 
-    fn try_from(page: PageWire) -> Result<Self, Self::Error> {
+    fn try_from(page: PageWire<C>) -> Result<Self, Self::Error> {
         Self::new(page.items, page.bytes, page.cursor)
     }
 }
 
-impl<'de> Deserialize<'de> for AgentPageRequest {
+impl<'de, C: Deserialize<'de> + AsRef<[u8]>> Deserialize<'de> for AgentPageRequest<C> {
     fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
         Self::try_from(PageWire::deserialize(decoder)?).map_err(serde::de::Error::custom)
     }
@@ -555,8 +567,8 @@ pub enum AgentCommand {
             tsify(type = "WasmResourceRefWire & { kind: 'generation' } | undefined")
         )]
         after_generation: Option<GenerationRef>,
-        /// Shared row/byte credit; its cursor is the preceding page's last name.
-        page: AgentPageRequest,
+        /// Shared row/byte credit and the preceding page's opaque continuation.
+        page: AgentPageRequest<Vec<u8>>,
     },
     /// A bounded projection of an original input's committed call admissions and
     /// completions, read through its agent's original private grant.
@@ -819,12 +831,6 @@ impl AgentCommand {
                     generation
                         .validate(&mut None)
                         .map_err(|_| CommandError::Invalid)?;
-                }
-                if let Some(after) = page.cursor() {
-                    validate_content_path(after, &mut None).map_err(|_| CommandError::Invalid)?;
-                    if after.contains('/') {
-                        return Err(CommandError::Invalid);
-                    }
                 }
                 Ok(())
             }
@@ -1148,7 +1154,7 @@ mod tests {
 
     #[test]
     fn client_cannot_assert_a_principal() {
-        let command = br#"{"kind":"cancel","agent":"harness/agents/00000000000000000000000000000001","id":"cancel-1","principal":"administrator"}"#;
+        let command = br#"{"kind":"cancel","agent":"harness/agents/00000000000000000000000000000001","id":"cancel-1","input":0,"conversation":0,"principal":"administrator"}"#;
         assert!(PreparedCommand::decode(command).is_err());
     }
 
@@ -1157,7 +1163,7 @@ mod tests {
         let original = concat!(
             "{ \"kind\" : \"cancel\", ",
             "\"agent\" : \"harness/agents/00000000000000000000000000000001\", ",
-            "\"id\" : \"cancel-1\" }"
+            "\"id\" : \"cancel-1\", \"input\" : 0, \"conversation\" : 0 }"
         )
         .as_bytes()
         .to_vec();

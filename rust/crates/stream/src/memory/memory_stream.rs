@@ -126,6 +126,11 @@ impl MemoryStream {
 
     /// Publishes this state's applied revision while the write guard is held.
     fn applied(&self, state: &State) {
+        // Bind the immutable original root before waking readers at this
+        // revision. Its persistent nodes were funded before publication.
+        if let Some(fact) = state.retained.last() {
+            fact.namespace.get_or_init(|| NamespaceCut::capture(state));
+        }
         self.revisions.advance(state.decision);
     }
     fn commit_request_digest(&self, request: &mut CommitRequest) -> Result<[u8; 32], StreamError> {

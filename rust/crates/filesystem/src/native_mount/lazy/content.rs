@@ -513,7 +513,7 @@ where
                 });
             }
             if let LazyLookup::Source { node, source } = &lookup
-                && pin.is_some_and(|pin| pin != source_content_pin(*source, node))
+                && pin.is_some_and(|pin| pin != source_content_pin(source.clone(), node))
             {
                 return Err(MountSourceError::Stale);
             }

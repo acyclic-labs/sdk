@@ -36,7 +36,7 @@ impl DiscoverySource for LazyDiscovery<'_> {
     ) -> BoxProviderFuture<'a, Result<Option<DiscoveryPage<LazySnapshotRef, LazyDirectoryCursor>>>>
     {
         Box::pin(async move {
-            let cut = revision.copied().unwrap_or(self.cut);
+            let cut = revision.unwrap_or(&self.cut);
             let mut accounting = KernelAccounting::NativeOriginal {
                 work: self.work,
                 cancellation: self.work.cancellation(),
@@ -65,11 +65,11 @@ impl DiscoverySource for LazyDiscovery<'_> {
                 };
                 entries.push(DiscoveryEntry {
                     name,
-                    kind: entry.kind.into(),
+                    kind: entry.node.into(),
                 });
             }
             Ok(Some(DiscoveryPage {
-                revision: cut,
+                revision: cut.clone(),
                 scanned,
                 entries,
                 next: page.next,
@@ -103,6 +103,20 @@ impl From<acyclic_fs::demand::SourceNodeKind> for DiscoveryKind {
             acyclic_fs::demand::SourceNodeKind::RegularFile => Self::File,
             acyclic_fs::demand::SourceNodeKind::Directory => Self::Directory,
             _ => Self::Other,
+        }
+    }
+}
+
+impl From<acyclic_fs::LazyDirectoryNode> for DiscoveryKind {
+    fn from(node: acyclic_fs::LazyDirectoryNode) -> Self {
+        use acyclic_fs::{LazyDirectoryNode, kernel::FileKind};
+        match node {
+            LazyDirectoryNode::Authored { kind, .. } => match kind {
+                FileKind::Regular => Self::File,
+                FileKind::Directory => Self::Directory,
+                _ => Self::Other,
+            },
+            LazyDirectoryNode::Source(node) => node.kind.into(),
         }
     }
 }

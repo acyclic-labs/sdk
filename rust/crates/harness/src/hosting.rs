@@ -1003,7 +1003,42 @@ where
                 page: request,
             } => {
                 let agent = self.within_tree(agent)?;
-                let mut page = self
+                let mut credit = None;
+                let mut admit = |generation: &crate::resources::GenerationRef,
+                                 entry: Option<&crate::conversation::PrivateDirectoryEntry>,
+                                 next: Option<&[u8]>|
+                 -> crate::Result<bool> {
+                    use crate::conversation::PrivateDirectoryPageView;
+                    if credit.is_none() {
+                        let end = AgentReply::Directory {
+                            page: PrivateDirectoryPageView {
+                                generation,
+                                entries: &[],
+                                next: None,
+                            },
+                        };
+                        let more = AgentReply::Directory {
+                            page: PrivateDirectoryPageView {
+                                generation,
+                                entries: &[],
+                                next: Some(&[]),
+                            },
+                        };
+                        credit = Some(PageCredit::from_envelopes(request, &end, &more)?);
+                    }
+                    let next = next
+                        .map(|next| page_json_bytes(&next).map(|bytes| bytes - 2))
+                        .transpose()?;
+                    let credit = credit
+                        .as_mut()
+                        .ok_or(Error::Record("directory credit is uninitialized"))?;
+                    match entry {
+                        Some(entry) => credit.accept(entry, next),
+                        None => credit.accept_boundary(next),
+                    }
+                    .map_err(crate::Error::from)
+                };
+                let page = self
                     .bound
                     .directory_page(
                         agent,
@@ -1012,27 +1047,12 @@ where
                             path,
                             generation: generation.as_ref(),
                             after_generation: after_generation.as_ref(),
-                            after_name: request.cursor(),
+                            after: request.cursor(),
                             maximum_entries: request.items(),
                         },
+                        Some(&mut admit),
                     )
                     .await?;
-                let empty = |has_more| AgentReply::Directory {
-                    page: crate::conversation::PrivateDirectoryPage {
-                        generation: page.generation.clone(),
-                        entries: Vec::new(),
-                        has_more,
-                    },
-                };
-                let mut credit = PageCredit::from_envelopes(request, &empty(false), &empty(true))?;
-                for (index, entry) in page.entries.iter().enumerate() {
-                    let continues = index + 1 < page.entries.len() || page.has_more;
-                    if !credit.accept(entry, continues.then_some(0))? {
-                        break;
-                    }
-                }
-                page.has_more |= credit.items < page.entries.len();
-                page.entries.truncate(credit.items);
                 Ok(AgentReply::Directory { page })
             }
             AgentCommand::Read {
@@ -1349,6 +1369,19 @@ where
                         ..
                     }
                 );
+                // The command ceiling is not a Stream request size. Return a
+                // protocol-sized chunk with the existing immutable continuation,
+                // reserving room for every row projection and the peer witness.
+                let row_heads = if peers {
+                    3
+                } else if sessions {
+                    2
+                } else {
+                    1
+                };
+                let chunk = page
+                    .items()
+                    .min((acyclic_stream::MAX_ITEMS as u32 - u32::from(peers)) / row_heads);
                 let requester = match command {
                     AgentCommand::Sessions { requester, .. } => {
                         requester.as_ref().unwrap_or(&self.root)
@@ -1398,18 +1431,20 @@ where
                 };
                 let provider = agents.provider();
                 let request = HeadsRequest {
+                    at: None,
                     retained: Default::default(),
                     durable_through: None,
                     projection: HeadProjection::Watermarks,
                     paths: Default::default(),
                     children: Some(ChildrenPageRequest {
+                        offset: 0,
                         tail_stream: None,
                         parent: Some(parent),
                         after,
                         hierarchy_version,
-                        limit: page.items(),
+                        limit: chunk,
                     }),
-                    limit: page.items(),
+                    limit: chunk,
                     at_least: Default::default(),
                 };
                 let view = match provider.heads(request.clone()).await {
@@ -1466,21 +1501,16 @@ where
                     // Status is published outside each child's fork destination.
                     // Observe its actual canonical path, at or after the page's
                     // creation cut, in one bounded view for the returned rows.
+                    let limit = u32::try_from(paths.len())
+                        .map_err(|_| Error::Stream(StreamError::Capacity))?;
                     let request = HeadsRequest {
+                        at: None,
                         retained: Default::default(),
                         durable_through: None,
                         projection: HeadProjection::History,
                         paths,
                         children: None,
-                        limit: page.items()
-                            * if peers {
-                                3
-                            } else if sessions {
-                                2
-                            } else {
-                                1
-                            }
-                            + u32::from(peers),
+                        limit,
                         at_least: RevisionCut::of(view.snapshot),
                     };
                     let statuses = provider
@@ -1594,12 +1624,14 @@ where
                 };
                 if items.is_empty()
                     && next.is_some()
-                    && !acyclic_harness_client::encoded_agent_reply_size(page_json_bytes(
-                        &AgentReply::Children {
+                    && !acyclic_harness_client::encoded_agent_reply_size(
+                        page_json_bytes(&AgentReply::<
+                            acyclic_harness_core::conversation::PrivateDirectoryPage,
+                        >::Children {
                             items: Vec::new(),
                             next: next.clone(),
-                        },
-                    )?)
+                        })?,
+                    )
                     .is_ok_and(|bytes| bytes <= u64::from(page.bytes()))
                 {
                     return Err(Error::Stream(StreamError::Capacity));
@@ -1898,10 +1930,10 @@ impl PageCredit {
         Self::from_envelopes(page, &empty(None), &empty(Some(String::new())))
     }
 
-    fn from_envelopes(
-        page: &AgentPageRequest,
-        end: &AgentReply,
-        next: &AgentReply,
+    fn from_envelopes<C>(
+        page: &AgentPageRequest<C>,
+        end: &impl serde::Serialize,
+        next: &impl serde::Serialize,
     ) -> Result<Self, Error> {
         let end_envelope = page_json_bytes(end)?;
         let maximum = u64::from(page.bytes());
@@ -1936,6 +1968,15 @@ impl PageCredit {
         Ok(true)
     }
 
+    fn accept_boundary(&self, next_bytes: Option<u64>) -> Result<bool, Error> {
+        let envelope = next_bytes.map_or(self.end_envelope, |bytes| self.next_envelope + bytes);
+        let accepted = acyclic_harness_client::encoded_agent_reply_size(self.bytes + envelope)
+            .is_ok_and(|encoded| encoded <= self.maximum);
+        if !accepted && self.items == 0 {
+            return Err(Error::Stream(StreamError::Capacity));
+        }
+        Ok(accepted)
+    }
     /// The page's row bytes with `item` appended, or `None` when it would
     /// exceed the requested credit.
     fn admits(

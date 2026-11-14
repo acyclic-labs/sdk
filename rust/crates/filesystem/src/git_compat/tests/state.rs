@@ -16,8 +16,8 @@ fn commit_identity_authenticates_every_generation_locator() {
     let tree = GitTreeRef::exact(workspace(), generation(186));
     let other = GitTreeRef::exact(workspace(), generation(187));
     let commit = GitCommit::new(
-        tree,
-        tree,
+        tree.clone(),
+        tree.clone(),
         Some(GitCaptureProof {
             fork_parent: tree,
             initial_generation: generation(186),
@@ -33,9 +33,9 @@ fn commit_identity_authenticates_every_generation_locator() {
     for field in 0..4 {
         let mut alias = commit.clone();
         match field {
-            0 => alias.tree = other,
-            1 => alias.workspace_tree = other,
-            2 => alias.capture_proof.as_mut().unwrap().fork_parent = other,
+            0 => alias.tree = other.clone(),
+            1 => alias.workspace_tree = other.clone(),
+            2 => alias.capture_proof.as_mut().unwrap().fork_parent = other.clone(),
             _ => alias.capture_proof.as_mut().unwrap().initial_generation = generation(187),
         }
         assert_ne!(alias.hash_id(), commit.id);

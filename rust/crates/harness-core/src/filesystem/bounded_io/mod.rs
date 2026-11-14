@@ -379,7 +379,7 @@ impl PreparationIo {
         }
     }
     #[inline]
-    fn account<T>(
+    pub(in crate::filesystem) fn account<T>(
         &self,
         operation: impl FnOnce(&mut KernelAccounting<'_>) -> std::result::Result<T, acyclic_fs::FsError>,
     ) -> std::result::Result<T, acyclic_fs::FsError> {
@@ -398,14 +398,14 @@ impl PreparationIo {
                 let allocations = allocations
                     .as_mut()
                     .map_err(|error| acyclic_fs::FsError::from(*error))?;
-                let before = allocations.live_bytes();
+                let before = allocations.scratch_bytes();
                 let result = operation(&mut KernelAccounting::borrowed_standalone(
                     allocations,
                     spent,
                     *budget,
                     cancellation,
                 ));
-                let after = allocations.live_bytes();
+                let after = allocations.scratch_bytes();
                 if let Err(error) = custody.record(before, after) {
                     state.1 = Err(acyclic_fs::WorkError::Overflow);
                     return Err(error.into());

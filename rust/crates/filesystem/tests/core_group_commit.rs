@@ -12,6 +12,7 @@ fn state(id: WorkspaceId) -> Result<LazyWorkspaceState, serde_json::Error> {
     Ok(LazyWorkspaceState::new(
         id,
         acyclic_fs::demand::SourceReference {
+            components: acyclic_stream::OwnedBytes::new(),
             identity: [1; 16],
             epoch: 0,
         },

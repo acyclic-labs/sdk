@@ -791,4 +791,4 @@ mod checkout_publication;
 #[cfg(not(target_arch = "wasm32"))]
 pub use checkout_publication::{AuthorizedCheckout, CheckoutApproval, CheckoutPublication};
 
-pub use host::DirectoryOptions;
+pub use host::{DirectoryCredit, DirectoryOptions};

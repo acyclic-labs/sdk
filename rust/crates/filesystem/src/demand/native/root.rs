@@ -161,9 +161,13 @@ impl NativeDemandSource {
                                 acyclic_native_runtime::initialize_native_io_services()?;
                             }
                             let reference = reference.unwrap_or_else(|| SourceReference {
+                                components: acyclic_stream::OwnedBytes::new(),
                                 identity: *crate::identity::fresh_uuid().as_bytes(),
                                 epoch: 0,
                             });
+                            if !reference.components.is_empty() {
+                                return Err(DemandError::InvalidRequest);
+                            }
                             let root = CachedRoot::new(root, &path, &mut context)?;
                             context.check()?;
                             Ok(Self {
@@ -298,6 +302,7 @@ impl NativeDemandSource {
     pub fn invalidate(&self) -> SourceReference {
         let epoch = self.inner.epoch.fetch_add(1, Ordering::AcqRel) + 1;
         SourceReference {
+            components: acyclic_stream::OwnedBytes::new(),
             identity: self.inner.identity,
             epoch,
         }
@@ -305,11 +310,11 @@ impl NativeDemandSource {
 
     fn check(
         &self,
-        source: SourceReference,
+        source: &SourceReference,
         context: &mut CallbackWork,
     ) -> Result<(), DemandError> {
         context.check()?;
-        if source != self.reference() {
+        if source != &self.reference() {
             return Err(DemandError::StaleSource);
         }
         if self.root_named_while_watched() {

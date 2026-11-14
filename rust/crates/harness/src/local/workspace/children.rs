@@ -68,7 +68,7 @@ impl LocalWorkspace {
         };
         let cut = view.snapshot(&mut accounting).await.map_err(storage)?;
         require_selected_generation(generation, cut.authored_generation)?;
-        view.prepare_fork_snapshot(destination, cut, operation, &mut accounting)
+        view.prepare_fork_snapshot(destination, cut.clone(), operation, &mut accounting)
             .await
             .map_err(storage)?;
         Ok(Some(cut.authored_generation))
@@ -137,7 +137,7 @@ impl LocalWorkspace {
         let view = if origin.phase == acyclic_fs::LazyForkPhase::Prepared {
             source
                 .bind_prepared_fork(
-                    origin.snapshot,
+                    origin.snapshot.clone(),
                     child,
                     original,
                     origin.operation_id,

@@ -108,6 +108,24 @@ impl StreamPath {
         Self::native_parts(&[path], meter).map(Ok)
     }
 
+    /// Validates and joins borrowed pieces directly into original-owned path
+    /// storage, without an intermediate concatenation buffer.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new_native_parts(
+        parts: &[&str],
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<Result<Self, StreamError>> {
+        if parts
+            .iter()
+            .try_fold(0usize, |length, part| length.checked_add(part.len()))
+            .is_none_or(|length| length == 0 || length > MAX_PATH_BYTES)
+        {
+            return Ok(Err(StreamError::InvalidPath));
+        }
+        let path = Self::native_parts(parts, meter)?;
+        Ok(Self::validate(path.as_str()).map(|()| path))
+    }
+
     /// Concatenates an admitted source with its canonical slash-prefixed suffix.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn with_native_suffix(
@@ -118,14 +136,31 @@ impl StreamPath {
         if !suffix.starts_with('/') {
             return Ok(Err(StreamError::InvalidPath));
         }
-        if let Err(error) = Self::validate(&suffix[1..]) {
+        Self::join_native(Some(self), &suffix[1..], meter)
+    }
+
+    /// Joins borrowed canonical input without an unadmitted formatted string.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn join_native(
+        parent: Option<&Self>,
+        relative: &str,
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<Result<Self, StreamError>> {
+        if let Err(error) = Self::validate(relative) {
             return Ok(Err(error));
         }
-        let length = self.as_str().len().checked_add(suffix.len());
+        let Some(parent) = parent else {
+            return Self::native_parts(&[relative], meter).map(Ok);
+        };
+        let length = parent
+            .as_str()
+            .len()
+            .checked_add(1)
+            .and_then(|n| n.checked_add(relative.len()));
         if length.is_none_or(|length| length > MAX_PATH_BYTES) {
             return Ok(Err(StreamError::InvalidPath));
         }
-        Self::native_parts(&[self.as_str(), suffix], meter).map(Ok)
+        Self::native_parts(&[parent.as_str(), "/", relative], meter).map(Ok)
     }
 
     #[cfg(not(target_arch = "wasm32"))]

@@ -41,7 +41,7 @@ impl ReadSource {
 pub enum FileReadSource {
     /// A verified complete content descriptor.
     Content(#[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))] FileRef),
-    /// The exact authored generation selected by the original range reader.
+    /// The exact namespace generation selected by the original range reader.
     Authored(crate::conversation::FilePathSelection),
 }
 

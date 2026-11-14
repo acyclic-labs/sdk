@@ -305,6 +305,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
         acyclic_fs::WorkspaceId::from_bytes([19; 16]),
         decoded,
         acyclic_fs::demand::SourceReference {
+            components: acyclic_stream::OwnedBytes::new(),
             identity: [20; 16],
             epoch: 0,
         },
@@ -367,7 +368,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
     )?;
     let delegated_reader =
         FilesystemContentVerifier::new(host.clone(), &verifier, &delegated_scope, 16, None)?;
-    let (listed_generation, page) = delegated_reader
+    let page = delegated_reader
         .list_private_directory(
             &volume,
             "messages",
@@ -381,6 +382,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
         )
         .await?
         .expect("fixture directory exists");
+    let listed_generation = page.generation.clone();
     assert_eq!(page.entries.len(), 1);
     let erased: &dyn ContentResidencyVerifier = delegated_reader.as_ref();
     let (portable_page, _portable_page_hold) = erased
@@ -444,7 +446,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
         crate::conversation::ContentAccess::default(),
     )
     .await?;
-    let (old_generation, old_page) = delegated_reader
+    let old_page = delegated_reader
         .list_private_directory(
             &volume,
             "messages",
@@ -458,9 +460,9 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
         )
         .await?
         .expect("fixture directory exists");
-    assert_eq!(old_generation, listed_generation);
+    assert_eq!(old_page.generation, listed_generation);
     assert_eq!(old_page.entries, page.entries);
-    let (_, current_page) = delegated_reader
+    let current_page = delegated_reader
         .list_private_directory(
             &volume,
             "messages",

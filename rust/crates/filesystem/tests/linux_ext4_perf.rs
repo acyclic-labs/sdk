@@ -726,7 +726,7 @@ async fn report_linux_lazy_mount_read_costs() -> Result<(), Box<dyn std::error::
     assert_eq!(native_bytes, native_parallel_bytes);
     assert_eq!(native_bytes, mounted_parallel_bytes);
     mount.unmount().await?;
-    let source_reference = profile_source.reference();
+    let source_reference = profile_source.as_ref().reference();
     let mut observed_files = Vec::new();
     let started = Instant::now();
     for index in 0..100 {
@@ -737,7 +737,7 @@ async fn report_linux_lazy_mount_read_costs() -> Result<(), Box<dyn std::error::
         let path = NamespacePath::from_portable(&path, VolumeLimits::default())?;
         let node = profile_source
             .lookup(
-                source_reference,
+                source_reference.clone(),
                 &path,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
@@ -753,7 +753,7 @@ async fn report_linux_lazy_mount_read_costs() -> Result<(), Box<dyn std::error::
     for (path, version) in &observed_files {
         demand_bytes += profile_source
             .read_range(
-                source_reference,
+                source_reference.clone(),
                 path,
                 *version,
                 0,

@@ -1,6 +1,9 @@
 //! Canonical authenticated filesystem page formats and sparse algorithms.
 
 pub mod allocation;
+#[cfg(not(target_arch = "wasm32"))]
+pub use allocation::retained::NativeAccounting;
+pub(crate) use allocation::retained::retain_decoded_bytes;
 pub use allocation::retained::{Retained, RetainedAllocation};
 pub use allocation::{KernelAccounting, KernelOwnedAllocation};
 mod attribute;
@@ -72,6 +75,7 @@ mod regular_mutation;
 mod retention;
 mod search;
 pub(crate) mod serde_decode;
+pub use serde_decode::MetadataDecodeError;
 pub(crate) mod sort;
 #[cfg(any(
     test,
@@ -109,7 +113,8 @@ pub(crate) use merge::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use merge::{MergeFileTableRequest, merge_file_tables_with_accounting, resolve_three};
-pub(crate) use persistent_batch::{IndexedKey, sort_by_with_accounting, sort_indexed};
+pub use persistent_batch::sort_by_with_accounting;
+pub(crate) use persistent_batch::{IndexedKey, sort_indexed};
 pub(crate) use persistent_diff::{
     ValueChange, diff_file_records_with_accounting, diff_tree_entries_with_accounting,
 };
@@ -228,6 +233,8 @@ pub(crate) use path_access::{
     PathBatchMode, PathQueries, lookup_path_async_with_accounting, lookup_paths_with_accounting,
     observe_path_async_with_accounting, observe_paths_async_with_accounting,
 };
+pub(crate) use persistent_pagination::PagePosition;
+pub(crate) use persistent_point::key_at_position_with_accounting;
 pub(crate) use persistent_point::retire_allocation;
 pub use probe::{
     AuthenticatedGenerationProbe, AuthenticatedProbeError, ProbeLimits, capture_content_range_bytes,
@@ -291,7 +298,7 @@ pub use transfer::{
     export_generation_batch_async, import_generation_batch_async,
 };
 pub use tree::{decode_tree_page, encode_tree_page, tree_page_id};
-pub(crate) use tree_mutation::apply_tree_mutations_with_accounting;
+pub(crate) use tree_mutation::{TreeFormat, apply_tree_mutations_with_accounting};
 pub use tree_mutation::{
     TreeMutation, TreeMutationError, TreeMutationFailure, apply_tree_mutations,
 };
