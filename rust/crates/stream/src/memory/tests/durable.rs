@@ -282,9 +282,15 @@ async fn durability_completion_cannot_change_the_stamp_or_refuse_an_accepted_dea
 #[tokio::test]
 async fn funded_publications_need_no_allocation_admission_after_durability()
 -> Result<(), Box<dyn std::error::Error>> {
-    for (family, at_millis) in
-        (0..4).flat_map(|family| [None, Some(7)].map(|stamp| (family, stamp)))
-    {
+    for (family, at_millis, private_view) in (0..4).flat_map(|family| {
+        [
+            (None, false),
+            (None, true),
+            (Some(7), false),
+            (Some(7), true),
+        ]
+        .map(|(stamp, private)| (family, stamp, private))
+    }) {
         let meter = Arc::new(crate::test_meter::Meter::default());
         let work = Work::new(meter.original())?;
         work.reserve_write(if family >= 2 { 21 } else { 8 })?;
@@ -295,6 +301,20 @@ async fn funded_publications_need_no_allocation_admission_after_durability()
         );
         let source = request(0)?;
         core.append(source.clone()).await?;
+        let private = StreamPath::new("durable/private")?;
+        let lease = if private_view {
+            let lease = core.lease_ephemeral(private.clone()).await?;
+            core.append(AppendRequest {
+                path: private.clone(),
+                records: vec![Bytes::from_static(b"private").into()],
+                if_tail: Some(0),
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+            Some(lease)
+        } else {
+            None
+        };
         let destination = StreamPath::new("new/parents/destination")?;
         let command = match family {
             0 => WriteRequest::Append(AppendRequest {
@@ -373,6 +393,10 @@ async fn funded_publications_need_no_allocation_admission_after_durability()
         });
         let execution = core.apply_durable(&canonical, None, persist).await?;
         meter.deny_allocation.store(false, Ordering::SeqCst);
+        if let Some(lease) = lease {
+            lease.settle().await?;
+            assert_eq!(core.tail(private).await, Err(StreamError::NotFound));
+        }
         assert_eq!(core.tail(destination).await?, 1);
         if let Some(at_millis) = at_millis {
             let commit_id = match execution.outcome {
