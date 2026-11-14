@@ -4,6 +4,7 @@
 
 use acyclic_actors::{client, domain, guest};
 use js_sys::{BigInt, Function, Reflect, Uint8Array};
+use serde::Serialize as _;
 use tokio_util::sync::CancellationToken;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
@@ -143,6 +144,20 @@ fn object(entries: &[(&str, JsValue)]) -> JsValue {
 #[wasm_bindgen(js_name = decodeDelivery)]
 pub fn decode_delivery(bytes: &[u8]) -> Result<JsValue, JsValue> {
     let (delivery, checkpoint) = guest::wire::decode_delivery(bytes).map_err(guest_error)?;
+    let socket = delivery
+        .socket()
+        .map_err(guest_error)?
+        .map(|socket| guest::GuestEvent::Socket {
+            connection_id: socket.connection_id,
+            event: socket.event,
+        });
+    let socket = socket
+        .map(|event| {
+            event.serialize(&serde_wasm_bindgen::Serializer::new().serialize_missing_as_null(true))
+        })
+        .transpose()
+        .map_err(|_| js_error("invalid_argument", "socket event does not encode"))?
+        .unwrap_or(JsValue::NULL);
     let u64 = |value: u64| JsValue::from(BigInt::from(value));
     let bytes = |value: &[u8]| JsValue::from(Uint8Array::from(value));
     let trigger = match (delivery.trigger, &delivery.record) {
@@ -207,6 +222,7 @@ pub fn decode_delivery(bytes: &[u8]) -> Result<JsValue, JsValue> {
         ("epoch", u64(delivery.epoch)),
         ("nowUnixMs", u64(delivery.now_unix_ms)),
         ("trigger", trigger),
+        ("socket", socket),
         ("checkpoint", checkpoint),
     ]))
 }
@@ -220,6 +236,9 @@ pub fn decode_delivery(bytes: &[u8]) -> Result<JsValue, JsValue> {
 pub fn decode_invoke_request(bytes: &[u8]) -> Result<JsValue, JsValue> {
     use prost::Message as _;
     let (delivery, _) = guest::wire::decode_delivery(bytes).map_err(guest_error)?;
+    if delivery.socket().map_err(guest_error)?.is_some() {
+        return Ok(JsValue::NULL);
+    }
     let Some(invocation) = delivery.invocation().map_err(guest_error)? else {
         return Ok(JsValue::NULL);
     };
@@ -242,6 +261,40 @@ pub fn decode_invoke_request(bytes: &[u8]) -> Result<JsValue, JsValue> {
         ("url", request.url.into()),
         ("headers", headers.into()),
         ("body", Uint8Array::from(request.body.as_slice()).into()),
+    ]))
+}
+
+/// The canonical actor answer to a socket Open, with the same validated
+/// GuestEventResult encoding the native SDK socket host consumes.
+#[wasm_bindgen(js_name = encodeSocketResult)]
+pub fn encode_socket_result(result: JsValue) -> Result<Vec<u8>, JsValue> {
+    let result: guest::GuestEventResult = serde_wasm_bindgen::from_value(result)
+        .map_err(|_| js_error("invalid_argument", "invalid socket result"))?;
+    Ok(acyclic_actors::sockets::socket_reply(&result)
+        .map_err(guest_error)?
+        .to_vec())
+}
+
+/// Encode the SDK-owned socket command and binary body for an admitted host port.
+#[wasm_bindgen(js_name = encodeSocketRequest)]
+pub fn encode_socket_request(command: JsValue, body: Vec<u8>) -> Result<Vec<u8>, JsValue> {
+    let command: guest::SocketCommand = serde_wasm_bindgen::from_value(command)
+        .map_err(|_| js_error("invalid_argument", "invalid socket command"))?;
+    Ok(guest::encode_socket_request(&command, body.into())
+        .map_err(guest_error)?
+        .to_vec())
+}
+
+/// Decode a native socket result without JSON/base64-encoding attachment bytes.
+#[wasm_bindgen(js_name = decodeSocketReply)]
+pub fn decode_socket_reply(bytes: &[u8]) -> Result<JsValue, JsValue> {
+    let (reply, body) = guest::decode_socket_reply(bytes).map_err(guest_error)?;
+    let reply = reply
+        .serialize(&serde_wasm_bindgen::Serializer::new().serialize_missing_as_null(true))
+        .map_err(|_| js_error("invalid_argument", "socket result does not encode"))?;
+    Ok(object(&[
+        ("reply", reply),
+        ("body", Uint8Array::from(body.as_ref()).into()),
     ]))
 }
 

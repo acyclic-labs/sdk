@@ -8,6 +8,29 @@
 //! that the peer is gone.
 use super::*;
 
+/// Current host admission for an actor socket's exact account and resource.
+/// A host using its own verifier implements this boundary over the original
+/// held credential and product-policy fence. No identity comes from the open.
+pub trait SocketAuthorization {
+    /// Refuse unless the current credential grants `actors/invoke` on this
+    /// resource in this account. This check MUST NOT perform I/O.
+    fn authorize_socket(&self, account: &[u8], resource: &str) -> Result<(), StreamError>;
+}
+
+impl SocketAuthorization for CallAuthorization {
+    fn authorize_socket(&self, account: &[u8], resource: &str) -> Result<(), StreamError> {
+        let attributes = acyclic_auth::contract::RecordAttributes::try_new(Vec::new())
+            .map_err(|_| StreamError::InvalidArgument)?;
+        self.authorize_in_account(
+            account,
+            resource,
+            &[],
+            &attributes,
+            acyclic_auth::authority::PolicyDecision::Allow,
+        )
+    }
+}
+
 /// Frames from the peer of one admitted socket. Dropping it ends the socket.
 pub trait SocketInbound: crate::ProviderPlatform {
     /// Accept one peer frame, in the order the peer sent it. This MUST NOT
@@ -16,6 +39,14 @@ pub trait SocketInbound: crate::ProviderPlatform {
     /// applies accepted frames in order on its own tasks. An error closes
     /// only this channel.
     fn receive(&self, frame: Bytes) -> Result<(), StreamError>;
+
+    /// Replace the admitted credential on an original forwarded Session before
+    /// handing it any subsequent peer frames. Local owners have no transport
+    /// credential to replace: their host retains and rechecks the admission.
+    /// This MUST NOT perform I/O or reopen the socket.
+    fn replace_credential(&self, _credential: Bytes) -> Result<(), StreamError> {
+        Ok(())
+    }
 }
 
 /// One admitted socket: frames to the peer, and the owner's inbound handle.
@@ -38,7 +69,7 @@ pub trait PreparedSocketOpen: crate::ProviderPlatform + 'static {
     /// the outbound stream or the owner's original tasks.
     fn open(
         self: Box<Self>,
-        authorization: CallAuthorization,
+        authorization: &dyn SocketAuthorization,
     ) -> Result<SocketChannel, StreamError>;
 }
 

@@ -88,6 +88,45 @@ impl Drop for Owner {
 }
 
 impl Client {
+    /// Retain the original slot owner until renewal is dispatched. An owned
+    /// slot cannot pass through explicit registration or be reused meanwhile.
+    pub(super) fn renew_credential(
+        &self,
+        slot: u32,
+        credential: Bytes,
+    ) -> Result<oneshot::Receiver<Result<(), StreamError>>, StreamError> {
+        if slot as usize >= Limits::default().channels {
+            return Err(StreamError::Capacity);
+        }
+        let owner = self
+            .credential_owner
+            .as_ref()
+            .filter(|owner| owner.slot == slot)
+            .cloned();
+        let value = frame(
+            0,
+            0,
+            Body::Credential(wire::SessionCredential {
+                slot,
+                credential: credential.clone(),
+            }),
+        );
+        if value.encoded_len() > crate::MAX_COMMAND_BYTES {
+            return Err(StreamError::LimitExceeded);
+        }
+        let (sent, result) = oneshot::channel();
+        self.pool
+            .commands
+            .try_send(Command::RenewCredential {
+                slot,
+                owner,
+                credential,
+                sent,
+            })
+            .map_err(queue_error)?;
+        Ok(result)
+    }
+
     /// Enroll a credential on this pool for the lifetime of the returned client
     /// and its clones. The returned slot names it on requests. Dropping the last
     /// clone withdraws it before reuse; no transport or task is created.
@@ -135,6 +174,46 @@ pub(super) fn queue_error<T>(error: mpsc::error::TrySendError<T>) -> StreamError
 }
 
 impl Pool {
+    pub(super) fn renew_credential(
+        &mut self,
+        slot: u32,
+        owner: Option<Arc<Owner>>,
+        credential: Bytes,
+        sent: oneshot::Sender<Result<(), StreamError>>,
+    ) -> Result<(), StreamError> {
+        let owned = self.credential_slots.owned(slot);
+        let admitted = match &owner {
+            Some(owner) => owned && owner.slot == slot,
+            None => !owned,
+        };
+        let empty = credential.is_empty();
+        let result = if admitted {
+            self.install_credential(slot, credential)
+        } else {
+            Err(StreamError::AccessDenied)
+        };
+        if result.is_ok() && owner.is_none() {
+            self.credential_slots.available(slot, empty);
+        }
+        // A command-local refusal must not fail unrelated channels. A failed
+        // physical send still fences the pool, as enrollment does.
+        let failure = result
+            .as_ref()
+            .err()
+            .filter(|error| {
+                !matches!(
+                    error,
+                    StreamError::AccessDenied | StreamError::Capacity | StreamError::LimitExceeded
+                )
+            })
+            .cloned();
+        let _ = sent.send(result);
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
     pub(super) fn install_credential(
         &mut self,
         slot: u32,

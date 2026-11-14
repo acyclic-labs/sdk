@@ -64,6 +64,7 @@ impl LocalSockets {
         let provider = Arc::clone(self.store.provider());
         let sockets = Sockets::open(
             Store::new(Arc::clone(&provider), root()?),
+            StreamPath::new("harness/actors/_sockets/v1")?,
             Arc::new(PlatformExecutor),
             Arc::new(SystemClock),
         )
@@ -189,7 +190,7 @@ async fn socket_ledger_exhaustion_preserves_committed_history() -> TestResult {
             .await?,
         );
         let store = Store::new(Arc::clone(&provider), root()?);
-        let layout = Layout::new(&store)?;
+        let layout = Layout::new(StreamPath::new("harness/actors/_sockets/v1")?)?;
         // Persist the real epoch format at its representable boundary.
         let record = EpochWire {
             version: 1,
@@ -210,7 +211,13 @@ async fn socket_ledger_exhaustion_preserves_committed_history() -> TestResult {
             )
             .await?
         );
-        let opened = Sockets::open(store, Arc::new(PlatformExecutor), Arc::new(SystemClock)).await;
+        let opened = Sockets::open(
+            store,
+            StreamPath::new("harness/actors/_sockets/v1")?,
+            Arc::new(PlatformExecutor),
+            Arc::new(SystemClock),
+        )
+        .await;
         let expected = if segment == u64::MAX {
             assert!(matches!(
                 opened,
@@ -249,11 +256,225 @@ async fn socket_ledger_exhaustion_preserves_committed_history() -> TestResult {
 }
 
 #[tokio::test]
+async fn socket_host_packets_keep_actor_ownership_binary_and_hibernation_state() -> TestResult {
+    use crate::guest::{
+        SocketCommand, SocketReply, decode_socket_reply, dispatch_socket_request,
+        encode_socket_request,
+    };
+    let executor = Arc::new(HeldCloseExecutor::default());
+    let sockets = Sockets::open(
+        Store::new(Arc::new(MemoryStream::default()), root()?),
+        StreamPath::new("harness/actors/_sockets/v1")?,
+        executor.clone(),
+        Arc::new(SystemClock),
+    )
+    .await?;
+    let (connection, inbox, last, mut frames) =
+        admitted_close_fixture(&sockets, "host-packets").await?;
+    let actor = ActorReference::new(b"account", b"sockets", b"host-packets")?;
+    let foreign = ActorReference::new(b"foreign", b"sockets", b"host-packets")?;
+    let bytes = Bytes::from(vec![0xff; acyclic_stream::MAX_RECORD_BYTES / 2]);
+    let send = encode_socket_request(
+        &SocketCommand::Send {
+            connection: connection.clone(),
+            binary: true,
+        },
+        bytes.clone(),
+    )?;
+    assert!(dispatch_socket_request(&sockets, &foreign, &send).is_err());
+    assert!(matches!(
+        frames.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+    let sent = dispatch_socket_request(&sockets, &actor, &send)?;
+    assert_eq!(
+        decode_socket_reply(&sent)?,
+        (SocketReply::Done, Bytes::new())
+    );
+    assert_eq!(
+        SocketFrame::decode(&frames.try_recv()?)?,
+        SocketFrame::Message(SocketPayload::Binary {
+            binary: bytes.clone()
+        })
+    );
+    for attachment in [Bytes::new(), bytes] {
+        let set = encode_socket_request(
+            &SocketCommand::SetAttachment {
+                connection: connection.clone(),
+            },
+            attachment.clone(),
+        )?;
+        dispatch_socket_request(&sockets, &actor, &set)?;
+        let get = encode_socket_request(
+            &SocketCommand::GetAttachment {
+                connection: connection.clone(),
+            },
+            Bytes::new(),
+        )?;
+        let reply = dispatch_socket_request(&sockets, &actor, &get)?;
+        assert_eq!(
+            decode_socket_reply(&reply)?,
+            (SocketReply::Attachment { present: true }, attachment)
+        );
+    }
+    let auto = encode_socket_request(
+        &SocketCommand::SetAutoResponse {
+            value: Some(WebSocketAutoResponse {
+                request: "ping".into(),
+                response: "pong".into(),
+            }),
+        },
+        Bytes::new(),
+    )?;
+    dispatch_socket_request(&sockets, &actor, &auto)?;
+    sockets.shared.message(
+        &connection,
+        SocketPayload::Text {
+            text: "ping".into(),
+        },
+    )?;
+    assert_eq!(
+        SocketFrame::decode(&frames.try_recv()?)?,
+        SocketFrame::Message(SocketPayload::Text {
+            text: "pong".into()
+        })
+    );
+    assert_eq!(
+        records(&sockets.shared.store, &inbox).await?.len(),
+        1,
+        "keepalive reached the guest"
+    );
+    let close = encode_socket_request(
+        &SocketCommand::Close {
+            connection: connection.clone(),
+            code: 4000,
+            reason: "done".into(),
+        },
+        Bytes::new(),
+    )?;
+    dispatch_socket_request(&sockets, &actor, &close)?;
+    executor.take()?.await;
+    assert!(matches!(
+        SocketFrame::decode(&last.await?)?,
+        SocketFrame::Close { code: 4000, .. }
+    ));
+    assert_eq!(records(&sockets.shared.store, &inbox).await?.len(), 2);
+    assert!(dispatch_socket_request(&sockets, &actor, &send).is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn recovery_fences_only_the_selected_hosts_socket_ledger() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let first_root = StreamPath::new("hosts/first/sockets/v1")?;
+    let second_root = StreamPath::new("hosts/second/sockets/v1")?;
+    let open = |ledger| {
+        Sockets::open(
+            Store::new(provider.clone(), root().expect("valid actor root")),
+            ledger,
+            Arc::new(HeldCloseExecutor::default()),
+            Arc::new(SystemClock),
+        )
+    };
+    let first = open(first_root.clone()).await?;
+    let (connection, inbox, _, _) = admitted_close_fixture(&first, "first-host").await?;
+    let socket = first.shared.layout.socket(&connection)?;
+    let second = open(second_root.clone()).await?;
+    let (other, other_inbox, _, _) = admitted_close_fixture(&second, "second-host").await?;
+    let other_socket = second.shared.layout.socket(&other)?;
+    assert_eq!(records(&first.shared.store, &socket).await?.len(), 1);
+    let _second_replacement = open(second_root).await?;
+    assert_eq!(records(&first.shared.store, &socket).await?.len(), 1);
+    assert_eq!(records(&second.shared.store, &other_socket).await?.len(), 2);
+    assert_eq!(records(&second.shared.store, &other_inbox).await?.len(), 2);
+    let _first_replacement = open(first_root.clone()).await?;
+    let _next_replacement = open(first_root).await?;
+    assert_eq!(records(&first.shared.store, &socket).await?.len(), 2);
+    let events = records(&first.shared.store, &inbox).await?;
+    assert_eq!(events.len(), 2, "repeated recovery published another Close");
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_socket_admission_rechecks_the_retained_target_before_installing() -> TestResult {
+    struct Admission {
+        current: AtomicBool,
+    }
+    impl SocketAuthorization for Admission {
+        fn authorize_socket(&self, account: &[u8], resource: &str) -> Result<(), StreamError> {
+            if self.current.load(Ordering::Acquire)
+                && account == b"account"
+                && resource == "actors:/sockets"
+            {
+                Ok(())
+            } else {
+                Err(StreamError::AccessDenied)
+            }
+        }
+    }
+    let sockets = Arc::new(
+        Sockets::open(
+            Store::new(Arc::new(MemoryStream::default()), root()?),
+            StreamPath::new("harness/actors/_sockets/v1")?,
+            Arc::new(PlatformExecutor),
+            Arc::new(SystemClock),
+        )
+        .await?,
+    );
+    let admission = Admission {
+        current: AtomicBool::new(true),
+    };
+    let mut open = SocketOpen {
+        actor: ActorReference::new(b"account", b"sockets", b"target")?,
+        subscription: "inbox".into(),
+        app_channel: None,
+        subprotocols: Vec::new(),
+        headers: Vec::new(),
+        resume_after: 0,
+        reconnected: false,
+    };
+    // Validation retains the original target; losing authority while the host
+    // admits placement must refuse before allocating or publishing a socket.
+    let prepared = sockets.clone().prepare(open.encode())?;
+    admission.current.store(false, Ordering::Release);
+    assert!(matches!(
+        prepared.open(&admission),
+        Err(StreamError::AccessDenied)
+    ));
+    assert!(sockets.is_empty());
+    assert_eq!(sockets.shared.next.load(Ordering::Relaxed), 0);
+    admission.current.store(true, Ordering::Release);
+    for actor in [
+        ActorReference::new(b"foreign", b"sockets", b"target")?,
+        ActorReference::new(b"account", b"ungranted", b"target")?,
+    ] {
+        open.actor = actor;
+        assert!(matches!(
+            sockets.clone().prepare(open.encode())?.open(&admission),
+            Err(StreamError::AccessDenied)
+        ));
+    }
+    assert_eq!(sockets.shared.next.load(Ordering::Relaxed), 0);
+    open.actor = ActorReference::new(b"account", b"sockets", b"target")?;
+    let channel = sockets.clone().prepare(open.encode())?.open(&admission)?;
+    assert_eq!(sockets.len(), 1);
+    // The original inbound owner retires an open abandoned before publication.
+    drop(channel);
+    assert!(sockets.is_empty());
+    assert!(matches!(
+        records(&sockets.shared.store, &sockets.shared.layout.segment(1)?).await,
+        Err(Error::Stream(StreamError::NotFound))
+    ));
+    Ok(())
+}
+
+#[tokio::test]
 async fn socket_admission_binds_namespace_grants_to_the_certified_account() -> TestResult {
     let decode_work = || crate::sockets::OPEN_DECODE_WORK.with(std::cell::Cell::get);
     let provider = Arc::new(MemoryStream::default());
     let sockets = Sockets::open(
         Store::new(Arc::clone(&provider), root()?),
+        StreamPath::new("harness/actors/_sockets/v1")?,
         Arc::new(PlatformExecutor),
         Arc::new(SystemClock),
     )
@@ -475,6 +696,7 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
         let provider = Arc::new(ControlledStream::default());
         let sockets = Sockets::open(
             Store::new(Arc::clone(&provider), root()?),
+            StreamPath::new("harness/actors/_sockets/v1")?,
             Arc::new(HeldCloseExecutor::default()),
             Arc::new(SystemClock),
         )
@@ -533,6 +755,7 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
         let executor = Arc::new(HeldCloseExecutor::default());
         let sockets = Sockets::open(
             Store::new(Arc::clone(&provider), root()?),
+            StreamPath::new("harness/actors/_sockets/v1")?,
             executor.clone(),
             Arc::new(SystemClock),
         )
@@ -606,6 +829,7 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
         drop(sockets);
         let recovered = Sockets::open(
             Store::new(provider, root()?),
+            StreamPath::new("harness/actors/_sockets/v1")?,
             executor,
             Arc::new(SystemClock),
         )
@@ -627,6 +851,7 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
         let executor = Arc::new(HeldCloseExecutor::default());
         let sockets = Sockets::open(
             Store::new(Arc::clone(&provider), root()?),
+            StreamPath::new("harness/actors/_sockets/v1")?,
             executor.clone(),
             Arc::new(SystemClock),
         )
@@ -705,6 +930,7 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
         drop(sockets);
         let recovered = Sockets::open(
             Store::new(provider, root()?),
+            StreamPath::new("harness/actors/_sockets/v1")?,
             executor,
             Arc::new(SystemClock),
         )
@@ -721,7 +947,13 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
     };
     let first = store()?;
     let provider = Arc::clone(first.provider());
-    let sockets = Sockets::open(first, Arc::new(PlatformExecutor), Arc::new(SystemClock)).await?;
+    let sockets = Sockets::open(
+        first,
+        StreamPath::new("harness/actors/_sockets/v1")?,
+        Arc::new(PlatformExecutor),
+        Arc::new(SystemClock),
+    )
+    .await?;
     let shared = &sockets.shared;
     let layout = shared.layout.clone();
     let actor = ActorReference::new(b"account", b"sockets", b"compacted")?;
@@ -772,8 +1004,13 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
 
     // The next incarnation closes exactly the survivor, from segment 2 only.
     let restarted = Store::new(provider, root()?);
-    let recovered =
-        Sockets::open(restarted, Arc::new(PlatformExecutor), Arc::new(SystemClock)).await?;
+    let recovered = Sockets::open(
+        restarted,
+        StreamPath::new("harness/actors/_sockets/v1")?,
+        Arc::new(PlatformExecutor),
+        Arc::new(SystemClock),
+    )
+    .await?;
     let store = &recovered.shared.store;
     assert_eq!(records(store, &survivor).await?.len(), 2);
     let delivered = records(store, &inbox).await?;
@@ -946,6 +1183,7 @@ async fn concurrent_hosts_cannot_share_an_incarnation() -> TestResult {
     let open = || -> Result<_, Error> {
         Ok(Sockets::open(
             Store::new(Arc::clone(&provider), root()?),
+            StreamPath::new("harness/actors/_sockets/v1")?,
             Arc::new(PlatformExecutor),
             Arc::new(SystemClock),
         ))
@@ -1133,6 +1371,7 @@ async fn automatic_reply_admission_preserves_the_open_socket_at_the_frame_bound(
     let executor = Arc::new(HeldCloseExecutor::default());
     let sockets = Sockets::open(
         Store::new(Arc::new(MemoryStream::default()), root()?),
+        StreamPath::new("harness/actors/_sockets/v1")?,
         executor.clone(),
         Arc::new(SystemClock),
     )
@@ -1235,6 +1474,7 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
     let executor = Arc::new(HeldCloseExecutor::default());
     let sockets = Sockets::open(
         Store::new(Arc::new(MemoryStream::default()), root()?),
+        StreamPath::new("harness/actors/_sockets/v1")?,
         executor.clone(),
         Arc::new(SystemClock),
     )
@@ -1747,6 +1987,7 @@ async fn accepted_open_retries_uncertain_durability_without_closing() -> TestRes
         let provider = Arc::new(ControlledStream::default());
         let sockets = Sockets::open(
             Store::new(Arc::clone(&provider), root()?),
+            StreamPath::new("harness/actors/_sockets/v1")?,
             Arc::new(PlatformExecutor),
             Arc::new(SystemClock),
         )
