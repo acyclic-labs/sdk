@@ -413,7 +413,9 @@ impl<T, P: Fn(ExtentSlice) -> T> RangeMachine<T, P> {
                                     .map_err(range_failure)?;
                                 self.spans_capacity.ensure_for_push_with_accounting(
                                     &mut self.spans,
-                                    usize::MAX,
+                                    self.input
+                                        .maximum_spans
+                                        .map_or(usize::MAX, |maximum| maximum as usize),
                                     &mut self.spans_custody,
                                     accounting,
                                 )?;

@@ -1348,17 +1348,28 @@ impl ToolContext {
             {
                 continue;
             }
+            // Declare custody first so the physical text retires before its credit
+            // on every refusal, cancellation, and dropped probe future.
+            let concrete_custody;
             let concrete = crate::executor::with_history_io(io, |history| {
                 crate::executor::preparation_format(format_args!("{prefix}{relative}"), history)
             })?;
+            concrete_custody = io
+                .map(|io| io.guard_owned(concrete.capacity() as u64))
+                .transpose()?;
             if let Some(original) = original {
                 if self.tool_path_selection(&concrete, io)?.0 == original {
+                    if let Some(custody) = concrete_custody {
+                        custody.into_retained()?;
+                    }
                     return Ok((concrete.into(), None));
                 }
-                crate::executor::stock_retire_text(concrete, io)?;
                 continue;
             }
             if prefix == SEED_PATH {
+                if let Some(custody) = concrete_custody {
+                    custody.into_retained()?;
+                }
                 return Ok((concrete.into(), None));
             }
             // Every probe and continuation uses the same bounded interval.
@@ -1370,7 +1381,6 @@ impl ToolContext {
                 match self.read_tool_path_range(&concrete, None, probe, io).await {
                     Ok(read) => read,
                     Err(error) if error.code() == crate::wire::ErrorCode::NotFound => {
-                        crate::executor::stock_retire_text(concrete, io)?;
                         continue;
                     }
                     Err(error) => return Err(error),
@@ -1421,7 +1431,6 @@ impl ToolContext {
                 drop(bytes);
                 drop(selected);
                 drop(custody);
-                crate::executor::stock_retire_text(concrete, io)?;
                 continue;
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -1433,6 +1442,9 @@ impl ToolContext {
                     .map(|io| io.take_native_custody(retained))
                     .transpose()?
             };
+            if let Some(custody) = concrete_custody {
+                custody.into_retained()?;
+            }
             return Ok((concrete.into(), Some((selected, custody))));
         }
         if original.is_some() {

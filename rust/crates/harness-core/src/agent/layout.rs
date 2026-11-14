@@ -561,7 +561,7 @@ mod tests {
             let (_, status_work) = acyclic_test_support::differential(
                 || {
                     let ancestry = parsed.as_str()[AGENTS.len()..].to_owned();
-                    stream(&format!("{STATUSES}{ancestry}")).expect("canonical status")
+                    stream(&[STATUSES, ancestry.as_str()].concat()).expect("canonical status")
                 },
                 || parsed.status().expect("canonical status"),
             );
