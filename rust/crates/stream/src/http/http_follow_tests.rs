@@ -522,7 +522,8 @@ async fn physical_http_exchange_has_owned_round_trip_and_original_body_bytes()
     let mut auth_checks = 0;
     let mut auth_parents = Vec::new();
     let mut exchange_id = None;
-    while completed < 6 {
+    let mut refused_credentials = 0;
+    while completed < 7 {
         if let Some(Observation::Completed {
             id,
             start,
@@ -532,8 +533,17 @@ async fn physical_http_exchange_has_owned_round_trip_and_original_body_bytes()
         }) = query.next().await?
         {
             completed += 1;
-            assert_eq!(result, Outcome::Succeeded);
+            if start.mechanism != Mechanism::AuthCheck {
+                assert_eq!(result, Outcome::Succeeded);
+            }
             if start.mechanism == Mechanism::AuthCheck {
+                if result == Outcome::Unsettled {
+                    assert_eq!(start.name, "credential.resolve");
+                    assert_eq!(start.parent, Some(parent));
+                    refused_credentials += 1;
+                } else {
+                    assert_eq!(result, Outcome::Succeeded);
+                }
                 auth_checks += 1;
                 auth_parents.push(start.parent);
                 assert_eq!(
@@ -560,8 +570,22 @@ async fn physical_http_exchange_has_owned_round_trip_and_original_body_bytes()
         }
     }
     assert_eq!(exchanges, 1);
-    assert_eq!(auth_checks, 4);
-    assert!(auth_parents.iter().all(|parent| *parent == exchange_id));
+    assert_eq!(auth_checks, 5);
+    assert_eq!(refused_credentials, 1);
+    assert_eq!(
+        auth_parents
+            .iter()
+            .filter(|value| **value == Some(parent))
+            .count(),
+        3
+    );
+    assert_eq!(
+        auth_parents
+            .iter()
+            .filter(|value| **value == exchange_id)
+            .count(),
+        2
+    );
     assert_eq!(resolutions.load(std::sync::atomic::Ordering::SeqCst), 2);
     Ok(())
 }
