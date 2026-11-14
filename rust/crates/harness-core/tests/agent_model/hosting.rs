@@ -1838,8 +1838,7 @@ async fn guest_spawn_creates_host_controls_with_original_child_and_volume_public
         .send(
             &root,
             &super::user(),
-            &InboxRecord::ApprovalRequested(ApprovalRequested {
-                child: child.clone(),
+            &InboxRecord::Approval(Approval {
                 id: intent("wake-parent"),
             }),
         )
