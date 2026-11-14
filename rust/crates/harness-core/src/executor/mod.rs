@@ -29,7 +29,8 @@ mod native_stock;
 use native_stock::*;
 pub(crate) use native_stock::{
     stage_json, stock_boundary, stock_into_iter, stock_push_model_event, stock_retire_text,
-    stock_string_copy, stock_string_push, stock_vec_prepare_push, stock_vec_push, stock_vec_reserve,
+    stock_string_copy, stock_string_push, stock_vec_prepare_push, stock_vec_push,
+    stock_vec_reserve,
 };
 
 pub(crate) mod execution_claim;
