@@ -443,7 +443,7 @@ async fn physical_http_exchange_has_owned_round_trip_and_original_body_bytes()
     use crate::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
     let response = json!({"ok":false,"code":"tail_conflict","actualTail":"1"});
     let response_bytes = serde_json::to_vec(&response)?.len() as u64;
-    let server = Server::new(vec![
+    let mut server = Server::new(vec![
         Reply::ok(response.clone()),
         Reply::ok(response.clone()),
     ])
@@ -489,6 +489,23 @@ async fn physical_http_exchange_has_owned_round_trip_and_original_body_bytes()
         response
     );
     assert_eq!(server.requests().len(), 2);
+    let original_credential = server
+        .client
+        .credential
+        .replace(CredentialProvider::new(|| {
+            futures::future::ready(Err(acyclic_auth::credential::CredentialError::Invalid))
+        }));
+    let refused = root
+        .within(server.client.request_json("append", || Ok("{}".into())))
+        .await
+        .expect_err("the original credential refusal must stop dispatch");
+    server.client.credential = original_credential;
+    assert_eq!(refused.category(), StreamError::AccessDenied);
+    assert_eq!(
+        server.requests().len(),
+        2,
+        "credential refusal made a physical request"
+    );
     let _completion = root.finish_submitted(None, Outcome::Succeeded)?;
     let mut query = TraceQuery::new(
         trace.follow(0, Default::default()).await?,

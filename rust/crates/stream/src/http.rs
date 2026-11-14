@@ -165,7 +165,12 @@ impl HttpStream {
     ) -> Result<Value, StreamError> {
         let body = encode().map_err(contract_error)?;
         // Bytes count the original decoded HTTP body, excluding headers and framing.
-        let work = self.request_inner(route, body);
+        let url = self
+            .endpoint
+            .join(&format!("v1/stream/{route}"))
+            .map_err(|error| StreamError::Unavailable.with_source(error))?;
+        let (authorization, lease) = self.authorization().await?;
+        let work = self.request_inner(route, url, body, authorization, lease);
         #[cfg(feature = "serde")]
         let result = crate::trace::observe(
             crate::trace::Request {
@@ -186,13 +191,11 @@ impl HttpStream {
     async fn request_inner(
         &self,
         route: &'static str,
+        url: Url,
         body: String,
+        authorization: HeaderValue,
+        lease: Option<acyclic_auth::credential::ResolvedCredential>,
     ) -> Result<(Value, usize), StreamError> {
-        let url = self
-            .endpoint
-            .join(&format!("v1/stream/{route}"))
-            .map_err(|error| StreamError::Unavailable.with_source(error))?;
-        let (authorization, lease) = self.authorization().await?;
         let mut response = self
             .client
             .post(url)
