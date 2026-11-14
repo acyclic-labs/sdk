@@ -4199,11 +4199,6 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
 async fn historical_session_forks_keep_source_only_files_from_adoption() -> Result<()> {
     use acyclic_fs::{CancellationToken, WorkBudget};
     let directory = tempfile::tempdir().map_err(agent)?;
-    std::fs::write(
-        directory.path().join("source-only.txt"),
-        b"original native source",
-    )
-    .map_err(agent)?;
     let provider = super::scripted([
         crate::test_support::ScriptedTurn::Text("parent answer".into()),
         crate::test_support::ScriptedTurn::Text("child answer".into()),
@@ -4215,6 +4210,14 @@ async fn historical_session_forks_keep_source_only_files_from_adoption() -> Resu
         )?)
         .await?,
     );
+    // Opening a fresh checkout imports its initial baseline. Add this native
+    // file afterwards, before adoption retains its lazy source cut, so the
+    // historical fork must preserve source data absent from authored storage.
+    std::fs::write(
+        directory.path().join("source-only.txt"),
+        b"original native source",
+    )
+    .map_err(agent)?;
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
     let connection = harness.connect().await?;
