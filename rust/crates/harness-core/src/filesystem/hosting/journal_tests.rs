@@ -219,7 +219,11 @@ async fn source_invocations_use_original_agent_grants_policy_and_receipts_withou
                         .journal
                         .replay(operation, 0, 64, None)?
                         .await?
-                        .is_empty()
+                        .iter()
+                        .all(|record| !matches!(
+                            record.event,
+                            crate::executor::ExecutionEvent::ToolStarted { .. }
+                        ))
                 );
                 let (id, parent, shown) = issued
                     .approvals

@@ -118,7 +118,7 @@ impl StockExecutor {
     /// The host retains the original immutable binding and source selection
     /// across pending approval and restart. Selection grants no execution
     /// authority: the issued task, canonical capability, policy and approvals
-    /// are checked by the same engine used for model calls. No start record is
+    /// are checked by the same engine used for model calls. No tool intent is
     /// written while approval is pending. The original call selection is
     /// fingerprinted before policy admission; another binding or input cannot
     /// replace it on retry. `hook_context` receives ordinary
@@ -160,8 +160,11 @@ impl StockExecutor {
             let owner = journal
                 .acquire_effect(parent.0, call.0.operation_id, io)?
                 .into_owner(io)?;
-            execution
+            let fingerprint = execution
                 .retain_host_selection(journal, parent, &call.0, &call.1, metadata)
+                .await?;
+            execution
+                .ensure_request_started(journal, parent.0, fingerprint)
                 .await?;
             let outcome = execution
                 .settle_invocation(
@@ -217,7 +220,7 @@ impl<'io> StockExecution<'io> {
         invocation: &ToolInvocation,
         tool: &crate::tool::Tool,
         metadata: &Value,
-    ) -> Result<()> {
+    ) -> Result<[u8; 32]> {
         let selected = HostCallIdentity {
             version: 1,
             invocation,
@@ -271,7 +274,7 @@ impl<'io> StockExecution<'io> {
             )
             .await?;
         }
-        Ok(())
+        Ok(fingerprint)
     }
 
     fn verify_invocation_binding(

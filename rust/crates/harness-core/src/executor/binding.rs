@@ -190,7 +190,17 @@ impl StockExecution<'_> {
         input: &TurnInput,
     ) -> Result<()> {
         self.verify_task_context_binding(input.operation_id)?;
+        self.ensure_request_started(journal, input.operation_id, self.request_digest(input)?)
+            .await
+    }
 
+    /// The shared initial request binding for model and source executions.
+    pub(super) async fn ensure_request_started(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation: OperationId,
+        request_digest: [u8; 32],
+    ) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         let _records_hold;
         #[cfg(not(target_arch = "wasm32"))]
@@ -200,7 +210,7 @@ impl StockExecution<'_> {
             .transpose()?
             .unwrap_or(0);
         let (tail, records) = self
-            .step_records(journal, input.operation_id, 0, true, Some(1), |event| {
+            .step_records(journal, operation, 0, true, Some(1), |event| {
                 matches!(event, ExecutionEvent::Started { .. })
             })
             .await?;
@@ -229,7 +239,6 @@ impl StockExecution<'_> {
                 "execution journal has no initial request binding",
             ));
         }
-        let request_digest = self.request_digest(input)?;
         match records.first().map(|record| &record.event) {
             Some(ExecutionEvent::Started {
                 request_digest: existing,
@@ -243,11 +252,11 @@ impl StockExecution<'_> {
             }
             None => {
                 if self.stock.reconciliation_only {
-                    return Err(Error::Indeterminate(input.operation_id));
+                    return Err(Error::Indeterminate(operation));
                 }
                 journal
                     .append(
-                        input.operation_id,
+                        operation,
                         "execution:started",
                         &ExecutionEvent::Started { request_digest },
                         self.io,
