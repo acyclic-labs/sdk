@@ -65,13 +65,19 @@ test("every standalone project compilation prepares its complete WASM closure", 
 
 test("standalone package WASM targets follow references while groups keep exclusive targets", () => {
   const selection = build.slice(build.indexOf("const grouped ="), build.indexOf("if (!grouped)"));
+  // A fixed reference graph: the live graph's closure is the first test's
+  // subject, so this one checks only how the build selects from a closure.
+  const graph = {
+    filesystem: ["core", "auth", "filesystem"],
+    workers: ["core", "auth", "actors", "objects", "workers"],
+  };
   const targets = (name, grouped) => Array.from(runInNewContext(`${selection}\ntargets`, {
-    packageArgument: name, packageClosure, root: process.cwd(),
+    packageArgument: name, packageClosure: (_root, selected) => new Set(graph[selected]), root: process.cwd(),
     packages: Object.fromEntries(names.map(name => [name, {}])),
     process: { env: grouped ? { ACYCLIC_WASM_GROUPS_PREPARED: "1" } : {} },
   }));
-  assert.deepEqual(targets("filesystem", false), ["auth", "actors", "filesystem"]);
-  assert.deepEqual(targets("harness", false), ["auth", "actors", "machines", "objects", "harness"]);
+  assert.deepEqual(targets("filesystem", false), ["auth", "filesystem"]);
+  assert.deepEqual(targets("manifest", false), ["auth", "actors", "objects", "manifest"]);
   for (const name of names) assert.deepEqual(targets(name, true), [name]);
 });
 
