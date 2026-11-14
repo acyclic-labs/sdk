@@ -781,7 +781,21 @@ async fn projection_lock_order_ignores_alias_order_and_duplicate_bindings() -> R
     };
     let forward = table(first, &second)?;
     let swapped = table(&second, first)?;
-    let duplicate = table(first, first)?;
+    // Attaching two names opens independent sources for the same durable
+    // workspace and binding destination; alias identity is not Arc identity.
+    let alias = Arc::new(MountedVolume {
+        workspace: crate::tools::git::OwnedView::Volume(first.workspace.workspace().clone()),
+        binding_root: Arc::clone(&first.binding_root),
+        destination: first.destination.clone(),
+        options: first.options.clone(),
+        task_view_admission: Arc::clone(&first.task_view_admission),
+        native: StateArc::new(AsyncMutex::new(None)),
+        users: StateArc::new(projection::Users::default()),
+        shared_views: tokio::sync::OnceCell::new(),
+        _binding: None,
+    });
+    assert!(!Arc::ptr_eq(first, &alias));
+    let duplicate = table(first, &alias)?;
     let identities = |table: &Mounts| -> Result<Vec<PathBuf>> {
         Ok(ordered_mounts(table.mounts())
             .into_iter()
@@ -789,6 +803,7 @@ async fn projection_lock_order_ignores_alias_order_and_duplicate_bindings() -> R
             .collect())
     };
     assert_eq!(identities(&forward)?, identities(&swapped)?);
+    assert_eq!(identities(&forward)?.len(), 2);
     assert_eq!(identities(&duplicate)?.len(), 1);
     let former = |table: &Mounts| {
         table
@@ -814,6 +829,7 @@ async fn projection_lock_order_ignores_alias_order_and_duplicate_bindings() -> R
     );
     // One view per volume, however many names bind it: every alias names it.
     native_scope(&duplicate, async |claims| {
+        assert_eq!(claims.views.len(), 1);
         let roots: std::collections::BTreeSet<_> = claims
             .mounts()
             .mounts()
@@ -821,9 +837,40 @@ async fn projection_lock_order_ignores_alias_order_and_duplicate_bindings() -> R
             .collect();
         assert_eq!(roots.len(), 1);
         assert!(!roots.contains(&first.destination));
+        let view = home(&claims)?;
+        assert!(view.is_dir());
+        let prepared = crate::filesystem::native_process::shell::prepare(
+            crate::tools::ShellInput {
+                command: crate::tools::ShellCommand::Source("echo alias".into()),
+                cwd: Some("volume:///home".into()),
+                timeout_ms: None,
+                background: false,
+                target: None,
+            },
+            claims.mounts(),
+            crate::filesystem::native_process::Invocation {
+                executable: std::env::current_exe().map_err(storage)?,
+                argv: Vec::new(),
+                cwd: duplicate.root.clone(),
+                environment: Default::default(),
+                inherit_environment: false,
+                execution_grant: None,
+                schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
+                maximum_output_bytes: None,
+                standard_input: None,
+                process_custody: None,
+            },
+            0,
+        )?;
+        assert_eq!(prepared.cwd, std::fs::canonicalize(&view).map_err(storage)?);
+        assert_eq!(
+            prepared.environment.get("ACYCLIC_VOLUME_HOME"),
+            Some(&view.to_string_lossy().into_owned())
+        );
         Ok(((), claims))
     })
     .await?;
     assert!(first.native().await.is_none());
+    assert!(alias.native().await.is_none());
     Ok(())
 }

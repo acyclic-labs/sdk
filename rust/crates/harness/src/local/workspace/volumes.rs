@@ -173,11 +173,9 @@ pub(in crate::local) fn ordered_mounts<'a>(
             // The binding is validated even when another name already selects
             // this volume. One command takes one view of each volume, never
             // one per alias in a particular task's mount table.
-            let key = (
-                source.workspace.workspace().id(),
-                source.destination.clone(),
-            );
-            ordered.entry(key).or_insert((relative, mount));
+            ordered
+                .entry(source.command_identity())
+                .or_insert((relative, mount));
         }
     }
     ordered.into_values().collect()
@@ -195,6 +193,10 @@ struct CommandView {
 }
 
 impl MountedVolume {
+    fn command_identity(&self) -> (acyclic_fs::WorkspaceId, &Path) {
+        (self.workspace.workspace().id(), &self.destination)
+    }
+
     async fn command_view(self: &Arc<Self>, address: &str, read_only: bool) -> Result<CommandView> {
         let options = self
             .options
@@ -464,13 +466,13 @@ pub(in crate::local) async fn native_scope<T>(
 fn command_mounts(mounts: &Mounts, views: &[CommandView]) -> Mounts {
     let mut table = mounts.clone();
     for (_, mount) in table.mounts_mut() {
-        if let Some(view) = views.iter().find(|view| {
-            mount
-                .view
-                .source
-                .as_ref()
-                .is_some_and(|source| Arc::ptr_eq(source, &view.source))
-        }) {
+        if let Some(view) =
+            views.iter().find(|view| {
+                mount.view.source.as_ref().is_some_and(|source| {
+                    source.command_identity() == view.source.command_identity()
+                })
+            })
+        {
             mount.native_root = crate::workspace::NativeRoot::Path(view.mount.path().to_path_buf());
         }
     }
