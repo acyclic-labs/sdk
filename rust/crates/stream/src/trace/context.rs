@@ -46,13 +46,40 @@ impl Drop for Restore {
     }
 }
 
-async fn scoped<F: Future>(active: Option<Active>, future: F) -> F::Output {
-    let mut future = std::pin::pin!(future);
-    futures::future::poll_fn(|cx| {
-        let _restore = Restore(CURRENT.replace(active.clone()));
-        future.as_mut().poll(cx)
-    })
-    .await
+pin_project_lite::pin_project! {
+    pub(crate) struct Inherited<F> {
+        #[pin]
+        source: Option<F>,
+        active: Option<Active>,
+    }
+    impl<F> PinnedDrop for Inherited<F> {
+        fn drop(this: std::pin::Pin<&mut Self>) {
+            let mut this = this.project();
+            let _restore = Restore(CURRENT.replace(this.active.clone()));
+            this.source.set(None);
+        }
+    }
+}
+
+impl<F: Future> Future for Inherited<F> {
+    type Output = F::Output;
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let this = self.project();
+        let _restore = Restore(CURRENT.replace(this.active.clone()));
+        this.source
+            .as_pin_mut()
+            .map_or(std::task::Poll::Pending, |source| source.poll(cx))
+    }
+}
+
+fn scoped<F>(active: Option<Active>, future: F) -> Inherited<F> {
+    Inherited {
+        source: Some(future),
+        active,
+    }
 }
 
 pub(super) fn within_sync<T>(
@@ -74,7 +101,7 @@ pub(super) async fn within<F: Future>(
 
 /// Capture at submission, then restore the exact causal owner on each worker poll.
 /// An unobserved submission carries no producer or per-agent background task.
-pub(crate) fn inherit<F: Future>(future: F) -> impl Future<Output = F::Output> {
+pub(crate) fn inherit<F: Future>(future: F) -> Inherited<F> {
     let active = CURRENT.with_borrow(Clone::clone);
     scoped(active, future)
 }

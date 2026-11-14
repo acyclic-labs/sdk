@@ -5,7 +5,91 @@ use std::sync::Arc;
 
 #[tokio::test]
 #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+async fn owned_executor_preserves_parent_after_submission_scope_returns()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::trace::{Recorder, Request, observe_guard};
+    let state = Arc::new(tokio::sync::Mutex::new(0_u32));
+    let stream = crate::Stream::new(Arc::new(MemoryStream::default()), "agents/task/trace")?;
+    let recorder = Arc::new(Recorder::new(stream.clone(), [74; 16]));
+    let root = recorder
+        .start(
+            "owner",
+            Mechanism::ActorDelivery,
+            None,
+            Some("original_request"),
+        )
+        .await?
+        .into_owned();
+    let parent = root.id();
+    let request = || Request {
+        name: "worker_guard",
+        mechanism: Mechanism::Lock,
+        parent: None,
+        guarantee: Some("exclusive_original_state"),
+    };
+    let (release, resumed) = futures::channel::oneshot::channel::<()>();
+    let (complete, finished) = futures::channel::oneshot::channel();
+    let original = state.clone();
+    let worker: crate::BoxProviderFuture<'static, ()> = Box::pin(async move {
+        resumed.await.expect("original worker event retained");
+        let mut held = observe_guard(request(), original.lock()).await;
+        *held = 11;
+        drop(held);
+        let _ = complete.send(());
+    });
+    root.within(async { crate::runtime::PlatformExecutor.spawn_owned(worker) })
+        .await;
+    // The eager first poll suspended on the original event. Resume only after
+    // submission's owner scope has returned and restored the caller's context.
+    assert_eq!(*state.lock().await, 0);
+    release.send(()).map_err(|_| "original worker abandoned")?;
+    finished.await?;
+    assert_eq!(*state.lock().await, 11);
+    let terminal = root.finish_submitted(None, Outcome::Succeeded)?;
+    assert!(matches!(
+        terminal.result().await?,
+        Ok(AppendOutcome::Committed(_))
+    ));
+    let mut query = TraceQuery::new(
+        stream.follow(0, Default::default()).await?,
+        Default::default(),
+    );
+    let mut completed = 0;
+    let mut worker_completed = false;
+    while completed < 2 {
+        if let Some(Observation::Completed { start, result, .. }) = query.next().await? {
+            if start.name == "worker_guard" {
+                worker_completed = true;
+                assert_eq!(start.parent, Some(parent));
+                assert_eq!(start.guarantee.as_deref(), Some("exclusive_original_state"));
+                assert_eq!(result, Outcome::Succeeded);
+            } else {
+                assert_eq!(start.name, "owner");
+            }
+            completed += 1;
+        }
+    }
+    assert!(worker_completed, "owned worker lost its original parent");
+    let tail = stream.tail().await?;
+    let (complete, finished) = futures::channel::oneshot::channel();
+    let worker: crate::BoxProviderFuture<'static, ()> = Box::pin(async move {
+        let mut held = observe_guard(request(), state.lock()).await;
+        *held = 12;
+        drop(held);
+        let _ = complete.send(());
+    });
+    crate::runtime::PlatformExecutor.spawn_owned(worker);
+    finished.await?;
+    assert_eq!(
+        stream.tail().await?,
+        tail,
+        "worker owner leaked to unrelated submission"
+    );
+    Ok(())
+}
 
+#[tokio::test]
+#[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
 async fn original_guard_unlock_precedes_its_trace_settlement()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::trace::{Recorder, Request, observe_guard};
