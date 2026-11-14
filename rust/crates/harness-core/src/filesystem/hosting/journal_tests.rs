@@ -64,7 +64,8 @@ async fn private_metadata_uses_the_session_cut_before_and_after_an_authored_over
             Some(&original),
             ContentAccess::default(),
         )
-        .await?
+        .await
+        .map_err(|error| format!("read absent metadata: {error}"))?
         .is_none()
     );
     let reference = workspace_ref(
@@ -83,10 +84,12 @@ async fn private_metadata_uses_the_session_cut_before_and_after_an_authored_over
         ],
         &crate::IdempotencyKey::new("private-title-metadata")?,
     )
-    .await?;
+    .await
+    .map_err(|error| format!("publish metadata override: {error}"))?;
     let after = host
         .stat_private_path(private, &grant, "ui/title", None, ContentAccess::default())
-        .await?
+        .await
+        .map_err(|error| format!("read authored metadata: {error}"))?
         .ok_or("authored title metadata is absent")?;
     assert_eq!(after.logical_bytes, Some(b"authored title".len() as u64));
     assert_ne!(after.file_id, before.file_id);
@@ -98,7 +101,8 @@ async fn private_metadata_uses_the_session_cut_before_and_after_an_authored_over
             Some(&original),
             ContentAccess::default(),
         )
-        .await?,
+        .await
+        .map_err(|error| format!("reopen computed metadata cut: {error}"))?,
         Some(before)
     );
     Ok(())
