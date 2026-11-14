@@ -480,10 +480,37 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
         request: CommitRequest,
     ) -> impl std::future::Future<Output = Result<CommitOutcome, StreamError>> + ProviderTask {
         async move {
-            match self.write(WriteRequest::Commit(request)).await? {
-                WriteOutcome::Commit(outcome) => Ok(outcome),
-                _ => Err(StreamError::InvalidResponse),
+            #[cfg(feature = "serde")]
+            let diagnostic =
+                crate::trace::any_source(request.conditions().map(CommitCondition::path).chain(
+                    request.mutations().flat_map(|mutation| {
+                        std::iter::once(mutation.path()).chain(match mutation {
+                            CommitMutation::Fork { source, .. } => Some(source),
+                            CommitMutation::Append { .. } => None,
+                        })
+                    }),
+                ));
+            let work = async move {
+                match self.write(WriteRequest::Commit(request)).await? {
+                    WriteOutcome::Commit(outcome) => Ok(outcome),
+                    _ => Err(StreamError::InvalidResponse),
+                }
+            };
+            #[cfg(feature = "serde")]
+            if !diagnostic {
+                return crate::trace::observe(
+                    crate::trace::Request {
+                        name: "stream.commit",
+                        mechanism: crate::trace::Mechanism::Commit,
+                        parent: None,
+                        guarantee: Some("atomic_keyed_multi_path_publication_decision"),
+                    },
+                    work,
+                    |_| None,
+                )
+                .await;
             }
+            work.await
         }
     }
 
