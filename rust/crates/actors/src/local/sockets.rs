@@ -188,8 +188,7 @@ pub(crate) struct Layout {
 }
 
 impl Layout {
-    pub(crate) fn new<P: StreamProvider + ?Sized>(store: &Store<P>) -> Result<Self, Error> {
-        let root = StreamPath::new(format!("{}/_sockets/v1", store.root()))?;
+    pub(crate) fn new(root: StreamPath) -> Result<Self, Error> {
         Ok(Self {
             epochs: StreamPath::new(format!("{root}/epochs"))?,
             root,
@@ -684,17 +683,22 @@ fn host_error(reason: &str) -> GuestError {
 }
 
 impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
-    /// Open the socket host of `store`'s runtime. Every socket a previous
+    /// Open one socket host over the actor `store`. `root` is the stable,
+    /// host-owned socket ledger root; independently owned hosts sharing an
+    /// actor store MUST use distinct roots. A replacement MUST reuse its
+    /// predecessor's root. This does not change the actor store's state paths.
+    /// Every socket a previous
     /// incarnation left open receives Close(Runtime, 1012) first, in work
     /// proportional to those sockets, and that incarnation can open no more.
     /// Of hosts opening concurrently, at most one succeeds; the others fail
     /// with [`Error::Conflict`].
     pub async fn open(
         store: Store<P>,
+        root: StreamPath,
         executor: Arc<dyn Executor>,
         clock: Arc<dyn Clock>,
     ) -> Result<Self, Error> {
-        let layout = Layout::new(&store)?;
+        let layout = Layout::new(root)?;
         let epochs = layout.epochs.clone();
         let (tail, last) = match store.provider().head(epochs.clone()).await {
             Ok(head) => (head.tail, head.last),
