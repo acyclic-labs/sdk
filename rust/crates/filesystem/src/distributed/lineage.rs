@@ -642,15 +642,25 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         work.append_record(
             &mut mutations,
             path,
-            [acyclic_stream::OwnedBytes::from_static(b"acyclic.fs.operations/v1")],
+            [acyclic_stream::OwnedBytes::from_static(
+                b"acyclic.fs.operations/v1",
+            )],
         )?;
         let request = CommitRequest {
             deadline_unix_millis: None,
             effects: crate::distributed::composition::funded_effect(
-                acyclic_stream::CommitEffect { conditions, mutations, soft: true },
+                acyclic_stream::CommitEffect {
+                    conditions,
+                    mutations,
+                    soft: true,
+                },
                 work,
             )?,
-            idempotency_key: work.key(self.placement.key_scope(), b"operation-namespace/v1", &[])?,
+            idempotency_key: work.key(
+                self.placement.key_scope(),
+                b"operation-namespace/v1",
+                &[],
+            )?,
         };
         let result = self.commit(request, None, work, None::<&mut ()>).await;
         if !work.is_native() {
