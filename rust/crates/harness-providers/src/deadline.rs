@@ -271,21 +271,16 @@ impl Stream for Guarded {
 
     fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
-        if this.body.is_none() {
+        let Some(body) = this.body.as_mut() else {
             return Poll::Ready(None);
-        }
+        };
         // The original deadline precedes ready bytes and EOF even if the timer
         // driver has not yet delivered its wake.
         if this.deadline.expired() {
             let error = this.deadline.timeout();
             return this.end(Err(error));
         }
-        if let Poll::Ready(item) = this
-            .body
-            .as_mut()
-            .expect("live response body")
-            .poll_next_unpin(context)
-        {
+        if let Poll::Ready(item) = body.poll_next_unpin(context) {
             if this.deadline.expired() {
                 return this.end(Err(this.deadline.timeout()));
             }

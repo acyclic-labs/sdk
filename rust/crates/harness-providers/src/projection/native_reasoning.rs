@@ -87,8 +87,9 @@ pub(super) fn replay_responses_with(
     use super::wire::{Item, Message};
     let raw: Vec<_> = items
         .iter()
-        .map(|item| serde_json::to_vec(item).unwrap())
-        .collect();
+        .map(serde_json::to_vec)
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|error| crate::invalid(error.to_string()))?;
     let mut messages = Vec::new();
     for (item, bytes) in items.iter().zip(&raw) {
         let next = match validated(Adapter::Responses, bytes) {
@@ -103,10 +104,13 @@ pub(super) fn replay_responses_with(
         )?;
     }
     super::sequence::finish(Adapter::Responses, &mut messages, false)?;
-    let encoded = serde_json::to_vec(&messages).unwrap();
-    match crate::json(&encoded).unwrap() {
+    let encoded =
+        serde_json::to_vec(&messages).map_err(|error| crate::invalid(error.to_string()))?;
+    match crate::json(&encoded)? {
         serde_json::Value::Array(output) => Ok(output),
-        _ => unreachable!("a message list encodes as an array"),
+        _ => Err(crate::invalid(
+            "a replayed message list must encode as an array",
+        )),
     }
 }
 
