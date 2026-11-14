@@ -17,6 +17,30 @@ unsettled rather than certifying a result without its receipt. The original
 enqueue, durability confirmation and reconciliation operations still determine
 when a result is available.
 
+## Trace files and live client queries
+
+`live/agents/self/trace/<from>/<count>.json` reads an explicit page of the
+selected agent's trace stream through the ordinary authenticated file host.
+An optional `/outliers/<mechanism>/<nanoseconds>` suffix selects a threshold.
+The SDK's shared query reports covered cursors, per-mechanism inclusive time,
+known bytes, unsettled waits, comparisons and missing guarantees. A caught-up
+window does not prove that outstanding work settled; starts outside the window
+cannot contribute invented durations.
+
+The client `reader::live::trace::File` feeds the same query from the original
+Reader's cached pages and live deliveries. `want` selects its next bounded
+page; `advance` borrows already loaded records and their original publication
+coordinates. It opens no additional reader or follow and does not copy payloads.
+The caller supplies the stream to the Reader's existing follow selection.
+
+A retained projection is bound to its original Reader and cache metadata.
+Replacement, metadata eviction, source reset or cache replacement invalidates
+that binding. Reopen from retained history after continuity loss. A restored
+cache row without immutable publication coordinates cannot be treated as
+original evidence. Neither file construction nor a continuity token grants
+read authority. These queries do not establish universal request-path coverage,
+automatic cache-prefix evidence, idle-child detection or production crash capture.
+
 ## Original model recovery observations
 
 Generation recovery emits `ModelEvent::Wait` through the original model stream.

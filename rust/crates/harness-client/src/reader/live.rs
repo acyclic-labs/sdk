@@ -14,15 +14,45 @@ use std::num::NonZeroU32;
 #[cfg(test)]
 mod tests;
 
+/// Request-span files over this same original reader and shared projection.
+pub mod trace;
+
 /// One public file's original committed record source.
 #[derive(Clone, Debug)]
 pub struct Source {
     stream: StreamPath,
 }
 
+/// Continuity of the original cache facts, not permission to read them.
+/// Dropped metadata, replacement and source reset retire this token. Ordinary
+/// reads and appends do not. No token is allocated for unbound sources.
+pub struct Custody {
+    reader: std::sync::Weak<()>,
+    facts: std::sync::Weak<()>,
+}
+
+impl Custody {
+    /// Retained projections must also check the original source's admission.
+    pub fn check(&self, reader: &Reader, source: &Source) -> Result<(), Error<'static>> {
+        if !self
+            .reader
+            .ptr_eq(&std::sync::Arc::downgrade(&reader.identity))
+            || self.facts.strong_count() == 0
+            || !reader.cache().retains_custody(&source.stream, &self.facts)
+        {
+            Err(Error::ContinuityLost)
+        } else {
+            Ok(())
+        }
+    }
+}
+
 /// A live value must not turn a missing source, gap or refused read into zero.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Error<'a> {
+    /// Retained measurements belong to source facts which have been retired.
+    #[error("live source continuity lost; recovery: reopen the projection from retained history")]
+    ContinuityLost,
     /// The original Reader has no source custody.
     #[error("live source is unreadable; recovery: restore the original reader's source admission")]
     Unreadable,
@@ -45,6 +75,20 @@ pub enum Error<'a> {
 }
 
 impl Source {
+    /// Bind a retained projection to the existing metadata lifetime, without
+    /// retaining that metadata or opening another reader/follow. Acknowledging
+    /// a read issue cannot make retired facts current again.
+    pub fn custody<'a>(&self, reader: &'a mut Reader) -> Result<Custody, Error<'a>> {
+        if !reader.readable() {
+            return Err(Error::Unreadable);
+        }
+        let custody = Custody {
+            reader: std::sync::Arc::downgrade(&reader.identity),
+            facts: reader.cache_mut().custody(&self.stream),
+        };
+        self.observed_tail(reader)?;
+        Ok(custody)
+    }
     /// Bind the original stream backing this file. An agent
     /// name, request digest or phase is not used to reconstruct its identity.
     pub const fn new(stream: StreamPath) -> Self {
