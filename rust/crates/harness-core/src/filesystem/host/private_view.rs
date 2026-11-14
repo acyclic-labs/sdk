@@ -9,6 +9,11 @@ pub(super) const FORMAT: &str = "lazy-v1";
 
 pub(super) trait PrivateView: Send + Sync {
     fn workspace_id(&self) -> acyclic_fs::WorkspaceId;
+    fn watch_source(
+        &self,
+        sink: Arc<dyn acyclic_fs::demand::SourceChangeSink>,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Option<Box<dyn acyclic_fs::demand::SourceWatch>>>;
     fn validate<'a>(
         &'a self,
         cut: &'a LazySnapshotRef,
@@ -56,6 +61,13 @@ where
 {
     fn workspace_id(&self) -> acyclic_fs::WorkspaceId {
         self.workspace().id()
+    }
+    fn watch_source(
+        &self,
+        sink: Arc<dyn acyclic_fs::demand::SourceChangeSink>,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Option<Box<dyn acyclic_fs::demand::SourceWatch>>> {
+        LazyWorkspace::watch_source(self, sink, ctx).map_err(Into::into)
     }
     fn validate<'a>(
         &'a self,
@@ -153,6 +165,21 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static, D: DemandS
 {
     fn workspace_id(&self) -> acyclic_fs::WorkspaceId {
         self.workspace.id()
+    }
+    fn watch_source(
+        &self,
+        sink: Arc<dyn acyclic_fs::demand::SourceChangeSink>,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Option<Box<dyn acyclic_fs::demand::SourceWatch>>> {
+        let cancellation = ctx.cancellation().clone();
+        let work = ctx.native_work().ok_or_else(|| {
+            Error::from(acyclic_fs::LazyWorkspaceError::Demand(
+                acyclic_fs::demand::DemandError::NativeWorkUnavailable,
+            ))
+        })?;
+        self.source
+            .watch(sink, work, &cancellation)
+            .map_err(|error| Error::from(acyclic_fs::LazyWorkspaceError::Demand(error)))
     }
     fn validate<'a>(
         &'a self,
@@ -304,7 +331,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Ok(host)
     }
 
-    pub(super) async fn private_snapshot(
+    pub(in crate::filesystem) fn has_private_source(&self) -> bool {
+        self.private_view.is_some()
+    }
+
+    pub(in crate::filesystem) fn is_private_generation(&self, generation: &GenerationRef) -> bool {
+        self.private_view.is_some() && generation.as_resource().version() == Some(FORMAT)
+    }
+
+    pub(in crate::filesystem) fn watch_private_source(
+        &self,
+        workspace: &Workspace<A, O>,
+        sink: Arc<dyn acyclic_fs::demand::SourceChangeSink>,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Option<Box<dyn acyclic_fs::demand::SourceWatch>>> {
+        self.private_view
+            .as_ref()
+            .filter(|view| view.workspace_id() == workspace.id())
+            .ok_or_else(|| Error::Unsupported("private source binding is unavailable".into()))?
+            .watch_source(sink, ctx)
+    }
+
+    pub(in crate::filesystem) async fn private_snapshot(
         &self,
         workspace: &Workspace<A, O>,
         expected: Option<&GenerationRef>,
@@ -363,7 +411,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         result.map(Some)
     }
 
-    pub(super) fn private_generation_ref(
+    pub(in crate::filesystem) fn private_generation_ref(
         &self,
         cut: &LazySnapshotRef,
         expected: Option<&GenerationRef>,
@@ -419,7 +467,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         result
     }
 
-    pub(super) async fn validate_private_snapshot(
+    pub(in crate::filesystem) async fn validate_private_snapshot(
         &self,
         cut: &LazySnapshotRef,
         io: &PreparationIo,

@@ -223,8 +223,10 @@ impl<
         })
     }
 
+    /// Subscribes to the original source's changes without reading its content.
+    /// A retained fork cut is immutable and therefore starts no source watch.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn watch_source(
+    pub fn watch_source(
         &self,
         sink: Arc<dyn crate::demand::SourceChangeSink>,
         ctx: &mut KernelAccounting<'_>,

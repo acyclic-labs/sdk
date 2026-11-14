@@ -754,6 +754,85 @@ async fn tool_result_reads_keep_the_settled_journal_cut() -> TestResult {
 }
 
 #[tokio::test]
+async fn computed_directory_waits_wake_on_original_stream_changes_without_volume_writes()
+-> TestResult {
+    use crate::conversation::{DirectoryQuery, DirectoryTarget};
+    fn query<'a>(path: &'a str, after: Option<&'a GenerationRef>) -> DirectoryQuery<'a> {
+        DirectoryQuery {
+            target: DirectoryTarget::Private {},
+            path,
+            generation: None,
+            after_generation: after,
+            after: None,
+            maximum_entries: 32,
+        }
+    }
+    let (bound, agent) = binding().await?;
+    let state = bound.agents().state(&agent).await?;
+    let reference = super::super::super::bounded_io::content_workspace(
+        &bound.volumes.provider,
+        state.volumes[0].volume()?,
+        None,
+    )?;
+    let authored = bound.volumes.resolve(&reference, None).await?.generation;
+    // Both present and absent directories retain the complete source cut.
+    for (path, notice) in [("ui", "first.md"), ("ui/absent", "second.md")] {
+        let selected = bound
+            .directory_page(&agent, query(path, None), None)
+            .await?;
+        assert_eq!(selected.generation.as_resource().version(), Some("lazy-v1"));
+        let waiting = bound.directory_page(&agent, query(path, Some(&selected.generation)), None);
+        futures::pin_mut!(waiting);
+        // One explicit poll establishes that unchanged source state stays pending.
+        assert!(futures::poll!(waiting.as_mut()).is_pending());
+        let status = crate::agent::StatusRecord {
+            cancelled_input: None,
+            phase: Phase::WaitingUser {
+                path: notice.into(),
+            },
+            cursor: 0,
+            conversation: 0,
+            child_settlement: None,
+            child_wakes: None,
+        }
+        .encode()?;
+        bound
+            .agents()
+            .provider()
+            .append(acyclic_stream::AppendRequest {
+                path: agent.status()?,
+                records: vec![status.into()],
+                if_tail: None,
+                idempotency_key: acyclic_stream::IdempotencyKey::unique(),
+            })
+            .await?;
+        let changed = waiting.await?;
+        assert_ne!(changed.generation, selected.generation);
+        assert_eq!(
+            bound.volumes.resolve(&reference, None).await?.generation,
+            authored
+        );
+        let (bytes, _) = bound
+            .read_path(
+                &agent,
+                DirectoryTarget::Private {},
+                "ui/status.md",
+                &changed.generation,
+                acyclic_fs::ByteRange {
+                    offset: 0,
+                    length: 4096,
+                },
+            )
+            .await?;
+        assert!(std::str::from_utf8(bytes.as_ref())?.contains(notice));
+        if path == "ui/absent" {
+            assert!(changed.entries.is_empty());
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn workspace_wait_follows_branch_commits_and_checkout_changes() -> TestResult {
     use crate::conversation::{DirectoryQuery, DirectoryTarget};
     use futures::FutureExt as _;

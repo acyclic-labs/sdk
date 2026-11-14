@@ -152,20 +152,20 @@ where
         let binding = self
             .directory_binding(agent, query.target, query.path)
             .await?;
+        let host = self.view_host(agent, &binding.volume).await?;
         let generation = match query.generation {
             Some(generation) => generation.clone(),
             None => {
-                self.volume_generation(&binding.volume, None, query.after_generation)
+                self.volume_generation(&host, &binding.volume, query.after_generation)
                     .await?
             }
         };
         let options = super::super::DirectoryOptions {
-            generation: query.generation,
+            generation: Some(&generation),
             after: query.after,
             maximum_entries: query.maximum_entries,
             ceiling: Some(binding.scope.capabilities()),
         };
-        let host = self.view_host(agent, &binding.volume).await?;
         let page = host
             .list_private_directory_with_credit(
                 &binding.volume,
