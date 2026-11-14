@@ -97,10 +97,10 @@ fn generated_typescript_variant_fields_match_rust_serde_fixtures() {
     let bisect = json!({"active": true, "good": commit.id, "bad": null, "current": commit.id, "remaining": 1, "first_bad": null});
     let lazy = json!({
         "kind": "lazy", "id": vec![1; 32], "workspace_id": vec![2; 16], "authored_generation": generation(3),
-        "source": {"identity": vec![4; 16], "epoch": 7}, "overlay": vec![5; 32], "shadows": vec![6; 32],
+        "source": {"identity": vec![4; 16], "epoch": 7, "components": [0, 1, 2]}, "overlay": vec![5; 32], "shadows": vec![6; 32],
     });
-    let lazy: GitTreeRef = serde_json::from_value(lazy).expect("lazy tree");
-    let lazy = serde_json::to_value(lazy).unwrap();
+    let typed: GitTreeRef = serde_json::from_value(lazy.clone()).expect("lazy tree");
+    assert_eq!(serde_json::to_value(typed).unwrap(), lazy);
     let proof = GitCaptureProof {
         fork_parent: tree(1),
         initial_generation: generation(1),
