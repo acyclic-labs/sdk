@@ -1,23 +1,44 @@
 //! Explicit, bounded stream dependencies shared by readers and projections.
 use crate::StreamPath;
 
-/// Protocol-sized requests covering exactly one logical listing page. Offsets
-/// advance by the requested span even when authorization hides returned rows.
-/// No allocation or request is performed until the consumer advances it.
-pub fn listing_chunks(
-    index: u32,
-    limit: u32,
-) -> Result<impl Iterator<Item = (u64, u32)>, crate::StreamError> {
-    if limit == 0 {
-        return Err(crate::StreamError::InvalidArgument);
+/// Bounded rank traversal of one logical listing page. Byte-shortened replies
+/// resume within the span; authorization-hidden rows retain their coordinates.
+pub struct ListingCursor {
+    offset: u64,
+    remaining: u32,
+}
+impl ListingCursor {
+    /// Selects a logical page without visiting earlier pages.
+    pub fn new(index: u32, limit: u32) -> Result<Self, crate::StreamError> {
+        if limit == 0 {
+            return Err(crate::StreamError::InvalidArgument);
+        }
+        Ok(Self {
+            offset: u64::from(index) * u64::from(limit),
+            remaining: limit,
+        })
     }
-    let start = u64::from(index) * u64::from(limit);
-    Ok((0..limit).step_by(crate::MAX_ITEMS).map(move |from| {
-        (
-            start + u64::from(from),
-            (limit - from).min(crate::MAX_ITEMS as u32),
-        )
-    }))
+    /// Rank and protocol-sized credit for the next request, if any.
+    pub fn request(&self) -> Option<(u64, u32)> {
+        (self.remaining != 0).then(|| (self.offset, self.remaining.min(crate::MAX_ITEMS as u32)))
+    }
+    /// Advances by original provider progress, never projected visible length.
+    pub fn advance(&mut self, page: &crate::ChildrenPage) -> Result<(), crate::StreamError> {
+        let (_, limit) = self.request().ok_or(crate::StreamError::InvalidResponse)?;
+        if page.children.len() > page.scanned as usize
+            || page.scanned > limit
+            || (page.next_after.is_some() && page.scanned == 0)
+        {
+            return Err(crate::StreamError::InvalidResponse);
+        }
+        self.offset += u64::from(page.scanned);
+        self.remaining = if page.next_after.is_some() {
+            self.remaining - page.scanned
+        } else {
+            0
+        };
+        Ok(())
+    }
 }
 
 /// One rendering need, stated each frame.

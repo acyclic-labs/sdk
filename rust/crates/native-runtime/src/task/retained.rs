@@ -246,7 +246,7 @@ impl Inner {
             return;
         }
         loop {
-            self.submission_handoff.begin();
+            self.submission_handoff.consume();
             let mut submission = self
                 .submission
                 .lock()

@@ -805,7 +805,12 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
                 ..page("tree", 1)?
             };
             let raw = provider.children_page(indexed.clone()).await?;
+            let scanned = raw.scanned;
             let projected = visibility.page(raw, tail_stream)?;
+            assert_eq!(
+                projected.scanned, scanned,
+                "authorization changed raw rank progress"
+            );
             assert_eq!(client.children_page(indexed, 1).await?, projected);
         }
         let view = client.heads(request.clone(), 1).await?;

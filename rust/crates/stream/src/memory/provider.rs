@@ -586,6 +586,7 @@ fn children_at(
         if crate::wire_codec::requests::block_len(crate::wire_codec::requests::children_page_len(
             candidate_bytes,
             continuation,
+            (rows.len() + 1) as u32,
         )) > remaining
         {
             if rows.is_empty() {
@@ -620,11 +621,13 @@ fn children_at(
     if crate::wire_codec::requests::block_len(crate::wire_codec::requests::children_page_len(
         page_bytes,
         next_after.as_ref(),
+        rows.len() as u32,
     )) > remaining
     {
         return Err(StreamError::LimitExceeded);
     }
     Ok(ChildrenPage {
+        scanned: rows.len() as u32,
         hierarchy_version,
         children: rows,
         next_after,

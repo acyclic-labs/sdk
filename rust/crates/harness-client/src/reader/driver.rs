@@ -496,8 +496,8 @@ async fn children<P: StreamProvider + ?Sized>(
     mut version: Option<acyclic_stream::CommitId>,
 ) -> Result<Outcome, StreamError> {
     let mut children = Vec::new();
-    let mut chunks = acyclic_stream::demand::listing_chunks(index, limit)?.peekable();
-    while let Some((offset, chunk)) = chunks.next() {
+    let mut cursor = acyclic_stream::demand::ListingCursor::new(index, limit)?;
+    while let Some((offset, chunk)) = cursor.request() {
         let page = provider
             .children_page(ChildrenPageRequest {
                 offset,
@@ -513,12 +513,13 @@ async fn children<P: StreamProvider + ?Sized>(
             return Err(StreamError::InvalidResponse);
         }
         version = Some(page.hierarchy_version);
+        cursor.advance(&page)?;
         children.extend(page.children.into_iter().map(|child| ListedChild {
             path: child.path,
             origin: child.origin,
             tail: child.tail_record.map(fetched),
         }));
-        if chunks.peek().is_none() || page.next_after.is_none() {
+        if cursor.request().is_none() {
             return Ok(Outcome::Children {
                 children,
                 next: page.next_after,
@@ -559,6 +560,85 @@ async fn read<P: StreamProvider + ?Sized>(
 mod tests {
     use super::*;
     use acyclic_stream::{AppendRequest, ForkRequest, IdempotencyKey, MemoryStream};
+
+    #[test]
+    fn byte_short_child_pages_preserve_logical_rank_spans() {
+        futures::executor::block_on(async {
+            let provider = MemoryStream::default();
+            let parent = StreamPath::new("byte-pages/children").unwrap();
+            let total = acyclic_stream::MAX_ITEMS as u32 + 5;
+            let large =
+                acyclic_stream::OwnedBytes::from(vec![b'x'; acyclic_stream::MAX_RECORD_BYTES]);
+            let mut expected = Vec::new();
+            for index in 0..total {
+                let child = StreamPath::new(format!("{parent}/{index:04}")).unwrap();
+                expected.push(child.clone());
+                provider
+                    .append(AppendRequest {
+                        path: StreamPath::new(format!("{child}/body")).unwrap(),
+                        records: vec![if index < 40 {
+                            large.clone().into()
+                        } else {
+                            b"small".as_slice().into()
+                        }],
+                        if_tail: Some(0),
+                        idempotency_key: IdempotencyKey::unique(),
+                    })
+                    .await
+                    .unwrap();
+            }
+            let first = provider
+                .children_page(ChildrenPageRequest {
+                    parent: Some(parent.clone()),
+                    after: None,
+                    offset: 0,
+                    tail_stream: Some(StreamPath::new("body").unwrap()),
+                    hierarchy_version: None,
+                    limit: 64,
+                })
+                .await
+                .unwrap();
+            assert!(
+                first.scanned > 0 && first.scanned < 64,
+                "fixture did not exercise a byte-short response"
+            );
+            assert_eq!(first.scanned as usize, first.children.len());
+            let version = first.hierarchy_version;
+            for (index, limit) in [
+                (0, 64),
+                (1, 64),
+                (0, acyclic_stream::MAX_ITEMS as u32 + 1),
+                (1, acyclic_stream::MAX_ITEMS as u32 + 1),
+            ] {
+                let Outcome::Children {
+                    children: rows,
+                    next,
+                    version: selected,
+                } = children(
+                    &provider,
+                    parent.clone(),
+                    index,
+                    limit,
+                    Some(StreamPath::new("body").unwrap()),
+                    Some(version),
+                )
+                .await
+                .unwrap()
+                else {
+                    panic!("listing returned another outcome");
+                };
+                let start = (index as usize * limit as usize).min(expected.len());
+                let end = (start + limit as usize).min(expected.len());
+                assert_eq!(
+                    rows.iter().map(|row| row.path.clone()).collect::<Vec<_>>(),
+                    expected[start..end],
+                    "byte-short response skipped children"
+                );
+                assert_eq!(next.is_some(), end < expected.len());
+                assert_eq!(selected, version);
+            }
+        });
+    }
 
     #[test]
     fn indexed_listing_reaches_cold_and_evicted_pages_in_one_request() {

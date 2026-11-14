@@ -183,6 +183,7 @@ pub(super) fn seeds(streams: &[(String, Vec<u8>)]) -> Result<Seeds, Box<dyn std:
         c::head_to_wire(head.clone())
     );
     let page = ChildrenPage {
+        scanned: 1,
         hierarchy_version: record.commit_id,
         children: vec![Child {
             path: StreamPath::new("codec")?,

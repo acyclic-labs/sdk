@@ -482,20 +482,21 @@ describe("website Stream contract", () => {
     const sourceHierarchyVersion = new Uint8Array(32).fill(8);
     const projected = projectMemoryResponse("children_page", toBinary(ChildrenPageResponseSchema, create(ChildrenPageResponseSchema, {
       hierarchyVersion: sourceHierarchyVersion,
+      scanned: 2,
       children: [{ path: "runs/a" }, { path: "runs/b" }],
       nextAfter: "runs/b",
     }))) as { readonly hierarchyVersion: Uint8Array; readonly children: readonly { readonly path: string }[]; readonly nextAfter?: string };
-    expect(projected).toEqual({ hierarchyVersion: sourceHierarchyVersion, children: [{ path: "runs/a" }, { path: "runs/b" }], nextAfter: "runs/b" });
+    expect(projected).toEqual({ hierarchyVersion: sourceHierarchyVersion, scanned: 2, children: [{ path: "runs/a" }, { path: "runs/b" }], nextAfter: "runs/b" });
     expect(projected.hierarchyVersion).not.toBe(sourceHierarchyVersion);
     sourceHierarchyVersion[0] = 1;
     expect(projected.hierarchyVersion[0]).toBe(8);
 
     expect(() => projectMemoryResponse("children_page", toBinary(ChildrenPageResponseSchema, create(ChildrenPageResponseSchema)))).toThrow();
     expect(() => projectMemoryResponse("children_page", toBinary(ChildrenPageResponseSchema, create(ChildrenPageResponseSchema, {
-      hierarchyVersion: new Uint8Array(32).fill(8), children: [{ path: "runs/b" }, { path: "runs/a" }],
+      hierarchyVersion: new Uint8Array(32).fill(8), scanned: 2, children: [{ path: "runs/b" }, { path: "runs/a" }],
     })))).toThrow();
     expect(() => projectMemoryResponse("children_page", toBinary(ChildrenPageResponseSchema, create(ChildrenPageResponseSchema, {
-      hierarchyVersion: new Uint8Array(32).fill(8), children: [{ path: "runs/a" }], nextAfter: "runs/missing",
+      hierarchyVersion: new Uint8Array(32).fill(8), scanned: 1, children: [{ path: "runs/a" }], nextAfter: "runs/0",
     })))).toThrow();
   });
 
@@ -697,15 +698,15 @@ describe("website Stream contract", () => {
   test("hosted children pages use the Rust response contract", async () => {
     const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_input, init) => {
       expect(JSON.parse(String(init?.body))).toEqual({ parent: "runs", after: "runs/a", hierarchyVersion: encodedCommitId, limit: 2 });
-      return new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, children: [{ path: "runs/b" }], nextAfter: "runs/b" }));
+      return new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, scanned: 1, children: [{ path: "runs/b" }], nextAfter: "runs/b" }));
     } });
     const page = await provider.childrenPage({ parent: "runs", after: "runs/a", hierarchyVersion: new Uint8Array(32).fill(7), limit: 2 });
-    expect(page).toEqual({ hierarchyVersion: new Uint8Array(32).fill(7), children: [{ path: "runs/b" }], nextAfter: "runs/b" });
+    expect(page).toEqual({ hierarchyVersion: new Uint8Array(32).fill(7), scanned: 1, children: [{ path: "runs/b" }], nextAfter: "runs/b" });
 
-    const nullContinuation = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, children: [], nextAfter: null })) });
-    await expect(nullContinuation.childrenPage({ parent: "runs", limit: 2 })).resolves.toEqual({ hierarchyVersion: new Uint8Array(32).fill(7), children: [] });
+    const nullContinuation = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, scanned: 0, children: [], nextAfter: null })) });
+    await expect(nullContinuation.childrenPage({ parent: "runs", limit: 2 })).resolves.toEqual({ hierarchyVersion: new Uint8Array(32).fill(7), scanned: 0, children: [] });
 
-    const malformed = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, children: [{ path: "runs/b" }], nextAfter: "runs/a" })) });
+    const malformed = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, scanned: 1, children: [{ path: "runs/b" }], nextAfter: "runs/a" })) });
     await expect(malformed.childrenPage({ parent: "runs", limit: 2 })).rejects.toMatchObject({ code: "invalid_response" });
   });
 
@@ -900,7 +901,7 @@ describe("website Stream contract", () => {
     const selected = {
       childrenPage: async (request: unknown) => {
         seen = request;
-        return { hierarchyVersion: hierarchyVersion.slice(), children: [] };
+        return { hierarchyVersion: hierarchyVersion.slice(), scanned: 0, children: [] };
       },
     } as unknown as StreamProvider;
     internal.select = async () => new Promise<StreamProvider>(resolve => { release = resolve; });

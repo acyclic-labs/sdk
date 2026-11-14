@@ -90,10 +90,12 @@ fn revision_len(revision: &crate::Revision) -> usize {
 pub(crate) fn children_page_len(
     children_bytes: usize,
     next_after: Option<&crate::StreamPath>,
+    scanned: u32,
 ) -> usize {
     block_len(32)
         .saturating_add(children_bytes)
         .saturating_add(next_after.map_or(0, |path| block_len(path.as_str().len())))
+        .saturating_add(uint_len((scanned != 0).then_some(u64::from(scanned))))
 }
 
 pub(crate) fn heads_len(view: &crate::Heads) -> usize {
@@ -135,6 +137,7 @@ pub(crate) fn heads_len_with_durability(view: &crate::Heads, deferred: bool) -> 
                 .map(|child| block_len(child_len(child)))
                 .fold(0usize, usize::saturating_add),
             page.next_after.as_ref(),
+            page.scanned,
         ))
     });
     block_len(snapshot)

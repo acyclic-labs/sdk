@@ -418,9 +418,9 @@ where
         };
         if let Some(page) = child_page {
             cut.page_size = self.view.page_size;
-            for (offset, limit) in acyclic_stream::demand::listing_chunks(page, self.view.page_size)
-                .map_err(stream_error)?
-            {
+            let mut cursor = acyclic_stream::demand::ListingCursor::new(page, self.view.page_size)
+                .map_err(stream_error)?;
+            while let Some((offset, limit)) = cursor.request() {
                 let heads = self
                     .heads(
                         Inputs::Children { offset, limit },
@@ -435,6 +435,7 @@ where
                     .as_ref()
                     .ok_or(DemandError::InvalidRequest)?;
                 let more = listing.next_after.is_some();
+                cursor.advance(listing).map_err(stream_error)?;
                 for child in &listing.children {
                     AgentPath::parse_id(child.path.as_str()).map_err(Error::from)?;
                     cut.targets.push((self.links)(&child.path, ctx)?, ctx)?;

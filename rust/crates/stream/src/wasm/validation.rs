@@ -322,6 +322,15 @@ mod http {
         let result = Object::new();
         set(
             &result,
+            "scanned",
+            &JsValue::from_f64(
+                field(item, "scanned")?
+                    .as_u64()
+                    .ok_or("invalid scanned count")? as f64,
+            ),
+        )?;
+        set(
+            &result,
             "hierarchyVersion",
             &bytes_js(field(item, "hierarchyVersion")?)?,
         )?;

@@ -370,7 +370,8 @@ pub fn children_page_request_to_wire(
 pub fn children_page_from_response(
     value: wire::ChildrenPageResponse,
 ) -> Result<crate::ChildrenPage, StreamError> {
-    Ok(crate::ChildrenPage {
+    let page = crate::ChildrenPage {
+        scanned: value.scanned,
         hierarchy_version: commit_id(&value.hierarchy_version)?,
         children: value
             .children
@@ -391,12 +392,20 @@ pub fn children_page_from_response(
             })
             .collect::<Result<_, StreamError>>()?,
         next_after: value.next_after.map(path).transpose()?,
-    })
+    };
+    if page.scanned > crate::MAX_ITEMS as u32
+        || page.children.len() > page.scanned as usize
+        || (page.next_after.is_some() && page.scanned == 0)
+    {
+        return Err(StreamError::InvalidResponse);
+    }
+    Ok(page)
 }
 
 /// Converts a domain children page into its generated wire representation.
 pub fn children_page_to_wire(value: crate::ChildrenPage) -> wire::ChildrenPageResponse {
     wire::ChildrenPageResponse {
+        scanned: value.scanned,
         hierarchy_version: bytes::Bytes::copy_from_slice(value.hierarchy_version.as_bytes()),
         children: value
             .children

@@ -108,7 +108,7 @@ export interface StreamChild {
 }
 /** Each page uses the current snapshot. Supply hierarchyVersion to refuse a changed hierarchy. */
 export type ChildrenPageRequest = Readonly<{ parent?: string; tailStream?: string; after?: string; offset?: bigint; hierarchyVersion?: CommitId; limit: number }>;
-export interface ChildrenPage { readonly hierarchyVersion: CommitId; readonly children: readonly StreamChild[]; readonly nextAfter?: string }
+export interface ChildrenPage { readonly hierarchyVersion: CommitId; readonly children: readonly StreamChild[]; readonly scanned: number; readonly nextAfter?: string }
 export type ForkReceipt = PublicWire<WireForkReceipt, { readonly commitId: CommitId }>;
 
 export type CommitCondition =

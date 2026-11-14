@@ -339,6 +339,8 @@ message ChildrenPageResponse {
   bytes hierarchy_version = 1;
   repeated Child children = 2;
   optional string next_after = 3;
+  // Raw namespace rows consumed before authorization projection.
+  uint32 scanned = 4;
 }
 
 message TailCondition {

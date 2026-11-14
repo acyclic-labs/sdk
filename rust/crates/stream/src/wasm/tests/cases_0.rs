@@ -181,6 +181,7 @@ fn fork_validation_rejects_same_paths_and_oversized_payloads() {
 #[wasm_bindgen_test::wasm_bindgen_test]
 fn page_tail_records_keep_keys_and_attributes() {
     let response = wire::ChildrenPageResponse {
+        scanned: 1,
         hierarchy_version: vec![7; 32].into(),
         children: vec![wire::Child {
             tail: Some(1),
