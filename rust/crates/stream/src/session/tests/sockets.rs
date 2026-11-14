@@ -406,6 +406,52 @@ async fn socket_input_renewal_preserves_the_certified_account() -> TestResult {
 }
 
 #[tokio::test]
+async fn forwarded_owned_credential_renewal_keeps_sibling_channels_live() -> TestResult {
+    let client = client(Arc::new(Echo {
+        gone: std::sync::Mutex::new(None),
+        ends: false,
+        received: None,
+    }));
+    let credential = testing::credential_with_grants(vec![acyclic_auth::contract::ResourceGrant {
+        resource: acyclic_auth::contract::ResourcePattern {
+            name: "actors:/fixture".into(),
+            prefix: false,
+        },
+        actions: vec!["actors/invoke".into()],
+    }]);
+    client.register_credential(0, credential.clone())?;
+    let (owned, slot) = client.with_credential(credential.clone()).await?;
+    let mut sibling = client.actor_socket(Bytes::from_static(b"open"), 0).await?;
+    let mut channel = owned
+        .actor_socket(Bytes::from_static(b"open"), slot)
+        .await?
+        .into_channel();
+    drop(owned); // The original socket and its forwarding input retain custody.
+    assert_eq!(sibling.next().await?.as_deref(), Some(&b"hello"[..]));
+    assert_eq!(
+        channel.outbound.next().await.transpose()?.as_deref(),
+        Some(&b"hello"[..])
+    );
+    channel.inbound.replace_credential(credential)?;
+    channel.inbound.receive(Bytes::from_static(b"renewed"))?;
+    assert_eq!(
+        channel.outbound.next().await.transpose()?.as_deref(),
+        Some(&b"renewed"[..])
+    );
+    channel.inbound.replace_credential(Bytes::new())?;
+    assert_eq!(
+        channel.outbound.next().await,
+        Some(Err(StreamError::AccessDenied))
+    );
+    sibling.send(Bytes::from_static(b"sibling lives")).await?;
+    assert_eq!(
+        sibling.next().await?.as_deref(),
+        Some(&b"sibling lives"[..])
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn forwarded_socket_renews_and_withdraws_its_original_credential() -> TestResult {
     let (gone, left) = oneshot::channel();
     let client = client(Arc::new(Echo {
