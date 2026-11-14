@@ -119,6 +119,13 @@ pub struct GuestContext<Bindings> {
     pub admitted_identity: Option<AdmittedCaller>,
     /// Reserved runtime namespace, independent of manifest bindings.
     pub actor: ActorRuntime,
+    /// Delivery-scoped socket owner. The JavaScript host port uses the SDK's
+    /// binary request/reply codecs; it carries no actor-selected authority.
+    #[ts(
+        optional,
+        type = "(request: Uint8Array, signal?: AbortSignal) => Promise<Uint8Array>"
+    )]
+    pub socket_host: Option<std::sync::Arc<dyn super::SocketHost>>,
     /// Effect retry keys derived from the admitted delivery identity.
     #[ts(type = "(effect: string) => string")]
     pub retry_key: RetryKey,
@@ -136,6 +143,7 @@ impl<Bindings> GuestContext<Bindings> {
             delivery_id: None,
             admitted_identity: None,
             actor: ActorRuntime::default(),
+            socket_host: None,
         }
     }
 }
@@ -147,6 +155,7 @@ pub struct GuestContextBuilder<Bindings> {
     delivery_id: Option<String>,
     admitted_identity: Option<AdmittedCaller>,
     actor: ActorRuntime,
+    socket_host: Option<std::sync::Arc<dyn super::SocketHost>>,
 }
 
 impl<Bindings> GuestContextBuilder<Bindings> {
@@ -165,6 +174,11 @@ impl<Bindings> GuestContextBuilder<Bindings> {
         self.actor = actor;
         self
     }
+    /// Supply the socket host scoped to this admitted actor's delivery.
+    pub fn socket_host(mut self, host: std::sync::Arc<dyn super::SocketHost>) -> Self {
+        self.socket_host = Some(host);
+        self
+    }
     /// Finish context construction and bind effect keys to the admitted delivery.
     pub fn build(self) -> GuestContext<Bindings> {
         let admitted = self.delivery_id.clone();
@@ -174,6 +188,7 @@ impl<Bindings> GuestContextBuilder<Bindings> {
             delivery_id: self.delivery_id,
             admitted_identity: self.admitted_identity,
             actor: self.actor,
+            socket_host: self.socket_host,
             retry_key: Box::new(move |effect| {
                 retry_key(admitted.as_deref().unwrap_or_default(), effect)
             }),
