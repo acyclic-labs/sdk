@@ -30,9 +30,14 @@ pub(crate) struct Call {
 impl Drop for Call {
     fn drop(&mut self) {
         let counts = std::mem::take(&mut *lock(&self.counts));
-        let latency = (*lock(&self.latency)).unwrap_or_else(|| self.started.elapsed());
         let mut ledger = lock(&self.ledger);
         let entry = ledger.operations.entry(self.name).or_default();
+        // Only a call whose future returned completed. A cancelled one is
+        // counted apart and never satisfies a budget.
+        let Some(latency) = *lock(&self.latency) else {
+            entry.cancelled += 1;
+            return;
+        };
         entry.calls += 1;
         entry.total.sum(&counts);
         entry.worst.max(&counts);
@@ -87,8 +92,10 @@ impl Counts {
 /// One operation's calls in a scope.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Operation {
-    /// Completed calls.
+    /// Completed calls: the operation's future returned.
     pub calls: u64,
+    /// Calls dropped before their future returned; never measured.
+    pub cancelled: u64,
     /// Counts summed over all calls.
     pub total: Counts,
     /// The worst single call, per cost (each cost's maximum independently).
@@ -119,7 +126,7 @@ impl Ledger {
     /// The named operation, if any call of it completed.
     #[must_use]
     pub fn operation(&self, name: &str) -> Option<&Operation> {
-        self.operations.get(name)
+        self.operations.get(name).filter(|op| op.calls > 0)
     }
 
     /// Checks each budget against the worst call of its operation. An
@@ -203,8 +210,8 @@ impl fmt::Display for Ledger {
         for (name, operation) in &self.operations {
             write!(
                 f,
-                "  {name}: calls={} worst_latency={:?} worst",
-                operation.calls, operation.latency
+                "  {name}: calls={} cancelled={} worst_latency={:?} worst",
+                operation.calls, operation.cancelled, operation.latency
             )?;
             for (cost, count) in &operation.worst.costs {
                 write!(f, " {cost:?}={count}")?;
@@ -413,6 +420,7 @@ mod tests {
             report.contains("operation pending never completed"),
             "{report}"
         );
+        assert!(report.contains("pending: calls=0 cancelled=1"), "{report}");
     }
 
     #[test]
