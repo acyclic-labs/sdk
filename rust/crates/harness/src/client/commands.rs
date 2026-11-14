@@ -410,6 +410,17 @@ mod tests {
                 query: CommandQuery::Diff
             })
         ));
+        let mut colliding: Vec<_> = catalog.commands.values().cloned().collect();
+        colliding
+            .iter_mut()
+            .find(|command| command.name == "diff")
+            .ok_or_else(|| Error::Invalid("diff command is missing".into()))?
+            .aliases
+            .push("view".into());
+        assert!(matches!(
+            CommandCatalog::from_specs(colliding),
+            Err(Error::Conflict(_))
+        ));
         let view = catalog.resolve("/view compare.md", 64)?;
         assert_eq!(
             view,
