@@ -311,7 +311,7 @@ impl AgentClient {
         if let Some(mut resources) = resources {
             for request in &mut resources {
                 if let Some(wire::session_subscription::Kind::Follow(follow)) = &mut request.kind {
-                    follow.opening_cut = self.all;
+                    follow.opening_cut |= self.all;
                 }
             }
             self.session.replace_interests(subscriptions, resources)?;
@@ -426,7 +426,7 @@ impl AgentClient {
         let Some(wire::session_subscription::Kind::Follow(follow)) = &mut subscription.kind else {
             return Err(WireSessionError::InvalidSubscription.into());
         };
-        follow.opening_cut = self.all;
+        follow.opening_cut |= self.all;
         wire_codec::session::validate_resource(&follow.resource)
             .map_err(WireSessionError::Stream)?;
         self.session.begin_resource(subscription)?;

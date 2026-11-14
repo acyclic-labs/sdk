@@ -925,3 +925,62 @@ async fn source_selection_opens_only_requested_producers() -> Result<(), Box<dyn
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn live_resource_subscriptions_retain_their_requested_opening_cut()
+-> Result<(), Box<dyn std::error::Error>> {
+    let memory = Arc::new(MemoryStream::default());
+    let path = StreamPath::new("resource/opening")?;
+    append(&memory, path.clone(), vec!["original".into()]).await?;
+    let pool = Client::with_transport(
+        Arc::new(Endpoint(memory)),
+        Arc::new(|_| Box::pin(async { Err(StreamError::Unavailable.into()) })),
+        Arc::new(PlatformExecutor),
+    );
+    pool.register_credential(0, session::testing::credential())?;
+    let resource = wire_codec::session::stream_resource(path.as_str());
+    for viewport in [false, true] {
+        let selection = AgentSelection {
+            agent: AgentPath::root(&AgentId::from_bytes([32; 16])),
+            conversation: None,
+            status: None,
+        };
+        let mut observer = AgentClient::observing(pool.clone(), selection.clone(), 0, false, None)?;
+        let mut request = subscription(&path, Default::default(), 0, false);
+        let Some(wire::session_subscription::Kind::Follow(follow)) = &mut request.kind else {
+            return Err("resource follow missing".into());
+        };
+        follow.opening_cut = true;
+        if viewport {
+            observer.set_viewport(selection, std::iter::empty(), [request])?;
+        } else {
+            observer.open_resource(request)?;
+        }
+        let mut drain = crate::EventDrain::new([(resource.clone(), 0)]);
+        let mut original = false;
+        let mut opening = false;
+        while !drain.complete() {
+            let delivery = poll_fn(|cx| observer.poll_delivery(cx)).await?;
+            assert_eq!(delivery.resource, resource);
+            match &delivery.frame.body {
+                Some(wire::session_frame::Body::Data(wire::SessionData {
+                    item: Some(wire::session_data::Item::Record(record)),
+                    ..
+                })) => {
+                    assert!(opening, "the requested opening cut must precede backfill");
+                    assert_eq!(record.sequence, 0);
+                    assert_eq!(record.value.as_ref(), b"original");
+                    original = true;
+                }
+                Some(wire::session_frame::Body::Watermark(mark)) => {
+                    assert_eq!(mark.opening_tail, Some(1), "viewport={viewport}");
+                    opening = true;
+                }
+                _ => {}
+            }
+            drain.accepted(&delivery);
+        }
+        assert!(original, "a cut cannot advance an unread cursor");
+    }
+    Ok(())
+}
