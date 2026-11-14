@@ -110,17 +110,17 @@ fn count_volumes<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u6
     deserializer.deserialize_seq(Count)
 }
 
-/// Version-two checkpoint, committed with its conversation entry and every
-/// retention fork. Its sequence in `AgentPath::history` is the turn's sequence
-/// in the conversation. Readers use ordinary stream reads and follows.
+/// Version-three checkpoint, committed with its conversation entry and every
+/// retention fork. Its sequence in `AgentPath::history` is the exclusive cut
+/// in the conversation; zero is adoption. Readers use stream reads and follows.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HistoryCheckpoint {
     /// Whether a child was still open when this boundary committed.
     pub live_children: bool,
-    /// Descriptor format; readers refuse versions other than 2.
+    /// Descriptor format; readers refuse versions other than 3.
     pub version: u32,
-    /// Exclusive conversation cut, including this settled turn.
+    /// Exclusive conversation cut; zero is the original adoption boundary.
     pub conversation: u64,
     /// Latest context checkpoint at that cut, if any.
     pub checkpoint: Option<u64>,
@@ -149,8 +149,7 @@ impl HistoryCheckpoint {
         }
         let value: Summary = serde_json::from_slice(bytes)
             .map_err(|_| super::Error::Record("history checkpoint is malformed"))?;
-        if value.version != 2 || value.conversation == 0 || value.context.tail > value.conversation
-        {
+        if value.version != 3 || value.context.tail > value.conversation {
             return Err(super::Error::Record(
                 "history checkpoint version or cut is invalid",
             ));
@@ -166,19 +165,44 @@ impl HistoryCheckpoint {
     pub fn decode(bytes: &[u8]) -> Result<Self, super::Error> {
         let checkpoint: Self = serde_json::from_slice(bytes)
             .map_err(|_| super::Error::Record("history checkpoint is malformed"))?;
-        if checkpoint.version != 2 || checkpoint.conversation == 0 {
+        checkpoint.check()?;
+        Ok(checkpoint)
+    }
+
+    /// Decode an original history descriptor while retaining its allocation credit.
+    pub fn decode_accounted(
+        bytes: &[u8],
+        accounting: &mut acyclic_fs::kernel::KernelAccounting<'_>,
+    ) -> Result<
+        acyclic_fs::kernel::Retained<Self>,
+        acyclic_fs::kernel::MetadataDecodeError<super::Error>,
+    > {
+        use acyclic_fs::kernel::MetadataDecodeError;
+        let checkpoint = accounting
+            .decode_json::<Self>(bytes)
+            .map_err(|error| match error {
+                MetadataDecodeError::Work(error) => MetadataDecodeError::Work(error),
+                MetadataDecodeError::Codec(_) => MetadataDecodeError::Codec(super::Error::Record(
+                    "history checkpoint is malformed",
+                )),
+            })?;
+        checkpoint.check().map_err(MetadataDecodeError::Codec)?;
+        Ok(checkpoint)
+    }
+
+    fn check(&self) -> Result<(), super::Error> {
+        let checkpoint = self;
+        if checkpoint.version != 3 {
             return Err(super::Error::Record(
                 "history checkpoint version or cut is invalid",
             ));
         }
         super::records::check_volumes(checkpoint.volumes.iter().map(|volume| &volume.binding))?;
-        let mut bindings = std::collections::BTreeSet::new();
         if checkpoint.volumes.iter().any(|volume| {
             volume
                 .binding
                 .as_volume()
                 .is_none_or(|source| source.class() != crate::conversation::VolumeClass::Project)
-                || !bindings.insert(&volume.binding.name)
         }) {
             return Err(super::Error::Record("saved project bindings are invalid"));
         }
@@ -198,6 +222,6 @@ impl HistoryCheckpoint {
         {
             return Err(super::Error::Record("context checkpoint exceeds its cut"));
         }
-        Ok(checkpoint)
+        Ok(())
     }
 }

@@ -316,7 +316,9 @@ pub(super) fn spawn_at(
     }
     let conversation = adopted.conversation_tail;
     let record = InboxRecord::ForkAdopted(Box::new(adopted)).encode()?;
-    let mut exclude = layout::not_inherited(fresh)?;
+    // An empty conversation starts with this branch's own adoption roots.
+    // There are no settled cases whose boundary zero must be inherited.
+    let mut exclude = layout::not_inherited(fresh || conversation == 0)?;
     let mut selected = Vec::new();
     let mut conditions = vec![
         CommitCondition::Present {
@@ -369,9 +371,20 @@ fn select_history(
     conditions: &mut Vec<CommitCondition>,
     selected: &mut Vec<CommitMutation>,
 ) -> Result<(), Error> {
-    for (source, destination) in [
-        (parent.conversation()?, child.conversation()?),
-        (parent.history()?, child.history()?),
+    for (source, destination, through) in [
+        (
+            parent.conversation()?,
+            child.conversation()?,
+            history.conversation,
+        ),
+        (
+            parent.history()?,
+            child.history()?,
+            history
+                .conversation
+                .checked_add(1)
+                .ok_or(Error::Record("history boundary overflows"))?,
+        ),
     ] {
         if history.conversation > 0 {
             conditions.push(CommitCondition::Absent {
@@ -381,7 +394,7 @@ fn select_history(
                 source,
                 destination,
                 exclude: Vec::new(),
-                at_tail: history.conversation,
+                at_tail: through,
                 records: Vec::new(),
             });
         }

@@ -153,7 +153,21 @@ async fn inheritance_and_tree_binding_follow_the_entry_in_one_commit()
             }],
             vec![acyclic_stream::CommitMutation::Append {
                 path: child.inbox()?,
-                records: vec![acyclic_stream::OwnedBytes::from_static(b"adopted").into()],
+                records: vec![
+                    InboxRecord::ForkAdopted(Box::new(ForkAdopted {
+                        agent: child.id(),
+                        parent: Some(parent.clone()),
+                        profile: None,
+                        forked_at: 0,
+                        conversation_tail: 0,
+                        checkpoint: None,
+                        volumes: bindings.clone(),
+                        brief: None,
+                        policy: None,
+                    }))
+                    .encode()?
+                    .into(),
+                ],
             }],
         )],
     };
@@ -242,7 +256,21 @@ async fn inheritance_and_tree_binding_follow_the_entry_in_one_commit()
             }],
             vec![acyclic_stream::CommitMutation::Append {
                 path: session.inbox()?,
-                records: vec![acyclic_stream::OwnedBytes::from_static(b"session").into()],
+                records: vec![
+                    InboxRecord::ForkAdopted(Box::new(ForkAdopted {
+                        agent: session.id(),
+                        parent: None,
+                        profile: None,
+                        forked_at: 0,
+                        conversation_tail: 0,
+                        checkpoint: None,
+                        volumes: session_bindings.clone(),
+                        brief: None,
+                        policy: None,
+                    }))
+                    .encode()?
+                    .into(),
+                ],
             }],
         )],
     };
