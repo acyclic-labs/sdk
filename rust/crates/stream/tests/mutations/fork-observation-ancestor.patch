@@ -1,0 +1,8 @@
+diff --git a/rust/crates/stream/src/lib/path.rs b/rust/crates/stream/src/lib/path.rs
+--- a/rust/crates/stream/src/lib/path.rs
++++ b/rust/crates/stream/src/lib/path.rs
+@@ -224,3 +224,3 @@
+     pub(crate) fn inherited_by(&self, source: &Self, exclude: &[crate::RelativePath]) -> bool {
+-        relative_suffix(self.as_str(), source.as_str()).is_some_and(|relative| {
++        relative_suffix(self.as_str(), source.as_str()).filter(|relative| relative.is_empty()).is_some_and(|relative| {
+             !exclude

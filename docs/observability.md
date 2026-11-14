@@ -16,6 +16,18 @@ terminal reports cancellation. Other failures and abandoned waits remain
 unsettled rather than certifying a result without its receipt. The original
 enqueue, durability confirmation and reconciliation operations still determine
 when a result is available.
+## Shared named-head observations
+
+Provider `head`, `tail` and `watermarks` requests emit typed `ProviderCall`
+spans from their shared named-head implementation. The same observation covers
+direct provider callers and high-level Stream handles, without another span
+for a handle that delegates to this implementation. History buys one atomic
+history/durability/origin view; tail buys accepted visibility without a flush;
+watermarks buy accepted visibility and confirmed durability at one snapshot.
+Their byte counts remain unknown rather than estimating physical I/O from
+metadata. Reads of the owning trace source suppress self-observation. Without
+an admitted owner, the original provider request runs without diagnostic I/O,
+clock reads or diagnostic allocation.
 
 ## Original model recovery observations
 

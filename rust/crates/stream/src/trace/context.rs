@@ -5,7 +5,7 @@ use std::{cell::RefCell, future::Future, sync::Arc};
 
 pub(super) trait Producer: ProviderPlatform {
     fn enabled(&self) -> bool;
-    fn is_source(&self, path: &crate::StreamPath) -> bool;
+    fn source(&self) -> &crate::StreamPath;
     fn start(
         self: Arc<Self>,
         request: Request,
@@ -184,10 +184,20 @@ pub(crate) fn records(records: crate::RecordStream) -> crate::RecordStream {
 }
 
 pub(crate) fn is_source(path: &crate::StreamPath) -> bool {
+    any_source(std::iter::once(path))
+}
+
+/// Diagnostic path traversal is lazy and only paid by an admitted owner.
+pub(crate) fn any_source<'a>(paths: impl IntoIterator<Item = &'a crate::StreamPath>) -> bool {
+    source_matches(|source| paths.into_iter().any(|path| path == source))
+}
+
+pub(crate) fn source_matches(matches: impl FnOnce(&crate::StreamPath) -> bool) -> bool {
     CURRENT.with_borrow(|active| {
         active
             .as_ref()
-            .is_some_and(|active| active.producer.is_source(path))
+            .filter(|active| active.producer.enabled())
+            .is_some_and(|active| matches(active.producer.source()))
     })
 }
 
