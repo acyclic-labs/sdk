@@ -155,6 +155,16 @@ async fn final_state_packet_shares_the_delivery_fence_and_preserves_flushed_pref
         );
         let address = spawn_with(&store, "joined-state", &[b"emit"]).await?;
         runtime.place(address.clone(), 1).await?;
+        let before = store.load(&address).await?;
+        let previous_checkpoint = before
+            .state()
+            .ok_or("missing initial actor state")?
+            .checkpoint()
+            .cloned();
+        let final_checkpoint = Checkpoint {
+            codec: handler.manifest().codec.clone(),
+            bytes: Bytes::from_static(b"finished"),
+        };
         let delivery = runtime.drain_event(&address);
         futures::pin_mut!(delivery);
         match futures::future::select(delivery.as_mut(), observing).await {
@@ -171,7 +181,7 @@ async fn final_state_packet_shares_the_delivery_fence_and_preserves_flushed_pref
             state.metadata.get("value"),
             Some(&Bytes::from_static(b"first"))
         );
-        assert!(state.checkpoint().is_none());
+        assert_eq!(state.checkpoint(), previous_checkpoint.as_ref());
         assert_eq!(state.alarm().pending(), Some(500));
         if deposed {
             let successor = Runtime::new(
@@ -197,7 +207,14 @@ async fn final_state_packet_shares_the_delivery_fence_and_preserves_flushed_pref
                 b"second"
             }))
         );
-        assert_eq!(state.checkpoint().is_some(), !deposed);
+        assert_eq!(
+            state.checkpoint(),
+            if deposed {
+                previous_checkpoint.as_ref()
+            } else {
+                Some(&final_checkpoint)
+            }
+        );
         assert_eq!(
             state.alarm().pending(),
             Some(if deposed { 500 } else { 1000 })
