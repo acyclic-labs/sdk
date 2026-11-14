@@ -23,43 +23,73 @@ pub enum SentDelivery {
     },
 }
 
-impl Serialize for SentDelivery {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        #[derive(Serialize)]
-        #[serde(tag = "kind", rename_all = "snake_case")]
-        enum View<'a> {
-            Committed {
-                inbox: u64,
-            },
-            Closed,
-            Relayed {
-                relay_seq: u64,
-            },
-            Rejected {
-                reason: &'static str,
-            },
-            PendingAdmission {
-                source: &'a acyclic_stream::StreamPath,
-                from: u64,
+/// Public delivery observation, without an internal relay admission key.
+/// Pending admission acknowledges durable sender-local storage, not receipt by
+/// the recipient. It grants no read or follow authority over the named cursor.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SentStatus<'a> {
+    /// The owning node appended this inbox sequence.
+    Committed { inbox: u64 },
+    /// The recipient is closed.
+    Closed,
+    /// The account admitted this destination-relay sequence.
+    Relayed { relay_seq: u64 },
+    /// The destination could not accept the request.
+    Rejected { reason: route::Rejection },
+    /// Durable locally; awaiting the original account admission.
+    PendingAdmission {
+        /// Sender-local acknowledgement stream, observed with existing authority.
+        source: std::borrow::Cow<'a, acyclic_stream::StreamPath>,
+        /// Original outbox sequence, never a current tail.
+        from: u64,
+    },
+}
+
+impl SentStatus<'_> {
+    /// Retain an observation after its original receipt is released. Only the
+    /// pending cursor needs ownership; ordinary serialization borrows it.
+    pub fn into_owned(self) -> SentStatus<'static> {
+        match self {
+            Self::Committed { inbox } => SentStatus::Committed { inbox },
+            Self::Closed => SentStatus::Closed,
+            Self::Relayed { relay_seq } => SentStatus::Relayed { relay_seq },
+            Self::Rejected { reason } => SentStatus::Rejected { reason },
+            Self::PendingAdmission { source, from } => SentStatus::PendingAdmission {
+                source: std::borrow::Cow::Owned(source.into_owned()),
+                from,
             },
         }
+    }
+}
+
+impl SentDelivery {
+    /// Borrow the same public status used by tools and external clients.
+    pub fn status(&self) -> SentStatus<'_> {
         match self {
-            Self::Complete(Routed::Delivered(delivered)) => View::Committed {
+            Self::Complete(Routed::Delivered(delivered)) => SentStatus::Committed {
                 inbox: delivered.inbox,
             },
-            Self::Complete(Routed::Rejected(route::Rejection::Closed)) => View::Closed,
-            Self::Complete(Routed::Rejected(route::Rejection::NoSuchActor)) => View::Rejected {
-                reason: "no_such_actor",
-            },
-            Self::Complete(Routed::Relayed { relay_seq, .. }) => View::Relayed {
+            Self::Complete(Routed::Rejected(route::Rejection::Closed)) => SentStatus::Closed,
+            Self::Complete(Routed::Rejected(route::Rejection::NoSuchActor)) => {
+                SentStatus::Rejected {
+                    reason: route::Rejection::NoSuchActor,
+                }
+            }
+            Self::Complete(Routed::Relayed { relay_seq, .. }) => SentStatus::Relayed {
                 relay_seq: *relay_seq,
             },
-            Self::Pending { source, from } => View::PendingAdmission {
-                source,
+            Self::Pending { source, from } => SentStatus::PendingAdmission {
+                source: std::borrow::Cow::Borrowed(source),
                 from: *from,
             },
         }
-        .serialize(serializer)
+    }
+}
+
+impl Serialize for SentDelivery {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.status().serialize(serializer)
     }
 }
 

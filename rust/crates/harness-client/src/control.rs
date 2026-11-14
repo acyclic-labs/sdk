@@ -752,9 +752,18 @@ mod tests {
                     return Err(AgentExchangeError::ActorStatus(400));
                 }
                 let call = call.assembled(whole.as_bytes())?;
-                assert!(matches!(call.command(), AgentCommand::Prompt { .. }));
-                return Ok(call.reply(&Ok(AgentReply::Delivered {
-                    delivery: acyclic_harness_core::agent::Delivered::Committed { inbox: 7 },
+                let AgentCommand::Prompt { id, .. } = call.command() else {
+                    return Err(CommandError::Invalid.into());
+                };
+                return Ok(call.reply(&Ok(AgentReply::PeerPublished {
+                    id: id.clone(),
+                    delivery: acyclic_harness_core::agent::SentStatus::PendingAdmission {
+                        source: std::borrow::Cow::Owned(
+                            acyclic_stream::StreamPath::new("routing/outbox/ack")
+                                .map_err(AgentExchangeError::Session)?,
+                        ),
+                        from: 0,
+                    },
                 }))?);
             }
             _ => return Err(CommandError::Invalid.into()),
@@ -797,8 +806,9 @@ mod tests {
         }))?;
         assert!(matches!(
             reply,
-            Ok(AgentReply::Delivered {
-                delivery: acyclic_harness_core::agent::Delivered::Committed { inbox: 7 }
+            Ok(AgentReply::PeerPublished {
+                delivery: acyclic_harness_core::agent::SentStatus::PendingAdmission { from: 0, .. },
+                ..
             })
         ));
         let (head, parts) = sent.split_last().ok_or("nothing sent")?;
@@ -808,6 +818,16 @@ mod tests {
             |part| matches!(part, AgentCommand::Stage { agent: owner, .. } if owner == &agent)
         ));
         let original_head = held.invocations().last().ok_or("no head")?;
+        let assembled = AgentCall::decode(original_head)?.assembled(command.command())?;
+        assert!(
+            assembled
+                .reply(&Ok(AgentReply::PeerPublished {
+                    id: IntentId::try_from("another-intent")?,
+                    delivery: acyclic_harness_core::agent::SentStatus::Relayed { relay_seq: 0 },
+                }))
+                .is_err(),
+            "a durable receipt must belong to the original intent"
+        );
         let mut forged = AgentCall::decode(original_head)?;
         let AgentCommand::Staged { agent: owner, .. } = &mut forged.command else {
             return Err("expected a staged head".into());

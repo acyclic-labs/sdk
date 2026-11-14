@@ -69,7 +69,7 @@ mod reply;
 mod sent;
 pub(crate) use reply::entry as conversation_entry;
 pub use sent::{
-    ReplyWatch, SentDelivery, SentMessage, SentReply, SentReplyStatus, sent, sent_reply,
+    ReplyWatch, SentDelivery, SentMessage, SentReply, SentReplyStatus, SentStatus, sent, sent_reply,
 };
 mod settled;
 #[cfg(test)]

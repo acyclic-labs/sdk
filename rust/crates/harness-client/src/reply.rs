@@ -158,6 +158,16 @@ pub enum AgentReply {
         /// Original inbox admission result; completion is observed separately.
         delivery: Delivered,
     },
+    /// Original peer send retained durably by the sender's node. Relay
+    /// admission and recipient delivery remain distinct observations.
+    PeerPublished {
+        /// Exact caller-owned intent, never the currently selected message.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        id: IntentId,
+        /// Public original receipt, including durable local pending admission.
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown"))]
+        delivery: acyclic_harness_core::agent::SentStatus<'static>,
+    },
     /// Spawn publication, including the canonical child path.
     Spawned {
         /// The newly published direct child.
@@ -664,6 +674,14 @@ fn validate_reply(
             | AgentCommand::Restore { .. }
             | AgentCommand::ClearAll { .. },
         ) => return Ok(()),
+        (
+            AgentReply::PeerPublished { id, .. },
+            AgentCommand::Prompt {
+                id: original,
+                peer: Some((_, Some(_))),
+                ..
+            },
+        ) if id == original => return Ok(()),
         (AgentReply::Reply { reply }, AgentCommand::Reply { agent, id, inbox }) => {
             // Correlate the original prompt or verified in-turn steering message.
             return match reply {

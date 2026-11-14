@@ -171,6 +171,25 @@ async fn qualified_senders_keep_distinct_intents_and_reply_destinations()
             &external_send.delivery,
             crate::agent::SentDelivery::Pending { from: 0, .. }
         ));
+        let encoded = serde_json::to_vec(&external_send.delivery)?;
+        let observed: crate::agent::SentStatus<'static> = serde_json::from_slice(&encoded)?;
+        let crate::agent::SentStatus::PendingAdmission {
+            source: cursor,
+            from,
+        } = observed
+        else {
+            return Err("durable local receipt was reported as inbox delivery".into());
+        };
+        assert_eq!(
+            cursor.as_ref(),
+            &sending.paths.outbox_cursor(&sending.node)?
+        );
+        assert_eq!(from, 0);
+        assert_eq!(
+            external.tail(cursor.into_owned()).await?,
+            0,
+            "pending local durability must not invent an account acknowledgement"
+        );
         let mut changed = input.clone();
         let InboxRecord::Message(changed_message) = &mut changed else {
             return Err("expected peer message".into());
