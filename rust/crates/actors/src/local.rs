@@ -207,6 +207,9 @@ impl Error {
             | Self::PreconditionUnchanged
             | Self::InvocationFailed { .. }
             | Self::Deleted
+            // Closed admission is this runtime's release: no later attempt
+            // here can decide the input (see `Runtime::unavailable`).
+            | Self::AdmissionClosed(_)
             | Self::Invalid(_) => false,
         }
     }
