@@ -6,7 +6,6 @@ use acyclic_stream::BoxProviderFuture;
 pub(super) struct Programs {
     pub(super) local: std::sync::Weak<LocalHarness>,
     pub(super) home: VolumeRef,
-    pub(super) journal: VolumeRef,
     pub(super) verifier: AuthorityVerifier,
     pub(super) scope: Scope,
     pub(super) shell: Arc<Tool>,
@@ -49,11 +48,15 @@ impl ToolSource for Programs {
                 .upgrade()
                 .ok_or_else(|| Error::Unsupported("local harness is closed".into()))?;
             let volumes = agent_settings::Volumes {
+                decisions: crate::config::SettingsAdmissions::new(
+                    local.agent_stream.clone().ok_or_else(|| {
+                        Error::Unsupported("settings needs its owner stream".into())
+                    })?,
+                ),
                 files: &local.files,
                 verifier: &self.verifier,
                 signed: &self.scope,
                 home: &self.home,
-                journal: &self.journal,
                 seed: (&local.seed.0, &local.seed.1),
                 configuration: local.harness.issuer_configuration(),
                 maximum_bytes: local.limits.file_bytes,

@@ -328,7 +328,6 @@ impl TurnContext for LocalContext {
                 Some(shell) => executor.with_tool_source(Arc::new(super::programs::Programs {
                     local: Arc::downgrade(&local),
                     home: bindings.context.scratch.clone(),
-                    journal: bindings.context.journal.clone(),
                     verifier: bindings.context.verifier.clone(),
                     scope: bindings.context.scope.copy(&mut None)?,
                     shell,

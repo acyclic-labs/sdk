@@ -69,6 +69,52 @@ impl std::ops::Deref for ObservedHeads {
     }
 }
 
+/// An original append receipt whose native metadata remains with its owner.
+pub(crate) struct ObservedAppend {
+    outcome: acyclic_stream::AppendOutcome,
+    #[cfg(not(target_arch = "wasm32"))]
+    _allocation: Option<acyclic_native_runtime::ReadAllocation>,
+}
+
+impl std::ops::Deref for ObservedAppend {
+    type Target = acyclic_stream::AppendOutcome;
+    fn deref(&self) -> &Self::Target {
+        &self.outcome
+    }
+}
+
+pub(crate) async fn append_with_work<P: crate::store::JournalProvider + ?Sized>(
+    client: &Arc<P>,
+    request: acyclic_stream::AppendRequest,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<ObservedAppend> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(original) = work.as_deref().and_then(|io| io.original_native_work()) {
+        let result = client
+            .native_append(request, original.runtime_meter())
+            .await;
+        let output = crate::distributed::native_call_result(original, result)?
+            .map_err(|source| stream_error_with_work(source, work))?;
+        let (outcome, allocation) = original_sdk_metadata_output(original, output)?.into_parts();
+        return Ok(ObservedAppend {
+            outcome,
+            _allocation: Some(allocation),
+        });
+    }
+    if let Some(observer) = work.as_deref_mut() {
+        observer.begin_call()?;
+    }
+    let outcome = client
+        .append(request)
+        .await
+        .map_err(|source| stream_error_with_work(source, work))?;
+    Ok(ObservedAppend {
+        outcome,
+        #[cfg(not(target_arch = "wasm32"))]
+        _allocation: None,
+    })
+}
+
 pub(crate) async fn heads_with_work<P: crate::store::JournalProvider + ?Sized>(
     client: &Arc<P>,
     request: &acyclic_stream::HeadsRequest,

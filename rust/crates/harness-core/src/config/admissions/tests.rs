@@ -24,26 +24,53 @@ async fn decisions_are_indexed_live_and_retained_without_an_agent_root() -> Resu
         at: utc(0),
     };
     let work = work()?;
-    journal.record(agent, original.clone(), None, &work).await?;
-    journal.record(agent, original.clone(), None, &work).await?;
+    let io = crate::executor::PreparationIo::from_native_work(&work)?;
+    journal
+        .record(
+            agent,
+            (&original.path, "cut-a", &original.version),
+            &original,
+            None,
+            &io,
+        )
+        .await?;
+    journal
+        .record(
+            agent,
+            (&original.path, "cut-a", &original.version),
+            &original,
+            None,
+            &io,
+        )
+        .await?;
     let path = SettingsAdmissions::path(agent)?;
     assert_eq!(provider.tail(path.clone()).await.map_err(invalid)?, 1);
     let mut other = original.clone();
     other.path = "plugins.ts".into();
-    journal.record(agent, other, None, &work).await?;
+    journal
+        .record(
+            agent,
+            (&other.path, "cut-a", &other.version),
+            &other,
+            None,
+            &io,
+        )
+        .await?;
     assert_eq!(
-        journal.latest(agent, "agent.ts", "original", &work).await?,
+        journal
+            .latest(agent, "agent.ts", "cut-a", "original", &work)
+            .await?,
         Some(original.clone())
     );
     assert!(
         journal
-            .latest(AgentId::new(), "agent.ts", "original", &work)
+            .latest(AgentId::new(), "agent.ts", "cut-a", "original", &work)
             .await?
             .is_none()
     );
     assert!(
         journal
-            .latest(agent, "agent.ts", "different", &work)
+            .latest(agent, "agent.ts", "cut-a", "different", &work)
             .await?
             .is_none()
     );
@@ -58,7 +85,15 @@ async fn decisions_are_indexed_live_and_retained_without_an_agent_root() -> Resu
         at: utc(1),
         ..original.clone()
     };
-    journal.record(agent, refused.clone(), None, &work).await?;
+    journal
+        .record(
+            agent,
+            (&refused.path, "cut-a", &refused.version),
+            &refused,
+            None,
+            &io,
+        )
+        .await?;
     let event = follow.try_next().await.map_err(invalid)?.unwrap();
     let decision: Decision =
         serde_json::from_slice(&event.value).map_err(|error| Error::Storage(error.to_string()))?;
@@ -67,9 +102,9 @@ async fn decisions_are_indexed_live_and_retained_without_an_agent_root() -> Resu
     let reopened = SettingsAdmissions::new(provider.clone());
     assert_eq!(
         reopened
-            .latest(agent, "agent.ts", "original", &work)
+            .latest(agent, "agent.ts", "cut-a", "original", &work)
             .await?,
-        Some(refused)
+        Some(refused.clone())
     );
     // All prior decisions remain in the same ordinary, bounded history query.
     assert_eq!(provider.tail(path.clone()).await.map_err(invalid)?, 3);
@@ -78,31 +113,74 @@ async fn decisions_are_indexed_live_and_retained_without_an_agent_root() -> Resu
     let first: Decision =
         serde_json::from_slice(&first.value).map_err(|error| Error::Storage(error.to_string()))?;
     assert_eq!(first.admission, original);
-    assert!(matches!(
-        journal.record(agent, original, Some(1), &work).await,
-        Err(Error::Invalid(_))
-    ));
     assert_eq!(
-        provider.tail(path).await.map_err(invalid)?,
+        journal
+            .record(
+                agent,
+                (&original.path, "cut-a", &original.version),
+                &original,
+                Some(1),
+                &io
+            )
+            .await
+            .err()
+            .expect("oversized admission must refuse")
+            .code(),
+        crate::wire::ErrorCode::Invalid
+    );
+    assert_eq!(
+        provider.tail(path.clone()).await.map_err(invalid)?,
         3,
         "bound refusal must not publish"
     );
+    // The same file version under another complete source cut has its own
+    // outcome. A path/version-only index would redirect both reads here.
+    journal
+        .record(
+            agent,
+            (&original.path, "cut-b", &original.version),
+            &original,
+            None,
+            &io,
+        )
+        .await?;
+    assert_eq!(
+        reopened
+            .latest(agent, "agent.ts", "cut-a", "original", &work)
+            .await?,
+        Some(refused)
+    );
+    assert_eq!(
+        reopened
+            .latest(agent, "agent.ts", "cut-b", "original", &work)
+            .await?,
+        Some(original)
+    );
+    assert!(
+        reopened
+            .latest(agent, "agent.ts", "missing-cut", "original", &work)
+            .await?
+            .is_none()
+    );
+    assert_eq!(provider.tail(path).await.map_err(invalid)?, 4);
     Ok(())
 }
 
 #[tokio::test]
 async fn indexed_decisions_refuse_substituted_identity_and_unknown_formats() -> Result<()> {
-    for (format, wrong_agent, wrong_path, wrong_version) in [
-        (2, false, false, false),
-        (1, true, false, false),
-        (1, false, true, false),
-        (1, false, false, true),
+    for (format, wrong_agent, wrong_path, wrong_version, wrong_cut) in [
+        (2, false, false, false, false),
+        (1, true, false, false, false),
+        (1, false, true, false, false),
+        (1, false, false, true, false),
+        (1, false, false, false, true),
     ] {
         let provider = Arc::new(MemoryStream::default());
         let agent = AgentId::new();
-        let query = SettingsAdmissions::query(agent, "agent.ts", "original")?;
+        let query = SettingsAdmissions::query(agent, "agent.ts", "cut-a", "original", None)?;
         let decision = Decision {
             version: format,
+            cut: if wrong_cut { "cut-b" } else { "cut-a" }.to_owned(),
             agent: if wrong_agent { AgentId::new() } else { agent },
             admission: Admission {
                 path: if wrong_path { "plugins.ts" } else { "agent.ts" }.into(),
@@ -133,7 +211,7 @@ async fn indexed_decisions_refuse_substituted_identity_and_unknown_formats() -> 
             .await
             .map_err(invalid)?;
         let result = SettingsAdmissions::new(provider)
-            .latest(agent, "agent.ts", "original", &work()?)
+            .latest(agent, "agent.ts", "cut-a", "original", &work()?)
             .await;
         if format != 1 {
             assert!(matches!(result, Err(Error::Unsupported(_))));

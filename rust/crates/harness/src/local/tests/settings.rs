@@ -96,7 +96,6 @@ async fn settings_cut(harness: &LocalHarness, path: &str) -> Result<blake3::Hash
         verifier: &harness.verifier,
         signed: &harness.signed,
         home: &harness.scratch,
-        journal: &harness.journal,
         decisions: decisions(harness)?,
         seed: (&harness.seed.0, &harness.seed.1),
         configuration: harness.harness.issuer_configuration(),
@@ -123,7 +122,13 @@ async fn admission(harness: &LocalHarness, path: &str, version: &str) -> Result<
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     decisions(harness)?
-        .latest(harness.root, path, version, &work)
+        .latest(
+            harness.root,
+            path,
+            &settings_cut(harness, path).await?.to_hex(),
+            version,
+            &work,
+        )
         .await?
         .ok_or_else(|| Error::NotFound("settings admission record".into()))
 }
@@ -193,7 +198,7 @@ async fn private_admission_cannot_replace_decision(
             "application/json",
             "authored forgery",
             None,
-            &IdempotencyKey::new("forged-admission")?,
+            &IdempotencyKey::new(format!("forged-admission:{path}:{}", blake3::hash(&bytes)))?,
             None,
             ContentAccess::default(),
         )
@@ -400,11 +405,16 @@ async fn issuer_settings_share_one_cut_across_selection_admission_and_imports() 
             &mut None,
         )?;
     let volumes = super::super::agent_settings::Volumes {
+        decisions: crate::config::SettingsAdmissions::new(
+            harness
+                .agent_stream
+                .clone()
+                .ok_or_else(|| Error::Unsupported("settings needs its owner stream".into()))?,
+        ),
         files: &harness.files,
         verifier: &harness.verifier,
         signed: &narrow,
         home: &harness.scratch,
-        journal: &harness.journal,
         seed: (&harness.seed.0, &harness.seed.1),
         configuration: harness.harness.issuer_configuration(),
         maximum_bytes: None,
@@ -1147,7 +1157,6 @@ async fn home_agent_settings_apply_or_refuse_the_original_version() -> Result<()
             verifier: &harness.verifier,
             signed: &harness.signed,
             home: &harness.scratch,
-            journal: &harness.journal,
             seed: (&harness.seed.0, &harness.seed.1),
             configuration: harness.harness.issuer_configuration(),
             decisions: decisions(&harness)?,
@@ -1309,7 +1318,6 @@ async fn each_settings_manifest_retains_its_own_admission_on_reopen() -> Result<
         verifier: &harness.verifier,
         signed: &harness.signed,
         home: &harness.scratch,
-        journal: &harness.journal,
         seed: (&harness.seed.0, &harness.seed.1),
         configuration: harness.harness.issuer_configuration(),
         decisions: decisions(&harness)?,

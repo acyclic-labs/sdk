@@ -4,16 +4,17 @@ use super::Admission;
 use crate::{AgentId, Error, Result};
 use acyclic_stream::{
     AppendOutcome, AppendRecord, AppendRequest, IdempotencyKey, NativeStreamProvider, ReadKeySeek,
-    ReadRequest, RecordHeaders, StreamPath, WriteOutcome, WriteRequest,
+    ReadRequest, RecordHeaders, StreamPath,
 };
 use std::sync::Arc;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Decision {
+struct Decision<T = Admission, C = String> {
     version: u8,
     agent: AgentId,
-    admission: Admission,
+    cut: C,
+    admission: T,
 }
 
 /// Owner-bound settings decisions, retained even when session startup refuses.
@@ -35,11 +36,20 @@ impl SettingsAdmissions {
         StreamPath::new(format!("harness/settings-admissions/v1/{agent}")).map_err(invalid)
     }
 
-    /// The latest decision for exactly one settings path and source version.
+    /// The latest decision for one settings path, complete cut and file version.
     /// This query pins its read interval in Streams; it needs no prior tail read.
-    pub fn query(agent: AgentId, path: &str, version: &str) -> Result<ReadRequest> {
+    pub fn query(
+        agent: AgentId,
+        path: &str,
+        cut: &str,
+        version: &str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<ReadRequest> {
         Ok(ReadRequest {
-            key: Some(ReadKeySeek::latest(key(path, version)?, u64::MAX)),
+            key: Some(ReadKeySeek::latest(
+                key(path, cut, version, io)?.to_vec(),
+                u64::MAX,
+            )),
             path: Self::path(agent)?,
             from: 0,
             limit: 1,
@@ -50,69 +60,76 @@ impl SettingsAdmissions {
     /// Retains this actual decision before startup returns success or refusal.
     /// Identical decisions replay their original append; later decisions keep
     /// history and become the latest value under the same indexed identity.
-    pub async fn record(
+    pub async fn record<T: serde::Serialize + Sync>(
         &self,
         agent: AgentId,
-        admission: Admission,
+        (path, cut, version): (&str, &str, &str),
+        admission: &T,
         maximum_bytes: Option<u64>,
-        work: &acyclic_fs::NativeMaterializationWork,
+        io: &crate::executor::PreparationIo,
     ) -> Result<()> {
-        let key = key(&admission.path, &admission.version)?;
-        if let Some(maximum) = maximum_bytes {
-            let bytes = serde_json::to_vec(&admission)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-            if bytes.len() as u64 > maximum {
-                return Err(Error::Invalid(
-                    "settings admission exceeds content limit".into(),
-                ));
-            }
+        // The caller lends its canonical Admission representation, including
+        // borrowed diagnostics, rather than allocating a second owned DTO.
+        if maximum_bytes.is_some() {
+            io.encode(admission, maximum_bytes, false)?;
         }
-        let bytes = serde_json::to_vec(&Decision {
-            version: 1,
-            agent,
-            admission,
-        })
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-        let idempotency_key = IdempotencyKey::new(format!(
-            "settings-admission:v1:{agent}:{}",
-            blake3::hash(&bytes)
-        ))
-        .map_err(invalid)?;
-        let request = WriteRequest::Append(AppendRequest {
+        let key = key(path, cut, version, Some(io))?;
+        let _key_hold = io.guard_owned(key.len() as u64)?;
+        io.allocation_attempt(key.len() as u64)?;
+        let key = key.to_vec();
+        let bytes = io.encode(
+            &Decision {
+                version: 1,
+                agent,
+                cut,
+                admission,
+            },
+            None,
+            true,
+        )?;
+        io.charge(acyclic_fs::WorkCounters {
+            bytes_hashed: bytes.len() as u64,
+            ..Default::default()
+        })?;
+        let identity = crate::executor::with_history_io(Some(io), |work| {
+            crate::executor::preparation_format(
+                format_args!("settings-admission:v1:{agent}:{}", blake3::hash(&bytes)),
+                work,
+            )
+        })?;
+        let _identity_hold = io.guard_owned(identity.capacity() as u64)?;
+        let request = AppendRequest {
             path: Self::path(agent)?,
             records: vec![AppendRecord {
-                value: bytes.into(),
+                value: bytes,
                 headers: RecordHeaders::new(vec![key.into()], vec![]).map_err(invalid)?,
             }],
             if_tail: None,
-            idempotency_key,
-        });
-        let output = crate::store::history::native_sdk_result(
-            work,
-            self.provider
-                .native_write(request, work.runtime_meter())
-                .await,
-        )?;
-        let output = crate::store::operations::original_sdk_metadata_output(work, output)?;
-        if !matches!(
-            output.value(),
-            WriteOutcome::Append(AppendOutcome::Committed(_))
-        ) {
+            idempotency_key: IdempotencyKey::new(identity).map_err(invalid)?,
+        };
+        let mut history = io.history_io();
+        let output = crate::store::operations::append_with_work(
+            &self.provider,
+            request,
+            &mut Some(&mut history),
+        )
+        .await?;
+        if !matches!(&*output, AppendOutcome::Committed(_)) {
             return Err(Error::Storage("settings admission was not appended".into()));
         }
         Ok(())
     }
-
     /// Executes the same bounded query and verifies its original identity.
     pub async fn latest(
         &self,
         agent: AgentId,
         path: &str,
+        cut: &str,
         version: &str,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Option<Admission>> {
-        let request = Self::query(agent, path, version)?;
         let io = crate::executor::PreparationIo::from_native_work(work)?;
+        let request = Self::query(agent, path, cut, version, Some(&io))?;
         let mut observer = io.history_io();
         let Some(record) = crate::store::operations::one_selected_record(
             &self.provider,
@@ -131,6 +148,7 @@ impl SettingsAdmissions {
             ));
         }
         if decision.agent != agent
+            || decision.cut != cut
             || decision.admission.path != path
             || decision.admission.version != version
         {
@@ -142,18 +160,37 @@ impl SettingsAdmissions {
     }
 }
 
-fn key(path: &str, version: &str) -> Result<Vec<u8>> {
-    crate::conversation::validate_content_path(path, &mut None)?;
-    if version.is_empty() {
-        return Err(Error::Invalid("settings version is empty".into()));
-    }
-    let mut hash = blake3::Hasher::new_derive_key("acyclic.settings-admission/v1");
-    hash.update(&(path.len() as u64).to_be_bytes());
-    hash.update(path.as_bytes());
-    hash.update(version.as_bytes());
-    Ok(hash.finalize().as_bytes().to_vec())
+fn key(
+    path: &str,
+    cut: &str,
+    version: &str,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<[u8; 32]> {
+    crate::executor::with_history_io(io, |work| {
+        crate::conversation::validate_content_path(path, work)?;
+        if cut.is_empty() || version.is_empty() {
+            return Err(Error::Invalid("settings cut or version is empty".into()));
+        }
+        const DOMAIN: &str = "acyclic.settings-admission/v1";
+        let length = crate::core::owned_sum([
+            DOMAIN.len() as u64,
+            16,
+            path.len() as u64,
+            cut.len() as u64,
+            version.len() as u64,
+        ])?;
+        if let Some(work) = work.as_deref_mut() {
+            work.hashed_bytes(length)?;
+        }
+        let mut hash = blake3::Hasher::new_derive_key(DOMAIN);
+        hash.update(&(path.len() as u64).to_be_bytes());
+        hash.update(path.as_bytes());
+        hash.update(&(cut.len() as u64).to_be_bytes());
+        hash.update(cut.as_bytes());
+        hash.update(version.as_bytes());
+        Ok(*hash.finalize().as_bytes())
+    })
 }
-
 fn invalid(error: acyclic_stream::StreamError) -> Error {
     Error::Invalid(error.to_string())
 }

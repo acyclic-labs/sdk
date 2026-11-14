@@ -198,7 +198,8 @@ impl LocalHarness {
     pub const fn scratch(&self) -> &VolumeRef {
         &self.scratch
     }
-    /// Host-only journal storage.
+    /// The root's workspace-private volume (the legacy field is named journal).
+    /// Protected execution journals are separate, owner-bound volumes.
     #[must_use]
     pub const fn journal_volume(&self) -> &VolumeRef {
         &self.journal
