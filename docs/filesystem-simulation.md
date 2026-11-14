@@ -23,6 +23,12 @@ generation must agree with it. The obligations are:
 - Reading a native source file leaves it unresolved in the authored generation.
   Every retained lazy snapshot preserves its authored bytes across later writes.
 
+Volume operations are generated as explicit actions before production code
+runs. Their ordinal, path, payload and race order remain fixed when actions are
+removed. This lets the shared minimizer shrink a history without redrawing later
+operations or renaming fork paths. The failure output retains the action data
+as well as the seed.
+
 `seeded_command_range_publications` also drives the production native command
 checkout and completion path. Each seeded range edit is checked against a byte
 array, and completion must publish that array. Retained commands must observe a

@@ -13,6 +13,33 @@ fn choice() -> u8 {
     byte[0]
 }
 
+#[derive(Clone, Debug)]
+struct Action {
+    ordinal: usize,
+    kind: u8,
+    slot: u8,
+    bytes: Vec<u8>,
+    other: u8,
+    reverse: bool,
+}
+
+fn history(seed: u64, steps: usize) -> Result<Vec<Action>, Box<dyn Error>> {
+    let runtime = seeded_runtime(seed)?;
+    let (schedule, _events) = Schedule::seeded(seed);
+    Ok(runtime.block_on(schedule.scope(async {
+        (0..steps)
+            .map(|ordinal| Action {
+                ordinal,
+                kind: choice() % 5,
+                slot: choice() % 4,
+                bytes: vec![choice(); 1 + usize::from(choice() % 32)],
+                other: choice(),
+                reverse: choice() & 1 != 0,
+            })
+            .collect()
+    })))
+}
+
 pub(super) async fn check<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     workspace: &Workspace<A, O>,
     expected: &Image,
@@ -71,16 +98,16 @@ async fn join<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     .await
 }
 
-async fn scenario(steps: usize) -> Result<(), Box<dyn Error>> {
+async fn scenario(actions: &[Action]) -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let mut parent = unbounded!(fs, create_workspace("parent"))?;
     let mut expected = Image::new();
-    for step in 0..steps {
-        let operation = choice() % 5;
-        let path = format!("/file-{}", choice() % 4);
-        let bytes = vec![choice(); 1 + usize::from(choice() % 32)];
-        eprintln!("volume step={step} operation={operation} path={path}");
-        match operation {
+    for action in actions {
+        let step = action.ordinal;
+        let path = format!("/file-{}", action.slot);
+        let bytes = action.bytes.clone();
+        eprintln!("volume action={action:?}");
+        match action.kind {
             0 => {
                 let mut transaction = unbounded!(parent, begin_transaction(IdempotencyKey::new()))?;
                 unbounded!(transaction, write(&path, bytes.clone()))?;
@@ -97,10 +124,9 @@ async fn scenario(steps: usize) -> Result<(), Box<dyn Error>> {
                 let mut first = unbounded!(parent, begin_transaction(IdempotencyKey::new()))?;
                 let mut second = unbounded!(parent, begin_transaction(IdempotencyKey::new()))?;
                 unbounded!(first, write(&path, bytes.clone()))?;
-                let second_bytes = vec![choice(); 33];
+                let second_bytes = vec![action.other; 33];
                 unbounded!(second, write(&path, second_bytes.clone()))?;
-                let reverse = choice() & 1 != 0;
-                let (first, second) = if reverse {
+                let (first, second) = if action.reverse {
                     let (second, first) = tokio::join!(commit(&mut second), commit(&mut first));
                     (first?, second?)
                 } else {
@@ -132,7 +158,7 @@ async fn scenario(steps: usize) -> Result<(), Box<dyn Error>> {
                 check(&child, &expected).await?;
                 let child_path = format!("/child-{step}");
                 child.write(&child_path, bytes.clone().into()).await?;
-                let parent_bytes = vec![choice(); 7];
+                let parent_bytes = vec![action.other; 7];
                 parent.write(&path, parent_bytes.clone().into()).await?;
                 expected.insert(path.clone(), parent_bytes);
                 assert!(matches!(
@@ -143,13 +169,13 @@ async fn scenario(steps: usize) -> Result<(), Box<dyn Error>> {
                 check(&parent, &expected).await?;
                 // A subsequent child delta must preserve a parent resolution of
                 // a previously imported child file (incremental merge base).
-                let resolved = vec![choice(); 9];
+                let resolved = vec![action.other; 9];
                 let child_path = format!("/child-{step}");
                 parent.write(&child_path, resolved.clone().into()).await?;
                 expected.insert(child_path, resolved);
                 let next = format!("/next-{step}");
-                child.write(&next, vec![choice(); 3].into()).await?;
-                let value = unbounded!(child, read(&next, 256))?.as_ref().to_vec();
+                let value = vec![action.other; 3];
+                child.write(&next, value.clone().into()).await?;
                 assert!(matches!(
                     join(&child, &parent).await?,
                     JoinOutcome::Applied(_)
@@ -170,7 +196,7 @@ async fn scenario(steps: usize) -> Result<(), Box<dyn Error>> {
                 )
                 .await?;
                 parent.write(&path, bytes.clone().into()).await?;
-                child.write(&path, vec![choice(); 34].into()).await?;
+                child.write(&path, vec![action.other; 34].into()).await?;
                 expected.insert(path, bytes);
                 let before = unbounded!(parent, head())?.id();
                 assert!(matches!(
@@ -191,17 +217,17 @@ async fn scenario(steps: usize) -> Result<(), Box<dyn Error>> {
         }
         check(&parent, &expected).await?;
     }
-    lazy::scenario(steps).await?;
+    lazy::scenario(actions.len()).await?;
     Ok(())
 }
 
-fn run(seed: u64, steps: usize) -> Result<(), Box<dyn Error>> {
-    eprintln!("volume seed={seed} steps={steps}");
+fn run(seed: u64, actions: &[Action]) -> Result<(), Box<dyn Error>> {
+    eprintln!("volume seed={seed} actions={actions:?}");
     let runtime = seeded_runtime(seed)?;
     runtime.block_on(async {
         tokio::time::pause();
         let (schedule, mut events) = Schedule::seeded(seed);
-        let world = schedule.scope(scenario(steps));
+        let world = schedule.scope(scenario(actions));
         tokio::pin!(world);
         loop {
             tokio::select! {
@@ -218,7 +244,8 @@ fn seeded_volume_history() -> Result<(), Box<dyn Error>> {
     let count = std::env::var("ACYCLIC_FS_SEEDS").map_or(Ok(4), |count| count.parse::<u64>())?;
     for offset in 0..count {
         let seed = first.wrapping_add(offset);
-        run(seed, 16).unwrap_or_else(|error| panic!("volume seed={seed}: {error}"));
+        let actions = history(seed, 16)?;
+        run(seed, &actions).unwrap_or_else(|error| panic!("volume seed={seed}: {error}"));
     }
     Ok(())
 }
