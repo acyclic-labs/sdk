@@ -66,7 +66,7 @@ pub enum StreamError {
 /// Category is independent of the diagnostic's original status message.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StreamRefusal {
-    category: &'static str,
+    category: Box<StreamError>,
     diagnostic: acyclic_auth::refusal::Refusal,
 }
 
@@ -136,7 +136,7 @@ impl StreamError {
     #[must_use]
     pub fn with_refusal(self, diagnostic: acyclic_auth::refusal::Refusal) -> Self {
         Self::Refused(StreamRefusal {
-            category: self.code(),
+            category: Box::new(self.category()),
             diagnostic,
         })
     }
@@ -240,8 +240,7 @@ impl StreamError {
     pub fn category(&self) -> Self {
         match self {
             Self::Caused(failure) => failure.classification().category(),
-            Self::Refused(refusal) => Self::from_code(refusal.category)
-                .expect("retained refusal category comes from StreamError::code"),
+            Self::Refused(refusal) => (*refusal.category).clone(),
             error => error.clone(),
         }
     }
@@ -284,7 +283,7 @@ impl StreamError {
             Self::Capacity => "capacity",
             Self::AccessDenied => "access_denied",
             Self::Unavailable => "unavailable",
-            Self::Refused(refusal) => refusal.category,
+            Self::Refused(refusal) => refusal.category.code(),
             Self::Caused(failure) => failure.classification().code(),
             Self::HierarchyChanged => "hierarchy_changed",
             Self::DeadlineElapsed => "deadline_elapsed",

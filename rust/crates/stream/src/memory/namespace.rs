@@ -248,7 +248,7 @@ struct ForkMarker {
 }
 struct Branch {
     name: Segment,
-    node: Option<Arc<NamespaceNode>>,
+    node: Arc<NamespaceNode>,
     left: Index,
     right: Index,
     height: u8,
@@ -261,12 +261,12 @@ struct Branch {
 }
 impl Branch {
     fn node(&self) -> &Arc<NamespaceNode> {
-        self.node.as_ref().expect("published namespace edge")
+        &self.node
     }
     fn retire_edges(&mut self, work: &mut Vec<NamespaceRetirement>) {
-        if let Some(node) = self.node.take() {
-            work.push(NamespaceRetirement::Node(node));
-        }
+        // This branch is dropped before the queued node is retired, so the
+        // queued edge is then the branch's last owner and retires iteratively.
+        work.push(NamespaceRetirement::Node(Arc::clone(&self.node)));
         if let Some(left) = self.left.take() {
             work.push(NamespaceRetirement::Branch(left));
         }
@@ -277,13 +277,15 @@ impl Branch {
 }
 impl Drop for Branch {
     fn drop(&mut self) {
-        if self.node.is_none() && self.left.is_none() && self.right.is_none() {
+        if self.left.is_none() && self.right.is_none() {
             return;
         }
+        // The node field drops after this; NamespaceNode retires its own
+        // subtree iteratively, so only sibling branches are queued here.
         let initial = [
-            self.node.take().map(NamespaceRetirement::Node),
             self.left.take().map(NamespaceRetirement::Branch),
             self.right.take().map(NamespaceRetirement::Branch),
+            None,
         ];
         retire_namespace(initial, &mut self._allocation);
     }
@@ -357,7 +359,7 @@ fn branch(
     };
     let value = Branch {
         name,
-        node: Some(node),
+        node,
         height: 1 + height(&left).max(height(&right)),
         width: 1 + width(&left) + width(&right),
         left,

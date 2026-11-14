@@ -159,10 +159,8 @@ fn fail(index: &Mutex<Index>, error: io::Error) -> Arc<io::Error> {
         let error = Arc::clone(index.failure.get_or_insert_with(|| Arc::new(error)));
         (error, std::mem::take(&mut index.entries))
     };
-    let pending = pending
-        .extract_prefix(&[], |_| {})
-        .unwrap_or_else(|_| unreachable!("an empty prefix fits every alarm key"));
-    crate::delivery::deliver(pending.into_entries(|_| {}), |entry| {
+    let mut pending = pending;
+    crate::delivery::deliver(pending.extract_all().into_entries(|_| {}), |entry| {
         let fire = entry.into_parts().1;
         fire(Err(Arc::clone(&error)));
     });

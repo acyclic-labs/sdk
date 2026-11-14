@@ -57,11 +57,7 @@ impl acyclic_collections::IndexWork for IndexAccounting<'_, '_> {
 
 impl<V, const N: usize> FixedIndex<V, N> {
     pub(crate) fn into_entries(mut self) -> Entries<V, N, impl FnMut(u64)> {
-        let extracted = self
-            .0
-            .extract_prefix(&[], |_| {})
-            .unwrap_or_else(|_| unreachable!("empty prefix fits every key width"));
-        Entries(extracted.into_entries(|_| {}))
+        Entries(self.0.extract_all().into_entries(|_| {}))
     }
 
     pub(crate) fn first(

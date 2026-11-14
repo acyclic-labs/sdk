@@ -1549,7 +1549,9 @@ name = "acyclic-stream-publication-models"
 version = "0.0.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-collections",
  "futures",
+ "http",
  "loom",
  "proptest",
  "thiserror 2.0.21",
