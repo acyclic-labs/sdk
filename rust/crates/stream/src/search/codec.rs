@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 pub struct CursorState<P = String> {
     version: u32,
     pattern: Vec<u8>,
-    cut: Option<(Vec<u8>, u128, u64)>,
+    cut: Option<Revision>,
     frontier: Vec<Frame<P>>,
     matcher: Option<[u8; 32]>,
 }
@@ -23,17 +23,14 @@ impl Serialize for Cursor {
         struct Borrowed<'a> {
             version: u32,
             pattern: &'a [u8],
-            cut: Option<(&'a [u8], u128, u64)>,
+            cut: Option<&'a Revision>,
             frontier: &'a [Frame],
             matcher: Option<[u8; 32]>,
         }
         Borrowed {
             version: 1,
             pattern: &self.pattern,
-            cut: self
-                .at
-                .as_ref()
-                .map(|at| (at.scope.as_bytes(), at.incarnation, at.index)),
+            cut: self.at.as_ref(),
             frontier: &self.frontier,
             matcher: self.matcher,
         }
@@ -82,11 +79,7 @@ impl<'de> Deserialize<'de> for Cursor {
         }
         Ok(Self {
             pattern: wire.pattern,
-            at: wire.cut.map(|(scope, incarnation, index)| Revision {
-                scope: RevisionScope::new(scope),
-                incarnation,
-                index,
-            }),
+            at: wire.cut,
             matcher: wire.matcher,
             frontier: wire.frontier,
         })
@@ -120,9 +113,9 @@ impl CursorState {
         }
         let mut allocation = ReadAllocation::empty(meter);
         let pattern = copy(&self.pattern, meter, &mut allocation)?;
-        let at = if let Some((scope, incarnation, index)) = &self.cut {
+        let at = if let Some(at) = &self.cut {
             let mut owner = ReadAllocation::empty(meter);
-            let bytes = copy(scope, meter, &mut owner)?;
+            let bytes = copy(at.scope.as_bytes(), meter, &mut owner)?;
             let bytes =
                 crate::OwnedBytes::from_vec_with_guard(bytes, owner, std::sync::Arc::clone(meter))
                     .map_err(|failure| match failure.into_error() {
@@ -133,8 +126,8 @@ impl CursorState {
                     })?;
             Some(Revision {
                 scope: RevisionScope::new(bytes),
-                incarnation: *incarnation,
-                index: *index,
+                incarnation: at.incarnation,
+                index: at.index,
             })
         } else {
             None

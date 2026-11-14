@@ -324,11 +324,10 @@ impl Cursor {
                 let observed = observe(access, cursor.at.clone(), Some(frame.path.clone()), None)
                     .await
                     .map_err(failure)?;
-                owner.absorb(observed.owner).map_err(failure)?;
-                let observed = observed.value;
-                cursor.at = Some(observed.snapshot);
+                cursor.at = Some(observed.value.snapshot.clone());
                 frame.tail = Some(
                     observed
+                        .value
                         .heads
                         .first()
                         .and_then(Option::as_ref)
@@ -361,7 +360,7 @@ impl Cursor {
                 .await?;
                 continue;
             }
-            let observed = observe(
+            let mut observed = observe(
                 access,
                 cursor.at.clone(),
                 None,
@@ -376,10 +375,10 @@ impl Cursor {
             )
             .await
             .map_err(failure)?;
-            owner.absorb(observed.owner).map_err(failure)?;
-            let observed = observed.value;
             let children = observed
+                .value
                 .children
+                .take()
                 .ok_or(StreamError::InvalidResponse)
                 .map_err(failure)?;
             work += 1;

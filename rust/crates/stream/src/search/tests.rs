@@ -32,6 +32,48 @@ async fn append<P: StreamProvider + ?Sized>(
 }
 
 #[tokio::test]
+async fn exhausted_native_search_retires_temporary_observation_vectors()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::{Arc, atomic::Ordering};
+    for durable in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let provider: Arc<dyn crate::NativeStreamProvider> = if durable {
+            Arc::new(
+                crate::LocalStream::open(directory.path(), crate::LocalStreamLimits::default())
+                    .await?,
+            )
+        } else {
+            Arc::new(MemoryStream::default())
+        };
+        for child in 0..32 {
+            append(
+                provider.as_ref(),
+                &format!("wide/child-{child:02}"),
+                vec!["unmatched".into()],
+            )
+            .await?;
+        }
+        let meter = Arc::new(crate::test_meter::Meter::default());
+        let cursor = Cursor::new(StreamPath::new("wide")?, b"needle".to_vec());
+        let page = cursor
+            .native_page(
+                provider.as_ref(),
+                NonZeroU32::new(1024).ok_or(StreamError::InvalidArgument)?,
+                meter.original(),
+            )
+            .await??;
+        assert!(page.value().next.is_none());
+        assert!(page.value().matches.is_empty());
+        assert_eq!(
+            meter.held.load(Ordering::SeqCst),
+            0,
+            "dropped search observation vectors remain charged"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn native_search_keeps_original_cuts_custody_and_observer_failures()
 -> Result<(), Box<dyn std::error::Error>> {
     use std::sync::{Arc, atomic::Ordering};
@@ -76,9 +118,11 @@ async fn native_search_keeps_original_cuts_custody_and_observer_failures()
         {
             let continuation = page.value().next.as_ref().ok_or("missing continuation")?;
             let encoded = serde_json::to_vec(continuation)?;
-            let decoded: CursorState = serde_json::from_slice(&encoded)?;
+            let decoded: CursorState =
+                serde_json::from_value(serde_json::from_slice::<serde_json::Value>(&encoded)?)?;
             let restored = decoded.to_native(&meter.original())??;
             assert_eq!(restored.value().selection(), continuation.selection());
+            assert_eq!(restored.value().at, continuation.at);
             let actual = restored
                 .value()
                 .native_page(provider.as_ref(), budget, meter.original())
