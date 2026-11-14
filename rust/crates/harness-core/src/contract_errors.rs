@@ -393,16 +393,18 @@ pub enum Error {
         /// Allowance admitted before validation, released after the cause.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
-    /// An actual Stream failure in a native operation.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// An original Stream failure with its request-boundary classification.
     #[error("{source}")]
-    NativeStream {
+    StreamFailure {
         /// Preserved contract classification for the original provider failure.
         code: ErrorCode,
         /// The original provider error, moved without string conversion.
         #[source]
         source: acyclic_stream::StreamError,
+        /// Whether the original request carried native work custody.
+        native: bool,
         /// Existing SDK payload custody, not opaque provider allocator metadata.
+        #[cfg(not(target_arch = "wasm32"))]
         custody: Option<acyclic_fs::NativeAllocation>,
     },
     /// An actual native supervisor failure.
@@ -935,13 +937,13 @@ impl Error {
             Self::MachinesIndeterminate { .. } => ErrorCode::Indeterminate,
             Self::MachineOwnership(_) => ErrorCode::Storage,
             Self::ModelDiagnostic { code, .. } => *code,
+            Self::StreamFailure { code, .. } => *code,
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeBoundary { code, .. }
             | Self::NativeJsonAdmission { code, .. }
             | Self::NativeDiagnostic { code, .. }
             | Self::NativeJson { code, .. }
             | Self::NativeProstDecode { code, .. }
-            | Self::NativeStream { code, .. }
             | Self::NativeSchema { code, .. }
             | Self::NativeReservation { code, .. } => *code,
             #[cfg(not(target_arch = "wasm32"))]
@@ -987,6 +989,14 @@ impl Error {
 
     /// An accepted effect that ended this way may have happened: reconcile it, never reject it.
     pub(crate) fn leaves_effect_uncertain(&self) -> bool {
+        if let Self::StreamFailure {
+            code,
+            native: false,
+            ..
+        } = self
+        {
+            return *code == ErrorCode::Storage;
+        }
         if let Self::Agent(source) = self {
             return source.uncertain();
         }
@@ -1256,8 +1266,7 @@ impl Error {
             Self::NativeProstDecode { .. } => true,
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeSchema { .. } => true,
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeStream { .. } => true,
+            Self::StreamFailure { native, .. } => *native,
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeSupervisor { .. } => true,
             #[cfg(not(target_arch = "wasm32"))]

@@ -14,7 +14,8 @@ pub(crate) fn stream_error_with_work(
         } else {
             Storage
         };
-        return Error::NativeStream {
+        return Error::StreamFailure {
+            native: true,
             code,
             source,
             custody: None,
