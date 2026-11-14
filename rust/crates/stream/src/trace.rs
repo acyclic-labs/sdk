@@ -235,6 +235,16 @@ mod tests {
             |_| None,
         ));
         let guard = std::mem::size_of_val(&observe_guard(request("guard"), work()));
+        // A caller's admission may borrow and carry its own error type.
+        let borrowed = 7u8;
+        let admission: crate::BoxProviderFuture<'_, Result<OwnedRecording, u8>> =
+            Box::pin(async { Err(borrowed) });
+        let accompanied =
+            std::mem::size_of_val(&OwnedRecording::accompany(Some(admission), work()));
+        assert!(
+            accompanied <= inner + LAYER_BYTES,
+            "{accompanied} > {inner} + {LAYER_BYTES}"
+        );
         assert!(
             once <= inner + LAYER_BYTES,
             "{once} > {inner} + {LAYER_BYTES}"

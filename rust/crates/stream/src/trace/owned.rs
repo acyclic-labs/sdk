@@ -100,7 +100,10 @@ impl OwnedRecording {
     /// diagnostics cannot delay a ready result; abandoned admission remains
     /// incomplete. Ready admission supplies the original parent for the
     /// remaining polls.
-    pub(super) fn child<F: std::future::Future>(request: super::Request, work: F) -> Accompany<F> {
+    pub(super) fn child<F: std::future::Future>(
+        request: super::Request,
+        work: F,
+    ) -> Accompany<'static, F, StreamError> {
         Accompany {
             admission: Admission::Child(request),
             recording: None,
@@ -110,10 +113,10 @@ impl OwnedRecording {
 
     /// Poll diagnostic admission alongside original work, as [`Self::child`]
     /// does for an admission already started.
-    pub fn accompany<F: std::future::Future>(
-        admission: Option<crate::BoxProviderFuture<'static, Result<Self, StreamError>>>,
+    pub fn accompany<'a, F: std::future::Future, E>(
+        admission: Option<crate::BoxProviderFuture<'a, Result<Self, E>>>,
         work: F,
-    ) -> Accompany<F> {
+    ) -> Accompany<'a, F, E> {
         Accompany {
             admission: admission.map_or(Admission::Settled, Admission::Starting),
             recording: None,
@@ -186,10 +189,13 @@ impl<P: StreamProvider + ?Sized> super::context::Producer for super::Recorder<P>
 }
 
 /// Diagnostic admission of one observed future.
-enum Admission {
+enum Admission<'a, E> {
     /// A child of whichever span first polls the work.
     Child(super::Request),
-    Starting(crate::BoxProviderFuture<'static, Result<OwnedRecording, StreamError>>),
+    /// The child's own admission, started on first poll.
+    StartingChild(crate::BoxProviderFuture<'a, Result<OwnedRecording, StreamError>>),
+    /// An admission the caller started, with its own error type.
+    Starting(crate::BoxProviderFuture<'a, Result<OwnedRecording, E>>),
     Settled,
 }
 
@@ -199,15 +205,15 @@ pin_project_lite::pin_project! {
     /// adds a constant number of bytes and one type level to the observed
     /// future, however deeply observations nest.
     #[must_use = "futures do nothing unless polled"]
-    pub struct Accompany<F> {
-        admission: Admission,
+    pub struct Accompany<'a, F, E> {
+        admission: Admission<'a, E>,
         recording: Option<OwnedRecording>,
         #[pin]
         work: F,
     }
 }
 
-impl<F: std::future::Future> std::future::Future for Accompany<F> {
+impl<F: std::future::Future, E> std::future::Future for Accompany<'_, F, E> {
     type Output = (F::Output, Option<OwnedRecording>);
 
     fn poll(
@@ -219,12 +225,15 @@ impl<F: std::future::Future> std::future::Future for Accompany<F> {
             && let Admission::Child(request) = std::mem::replace(this.admission, Admission::Settled)
         {
             *this.admission =
-                super::context::child(request).map_or(Admission::Settled, Admission::Starting);
+                super::context::child(request).map_or(Admission::Settled, Admission::StartingChild);
         }
-        if let Admission::Starting(start) = this.admission
-            && let std::task::Poll::Ready(started) = start.as_mut().poll(cx)
-        {
-            *this.recording = started.ok();
+        let started = match this.admission {
+            Admission::StartingChild(start) => start.as_mut().poll(cx).map(Result::ok),
+            Admission::Starting(start) => start.as_mut().poll(cx).map(Result::ok),
+            Admission::Child(_) | Admission::Settled => std::task::Poll::Pending,
+        };
+        if let std::task::Poll::Ready(started) = started {
+            *this.recording = started;
             *this.admission = Admission::Settled;
         }
         let mut work = this.work;
