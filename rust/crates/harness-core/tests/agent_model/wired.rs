@@ -195,13 +195,18 @@ fn executors_with_render_bytes(
         ..Default::default()
     }
     .build()?;
+    // Wired fixtures bind no plugins: the seed feedback plugin's
+    // retrospective request would add a model dispatch after every settled
+    // turn, and these tests count dispatches for what they mean. Feedback has
+    // its own tests over the seed set.
     Ok(Arc::new(
         acyclic_harness_core::filesystem::StockExecutors::new(
             (selection, model),
             ToolRegistry::default(),
             (base, CompactionPolicy::Disabled),
             Arc::new(Tasks(bindings)),
-        ),
+        )
+        .with_plugins(Arc::new(acyclic_harness_core::plugins::Enabled::default())),
     ))
 }
 
@@ -1782,11 +1787,8 @@ async fn a_child_inherits_context_but_retains_its_own_observed_answer_across_tur
     ));
     let model = Arc::new(ScriptedModelProvider::new([
         ScriptedTurn::Text("parent answer".into()),
-        ScriptedTurn::Text("none".into()),
         ScriptedTurn::Text("child answer".into()),
-        ScriptedTurn::Text("none".into()),
         ScriptedTurn::Text("later child answer".into()),
-        ScriptedTurn::Text("none".into()),
     ]));
     let (host, binding) = private_in(&stream, &parent).await?;
     let turn_host = Arc::new(
@@ -1889,24 +1891,22 @@ async fn a_child_inherits_context_but_retains_its_own_observed_answer_across_tur
     assert!(matches!(answer(&*stream, &child, latest).await?.input,
         TurnInput::Approval { id } if id == intent("c2")));
     let requests = model.requests();
-    assert_eq!(requests.len(), 6);
+    assert_eq!(requests.len(), 3);
     assert!(
-        requests[2]
+        requests[1]
             .messages
             .iter()
             .any(|message| message.role == ModelRole::Assistant
                 && message.content == ModelContent::Text("parent answer".into())),
         "the child's first request lacks its parent's settled turn: {:?}",
-        requests[2].messages
+        requests[1].messages
     );
     // These completed child turns now publish waking events to the parent.
     // Consume them through the real host before measuring a new wait call;
     // otherwise the old events start turns using the next fixture's script.
     model.extend([
         ScriptedTurn::Text("observed first child completion".into()),
-        ScriptedTurn::Text("none".into()),
         ScriptedTurn::Text("observed later child completion".into()),
-        ScriptedTurn::Text("none".into()),
     ]);
     root_host.drain(&parent).await?;
     assert!(settled(&stream, &within(), &parent).await?.settled);
