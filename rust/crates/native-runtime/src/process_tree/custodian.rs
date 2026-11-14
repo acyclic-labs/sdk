@@ -417,7 +417,7 @@ impl Handoff {
         }
         .encode();
         crate::io_progress::write_all(&mut [io::IoSlice::new(&frame)], |buffers| {
-            output.write(&buffers[0])
+            output.write(buffers.first().ok_or(io::ErrorKind::InvalidInput)?)
         })?;
         self.count = 0;
         Ok(())
@@ -1210,123 +1210,129 @@ mod handoff_tests {
 
     #[test]
     fn handover_refuses_failed_readiness_or_owner_termination() -> io::Result<()> {
+        for (deny_ready, deny_termination) in [(false, false), (true, false), (false, true)] {
+            handover_with_access(deny_ready, deny_termination)?;
+        }
+        Ok(())
+    }
+
+    fn handover_with_access(deny_ready: bool, deny_termination: bool) -> io::Result<()> {
         use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
         use windows_sys::Win32::System::Threading::SYNCHRONIZATION_SYNCHRONIZE;
 
         // JOB_OBJECT_QUERY | JOB_OBJECT_SET_ATTRIBUTES, without TERMINATE.
         // These access bits are absent from the windows-sys JobObjects module.
         const JOB_QUERY_AND_SET_ATTRIBUTES: u32 = 0x0004 | 0x0002;
-        for (deny_ready, deny_termination) in [(false, false), (true, false), (false, true)] {
-            // SAFETY: new native objects, each owned below on success.
-            let port =
-                unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, std::ptr::null_mut(), 0, 1) };
-            if port.is_null() {
-                return Err(io::Error::last_os_error());
-            }
-            // SAFETY: successful creation transferred one owned port.
-            let port = unsafe { OwnedHandle::from_raw_handle(port) };
-            // SAFETY: an unnamed Job with no inherited or synthetic members.
-            let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
-            if job.is_null() {
-                return Err(io::Error::last_os_error());
-            }
-            // SAFETY: successful creation transferred one owned Job.
-            let job = unsafe { OwnedHandle::from_raw_handle(job) };
-            let ready = event(false, None)?;
-            let done = event(true, None)?;
-            let mut child = Command::new(std::env::current_exe()?)
-                .args([
-                    "--exact",
-                    "process_tree::capture_events_tests::event_capture_child",
-                    "--nocapture",
-                ])
-                .env("ACYCLIC_TEST_EVENT_CAPTURE", "quiet")
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()?;
-            // The real child waits on this parent's original stdin closure.
-            // SAFETY: both original Job and child process handles are live.
-            let assigned =
-                unsafe { AssignProcessToJobObject(job.as_raw_handle(), child.as_raw_handle()) };
-            if assigned == 0 {
-                let error = io::Error::last_os_error();
-                drop(child.stdin.take());
-                child.wait()?;
-                return Err(error);
-            }
-            // SAFETY: each duplicate transfers the same native object, with
-            // only its selected publication/termination right removed.
-            let opened = unsafe {
-                Opened {
-                    tree: 7,
-                    job: duplicate(
-                        job.as_raw_handle(),
-                        GetCurrentProcess(),
-                        JOB_QUERY_AND_SET_ATTRIBUTES,
-                        if deny_termination {
-                            0
-                        } else {
-                            DUPLICATE_SAME_ACCESS
-                        },
-                    )?,
-                    process: duplicate(
-                        child.as_raw_handle(),
-                        GetCurrentProcess(),
-                        0,
-                        DUPLICATE_SAME_ACCESS,
-                    )?,
-                    ready: duplicate(
-                        ready.as_raw_handle(),
-                        GetCurrentProcess(),
-                        SYNCHRONIZATION_SYNCHRONIZE,
-                        if deny_ready { 0 } else { DUPLICATE_SAME_ACCESS },
-                    )?,
-                    done: done.try_clone()?.into_raw_handle(),
-                    secret: [0; 16],
-                }
-            };
-            let mut state = State {
-                trees: IndexMap::new(),
-                members: Members::new(port.as_raw_handle()),
-                owner_exited: deny_termination,
-                input_closed: false,
-                visits: 0,
-            };
-            let result = state.open(opened, port.as_raw_handle());
-            let watched = state.members.live.contains_key(&child.id());
-            // SAFETY: single observations of the original native events.
-            let readiness = unsafe { WaitForSingleObject(ready.as_raw_handle(), 0) };
-            // SAFETY: the real child is still held by the original stdin.
-            let retirement = unsafe { WaitForSingleObject(done.as_raw_handle(), 0) };
+
+        // SAFETY: new native objects, each owned below on success.
+        let port =
+            unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, std::ptr::null_mut(), 0, 1) };
+        if port.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: successful creation transferred one owned port.
+        let port = unsafe { OwnedHandle::from_raw_handle(port) };
+        // SAFETY: an unnamed Job with no inherited or synthetic members.
+        let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if job.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: successful creation transferred one owned Job.
+        let job = unsafe { OwnedHandle::from_raw_handle(job) };
+        let ready = event(false, None)?;
+        let done = event(true, None)?;
+        let mut child = Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "process_tree::capture_events_tests::event_capture_child",
+                "--nocapture",
+            ])
+            .env("ACYCLIC_TEST_EVENT_CAPTURE", "quiet")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        // The real child waits on this parent's original stdin closure.
+        // SAFETY: both original Job and child process handles are live.
+        let assigned =
+            unsafe { AssignProcessToJobObject(job.as_raw_handle(), child.as_raw_handle()) };
+        if assigned == 0 {
+            let error = io::Error::last_os_error();
             drop(child.stdin.take());
-            let exited = child.wait()?;
-            retire_member(&mut state, port.as_raw_handle(), child.id())?;
-            if state.trees.contains_key(&7) {
-                state.settle_tree(7)?;
-            } else {
-                // In production a failed handover exits the custodian. This
-                // direct control retires its remaining duplicates only after
-                // that same original member's physical exit packet.
-                // SAFETY: failed publication did not transfer these handles.
-                unsafe {
-                    CloseHandle(opened.job);
-                    CloseHandle(opened.done);
-                }
+            child.wait()?;
+            return Err(error);
+        }
+        // SAFETY: each duplicate transfers the same native object, with
+        // only its selected publication/termination right removed.
+        let opened = unsafe {
+            Opened {
+                tree: 7,
+                job: duplicate(
+                    job.as_raw_handle(),
+                    GetCurrentProcess(),
+                    JOB_QUERY_AND_SET_ATTRIBUTES,
+                    if deny_termination {
+                        0
+                    } else {
+                        DUPLICATE_SAME_ACCESS
+                    },
+                )?,
+                process: duplicate(
+                    child.as_raw_handle(),
+                    GetCurrentProcess(),
+                    0,
+                    DUPLICATE_SAME_ACCESS,
+                )?,
+                ready: duplicate(
+                    ready.as_raw_handle(),
+                    GetCurrentProcess(),
+                    SYNCHRONIZATION_SYNCHRONIZE,
+                    if deny_ready { 0 } else { DUPLICATE_SAME_ACCESS },
+                )?,
+                done: done.try_clone()?.into_raw_handle(),
+                secret: [0; 16],
             }
-            assert!(watched);
-            assert!(exited.success());
-            assert_eq!(retirement, WAIT_TIMEOUT);
-            if deny_ready || deny_termination {
-                assert_eq!(
-                    result.unwrap_err().raw_os_error(),
-                    Some(ERROR_ACCESS_DENIED.cast_signed())
-                );
-                assert_eq!(readiness, WAIT_TIMEOUT);
-            } else {
-                result?;
-                assert_eq!(readiness, WAIT_OBJECT_0);
+        };
+        let mut state = State {
+            trees: IndexMap::new(),
+            members: Members::new(port.as_raw_handle()),
+            owner_exited: deny_termination,
+            input_closed: false,
+            visits: 0,
+        };
+        let result = state.open(opened, port.as_raw_handle());
+        let watched = state.members.live.contains_key(&child.id());
+        // SAFETY: single observations of the original native events.
+        let readiness = unsafe { WaitForSingleObject(ready.as_raw_handle(), 0) };
+        // SAFETY: the real child is still held by the original stdin.
+        let retirement = unsafe { WaitForSingleObject(done.as_raw_handle(), 0) };
+        drop(child.stdin.take());
+        let exited = child.wait()?;
+        retire_member(&mut state, port.as_raw_handle(), child.id())?;
+        if state.trees.contains_key(&7) {
+            state.settle_tree(7)?;
+        } else {
+            // In production a failed handover exits the custodian. This
+            // direct control retires its remaining duplicates only after
+            // that same original member's physical exit packet.
+            // SAFETY: failed publication did not transfer these handles.
+            unsafe {
+                CloseHandle(opened.job);
+                CloseHandle(opened.done);
             }
+        }
+        assert!(watched);
+        assert!(exited.success());
+        assert_eq!(retirement, WAIT_TIMEOUT);
+        if deny_ready || deny_termination {
+            assert_eq!(
+                result.unwrap_err().raw_os_error(),
+                Some(ERROR_ACCESS_DENIED.cast_signed())
+            );
+            assert_eq!(readiness, WAIT_TIMEOUT);
+        } else {
+            result?;
+            assert_eq!(readiness, WAIT_OBJECT_0);
         }
         Ok(())
     }
@@ -1468,7 +1474,8 @@ mod handoff_tests {
             return Err(io::Error::last_os_error());
         }
         assert_ne!(capacity, 0);
-        let error = io::Error::other("x".repeat(usize::try_from(capacity).unwrap() + 1));
+        let error =
+            io::Error::other("x".repeat(usize::try_from(capacity).map_err(io::Error::other)? + 1));
         writeln!(write, "{READY}")?;
         // Retaining arbitrary error text here would exhaust the real pipe
         // before this producer could exit and enable its original observer.
@@ -1634,17 +1641,8 @@ mod handoff_tests {
             io::ErrorKind::AlreadyExists
         );
         let unrelated_done = event(true, None)?;
-        let job = |name: *const u16| -> io::Result<OwnedHandle> {
-            // SAFETY: an optional NUL-terminated name, owned on success.
-            let handle = unsafe { CreateJobObjectW(std::ptr::null(), name) };
-            if handle.is_null() {
-                return Err(io::Error::last_os_error());
-            }
-            // SAFETY: CreateJobObjectW transferred one owned handle.
-            Ok(unsafe { OwnedHandle::from_raw_handle(handle.cast()) })
-        };
-        let selected = job(job_name.as_ptr())?;
-        let unrelated = job(std::ptr::null())?;
+        let selected = unnamed_or_named_job(job_name.as_ptr())?;
+        let unrelated = unnamed_or_named_job(std::ptr::null())?;
         // Hold the unrelated original producer before its settle transition.
         // These are actual native Jobs and the SAME production State, not a
         // synthesized member count or process-exit receipt.
@@ -1707,10 +1705,28 @@ mod handoff_tests {
         await_tree(&unrelated_done, &producer)?;
         assert!(state.trees.is_empty());
 
+        retire_empty_jobs()?;
+        Ok(())
+    }
+
+    fn unnamed_or_named_job(name: *const u16) -> io::Result<OwnedHandle> {
+        // SAFETY: the optional name is NUL-terminated and creation transfers ownership.
+        let handle = unsafe { CreateJobObjectW(std::ptr::null(), name) };
+        if handle.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: successful creation transferred one owned job handle.
+        Ok(unsafe { OwnedHandle::from_raw_handle(handle.cast()) })
+    }
+
+    fn retire_empty_jobs() -> io::Result<()> {
         // The original owner-death pass must also retire already-empty Jobs.
         // Removing one live slot swaps another into it: neither may be skipped
         // or left waiting for a member-exit producer that no longer exists.
-        let empty = [job(std::ptr::null())?, job(std::ptr::null())?];
+        let empty = [
+            unnamed_or_named_job(std::ptr::null())?,
+            unnamed_or_named_job(std::ptr::null())?,
+        ];
         let completion = [event(true, None)?, event(true, None)?];
         let mut state = State {
             trees: [

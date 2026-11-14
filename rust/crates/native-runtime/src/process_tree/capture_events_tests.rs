@@ -86,7 +86,10 @@ fn pending_stdin_keeps_original_credit_and_records_after_cancel_without_another_
     let bytes = [b'w'; 64 * 1024];
     let meter = crate::tests::ReadBudgetMeter::shared(u64::MAX, bytes.len() as u64);
     let (recorded, completion) = std::sync::mpsc::channel();
-    *meter.bytes_recorded.lock().unwrap() = Some(recorded);
+    *meter
+        .bytes_recorded
+        .lock()
+        .map_err(|error| io::Error::other(error.to_string()))? = Some(recorded);
     let pipe = process
         .child
         .as_mut()
