@@ -57,6 +57,7 @@ impl ExecutionEvent {
             | Self::ModelInline { step, .. }
             | Self::ModelWait { step, .. }
             | Self::ModelStopped { step, .. }
+            | Self::ModelRejected { step, .. }
             | Self::ModelOutput { step, .. }
             | Self::ToolStarted { step, .. }
             | Self::ToolCompleted { step, .. }
@@ -159,6 +160,15 @@ impl ExecutionEvent {
                 step: *step,
                 purpose: *purpose,
                 worker_paused: *worker_paused,
+            },
+            ModelRejected {
+                step,
+                purpose,
+                reason,
+            } => ModelRejected {
+                step: *step,
+                purpose: *purpose,
+                reason: text(reason)?,
             },
             ModelOutput { step, digest } => ModelOutput {
                 step: *step,

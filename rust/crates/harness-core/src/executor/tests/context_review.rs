@@ -746,6 +746,28 @@ async fn defective_context_decisions_reask_once_then_keep_history() -> Result<()
                     );
                 }
             }
+            for step in 0..3 {
+                let (_, rejected) = execution
+                    .step_records(journal, input.operation_id, step, false, None, |event| {
+                        matches!(
+                            event,
+                            ExecutionEvent::ModelRejected {
+                                purpose: ModelPurpose::Summary,
+                                ..
+                            }
+                        )
+                    })
+                    .await?;
+                assert_eq!(
+                    rejected.len(),
+                    usize::from(step < 2),
+                    "each rejection is journaled once with its reason"
+                );
+                assert!(rejected.iter().all(|record| matches!(
+                    &record.event,
+                    ExecutionEvent::ModelRejected { reason, .. } if !reason.is_empty()
+                )));
+            }
             let ask = provider.request(1).unwrap();
             let reask = provider.request(3).unwrap();
             assert!(ask.summary && reask.summary);

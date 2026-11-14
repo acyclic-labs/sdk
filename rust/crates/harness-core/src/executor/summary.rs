@@ -278,6 +278,11 @@ impl StockExecution<'_> {
         for event in stock_into_iter(events, io)? {
             match event {
                 ModelEvent::Content { delta } if !completed_message => {
+                    if self.stock.limits.render_bytes.is_some_and(|maximum| {
+                        (text.len() as u64).saturating_add(delta.len() as u64) > maximum
+                    }) {
+                        return Ok(Err("summary output exceeds caller render budget"));
+                    }
                     stock_string_push(
                         &mut text,
                         &delta,
