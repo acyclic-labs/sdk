@@ -50,15 +50,15 @@ diff --git a/rust/crates/harness-core/src/filesystem/hosting.rs b/rust/crates/ha
 diff --git a/rust/crates/harness-core/src/filesystem/agent_turns.rs b/rust/crates/harness-core/src/filesystem/agent_turns.rs
 --- a/rust/crates/harness-core/src/filesystem/agent_turns.rs
 +++ b/rust/crates/harness-core/src/filesystem/agent_turns.rs
-@@ -264,7 +264,7 @@ impl<'v> AdmittedAgent<'v> {
-                 (scope.capabilities().clone(), scope)
-             }
-             None => {
--                let grants = Capabilities::new(root_grants(self.volumes, &self.journal, external)?);
-+                let grants = Capabilities::new(root_grants(self.volumes, external)?);
-                 let scope = self
-                     .issuer
-                     .issue(None, "agent", &grants, Some(self.owner))
+@@ -283,7 +283,7 @@
+                 }
+                 None => {
+-                    let mut grants = root_grants(self.volumes, &self.journal, external)?;
++                    let mut grants = root_grants(self.volumes, external)?;
+                     if let Some(turn) = turn {
+                         // Keep the fixed native input route alongside the journal
+                         // policy's ordinary read admission (including summaries).
+                         grants.push(self.journal.directory_read_capability(
 @@ -480,12 +480,8 @@ pub(super) fn journal_grants(journal: &VolumeRef, content: &Capabilities) -> Res
  /// ceilings, its provider's seed layer, its own journal's reads and retained
  /// exact input versions. Raw writers cannot widen a rooted entry; scoped
