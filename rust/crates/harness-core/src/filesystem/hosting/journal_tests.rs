@@ -4,7 +4,7 @@ use super::*;
 use crate::{
     agent::{AgentId, InboxRecord, Phase},
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
-    filesystem::{PRIVATE_VOLUME, TurnAuthority},
+    filesystem::{PRIVATE_VOLUME, TurnAuthority, WorkspaceMutation, workspace_ref},
 };
 use acyclic_stream::MemoryStream;
 
@@ -62,7 +62,7 @@ async fn private_metadata_uses_the_session_cut_before_and_after_an_authored_over
         .await?
         .is_none()
     );
-    let reference = super::super::workspace_ref(
+    let reference = workspace_ref(
         private.provider().clone(),
         &private.storage_name(&mut None)?,
     )?;
@@ -70,8 +70,8 @@ async fn private_metadata_uses_the_session_cut_before_and_after_an_authored_over
         &reference,
         None,
         &[
-            super::super::WorkspaceMutation::CreateDirectory { path: "/ui".into() },
-            super::super::WorkspaceMutation::PutFile {
+            WorkspaceMutation::CreateDirectory { path: "/ui".into() },
+            WorkspaceMutation::PutFile {
                 path: "/ui/title".into(),
                 bytes: b"authored title".to_vec().into(),
             },

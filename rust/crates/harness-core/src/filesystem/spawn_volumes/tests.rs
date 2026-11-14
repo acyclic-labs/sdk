@@ -111,7 +111,7 @@ async fn inheritance_and_tree_binding_follow_the_entry_in_one_commit()
         home,
     ));
     let state = AgentState::adopted(
-        parent,
+        parent.clone(),
         &ForkAdopted {
             agent: AgentId::from_bytes([1; 16]),
             parent: None,
