@@ -5,7 +5,10 @@ use super::OperationId;
 /// # Panics
 /// If recognition or an adapter projection changes the original image.
 pub fn assert_image_invariants(input: &[u8]) {
-    crate::projection::image::assert_roundtrip(input);
+    assert_eq!(
+        crate::projection::image::assert_roundtrip(input).map_err(|error| format!("{error:?}")),
+        Ok(())
+    );
 }
 
 /// Accepted alloy manifests preserve policy and deterministic selection through JSON.
