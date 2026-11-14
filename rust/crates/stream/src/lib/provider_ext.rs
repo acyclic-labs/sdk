@@ -176,10 +176,29 @@ pub trait StreamProviderExt: StreamProvider {
     ) -> impl std::future::Future<Output = Result<AcceptedCommitOutcome, StreamError>> + ProviderTask
     {
         async move {
-            match self.write(WriteRequest::CommitAccepted(request)).await? {
-                WriteOutcome::CommitAccepted(outcome) => Ok(outcome),
-                _ => Err(StreamError::InvalidResponse),
+            #[cfg(feature = "serde")]
+            let diagnostic = diagnostic_commit(&request);
+            let work = async move {
+                match self.write(WriteRequest::CommitAccepted(request)).await? {
+                    WriteOutcome::CommitAccepted(outcome) => Ok(outcome),
+                    _ => Err(StreamError::InvalidResponse),
+                }
+            };
+            #[cfg(feature = "serde")]
+            if !diagnostic {
+                return crate::trace::observe(
+                    crate::trace::Request {
+                        name: "stream.commit_accepted",
+                        mechanism: crate::trace::Mechanism::Commit,
+                        parent: None,
+                        guarantee: Some("original_accepted_envelope_at_atomic_publication"),
+                    },
+                    work,
+                    |_| None,
+                )
+                .await;
             }
+            work.await
         }
     }
 
@@ -481,15 +500,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
     ) -> impl std::future::Future<Output = Result<CommitOutcome, StreamError>> + ProviderTask {
         async move {
             #[cfg(feature = "serde")]
-            let diagnostic =
-                crate::trace::any_source(request.conditions().map(CommitCondition::path).chain(
-                    request.mutations().flat_map(|mutation| {
-                        std::iter::once(mutation.path()).chain(match mutation {
-                            CommitMutation::Fork { source, .. } => Some(source),
-                            CommitMutation::Append { .. } => None,
-                        })
-                    }),
-                ));
+            let diagnostic = diagnostic_commit(&request);
             let work = async move {
                 match self.write(WriteRequest::Commit(request)).await? {
                     WriteOutcome::Commit(outcome) => Ok(outcome),
@@ -730,4 +741,16 @@ async fn named_head<P: StreamProvider + ?Sized>(
         .await;
     }
     work.await
+}
+
+#[cfg(feature = "serde")]
+fn diagnostic_commit(request: &CommitRequest) -> bool {
+    crate::trace::any_source(request.conditions().map(CommitCondition::path).chain(
+        request.mutations().flat_map(|mutation| {
+            std::iter::once(mutation.path()).chain(match mutation {
+                CommitMutation::Fork { source, .. } => Some(source),
+                CommitMutation::Append { .. } => None,
+            })
+        }),
+    ))
 }
