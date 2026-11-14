@@ -5,26 +5,48 @@ use std::{fmt, ops::Range, time::Duration};
 /// `DST_SEEDS=<start>..<end>` replaces `default` for a deeper sweep; otherwise
 /// `default`.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics when either variable is set but malformed, selects no seed, or
-/// names `u64::MAX`, so a typo never silently runs the wrong range or none.
-#[must_use]
-pub fn seeds(default: Range<u64>) -> Range<u64> {
-    if let Ok(seed) = std::env::var("DST_SEED") {
-        let seed: u64 = seed.parse().expect("DST_SEED=<u64>");
-        return seed..seed.checked_add(1).expect("DST_SEED below u64::MAX");
+/// [`SeedsError`] when either variable is set but malformed, selects no seed,
+/// or names `u64::MAX`, so a typo never silently runs the wrong range or none.
+pub fn seeds(default: Range<u64>) -> Result<Range<u64>, SeedsError> {
+    if let Ok(text) = std::env::var("DST_SEED") {
+        let seed: u64 = text.parse().map_err(|_| SeedsError::Seed(text.clone()))?;
+        let end = seed.checked_add(1).ok_or(SeedsError::Seed(text))?;
+        return Ok(seed..end);
     }
-    if let Ok(range) = std::env::var("DST_SEEDS") {
-        let (start, end) = range.split_once("..").expect("DST_SEEDS=<start>..<end>");
-        let seeds: Range<u64> =
-            start.parse().expect("DST_SEEDS start")..end.parse().expect("DST_SEEDS end");
+    if let Ok(text) = std::env::var("DST_SEEDS") {
+        let range = text
+            .split_once("..")
+            .and_then(|(start, end)| Some(start.parse().ok()?..end.parse().ok()?));
         // An empty range would pass without running a single world.
-        assert!(seeds.start < seeds.end, "DST_SEEDS={range} selects no seed");
-        return seeds;
+        return match range {
+            Some(seeds) if seeds.start < seeds.end => Ok(seeds),
+            _ => Err(SeedsError::Seeds(text)),
+        };
     }
-    default
+    Ok(default)
 }
+
+/// A seed selection variable that is set but selects no runnable seed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SeedsError {
+    /// `DST_SEED` is not a `u64` below `u64::MAX`.
+    Seed(String),
+    /// `DST_SEEDS` is not a non-empty `<start>..<end>` range of `u64`.
+    Seeds(String),
+}
+
+impl fmt::Display for SeedsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Seed(text) => write!(f, "DST_SEED={text} is not a u64 below u64::MAX"),
+            Self::Seeds(text) => write!(f, "DST_SEEDS={text} is not a non-empty <start>..<end>"),
+        }
+    }
+}
+
+impl std::error::Error for SeedsError {}
 
 /// The first failing seed of a sweep and the world's own minimal trace.
 #[derive(Clone, Eq, PartialEq)]

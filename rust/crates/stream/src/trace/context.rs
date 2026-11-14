@@ -87,47 +87,50 @@ pub(super) async fn disabled<F: Future>(future: F) -> F::Output {
 /// admitted owner this performs one local context check, with no allocation,
 /// clock, subscription lookup or diagnostic IO. Publication errors never replace
 /// the original result; unretained failures remain explicitly unfinished.
-pub async fn observe<T, E>(
+pub fn observe<T, E>(
     request: Request,
     work: impl Future<Output = Result<T, E>>,
     bytes: impl FnOnce(&T) -> Option<u64>,
-) -> Result<T, E> {
+) -> impl Future<Output = Result<T, E>> {
     observe_outcome(request, work, |result| {
         result
             .as_ref()
             .ok()
             .map(|value| (bytes(value), super::Outcome::Succeeded))
     })
-    .await
 }
 
 /// Classify the original result only for an admitted span. Failed classification
 /// still requires the original retained cause through Outcome's type. No
 /// classifier or terminal publication is evaluated on an unobserved request.
-pub async fn observe_outcome<T, E>(
+pub fn observe_outcome<T, E>(
     request: Request,
     work: impl Future<Output = Result<T, E>>,
-    _outcome: impl FnOnce(&Result<T, E>) -> Option<(Option<u64>, super::Outcome)>,
-) -> Result<T, E> {
-    observe_value(request, work, _outcome).await
+    outcome: impl FnOnce(&Result<T, E>) -> Option<(Option<u64>, super::Outcome)>,
+) -> impl Future<Output = Result<T, E>> {
+    observe_value(request, work, outcome)
 }
 
 /// Observe an original result or value, including a borrowed lock guard, without
 /// wrapping an infallible mechanism in a fabricated error type. The classifier
 /// runs only for an admitted span and no terminal publication delays return.
-pub async fn observe_value<T>(
+/// The observed future holds the work once: observation adds a constant size
+/// and one type level, however deeply observations nest.
+pub fn observe_value<T>(
     request: Request,
     work: impl Future<Output = T>,
     _outcome: impl FnOnce(&T) -> Option<(Option<u64>, super::Outcome)>,
-) -> T {
-    let (result, recording) = OwnedRecording::accompany(child(request), work).await;
-    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
-    if let Some(recording) = recording
-        && let Some((bytes, outcome)) = _outcome(&result)
-    {
-        let _completion = recording.finish_submitted(bytes, outcome);
-    }
-    result
+) -> impl Future<Output = T> {
+    use futures::FutureExt as _;
+    OwnedRecording::child(request, work).map(move |(result, _recording)| {
+        #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+        if let Some(recording) = _recording
+            && let Some((bytes, outcome)) = _outcome(&result)
+        {
+            let _completion = recording.finish_submitted(bytes, outcome);
+        }
+        result
+    })
 }
 /// Preserve the original cursor and snapshot; only admitted readers acquire an
 /// observation wrapper. Pending diagnostic publication never owns delivery.
