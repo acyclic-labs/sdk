@@ -536,6 +536,7 @@ fn pending_owner(root: &Path, old: bool) -> Result<(), Box<dyn std::error::Error
     control.write_all(info.map(u64::to_ne_bytes).as_flattened())?;
     let mut go = [0];
     control.read_exact(&mut go)?;
+    std::fs::create_dir(root.join("independent"))?;
     let path = root.join("blocked");
     let request = std::thread::spawn(move || std::fs::metadata(path));
     // Actual FUSE dispatch has entered the original source. No response is
@@ -567,6 +568,15 @@ fn pending_owner(root: &Path, old: bool) -> Result<(), Box<dyn std::error::Error
             submission
                 .recv_timeout(Duration::from_secs(2))
                 .map_err(std::io::Error::other)?;
+            // This reply follows the notification frame on the same stream.
+            // Its physical completion proves the host dispatched the earlier
+            // notification while the original parent-directory request waits.
+            assert_eq!(
+                std::fs::metadata(root.join("independent/missing"))
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::NotFound
+            );
         }
         control.write_all(&[1])?;
         control.read_exact(&mut go)
@@ -621,9 +631,14 @@ fn controller(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     use std::os::{fd::OwnedFd, unix::net::UnixStream};
     use std::process::{Command, Stdio};
     crate::initialize_native_mount_services()?;
-    for (case, (old, keep_survivor)) in [(false, false), (false, true), (true, true)]
-        .into_iter()
-        .enumerate()
+    for (case, (old, keep_survivor, kill_host)) in [
+        (false, false, false),
+        (false, true, false),
+        (false, false, true),
+        (true, true, false),
+    ]
+    .into_iter()
+    .enumerate()
     {
         let survivor_root = root.join(format!("survivor-{case}"));
         let owner_root = root.join(format!("owner-{case}"));
@@ -680,6 +695,15 @@ fn controller(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let mut pending = [0];
         control.read_exact(&mut pending)?;
         assert_eq!(pending, [1]);
+        if kill_host {
+            // A physical notifier must also retire when its host dies while
+            // blocked in the kernel; descriptor closure alone cannot abort
+            // a connection whose notification syscall still borrows it.
+            nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(i32::try_from(host_id)?),
+                nix::sys::signal::Signal::SIGKILL,
+            )?;
+        }
         child.kill()?;
         wait_exit(&thread_exit)?;
         if old {
