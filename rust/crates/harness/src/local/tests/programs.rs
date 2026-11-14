@@ -133,7 +133,11 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
         let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         std::fs::create_dir(directory.path().join(".git"))
             .map_err(|error| Error::Storage(error.to_string()))?;
-        let provider = scripted([ScriptedTurn::Text("ready".into())]);
+        let pause = Arc::new(PauseBeforeReply::default());
+        let provider = pause.provider(
+            ScriptedModelProvider::new([ScriptedTurn::Text("ready".into())])
+                .with_context_capacity(capacity()),
+        );
         let mut config = checkout_config(directory.path(), (model()?, provider.clone()))?;
         if denied {
             config = config.approval_policy(crate::approvals::ApprovalPolicy {
@@ -152,6 +156,7 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
         }
         let harness = Arc::new(super::open_scripted(config).await?);
         let connection = harness.connect().await?;
+        pause.arm(&harness, connection.root())?;
         let AgentReply::Spawned { agent: worker, .. } = connection
             .execute(&AgentCommand::Spawn {
                 parent: connection.root().clone(),
@@ -230,10 +235,11 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
             }),
             ScriptedTurn::Text("child done".into()),
         ]);
+        pause.arm(&harness, &worker)?;
         let AgentReply::Spawned { agent: child, .. } = connection
             .execute(&AgentCommand::Fork {
                 continuation: None,
-                parent: worker,
+                parent: worker.clone(),
                 id: crate::agent::IntentId::try_from("program-reader")
                     .map_err(|error| Error::Invalid(error.to_string()))?,
                 at: 1,
@@ -264,6 +270,13 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
             )?;
         }
         if !denied {
+            provider.extend([ScriptedTurn::Text("Child notification received".into())]);
+            let (agents, _) = harness.agents().await?;
+            agents
+                .pause(&worker, false)
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            super::agents::settled(&harness, &worker).await?;
             provider.extend([
                 code("replace-parent-program", r#"
                     import {write} from 'acyclic';
@@ -280,6 +293,10 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
                     .outcome
                     .is_completed()
             );
+            assert_eq!(
+                result(&provider.last_request().unwrap(), "replace-parent-program")?,
+                "replaced"
+            );
             provider.extend([
                 program_code(
                     "call-frozen-program",
@@ -287,6 +304,7 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
                 ),
                 ScriptedTurn::Text("child still isolated".into()),
             ]);
+            pause.arm(&harness, &worker)?;
             let conversation = Conversation::open(connection.select(child).await?);
             let mut inherited = ObservedConversation::observe(conversation, None).await?;
             assert!(
@@ -312,7 +330,11 @@ async fn authored_programs_wait_for_the_original_shell_approval_before_native_di
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     std::fs::create_dir(directory.path().join(".git"))
         .map_err(|error| Error::Storage(error.to_string()))?;
-    let provider = scripted([ScriptedTurn::Text("ready".into())]);
+    let pause = Arc::new(PauseBeforeReply::default());
+    let provider = pause.provider(
+        ScriptedModelProvider::new([ScriptedTurn::Text("ready".into())])
+            .with_context_capacity(capacity()),
+    );
     let policy = crate::approvals::ApprovalPolicy {
         approvers: vec![
             crate::approvals::Approver::Rules {
@@ -342,6 +364,7 @@ async fn authored_programs_wait_for_the_original_shell_approval_before_native_di
         ));
     let harness = Arc::new(super::open_scripted(config).await?);
     let connection = harness.connect().await?;
+    pause.arm(&harness, connection.root())?;
     let AgentReply::Spawned { agent: worker, .. } = connection
         .execute(&AgentCommand::Spawn {
             parent: connection.root().clone(),
@@ -546,7 +569,8 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         "A source retained by the request",
     )
     .map_err(|error| Error::Storage(error.to_string()))?;
-    let first = Arc::new(ScriptedModelProvider::new([
+    let pause = Arc::new(PauseBeforeReply::default());
+    let first = pause.provider(ScriptedModelProvider::new([
         ScriptedTurn::Text("ready".into()),
         code("select-settings", r#"
             import {write} from 'acyclic';
@@ -558,7 +582,7 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
             export default 'selected';
         "#),
     ]).reading_content().with_context_capacity(capacity()));
-    let second = Arc::new(
+    let second = pause.provider(
         ScriptedModelProvider::new([])
             .reading_content()
             .with_context_capacity(capacity()),
@@ -635,6 +659,7 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         ScriptedTurn::Text("inherited provider".into()),
     ]);
     let connection = harness.connect().await?;
+    pause.arm(&harness, connection.root())?;
     let AgentReply::Spawned { agent: worker, .. } = connection
         .execute(&AgentCommand::Spawn {
             parent: connection.root().clone(),
@@ -739,10 +764,11 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         entry.inbox
     );
     assert_eq!((first.request_count(), second.request_count()), (2, 2));
+    pause.arm(&harness, &worker)?;
     let AgentReply::Spawned { agent: child, .. } = connection
         .execute(&AgentCommand::Fork {
             continuation: None,
-            parent: worker,
+            parent: worker.clone(),
             id: crate::agent::IntentId::try_from("settings-reader")
                 .map_err(|error| Error::Invalid(error.to_string()))?,
             at: 1,
@@ -761,6 +787,13 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
     assert_ne!(second.dispatches()[2].operation_id, after.operation_id);
     assert_eq!(efforts(&inherited), ["low"]);
     let frozen_prefix = system_prefix(&inherited)?;
+    second.extend([ScriptedTurn::Text("Child notification received".into())]);
+    let (agents, _) = harness.agents().await?;
+    agents
+        .pause(&worker, false)
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    super::agents::settled(&harness, &worker).await?;
     second.extend([
         code("clear-effort", r#"
             import {write} from 'acyclic';
@@ -783,7 +816,7 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         observed.conversation.output_text(&cleared).await?,
         "default effort"
     );
-    let default_request = second.request(4).unwrap();
+    let default_request = second.request(5).unwrap();
     assert_eq!(efforts(&default_request), ["low", "medium"]);
     assert_eq!(system_prefix(&default_request)?, frozen_prefix);
     let restored = observed
@@ -794,7 +827,7 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         observed.conversation.output_text(&restored).await?,
         "low effort"
     );
-    let restored_request = second.request(6).unwrap();
+    let restored_request = second.request(7).unwrap();
     assert_eq!(efforts(&restored_request), ["low", "medium", "low"]);
     assert_eq!(system_prefix(&restored_request)?, frozen_prefix);
     assert_eq!(
@@ -811,7 +844,7 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
             .await?,
         restored.inbox
     );
-    assert_eq!((first.request_count(), second.request_count()), (2, 7));
+    assert_eq!((first.request_count(), second.request_count()), (2, 8));
     first.extend([
         ScriptedTurn::Text("first model with high effort".into()),
         code("return-second", r#"
@@ -876,7 +909,7 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         efforts(&returned),
         ["low", "medium", "low", "high", "medium", "medium"]
     );
-    assert_eq!((first.request_count(), second.request_count()), (5, 10));
+    assert_eq!((first.request_count(), second.request_count()), (5, 11));
     assert_eq!(
         second_route.model_profile(&model()?)?.unwrap().reasoning(),
         reasoning_baseline
@@ -929,6 +962,6 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
     );
     assert_eq!(system_prefix(&after_disable)?, frozen_prefix);
     assert_eq!(system_prefix(&disabled_result)?, frozen_prefix);
-    assert_eq!((first.request_count(), second.request_count()), (8, 10));
+    assert_eq!((first.request_count(), second.request_count()), (8, 11));
     Ok(())
 }

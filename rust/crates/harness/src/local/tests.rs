@@ -38,6 +38,58 @@ pub(super) fn text() -> Arc<ScriptedModelProvider> {
     scripted([ScriptedTurn::Text("done".into())])
 }
 
+/// Parks a parent before its child's next model reply can notify it. The
+/// child's finite script stays owned by that child until the parent resumes.
+#[derive(Default)]
+pub(super) struct PauseBeforeReply {
+    target: std::sync::Mutex<Option<(std::sync::Weak<LocalHarness>, crate::agent::AgentPath)>>,
+}
+
+impl PauseBeforeReply {
+    pub(super) fn arm(
+        &self,
+        harness: &Arc<LocalHarness>,
+        parent: &crate::agent::AgentPath,
+    ) -> Result<()> {
+        let mut target = self
+            .target
+            .lock()
+            .map_err(|_| Error::Storage("reply pause lock poisoned".into()))?;
+        if target.is_some() {
+            return Err(Error::Conflict("reply pause is already armed".into()));
+        }
+        *target = Some((Arc::downgrade(harness), parent.clone()));
+        Ok(())
+    }
+
+    pub(super) fn provider(
+        self: &Arc<Self>,
+        provider: ScriptedModelProvider,
+    ) -> Arc<ScriptedModelProvider> {
+        let pause = Arc::clone(self);
+        Arc::new(provider.with_dispatch_observer(move |_| {
+            let target = pause
+                .target
+                .lock()
+                .map(|mut target| target.take())
+                .map_err(|_| Error::Storage("reply pause lock poisoned".into()));
+            Box::pin(async move {
+                if let Some((harness, parent)) = target? {
+                    let harness = harness
+                        .upgrade()
+                        .ok_or_else(|| Error::Storage("reply pause host closed".into()))?;
+                    let (agents, _) = harness.agents().await?;
+                    agents
+                        .pause(&parent, true)
+                        .await
+                        .map_err(|error| Error::Storage(error.to_string()))?;
+                }
+                Ok(())
+            })
+        }))
+    }
+}
+
 /// Finite scripts model the task's requests, without optional settlement
 /// followups. Settlement coverage opens the default composition directly.
 pub(super) async fn open_scripted(config: LocalHarnessConfig) -> Result<LocalHarness> {
