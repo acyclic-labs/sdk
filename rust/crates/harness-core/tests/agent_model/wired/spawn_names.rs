@@ -315,7 +315,7 @@ async fn fixture_with_pause(
 async fn home_binding(
     files: &Host,
     agent: &AgentPath,
-    provider: acyclic_harness_core::conversation::ProviderRef,
+    provider: ProviderRef,
 ) -> Result<WorkspaceEntry> {
     let volume = VolumeRef::new(
         provider,
