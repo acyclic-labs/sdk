@@ -15,14 +15,37 @@ use futures::TryStreamExt as _;
 /// backend executes its real package and scheduler, not just inbox appends.
 pub async fn replayed_delivery<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
     let mut receiver = Fixture::create(target, run, "routing-replay").await?;
-    receiver.send("emit").await?;
-    receiver.expect(&["r0"]).await?;
     let provider = target.store().provider();
     let root = StreamPath::new(format!("{}/routing-replay", target.store().root()))
         .map_err(Error::from)?;
     let paths = Paths::new(root.clone());
     let source = NodeId::new(b"source").map_err(violation)?;
     let destination = NodeId::new(b"destination").map_err(violation)?;
+    let placement = Placement {
+        actor: receiver.actor.clone(),
+        node: destination.clone(),
+    };
+    receiver
+        .creation
+        .as_mut()
+        .ok_or_else(|| violation("receiver creation already published"))?
+        .push(placement.effect(&paths).map_err(violation)?);
+    receiver.send("emit").await?;
+    receiver.expect(&["r0"]).await?;
+    let created = provider
+        .record_at(receiver.inbox.clone(), 0)
+        .await
+        .map_err(Error::from)?
+        .ok_or_else(|| violation("receiver creation input missing"))?;
+    let located = provider
+        .record_at(paths.placement(&receiver.actor).map_err(Error::from)?, 0)
+        .await
+        .map_err(Error::from)?
+        .ok_or_else(|| violation("receiver placement missing"))?;
+    require(
+        created.commit_id == located.commit_id,
+        "placement did not share the original actor creation",
+    )?;
     let mut sender = Fixture::create(target, run, "routing-source").await?;
     let mut messages = Vec::new();
     for index in 0..2 {
@@ -79,8 +102,11 @@ pub async fn replayed_delivery<T: Backend + ?Sized>(target: &T, run: &str) -> Re
             if message != messages[0] {
                 return Err(crate::route::Error::InvalidRecord);
             }
+            let destination = Placement::read(provider.as_ref(), &paths, &message.to)
+                .await?
+                .ok_or(crate::route::Error::InvalidRecord)?;
             message
-                .publish_relay(provider.as_ref(), &paths, &destination, Vec::new())
+                .publish_relay(provider.as_ref(), &paths, &destination.node, Vec::new())
                 .await?;
             // Lose the account response after durable admission, before the
             // sender can record it. Reconnect must resubmit this same intent.
@@ -110,6 +136,28 @@ pub async fn replayed_delivery<T: Backend + ?Sized>(target: &T, run: &str) -> Re
     )?;
     target.restart().await?;
     sender.expect(&["r0", "r1"]).await?;
+    let moved = Placement {
+        actor: receiver.actor.clone(),
+        node: source.clone(),
+    };
+    require(
+        matches!(
+            provider
+                .commit(CommitRequest {
+                    deadline_unix_millis: None,
+                    idempotency_key: key(&root, "move-recipient")?,
+                    effects: vec![moved.effect(&paths).map_err(violation)?],
+                })
+                .await
+                .map_err(Error::from)?,
+            CommitOutcome::Conflict(_)
+        ) && Placement::read(provider.as_ref(), &paths, &receiver.actor)
+            .await
+            .map_err(violation)?
+            .as_ref()
+            == Some(&placement),
+        "restart allowed the recipient to move to another node",
+    )?;
     // The lost response must not let a restarted sender replace the admitted
     // bytes under the original intent. The unchanged retry below is the
     // positive control and must still reach the real receiver exactly once.
@@ -144,8 +192,11 @@ pub async fn replayed_delivery<T: Backend + ?Sized>(target: &T, run: &str) -> Re
         &source,
         async |_| Err(crate::route::Error::InvalidRecord),
         async |message| {
+            let destination = Placement::read(provider.as_ref(), &paths, &message.to)
+                .await?
+                .ok_or(crate::route::Error::InvalidRecord)?;
             message
-                .publish_relay(provider.as_ref(), &paths, &destination, Vec::new())
+                .publish_relay(provider.as_ref(), &paths, &destination.node, Vec::new())
                 .await
         },
     );

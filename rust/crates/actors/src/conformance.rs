@@ -377,7 +377,7 @@ struct Fixture<'a, T: Backend + ?Sized> {
     inbox: StreamPath,
     outbox: StreamPath,
     /// Creation effects that ride in the first send's commit.
-    creation: Option<[CommitEffect; 2]>,
+    creation: Option<Vec<CommitEffect>>,
     sent: u64,
 }
 
@@ -445,7 +445,7 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
             reservations: None,
             answer: None,
         };
-        let creation = [
+        let creation = vec![
             target.store().create(
                 template,
                 &actor,
