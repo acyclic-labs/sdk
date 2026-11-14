@@ -60,6 +60,33 @@ const label = p => `//${dir(p)}`;
 const libOf = p => p.targets.find(t => t.kind.some(k => k === "lib" || k === "rlib" || k === "proc-macro"));
 const crateName = target => target.name.replaceAll("-", "_");
 
+// Every tracked file belongs to the innermost member directory, or to the root package, as in Bazel.
+const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8", maxBuffer: 2 ** 31 - 1 }).split("\0").filter(Boolean);
+const memberDirs = [...members].map(id => dir(packages.get(id))).sort((a, b) => b.length - a.length);
+const ownerOf = file => memberDirs.find(d => file.startsWith(`${d}/`)) ?? "";
+const within = (owner, file) => (owner ? file.slice(owner.length + 1) : file);
+// Files of another package that a member's Rust sources embed through include!, include_str! or
+// include_bytes!, split into library and test-target inputs. A path this misses fails the sandboxed
+// compile loudly; it can never be read stale.
+const EMBED = /include(?:_str|_bytes)?!\(\s*(concat!\(\s*env!\(\s*"CARGO_MANIFEST_DIR"\s*\)\s*,\s*)?"([^"]+)"/g;
+const TEST_DIRS = /^(tests|benches|examples)\//;
+const trackedSet = new Set(tracked);
+const exported = new Map();
+const embeds = new Map(memberDirs.map(d => [d, { lib: new Set(), tests: new Set() }]));
+for (const file of tracked) {
+  const owner = ownerOf(file);
+  if (!owner || !file.endsWith(".rs")) continue;
+  for (const [, manifestRelative, literal] of fs.readFileSync(path.join(root, file), "utf8").matchAll(EMBED)) {
+    const target = path.posix.normalize(path.posix.join(manifestRelative ? owner : path.posix.dirname(file), literal));
+    const targetOwner = ownerOf(target);
+    if (targetOwner === owner || !trackedSet.has(target)) continue;
+    if (!exported.has(targetOwner)) exported.set(targetOwner, new Set());
+    exported.get(targetOwner).add(within(targetOwner, target));
+    embeds.get(owner)[TEST_DIRS.test(within(owner, file)) ? "tests" : "lib"].add(`//${targetOwner}:${within(targetOwner, target)}`);
+  }
+}
+const exportsRule = owner => (exported.has(owner) ? `\nexports_files(${list([...exported.get(owner)].sort())}, visibility = ["//visibility:public"])\n` : "");
+
 const cargo = tables("Cargo.toml");
 const dev = cargo["profile.dev"] ?? {};
 const packageOpt = name => value(cargo[`profile.dev.package.${name}`], "opt-level");
@@ -95,6 +122,7 @@ function buildFile(p) {
   const features = nodes.map(byId => [...(byId.get(p.id)?.features ?? [])].sort());
   const local = file => path.relative(path.dirname(p.manifest_path), file).replaceAll("\\", "/");
   const opt = packageOpt(p.name);
+  const embedded = embeds.get(dir(p));
   const env = Object.fromEntries([["CARGO_PKG_NAME", p.name], ["CARGO_PKG_DESCRIPTION", p.description], ["CARGO_PKG_REPOSITORY", p.repository], ["CARGO_PKG_LICENSE", p.license], ["CARGO_PKG_RUST_VERSION", p.rust_version]].filter(([, v]) => v));
   const common = target => [
     ["edition", q(target.edition)],
@@ -140,7 +168,7 @@ function buildFile(p) {
       ["name", q(crateName(lib))],
       ["crate_root", q(local(lib.src_path))],
       ["srcs", glob(["**/*.rs"], ["build.rs", ...NOT_LIB])],
-      ["compile_data", glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB])],
+      ["compile_data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), list([...embedded.lib].sort()))],
       ...common(lib),
       ...deps([null], { deps: "normal = True", procMacros: "proc_macro = True", aliases: "" }, ownDeps),
       ["visibility", q(["//visibility:public"])],
@@ -156,7 +184,7 @@ function buildFile(p) {
       ["name", q(bin.name)],
       ["crate_root", q(local(bin.src_path))],
       ["srcs", glob(["**/*.rs"], ["build.rs", ...NOT_LIB])],
-      ["compile_data", glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB])],
+      ["compile_data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), list([...embedded.lib].sort()))],
       ...common(bin),
       ...deps([null], { deps: "normal = True", procMacros: "proc_macro = True", aliases: "" }, [...(lib ? [`:${crateName(lib)}`] : []), ...ownDeps]),
       ["visibility", q(["//visibility:public"])],
@@ -166,7 +194,7 @@ function buildFile(p) {
     if (bin.test) test(lib && binCrate === crateName(lib) ? `${binCrate}_bin_test` : `${binCrate}_test`, [
       ["crate_root", q(local(bin.src_path))],
       ["srcs", glob(["**/*.rs"], ["build.rs", ...NOT_LIB])],
-      ["compile_data", glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB])],
+      ["compile_data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), list([...embedded.lib].sort()))],
       ...common(bin),
       ...deps([null, "dev"], { deps: "normal = True, normal_dev = True", procMacros: "proc_macro = True, proc_macro_dev = True", aliases: "normal = True, normal_dev = True, proc_macro = True, proc_macro_dev = True" },
         [...(lib ? [`:${crateName(lib)}`] : []), ...ownDeps]),
@@ -178,7 +206,7 @@ function buildFile(p) {
     test(lib && target.name === crateName(lib) ? `${target.name}_integration` : target.name, [
       ["crate_root", q(root)],
       ["srcs", glob([`${testDir}/**/*.rs`], [])],
-      ["compile_data", glob([`${testDir}/**`], ["**/*.rs"])],
+      ["compile_data", plus(glob([`${testDir}/**`], ["**/*.rs"]), list([...embedded.tests].sort()))],
       ...common(target),
       ...deps([null, "dev"], { deps: "normal = True, normal_dev = True", procMacros: "proc_macro = True, proc_macro_dev = True", aliases: "normal = True, normal_dev = True, proc_macro = True, proc_macro_dev = True" },
         [...(lib ? [`:${crateName(lib)}`] : []), ...ownDeps]),
@@ -193,7 +221,7 @@ function buildFile(p) {
     `FEATURES = ${perTriple(features, list)}\n\n`,
     `PACKAGE_ENV = ${q(env)}\n`,
   ];
-  return header.join("") + rules.map(([kind, attrs]) => `\n${rule(kind, attrs)}`).join("");
+  return header.join("") + rules.map(([kind, attrs]) => `\n${rule(kind, attrs)}`).join("") + exportsRule(dir(p));
 }
 
 function moduleFile() {
@@ -227,7 +255,10 @@ function moduleFile() {
   ].join("");
 }
 
-const files = new Map([["cargo.MODULE.bazel", moduleFile()]]);
+const files = new Map([
+  ["cargo.MODULE.bazel", moduleFile()],
+  ["BUILD.bazel", `${HEADER}\nexports_files(${list(["Cargo.lock", "Cargo.toml"])})\n${exportsRule("")}`],
+]);
 for (const id of members) files.set(`${dir(packages.get(id))}/BUILD.bazel`, buildFile(packages.get(id)));
 // A generated file whose package left the workspace is stale.
 for (const file of execFileSync("git", ["ls-files", "*BUILD.bazel"], { cwd: root, encoding: "utf8" }).split("\n").filter(Boolean)) {
