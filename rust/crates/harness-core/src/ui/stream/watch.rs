@@ -1,44 +1,8 @@
 //! One event-driven owner for the inputs of a subscribed UI view.
 use super::*;
-use acyclic_native_runtime::{OwnedFuture, retain_future};
+
 use acyclic_stream::{FollowRequest, NativeRecordStream, WhenAbsent};
 use futures::{future, stream};
-
-struct Watch {
-    future: OwnedFuture,
-    _allocation: RetainedAllocation,
-}
-
-impl SourceWatch for Watch {
-    fn fence(&self, ctx: &mut KernelAccounting<'_>) -> Result<SourceFence, DemandError> {
-        ctx.remaining()?;
-        // Independent input follows do not establish a single delivery cut.
-        Ok(SourceFence::Unconfirmed)
-    }
-    fn stop(&self, ctx: &mut KernelAccounting<'_>) -> Result<(), DemandError> {
-        ctx.remaining()?;
-        self.stop_accepted_cleanup()
-    }
-    fn stop_with_cleanup_wait(
-        &self,
-        wait: &acyclic_fs::CancellationToken,
-    ) -> Result<(), DemandError> {
-        wait.check().map_err(|_| DemandError::Cancelled)?;
-        self.stop_accepted_cleanup()
-    }
-    fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
-        self.future.stop().map_err(DemandError::from)
-    }
-    fn is_stopped(&self) -> bool {
-        self.future.is_stopped()
-    }
-    fn is_exact(&self) -> bool {
-        !self.future.is_stopped()
-    }
-    fn logical_owned_bytes(&self) -> u64 {
-        std::mem::size_of::<Self>() as u64
-    }
-}
 
 // Retiring the frame invalidates delivery on every exit, including cancellation
 // while an opening floor or snapshot lock is pending. No cleanup task escapes.
@@ -56,12 +20,10 @@ pub(super) fn start<P: NativeStreamProvider + ?Sized + 'static>(
     sink: Arc<dyn ViewChangeSink<Affected>>,
     ctx: &mut KernelAccounting<'_>,
 ) -> Result<Box<dyn SourceWatch>, DemandError> {
-    let allocation = RetainedAllocation::claim(std::mem::size_of::<Watch>() as u64, 1, ctx)?;
-    let meter = original.runtime_meter();
     let errors = original.clone();
     let delivery = Delivery(sink);
-    let future = retain_future(
-        async move {
+    crate::computed_watch::retain(
+        || async move {
             // Register the original cancellation event before any opening wait.
             let Ok(cancelled) = original.cancellation_wait() else {
                 return;
@@ -132,13 +94,9 @@ pub(super) fn start<P: NativeStreamProvider + ?Sized + 'static>(
             let _ = future::select(std::pin::pin!(cancelled), std::pin::pin!(run)).await;
             drop(delivery);
         },
-        &meter,
+        &errors,
+        ctx,
     )
-    .map_err(|error| DemandError::from(errors.runtime_error(error)))?;
-    Ok(Box::new(Watch {
-        future,
-        _allocation: allocation,
-    }))
 }
 
 async fn open<P: NativeStreamProvider + ?Sized>(

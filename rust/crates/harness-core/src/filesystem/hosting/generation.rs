@@ -83,7 +83,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         }
     }
 
-    async fn publication_cursor(
+    pub(super) async fn publication_cursor(
         &self,
         path: acyclic_stream::StreamPath,
     ) -> Result<acyclic_stream::FollowRequest, Error> {

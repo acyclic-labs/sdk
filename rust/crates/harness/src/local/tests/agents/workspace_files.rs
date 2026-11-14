@@ -8,6 +8,121 @@ use crate::{
 };
 use acyclic_harness_client::{AgentCommand, AgentPageRequest, AgentReply, ReadTarget};
 
+#[tokio::test]
+async fn private_computed_views_reopen_through_the_real_session() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let mut pinned = None;
+    let mut identity = None;
+    for opening in 0..2 {
+        let harness = Arc::new(
+            super::super::open_scripted(
+                volume_config(directory.path(), project.clone(), text())?.without_default_tools(),
+            )
+            .await?,
+        );
+        let connection = harness.connect().await?;
+        let (_, root) = harness.agents().await?;
+        let root = root.clone();
+        if let Some(expected) = &identity {
+            assert_eq!(expected, &root);
+        }
+        identity = Some(root.clone());
+        let AgentReply::Directory { page } = connection
+            .execute(&AgentCommand::Directory {
+                agent: root.clone(),
+                target: DirectoryTarget::Private {},
+                path: "ui".into(),
+                generation: None,
+                after_generation: None,
+                page: AgentPageRequest::default(),
+            })
+            .await?
+        else {
+            return Err(Error::Conflict("private UI directory reply".into()));
+        };
+        assert!(page.entries.iter().any(|entry| entry.name == "title"));
+        assert_eq!(page.generation.as_resource().version(), Some("lazy-v1"));
+        let read = |generation| AgentCommand::Read {
+            agent: root.clone(),
+            offset: 0,
+            target: ReadTarget::Path {
+                target: DirectoryTarget::Private {},
+                path: "ui/title".into(),
+                generation,
+            },
+        };
+        let reply = connection.execute(&read(page.generation.clone())).await?;
+        let (bytes, _) = reply.content().map_err(agent)?;
+        if opening == 0 {
+            assert_eq!(
+                std::str::from_utf8(&bytes).map_err(agent)?,
+                root.as_str().rsplit('/').next().unwrap()
+            );
+            let waiting_request = AgentCommand::Directory {
+                agent: root.clone(),
+                target: DirectoryTarget::Private {},
+                path: "ui".into(),
+                generation: None,
+                after_generation: Some(page.generation.clone()),
+                page: AgentPageRequest::default(),
+            };
+            let waiting = connection.execute(&waiting_request);
+            tokio::pin!(waiting);
+            assert!(futures::poll!(&mut waiting).is_pending());
+            let mut conversation = ObservedConversation::open(&harness).await?;
+            conversation
+                .send("computed-source-event", "publish a conversation event")
+                .await?;
+            let AgentReply::Directory { page: changed } = waiting.await? else {
+                return Err(Error::Conflict("private UI event reply".into()));
+            };
+            assert_ne!(changed.generation, page.generation);
+            pinned = Some(page.generation);
+            let state = harness
+                .agents()
+                .await?
+                .0
+                .state(&root)
+                .await
+                .map_err(agent)?;
+            let private = state
+                .volumes
+                .iter()
+                .find(|binding| binding.role == WorkspaceRole::Private)
+                .ok_or_else(|| Error::NotFound("private volume".into()))?
+                .volume()?;
+            harness
+                .files
+                .apply(
+                    &workspace_ref(
+                        private.provider().clone(),
+                        &private.storage_name(&mut None)?,
+                    )?,
+                    None,
+                    &[
+                        WorkspaceMutation::CreateDirectory { path: "/ui".into() },
+                        WorkspaceMutation::PutFile {
+                            path: "/ui/title".into(),
+                            bytes: b"authored title".to_vec().into(),
+                        },
+                    ],
+                    &crate::IdempotencyKey::new("private-ui-title")?,
+                )
+                .await?;
+        } else {
+            assert_eq!(bytes, b"authored title");
+            let historical = connection.execute(&read(pinned.clone().unwrap())).await?;
+            let (bytes, _) = historical.content().map_err(agent)?;
+            assert_eq!(
+                std::str::from_utf8(&bytes).map_err(agent)?,
+                root.as_str().rsplit('/').next().unwrap()
+            );
+        }
+    }
+    Ok(())
+}
+
 async fn change(
     harness: &Arc<LocalHarness>,
     op: WorkspaceOp,

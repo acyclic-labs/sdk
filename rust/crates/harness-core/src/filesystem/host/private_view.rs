@@ -9,6 +9,11 @@ pub(super) const FORMAT: &str = "lazy-v1";
 
 pub(super) trait PrivateView: Send + Sync {
     fn workspace_id(&self) -> acyclic_fs::WorkspaceId;
+    fn watch(
+        &self,
+        sink: Arc<dyn acyclic_fs::demand::SourceChangeSink>,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Option<Box<dyn acyclic_fs::demand::SourceWatch>>>;
     fn validate<'a>(
         &'a self,
         cut: &'a LazySnapshotRef,
@@ -56,6 +61,13 @@ where
 {
     fn workspace_id(&self) -> acyclic_fs::WorkspaceId {
         self.workspace().id()
+    }
+    fn watch(
+        &self,
+        sink: Arc<dyn acyclic_fs::demand::SourceChangeSink>,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Option<Box<dyn acyclic_fs::demand::SourceWatch>>> {
+        self.watch_source(sink, ctx).map_err(Into::into)
     }
     fn validate<'a>(
         &'a self,
@@ -121,6 +133,140 @@ where
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
+    pub(in crate::filesystem) async fn private_current_generation(
+        &self,
+        volume: &VolumeRef,
+        expected: Option<&GenerationRef>,
+        io: &PreparationIo,
+    ) -> Result<Option<GenerationRef>> {
+        if self.private_view.is_none() {
+            return Ok(None);
+        }
+        let reference = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
+        let _hold = io.guard_owned(reference.logical_owned_bytes()?)?;
+        let workspace = self.open(&reference, Some(io)).await?;
+        if let Some(expected) = expected {
+            match self
+                .private_snapshot(&workspace, Some(expected), io)
+                .await?
+            {
+                Some(cut) => self.validate_private_snapshot(&cut, io).await?,
+                None => {
+                    self.generation(&workspace, expected, Some(io)).await?;
+                }
+            }
+        }
+        let Some(cut) = self.private_snapshot(&workspace, None, io).await? else {
+            return Ok(None);
+        };
+        self.private_generation_ref(&cut, None, io).map(Some)
+    }
+
+    pub(in crate::filesystem) fn private_changes(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<PrivateChanges>> {
+        let Some(view) = &self.private_view else {
+            return Ok(None);
+        };
+        let mut ctx = KernelAccounting::NativeOriginal {
+            work,
+            cancellation: work.cancellation(),
+        };
+        let allocation = acyclic_fs::kernel::RetainedAllocation::claim(
+            std::mem::size_of::<PrivateSignal>() as u64,
+            1,
+            &mut ctx,
+        )?;
+        let (sender, receiver) = tokio::sync::watch::channel(true);
+        let signal = Arc::new(PrivateSignal {
+            sender,
+            _allocation: allocation,
+        });
+        Ok(view
+            .watch(signal, &mut ctx)?
+            .map(|watch| PrivateChanges { watch, receiver }))
+    }
+
+    /// Composes the private projections with the agent's existing authored
+    /// volume. Both local and served sessions call this after admission.
+    /// Companion state stays on the same authority as the session volumes.
+    pub(in crate::filesystem) async fn for_agent_views<P>(
+        self: &Arc<Self>,
+        streams: Arc<P>,
+        agent: &crate::agent::AgentPath,
+        volume: &VolumeRef,
+        verifier: &crate::core::AuthorityVerifier,
+        scope: &crate::core::Scope,
+    ) -> Result<Arc<Self>>
+    where
+        P: acyclic_stream::NativeStreamProvider + ?Sized + 'static,
+    {
+        use acyclic_fs::demand::{Empty, Routed};
+        if volume.provider() != &self.provider
+            || volume.class() != VolumeClass::AgentPrivate
+            || volume.owner()
+                != &crate::conversation::VolumeOwner::Agent(crate::AgentId::from_bytes(
+                    agent.id_bytes(),
+                ))
+            || self.filesystem.operation_claims().owner_identity()
+                != streams.context().operation_claims().owner_identity()
+        {
+            return Err(Error::Unauthorized(
+                "private views require the original agent and volume authority".into(),
+            ));
+        }
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .map_err(|(error, _)| Error::from(error))?;
+        let io = PreparationIo::from_native_work(&work)?;
+        let reference = bounded_io::content_workspace(&self.provider, volume, Some(&io))?;
+        let _reference_hold = io.guard_owned(reference.logical_owned_bytes()?)?;
+        let workspace = self.open(&reference, Some(&io)).await?;
+        let limits = workspace.volume_config().limits;
+        let reader = super::super::FilesystemContentVerifier::new(
+            self.clone(),
+            verifier,
+            scope,
+            None,
+            None,
+        )?;
+        let source = crate::ui::StreamUiProvider::new(
+            streams.clone(),
+            reader,
+            agent.clone(),
+            crate::ui::View::new(64).map_err(|error| Error::Invalid(error.to_string()))?,
+            *b"agent-ui-path-v1",
+            private_navigation,
+        )
+        .into_source();
+        let source = Arc::new(Routed::new(
+            Empty,
+            acyclic_fs::kernel::LogicalName::new(
+                acyclic_fs::kernel::NameEncoding::Utf8,
+                b"ui".to_vec(),
+            )
+            .map_err(|_| io.invalid("invalid private view route"))?,
+            source,
+            limits,
+        ));
+        let mut ctx = KernelAccounting::NativeOriginal {
+            work: &work,
+            cancellation: &cancellation,
+        };
+        let view = LazyWorkspace::bind(
+            workspace,
+            source,
+            acyclic_fs::StreamAuthorityStore::new(streams),
+            &mut ctx,
+        )
+        .await?;
+        self.for_private_view(volume, view.share(&mut ctx)?)
+    }
+
     /// Binds an existing private lazy workspace to the same authorized range reader.
     /// Construction starts no IO, mount, watch, cache or background task.
     pub fn for_private_view<D: DemandSource + 'static, S: LazyWorkspaceStore>(
@@ -275,4 +421,64 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         io.account(|ctx| owner.restore(ctx))?;
         result
     }
+}
+
+struct PrivateSignal {
+    sender: tokio::sync::watch::Sender<bool>,
+    _allocation: acyclic_fs::kernel::RetainedAllocation,
+}
+
+impl acyclic_fs::demand::SourceChangeSink for PrivateSignal {
+    fn source_changed(
+        &self,
+        _: &[acyclic_fs::demand::SourceChange],
+        ctx: &mut KernelAccounting<'_>,
+    ) -> std::result::Result<(), acyclic_fs::demand::DemandError> {
+        ctx.check()?;
+        self.sender.send_replace(true);
+        Ok(())
+    }
+    fn delivery_lost(&self) {
+        self.sender.send_replace(false);
+    }
+    fn logical_owned_bytes(&self) -> u64 {
+        std::mem::size_of::<Self>() as u64
+    }
+}
+
+/// One request's retained source wait. Dropping it retires the source owner;
+/// sessions without a waiting reader keep no subscription or task.
+pub(in crate::filesystem) struct PrivateChanges {
+    watch: Box<dyn acyclic_fs::demand::SourceWatch>,
+    receiver: tokio::sync::watch::Receiver<bool>,
+}
+
+impl PrivateChanges {
+    pub(in crate::filesystem) async fn changed(&mut self) -> Result<()> {
+        self.receiver
+            .changed()
+            .await
+            .map_err(|_| Error::Storage("private source subscription closed".into()))?;
+        if *self.receiver.borrow_and_update() {
+            Ok(())
+        } else {
+            Err(Error::Storage("private source delivery lost".into()))
+        }
+    }
+}
+
+impl Drop for PrivateChanges {
+    fn drop(&mut self) {
+        // This retires the birth-paid runtime owner, including cancellation.
+        let _ = self.watch.stop_accepted_cleanup();
+    }
+}
+
+fn private_navigation(
+    child: &acyclic_stream::StreamPath,
+    ctx: &mut KernelAccounting<'_>,
+) -> std::result::Result<acyclic_fs::kernel::OwnedSourceChunk, acyclic_fs::demand::DemandError> {
+    acyclic_fs::kernel::OwnedSourceChunk::produce(ctx, |sink| {
+        write!(sink, "/{}/ui", child.as_str()).map_err(acyclic_fs::demand::DemandError::from)
+    })
 }
