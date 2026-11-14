@@ -461,19 +461,17 @@ where
         reference: &'a FileRef,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
-        if io.is_none() {
-            return crate::conversation::BoundedContentFuture::new(None, || async move {
-                let span = obs_span!("acyclic.harness.journal.load", bytes = crate::obs::Empty);
-                crate::obs::traced_future(span, async move {
-                    let bytes = self.load_content(reference, None).await?;
-                    crate::obs::obs_record!("bytes" = bytes.len());
-                    Ok(bytes)
-                })
-                .await
-            });
-        }
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            self.load_content(reference, io).await
+        crate::conversation::BoundedContentFuture::new(io, || {
+            self.observe_request(
+                acyclic_stream::trace::Request {
+                    name: "harness.private_load",
+                    mechanism: acyclic_stream::trace::Mechanism::Io,
+                    parent: None,
+                    guarantee: Some("authenticated_immutable_content"),
+                },
+                self.load_content(reference, io),
+                |bytes| u64::try_from(bytes.len()).ok(),
+            )
         })
     }
 
@@ -483,33 +481,44 @@ where
         range: acyclic_fs::ByteRange,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            if reference.volume() != &self.volume {
-                return Err(canonical_boundary(
-                    io,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "journal content belongs to another private volume",
-                ));
-            }
-            let grant = crate::executor::with_history_io(io, |work| {
-                ContentGrant::verify(
-                    &self.verifier,
-                    &self.scope,
-                    &self.volume,
-                    VolumeOperation::Read,
-                    work,
-                )
-            })?;
-            let grant_hold = io
-                .map(|io| io.guard_owned(grant.logical_owned_bytes()?))
-                .transpose()?;
-            let result = self
-                .host
-                .read_content_range(reference, &grant, range, io)
-                .await;
-            drop(grant);
-            drop(grant_hold);
-            result
+        crate::conversation::BoundedContentFuture::new(io, || {
+            self.observe_request(
+                acyclic_stream::trace::Request {
+                    name: "harness.private_load_range",
+                    mechanism: acyclic_stream::trace::Mechanism::Io,
+                    parent: None,
+                    guarantee: Some("authenticated_immutable_range"),
+                },
+                async move {
+                    if reference.volume() != &self.volume {
+                        return Err(canonical_boundary(
+                            io,
+                            crate::wire::ErrorCode::Unauthorized,
+                            "journal content belongs to another private volume",
+                        ));
+                    }
+                    let grant = crate::executor::with_history_io(io, |work| {
+                        ContentGrant::verify(
+                            &self.verifier,
+                            &self.scope,
+                            &self.volume,
+                            VolumeOperation::Read,
+                            work,
+                        )
+                    })?;
+                    let grant_hold = io
+                        .map(|io| io.guard_owned(grant.logical_owned_bytes()?))
+                        .transpose()?;
+                    let result = self
+                        .host
+                        .read_content_range(reference, &grant, range, io)
+                        .await;
+                    drop(grant);
+                    drop(grant_hold);
+                    result
+                },
+                |bytes| u64::try_from(bytes.len()).ok(),
+            )
         })
     }
 
@@ -667,20 +676,17 @@ where
         media: &'static str,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
-        if io.is_none() {
-            return crate::conversation::BoundedContentFuture::new(None, || {
-                // Construct one storage payload, but acquire its tracing
-                // parent only when polling begins. No forwarding coroutine
-                // duplicates that payload or needs a second allocation.
-                crate::obs::traced_on_poll(
-                    move || obs_span!("acyclic.harness.journal.stage", bytes = bytes.len()),
-                    self.stage_with_io(operation, key, bytes, media, None),
-                )
-            });
-        }
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            let span = obs_span!("acyclic.harness.journal.stage", bytes = bytes.len());
-            traced(span, self.stage_with_io(operation, key, bytes, media, io)).await
+        crate::conversation::BoundedContentFuture::new(io, || {
+            self.observe_request(
+                acyclic_stream::trace::Request {
+                    name: "harness.private_stage",
+                    mechanism: acyclic_stream::trace::Mechanism::Commit,
+                    parent: None,
+                    guarantee: Some("authenticated_private_publication"),
+                },
+                self.stage_with_io(operation, key, bytes, media, io),
+                |_| u64::try_from(bytes.len()).ok(),
+            )
         })
     }
 

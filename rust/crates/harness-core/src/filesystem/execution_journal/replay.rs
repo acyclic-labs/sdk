@@ -88,6 +88,44 @@ where
         retain_models: bool,
         io: Option<&PreparationIo>,
     ) -> Result<Vec<(ExecutionRecord, Option<ModelEvent>)>> {
+        self.observe_request(
+            acyclic_stream::trace::Request {
+                name: "harness.execution_replay_page",
+                mechanism: acyclic_stream::trace::Mechanism::Io,
+                parent: None,
+                guarantee: Some("authenticated_execution_prefix"),
+            },
+            self.replay_page_inner(operation_id, after, maximum, retain_models, io),
+            |_| None,
+        )
+        .await
+    }
+
+    pub(super) async fn observe_request<T, E>(
+        &self,
+        request: acyclic_stream::trace::Request,
+        work: impl std::future::Future<Output = std::result::Result<T, E>>,
+        bytes: impl FnOnce(&T) -> Option<u64>,
+    ) -> std::result::Result<T, E> {
+        match &self.traces {
+            Some((traces, owner)) => {
+                traces
+                    .observe(owner.as_str(), request, work, bytes)
+                    .await
+                    .result
+            }
+            None => work.await,
+        }
+    }
+
+    async fn replay_page_inner(
+        &self,
+        operation_id: OperationId,
+        after: u64,
+        maximum: u32,
+        retain_models: bool,
+        io: Option<&PreparationIo>,
+    ) -> Result<Vec<(ExecutionRecord, Option<ModelEvent>)>> {
         #[cfg(not(target_arch = "wasm32"))]
         let recheck = io
             .and_then(PreparationIo::original_native_work)

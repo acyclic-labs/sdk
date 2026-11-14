@@ -9,6 +9,14 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    pub(in crate::filesystem) fn with_trace_interest(
+        mut self,
+        traces: acyclic_stream::trace::Registry<P>,
+        owner: crate::agent::AgentPath,
+    ) -> Self {
+        self.traces = Some((traces, owner));
+        self
+    }
     fn invalidate_execution_caches(&mut self) {
         self.cache_identity = Default::default();
         *self.verified.get_mut() = SummaryCache::default();
@@ -170,6 +178,7 @@ where
         let _native_metadata = quota.into_custody()?;
         Ok(Self {
             cache_identity: Default::default(),
+            traces: None,
             stream,
             host,
             volume,
