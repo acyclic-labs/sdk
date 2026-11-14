@@ -8,7 +8,7 @@
 //! [`Store::activation`] for that actor in the same commit, and the dispatcher's
 //! assigned shard follow wakes it. A delivery reads its inputs with bounded finite reads.
 use super::ready::{Flight, ReadySet, Registration, Work};
-use super::{Error, PreparedPublish, Snapshot, State, Store, scheduling};
+use super::{Error, PreparedPublish, Publication, Snapshot, State, Store, owned, scheduling};
 use acyclic_stream::StreamProviderExt as _;
 mod clock;
 mod completion;
@@ -1847,6 +1847,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 let mut publication = match result {
                     Ok(transition) => self.prepare_transition(
                         &handled_cut,
+                        &snapshot,
                         epoch,
                         &trigger,
                         record.as_ref(),
@@ -1929,6 +1930,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                             .map(|transition| {
                                 let mut publication = self.prepare_transition(
                                     &handled_cut,
+                                    &snapshot,
                                     epoch,
                                     &trigger,
                                     record.as_ref(),
@@ -1990,6 +1992,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     fn prepare_transition(
         &self,
         snapshot: &Snapshot,
+        admitted: &Snapshot,
         epoch: u64,
         trigger: &Trigger,
         record: Option<&Record>,
@@ -2005,9 +2008,19 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         {
             return Err(Error::Invalid("checkpoint exceeds the manifest limit"));
         }
-        let mut publication = self
-            .store
-            .prepare_publish(snapshot, epoch, trigger, record, transition, identity)?;
+        // A state flush can replace the desired alarm while this delivery
+        // still consumes its originally admitted generation.
+        let mut publication = self.store.prepare_publication(
+            snapshot,
+            owned(snapshot, epoch)?.clone(),
+            &owned(admitted, epoch)?.alarm,
+            Publication {
+                trigger,
+                delivered: record,
+                transition,
+                key: identity,
+            },
+        )?;
         if self
             .handler
             .revalidate_foreign_conflicts(&self.store.actor(snapshot.path())?)
