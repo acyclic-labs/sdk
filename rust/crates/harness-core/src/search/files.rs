@@ -18,7 +18,7 @@ pub use crate::tool::ReadPathKind as FileRootKind;
 #[serde(deny_unknown_fields)]
 struct Directory {
     path: String,
-    after: Option<String>,
+    after: Option<Vec<u8>>,
     done: bool,
 }
 
@@ -148,7 +148,7 @@ impl FileCursor {
             return Err(invalid());
         }
         for directory in &self.directories {
-            if !valid(&directory.path)? || directory.after.as_ref().is_some_and(String::is_empty) {
+            if !valid(&directory.path)? || directory.after.as_ref().is_some_and(Vec::is_empty) {
                 return Err(invalid());
             }
         }
@@ -227,7 +227,7 @@ impl FileCursor {
             };
             let (page, _) = &read;
             page.validate_with_io(io)?;
-            if page.examined > 1 || page.entries.len() > 1 {
+            if page.entries.len() > 1 {
                 return Err(stock_boundary(
                     io,
                     crate::wire::ErrorCode::Storage,
@@ -248,12 +248,19 @@ impl FileCursor {
             if cursor.generation.is_none() {
                 cursor.generation = Some(generation(&page.generation, io)?);
             }
-            directory.done = !page.has_more;
+            directory.done = page.next.is_none();
             retire(directory.after.take(), io)?;
             directory.after = page
                 .next
                 .as_ref()
-                .map(|token| stock_string_copy(token, io))
+                .map(|token| {
+                    crate::executor::with_history_io(io, |work| {
+                        crate::wire_codec::CodecQuota::produce(work, |quota| {
+                            crate::core::copy_copy_vector(token, quota)
+                        })
+                        .map(|(token, _)| token)
+                    })
+                })
                 .transpose()?;
             if let Some(entry) = page.entries.first() {
                 let mut path = stock_string_copy(&directory.path, io)?;
@@ -280,6 +287,7 @@ impl FileCursor {
                     PrivateDirectoryEntryKind::File => {
                         cursor.pending = Some(Position { path, offset: 0 })
                     }
+                    _ => retire(path, io)?,
                 }
             }
         }
