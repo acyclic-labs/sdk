@@ -9,12 +9,19 @@ use acyclic_stream::{
 use std::sync::Arc;
 
 #[derive(serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Decision<T = Admission, C = String> {
-    version: u8,
-    agent: AgentId,
-    cut: C,
-    admission: T,
+#[serde(tag = "storage", rename_all = "snake_case", deny_unknown_fields)]
+enum Decision<T = Admission, C = String> {
+    Inline {
+        version: u8,
+        agent: AgentId,
+        cut: C,
+        admission: T,
+    },
+    Chunks {
+        version: u8,
+        digest: [u8; 32],
+        bytes: u64,
+    },
 }
 
 /// Owner-bound settings decisions, retained even when session startup refuses.
@@ -78,7 +85,7 @@ impl SettingsAdmissions {
         io.allocation_attempt(key.len() as u64)?;
         let key = key.to_vec();
         let bytes = io.encode(
-            &Decision {
+            &Decision::Inline {
                 version: 1,
                 agent,
                 cut,
@@ -87,22 +94,62 @@ impl SettingsAdmissions {
             None,
             true,
         )?;
-        io.charge(acyclic_fs::WorkCounters {
-            bytes_hashed: bytes.len() as u64,
-            ..Default::default()
-        })?;
+        let digest = crate::model::hash_bytes(&bytes, Some(io))?;
         let identity = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(
-                format_args!("settings-admission:v1:{agent}:{}", blake3::hash(&bytes)),
+                format_args!(
+                    "settings-admission:v1:{agent}:{}",
+                    blake3::Hash::from_bytes(digest)
+                ),
                 work,
             )
         })?;
         let _identity_hold = io.guard_owned(identity.capacity() as u64)?;
+        let headers = RecordHeaders::new(vec![key.into()], vec![]).map_err(invalid)?;
+        let bytes = if bytes.len().saturating_add(headers.payload_bytes())
+            > acyclic_stream::MAX_RECORD_BYTES
+        {
+            let path = Self::payload_path(agent, &digest, Some(io))?;
+            crate::store::operations::stage_chunks(
+                &self.provider,
+                &path,
+                &bytes,
+                Some(io),
+                |sequence| {
+                    let mut chunk = [0; 40];
+                    chunk[..32].copy_from_slice(&digest);
+                    chunk[32..].copy_from_slice(&sequence.to_be_bytes());
+                    let digest = crate::model::hash_bytes(&chunk, Some(io))?;
+                    let key = crate::executor::with_history_io(Some(io), |work| {
+                        crate::executor::preparation_format(
+                            format_args!(
+                                "settings-admission-chunk:v1:{}",
+                                blake3::Hash::from_bytes(digest)
+                            ),
+                            work,
+                        )
+                    })?;
+                    IdempotencyKey::new(key).map_err(invalid)
+                },
+            )
+            .await?;
+            io.encode(
+                &Decision::<&T, &str>::Chunks {
+                    version: 1,
+                    digest,
+                    bytes: bytes.len() as u64,
+                },
+                None,
+                true,
+            )?
+        } else {
+            bytes
+        };
         let request = AppendRequest {
             path: Self::path(agent)?,
             records: vec![AppendRecord {
                 value: bytes,
-                headers: RecordHeaders::new(vec![key.into()], vec![]).map_err(invalid)?,
+                headers,
             }],
             if_tail: None,
             idempotency_key: IdempotencyKey::new(identity).map_err(invalid)?,
@@ -140,23 +187,69 @@ impl SettingsAdmissions {
         else {
             return Ok(None);
         };
-        let decision: Decision = serde_json::from_slice(&record.value)
+        let mut decision: Decision = serde_json::from_slice(&record.value)
             .map_err(|error| Error::Storage(error.to_string()))?;
-        if decision.version != 1 {
+        if let Decision::Chunks {
+            version,
+            digest,
+            bytes,
+        } = decision
+        {
+            if version != 1 {
+                return Err(Error::Unsupported(
+                    "settings decisions require format v1".into(),
+                ));
+            }
+            let path = Self::payload_path(agent, &digest, Some(&io))?;
+            let (body, _hold) =
+                crate::store::operations::read_chunks(&self.provider, &path, bytes, &digest, &io)
+                    .await?;
+            decision =
+                serde_json::from_slice(&body).map_err(|error| Error::Storage(error.to_string()))?;
+        }
+        let Decision::Inline {
+            version: format,
+            agent: owner,
+            cut: source_cut,
+            admission,
+        } = decision
+        else {
+            return Err(Error::Storage(
+                "settings payload does not contain a complete decision".into(),
+            ));
+        };
+        if format != 1 {
             return Err(Error::Unsupported(
                 "settings decisions require format v1".into(),
             ));
         }
-        if decision.agent != agent
-            || decision.cut != cut
-            || decision.admission.path != path
-            || decision.admission.version != version
+        if owner != agent
+            || source_cut != cut
+            || admission.path != path
+            || admission.version != version
         {
             return Err(Error::Storage(
                 "settings decision belongs to another query".into(),
             ));
         }
-        Ok(Some(decision.admission))
+        Ok(Some(admission))
+    }
+
+    fn payload_path(
+        agent: AgentId,
+        digest: &[u8; 32],
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<StreamPath> {
+        crate::executor::with_history_io(io, |work| {
+            crate::executor::preparation_format(
+                format_args!(
+                    "harness/settings-admissions/v1/{agent}/values/{}",
+                    blake3::Hash::from_bytes(*digest)
+                ),
+                work,
+            )
+        })
+        .and_then(|path| StreamPath::new(path).map_err(invalid))
     }
 }
 

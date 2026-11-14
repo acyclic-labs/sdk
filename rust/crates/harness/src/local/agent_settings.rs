@@ -947,6 +947,24 @@ mod tests {
             retained,
             "replaying the same record must retire temporary publication storage"
         );
+        let reason = Error::Invalid("設定\"\n\\".repeat(20_000));
+        let original = reason.to_string();
+        let returned = admitted::<()>(
+            &volumes,
+            Some(&io),
+            harness.root,
+            (config::AGENT, "large-error", "original"),
+            Err(Refused::Settings(AdmissionStatus::Invalid, reason)),
+            &Clock,
+        )
+        .await
+        .expect_err("invalid settings must preserve their original refusal");
+        assert_eq!(returned.to_string(), original);
+        let outcome = observed(&volumes, harness.root, "large-error")
+            .await?
+            .ok_or_else(|| Error::NotFound("large settings admission".into()))?;
+        assert_eq!(outcome.status, AdmissionStatus::Invalid);
+        assert_eq!(outcome.error.as_deref(), Some(original.as_str()));
         cancel.cancel();
         let result = record(
             &volumes,

@@ -3,10 +3,7 @@
 //! staging cannot expose a partial diagnostic as a completed agent result.
 
 use super::{AgentPath, Error};
-use acyclic_stream::{
-    AppendOutcome, AppendRequest, ReadRequest, RecordStream, StreamPath, StreamProvider,
-    StreamProviderExt as _,
-};
+use acyclic_stream::{ReadRequest, RecordStream, StreamPath, StreamProvider};
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
 
@@ -121,34 +118,18 @@ impl Diagnostic {
 
     /// Stages only bounded records. Exact retries use the original per-chunk
     /// identity; failures propagate without an independent retry or tail probe.
-    pub(super) async fn stage<P: StreamProvider + ?Sized>(
+    pub(super) async fn stage<P: crate::store::JournalProvider + ?Sized>(
         &self,
-        provider: &P,
+        provider: &std::sync::Arc<P>,
         text: &str,
     ) -> Result<(), Error> {
         let path = self.path()?;
-        for (index, chunk) in text
-            .as_bytes()
-            .chunks(acyclic_stream::MAX_RECORD_BYTES)
-            .enumerate()
-        {
-            let request = AppendRequest {
-                path: path.clone(),
-                records: vec![chunk.to_vec().into()],
-                if_tail: Some(index as u64),
-                idempotency_key: super::intent_key(
-                    "diagnostic",
-                    &[path.as_str(), &index.to_string()],
-                )?,
-            };
-            match provider.append(request).await.map_err(Error::Stream)? {
-                AppendOutcome::Committed(_) => {}
-                AppendOutcome::TailConflict { .. } => {
-                    return Err(Error::Record("diagnostic prefix differs"));
-                }
-            }
-        }
-        Ok(())
+        crate::store::operations::stage_chunks(provider, &path, text.as_bytes(), None, |index| {
+            super::intent_key("diagnostic", &[path.as_str(), &index.to_string()])
+                .map_err(crate::Error::from)
+        })
+        .await
+        .map_err(|cause| Error::Turn(Box::new(cause)))
     }
 }
 

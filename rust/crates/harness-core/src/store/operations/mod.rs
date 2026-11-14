@@ -15,6 +15,8 @@ mod paths;
 pub use paths::*;
 mod sdk;
 pub(crate) use sdk::*;
+mod chunks;
+pub(crate) use chunks::{read_chunks, stage_chunks};
 
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_stream::{NativeRecordStream, NativeStreamOutput};
