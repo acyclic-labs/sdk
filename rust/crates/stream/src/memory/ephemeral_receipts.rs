@@ -44,7 +44,12 @@ impl MemoryStream {
         self.project_replayed_commit(
             request,
             digest,
-            (&pin.fact.digest, &pin.fact.result, pin.fact.index),
+            (
+                &pin.fact.digest,
+                &pin.fact.result,
+                pin.fact.index,
+                pin.ephemeral,
+            ),
             accepted,
         )
     }
@@ -53,7 +58,7 @@ impl MemoryStream {
         &self,
         request: &CommitRequest,
         digest: [u8; 32],
-        (replayed, result, index): Replayed<'_>,
+        (replayed, result, index, _): Replayed<'_>,
         accepted: bool,
     ) -> Result<(crate::WriteOutcome, Allocation), StreamError> {
         if *replayed != digest {
@@ -142,7 +147,7 @@ impl State {
     ) -> Result<Option<Replayed<'_>>, E> {
         Ok(self
             .lookup_fact(key, probe)?
-            .map(|(fact, _)| (&fact.digest, &fact.result, fact.index)))
+            .map(|(fact, ephemeral)| (&fact.digest, &fact.result, fact.index, ephemeral)))
     }
 
     fn ephemeral_key_is_spent<E>(
