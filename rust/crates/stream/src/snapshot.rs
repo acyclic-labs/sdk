@@ -14,10 +14,10 @@ pub(crate) mod model;
 // the only place stream snapshots are polled. Portable snapshots restart pending
 // acquisitions under independent ownership; native snapshots keep them directly
 // in the caller-owned frame so its retirement proves cancellation quiescence.
-pub(crate) trait Snapshot: Send + 'static {
+pub(crate) trait Snapshot: crate::ProviderTask + 'static {
     #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
     const OBSERVE: bool = false;
-    type Output: Send + 'static;
+    type Output: crate::ProviderTask + 'static;
     /// The original caller owns the entire pending acquisition and can cancel
     /// it by destroying this frame. No independently retained producer exists.
     fn caller_retains_pending(&self) -> bool {

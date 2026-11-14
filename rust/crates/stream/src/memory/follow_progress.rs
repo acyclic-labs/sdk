@@ -136,7 +136,7 @@ impl MemoryStream {
         Ok(crate::Opened::new(
             snapshot,
             selection,
-            stream::try_unfold(state, |mut state| async move {
+            Box::pin(stream::try_unfold(state, |mut state| async move {
                 loop {
                     if state.cursor.finished() {
                         return Ok(None);
@@ -164,8 +164,7 @@ impl MemoryStream {
                         }
                     })?;
                 }
-            })
-            .boxed(),
+            })),
         ))
     }
 }

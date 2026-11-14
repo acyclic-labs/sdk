@@ -344,7 +344,7 @@ async fn isolation<P: StreamProvider + ?Sized>(
                 path: target.clone(),
                 records: vec![Bytes::from_static(b"public").into()],
                 if_tail: Some(0),
-                idempotency_key: IdempotencyKey::unique(),
+                idempotency_key: key(target.as_str().as_bytes())?,
             })
             .await?;
     }
