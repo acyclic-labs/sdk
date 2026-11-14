@@ -145,7 +145,17 @@ impl SocketInbound for ForwardInput {
         if self.progress.cancelled() || self.progress.ended() {
             return Err(StreamError::Unavailable);
         }
-        self.client.register_credential(self.credential, credential)
+        let result = self.results.try_reserve().map_err(queue_error)?;
+        match self
+            .client
+            .renew_owned_credential(self.credential, credential.clone())?
+        {
+            Some(completion) => {
+                result.send(completion);
+                Ok(())
+            }
+            None => self.client.register_credential(self.credential, credential),
+        }
     }
 
     fn receive(&self, frame: Bytes) -> Result<(), StreamError> {

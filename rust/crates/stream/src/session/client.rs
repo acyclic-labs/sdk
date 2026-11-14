@@ -229,6 +229,11 @@ enum Command {
     ReleaseCredential {
         slot: u32,
     },
+    RenewCredential {
+        owner: Arc<credentials::Owner>,
+        credential: Bytes,
+        sent: oneshot::Sender<Result<(), StreamError>>,
+    },
     Credential {
         slot: u32,
         credential: Bytes,
