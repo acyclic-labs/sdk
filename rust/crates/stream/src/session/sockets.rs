@@ -39,6 +39,14 @@ pub trait SocketInbound: crate::ProviderPlatform {
     /// applies accepted frames in order on its own tasks. An error closes
     /// only this channel.
     fn receive(&self, frame: Bytes) -> Result<(), StreamError>;
+
+    /// Replace the admitted credential on an original forwarded Session before
+    /// handing it any subsequent peer frames. Local owners have no transport
+    /// credential to replace: their host retains and rechecks the admission.
+    /// This MUST NOT perform I/O or reopen the socket.
+    fn replace_credential(&self, _credential: Bytes) -> Result<(), StreamError> {
+        Ok(())
+    }
 }
 
 /// One admitted socket: frames to the peer, and the owner's inbound handle.
