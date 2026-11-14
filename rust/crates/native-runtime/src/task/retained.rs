@@ -41,8 +41,7 @@ struct Inner {
     driving: AtomicBool,
     stopping: AtomicBool,
     stopped: AtomicBool,
-    submitting: AtomicBool,
-    submit_again: AtomicBool,
+    submission_handoff: super::submission::SubmissionHandoff,
     submission: InlineMutex<Submission>,
     waiter: Arc<crate::workers::CapacityWaiter>,
     _allocation: ReadAllocation,
@@ -110,8 +109,7 @@ where
         driving: AtomicBool::new(false),
         stopping: AtomicBool::new(false),
         stopped: AtomicBool::new(false),
-        submitting: AtomicBool::new(false),
-        submit_again: AtomicBool::new(false),
+        submission_handoff: super::submission::SubmissionHandoff::default(),
         submission: InlineMutex::new(Submission {
             pending: None,
             waiter: None,
@@ -244,12 +242,11 @@ impl Inner {
         this.submit_pending();
     }
     fn submit_pending(self: &Arc<Self>) {
-        if self.submitting.swap(true, Ordering::AcqRel) {
-            self.submit_again.store(true, Ordering::Release);
+        if !self.submission_handoff.request() {
             return;
         }
         loop {
-            self.submit_again.store(false, Ordering::Release);
+            self.submission_handoff.begin();
             let mut submission = self
                 .submission
                 .lock()
@@ -292,10 +289,7 @@ impl Inner {
             } else {
                 drop(submission);
             }
-            self.submitting.store(false, Ordering::Release);
-            if !self.submit_again.load(Ordering::Acquire)
-                || self.submitting.swap(true, Ordering::AcqRel)
-            {
+            if self.submission_handoff.release() {
                 return;
             }
         }

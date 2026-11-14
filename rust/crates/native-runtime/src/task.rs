@@ -12,6 +12,7 @@ pub use native::{AbortHandle, TaskHandle, spawn, spawn_blocking, try_spawn};
 
 mod custody;
 mod retained;
+mod submission;
 #[cfg(feature = "test-support")]
 pub(crate) use custody::cancelled_error;
 pub(crate) use custody::panic_error;
