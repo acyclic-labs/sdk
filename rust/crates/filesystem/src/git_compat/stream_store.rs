@@ -4,10 +4,10 @@ use crate::StreamStateStoreError;
 use crate::distributed::state_record::{CompanionKind, StateRecord};
 use crate::distributed::{AuthorityProvider, AuthorizedObservation};
 use crate::{
-    AuthorityStoreError, AuthorityWork, FilesystemCommit, FilesystemCommitOutcome,
-    StreamAuthorityStore, WorkspaceLineageRecord, WorkspaceLineageStore,
+    AuthorityWork, FilesystemCommit, StreamAuthorityStore, WorkspaceLineageRecord,
+    WorkspaceLineageStore,
 };
-use acyclic_stream::{CommitCondition, CommitEffect, CommitRequest, StreamPath};
+use acyclic_stream::StreamPath;
 
 /// Durable command state shared by hosts using the same filesystem provider.
 /// Each lookup reads one stream head and its last record, independent of history.
@@ -178,71 +178,18 @@ impl<P: AuthorityProvider + ?Sized> StreamGitCompatStore<P> {
         else {
             return Ok(false);
         };
-        let mut hash = blake3::Hasher::new();
-        hash.update(b"acyclic-fs-stream-git-state-v1\0");
-        let (path, sequence) = match observation.condition() {
-            CommitCondition::Absent { path } => {
-                hash.update(&[0]);
-                hash.update(path.as_str().as_bytes());
-                (path.clone(), 0)
-            }
-            CommitCondition::Head {
-                path,
-                expected,
-                commit_id,
-            } => {
-                hash.update(&[1]);
-                hash.update(path.as_str().as_bytes());
-                hash.update(&expected.to_le_bytes());
-                hash.update(commit_id.as_bytes());
-                (path.clone(), *expected)
-            }
-            _ => return Err(StreamStateStoreError::Incompatible),
-        };
-        hash.update(&payload);
-        let key = acyclic_stream::IdempotencyKey::new(bytes::Bytes::copy_from_slice(
-            hash.finalize().as_bytes(),
-        ))?;
-        let record = StateRecord::Companion {
-            kind: CompanionKind::GitRefs,
-            payload: payload.into(),
-        };
-        let mut commit = FilesystemCommit::new(CommitRequest {
-            idempotency_key: key.clone(),
-            effects: vec![CommitEffect::hard(Vec::new(), Vec::new())],
-            deadline_unix_millis: None,
-        });
-        self.authority.contribute_record(
-            &mut commit,
-            &observation,
-            &record,
-            crate::PublicationHold::none(),
-            &mut work,
-        )?;
         self.authority
-            .seal_observed(&mut commit, &[], None, &mut work)?;
-        match self.authority.submit(commit, &mut work).await? {
-            FilesystemCommitOutcome::Committed(_) => Ok(true),
-            FilesystemCommitOutcome::Rejected(_) => Ok(false),
-            FilesystemCommitOutcome::Unknown { commit, error } => {
-                // One exact-position observation resolves a lost reply. Failure
-                // stays an error; no retry at a newer head or polling is allowed.
-                match self
-                    .authority
-                    .reconcile_record(path, sequence, &key, &record, &mut work)
-                    .await
-                {
-                    Ok(_) => {
-                        drop(commit);
-                        Ok(true)
-                    }
-                    Err(_) => Err(StreamStateStoreError::Unknown {
-                        commit: Box::new(move || commit),
-                        error,
-                    }),
-                }
-            }
-        }
+            .publish_companion(
+                &observation,
+                &[],
+                StateRecord::Companion {
+                    kind: CompanionKind::GitRefs,
+                    payload: payload.into(),
+                },
+                crate::PublicationHold::none(),
+                &mut work,
+            )
+            .await
     }
 }
 

@@ -59,6 +59,25 @@ async fn private_computed_views_reopen_through_the_real_session() -> Result<()> 
                 std::str::from_utf8(&bytes).map_err(agent)?,
                 root.as_str().rsplit('/').next().unwrap()
             );
+            let waiting_request = AgentCommand::Directory {
+                agent: root.clone(),
+                target: DirectoryTarget::Private {},
+                path: "ui".into(),
+                generation: None,
+                after_generation: Some(page.generation.clone()),
+                page: AgentPageRequest::default(),
+            };
+            let waiting = connection.execute(&waiting_request);
+            tokio::pin!(waiting);
+            assert!(futures::poll!(&mut waiting).is_pending());
+            let mut conversation = ObservedConversation::open(&harness).await?;
+            conversation
+                .send("computed-source-event", "publish a conversation event")
+                .await?;
+            let AgentReply::Directory { page: changed } = waiting.await? else {
+                return Err(Error::Conflict("private UI event reply".into()));
+            };
+            assert_ne!(changed.generation, page.generation);
             pinned = Some(page.generation);
             let state = harness
                 .agents()

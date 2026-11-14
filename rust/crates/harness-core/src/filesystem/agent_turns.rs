@@ -736,6 +736,8 @@ pub struct FilesystemTurnHost<P: ?Sized, A: 'static, O: 'static> {
     actor_root: Option<acyclic_stream::StreamPath>,
     clock: Arc<dyn acyclic_actors::local::Clock>,
     host: Arc<FilesystemHost<A, O>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    agent_views: bool,
     issuer: RuntimeAuthority,
     admission: TurnAdmission,
     executors: Arc<dyn TurnExecutors>,
@@ -782,6 +784,14 @@ where
     P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
+    /// Production serving composes views on this original volume authority.
+    /// A generic turn host may instead supply unrelated content adapters.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::filesystem) fn with_agent_views(mut self) -> Self {
+        self.agent_views = true;
+        self
+    }
+
     /// Binds filesystem commands to each turn's original placement and authority.
     #[must_use]
     pub fn with_filesystem_tools(mut self) -> Self {
@@ -834,6 +844,8 @@ where
             traces: None,
             clock: Arc::new(acyclic_actors::local::SystemClock),
             host,
+            #[cfg(not(target_arch = "wasm32"))]
+            agent_views: false,
             issuer,
             templates,
             admission,
@@ -1406,7 +1418,7 @@ where
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
-        {
+        if self.agent_views {
             let host = self
                 .host
                 .for_agent_views(

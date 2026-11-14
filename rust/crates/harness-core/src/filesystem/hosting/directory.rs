@@ -146,12 +146,12 @@ where
         let generation = match query.generation {
             Some(generation) => generation.clone(),
             None => {
-                self.volume_generation(&binding.volume, None, query.after_generation)
+                self.directory_generation(&binding, query.after_generation)
                     .await?
             }
         };
         let options = super::super::DirectoryOptions {
-            generation: query.generation,
+            generation: Some(&generation),
             after: query.after,
             maximum_entries: query.maximum_entries,
             ceiling: Some(binding.scope.capabilities()),
@@ -172,5 +172,89 @@ where
             entries: Vec::new(),
             next: None,
         }))
+    }
+
+    async fn directory_generation(
+        &self,
+        binding: &DirectoryBinding<P, O>,
+        after: Option<&GenerationRef>,
+    ) -> Result<GenerationRef, Error> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let work = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .map_err(|(error, _)| turn(crate::Error::from(error)))?;
+            let io = super::super::PreparationIo::from_native_work(&work).map_err(turn)?;
+            let Some(mut current) = binding
+                .host
+                .private_current_generation(&binding.volume, after, &io)
+                .await
+                .map_err(turn)?
+            else {
+                return self.volume_generation(&binding.volume, None, after).await;
+            };
+            let Some(after) = after else {
+                return Ok(current);
+            };
+            if &current != after {
+                return Ok(current);
+            }
+            let mut source = binding.host.private_changes(&work).map_err(turn)?;
+            let reference = super::super::bounded_io::content_workspace(
+                &self.volumes.provider,
+                &binding.volume,
+                None,
+            )
+            .map_err(turn)?;
+            let workspace = self.volumes.open(&reference, None).await.map_err(turn)?;
+            let changes = acyclic_fs::session::changes_path(
+                &self.volumes.filesystem,
+                workspace.id().volume_id(),
+            )
+            .map_err(Error::Stream)?;
+            loop {
+                // Capture the authored cursor before sampling the complete cut.
+                // The source watch emits its opening invalidation after its
+                // own follows are registered, covering that opening race too.
+                let cursor = self.publication_cursor(changes.clone()).await?;
+                current = binding
+                    .host
+                    .private_current_generation(&binding.volume, None, &io)
+                    .await
+                    .map_err(turn)?
+                    .ok_or(Error::Record("private view binding disappeared"))?;
+                if &current != after {
+                    return Ok(current);
+                }
+                let authored = async {
+                    use futures::TryStreamExt as _;
+                    let updates = self
+                        .agents
+                        .provider()
+                        .follow(cursor)
+                        .await
+                        .map_err(Error::Stream)?;
+                    acyclic_stream::records_only(updates)
+                        .try_next()
+                        .await
+                        .map_err(Error::Stream)?
+                        .ok_or(Error::Stream(acyclic_stream::StreamError::Unavailable))?;
+                    Ok::<_, Error>(())
+                };
+                if let Some(source) = &mut source {
+                    tokio::select! {
+                        changed = authored => changed?,
+                        changed = source.changed() => changed.map_err(turn)?,
+                    }
+                } else {
+                    authored.await?;
+                }
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        self.volume_generation(&binding.volume, None, after).await
     }
 }

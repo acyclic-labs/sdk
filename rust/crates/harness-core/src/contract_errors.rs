@@ -1710,6 +1710,22 @@ impl From<acyclic_stream::StreamError> for Error {
 /// Harness result type.
 pub type Result<T> = std::result::Result<T, Error>;
 
+fn stream_state_error_code(source: &acyclic_fs::StreamStateStoreError) -> ErrorCode {
+    match source {
+        acyclic_fs::StreamStateStoreError::Authority(acyclic_fs::AuthorityStoreError::Missing) => {
+            ErrorCode::NotFound
+        }
+        acyclic_fs::StreamStateStoreError::Authority(
+            acyclic_fs::AuthorityStoreError::Cancelled,
+        ) => ErrorCode::Cancelled,
+        acyclic_fs::StreamStateStoreError::Unknown { .. } => ErrorCode::Indeterminate,
+        acyclic_fs::StreamStateStoreError::Incompatible => ErrorCode::Conflict,
+        acyclic_fs::StreamStateStoreError::Authority(_)
+        | acyclic_fs::StreamStateStoreError::Stream(_)
+        | acyclic_fs::StreamStateStoreError::Codec(_) => ErrorCode::Storage,
+    }
+}
+
 #[cfg(test)]
 mod cleanup_tests {
     use super::*;
@@ -1951,21 +1967,5 @@ mod boundary_tests {
                 assert_eq!(encoded.message, reason);
             }
         }
-    }
-}
-
-fn stream_state_error_code(source: &acyclic_fs::StreamStateStoreError) -> ErrorCode {
-    match source {
-        acyclic_fs::StreamStateStoreError::Authority(acyclic_fs::AuthorityStoreError::Missing) => {
-            ErrorCode::NotFound
-        }
-        acyclic_fs::StreamStateStoreError::Authority(
-            acyclic_fs::AuthorityStoreError::Cancelled,
-        ) => ErrorCode::Cancelled,
-        acyclic_fs::StreamStateStoreError::Unknown { .. } => ErrorCode::Indeterminate,
-        acyclic_fs::StreamStateStoreError::Incompatible => ErrorCode::Conflict,
-        acyclic_fs::StreamStateStoreError::Authority(_)
-        | acyclic_fs::StreamStateStoreError::Stream(_)
-        | acyclic_fs::StreamStateStoreError::Codec(_) => ErrorCode::Storage,
     }
 }

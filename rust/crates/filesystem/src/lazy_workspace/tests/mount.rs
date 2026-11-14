@@ -118,113 +118,130 @@ async fn discarded_source_promotion_retains_before_images_without_overriding_liv
 async fn source_before_images_require_their_original_collection_roots_after_restart()
 -> Result<(), Box<dyn std::error::Error>> {
     for retain_original in [false, true] {
-        let directory = tempfile::tempdir()?;
-        let source_path = directory.path().join("source");
-        std::fs::create_dir(&source_path)?;
-        let physical = source_path.join("file");
-        let original = vec![0x37; 32 * 1024];
-        std::fs::write(&physical, &original)?;
-        let source = native_source(&source_path, crate::FilesystemProfile::Portable).await;
-        let fs_path = directory.path().join("fs");
-        let store = crate::LocalCoreStateStore::new(directory.path().join("state"));
-        let cancellation = CancellationToken::new();
-        let cut;
-        {
-            let fs = Fs::local(crate::LocalOptions::new(&fs_path)).await?;
-            let released = fs
-                .local_root_release_barrier()
-                .ok_or("local release barrier")?;
-            let root = attach(&fs, Arc::clone(&source), store.clone()).await?;
-            let mut ctx = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-            let lookup = root.lookup("/file", &mut ctx).await?;
-            let id = root
-                .stable_file_id_for_lookup("/file", &lookup.0, &mut ctx)
-                .await?;
-            root.retire_lookup(lookup, &mut ctx)?;
-            let mut checkout = root
-                .workspace()
-                .checkout(
-                    crate::model::GenerationSelector::Head,
-                    crate::model::CheckoutMode::tracking_transaction(),
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .await?
-                .value;
-            assert!(
-                root.stage_into_checkout(
-                    &mut checkout,
-                    "/file",
-                    id,
-                    original.len() as u64,
-                    &mut ctx
-                )
-                .await?
-            );
-            // This real unpublished payload gives collection reclaimable work.
-            // Neither it nor the source copy-up becomes an authored generation.
-            let orphan = root.namespace_path("/orphan", &mut ctx)?;
-            checkout
-                .apply_authored_transaction(
-                    vec![AuthoredMutation::CreateFile {
-                        file_id: None,
-                        path: orphan.value,
-                        bytes: acyclic_stream::OwnedBytes::from(vec![0x6e; 65_537]),
-                        metadata: FileMetadata::default(),
-                    }],
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .await?;
-            crate::kernel::retire_allocation(orphan.allocation, orphan.bytes, &mut ctx)?;
-            drop(checkout);
-            cut = root.snapshot(&mut ctx).await?;
-            assert!(
-                root.workspace()
-                    .generation(
-                        cut.authored_generation,
-                        WorkBudget::UNBOUNDED,
-                        &cancellation
-                    )
-                    .await?
-                    .value
-                    .read("/file", None, WorkBudget::UNBOUNDED, &cancellation)
-                    .await
-                    .is_err()
-            );
-            drop((root, fs));
-            released.released().await;
-        }
-        std::fs::remove_file(&physical)?;
-        source.invalidate();
+        source_before_images_collection(
+            |_, path| crate::LocalCoreStateStore::new(path.join("state")),
+            retain_original,
+            retain_original,
+        )
+        .await?;
+    }
+    // Production companions are retained automatically by their original
+    // authority; collection needs no second companion-store argument.
+    source_before_images_collection(
+        |fs, _| crate::StreamAuthorityStore::new(fs.stream_provider()),
+        false,
+        true,
+    )
+    .await
+}
+
+async fn source_before_images_collection<S: LazyWorkspaceStore>(
+    store_for: impl Fn(&crate::LocalFs, &std::path::Path) -> S,
+    retain_original: bool,
+    survives: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let source_path = directory.path().join("source");
+    std::fs::create_dir(&source_path)?;
+    let physical = source_path.join("file");
+    let original = vec![0x37; 32 * 1024];
+    std::fs::write(&physical, &original)?;
+    let source = native_source(&source_path, crate::FilesystemProfile::Portable).await;
+    let fs_path = directory.path().join("fs");
+    let cancellation = CancellationToken::new();
+    let cut;
+    {
         let fs = Fs::local(crate::LocalOptions::new(&fs_path)).await?;
+        let store = store_for(&fs, directory.path());
+        let released = fs
+            .local_root_release_barrier()
+            .ok_or("local release barrier")?;
+        let root = attach(&fs, Arc::clone(&source), store.clone()).await?;
         let mut ctx = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-        let workspace = fs
-            .open_workspace("root", WorkBudget::UNBOUNDED, &cancellation)
+        let lookup = root.lookup("/file", &mut ctx).await?;
+        let id = root
+            .stable_file_id_for_lookup("/file", &lookup.0, &mut ctx)
+            .await?;
+        root.retire_lookup(lookup, &mut ctx)?;
+        let mut checkout = root
+            .workspace()
+            .checkout(
+                crate::model::GenerationSelector::Head,
+                crate::model::CheckoutMode::tracking_transaction(),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await?
             .value;
-        let root =
-            LazyWorkspace::open(workspace, Arc::clone(&source), store.clone(), &mut ctx).await?;
-        let collected = fs
-            .collect_local_garbage(retain_original.then_some(&store), &cancellation)
-            .await?;
         assert!(
-            collected.removed > 0,
-            "collection did not reclaim the unpublished control"
+            root.stage_into_checkout(&mut checkout, "/file", id, original.len() as u64, &mut ctx)
+                .await?
         );
-        let read = root
-            .read_at_snapshot(&cut, "/file", None, None, &mut ctx)
-            .await;
-        if retain_original {
-            let (read, used_source) = read?;
-            assert_eq!(read.bytes.as_ref(), original.as_slice());
-            assert!(!used_source);
-        } else {
-            assert!(
-                read.is_err(),
-                "omitting original collection roots retained unavailable source bytes"
-            );
-        }
+        // This real unpublished payload gives collection reclaimable work.
+        // Neither it nor the source copy-up becomes an authored generation.
+        let orphan = root.namespace_path("/orphan", &mut ctx)?;
+        checkout
+            .apply_authored_transaction(
+                vec![AuthoredMutation::CreateFile {
+                    file_id: None,
+                    path: orphan.value,
+                    bytes: acyclic_stream::OwnedBytes::from(vec![0x6e; 65_537]),
+                    metadata: FileMetadata::default(),
+                }],
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?;
+        crate::kernel::retire_allocation(orphan.allocation, orphan.bytes, &mut ctx)?;
+        drop(checkout);
+        cut = root.snapshot(&mut ctx).await?;
+        assert!(
+            root.workspace()
+                .generation(
+                    cut.authored_generation,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation
+                )
+                .await?
+                .value
+                .read("/file", None, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .is_err()
+        );
+        drop((root, store, fs));
+        released.released().await;
+    }
+    std::fs::remove_file(&physical)?;
+    source.invalidate();
+    let fs = Fs::local(crate::LocalOptions::new(&fs_path)).await?;
+    let store = store_for(&fs, directory.path());
+    let mut ctx = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let workspace = fs
+        .open_workspace("root", WorkBudget::UNBOUNDED, &cancellation)
+        .await?
+        .value;
+    let root = LazyWorkspace::open(workspace, Arc::clone(&source), store.clone(), &mut ctx).await?;
+    let core =
+        retain_original.then(|| crate::LocalCoreStateStore::new(directory.path().join("state")));
+    let collected = fs
+        .collect_local_garbage(core.as_ref(), &cancellation)
+        .await?;
+    assert!(
+        collected.removed > 0,
+        "collection did not reclaim the unpublished control"
+    );
+    let read = root
+        .read_at_snapshot(&cut, "/file", None, None, &mut ctx)
+        .await;
+    if survives {
+        let (read, used_source) = read?;
+        assert_eq!(read.bytes.as_ref(), original.as_slice());
+        assert!(!used_source);
+    } else {
+        assert!(
+            read.is_err(),
+            "omitting original collection roots retained unavailable source bytes"
+        );
     }
     Ok(())
 }

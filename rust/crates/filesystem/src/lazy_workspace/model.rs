@@ -295,6 +295,68 @@ pub struct LazyForkOrigin {
 }
 
 impl LazyWorkspaceState {
+    /// The same immutable fork lineage applies to every companion backend.
+    /// Storage must fence `parent` with this transition when freezing it first.
+    pub(crate) fn accepts_fork_transition(
+        &self,
+        current: Option<&Self>,
+        parent: Option<&Self>,
+    ) -> bool {
+        let prior = current.and_then(|state| state.fork_origin.as_ref());
+        if prior.is_none() && self.fork_origin.is_none() {
+            return true;
+        }
+        let Some(origin) = &self.fork_origin else {
+            return false;
+        };
+        if self.schema_version != LAZY_STATE_SCHEMA
+            || self.parent_workspace_id != Some(origin.snapshot.workspace_id)
+            || origin.snapshot.workspace_id == self.workspace_id
+        {
+            return false;
+        }
+        if let (Some(current), Some(prior)) = (current, prior) {
+            if current.schema_version != self.schema_version
+                || current.workspace_id != self.workspace_id
+                || current.parent_workspace_id != self.parent_workspace_id
+                || prior.operation_id != origin.operation_id
+                || prior.config != origin.config
+                || prior.snapshot != origin.snapshot
+                || (prior.phase == LazyForkPhase::Committed
+                    && origin.phase != LazyForkPhase::Committed)
+            {
+                return false;
+            }
+        } else if current.is_some() || self.revision != 1 || origin.phase != LazyForkPhase::Prepared
+        {
+            return false;
+        }
+        if prior.is_none_or(|prior| prior.phase == LazyForkPhase::Prepared)
+            && (self.source != origin.snapshot.source
+                || self.overlay != origin.snapshot.overlay
+                || self.shadows != origin.snapshot.shadows
+                || self.pending_remove.is_some())
+        {
+            return false;
+        }
+        if prior.is_none() {
+            let Some(parent) = parent else { return false };
+            if parent.schema_version != self.schema_version
+                || parent.workspace_id != origin.snapshot.workspace_id
+                || parent.source != origin.snapshot.source
+                || parent.overlay != origin.snapshot.overlay
+                || parent.shadows != origin.snapshot.shadows
+                || parent
+                    .fork_origin
+                    .as_ref()
+                    .is_some_and(|origin| origin.phase == LazyForkPhase::Prepared)
+            {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Current persisted lazy-state format, with complete retained source cuts and before-images.
     pub const SCHEMA_VERSION: u32 = 13;
 

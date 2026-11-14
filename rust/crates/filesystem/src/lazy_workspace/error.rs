@@ -108,6 +108,25 @@ pub enum LazyWorkspaceError {
     NativeRecordIntegrity,
 }
 impl LazyWorkspaceError {
+    /// Keeps the caller's original dependency closure with an unresolved
+    /// companion append. No error path can retire it before that publication.
+    pub(crate) fn retain_publication_hold(self, hold: crate::PublicationHold) -> Self {
+        match self {
+            Self::StatePublication(error) => match *error {
+                crate::StreamStateStoreError::Unknown { commit, error } => {
+                    let mut commit = commit();
+                    commit.hold(hold);
+                    Self::StatePublication(Box::new(crate::StreamStateStoreError::Unknown {
+                        commit: Box::new(move || commit),
+                        error,
+                    }))
+                }
+                error => Self::StatePublication(Box::new(error)),
+            },
+            error => error,
+        }
+    }
+
     /// Original semantic cause.
     pub fn semantic_error(&self) -> &Self {
         match self {

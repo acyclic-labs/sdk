@@ -473,6 +473,8 @@ where
         .with_clock(turns.clock.clone())
         .with_actor_store(crate::agent::actor_store(&stream)?.root().clone())
         .with_filesystem_tools();
+        #[cfg(not(target_arch = "wasm32"))]
+        let turner = turner.with_agent_views();
         let turner = Arc::new(configure(turner));
         let templates = turner.templates();
         let driver = ExecutorDriver::new(Arc::clone(&turner));
