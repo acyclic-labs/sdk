@@ -1391,7 +1391,7 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
         journal.replay(operation, 0, 1, None)?.await?[0].event,
         event
     );
-    let approval_id = InteractionId::from_bytes([78; 16]);
+    let approval_id = crate::InteractionId::from_bytes([78; 16]);
     let approval_digest = [79; 32];
     let approval = crate::interaction::Interaction::approval(
         "original action".into(),
