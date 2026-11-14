@@ -2,6 +2,7 @@
 //! admission and transport setup belong in this fixture.
 use super::*;
 use crate::{
+    Capabilities,
     agent::{IntentId, WorkspaceEntry, WorkspaceRole},
     core::{AggregateKind, Authority, AuthorityRoot},
     filesystem::{PRIVATE_VOLUME, TurnLimits},
