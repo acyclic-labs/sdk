@@ -686,9 +686,19 @@ pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
         authority: &'a TurnAuthority,
     ) -> BoxFuture<'a, Result<Arc<dyn Executor>>>;
 
-    /// Prepare the same issued tools for a host-selected call. This creates no
-    /// model input, context epoch or prompt lifecycle event. Unsupported hosts
-    /// refuse before dispatch; a selected program never supplies authority.
+    /// Observe program sources on the original reader without constructing a
+    /// native execution target. The selected source grants no execution rights.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn program_files<'a>(
+        &'a self,
+        _agent: &'a AgentState,
+        _authority: &'a TurnAuthority,
+    ) -> BoxFuture<'a, Result<Option<Arc<crate::plugins::ProgramFiles>>>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    /// Prepare the same issued tools for a host-selected call, without model
+    /// input or prompt lifecycle events. Unsupported hosts refuse before dispatch.
     fn invocation_executor<'a>(
         &'a self,
         _agent: &'a AgentState,

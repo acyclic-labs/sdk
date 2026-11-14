@@ -21,6 +21,17 @@ use std::sync::Arc;
 /// What one host adds to a stock turn once its model, tools, limits and
 /// compaction are composed: at least the turn's tool authority.
 pub trait TurnContext: acyclic_stream::ProviderPlatform + 'static {
+    /// Bind only original program sources and their canonical shell declaration.
+    /// Discovery must not prepare a native workspace or an executable context.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn program_files(
+        &self,
+        _tools: &ToolRegistry,
+        _agent: &AgentState,
+        _authority: &TurnAuthority,
+    ) -> Result<Option<Arc<crate::plugins::ProgramFiles>>> {
+        Ok(None)
+    }
     /// Saves the workspace before the delivery parks on `operation`.
     fn park<'a>(
         &'a self,
@@ -104,6 +115,51 @@ pub struct Grants(pub Vec<String>);
 pub struct Tasks(pub Arc<AgentHarness>);
 
 impl Tasks {
+    /// Original program sources without native target binding or model context.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn program_files(
+        harness: &Arc<AgentHarness>,
+        tools: &ToolRegistry,
+        agent: &AgentState,
+        authority: &TurnAuthority,
+    ) -> Result<Option<Arc<crate::plugins::ProgramFiles>>> {
+        let shell = tools
+            .get_shared(crate::tools::shell::PLATFORM.name, None, None)?
+            .cloned();
+        let context = harness.agent_context(&authority.grants, authority.content.clone())?;
+        Self::program_files_bound(
+            harness,
+            shell,
+            agent,
+            authority,
+            context.scope().limits().file_bytes,
+        )
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn program_files_bound(
+        harness: &AgentHarness,
+        shell: Option<Arc<crate::tool::Tool>>,
+        agent: &AgentState,
+        authority: &TurnAuthority,
+        maximum_bytes: Option<u64>,
+    ) -> Result<Option<Arc<crate::plugins::ProgramFiles>>> {
+        let home = agent
+            .volumes
+            .iter()
+            .find(|volume| volume.role == crate::agent::WorkspaceRole::Home);
+        match (shell, home) {
+            (Some(shell), Some(home)) => Ok(Some(Arc::new(crate::plugins::ProgramFiles::new(
+                Arc::clone(&authority.content.reader),
+                home.volume()?.clone(),
+                harness.issuer_configuration().clone(),
+                shell,
+                maximum_bytes,
+            )))),
+            _ => Ok(None),
+        }
+    }
+
     /// Binds one executor and returns the same task context for host hooks.
     pub fn bind(
         harness: &Arc<AgentHarness>,
@@ -121,30 +177,30 @@ impl Tasks {
             .with_tool_authority(context.scope().clone(), authority.approval.clone())?
             .with_task_context(&context, turn)?;
         #[cfg(not(target_arch = "wasm32"))]
-        let executor = match (
+        let executor = match Self::program_files_bound(
+            harness,
             executor.tool_binding(crate::tools::shell::PLATFORM.name)?,
-            agent
-                .volumes
-                .iter()
-                .find(|volume| volume.role == crate::agent::WorkspaceRole::Home),
-        ) {
-            (Some(shell), Some(home)) => {
-                let programs = Arc::new(crate::plugins::ProgramFiles::new(
-                    Arc::clone(&authority.content.reader),
-                    home.volume()?.clone(),
-                    harness.issuer_configuration().clone(),
-                    shell,
-                    context.scope().limits().file_bytes,
-                ));
-                executor.with_programs(programs)
-            }
-            _ => executor,
+            agent,
+            authority,
+            context.scope().limits().file_bytes,
+        )? {
+            Some(programs) => executor.with_programs(programs),
+            None => executor,
         };
         Ok((executor, context))
     }
 }
 
 impl TurnContext for Tasks {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn program_files(
+        &self,
+        tools: &ToolRegistry,
+        agent: &AgentState,
+        authority: &TurnAuthority,
+    ) -> Result<Option<Arc<crate::plugins::ProgramFiles>>> {
+        Self::program_files(&self.0, tools, agent, authority)
+    }
     fn prepare_invocation<'a>(
         &'a self,
         (executor, _): (StockExecutor, Limits),
@@ -366,6 +422,14 @@ impl StockExecutors {
 }
 
 impl TurnExecutors for StockExecutors {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn program_files<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        authority: &'a TurnAuthority,
+    ) -> BoxProviderFuture<'a, Result<Option<Arc<crate::plugins::ProgramFiles>>>> {
+        Box::pin(async move { self.context.program_files(&self.tools, agent, authority) })
+    }
     fn park<'a>(
         &'a self,
         agent: &'a AgentState,

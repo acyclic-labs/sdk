@@ -9,6 +9,11 @@ pub(in crate::filesystem) struct HostInvocation {
     pub(in crate::filesystem) approvals: Arc<AgentApprovals>,
 }
 
+pub(in crate::filesystem) struct ProgramCatalogue {
+    pub(in crate::filesystem) programs: Arc<crate::plugins::ProgramFiles>,
+    pub(in crate::filesystem) authority: TurnAuthority,
+}
+
 impl<P, A, O> FilesystemTurnHost<P, A, O>
 where
     P: crate::store::JournalProvider + ?Sized + 'static,
@@ -24,6 +29,46 @@ where
         operation: OperationId,
         stop: acyclic_actors::guest::CancellationToken,
     ) -> Result<HostInvocation> {
+        let (mut authority, approvals) = self.invocation_authority(agent, operation, stop).await?;
+        if let Some(factory) = &self.workspace_tools {
+            authority.workspace_tools = Some(factory(agent, &authority)?);
+        }
+        let executor = self
+            .executors
+            .invocation_executor(agent, operation, &authority)
+            .await?;
+        Ok(HostInvocation {
+            executor,
+            authority,
+            approvals,
+        })
+    }
+
+    /// Discover original names and selectors without opening a native target.
+    /// The same issued journal retains the selected source generations; only
+    /// an executing event enters `invocation` and binds its native workspace.
+    pub(in crate::filesystem) async fn program_catalogue(
+        &self,
+        agent: &AgentState,
+        operation: OperationId,
+        stop: acyclic_actors::guest::CancellationToken,
+    ) -> Result<Option<ProgramCatalogue>> {
+        let (authority, _) = self.invocation_authority(agent, operation, stop).await?;
+        let Some(programs) = self.executors.program_files(agent, &authority).await? else {
+            return Ok(None);
+        };
+        Ok(Some(ProgramCatalogue {
+            programs,
+            authority,
+        }))
+    }
+
+    async fn invocation_authority(
+        &self,
+        agent: &AgentState,
+        operation: OperationId,
+        stop: acyclic_actors::guest::CancellationToken,
+    ) -> Result<(TurnAuthority, Arc<AgentApprovals>)> {
         let (journal, bindings, files) = self
             .journal(
                 self.admit(agent)?,
@@ -47,7 +92,7 @@ where
                 .with_stop(stop)
                 .with_agent_approvals(approvals.clone()),
         );
-        let mut authority = TurnAuthority {
+        let authority = TurnAuthority {
             templates: self.templates(),
             issuer: bindings.issuer,
             scope: bindings.scope,
@@ -59,17 +104,6 @@ where
             children: None,
             workspace_tools: None,
         };
-        if let Some(factory) = &self.workspace_tools {
-            authority.workspace_tools = Some(factory(agent, &authority)?);
-        }
-        let executor = self
-            .executors
-            .invocation_executor(agent, operation, &authority)
-            .await?;
-        Ok(HostInvocation {
-            executor,
-            authority,
-            approvals,
-        })
+        Ok((authority, approvals))
     }
 }
