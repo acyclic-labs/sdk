@@ -367,7 +367,7 @@ async fn turns(harness: &Arc<LocalHarness>, agent: &AgentPath) -> Result<Vec<Con
 
 /// One swarm world: the plan's agents run to quiescence, and every turn of
 /// every agent completes. Returns the broken invariant.
-fn swarm<'a>(directory: &'a Path, plan: &'a [Step]) -> EntryFuture<'a, Result<()>> {
+fn swarm<'a>(directory: &'a Path, plan: &'a [Step], seen: &'a Seen) -> EntryFuture<'a, Result<()>> {
     entry(async move {
         let reference =
             ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
@@ -386,15 +386,14 @@ fn swarm<'a>(directory: &'a Path, plan: &'a [Step]) -> EntryFuture<'a, Result<()
             .await?;
         let model = Model::new("scripted".into(), "swarm".into(), "1".into())?;
         let owned = plan.to_vec();
-        let seen = Seen::default();
-        let recorded = Arc::clone(&seen);
+        let recorded = Arc::clone(seen);
         let provider = Arc::new(ScriptedModelProvider::responding(move |request| {
-            if let Some((node, _)) = node_of(&owned, request) {
-                recorded
-                    .lock()
-                    .map_err(storage)?
-                    .push((node, settlements(request)));
-            }
+            // An unidentified request is recorded too, so a stall names it.
+            let node = node_of(&owned, request).map_or_else(|| "?".to_owned(), |(node, _)| node);
+            recorded
+                .lock()
+                .map_err(storage)?
+                .push((node, settlements(request)));
             respond(&owned, request)
         }));
         let config = local_harness_config(directory.join("filesystem"), (model, provider))?
@@ -441,9 +440,26 @@ fn run_world(seed: u64, plan: &[Step]) -> std::result::Result<(), String> {
         tokio::time::pause();
         let directory = tempfile::tempdir().map_err(|e| e.to_string())?;
         let mut driver = driver::Driver::new(seed, None);
-        match driver.run(swarm(directory.path(), plan)).await {
-            driver::Outcome::Completed(result) => result.map_err(|error| error.to_string()),
-            driver::Outcome::Crashed(cause) => Err(format!("unplanned storage fault: {cause}")),
+        let seen = Seen::default();
+        // Simulated time: a swarm that stops making progress fails with the
+        // requests each node made, instead of hanging.
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(3600),
+            driver.run(swarm(directory.path(), plan, &seen)),
+        )
+        .await;
+        match outcome {
+            Ok(driver::Outcome::Completed(result)) => result.map_err(|error| error.to_string()),
+            Ok(driver::Outcome::Crashed(cause)) => Err(format!("unplanned storage fault: {cause}")),
+            Err(_) => {
+                let requests: Vec<String> = seen
+                    .lock()
+                    .map(|seen| seen.iter().map(|(node, _)| node.clone()).collect())
+                    .unwrap_or_default();
+                Err(format!(
+                    "swarm did not settle within 1 h of simulated time; model requests by node, in order: {requests:?}"
+                ))
+            }
         }
     })
 }
