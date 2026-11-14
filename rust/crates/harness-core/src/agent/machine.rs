@@ -1714,7 +1714,11 @@ async fn run<T: TurnDriver + ?Sized>(
                         .selected
                         .as_ref()
                         .ok_or(Error::Record("review has no frozen selection"))?;
-                    if reviewed.outs.iter().any(|out| !admissible(out)) {
+                    if reviewed
+                        .outs
+                        .iter()
+                        .any(|out| !admissible(out, &state.path))
+                    {
                         return Err(Error::Record("review returned an inadmissible effect"));
                     }
                     if let Some(summary) = reviewed.summary {
@@ -1728,7 +1732,7 @@ async fn run<T: TurnDriver + ?Sized>(
                                 notice: super::NoticePayload::Waking(Box::new(summary)),
                             },
                         };
-                        if !admissible(&notice) {
+                        if !admissible(&notice, &state.path) {
                             return Err(Error::Record("review summary exceeds its record"));
                         }
                         outs.push(notice);
@@ -1832,7 +1836,6 @@ async fn run<T: TurnDriver + ?Sized>(
     let base_conversation = conversation;
     let valid = turn.outs.iter().all(|out| {
         if !admissible(out, &state.path) {
-
             return false;
         }
         if matches!(out, Out::Conversation(_)) {
