@@ -696,6 +696,15 @@ const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::
 }
 
 impl Error {
+    /// The original refusal, independently of local diagnostic custody.
+    #[must_use]
+    pub fn category(&self) -> &Self {
+        match self {
+            Self::Caused(failure) => failure.classification().category(),
+            category => category,
+        }
+    }
+
     /// Retain a concrete local cause without changing this refusal's classification.
     #[must_use]
     pub fn with_source(self, source: impl acyclic_auth::failure::Source) -> Self {
