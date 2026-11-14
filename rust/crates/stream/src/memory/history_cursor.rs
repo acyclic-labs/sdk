@@ -285,7 +285,7 @@ impl FiniteRead {
                 .is_none()
                 .then(|| path.prefix_window(request.from, tail))
                 .flatten(),
-            key: request.key.map(|key| (key, path.keys.pin(path.tail))),
+            key: request.key.map(|key| (key, path.keys.key_pin(path.tail))),
             next: request.from,
             remaining: request.limit,
         }

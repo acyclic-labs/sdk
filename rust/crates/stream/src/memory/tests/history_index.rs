@@ -182,6 +182,65 @@ async fn releasing_a_keyed_pin_returns_superseded_index_funding() -> TestResult<
     Ok(())
 }
 
+#[tokio::test]
+async fn releasing_a_history_pin_returns_superseded_range_funding() -> TestResult<()> {
+    let provider = MemoryStream::default();
+    let path = path("indexed/range-retirement")?;
+    let meter = Arc::new(Meter::default());
+    let values: [&'static [u8]; 5] = [b"a", b"b", b"c", b"d", b"e"];
+    let append = |value: &'static [u8]| AppendRequest {
+        path: path.clone(),
+        records: vec![Bytes::from_static(value).into()],
+        if_tail: None,
+        idempotency_key: IdempotencyKey::unique(),
+    };
+    // Sealed batches 0, 1 and 2 form a branch root that the next insertion
+    // (batch 3) copies, superseding it.
+    for value in &values[..4] {
+        drop(
+            provider
+                .native_append(append(value), meter.original())
+                .await??,
+        );
+    }
+    // This ordinary cursor has no allocation on the native issuer. Any refund
+    // when it drops belongs to the range index version it alone keeps pinned.
+    let mut pinned = provider
+        .read(ReadRequest {
+            path: path.clone(),
+            from: 0,
+            limit: 1,
+            at_least: Default::default(),
+            key: None,
+        })
+        .await?;
+    drop(
+        provider
+            .native_append(append(values[4]), meter.original())
+            .await??,
+    );
+    assert_eq!(
+        futures::TryStreamExt::try_next(&mut pinned)
+            .await?
+            .ok_or(StreamError::Unavailable)?
+            .value
+            .as_ref(),
+        b"a"
+    );
+    let held = meter.held.load(Ordering::SeqCst);
+    drop(pinned);
+    assert!(
+        meter.held.load(Ordering::SeqCst) < held,
+        "record ancestry retained a superseded range index after its last pin"
+    );
+    let expected = values.map(Bytes::from_static);
+    assert_records(&provider, &path, &expected).await?;
+    drop(provider);
+    assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+    meter.assert_refunded();
+    Ok(())
+}
+
 async fn assert_records(
     provider: &MemoryStream,
     path: &StreamPath,
@@ -409,7 +468,7 @@ async fn pinned_ranges_preserve_cold_bounds_cuts_and_original_admission() -> Tes
             meter.allocations.load(Ordering::SeqCst) + allowance,
             Ordering::SeqCst,
         );
-        let next = selected_state.ranges.insert(
+        let next = selected_state.ranges.newest().insert(
             20_u64.to_be_bytes(),
             Arc::clone(records),
             &mut HistoryIndexWork(&admitted),

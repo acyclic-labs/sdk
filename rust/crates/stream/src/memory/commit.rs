@@ -215,20 +215,36 @@ impl MemoryStream {
             CommittedMutation::Fork(fork) => (&fork.source, Some(fork.forked_at)),
         };
         let original = state.paths.get(source_path);
-        let mut ranges = original.map_or_else(HistoryRanges::default, |path| path.ranges.clone());
+        let lineage = original.map_or_else(RangeLineage::default, |path| path.ranges.clone());
         let mut keys = original.map_or_else(KeyTree::default, |path| path.keys.clone());
+        let tail = original.map_or(0, |path| path.tail);
+        let (mut index, extends) = lineage.base(tail);
+        let mut changed = false;
         if let Some(History::Batch { records, .. }) =
             original.and_then(|path| path.history.as_deref())
             && before.is_none_or(|before| records.start < before)
         {
-            ranges = ranges.insert(
+            index = index.insert(
                 records.start.to_be_bytes(),
                 Arc::clone(records),
                 &mut HistoryIndexWork(self),
             )?;
+            changed = true;
         }
+        let ranges = match before {
+            // A fork's index is cut after insertion, so the sealed batch keeps
+            // the fork's exclusive bound; it never extends the source lineage.
+            Some(before) if changed => lineage.publish(
+                before,
+                false,
+                true,
+                index.prefix(before.to_be_bytes()),
+                &mut HistoryIndexWork(self),
+            )?,
+            Some(before) => lineage.cap(before),
+            None => lineage.publish(tail, extends, changed, index, &mut HistoryIndexWork(self))?,
+        };
         if let Some(before) = before {
-            ranges = ranges.prefix(before.to_be_bytes());
             keys = keys.cap(before);
         }
         let parent = match fact {
@@ -327,7 +343,7 @@ impl MemoryStream {
                 PathState {
                     changed_at: 0,
                     history: None,
-                    ranges: HistoryRanges::default(),
+                    ranges: RangeLineage::default(),
                     keys: KeyTree::default(),
                     prefix: [None, None],
                     tail: 0,
