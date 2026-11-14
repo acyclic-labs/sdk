@@ -8,7 +8,7 @@ where
 {
     pub(super) async fn generation(
         &self,
-        tree: GitTreeRef,
+        tree: &GitTreeRef,
     ) -> Result<ManagedGeneration<P, O>, Error> {
         match tree {
             GitTreeRef::Exact(reference) => self
@@ -44,7 +44,7 @@ where
                 let (child, initial) = lazy
                     .fork_snapshot(
                         &destination,
-                        snapshot,
+                        snapshot.clone(),
                         IdempotencyKey::from_bytes(identity),
                         PublicationPermit::Unrestricted,
                         &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),

@@ -623,7 +623,7 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
             offset: Some(start + prefix.len()),
             ..position.clone()
         });
-        let encoded = serde_json::to_vec(&AgentReply::Diff {
+        let encoded = serde_json::to_vec::<AgentReply>(&AgentReply::Diff {
             items: vec![expected.clone()],
         })
         .expect("scalar envelope");

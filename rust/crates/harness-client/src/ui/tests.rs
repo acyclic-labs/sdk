@@ -120,11 +120,9 @@ async fn terminal_diagnostic_is_discoverable_and_lazily_readable_without_losing_
         digest: *blake3::hash(original.as_bytes()).as_bytes(),
         bytes: original.len() as u64,
     };
-    let output = serde_json::to_string(&TurnOutput::new(
-        "saved reply".into(),
-        serde_json::Value::Null,
-        1,
-    ))?;
+    let output = serde_json::to_string(&serde_json::json!({
+        "text": "saved reply", "transcript": [{"unneeded": [1, 2, 3]}]
+    }))?;
     let reference = file(
         &selected,
         "turns/0.json",
@@ -205,6 +203,12 @@ async fn terminal_diagnostic_is_discoverable_and_lazily_readable_without_losing_
             file: &lookup,
         };
         let page = cut.diagnostic(&diagnostic, from)?;
+        let mut wrong = diagnostic.clone();
+        wrong.bytes += 1;
+        assert!(matches!(
+            cut.diagnostic(&wrong, from),
+            Err(Error::Invalid(_))
+        ));
         assert!(!page.text.is_empty());
         assert!(page.text.len() <= acyclic_stream::MAX_RECORD_BYTES);
         complete.push_str(&page.text);
@@ -223,7 +227,7 @@ async fn terminal_diagnostic_is_discoverable_and_lazily_readable_without_losing_
         );
         assert!(
             view.project(&cut, &UiPath::new("turns/0.md")?)?
-                .contains(&format!("(../diagnostics/{digest}/0.md)"))
+                .contains("[Current status](../status.md)")
         );
         let forged = UiPath::new(&format!("diagnostics/{}/0.md", "0".repeat(64)))?;
         assert!(view.project(&cut, &forged).is_err());
@@ -277,7 +281,7 @@ async fn ui_default_projection() -> TestResult {
         listing_limit: 2,
         ..ReaderPolicy::default()
     })?;
-    let mut driver = Driver::new(memory);
+    let mut driver = Driver::new(Arc::clone(&memory));
     driver.attach(&mut reader, 0);
     let index = UiPath::new("index.md")?;
     wait(
@@ -334,7 +338,7 @@ async fn ui_default_projection() -> TestResult {
         view.wants(&selected, &children, Some(5), 0)?,
         |r| {
             r.cache()
-                .listing(&selected.children().expect("children"), 0)
+                .listing(&selected.children().expect("children"), 0, 2)
                 .is_some()
         },
     )
@@ -370,7 +374,7 @@ async fn ui_default_projection() -> TestResult {
         view.wants(&selected, &children, Some(5), cursor)?,
         |r| {
             r.cache()
-                .listing(&selected.children().expect("children"), 1)
+                .listing(&selected.children().expect("children"), 1, 2)
                 .is_some()
         },
     )
@@ -408,10 +412,51 @@ async fn ui_default_projection() -> TestResult {
             .iter()
             .any(|want| { matches!(want, crate::reader::Want::Listing { index: 2, .. }) })
     );
-    assert_eq!(
-        view.affected(Affected::Status),
-        &["index.md", "status.md", "glyph"]
-    );
+    // A real followed record supplies multibyte text. Byte ranges may split a
+    // scalar, cross formatting writes, be reversed, or extend beyond EOF.
+    reader.set_follow(selected.status()?, true);
+    append(
+        &memory,
+        selected.status()?,
+        status(Phase::WaitingUser {
+            path: "réponse.md".into(),
+        })
+        .encode()?,
+    )
+    .await?;
+    let tail = memory.head(selected.status()?).await?.tail;
+    wait(&mut reader, &mut driver, Vec::new(), |r| {
+        let stream = selected.status().expect("status");
+        r.cache().tail(&stream) == Some(tail) && r.cache().record(&stream, tail - 1).is_some()
+    })
+    .await;
+    let cut = ReaderCut {
+        reader: &reader,
+        agent: &selected,
+        file: &lookup,
+    };
+    let path = UiPath::new("status.md")?;
+    let expected = "Waiting for your reply: [réponse.md](réponse.md)\n";
+    assert_eq!(view.project(&cut, &path)?, expected);
+    for from in 0..expected.len() + 2 {
+        for to in 0..expected.len() + 2 {
+            let start = from.min(expected.len());
+            let end = to.min(expected.len()).max(start);
+            assert_eq!(
+                view.bytes(&cut, &path, from..to)?,
+                &expected.as_bytes()[start..end]
+            );
+        }
+    }
+    let mut storage = [0; 1];
+    let error = view
+        .write(
+            &cut,
+            &path,
+            &mut std::io::Cursor::new(storage.as_mut_slice()),
+        )
+        .expect_err("caller output capacity must be respected");
+    assert!(matches!(error, Error::Output(error) if error.kind() == std::io::ErrorKind::WriteZero));
     Ok(())
 }
 

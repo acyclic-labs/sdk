@@ -206,12 +206,14 @@ where
                 }
                 let mut accounting =
                     crate::kernel::KernelAccounting::native(work, work.cancellation());
-                let source = self.lazy.source_reference();
-                let node = match self
-                    .lazy
-                    .source_lookup(source, &self.path, &mut accounting)
-                    .await
-                {
+                let selected = async {
+                    let source = self.lazy.source_reference(&mut accounting).await?;
+                    self.lazy
+                        .source_lookup(&source, &self.path, &mut accounting)
+                        .await
+                }
+                .await;
+                let node = match selected {
                     Ok(node) => node,
                     Err(LazyWorkspaceError::Demand(DemandError::Io(error)))
                         if matches!(
@@ -232,10 +234,7 @@ where
                 }
                 .filter(|node| node.file_identity == self.source_node.file_identity)
                 .unwrap_or(self.source_node);
-                Ok(mount_lookup(
-                    &LazyLookup::Source { node, source },
-                    self.expected_source,
-                ))
+                Ok(source_mount_lookup(node, self.expected_source))
             })
         })
     }

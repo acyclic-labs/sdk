@@ -42,6 +42,22 @@ fn object(suffix: u8) -> ObjectId {
 }
 
 #[test]
+fn retained_push_checks_work_and_cancellation_with_spare_capacity() -> Result<(), crate::FsError> {
+    let cancellation = crate::CancellationToken::new();
+    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let mut values = retained::Retained::<Vec<u64>>::allocate(4, &mut work.accounting())?;
+    let before = work.spent();
+    values.push(17, &mut work.accounting())?;
+    let after = work.spent();
+    assert_eq!(after.items_examined - before.items_examined, 1);
+    assert_eq!(after.bytes_copied - before.bytes_copied, 8);
+    cancellation.cancel();
+    assert!(values.push(23, &mut work.accounting()).is_err());
+    assert_eq!(values.value.as_slice(), &[17]);
+    Ok(())
+}
+
+#[test]
 fn scratch_retirement_preserves_errors_and_fences_invalid_custody() -> Result<(), crate::FsError> {
     for authority in [false, true] {
         for shared in [false, true] {

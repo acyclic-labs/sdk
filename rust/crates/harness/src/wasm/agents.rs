@@ -854,6 +854,7 @@ impl WasmAgents {
             .agents
             .provider()
             .children_page(ChildrenPageRequest {
+                offset: 0,
                 tail_stream: None,
                 parent: Some(parent),
                 after,

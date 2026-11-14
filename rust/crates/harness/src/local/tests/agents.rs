@@ -1222,9 +1222,14 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     // generation, then continues only at that immutable generation.
     let page =
         |after| acyclic_harness_client::AgentPageRequest::new(1, 64 * 1024, after).map_err(agent);
-    let first = client.directory_page("", None, page(None)?).await?;
+    let mut first = client.directory_page("", None, page(None)?).await?;
+    while first.entries.is_empty() && first.next.is_some() {
+        first = client
+            .directory_page("", Some(&first.generation), page(first.next.clone())?)
+            .await?;
+    }
     assert_eq!(first.entries.len(), 1);
-    assert!(first.has_more);
+    assert!(first.next.is_some());
     private
         .write_text("/directory-a", "changed after selection")
         .await
@@ -1268,7 +1273,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     );
     let last = &first.entries[0].name;
     let second = client
-        .directory_page("", Some(&first.generation), page(Some(last.clone()))?)
+        .directory_page("", Some(&first.generation), page(first.next.clone())?)
         .await?;
     assert_eq!(second.generation, first.generation);
     assert_eq!(second.entries.len(), 1);
@@ -1291,7 +1296,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         path: String::new(),
         generation: Some(first.generation.clone()),
         after_generation: None,
-        page: page(Some(last.clone()))?,
+        page: page(first.next.clone())?,
     };
     assert!(
         acyclic_harness_client::encode_agent_reply(
@@ -1327,7 +1332,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     assert_eq!(selected.generation, first.generation);
     assert!(
         client
-            .directory_page("", None, page(Some(last.clone()))?)
+            .directory_page("", None, page(first.next.clone())?)
             .await
             .is_err()
     );
@@ -1702,7 +1707,7 @@ async fn names(
         "",
         &mut None,
     )?;
-    let (_, page) = harness
+    let page = harness
         .files
         .list_private_directory(
             volume,
@@ -1835,7 +1840,7 @@ async fn a_shell_call_stages_its_output_on_the_journal_volume() -> Result<()> {
         &mut None,
     )?;
     let generation = harness.files.file_generation(&entry.output, None)?;
-    let (_, page) = harness
+    let page = harness
         .files
         .list_private_directory(
             &journal,
@@ -1854,11 +1859,11 @@ async fn a_shell_call_stages_its_output_on_the_journal_volume() -> Result<()> {
                 "shell output directory {directory}; result: {result:?}"
             ))
         })?;
-    assert!(!page.has_more, "unexpected additional model calls");
+    assert!(page.next.is_none(), "unexpected additional model calls");
     let mut calls = Vec::new();
     for entry in &page.entries {
         let name = std::str::from_utf8(entry.name.as_bytes()).map_err(agent)?;
-        let (_, children) = harness
+        let children = harness
             .files
             .list_private_directory(
                 &journal,
@@ -1873,7 +1878,7 @@ async fn a_shell_call_stages_its_output_on_the_journal_volume() -> Result<()> {
             )
             .await?
             .ok_or_else(|| Error::NotFound("published output directory".into()))?;
-        assert!(!children.has_more, "unexpected additional call files");
+        assert!(children.next.is_none(), "unexpected additional call files");
         if children
             .entries
             .iter()

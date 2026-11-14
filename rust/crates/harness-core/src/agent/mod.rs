@@ -115,6 +115,8 @@ pub(crate) use handler::{Agents, observe_state};
 pub use handler::{AgentHandler, Companions, INBOX};
 pub use host::{AgentHost, Delivered, InputProgress, actor_store};
 pub use kernel::{CONTINUE_NOW, MAX_FANOUT};
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use layout::AgentStream;
 pub use layout::{
     ACTORS, AGENTS, AgentId, AgentPath, NOT_INHERITED, STATUSES, TARGET_STATUS, VOLUMES,
 };

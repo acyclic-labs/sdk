@@ -51,6 +51,14 @@ pub const NOT_INHERITED: [&str; 7] = [
 ];
 
 const CONVERSATION: &str = "conversation";
+const MEMBERSHIP: &str = "harness/membership";
+
+pub(crate) enum AgentStream {
+    Inbox,
+    Status,
+    Conversation,
+    Membership,
+}
 /// Generation-linked checkpoints, indexed like [`CONVERSATION`].
 const HISTORY: &str = "history";
 const CLOSED: &str = "closed";
@@ -274,6 +282,13 @@ impl AgentPath {
         AgentId(self.id_text().to_owned())
     }
 
+    /// Validate a canonical agent path and borrow its final identity without
+    /// allocating a path or id. Uses the same parser as owned construction.
+    pub fn parse_id(path: &str) -> Result<&str, Error> {
+        Self::parse_depth(path)?;
+        Ok(&path[path.len() - ID_HEX..])
+    }
+
     /// This agent's original identity bytes, without allocation or ancestry
     /// traversal. The canonical path was validated when it was constructed.
     #[must_use]
@@ -288,7 +303,7 @@ impl AgentPath {
         id_bytes(&self.text[AGENTS.len() + 1..][..ID_HEX])
     }
 
-    fn id_text(&self) -> &str {
+    pub(crate) fn id_text(&self) -> &str {
         &self.text[self.text.len() - ID_HEX..]
     }
 
@@ -311,7 +326,7 @@ impl AgentPath {
 
     /// Conversation stream.
     pub fn conversation(&self) -> Result<StreamPath, Error> {
-        stream(&format!("{}/{CONVERSATION}", self.text))
+        stream(&self.stream_parts(AgentStream::Conversation).concat())
     }
 
     /// Generation-linked checkpoints, indexed exactly like the conversation.
@@ -322,7 +337,7 @@ impl AgentPath {
 
     /// Status stream.
     pub fn status(&self) -> Result<StreamPath, Error> {
-        stream(&format!("{STATUSES}{}", &self.text[AGENTS.len()..]))
+        stream(&self.stream_parts(AgentStream::Status).concat())
     }
 
     /// Close marker stream; its existence refuses every later inbox append.
@@ -365,16 +380,28 @@ impl AgentPath {
     /// Append-only membership: this agent first, then each direct child, in
     /// the same commit as its creation. Outside fork destinations like status.
     pub fn membership(&self) -> Result<StreamPath, Error> {
-        stream(&format!("{}/{}", self.membership_tree()?, self.id_text()))
+        stream(&self.stream_parts(AgentStream::Membership).concat())
     }
 
     /// Namespace of this tree's membership feeds. A root observer can follow
     /// each descendant's feed on its existing authenticated session.
     pub fn membership_tree(&self) -> Result<StreamPath, Error> {
-        stream(&format!(
-            "harness/membership/{}",
-            self.tree_root().id_text()
-        ))
+        stream(&format!("{MEMBERSHIP}/{}", self.tree_root().id_text()))
+    }
+
+    pub(crate) fn stream_parts(&self, stream: AgentStream) -> [&str; 5] {
+        match stream {
+            AgentStream::Inbox => [self.as_str(), "", "", "", ""],
+            AgentStream::Status => [STATUSES, &self.text[AGENTS.len()..], "", "", ""],
+            AgentStream::Conversation => [self.as_str(), "/", CONVERSATION, "", ""],
+            AgentStream::Membership => [
+                MEMBERSHIP,
+                "/",
+                &self.text[AGENTS.len() + 1..AGENTS.len() + 1 + ID_HEX],
+                "/",
+                self.id_text(),
+            ],
+        }
     }
 
     /// The root of this agent's tree: itself for a root.
@@ -410,10 +437,8 @@ impl AgentPath {
     }
 }
 
-impl TryFrom<String> for AgentPath {
-    type Error = Error;
-
-    fn try_from(text: String) -> Result<Self, Error> {
+impl AgentPath {
+    fn parse_depth(text: &str) -> Result<usize, Error> {
         let rest = text
             .strip_prefix(AGENTS)
             .and_then(|rest| rest.strip_prefix('/'))
@@ -428,6 +453,15 @@ impl TryFrom<String> for AgentPath {
             AgentId::validate(segments.next().unwrap_or_default())?;
             depth += 1;
         }
+        Ok(depth)
+    }
+}
+
+impl TryFrom<String> for AgentPath {
+    type Error = Error;
+
+    fn try_from(text: String) -> Result<Self, Error> {
+        let depth = Self::parse_depth(&text)?;
         Ok(Self { text, depth })
     }
 }

@@ -490,6 +490,14 @@ message PrivateDirectoryEntry {
     KIND_UNSPECIFIED = 0;
     KIND_FILE = 1;
     KIND_DIRECTORY = 2;
+    KIND_SYMBOLIC_LINK = 3;
+    KIND_FIFO = 4;
+    KIND_SOCKET = 5;
+    KIND_CHARACTER_DEVICE = 6;
+    KIND_BLOCK_DEVICE = 7;
+    KIND_REPARSE_POINT = 8;
+    KIND_MOUNT_BOUNDARY = 9;
+    KIND_UNSUPPORTED = 10;
   }
   Kind kind = 2;
 }
@@ -497,7 +505,8 @@ message PrivateDirectoryEntry {
 message PrivateDirectoryPage {
   GenerationRef generation = 1;
   repeated PrivateDirectoryEntry entries = 2;
-  bool has_more = 3;
+  reserved 3;
+  optional bytes next = 4;
 }
 
 message ProjectRevision {

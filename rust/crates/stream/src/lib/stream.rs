@@ -246,6 +246,7 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         limit: u32,
     ) -> Result<ChildrenPage, StreamError> {
         let work = self.provider.children_page(ChildrenPageRequest {
+            offset: 0,
             tail_stream: None,
             parent: Some(self.path.clone()),
             after,

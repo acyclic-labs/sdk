@@ -3,7 +3,7 @@ use super::*;
 /// Preserves original observer failure separately from the provider's error.
 pub type NativeStreamResult<T, E = StreamError> = std::io::Result<Result<NativeStreamOutput<T>, E>>;
 
-/// The selected finite cut and original cursor preserve late native failures.
+/// The selected opening cut and original cursor preserve late native failures.
 pub type NativeRecordStream =
     crate::Opened<Result<NativeStreamOutput<Record>, StreamError>, std::io::Error>;
 
