@@ -1173,6 +1173,21 @@ mod tests {
             .hook_for_execution(journal.as_ref(), operation, "guard", None)?
             .await?;
         let selected_revision = selected.binding().definition.revision.clone();
+        let catalogue_operation = crate::OperationId::new();
+        let first_names = programs
+            .catalogue_page(journal.as_ref(), catalogue_operation, None, 1, None)?
+            .await?;
+        assert_eq!(first_names.names(), ["guard"]);
+        let continuation = |page: &crate::plugins::HookCataloguePage<'_>| {
+            page.next()
+                .map(|cursor| {
+                    serde_json::to_vec(cursor).and_then(|bytes| {
+                        serde_json::from_slice::<crate::plugins::HookCatalogueCursor>(&bytes)
+                    })
+                })
+                .transpose()
+                .map_err(storage)
+        };
         for (path, source) in [
             ("switch.ts", "export const enabled = false;"),
             (
@@ -1182,10 +1197,55 @@ mod tests {
             ("plugins/guard/hooks/before-tool.sh", "\0"),
             ("hooks/guard/main.sh", "exit 73"),
             ("hooks/guard/main.ps1", "exit 73"),
+            (
+                "hooks/late/program.ts",
+                "throw new Error('name-only discovery must not evaluate this');",
+            ),
         ] {
             crate::local::tests::settings::write(&harness, path, source).await?;
         }
         let replayed = Tree::for_step(&volumes, journal.as_ref(), operation, 0, None).await?;
+        let mut next = continuation(&first_names)?;
+        while let Some(cursor) = next {
+            let page = programs
+                .catalogue_page(
+                    journal.as_ref(),
+                    catalogue_operation,
+                    Some(&cursor),
+                    1,
+                    None,
+                )?
+                .await?;
+            assert!(
+                !page.names().iter().any(|name| name == "late"),
+                "catalogue continuation changed its original generation"
+            );
+            next = continuation(&page)?;
+        }
+        let refreshed_operation = crate::OperationId::new();
+        let mut next = None;
+        let mut names = Vec::new();
+        loop {
+            let page = programs
+                .catalogue_page(
+                    journal.as_ref(),
+                    refreshed_operation,
+                    next.as_ref(),
+                    1,
+                    None,
+                )?
+                .await?;
+            names.extend(page.names().iter().cloned());
+            next = continuation(&page)?;
+            if next.is_none() {
+                break;
+            }
+        }
+        assert_eq!(
+            names,
+            ["guard", "late"],
+            "discovery must page names without loading manifests"
+        );
         let (recovered, _) = programs
             .hook_for_execution(journal.as_ref(), operation, "guard", None)?
             .await?;
