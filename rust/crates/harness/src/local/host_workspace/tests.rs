@@ -231,7 +231,6 @@ async fn read_only_bindings_require_read_but_not_write() -> Result<()> {
 async fn child_views_select_roles_without_assuming_names_or_volume_classes() -> Result<()> {
     use crate::agent::{WorkspaceRole, WorkspaceTable};
     use crate::conversation::VolumeOwner;
-    use acyclic_fs::LazyWorkspaceStore as _;
 
     let checkout = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
@@ -339,21 +338,28 @@ async fn child_views_select_roles_without_assuming_names_or_volume_classes() -> 
                 VolumeOperation::Write,
                 &mut None,
             )?;
-            harness
-                .files
-                .put_content(
-                    &volume,
-                    &grant,
-                    "home-only",
-                    b"authored home",
-                    "text/plain",
-                    "home-only",
-                    None,
-                    &crate::IdempotencyKey::new("authored-primary-home".to_owned())?,
-                    None,
-                    crate::conversation::ContentAccess::default(),
-                )
-                .await?;
+            for path in [
+                "home-only",
+                ".git/home-only",
+                ".system/home-only",
+                ".volumes/home-only",
+            ] {
+                harness
+                    .files
+                    .put_content(
+                        &volume,
+                        &grant,
+                        path,
+                        b"authored home",
+                        "text/plain",
+                        "home-only",
+                        None,
+                        &crate::IdempotencyKey::new(format!("authored-primary:{path}"))?,
+                        None,
+                        crate::conversation::ContentAccess::default(),
+                    )
+                    .await?;
+            }
         }
         let reference = format!("selected-{index}");
         let opened = parent
@@ -370,10 +376,18 @@ async fn child_views_select_roles_without_assuming_names_or_volume_classes() -> 
                 b"parent cut"
             );
         } else {
-            assert_eq!(
-                std::fs::read(opened.host_cwd().join("home-only")).map_err(storage)?,
-                b"authored home"
-            );
+            for path in [
+                "home-only",
+                ".git/home-only",
+                ".system/home-only",
+                ".volumes/home-only",
+            ] {
+                assert_eq!(
+                    std::fs::read(opened.host_cwd().join(path)).map_err(storage)?,
+                    b"authored home"
+                );
+                native_write(&opened.host_cwd().join(path), b"selected write")?;
+            }
             assert!(
                 !opened
                     .host_cwd()
@@ -384,7 +398,7 @@ async fn child_views_select_roles_without_assuming_names_or_volume_classes() -> 
             assert!(
                 !opened
                     .host_cwd()
-                    .join(".git")
+                    .join(".git/parent-only")
                     .try_exists()
                     .map_err(storage)?
             );
@@ -407,6 +421,14 @@ async fn child_views_select_roles_without_assuming_names_or_volume_classes() -> 
             b"selected write"
         );
         assert!(!parent.host_cwd().join("child-note").exists());
+        assert_eq!(
+            std::fs::read(parent.host_cwd().join("source.txt")).map_err(storage)?,
+            b"parent cut"
+        );
+        assert_eq!(
+            std::fs::read(parent.host_cwd().join(".git/parent-only")).map_err(storage)?,
+            b"parent metadata"
+        );
         let physical = opened.path().to_path_buf();
         drop(opened);
         let reopened = parent
@@ -428,30 +450,29 @@ async fn child_views_select_roles_without_assuming_names_or_volume_classes() -> 
             assert!(
                 !reopened
                     .host_cwd()
-                    .join(".git")
+                    .join(".git/parent-only")
                     .try_exists()
                     .map_err(storage)?
             );
             assert!(reopened.workspace.mounts.native_read_roots.is_empty());
-            let id = workspace
-                .filesystem
-                .workspace_id(volume.storage_name(&mut None)?)
-                .map_err(storage)?;
-            assert!(
-                workspace
-                    .store
-                    .load_lazy_workspace(
-                        id,
-                        &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                            work: &work,
-                            cancellation: &cancellation,
-                        },
-                    )
-                    .await
-                    .map_err(storage)?
-                    .is_none(),
-                "ordinary Home binding manufactured source-backed state"
-            );
+            for path in [
+                "home-only",
+                ".git/home-only",
+                ".system/home-only",
+                ".volumes/home-only",
+            ] {
+                assert_eq!(
+                    std::fs::read(reopened.host_cwd().join(path)).map_err(storage)?,
+                    b"selected write"
+                );
+                assert_eq!(
+                    head.read(&format!("/{path}"), None, &work, &cancellation)
+                        .await
+                        .map_err(storage)?
+                        .as_ref(),
+                    b"selected write"
+                );
+            }
         }
         // Attaching a root uses that same composed source, regardless of class.
         let attached = HostWorkspace::attach(
