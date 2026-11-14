@@ -419,10 +419,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 }
                 Err(error) => return Err(error),
             };
-            if let KernelOwnedAllocation::NativeOriginal(allocation) = allocation {
-                io.absorb_native_custody(allocation)?;
-            }
-            let hold = io.guard_owned(bytes)?;
+            let hold = io.hold_returned_allocation(allocation, bytes)?;
             Ok(Some((page, hold)))
         }
         #[cfg(target_arch = "wasm32")]
