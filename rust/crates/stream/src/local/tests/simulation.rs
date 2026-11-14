@@ -22,23 +22,30 @@ fn append(path: &str, tail: usize, value: Vec<u8>) -> Result<AppendRequest> {
 }
 
 async fn records(provider: &LocalStream, path: &str) -> Result<Vec<Vec<u8>>> {
-    let mut stream = provider
-        .read(ReadRequest {
-            path: StreamPath::new(path)?,
-            from: 0,
-            limit: u32::MAX,
-            at_least: Default::default(),
-        })
-        .await?;
     let mut values = Vec::new();
-    while let Some(record) = stream.next().await {
-        let record = record?;
-        assert_eq!(
-            record.sequence,
-            values.len() as u64,
-            "noncontiguous history: {path}"
-        );
-        values.push(record.value.as_slice().to_vec());
+    let limit = u32::try_from(crate::MAX_ITEMS)?;
+    loop {
+        let from = values.len() as u64;
+        let mut stream = provider
+            .read(ReadRequest {
+                path: StreamPath::new(path)?,
+                from,
+                limit,
+                at_least: Default::default(),
+            })
+            .await?;
+        while let Some(record) = stream.next().await {
+            let record = record?;
+            assert_eq!(
+                record.sequence,
+                values.len() as u64,
+                "noncontiguous history: {path}"
+            );
+            values.push(record.value.as_slice().to_vec());
+        }
+        if values.len() as u64 - from < u64::from(limit) {
+            break;
+        }
     }
     Ok(values)
 }
