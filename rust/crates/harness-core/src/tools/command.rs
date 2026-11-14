@@ -1,18 +1,129 @@
-use crate::{Error, Result};
+use crate::Result;
+use crate::executor::{PreparationIo, stock_boundary, stock_string_push, stock_vec_push};
 
 /// Splits a facade command into arguments without executing shell expansion.
 pub fn parse_command(command: &str) -> Result<Vec<String>> {
+    parse_command_with_io(command, None)
+}
+
+/// Decode through the shared lexer with the original execution allocation owner.
+pub(crate) fn parse_command_with_io(
+    command: &str,
+    io: Option<&PreparationIo>,
+) -> Result<Vec<String>> {
     let mut arguments = Vec::new();
     let mut word = String::new();
+    visit(command, io, |character| match character {
+        Some(character) => {
+            let mut encoded = [0; 4];
+            stock_string_push(
+                &mut word,
+                character.encode_utf8(&mut encoded),
+                None,
+                "command argument size overflows",
+                io,
+            )
+        }
+        None => stock_vec_push(&mut arguments, std::mem::take(&mut word), io),
+    })?;
+    Ok(arguments)
+}
+
+/// Compare decoded argument prefixes without allocating a second argument list.
+pub(super) fn has_prefix<const N: usize>(command: &str, prefixes: [&[&str]; N]) -> Result<bool> {
+    let mut matched = [true; N];
+    let mut word = 0;
+    let mut offset = 0;
+    visit(command, None, |character| {
+        for (prefix, matched) in prefixes.iter().zip(&mut matched) {
+            if let Some(expected) = prefix.get(word) {
+                *matched &= match character {
+                    Some(character) => expected.chars().nth(offset) == Some(character),
+                    None => expected.chars().count() == offset,
+                };
+            }
+        }
+        if character.is_some() {
+            offset += 1;
+        } else {
+            word += 1;
+            offset = 0;
+        }
+        Ok(())
+    })?;
+    Ok(prefixes
+        .iter()
+        .zip(matched)
+        .any(|(prefix, matched)| matched && word >= prefix.len()))
+}
+
+/// Select the explicit agent-scope query without allocating parsed arguments.
+pub(crate) fn scoped_search(command: &str) -> Result<bool> {
+    if !has_prefix(command, [&["grep"], &["git", "grep"]])? {
+        return Ok(false);
+    }
+    const OPTIONS: [&str; 7] = [
+        "--scope",
+        "--",
+        "--page-size",
+        "--cursor",
+        "--file",
+        "--directory",
+        "--volume",
+    ];
+    let mut matched = [true; OPTIONS.len()];
+    let mut offset = 0;
+    let mut operand = false;
+    let mut literal = false;
+    let mut found = false;
+    visit(command, None, |character| {
+        for (expected, matched) in OPTIONS.iter().zip(&mut matched) {
+            *matched &= match character {
+                Some(character) => expected.chars().nth(offset) == Some(character),
+                None => expected.chars().count() == offset,
+            };
+        }
+        if character.is_some() {
+            offset += 1;
+            return Ok(());
+        }
+        if !literal {
+            if operand {
+                operand = false;
+            } else {
+                found |= matched[0];
+                literal = matched[1];
+                operand = matched
+                    .iter()
+                    .enumerate()
+                    .any(|(index, yes)| index != 1 && *yes);
+            }
+        }
+        matched.fill(true);
+        offset = 0;
+        Ok(())
+    })?;
+    Ok(found)
+}
+fn visit(
+    command: &str,
+    io: Option<&PreparationIo>,
+    mut emit: impl FnMut(Option<char>) -> Result<()>,
+) -> Result<()> {
     let mut quote = None;
     let mut escaped = false;
     let mut started = false;
+    let mut words = 0;
     for character in command.chars() {
         if character == '\0' {
-            return Err(Error::Invalid("fs command contains NUL".into()));
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "fs command contains NUL",
+            ));
         }
         if escaped {
-            word.push(character);
+            emit(Some(character))?;
             escaped = false;
         } else if character == '\\' && quote != Some('\'') {
             escaped = true;
@@ -21,39 +132,67 @@ pub fn parse_command(command: &str) -> Result<Vec<String>> {
             if character == delimiter {
                 quote = None;
             } else {
-                word.push(character);
+                emit(Some(character))?;
             }
         } else if matches!(character, '\'' | '"') {
             quote = Some(character);
             started = true;
         } else if character.is_whitespace() {
             if started {
-                arguments.push(std::mem::take(&mut word));
+                emit(None)?;
+                words += 1;
                 started = false;
             }
         } else if matches!(character, ';' | '|' | '&' | '<' | '>' | '`') {
-            return Err(Error::Invalid("fs accepts one facade command".into()));
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "fs accepts one facade command",
+            ));
         } else {
-            word.push(character);
+            emit(Some(character))?;
             started = true;
         }
     }
     if escaped || quote.is_some() {
-        return Err(Error::Invalid("unterminated fs command argument".into()));
+        return Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Invalid,
+            "unterminated fs command argument",
+        ));
     }
     if started {
-        arguments.push(word);
+        emit(None)?;
+        words += 1;
     }
-    if arguments.is_empty() {
-        return Err(Error::Invalid("fs command is empty".into()));
+    if words == 0 {
+        return Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Invalid,
+            "fs command is empty",
+        ));
     }
-    Ok(arguments)
+    Ok(())
 }
 
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
+    #[test]
+    fn scope_routing_respects_option_operands_and_literal_terminators() -> Result<()> {
+        for (command, expected) in [
+            ("grep --scope . needle", true),
+            ("'git' 'grep' --page-size 1 --scope . needle", true),
+            ("grep --directory . needle", false),
+            ("grep -- needle --scope .", false),
+            ("grep --cursor --scope needle", false),
+            ("status --scope .", false),
+        ] {
+            assert_eq!(scoped_search(command)?, expected, "{command}");
+        }
+        Ok(())
+    }
     use proptest::prelude::*;
 
     proptest! {
@@ -72,6 +211,20 @@ mod tests {
                 format!("\"{}\"", argument.replace('\\', "\\\\").replace('"', "\\\""))
             }).collect::<Vec<_>>().join(" ");
             prop_assert_eq!(parse_command(&command).unwrap(), arguments);
+        }
+
+        #[test]
+        fn routing_and_execution_decode_the_same_quoted_prefix(
+            prefix in prop::sample::select(vec![vec!["grep", "--scope"], vec!["git", "grep", "--scope"], vec!["grep", "--volume"], vec!["status"]]),
+            operand in r"[^\x00]{0,64}",
+            quote in any::<bool>(),
+        ) {
+            let command = prefix.iter().map(|word| if quote { format!("'{word}'") } else { word.to_string() }).chain([
+                format!("\"{}\"", operand.replace('\\', "\\\\").replace('"', "\\\"")),
+            ]).collect::<Vec<_>>().join(" ");
+            let args = parse_command(&command).unwrap();
+            let args = if args.first().is_some_and(|arg| arg == "git") { &args[1..] } else { &args[..] };
+            prop_assert_eq!(has_prefix(&command, [&["grep"], &["git", "grep"]]).unwrap(), args.starts_with(&["grep".into()]));
         }
 
         #[test]

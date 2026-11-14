@@ -46,6 +46,7 @@ pub use pending::{AppendPending, Pending};
 pub mod pull;
 pub mod request;
 pub mod runtime;
+pub mod search;
 #[cfg(any(
     not(target_arch = "wasm32"),
     all(feature = "wasm", target_arch = "wasm32")

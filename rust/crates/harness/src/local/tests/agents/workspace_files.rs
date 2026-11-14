@@ -9,6 +9,112 @@ use crate::{
 use acyclic_harness_client::{AgentCommand, AgentPageRequest, AgentReply, ReadTarget};
 
 #[tokio::test]
+async fn private_view_search_uses_the_real_session_content_adapter() -> Result<()> {
+    use crate::model::{ModelContentPart, ModelEvent, ToolCall, ToolResultContent};
+    use crate::test_support::ScriptedEvent;
+
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let provider = super::super::scripted([ScriptedTurn::Text("first settled case".into())]);
+    let filesystem_tool = crate::tools::catalog()
+        .find(|spec| spec.name == "fs")
+        .ok_or_else(|| Error::NotFound("filesystem tool".into()))?
+        .bind()?;
+    let harness = Arc::new(
+        super::super::open_scripted(
+            volume_config(directory.path(), project, provider.clone())?
+                .without_default_tools()
+                .tool(filesystem_tool),
+        )
+        .await?,
+    );
+    let mut conversation = ObservedConversation::open(&harness).await?;
+    conversation
+        .send("first-case", "settle the original case")
+        .await?;
+    let selected = [
+        ("search-title", "ui/title", ""),
+        (
+            "search-case",
+            "evals/00000000000000000000.json",
+            "\"through\":0",
+        ),
+    ];
+    let mut events = selected
+        .iter()
+        .map(|(id, path, pattern)| {
+            ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                (*id).into(),
+                "fs".into(),
+                serde_json::json!({
+                    "command": format!("grep --volume private --file {path} '{pattern}'"),
+                }),
+            )))
+        })
+        .collect::<Vec<_>>();
+    events.push(ScriptedEvent::Event(ModelEvent::Completed {
+        metadata: serde_json::json!({}),
+    }));
+    provider.extend([
+        ScriptedTurn::Events(events),
+        ScriptedTurn::Text("searched original computed files".into()),
+    ]);
+    conversation
+        .send("search-computed", "search both selected files")
+        .await?;
+    let requests = provider.requests();
+    let request = requests
+        .last()
+        .ok_or_else(|| Error::NotFound("search result request".into()))?;
+    let connection = harness.connect().await?;
+    for (id, path, pattern) in selected {
+        let result = request
+            .messages
+            .iter()
+            .flat_map(|message| message.content.parts())
+            .find_map(|part| match part {
+                ModelContentPart::ToolResult {
+                    call_id,
+                    content: ToolResultContent::Json { value },
+                    ..
+                } if call_id == id => Some(value),
+                _ => None,
+            })
+            .ok_or_else(|| Error::NotFound(format!("search result {id}")))?;
+        let matches = result["result"]["matches"]
+            .as_array()
+            .ok_or_else(|| Error::Invalid(format!("search result {id}: {result}")))?;
+        assert_eq!(matches.len(), 1);
+        let found: crate::history_search::FileMatch =
+            serde_json::from_value(matches[0].clone()).map_err(agent)?;
+        assert_eq!(found.file.path, path);
+        assert_eq!(
+            found.file.generation.as_resource().version(),
+            Some("lazy-v1")
+        );
+        let reply = connection
+            .execute(&AgentCommand::Read {
+                agent: connection.root().clone(),
+                offset: 0,
+                target: ReadTarget::Path {
+                    target: DirectoryTarget::Private {},
+                    path: found.file.path,
+                    generation: found.file.generation,
+                },
+            })
+            .await?;
+        let (bytes, _) = reply.content().map_err(agent)?;
+        assert_eq!(bytes.len() as u64, found.file.byte_length);
+        assert!(
+            std::str::from_utf8(&bytes)
+                .map_err(agent)?
+                .contains(pattern)
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn private_computed_views_reopen_through_the_real_session() -> Result<()> {
     let directory = tempfile::tempdir().map_err(agent)?;
     let project = volume(directory.path()).await?;
