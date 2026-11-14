@@ -813,7 +813,7 @@ async fn metadata_bootstrap_skips_history_and_rejoin_reads_current_files() -> Te
             .await?;
     }
     let before = provider.tail(path.clone()).await?;
-    let (mut runtime, control) = file_runtime(&bound, &root)?;
+    let (runtime, control) = file_runtime(&bound, &root)?;
     runtime.drain_actor(&control).await?;
     let head = provider.head(path.clone()).await?;
     assert_eq!(

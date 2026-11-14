@@ -88,6 +88,16 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
             .await
             .map_err(Error::Stream)?;
         view.validate_for(&request).map_err(Error::Stream)?;
+        if view
+            .retained
+            .first()
+            .and_then(|observed| observed.record.as_ref())
+            != Some(record)
+        {
+            return Err(Error::Record(
+                "membership event is outside the metadata cut",
+            ));
+        }
         let member_head = view.heads[membership_index]
             .as_ref()
             .ok_or(Error::Record("membership head missing"))?;
