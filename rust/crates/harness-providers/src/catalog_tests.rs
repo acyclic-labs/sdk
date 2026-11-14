@@ -13,7 +13,7 @@ async fn captured_container_catalog_keeps_exact_host_grants_on_every_route() -> 
     );
     let (_, transport) = provider(Adapter::Responses, 200);
     let mut registry =
-        Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport.clone());
+        Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport.clone())?;
     let file = tempfile::NamedTempFile::new().map_err(|cause| invalid(cause.to_string()))?;
     std::fs::write(file.path(), captured).map_err(|cause| invalid(cause.to_string()))?;
     registry.load_catalog(file.path())?;
@@ -116,7 +116,7 @@ async fn captured_container_catalog_keeps_exact_host_grants_on_every_route() -> 
 async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> Result<()> {
     let (_, script) = provider(Adapter::Chat, 200);
     let mut registry =
-        Registry::with_transport(Credentials::explicit(BTreeMap::new()), script.clone());
+        Registry::with_transport(Credentials::explicit(BTreeMap::new()), script.clone())?;
     let mut spec = ProviderSpec {
         adapter: Adapter::Chat,
         authentication: Authentication::Optional,
@@ -187,14 +187,14 @@ async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> 
 #[test]
 fn serialized_catalogs_own_capacities_without_name_based_fallbacks() -> Result<()> {
     let (_, script) = provider(Adapter::Chat, 200);
-    let catalog = default_catalog();
+    let catalog = default_catalog()?;
     let encoded = serde_json::to_vec(&catalog).expect("catalog");
     let catalog: BTreeMap<String, ProviderSpec> =
         serde_json::from_slice(&encoded).expect("catalog round trip");
     let mut registry = Registry::with_transport(
         Credentials::explicit(BTreeMap::from([("openai".into(), "fixture".into())])),
         script,
-    );
+    )?;
     for (id, spec) in catalog {
         registry.register(id, spec)?;
     }
@@ -233,7 +233,7 @@ fn resolution_rejects_mutated_model_identity() -> Result<()> {
             ("morph".into(), "fixture".into()),
         ])),
         script,
-    );
+    )?;
     for selection in [
         "openai/gpt-5",
         "anthropic/claude-sonnet-4-5",
@@ -266,7 +266,7 @@ fn resolution_rejects_mutated_model_identity() -> Result<()> {
 #[test]
 fn invalid_catalog_files_do_not_partially_replace_registered_policy() -> Result<()> {
     let (_, transport) = provider(Adapter::Responses, 200);
-    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport);
+    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport)?;
     let before = registry.catalog().keys().cloned().collect::<Vec<_>>();
     let valid = json!({"adapter":"chat","authentication":"optional","base_url":"http://localhost:1234/v1","models":{"fixture":{"capacity":{"context_tokens":4096,"output_tokens":512}}},"max_event_bytes":4096});
     let mut bad = valid.clone();
@@ -304,7 +304,8 @@ fn stock_registry() -> (Registry, Arc<Script>) {
             ("morph".into(), "fixture".into()),
         ])),
         transport.clone(),
-    );
+    )
+    .unwrap();
     (registry, transport)
 }
 
@@ -449,7 +450,7 @@ async fn omitted_event_capacity_reaches_protocol_admission() -> Result<()> {
     let spec: ProviderSpec =
         serde_json::from_value(value).map_err(|cause| invalid(cause.to_string()))?;
     let (_, script) = provider(Adapter::Chat, 200);
-    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), script);
+    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), script)?;
     registry.register("local".into(), spec)?;
     let provider = registry.resolve("local/fixture")?;
     let (request, dispatch) = request(&provider)?;
@@ -471,7 +472,7 @@ fn configured_seed_role_models_resolve_in_the_shipped_catalog() -> Result<()> {
     let registry = Registry::with_transport(
         Credentials::explicit(BTreeMap::from([("morph".into(), "fixture".into())])),
         transport,
-    );
+    )?;
     for role in ["orchestrator", "worker", "advisor", "reviewer"] {
         let path = format!("templates/{role}/AGENT.md");
         let bytes =

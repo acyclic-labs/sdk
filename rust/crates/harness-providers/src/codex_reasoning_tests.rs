@@ -51,7 +51,7 @@ async fn encrypted_reasoning_survives_login_refresh_and_durable_tool_followup() 
                 server.clone()
             };
             let provider =
-                Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport)
+                Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport)?
                     .with_codex_login(login)
                     .resolve("openai/gpt-5")?;
             let (prepared, initial) = crate::tests::request(&provider)?;

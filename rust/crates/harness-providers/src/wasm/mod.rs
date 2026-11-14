@@ -117,7 +117,8 @@ impl WasmProviderRegistry {
             None => BrowserTransport::global().map_err(error)?,
         };
         let mut registry =
-            Registry::with_transport(Credentials::explicit(keys), Arc::new(transport));
+            Registry::with_transport(Credentials::explicit(keys), Arc::new(transport))
+                .map_err(error)?;
         if let Some(reader) = reader {
             registry = registry.with_content(
                 Arc::new(acyclic_harness::BrowserContentReader(reader)),

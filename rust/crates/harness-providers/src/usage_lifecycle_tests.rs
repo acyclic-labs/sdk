@@ -121,7 +121,7 @@ async fn delayed_502_preserves_usage_and_later_turns_through_catalog_proxy() -> 
         waits: Mutex::new(Vec::new()),
     });
     let mut registry =
-        Registry::with_transport(Credentials::explicit(BTreeMap::new()), proxy.clone());
+        Registry::with_transport(Credentials::explicit(BTreeMap::new()), proxy.clone())?;
     let mut spec: BTreeMap<String, ProviderSpec> =
         serde_json::from_str(include_str!("fixtures/luna-catalog.json"))
             .map_err(|error| invalid(error.to_string()))?;
@@ -301,7 +301,7 @@ fn usage_rows(bytes: &[u8]) -> Result<Vec<ModelUsageProjection<'_>>> {
 #[test]
 fn counters_cannot_alias_generation_routes_on_any_protocol() -> Result<()> {
     let (_, transport) = provider(Adapter::Responses, 200);
-    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport);
+    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport)?;
     for (adapter, route) in [
         (Adapter::Responses, "responses"),
         (Adapter::Chat, "chat/completions"),

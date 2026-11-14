@@ -32,7 +32,7 @@ async fn credential_read_failures_never_become_terminal_model_refusals() -> Resu
                 server.clone()
             };
             let provider =
-                Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport)
+                Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport)?
                     .with_codex_login(login)
                     .resolve("openai/gpt-5")?;
             let (request, dispatch) = crate::tests::request(&provider)?;
@@ -170,7 +170,7 @@ async fn ordinary_and_native_refresh_only_before_successful_response_admission()
                 server.clone()
             };
             let provider =
-                Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport)
+                Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport)?
                     .with_codex_login(login)
                     .resolve("openai/gpt-5")?;
             let (request, dispatch) = crate::tests::request(&provider)?;
@@ -301,7 +301,7 @@ async fn cancellation_during_authentication_recovery_releases_the_guard_and_all_
     let provider = Registry::with_transport(
         Credentials::explicit(BTreeMap::new()),
         Arc::new(CancelRefresh { cancel }),
-    )
+    )?
     .with_codex_login(login)
     .resolve("openai/gpt-5")?;
     let (request, dispatch) = crate::tests::request(&provider)?;

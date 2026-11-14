@@ -107,7 +107,7 @@ pub(super) fn assert_roundtrip(input: &[u8]) -> ProbeResult {
             let mut registry = Registry::with_transport(
                 Credentials::explicit(Default::default()),
                 transport.clone(),
-            )
+            )?
             .with_content(reader.clone(), Some(maximum_bytes * 2));
             registry.register("image-test".into(), serde_json::from_value(json!({
                 "adapter":adapter,"authentication":"optional","base_url":"http://127.0.0.1:1/v1",

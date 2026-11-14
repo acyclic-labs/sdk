@@ -143,7 +143,7 @@ async fn credential_watch_login_creation_refresh_and_account_pin() -> Result<()>
         })
     }));
     let server = Arc::new(Server(Mutex::new(Vec::new())));
-    let registry = Registry::with_transport(credentials, server.clone());
+    let registry = Registry::with_transport(credentials, server.clone())?;
     let provider = registry.resolve("openai/gpt-5")?;
     let (request, dispatch) = crate::tests::request(&provider)?;
     let frozen = request.bytes().to_vec();

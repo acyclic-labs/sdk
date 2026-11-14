@@ -12,7 +12,7 @@ fn specification(mask: u8) -> ProviderSpec {
 }
 
 fn counted_specification(mask: u8, counted: bool) -> ProviderSpec {
-    let base = crate::catalog::default_catalog()["openai"].clone();
+    let base = crate::catalog::default_catalog().unwrap()["openai"].clone();
     let model = base.models.values().next().unwrap().clone();
     ProviderSpec {
         authentication: Authentication::Optional,
@@ -234,7 +234,7 @@ fn negative_control_detects_retained_default_loss_in_both_entry_points() {
 
 #[test]
 fn codex_login_route_remains_a_countable_default_without_a_counter() {
-    let mut openai = crate::catalog::default_catalog()["openai"].clone();
+    let mut openai = crate::catalog::default_catalog().unwrap()["openai"].clone();
     openai.token_counter = None;
     for (authentication, accepted) in [
         (Authentication::ApiKeyOrCodexLogin, true),

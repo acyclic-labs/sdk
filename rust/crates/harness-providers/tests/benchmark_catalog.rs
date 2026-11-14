@@ -39,7 +39,7 @@ print(json.dumps(catalog('openai/shared', 'http://127.0.0.1:9/v1', 100, 10,
     std::fs::write(file.path(), serde_json::to_vec(&document)?)?;
     let mut registry = Registry::new(Credentials::explicit(BTreeMap::new()))?;
     registry.load_catalog(file.path())?;
-    let stock = default_catalog();
+    let stock = default_catalog()?;
     for (provider, path, adapter, counter_provider) in [
         ("openai", "/v1", Adapter::Responses, "openai"),
         ("deepseek", "/deepseek/v1", Adapter::Chat, "openrouter"),
@@ -138,7 +138,7 @@ print(json.dumps(results))
         (Adapter::Chat, "openrouter"),
     ];
     assert_eq!(documents.len(), expected.len());
-    let stock = default_catalog();
+    let stock = default_catalog()?;
     let file = tempfile::NamedTempFile::new()?;
     for (document, (adapter, provider)) in documents.iter().zip(expected) {
         let id = document

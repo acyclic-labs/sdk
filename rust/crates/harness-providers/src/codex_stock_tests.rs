@@ -92,7 +92,7 @@ async fn local_count_reservation_boundary_65536_and_65537_keeps_the_original_led
         generations: AtomicUsize::new(0),
     });
     let provider =
-        Registry::with_transport(Credentials::explicit(BTreeMap::new()), backend.clone())
+        Registry::with_transport(Credentials::explicit(BTreeMap::new()), backend.clone())?
             .with_codex_login(login)
             .resolve("openai/gpt-5")?;
     let (request, _) = crate::tests::request(&provider)?;
@@ -167,7 +167,7 @@ async fn stock(broken: bool) -> Result<()> {
         BTreeMap::new()
     });
     let mut registry =
-        Registry::with_transport(credentials, backend.clone()).with_codex_login(login);
+        Registry::with_transport(credentials, backend.clone())?.with_codex_login(login);
     let catalog = tempfile::NamedTempFile::new().map_err(|_| invalid("fixture catalog"))?;
     std::fs::write(catalog.path(), include_str!("fixtures/luna-catalog.json"))
         .map_err(|_| invalid("fixture catalog"))?;
@@ -179,7 +179,7 @@ async fn stock(broken: bool) -> Result<()> {
         // base_url. Configure that original input before resolution, so each
         // credential refresh admits the same deliberately broken route.
         spec.base_url = "https://chatgpt.com/backend-api/codex".into();
-        let mut counter = crate::catalog::default_catalog()["openai"]
+        let mut counter = crate::catalog::default_catalog()?["openai"]
             .token_counter
             .clone()
             .ok_or_else(|| invalid("fixture inherited counter is absent"))?;

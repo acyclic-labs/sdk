@@ -80,7 +80,7 @@ async fn mixed_provider_catalog_executes_every_route_and_rejects_a_swapped_adapt
         .map(|(name, _, _)| (name.to_string(), format!("fixture-{name}")))
         .collect();
     let mut catalog =
-        Registry::with_transport(Credentials::explicit(credentials), transport.clone());
+        Registry::with_transport(Credentials::explicit(credentials), transport.clone())?;
     catalog.load_catalog(file.path())?;
     for (index, (name, adapter, path)) in providers.into_iter().enumerate() {
         let selection = format!("{name}/model");

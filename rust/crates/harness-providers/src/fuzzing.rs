@@ -384,7 +384,7 @@ mod properties {
 
         #[test]
         fn catalog_codec_has_an_idempotent_canonical_form(endpoint in "[a-z]{0,32}", maximum in 1usize..65536) {
-            for mut spec in crate::default_catalog().into_values() {
+            for mut spec in crate::default_catalog().unwrap().into_values() {
                 spec.base_url = format!("https://example.test/{endpoint}");
                 spec.max_event_bytes = Some(maximum);
                 prop_assert_eq!(catalog_round_trip(&serde_json::to_vec(&spec).unwrap()).map_err(|error| format!("{error:?}")), Ok(true));

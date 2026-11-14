@@ -196,7 +196,7 @@ async fn agent_journals_admission_start_before_generation_or_token_count_is_admi
             let mut registry = crate::Registry::with_transport(
                 crate::Credentials::explicit(std::collections::BTreeMap::new()),
                 transport.clone(),
-            );
+            )?;
             registry.register("morph".into(), specification)?;
             let provider = registry.resolve("morph/morph-kimik31")?;
             let gate = provider.admission.gate(&provider);

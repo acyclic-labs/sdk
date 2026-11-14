@@ -269,7 +269,7 @@ fn one_models_retry_after_does_not_gate_another_models_http() -> Result<()> {
                 "key".into(),
             )])),
             transport.clone(),
-        );
+        )?;
         registry.register("fixture".into(), specification)?;
         let limited = registry.resolve("fixture/limited")?;
         let peer = registry.resolve("fixture/limited")?;
