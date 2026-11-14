@@ -90,6 +90,13 @@ impl std::error::Error for StreamRefusal {
     }
 }
 
+impl<T> From<std::sync::PoisonError<T>> for StreamError {
+    fn from(error: std::sync::PoisonError<T>) -> Self {
+        drop(error);
+        Self::unavailable(acyclic_auth::refusal::Cause::new("stream.lock", "poisoned"))
+    }
+}
+
 #[cfg(feature = "serde")]
 impl serde::Serialize for StreamError {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -122,7 +129,7 @@ const NOT_BEFORE: &str = "not_before";
 impl StreamError {
     /// Preserve the original concrete error without rendering or changing its category.
     #[must_use]
-    pub fn with_source(self, source: impl std::error::Error + Send + Sync + 'static) -> Self {
+    pub fn with_source(self, source: impl acyclic_auth::failure::Source) -> Self {
         Self::Caused(acyclic_auth::failure::Failure::new(self, source))
     }
     /// Attach original diagnostics without changing this failure's category.
@@ -133,30 +140,24 @@ impl StreamError {
             diagnostic,
         })
     }
-    /// Unavailability carrying the producer failure's rendered diagnostic.
-    /// The canonical status/refusal codec retains that message, not the
-    /// borrowed producer's concrete Rust error type. Its standard error source
-    /// exposes the retained refusal status. This never grants permission to
-    /// retry an application failure.
+    /// Retain an already boxed native cause with the same clone and category
+    /// guarantees as [`Self::with_source`]. The original concrete source remains
+    /// downcastable; it is shared as an Arc, not wrapped in another error.
     #[must_use]
-    pub fn unavailable_with_cause(cause: &(dyn std::error::Error + 'static)) -> Self {
-        acyclic_auth::refusal::Refusal::capture(
-            14,
-            &cause.to_string(),
-            b"",
-            &::http::HeaderMap::new(),
-            acyclic_auth::refusal::Canonical {
-                code: 14,
-                message: "stream unavailable",
-                details: b"",
-                owned: &[],
-            },
-            None,
-        )
-        .map_or(Self::Unavailable, |refusal| {
-            Self::Unavailable.with_refusal(refusal)
-        })
+    pub fn with_boxed_source(
+        self,
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    ) -> Self {
+        Self::Caused(acyclic_auth::failure::Failure::from_boxed(self, source))
     }
+
+    /// Unavailability with its original typed attribution. Recovery still follows
+    /// the unavailable category; attribution is diagnostic, not retry permission.
+    #[must_use]
+    pub fn unavailable(cause: acyclic_auth::refusal::Cause) -> Self {
+        Self::Unavailable.with_refusal(acyclic_auth::refusal::Refusal::caused(cause))
+    }
+
     /// Every failure, in canonical code order.
     pub const ALL: [Self; 16] = [
         Self::InvalidResponse,
@@ -198,6 +199,7 @@ impl StreamError {
                 message: "stream sequence out of range",
                 details: b"",
                 owned: &[],
+                cause_is_embedded: false,
             },
             None,
         )

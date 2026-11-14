@@ -198,6 +198,7 @@ impl Error {
             | Self::Paused
             | Self::AlarmNotDue { .. } => true,
             Self::Call(_)
+            | Self::AdmissionClosed(_)
             | Self::InvocationTerminated { .. }
             | Self::Clock(_)
             | Self::CompletionStopped

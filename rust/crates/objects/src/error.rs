@@ -48,7 +48,7 @@ impl Error {
     #[must_use]
     pub fn status_parts(&self) -> acyclic_auth::refusal::Parts {
         let detail = wire::ErrorDetail::from(self).encode_to_vec();
-        acyclic_auth::refusal::Refusal::encode(
+        acyclic_auth::refusal::Refusal::encode_embedded(
             self.refusal.as_ref(),
             self.canonical_status(&detail),
         )
@@ -100,6 +100,7 @@ impl Error {
             message: "objects operation failed",
             details,
             owned: OWNED,
+            cause_is_embedded: true,
         }
     }
 

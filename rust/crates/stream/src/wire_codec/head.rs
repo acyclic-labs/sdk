@@ -7,7 +7,7 @@ pub fn heads_from_wire(value: wire::HeadsRequest) -> Result<crate::HeadsRequest,
         retained: value
             .retained
             .into_iter()
-            .map(|selected| {
+            .map(|selected| -> Result<_, StreamError> {
                 Ok(crate::RetainedRecord {
                     commit_id: commit_id(&selected.commit_id)?,
                     path: StreamPath::new(selected.path)?,
@@ -97,10 +97,10 @@ pub fn heads_from_response(value: wire::HeadsResponse) -> Result<crate::Heads, S
         retained: value
             .retained
             .into_iter()
-            .map(|selected| {
-                let path =
-                    StreamPath::new(selected.path).map_err(|_| StreamError::InvalidResponse)?;
-                Ok::<_, StreamError>(crate::RetainedRecordObservation {
+            .map(|selected| -> Result<_, StreamError> {
+                let path = StreamPath::new(selected.path)
+                    .map_err(|source| StreamError::InvalidResponse.with_source(source))?;
+                Ok(crate::RetainedRecordObservation {
                     record: selected
                         .record
                         .map(|record| self::record(record, Some(&path)))
@@ -283,7 +283,16 @@ mod tests {
             if !response.retained.is_empty() {
                 let mut malformed = response;
                 malformed.retained[0].path.clear();
-                prop_assert_eq!(heads_from_response(malformed), Err(StreamError::InvalidResponse));
+                let error = heads_from_response(malformed).unwrap_err();
+                prop_assert_eq!(error.category(), StreamError::InvalidResponse);
+                let mut cause = std::error::Error::source(&error);
+                let mut original_path_error = false;
+                while let Some(source) = cause {
+                    original_path_error |= source.downcast_ref::<StreamError>()
+                        .is_some_and(|error| error.category() == StreamError::InvalidPath);
+                    cause = source.source();
+                }
+                prop_assert!(original_path_error, "original path validation failure was lost");
             }
             if !wire.retained.is_empty() {
                 let mut malformed = wire.clone();

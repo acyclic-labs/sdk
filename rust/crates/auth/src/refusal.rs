@@ -14,6 +14,7 @@
 
 use std::sync::Arc;
 
+use base64::Engine as _;
 use bytes::Bytes;
 use http::HeaderMap;
 
@@ -26,6 +27,8 @@ pub mod native;
 /// Namespace of product response metadata a refusal retains.
 pub const METADATA_PREFIX: &str = "acyclic-";
 
+const CAUSE_METADATA: &str = "acyclic-cause-v1-bin";
+
 /// A server's attribution of one remote failure, shared by every service error.
 ///
 /// `component` and `reason` are closed snake_case tokens the server chooses,
@@ -33,7 +36,7 @@ pub const METADATA_PREFIX: &str = "acyclic-";
 /// `request_id` names the server's request. An empty part was not reported.
 /// A service error exposes its cause through [`std::error::Error::source`],
 /// so a consumer needs no service crate.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "auth/Cause.ts", rename_all = "camelCase")]
 pub struct Cause {
@@ -98,6 +101,9 @@ pub struct Canonical<'a> {
     pub details: &'a [u8],
     /// Product metadata keys the primitive's protocol owns and re-emits itself.
     pub owned: &'a [&'a str],
+    /// The primitive's canonical body already carries this attribution. When
+    /// false, shared encoding carries it once in versioned response metadata.
+    pub cause_is_embedded: bool,
 }
 
 /// The parts of one status, as decoded from or encoded to the wire.
@@ -212,7 +218,18 @@ impl Refusal {
         canonical: Canonical<'_>,
         cause: Option<Cause>,
     ) -> Option<Self> {
-        let original = differs(code, message, details, metadata, canonical).then(|| {
+        let reported = reported_cause(metadata);
+        let has_reported_cause = reported.is_some();
+        let cause = cause.or(reported);
+        let original = differs(
+            code,
+            message,
+            details,
+            metadata,
+            canonical,
+            has_reported_cause,
+        )
+        .then(|| {
             let mut retained = HeaderMap::new();
             for (name, value) in metadata.iter().filter(|(name, _)| product(name, canonical)) {
                 retained.append(name, value.clone());
@@ -236,12 +253,16 @@ impl Refusal {
         canonical: Canonical<'_>,
         cause: Option<Cause>,
     ) -> Option<Self> {
+        let reported = reported_cause(&parts.metadata);
+        let has_reported_cause = reported.is_some();
+        let cause = cause.or(reported);
         let original = differs(
             parts.code,
             &parts.message,
             &parts.details,
             &parts.metadata,
             canonical,
+            has_reported_cause,
         )
         .then(|| {
             if !parts.metadata.keys().all(|name| product(name, canonical)) {
@@ -301,10 +322,10 @@ impl Refusal {
         }
     }
 
-    /// The status to emit: a refusal's original parts verbatim, else
-    /// `canonical`, which carries the refusal's cause.
+    /// The status whose body already carries its attribution. Original parts
+    /// remain verbatim; otherwise no metadata encoding is necessary.
     #[must_use]
-    pub fn encode(refusal: Option<&Self>, canonical: Canonical<'_>) -> Parts {
+    pub fn encode_embedded(refusal: Option<&Self>, canonical: Canonical<'_>) -> Parts {
         refusal.and_then(Self::original).map_or_else(
             || Parts {
                 code: canonical.code,
@@ -315,6 +336,62 @@ impl Refusal {
             Parts::clone,
         )
     }
+
+    /// Emit original parts verbatim, or encode attribution in metadata when
+    /// the canonical body does not carry it. Encoding failures retain both
+    /// the original refusal and the exact serialization/header cause.
+    pub fn encode(
+        refusal: Option<&Self>,
+        canonical: Canonical<'_>,
+    ) -> Result<Parts, EncodeFailure> {
+        let mut parts = Self::encode_embedded(refusal, canonical);
+        if let Some(refusal) = refusal.filter(|refusal| refusal.original().is_none())
+            && let Some(cause) = refusal.cause().filter(|_| !canonical.cause_is_embedded)
+        {
+            let encode = || -> Result<http::HeaderValue, EncodeError> {
+                let bytes = serde_json::to_vec(cause)?;
+                let value = base64::engine::general_purpose::STANDARD.encode(bytes);
+                Ok(value.parse()?)
+            };
+            let value = encode().map_err(|source| EncodeFailure {
+                refusal: refusal.clone(),
+                source,
+            })?;
+            parts.metadata.insert(CAUSE_METADATA, value);
+        }
+        Ok(parts)
+    }
+}
+
+/// A refused status could not encode its diagnostic attribution.
+#[derive(Debug, thiserror::Error)]
+#[error("refusal attribution encoding failed: {source}")]
+pub struct EncodeFailure {
+    /// Original refusal, retained without formatting or replacing it.
+    pub refusal: Refusal,
+    /// Original encoding failure.
+    #[source]
+    pub source: EncodeError,
+}
+
+/// The original fallible operation in refusal encoding.
+#[derive(Debug, thiserror::Error)]
+pub enum EncodeError {
+    /// Original JSON encoder failure.
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+    /// Original HTTP metadata validation failure.
+    #[error(transparent)]
+    Header(#[from] http::header::InvalidHeaderValue),
+}
+
+fn reported_cause(metadata: &HeaderMap) -> Option<Cause> {
+    let value = metadata.get(CAUSE_METADATA)?.to_str().ok()?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(value)
+        .ok()?;
+    let cause: Cause = serde_json::from_slice(&bytes).ok()?;
+    Cause::reported(cause.component, cause.reason, cause.request_id)
 }
 
 fn product(name: &http::HeaderName, canonical: Canonical<'_>) -> bool {
@@ -327,11 +404,16 @@ fn differs(
     details: &[u8],
     metadata: &HeaderMap,
     canonical: Canonical<'_>,
+    has_reported_cause: bool,
 ) -> bool {
-    code != canonical.code
+    // A cause-only refusal classifies as unavailable; other status classes need their parts.
+    (has_reported_cause && code != 14)
+        || code != canonical.code
         || message != canonical.message
         || details != canonical.details
-        || metadata.keys().any(|name| product(name, canonical))
+        || metadata
+            .keys()
+            .any(|name| product(name, canonical) && (name != CAUSE_METADATA || !has_reported_cause))
 }
 
 impl std::fmt::Display for Refusal {

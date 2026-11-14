@@ -83,13 +83,19 @@ impl Frame {
     /// continue to use the session close code; they cannot claim local custody.
     #[must_use]
     pub fn closed(identity: wire::SessionChannel, error: StreamError) -> Self {
+        // A local source has no remote refusal yet. Render it only at this
+        // wire boundary; the frame still retains the original typed error.
+        let message = match &error {
+            StreamError::Caused(_) if error.member_refusal().is_none() => error.to_string(),
+            _ => tonic::Status::from(&error).message().to_owned(),
+        };
         Self {
             wire: super::frame(
                 identity.channel_id,
                 identity.generation,
                 wire::session_frame::Body::Closed(wire::SessionClosed {
                     code: error.code().into(),
-                    message: tonic::Status::from(&error).message().to_owned(),
+                    message,
                 }),
             ),
             original: Some(Original::Error(error)),

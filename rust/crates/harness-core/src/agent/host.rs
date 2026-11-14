@@ -398,7 +398,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
                     if self.input_progress(agent, input).await?.settled {
                         return Ok(());
                     }
-                    return Err(Error::Stream(StreamError::unavailable_with_cause(&cause)));
+                    return Err(Error::Stream(StreamError::Unavailable.with_source(cause)));
                 }
             }
         }

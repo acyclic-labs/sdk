@@ -338,7 +338,7 @@ pub fn children_page_from_wire(
         after: value.after.map(path).transpose()?,
         hierarchy_version: value
             .hierarchy_version
-            .map(|bytes| {
+            .map(|bytes| -> Result<_, StreamError> {
                 let array: [u8; 32] = bytes
                     .as_ref()
                     .try_into()
@@ -556,7 +556,7 @@ pub fn commit_write_outcome_from_wire(
         CommitOutcome::Committed(receipt) => {
             let envelope = envelope_from_wire(envelope.ok_or(StreamError::InvalidResponse)?)?;
             crate::persistence::validate_envelope(&envelope)
-                .map_err(|_| StreamError::InvalidResponse)?;
+                .map_err(|source| StreamError::InvalidResponse.with_source(source))?;
             if !receipt.matches_envelope(&envelope) {
                 return Err(StreamError::InvalidResponse);
             }

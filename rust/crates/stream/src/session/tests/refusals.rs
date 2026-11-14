@@ -72,74 +72,86 @@ async fn local_socket_refusals_retain_the_original_error_after_prior_data() -> T
     let status = tonic::Status::from_error(Box::new(refused));
     let original = crate::grpc::status(&status);
     assert!(matches!(original, StreamError::Refused(_)));
-    for phase in [Phase::Prepare, Phase::Open, Phase::Output, Phase::Input] {
-        let client = Client::in_process_with_sockets(
-            Arc::new(MemoryStream::default()),
-            testing::authority(),
-            None,
-            Arc::new(Rejected {
-                phase,
-                error: original.clone(),
-            }),
-            Arc::new(crate::runtime::PlatformExecutor),
-            None,
-        );
-        client.register_credential(
-            0,
-            testing::credential_with_grants(vec![acyclic_auth::contract::ResourceGrant {
-                resource: acyclic_auth::contract::ResourcePattern {
-                    name: "actors:/refusal".into(),
-                    prefix: false,
-                },
-                actions: vec!["actors/invoke".into()],
-            }]),
-        )?;
-        let actual = match client.actor_socket(Bytes::from_static(b"open"), 0).await {
-            Err(error) => error,
-            Ok(mut socket) => {
-                assert_eq!(socket.next().await?, Some(Bytes::from_static(b"accepted")));
-                if matches!(phase, Phase::Input) {
-                    socket.send(Bytes::from_static(b"input")).await?;
+    let local = StreamError::Unavailable.with_source(status);
+    for original in [original, local] {
+        for phase in [Phase::Prepare, Phase::Open, Phase::Output, Phase::Input] {
+            let client = Client::in_process_with_sockets(
+                Arc::new(MemoryStream::default()),
+                testing::authority(),
+                None,
+                Arc::new(Rejected {
+                    phase,
+                    error: original.clone(),
+                }),
+                Arc::new(crate::runtime::PlatformExecutor),
+                None,
+            );
+            client.register_credential(
+                0,
+                testing::credential_with_grants(vec![acyclic_auth::contract::ResourceGrant {
+                    resource: acyclic_auth::contract::ResourcePattern {
+                        name: "actors:/refusal".into(),
+                        prefix: false,
+                    },
+                    actions: vec!["actors/invoke".into()],
+                }]),
+            )?;
+            let actual = match client.actor_socket(Bytes::from_static(b"open"), 0).await {
+                Err(error) => error,
+                Ok(mut socket) => {
+                    assert_eq!(socket.next().await?, Some(Bytes::from_static(b"accepted")));
+                    if matches!(phase, Phase::Input) {
+                        socket.send(Bytes::from_static(b"input")).await?;
+                    }
+                    socket.next().await.unwrap_err()
                 }
-                socket.next().await.unwrap_err()
-            }
+            };
+            assert_eq!(actual, original, "local socket lost its original refusal");
+        }
+        // Hold both credits at zero so the terminal must retain the same error
+        // while earlier accepted data owns the queue. Drive the actual queue and
+        // credit transitions, rather than substituting another close producer.
+        let mut session = super::properties::empty_session(false);
+        let identity = wire::SessionChannel {
+            channel_id: 1,
+            generation: 1,
         };
-        assert_eq!(actual, original, "local socket lost its original refusal");
-    }
-    // Hold both credits at zero so the terminal must retain the same error
-    // while earlier accepted data owns the queue. Drive the actual queue and
-    // credit transitions, rather than substituting another close producer.
-    let mut session = super::properties::empty_session(false);
-    let identity = wire::SessionChannel {
-        channel_id: 1,
-        generation: 1,
-    };
-    session.record(
-        identity,
-        Ok(Event::Socket {
-            next: 1,
-            bytes: Bytes::from_static(b"queued"),
-        }),
-    )?;
-    session.record(identity, Err(original.clone()))?;
-    assert!(session.ready()?.is_none());
-    assert!(session.controls.is_empty());
-    session.receive(window(0))?;
-    session.receive(window(1))?;
-    let data = session.ready()?.ok_or("accepted data was dropped")?;
-    assert!(matches!(&data.wire().body, Some(Body::Data(data))
+        session.record(
+            identity,
+            Ok(Event::Socket {
+                next: 1,
+                bytes: Bytes::from_static(b"queued"),
+            }),
+        )?;
+        session.record(identity, Err(original.clone()))?;
+        assert!(session.ready()?.is_none());
+        assert!(session.controls.is_empty());
+        session.receive(window(0))?;
+        session.receive(window(1))?;
+        let data = session.ready()?.ok_or("accepted data was dropped")?;
+        assert!(matches!(&data.wire().body, Some(Body::Data(data))
         if matches!(&data.item, Some(Item::ActorSocket(bytes)) if bytes.as_ref() == b"queued")));
-    let (_, retained) = session
-        .controls
-        .pop_front()
-        .ok_or("terminal was dropped")?
-        .into_parts();
-    assert_eq!(
-        retained,
-        Some(original),
-        "queued terminal lost the original refusal"
-    );
-    assert!(session.channels.is_empty());
-    assert!(session.controls.is_empty());
+        let (closed, retained) = session
+            .controls
+            .pop_front()
+            .ok_or("terminal was dropped")?
+            .into_parts();
+        let Some(Body::Closed(closed)) = closed.body else {
+            return Err("failure was not encoded as a session close".into());
+        };
+        assert_eq!(closed.code, original.code());
+        let expected = match &original {
+            StreamError::Caused(_) => original.to_string(),
+            _ => tonic::Status::from(&original).message().to_owned(),
+        };
+        assert_eq!(closed.message, expected);
+        assert_eq!(
+            retained,
+            Some(original),
+            "queued terminal lost the original refusal"
+        );
+        assert!(session.channels.is_empty());
+        assert!(session.controls.is_empty());
+    }
     Ok(())
 }

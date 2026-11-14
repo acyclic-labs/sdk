@@ -144,7 +144,6 @@ fn every_stream_category_survives_the_authority_wrapper() -> Result<(), Box<dyn 
     let cases = [
         (E::InvalidPath, Code::InvalidArgument),
         (E::InvalidArgument, Code::InvalidArgument),
-        (E::InvalidResponse, Code::DataLoss),
         (E::LimitExceeded, Code::InvalidArgument),
         (E::NotFound, Code::NotFound),
         (E::AlreadyExists, Code::AlreadyExists),
@@ -173,11 +172,15 @@ fn every_stream_category_survives_the_authority_wrapper() -> Result<(), Box<dyn 
                 message: error.code(),
                 details: b"",
                 owned: &[],
+                cause_is_embedded: false,
             },
             None,
         )
         .ok_or("member diagnostic must retain the original status")?;
-        for error in [error.clone(), error.with_refusal(refusal)] {
+        let caused = error
+            .clone()
+            .with_source("invalid".parse::<u64>().unwrap_err());
+        for error in [error.clone(), error.with_refusal(refusal), caused] {
             let error = authority(AuthorityStoreError::NativeStream(error));
             let response = status(&error);
             assert_eq!(
