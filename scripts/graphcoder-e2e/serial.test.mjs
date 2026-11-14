@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
-import { collect, runSuites, variants, acceptanceBinding } from "./serial.mjs";
-import {mkdtemp,mkdir,readFile,writeFile,rename,rm,copyFile,symlink} from 'node:fs/promises';
+import { collect, collectPartitions, runSuites, variants, acceptanceBinding } from "./serial.mjs";
+import {mkdtemp,mkdir,readFile,writeFile,appendFile,rename,rm,copyFile,symlink} from 'node:fs/promises';
 import {dirname,join} from 'node:path';
 import {nativeHost,nativeHostEnvironment} from '../../plugin/tests/hosts/native-host.mjs';
 import {Processes} from './process.mjs';
@@ -151,6 +151,37 @@ test('installed host admission binds second trees, nested hidden files and link 
 
 test('partition provenance includes plugin executables and host helper source',async()=>{
  await fuzzAdmission(Buffer.alloc(0));
+});
+
+test("declared native artifacts fence partition collection after their bytes change", async () => {
+  const root = await mkdtemp(join(tmpdir(), "declared-native-"));
+  try {
+    const directory = join(root, "scripts/graphcoder-e2e");
+    for (const path of [directory, join(root, "scripts/graphcoder-pty"), join(root, "plugin/tests/hosts")])
+      await mkdir(path, { recursive: true });
+    const binary = join(root, "native-binary");
+    await copyFile(process.execPath, binary);
+    const env = { E2E_QUALIFICATION_BINARY: binary, E2E_FIXTURE_BINARY: binary,
+      E2E_WORKSPACE_BINARY: binary };
+    const cases = [{ id: "native", inputs: [{ format: "libtest",
+      binary_env: "E2E_QUALIFICATION_BINARY", fixture_binary_env: "E2E_FIXTURE_BINARY" }],
+      workspace: { files: { "native.exe": { binary_env: "E2E_WORKSPACE_BINARY" } } } }];
+    const bind = () => acceptanceBinding(directory, process.execPath, process.execPath, cases, env);
+    const before = await bind(), coverage = { pass: true };
+    // Internal refused receipts test collection identity only; they cannot
+    // claim that a native acceptance case ran or passed.
+    const bundles = [{ index: 0, count: 1, platform: process.platform, binding: before, coverage,
+      inventory: ["native"], selected: ["native"], receipts: [{ code: 1, report: {
+        platform: process.platform, selected: ["native"], qualification: false, coverage, seconds: .1,
+        results: [{ case: "native", platform: process.platform, status: "refused" }] } }] }];
+    assert.equal(collectPartitions(cases, bundles, process.platform, coverage, before).pass, false);
+    await appendFile(binary, Buffer.from([0]));
+    const changed = await bind();
+    assert.throws(() => collectPartitions(cases, bundles, process.platform, coverage, changed),
+      /expected acceptance identity/, "changed declared native artifact must fence partition collection");
+    for (const name of Object.keys(env))
+      assert.notEqual(changed.executables[name], before.executables[name]);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("Windows starts the next case only after the previous case has exited", async () => {
