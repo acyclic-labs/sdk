@@ -82,18 +82,25 @@ async fn episode(seed: u64, fault: DurableFault) -> TestResult {
 #[test]
 fn seeded_physical_restart_preserves_exactly_once_delivery_and_alarm() -> TestResult {
     acyclic_native_runtime::initialize_native_io_services()?;
-    for seed in [0, 7] {
-        for fault in [
-            DurableFault::Before,
-            DurableFault::After,
-            DurableFault::Torn(1),
-        ] {
-            eprintln!("seed={seed} fault={fault:?}");
-            seeded_runtime(seed)?.block_on(async {
-                tokio::time::pause();
-                episode(seed, fault).await
-            })?;
-        }
-    }
+    acyclic_native_runtime::testing::sweep::sweep(
+        "actors-physical",
+        acyclic_native_runtime::testing::sweep::seeds(0..2),
+        |seed| {
+            for fault in [
+                DurableFault::Before,
+                DurableFault::After,
+                DurableFault::Torn(1),
+            ] {
+                seeded_runtime(seed)
+                    .map_err(|error| error.to_string())?
+                    .block_on(async {
+                        tokio::time::pause();
+                        episode(seed, fault).await
+                    })
+                    .map_err(|error| format!("{fault:?}: {error}"))?;
+            }
+            Ok(())
+        },
+    )?;
     Ok(())
 }

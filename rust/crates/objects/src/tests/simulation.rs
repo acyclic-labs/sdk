@@ -103,7 +103,6 @@ async fn history() -> Result<(), Failure> {
 }
 
 fn replay(seed: u64) -> Result<(), Failure> {
-    eprintln!("seed={seed}");
     seeded_runtime(seed)?.block_on(async {
         tokio::time::pause();
         let (schedule, mut boundaries) = Schedule::seeded(seed);
@@ -111,19 +110,12 @@ fn replay(seed: u64) -> Result<(), Failure> {
     })
 }
 
+/// `DST_SEEDS=<a>..<b>` runs a deep sweep; `DST_SEED=<n>` replays one seed.
 #[test]
 fn seeded_puts_dependencies_and_ranges() -> Result<(), Failure> {
-    for seed in [0, 1, 7, 42] {
-        replay(seed).map_err(|error| format!("seed={seed}: {error}"))?;
-    }
-    Ok(())
-}
-
-#[test]
-#[ignore = "deep seeded sweep; run on an idle worker"]
-fn deep_puts_dependencies_and_ranges() -> Result<(), Failure> {
-    for seed in 0..4096 {
-        replay(seed).map_err(|error| format!("seed={seed}: {error}"))?;
-    }
+    use acyclic_native_runtime::testing::sweep::{seeds, sweep};
+    sweep("objects-batches", seeds(0..4), |seed| {
+        replay(seed).map_err(|error| error.to_string())
+    })?;
     Ok(())
 }

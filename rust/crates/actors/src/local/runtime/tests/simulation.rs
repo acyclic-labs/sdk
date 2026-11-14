@@ -278,7 +278,6 @@ async fn admission_close(credit: usize) -> TestResult {
 }
 
 fn replay(seed: u64) -> TestResult {
-    eprintln!("seed={seed}");
     seeded_runtime(seed)?.block_on(async {
         tokio::time::pause();
         let (schedule, mut boundaries) = Schedule::seeded(seed);
@@ -286,19 +285,12 @@ fn replay(seed: u64) -> TestResult {
     })
 }
 
+/// `DST_SEEDS=<a>..<b>` runs a deep sweep; `DST_SEED=<n>` replays one seed.
 #[test]
 fn seeded_runtime_delivery_alarms_pause_and_restart() -> TestResult {
-    for seed in [0, 1, 7, 42] {
-        replay(seed)?;
-    }
-    Ok(())
-}
-
-#[test]
-#[ignore = "deep seeded sweep; run on an idle worker"]
-fn deep_runtime_delivery_alarms_pause_and_restart() -> TestResult {
-    for seed in 0..4096 {
-        replay(seed)?;
-    }
+    use acyclic_native_runtime::testing::sweep::{seeds, sweep};
+    sweep("actors-runtime", seeds(0..4), |seed| {
+        replay(seed).map_err(|error| error.to_string())
+    })?;
     Ok(())
 }
