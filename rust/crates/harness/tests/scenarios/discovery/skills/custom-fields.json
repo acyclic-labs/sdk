@@ -1,5 +1,5 @@
 {"seed":{"skills/inspect/SKILL.md":
   "---\nname: inspect\ndescription: Inspect files\nmetadata: {category: review}\n---\nSECRET BODY"},"expect":{
-  "requests":[{"messages":[{"role":"system","content":{"$json":[{"name":"inspect","description":"Inspect files",
-  "source":{"path":"skills/inspect/SKILL.md"},"fields":{"metadata":{"category":"review"}}}]}},{"role":"user","content"
+  "requests":[{"messages":[{"role":"system","content":{"$skill_catalog":[{"name":"inspect","description":"Inspect files",
+  "id":"*"}]}},{"role":"user","content"
   :"Inspect files"}]}],"not_requests":[{"messages":[{"content":{"$contains":"SECRET BODY"}}]}],"request_files":[[]]}}
