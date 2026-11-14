@@ -6,11 +6,18 @@
 //! discovery enumerates every child exactly once. A failed physical write may
 //! leave its whole record or nothing, never a partial logical record.
 use super::super::*;
+use acyclic_native_runtime::testing::sweep;
 use acyclic_native_runtime::testing::{DurableFault, Schedule, fill_seeded, seeded_runtime};
 use std::collections::BTreeMap;
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 type History = BTreeMap<String, Vec<Vec<u8>>>;
+
+#[derive(Clone, Copy, Debug)]
+struct Choice {
+    step: usize,
+    bytes: [u8; 3],
+}
 
 fn append(path: &str, tail: usize, value: Vec<u8>) -> Result<AppendRequest> {
     Ok(AppendRequest {
@@ -54,11 +61,19 @@ async fn records(provider: &LocalStream, path: &str) -> Result<Vec<Vec<u8>>> {
 async fn invariant(provider: &LocalStream, expected: &History) -> Result {
     for (path, values) in expected {
         let marks = provider.watermarks(StreamPath::new(path)?).await?;
-        assert_eq!(marks.accepted, values.len() as u64);
-        assert_eq!(marks.durable, marks.accepted);
+        assert_eq!(
+            marks.accepted,
+            values.len() as u64,
+            "accepted watermark differs from history"
+        );
+        assert_eq!(
+            marks.durable, marks.accepted,
+            "acknowledged history is not durable"
+        );
         assert_eq!(
             provider.tail(StreamPath::new(path)?).await?,
-            values.len() as u64
+            values.len() as u64,
+            "tail differs from history"
         );
         assert_eq!(
             &records(provider, path).await?,
@@ -90,11 +105,15 @@ async fn invariant(provider: &LocalStream, expected: &History) -> Result {
             None => break,
         }
     }
-    assert_eq!(found, expected.keys().cloned().collect::<Vec<_>>());
+    assert_eq!(
+        found,
+        expected.keys().cloned().collect::<Vec<_>>(),
+        "children differ from hierarchy"
+    );
     Ok(())
 }
 
-async fn world(seed: u64, steps: usize) -> Result {
+async fn world(seed: u64, choices: &[Choice]) -> Result<(u64, usize)> {
     let directory = tempfile::tempdir()?;
     let limits = LocalStreamLimits {
         compaction_operations: 4,
@@ -111,15 +130,11 @@ async fn world(seed: u64, steps: usize) -> Result {
     let mut retries = Vec::new();
     let mut epoch = 0;
     let mut faults = 0;
-    // Draw the operation tape from the shared core, not a subsystem RNG. Keep
-    // it independent of how much entropy the real implementation consumes.
-    let (plan, _) = Schedule::seeded(seed);
-    let mut tape = vec![0; steps * 3];
-    plan.scope(async {
-        assert!(fill_seeded(&mut tape));
-    })
-    .await;
-    for (step, choice) in tape.chunks_exact(3).enumerate() {
+    for Choice {
+        step,
+        bytes: choice,
+    } in choices.iter().copied()
+    {
         let (schedule, mut events) = Schedule::seeded(seed.wrapping_add(step as u64));
         let path = if expected.is_empty() {
             "tree/root".to_owned()
@@ -179,8 +194,15 @@ async fn world(seed: u64, steps: usize) -> Result {
                     let (written, observed) = tokio::join!(provider.append(request), follow.next());
                     assert!(matches!(written?, AppendOutcome::Committed(_)));
                     let observed = observed.ok_or("follow ended")??;
-                    assert_eq!(observed.sequence, tail as u64);
-                    assert_eq!(observed.value.as_slice(), value.as_slice());
+                    assert_eq!(
+                        observed.sequence, tail as u64,
+                        "follow skipped the appended sequence"
+                    );
+                    assert_eq!(
+                        observed.value.as_slice(),
+                        value.as_slice(),
+                        "follow changed the appended value"
+                    );
                     expected.get_mut(&path).unwrap().push(value.clone());
                 }
                 4 => {
@@ -273,40 +295,85 @@ async fn world(seed: u64, steps: usize) -> Result {
             );
             invariant(&provider, &expected).await?;
         }
-        if let Some(snapshot) = read_snapshot(directory.path(), limits)? {
-            assert!(snapshot.epoch >= epoch, "snapshot epoch moved backwards");
-            epoch = snapshot.epoch;
+        match read_snapshot(directory.path(), limits)? {
+            Some(snapshot) => {
+                assert!(snapshot.epoch >= epoch, "snapshot epoch moved backwards");
+                epoch = snapshot.epoch;
+            }
+            None => assert_eq!(epoch, 0, "installed snapshot disappeared"),
         }
     }
-    assert!(
-        read_snapshot(directory.path(), limits)?.is_some(),
-        "no snapshot was recovered"
-    );
-    assert!(faults > 0, "seed did not exercise a physical fault");
-    Ok(())
+    Ok((epoch, faults))
 }
 
-fn run(seed: u64, steps: usize) {
-    let runtime = seeded_runtime(seed).unwrap();
-    runtime.block_on(async {
-        tokio::time::pause();
-        world(seed, steps)
-            .await
-            .unwrap_or_else(|error| panic!("seed={seed} steps={steps}: {error}"));
+fn evaluate(seed: u64, choices: &[Choice]) -> std::result::Result<(u64, usize), String> {
+    let mut coverage = None;
+    // The shared runner owns panic capture too. Coverage stays outside the
+    // shrinking predicate: removing work must not manufacture a new failure.
+    sweep::sweep("streams replay", 0..1, |_| {
+        let runtime = seeded_runtime(seed).map_err(|error| error.to_string())?;
+        coverage = Some(
+            runtime
+                .block_on(async {
+                    tokio::time::pause();
+                    world(seed, choices).await
+                })
+                .map_err(|error| error.to_string())?,
+        );
+        Ok(())
+    })
+    .map_err(|failure| failure.report)?;
+    Ok(coverage.expect("one replay completed"))
+}
+
+fn run(seed: u64, steps: usize) -> std::result::Result<(), String> {
+    let runtime = seeded_runtime(seed).map_err(|error| error.to_string())?;
+    // Draw the operation tape from the shared core independently of how much
+    // entropy the implementation consumes. Retain original step identities
+    // when the shared minimizer removes choices.
+    let choices: Vec<Choice> = runtime.block_on(async {
+        let (plan, _) = Schedule::seeded(seed);
+        let mut tape = vec![0; steps * 3];
+        plan.scope(async {
+            assert!(fill_seeded(&mut tape));
+        })
+        .await;
+        tape.chunks_exact(3)
+            .enumerate()
+            .map(|(step, bytes)| Choice {
+                step,
+                bytes: bytes.try_into().expect("three-byte choice"),
+            })
+            .collect()
     });
+    drop(runtime);
+    match evaluate(seed, &choices) {
+        Ok((epoch, faults)) => {
+            if epoch == 0 || faults == 0 {
+                return Err(format!(
+                    "insufficient transition coverage: epoch={epoch} storage_events={faults}"
+                ));
+            }
+            Ok(())
+        }
+        Err(report) => {
+            let signature = report.lines().next().unwrap_or(&report);
+            let minimal = sweep::minimize(choices, |candidate| {
+                evaluate(seed, candidate)
+                    .is_err_and(|error| error.lines().next().unwrap_or(&error) == signature)
+            });
+            Err(format!("{report}\nminimal choices: {minimal:?}"))
+        }
+    }
 }
 
 #[test]
 fn seeded_journal_snapshot_follow_and_fork() {
-    for seed in [0, 1, 7, 71] {
-        run(seed, 32);
-    }
+    sweep::sweep("streams", sweep::seeds(0..4), |seed| run(seed, 32)).unwrap();
 }
 
 #[test]
 #[ignore = "deep seed sweep; run on an idle-priority validation worker"]
 fn seeded_journal_deep_sweep() {
-    for seed in 0..4096 {
-        run(seed, 256);
-    }
+    sweep::sweep("streams deep", sweep::seeds(0..4096), |seed| run(seed, 256)).unwrap();
 }
