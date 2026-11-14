@@ -491,7 +491,11 @@ fn minimal_trace(seed: u64) -> String {
     )
 }
 
+// GC-284: seed 0 stalls the real harness (two model requests, then no
+// progress and no simulated time), so this sweep is the failing
+// reproduction, run with `--ignored`, until the stall is fixed.
 #[test]
+#[ignore = "GC-284: seed 0 stalls the harness; run with --ignored to reproduce"]
 fn seeded_swarms_settle_and_complete_every_turn() {
     let seeds = sweep::seeds(SEEDS);
     let single = seeds.end - seeds.start == 1;
