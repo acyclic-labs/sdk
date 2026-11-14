@@ -893,8 +893,6 @@ name = "acyclic-harness-settings-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
- "serde",
- "toml",
 ]
 
 [[package]]
