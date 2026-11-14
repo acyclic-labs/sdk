@@ -37,7 +37,9 @@ impl Handler for OwnedGated {
     ) -> GuestFuture<'a, Transition> {
         if self.refused.lock().unwrap().contains(&delivery.actor) {
             return Box::pin(async {
-                Err(crate::guest::GuestError::Handler("definitive refusal".into()))
+                Err(crate::guest::GuestError::Handler(
+                    "definitive refusal".into(),
+                ))
             });
         }
         self.gated.on_record(delivery, checkpoint, cancellation)
@@ -201,6 +203,25 @@ async fn unavailability_observers_survive_hibernation_and_cancelled_attempts() -
         futures::poll!(failed.as_mut()).is_pending(),
         "hibernation fabricated a failure"
     );
+
+    runtime.host(address.clone())?;
+    let slot = runtime.slot(&address).ok_or("missing retained slot")?;
+    let work = runtime.ready[0]
+        .take()
+        .ok_or("missing original delivery work")?;
+    assert!(runtime.release(&address));
+    runtime.deliver(&address, &slot, Some(work)).await?;
+    let shard = store.scheduling_shard(&address);
+    assert!(
+        runtime.ready[0].failed(shard).contains(&address),
+        "released work lost its scheduling handoff"
+    );
+    assert!(
+        futures::poll!(failed.as_mut()).is_pending(),
+        "a released slot that ran no delivery fabricated a failure"
+    );
+    assert_eq!(handler.active.load(Ordering::SeqCst), 0);
+    drop(slot);
 
     runtime.host(address.clone())?;
     let mut delivery = Box::pin(runtime.drain_actor(&address));
@@ -427,6 +448,42 @@ async fn finite_drain_shares_admission_and_retains_cancelled_inputs() -> TestRes
                 .expect("reserved work credit")
                 .available_permits(),
             active
+        );
+
+        // Closed runtime credit is permanent; retrying cannot reopen it. The
+        // original acquisition error settles availability without consuming input.
+        let address = spawn_with(&store, "closed-admission", &[b"emit"]).await?;
+        runtime.host(address.clone())?;
+        let failed = runtime.unavailable(&address)?;
+        runtime.admission[0]
+            .as_ref()
+            .expect("reserved work credit")
+            .close();
+        let error = runtime
+            .drain_actor(&address)
+            .await
+            .expect_err("closed credit admitted work");
+        assert!(matches!(error, Error::AdmissionClosed(_)));
+        assert!(!error.retryable());
+        assert!(
+            std::error::Error::source(&error)
+                .and_then(|source| source.downcast_ref::<tokio::sync::AcquireError>())
+                .is_some()
+        );
+        assert!(
+            failed
+                .await
+                .to_string()
+                .contains("runtime admission is closed")
+        );
+        assert_eq!(
+            store
+                .load(&address)
+                .await?
+                .state()
+                .and_then(|state| state.cursor("inbox")),
+            Some(0),
+            "closed admission consumed retained input"
         );
     }
     Ok(())

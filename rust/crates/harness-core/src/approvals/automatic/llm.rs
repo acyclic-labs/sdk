@@ -111,11 +111,8 @@ pub(crate) async fn review_model(
         Ok(review) => review,
         // The inference is already terminal and journaled. Replaying invalid
         // decision text cannot repair it; let the original approval owner ask.
-        Err(Error::Invalid(_))
-        | Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid,
-            ..
-        }) => Review {
+        Err(error) if error.code() == crate::wire::ErrorCode::Invalid => Review {
+
             verdict: RuleVerdict::Ask,
             reason: None,
         },
