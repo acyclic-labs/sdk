@@ -145,22 +145,70 @@ async fn qualified_senders_keep_distinct_intents_and_reply_destinations()
         let external = MemoryStream::default();
         let contribution =
             sending.publication(source.clone(), original.to.clone(), &input, &admission)?;
-        let prepared = CommitRequest {
-            deadline_unix_millis: None,
-            idempotency_key: crate::agent::intent_key("prepared-message", &[])?,
-            effects: vec![contribution.clone()],
-        };
-        let accepted = external.commit(prepared.clone()).await?;
-        assert!(matches!(&accepted, CommitOutcome::Committed(_)));
-        assert_eq!(external.commit(prepared).await?, accepted);
-        let external_send = crate::agent::sent(&external, &sender, &message.id)
-            .await?
-            .ok_or("prepared command lost its durable send")?;
+        let external_send = sending
+            .publish(
+                &external,
+                source.clone(),
+                original.to.clone(),
+                &input,
+                &admission,
+            )
+            .await?;
+        assert_eq!(
+            sending
+                .publish(
+                    &external,
+                    source.clone(),
+                    original.to.clone(),
+                    &input,
+                    &admission,
+                )
+                .await?,
+            external_send
+        );
         assert_eq!(external_send.to, target);
         assert!(matches!(
-            external_send.delivery,
+            &external_send.delivery,
             crate::agent::SentDelivery::Pending { from: 0, .. }
         ));
+        let mut changed = input.clone();
+        let InboxRecord::Message(changed_message) = &mut changed else {
+            return Err("expected peer message".into());
+        };
+        changed_message.re = Some(IntentId::try_from("another-thread")?);
+        assert!(
+            sending
+                .publish(
+                    &external,
+                    source.clone(),
+                    original.to.clone(),
+                    &changed,
+                    &admission,
+                )
+                .await
+                .is_err(),
+            "changed bytes reused a prepared command's intent"
+        );
+        let retargeted = ActorReference::new(
+            original.to.account().as_bytes(),
+            b"another-destination",
+            original.to.id().as_bytes(),
+        )?;
+        assert!(
+            sending
+                .publish(&external, source.clone(), retargeted, &input, &admission,)
+                .await
+                .is_err(),
+            "a prepared intent was retargeted after publication"
+        );
+        assert_eq!(
+            external.tail(sending.paths.outbox(&sending.node)?).await?,
+            1
+        );
+        assert_eq!(
+            crate::agent::sent(&external, &sender, &message.id).await?,
+            Some(external_send)
+        );
         // A receipt that merely points to an earlier outbox append cannot
         // establish ownership. Removing atomic publication must be detected.
         let split = MemoryStream::default();

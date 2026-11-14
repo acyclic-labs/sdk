@@ -92,6 +92,40 @@ fn is_message(envelope: &route::Envelope) -> Result<bool, Error> {
 }
 
 impl Routing {
+    /// Publish an admitted prepared command without a model turn. The owning
+    /// host authenticates the source and selects remote delivery before calling
+    /// this method. No directory or mutable membership is reselected on retry.
+    /// An acknowledged pending receipt is durable locally, including after the
+    /// client exits; the existing NodeLink forwards it on reconnect.
+    pub async fn publish<P: crate::store::JournalProvider + ?Sized>(
+        &self,
+        provider: &P,
+        sender: ActorReference,
+        to: ActorReference,
+        input: &super::InboxRecord,
+        admission: &PeerAdmission,
+    ) -> Result<super::SentMessage, Error> {
+        let contribution = self.publication(sender.clone(), to.clone(), input, admission)?;
+        let (super::InboxRecord::Message(message) | super::InboxRecord::FollowUp(message)) = input
+        else {
+            unreachable!()
+        };
+        let super::Sender::Agent { path } = &message.from else {
+            unreachable!()
+        };
+        let request = acyclic_stream::CommitRequest {
+            deadline_unix_millis: None,
+            idempotency_key: qualified_intent("publication", &sender, &to, &message.id)?,
+            effects: vec![contribution],
+        };
+        match super::submit(provider, request).await? {
+            super::Submitted::Committed(_) => super::sent(provider, path, &message.id)
+                .await?
+                .ok_or(Error::Record("peer publication has no owned receipt")),
+            _ => Err(Error::Record("peer intent already has another publication")),
+        }
+    }
+
     /// Prepare one durable sender-local publication for an admitted peer send.
     /// Commit this hard contribution with the sender's original intent, alongside
     /// its journal effect when there is one. The outbox and receipt must never
