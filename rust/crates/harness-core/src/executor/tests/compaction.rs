@@ -513,6 +513,9 @@ async fn rejected_manager_rewrites_preserve_history_and_never_dispatch_the_worke
         let journal = storage.journal();
         let mut script = vec![ScriptedTurn::Text(reply.into())];
         if admitted {
+            script.push(ScriptedTurn::Text(
+                r#"{"version":1,"drop_through":2,"summary":"complete retained history"}"#.into(),
+            ));
             script.push(ScriptedTurn::Text("verified answer".into()));
         }
         let (provider, _) = counted_model(32_768, None, script, []);
@@ -566,7 +569,7 @@ async fn rejected_manager_rewrites_preserve_history_and_never_dispatch_the_worke
         let requests = provider.requests();
         assert_eq!(
             requests.len(),
-            if admitted { 2 } else { 1 },
+            if admitted { 3 } else { 1 },
             "replay dispatches nothing"
         );
         assert!(
@@ -574,9 +577,10 @@ async fn rejected_manager_rewrites_preserve_history_and_never_dispatch_the_worke
             "a rejected rewrite must never dispatch the worker"
         );
         if admitted {
+            assert!(requests[1].summary, "a partial rewrite still needs capacity proof");
             assert!(
-                !requests[1].summary,
-                "a valid partial rewrite admits the worker"
+                !requests[2].summary,
+                "the completed rewrite admits the worker"
             );
         }
         let records = journal.replay(input.operation_id, 0, 128, None)?.await?;
@@ -941,9 +945,12 @@ fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled() -> Re
         .enable_all()
         .build()
         .map_err(|error| Error::Storage(error.to_string()))?;
-    for (capacity, source_length, fault, counts) in [
-        (4_096, 5_000, None, 1),
-        (131_072, 1, Some(AccountingFault::Digest), 1),
+    for (capacity, source_length, fault, counts, overflow) in [
+        // A reserve consuming the entire window fails before token accounting.
+        (4_096, 5_000, None, 0, false),
+        // A valid window still refuses an oversized source after its real count.
+        (8_192, 5_000, None, 1, true),
+        (131_072, 1, Some(AccountingFault::Digest), 1, false),
     ] {
         let (provider, accounting_calls) = counted_model(capacity, fault, [], []);
         let executor = uncompacted_executor(
@@ -969,7 +976,13 @@ fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled() -> Re
             ))
             .err()
             .ok_or_else(|| Error::Invalid("invalid summary was admitted".into()))?;
-        assert!(matches!(error, Error::Invalid(_)), "{error}");
+        assert!(
+            matches!(
+                (&error, overflow),
+                (Error::ModelContextOverflow, true) | (Error::Invalid(_), false)
+            ),
+            "{error}"
+        );
         assert_eq!(accounting_calls.load(Ordering::SeqCst), counts);
         assert!(provider.requests().is_empty());
         assert!(journal.0.lock().unwrap().is_empty());
