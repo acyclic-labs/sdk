@@ -842,7 +842,7 @@ mod indexed_trace_tests {
                     vec![condition],
                     vec![CommitMutation::Append {
                         path: path.clone(),
-                        records: vec![AppendRecord::new(OwnedBytes::from_static(b"guarded"))?],
+                        records: vec![AppendRecord::from(OwnedBytes::from_static(b"guarded"))],
                     }],
                 )],
                 idempotency_key: IdempotencyKey::unique(),
@@ -868,7 +868,7 @@ mod indexed_trace_tests {
         for name in ["agents/worker/data/a", "agents/worker/data/b"] {
             Stream::new(provider.clone(), name)?
                 .append(
-                    AppendRecord::new(OwnedBytes::from_static(b"child"))?,
+                    AppendRecord::from(OwnedBytes::from_static(b"child")),
                     IdempotencyKey::unique(),
                 )
                 .await?;
@@ -877,7 +877,7 @@ mod indexed_trace_tests {
         let direct_append = root
             .within(provider.append(AppendRequest {
                 path: child.path().clone(),
-                records: vec![AppendRecord::new(OwnedBytes::from_static(b"direct"))?],
+                records: vec![AppendRecord::from(OwnedBytes::from_static(b"direct"))],
                 if_tail: Some(1),
                 idempotency_key: IdempotencyKey::unique(),
             }))
@@ -885,7 +885,7 @@ mod indexed_trace_tests {
         assert!(matches!(direct_append, AppendOutcome::Committed(_)));
         let handle_append = root
             .within(child.append_at(
-                AppendRecord::new(OwnedBytes::from_static(b"handle"))?,
+                AppendRecord::from(OwnedBytes::from_static(b"handle")),
                 2,
                 IdempotencyKey::unique(),
             ))
@@ -906,7 +906,7 @@ mod indexed_trace_tests {
                 ],
                 vec![CommitMutation::Append {
                     path: child.path().clone(),
-                    records: vec![AppendRecord::new(OwnedBytes::from_static(b"commit"))?],
+                    records: vec![AppendRecord::from(OwnedBytes::from_static(b"commit"))],
                 }],
             )],
             idempotency_key: IdempotencyKey::unique(),
@@ -924,9 +924,9 @@ mod indexed_trace_tests {
                 }],
                 vec![CommitMutation::Append {
                     path: trace.path().clone(),
-                    records: vec![AppendRecord::new(OwnedBytes::from_static(
+                    records: vec![AppendRecord::from(OwnedBytes::from_static(
                         b"never-published",
-                    ))?],
+                    ))],
                 }],
             )],
             idempotency_key: IdempotencyKey::unique(),
@@ -945,7 +945,7 @@ mod indexed_trace_tests {
                 }],
                 vec![CommitMutation::Append {
                     path: child.path().clone(),
-                    records: vec![AppendRecord::new(OwnedBytes::from_static(b"accepted"))?],
+                    records: vec![AppendRecord::from(OwnedBytes::from_static(b"accepted"))],
                 }],
             )],
             idempotency_key: IdempotencyKey::unique(),
