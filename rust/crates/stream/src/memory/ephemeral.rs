@@ -53,28 +53,6 @@ impl Ephemeral {
             .find_map(|end| self.owned.get(path.get(..end)?))
     }
 
-    /// Owned subtrees strictly beneath `path`, relative to it.
-    fn nested(&self, path: &StreamPath) -> Result<Vec<crate::RelativePath>, StreamError> {
-        if self.owned.is_empty() {
-            return Ok(Vec::new());
-        }
-        let lower = format!("{}/", path.as_str());
-        let upper = format!("{}0", path.as_str());
-        self.owned
-            .range::<str, _>((
-                std::ops::Bound::Included(lower.as_str()),
-                std::ops::Bound::Excluded(upper.as_str()),
-            ))
-            .map(|(top, _)| {
-                StreamPath::new(
-                    top.as_str()
-                        .strip_prefix(lower.as_str())
-                        .ok_or(StreamError::InvalidPath)?,
-                )
-            })
-            .collect()
-    }
-
     /// A write publishing into exactly one lease is ephemeral, provided every
     /// other path it publishes is created by it: those are adopted by that
     /// lease, so ownership always extends from a path the lease already
@@ -251,10 +229,9 @@ impl MemoryStream {
     ) -> Result<crate::EphemeralLease, StreamError> {
         let _publication = self.publication.lock().await;
         let mut state = self.state.write().await;
-        if state.contains_path(&root)
-            || state.ephemeral.root_of(root.as_str()).is_some()
-            || !state.ephemeral.nested(&root)?.is_empty()
-        {
+        // A lease requires a present, durable parent. Its ancestors cannot
+        // disappear, so a missing root cannot contain another lease.
+        if state.contains_path(&root) || state.ephemeral.root_of(root.as_str()).is_some() {
             return Err(StreamError::AlreadyExists);
         }
         if root

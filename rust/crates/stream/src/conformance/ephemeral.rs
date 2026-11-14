@@ -70,7 +70,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         }
     }
     refusals(provider, &source, &forked, &adopted).await?;
-    isolation(provider, &parent, &source).await?;
+    isolation(provider, &parent, &source, &forked).await?;
     // Release removes the subtree and every adopted path; followers of both
     // observe the loss.
     lease.settle().await?;
@@ -316,6 +316,7 @@ async fn isolation<P: StreamProvider + ?Sized>(
     provider: &P,
     parent: &StreamPath,
     source: &StreamPath,
+    forked: &StreamPath,
 ) -> Result<(), Failure> {
     let page = provider
         .children_page(ChildrenPageRequest {
@@ -342,6 +343,29 @@ async fn isolation<P: StreamProvider + ?Sized>(
         })
         .await?;
     if !end.children.is_empty() {
+        return Err(violated!());
+    }
+    let mut request = crate::HeadsRequest {
+        at: None,
+        retained: Default::default(),
+        durable_through: None,
+        projection: crate::HeadProjection::Tail,
+        paths: [forked.clone(), source.clone()].into_iter().collect(),
+        children: None,
+        limit: 2,
+        at_least: Default::default(),
+    };
+    let live = provider.heads(request.clone()).await?;
+    live.validate_for(&request)?;
+    if live.heads[0].is_none() || live.heads[1].is_none() {
+        return Err(violated!());
+    }
+    // An explicit canonical cut never acquires private records, even at the
+    // currently applied revision. The live read above is the positive control.
+    request.at = Some(live.snapshot);
+    let pinned = provider.heads(request.clone()).await?;
+    pinned.validate_for(&request)?;
+    if pinned.heads[0].is_some() || pinned.heads[1] != live.heads[1] {
         return Err(violated!());
     }
     provider
