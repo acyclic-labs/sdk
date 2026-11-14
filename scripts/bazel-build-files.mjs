@@ -143,8 +143,9 @@ function buildFile(p) {
   };
   const rules = [], ownDeps = script ? [":build_script"] : [];
   // The libtest executable builds on its own; the isolated test runs its cases.
+  // Cases run in the package directory, as under Cargo, and read its files there.
   const test = (name, attrs) => rules.push(
-    ["rust_test", [["name", q(`${name}_cases`)], ...attrs, ["tags", q(["manual"])]]],
+    ["rust_test", [["name", q(`${name}_cases`)], ...attrs, ["data", glob(["**"], ["**/*.rs", "BUILD.bazel"])], ["tags", q(["manual"])]]],
     ["isolated_test", [["name", q(name)], ["binary", q(`:${name}_cases`)], ["limit_seconds", String(CASE_LIMIT_SECONDS)]]],
   );
   if (script) {
