@@ -243,6 +243,7 @@ where
                 projection: acyclic_stream::HeadProjection::History,
                 children: None,
                 at_least: Default::default(),
+                at: None,
             };
             let observed =
                 crate::store::operations::heads_with_work(&self.stream, &request, &mut work)

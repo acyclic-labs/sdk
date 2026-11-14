@@ -197,6 +197,7 @@ impl Connection {
                         children: None,
                         limit: 1,
                         at_least: Default::default(),
+                        at: None,
                     },
                     feed.connection.session.credential(),
                 )
@@ -264,6 +265,7 @@ impl TreeFeed {
                     children: None,
                     limit: 1,
                     at_least: Default::default(),
+                    at: None,
                 },
                 self.connection.session.credential(),
             )

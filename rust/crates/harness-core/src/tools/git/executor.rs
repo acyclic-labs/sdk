@@ -95,7 +95,7 @@ where
                 "Git merge has unresolved entries; conflicts have not been inspected",
             ));
         };
-        let current = self.generation(tree).await?;
+        let current = self.generation(&tree).await?;
         let resolved =
             match acyclic_fs::git_merge_resolution(&current, paths, tracked_paths).await? {
                 acyclic_fs::GitMergeResolution::Resolved(paths) => paths,
