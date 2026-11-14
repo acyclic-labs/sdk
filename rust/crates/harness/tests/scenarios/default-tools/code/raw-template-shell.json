@@ -28,6 +28,7 @@
     },
     "results": {
       "raw-program": {
+        "name": "code",
         "content": {
           "kind": "json",
           "value": {
