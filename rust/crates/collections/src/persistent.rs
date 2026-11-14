@@ -7,9 +7,30 @@ use std::sync::Arc;
 /// predecessor lookup makes at most eight branch decisions per key byte,
 /// inspecting each branch's child minimum before visiting one leaf.
 /// Neither operation depends on fork depth or the retained population.
-pub type PersistentIndex<V, A, const N: usize = 8> = Tree<V, A, N, std::convert::Infallible>;
+pub type PersistentIndex<V, A, const N: usize = 8> =
+    Tree<V, A, N, std::convert::Infallible, [u8; N]>;
 
-pub(crate) type QualifiedIndex<V, A, const N: usize> = Tree<V, A, N, u64>;
+// Keyed compositions bound sequences, never the key space, so their key
+// index carries no key cut and its views and nodes stay independent of width.
+pub(crate) type QualifiedIndex<V, A, const N: usize> = Tree<V, A, N, u64, std::convert::Infallible>;
+
+/// An exclusive key cut a composition may carry; `Infallible` carries none.
+pub trait KeyCut<const N: usize>: Copy + Ord {
+    /// The cut's key; keys at or above it are hidden.
+    fn key(&self) -> &[u8; N];
+}
+
+impl<const N: usize> KeyCut<N> for [u8; N] {
+    fn key(&self) -> &[u8; N] {
+        self
+    }
+}
+
+impl<const N: usize> KeyCut<N> for std::convert::Infallible {
+    fn key(&self) -> &[u8; N] {
+        match *self {}
+    }
+}
 
 /// Worst-case original node funding and insertion work, bounded by key width.
 /// Actual claims and examinations still occur on `IndexWork`.
@@ -21,10 +42,10 @@ pub struct IndexInsertionBound {
     pub examined_items: u64,
 }
 
-/// Shared immutable tree representation; public compositions select the cut type.
-pub struct Tree<V, A, const N: usize, C> {
-    root: Option<Node<V, A, N, C>>,
-    before: Option<[u8; N]>,
+/// Shared immutable tree representation; public compositions select the cut types.
+pub struct Tree<V, A, const N: usize, C, K> {
+    root: Option<Node<V, A, N, C, K>>,
+    before: Option<K>,
     value_before: Option<C>,
 }
 
@@ -39,14 +60,14 @@ pub struct PersistentPosition<'a, V, const N: usize> {
     pub before: Option<[u8; N]>,
 }
 
-pub(crate) struct Position<'a, V, const N: usize, C> {
+pub(crate) struct Position<'a, V, const N: usize, C, K> {
     pub(crate) key: &'a [u8; N],
     pub(crate) value: &'a V,
-    pub(crate) before: Option<[u8; N]>,
+    pub(crate) before: Option<K>,
     pub(crate) value_before: Option<C>,
 }
 
-impl<'a, V, const N: usize> Position<'a, V, N, std::convert::Infallible> {
+impl<'a, V, const N: usize> Position<'a, V, N, std::convert::Infallible, [u8; N]> {
     fn unqualified(self) -> PersistentPosition<'a, V, N> {
         PersistentPosition {
             key: self.key,
@@ -57,6 +78,12 @@ impl<'a, V, const N: usize> Position<'a, V, N, std::convert::Infallible> {
 }
 
 impl<V, A, const N: usize> PersistentIndex<V, A, N> {
+    /// Pins the original keys strictly before this exclusive cut. Repeated
+    /// prefixing keeps the earlier cut, without a chain of historical views.
+    pub fn prefix(&self, before: [u8; N]) -> Self {
+        self.cut(before)
+    }
+
     /// Borrows the greatest retained key at or below `key`. Checks the original
     /// admission even on an empty view. It allocates and copies no values.
     pub fn predecessor<W: IndexReadWork>(
@@ -80,38 +107,38 @@ impl<V, A, const N: usize> PersistentIndex<V, A, N> {
     }
 }
 
-struct Node<V, A, const N: usize, C>(Option<Arc<Body<V, A, N, C>>>);
+struct Node<V, A, const N: usize, C, K>(Option<Arc<Body<V, A, N, C, K>>>);
 
-struct Body<V, A, const N: usize, C> {
+struct Body<V, A, const N: usize, C, K> {
     minimum: [u8; N],
     depth: usize,
-    kind: Kind<V, A, N, C>,
+    kind: Kind<V, A, N, C, K>,
     // Values and child references retire before their original node funding.
     _allocation: A,
 }
 
-enum Kind<V, A, const N: usize, C> {
+enum Kind<V, A, const N: usize, C, K> {
     Leaf(V),
     Branch {
         bit: Bit,
-        low: Tree<V, A, N, C>,
-        high: Tree<V, A, N, C>,
+        low: Tree<V, A, N, C, K>,
+        high: Tree<V, A, N, C, K>,
     },
 }
 
-impl<V, A, const N: usize, C> Node<V, A, N, C> {
-    fn body(&self) -> Option<&Body<V, A, N, C>> {
+impl<V, A, const N: usize, C, K> Node<V, A, N, C, K> {
+    fn body(&self) -> Option<&Body<V, A, N, C, K>> {
         self.0.as_deref()
     }
 }
 
-impl<V, A, const N: usize, C> Clone for Node<V, A, N, C> {
+impl<V, A, const N: usize, C, K> Clone for Node<V, A, N, C, K> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
 
-impl<V, A, const N: usize, C> Drop for Node<V, A, N, C> {
+impl<V, A, const N: usize, C, K> Drop for Node<V, A, N, C, K> {
     fn drop(&mut self) {
         // Retirement keeps constant stack and needs no allocator or fallible
         // admission, whatever the key width or the tree's height. A uniquely
@@ -119,7 +146,7 @@ impl<V, A, const N: usize, C> Drop for Node<V, A, N, C> {
         // through its own low slot; its low child is retired next. A pending
         // branch's high child resumes once the low subtree is gone.
         let mut current = self.0.take();
-        let mut pending: Option<Arc<Body<V, A, N, C>>> = None;
+        let mut pending: Option<Arc<Body<V, A, N, C, K>>> = None;
         loop {
             let Some(mut node) = current.take() else {
                 let Some(mut branch) = pending.take() else {
@@ -168,19 +195,19 @@ impl<V, A, const N: usize, C> Drop for Node<V, A, N, C> {
     }
 }
 
-fn take_root<V, A, const N: usize, C>(
-    tree: &mut Tree<V, A, N, C>,
-) -> Option<Arc<Body<V, A, N, C>>> {
+fn take_root<V, A, const N: usize, C, K>(
+    tree: &mut Tree<V, A, N, C, K>,
+) -> Option<Arc<Body<V, A, N, C, K>>> {
     tree.root.take().and_then(|mut node| node.0.take())
 }
 
 /// Releases the physical Arc backing before the body, so the original funding
 /// refunds after both backing and value retirement.
-fn retire<V, A, const N: usize, C>(node: Arc<Body<V, A, N, C>>) {
+fn retire<V, A, const N: usize, C, K>(node: Arc<Body<V, A, N, C, K>>) {
     drop(Arc::into_inner(node));
 }
 
-impl<V, A, const N: usize, C: Copy> Clone for Tree<V, A, N, C> {
+impl<V, A, const N: usize, C: Copy, K: Copy> Clone for Tree<V, A, N, C, K> {
     fn clone(&self) -> Self {
         Self {
             root: self.root.clone(),
@@ -190,7 +217,7 @@ impl<V, A, const N: usize, C: Copy> Clone for Tree<V, A, N, C> {
     }
 }
 
-impl<V, A, const N: usize, C> Default for Tree<V, A, N, C> {
+impl<V, A, const N: usize, C, K> Default for Tree<V, A, N, C, K> {
     fn default() -> Self {
         Self {
             root: None,
@@ -200,7 +227,7 @@ impl<V, A, const N: usize, C> Default for Tree<V, A, N, C> {
     }
 }
 
-impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
+impl<V, A, const N: usize, C: Copy + Ord, K: KeyCut<N>> Tree<V, A, N, C, K> {
     /// Computes original funding for `insertions` before their keys arrive.
     /// Uses the pinned root's depth plus possible new branches, capped by key
     /// width. Returns `None` on overflow; allocates and traverses nothing.
@@ -219,7 +246,7 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
             allocation_bytes: depth
                 .checked_add(2)?
                 .checked_mul(insertions)?
-                .checked_mul(u64::try_from(arc_allocation_bytes::<Body<V, A, N, C>>()).ok()?)?,
+                .checked_mul(u64::try_from(arc_allocation_bytes::<Body<V, A, N, C, K>>()).ok()?)?,
             // The locating pass and rebuilding pass, including child visibility
             // and complete minimum-key comparisons, each have bounded depth.
             examined_items: depth
@@ -233,9 +260,7 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
         self.body().map_or(0, |body| body.depth)
     }
 
-    /// Pins the original keys strictly before this exclusive cut. Repeated
-    /// prefixing keeps the earlier cut, without a chain of historical views.
-    pub fn prefix(&self, before: [u8; N]) -> Self {
+    fn cut(&self, before: K) -> Self {
         let before = self.before.map_or(before, |prior| prior.min(before));
         Self {
             root: self.root.clone(),
@@ -254,7 +279,7 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
         }
     }
 
-    fn body(&self) -> Option<&Body<V, A, N, C>> {
+    fn body(&self) -> Option<&Body<V, A, N, C, K>> {
         self.root.as_ref().and_then(Node::body)
     }
 
@@ -278,20 +303,21 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
     fn visible_body<W: IndexReadWork>(
         &self,
         work: &mut W,
-    ) -> Result<Option<&Body<V, A, N, C>>, W::Error> {
+    ) -> Result<Option<&Body<V, A, N, C, K>>, W::Error> {
         if self.root.is_none() {
             return Ok(None);
         }
         work.examine(1 + self.before.map_or(0, |_| N as u64))?;
-        Ok(self
-            .body()
-            .filter(|body| self.before.is_none_or(|before| body.minimum < before)))
+        Ok(self.body().filter(|body| {
+            self.before
+                .is_none_or(|before| body.minimum < *before.key())
+        }))
     }
 
     fn child(&self, child: &Self) -> Self {
         let child = self
             .before
-            .map_or_else(|| child.clone(), |before| child.prefix(before));
+            .map_or_else(|| child.clone(), |before| child.cut(before));
         match self.value_before {
             Some(before) => child.values_before(before),
             None => child,
@@ -304,10 +330,10 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
     #[inline(never)]
     fn node<W: IndexWork<Allocation = A>>(
         minimum: Option<&[u8; N]>,
-        kind: Kind<V, A, N, C>,
+        kind: Kind<V, A, N, C, K>,
         work: &mut W,
     ) -> Result<Self, W::Error> {
-        let allocation = work.claim(arc_allocation_bytes::<Body<V, A, N, C>>() as u64)?;
+        let allocation = work.claim(arc_allocation_bytes::<Body<V, A, N, C, K>>() as u64)?;
         let (depth, inherited) = match &kind {
             Kind::Leaf(_) => (0, None),
             Kind::Branch { low, high, .. } => (
@@ -347,7 +373,7 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
         &self,
         key: &[u8; N],
         work: &mut W,
-    ) -> Result<Option<Position<'_, V, N, C>>, W::Error> {
+    ) -> Result<Option<Position<'_, V, N, C, K>>, W::Error> {
         work.validate()?;
         let mut cursor = self;
         let mut before = None;
@@ -355,13 +381,13 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
         loop {
             if let Some(cut) = cursor.before {
                 work.examine(N as u64)?;
-                if *key >= cut {
+                if key >= cut.key() {
                     return Ok(None);
                 }
                 if before.is_some() {
                     work.examine(N as u64)?;
                 }
-                before = Some(before.map_or(cut, |prior: [u8; N]| prior.min(cut)));
+                before = Some(before.map_or(cut, |prior: K| prior.min(cut)));
             }
             if let Some(cut) = cursor.value_before {
                 value_before = Some(value_before.map_or(cut, |prior: C| prior.min(cut)));
@@ -395,7 +421,7 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
         &self,
         key: [u8; N],
         work: &mut W,
-    ) -> Result<Option<Position<'_, V, N, C>>, W::Error> {
+    ) -> Result<Option<Position<'_, V, N, C, K>>, W::Error> {
         work.validate()?;
         let mut cursor = self;
         let mut before = self.before;
@@ -405,7 +431,7 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
                 return Ok(None);
             };
             work.examine(2 * N as u64)?;
-            if body.minimum > key || before.is_some_and(|before| body.minimum >= before) {
+            if body.minimum > key || before.is_some_and(|before| body.minimum >= *before.key()) {
                 return Ok(None);
             }
             match &body.kind {
@@ -421,7 +447,8 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
                     let upper = high.visible_body(work)?;
                     work.examine(3 * N as u64)?;
                     cursor = if upper.is_some_and(|upper| {
-                        upper.minimum <= key && before.is_none_or(|before| upper.minimum < before)
+                        upper.minimum <= key
+                            && before.is_none_or(|before| upper.minimum < *before.key())
                     }) {
                         high
                     } else {
@@ -442,7 +469,7 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
         &self,
         key: [u8; N],
         work: &mut W,
-    ) -> Result<Option<Position<'_, V, N, C>>, W::Error> {
+    ) -> Result<Option<Position<'_, V, N, C, K>>, W::Error> {
         work.validate()?;
         let mut cursor = self;
         let mut before = None;
@@ -450,14 +477,16 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
         let mut candidate = None;
         loop {
             if let Some(cut) = cursor.before {
-                before = Some(before.map_or(cut, |prior: [u8; N]| prior.min(cut)));
+                before = Some(before.map_or(cut, |prior: K| prior.min(cut)));
             }
             if let Some(cut) = cursor.value_before {
                 value_before = Some(value_before.map_or(cut, |prior: C| prior.min(cut)));
             }
             let body = cursor.visible_body(work)?;
             work.examine(2 * N as u64)?;
-            match body.filter(|body| before.is_none_or(|cut| key < cut && body.minimum < cut)) {
+            match body.filter(|body| {
+                before.is_none_or(|cut| key < *cut.key() && body.minimum < *cut.key())
+            }) {
                 Some(Body {
                     minimum,
                     kind: Kind::Leaf(value),
@@ -477,7 +506,7 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
                     let upper = high.visible_body(work)?;
                     work.examine(2 * N as u64)?;
                     if let Some(upper) =
-                        upper.filter(|upper| before.is_none_or(|cut| upper.minimum < cut))
+                        upper.filter(|upper| before.is_none_or(|cut| upper.minimum < *cut.key()))
                     {
                         if upper.minimum <= key {
                             cursor = high;
