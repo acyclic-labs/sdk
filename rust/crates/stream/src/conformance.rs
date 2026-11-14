@@ -88,6 +88,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
             idempotency_key: append_key.clone(),
         })
         .await
+        .map_err(|error| error.category())
         != Err(StreamError::IdempotencyMismatch)
     {
         return Err(violated!());
@@ -239,6 +240,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
             limit: 1,
         })
         .await
+        .map_err(|error| error.category())
         != Err(StreamError::HierarchyChanged)
     {
         return Err(violated!());
@@ -274,6 +276,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
             limit: 1,
         })
         .await
+        .map_err(|error| error.category())
         != Err(StreamError::InvalidArgument)
     {
         return Err(violated!());
@@ -404,6 +407,7 @@ async fn verify_read_open_failures(
             })
             .await
             .err()
+            .map(|error| error.category())
     };
     let beyond = provider.tail(source.clone()).await? + 1;
     if open(path("conformance/never-written")?, 0).await != Some(StreamError::NotFound)
@@ -451,7 +455,11 @@ pub async fn verify_stale_tail_condition(
         })
         .await?
         != stale_conflict
-        || provider.tail(stale_path).await != Err(StreamError::NotFound)
+        || provider
+            .tail(stale_path)
+            .await
+            .map_err(|error| error.category())
+            != Err(StreamError::NotFound)
         || provider.tail(source).await? != 2
     {
         return Err(violated!());
@@ -862,6 +870,7 @@ async fn verify_subtree_private_writes(
     if provider
         .tail(path("conformance/tree/children/fork/children/fork")?)
         .await
+        .map_err(|error| error.category())
         != Err(StreamError::NotFound)
     {
         return Err(violated!());
@@ -873,6 +882,7 @@ async fn verify_subtree_private_writes(
         || provider
             .tail(path("conformance/tree/children/fork/children/old/events")?)
             .await
+            .map_err(|error| error.category())
             != Err(StreamError::NotFound)
     {
         return Err(violated!());
@@ -986,6 +996,7 @@ pub async fn verify_page_tails(provider: &(impl StreamProvider + ?Sized)) -> Res
     if provider
         .tail(path("conformance/page-tails/c/status")?)
         .await
+        .map_err(|error| error.category())
         != Err(StreamError::NotFound)
     {
         return Err(violated!());

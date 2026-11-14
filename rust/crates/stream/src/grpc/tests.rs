@@ -157,7 +157,10 @@ async fn grpc_heads_refuse_an_oversized_view_without_poisoning_the_session() -> 
     let mut request = crate::head_tests::large_retained_view(&provider).await?;
     let transport = client(provider)?;
     assert_eq!(
-        transport.heads(request.clone()).await,
+        transport
+            .heads(request.clone())
+            .await
+            .map_err(|error| error.category()),
         Err(StreamError::LimitExceeded)
     );
     request.retained.truncate(1);

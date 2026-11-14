@@ -165,7 +165,11 @@ async fn revision_scope_selection_preserves_other_views_and_explicit_minima() ->
     client.session_client()?.revisions().observe(&foreign);
     for _ in 0..2 {
         assert_eq!(
-            client.head(StreamPath::new("events")?).await.err(),
+            client
+                .head(StreamPath::new("events")?)
+                .await
+                .err()
+                .map(|error| error.category()),
             Some(StreamError::RevisionForeign),
             "one refusal cannot retire another required authority"
         );
@@ -580,8 +584,16 @@ async fn session_children_page_equals_the_provider_page() -> TestResult {
             .all(|child| child.tail_record.is_some())
     );
     assert_eq!(
-        client.children_page(page("tree", 0)?, 0).await.err(),
-        provider.children_page(page("tree", 0)?).await.err()
+        client
+            .children_page(page("tree", 0)?, 0)
+            .await
+            .err()
+            .map(|error| error.category()),
+        provider
+            .children_page(page("tree", 0)?)
+            .await
+            .err()
+            .map(|error| error.category())
     );
     Ok(())
 }
