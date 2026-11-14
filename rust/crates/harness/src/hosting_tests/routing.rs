@@ -499,6 +499,16 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
             "account router hosted a remote root"
         );
         let local = acyclic_stream::MemoryStream::default();
+        let source_routing = crate::agent::Routing {
+            paths: paths.clone(),
+            node: source.clone(),
+        };
+        let source_binding = binding_on_provider(
+            Arc::new(Counted::new(local.clone())),
+            Arc::new(Never),
+            Default::default(),
+            Some(source_routing.clone()),
+        )?;
         let source_row = crate::agent::SessionPublication {
             actor: message.sender.clone(),
             row: crate::agent::SessionRow::new(
@@ -542,12 +552,10 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
         let control = link.sender();
         let (admitted, observed) = tokio::sync::oneshot::channel();
         let mut admitted = Some(admitted);
-        let forwarding = route::run_link(
+        let forwarding = source_routing.run_link(
             link,
-            &local,
+            source_binding.agents().as_ref(),
             stream.as_ref(),
-            &paths,
-            &source,
             async |publication: route::Publication| {
                 publication.publish(&client, 4, &paths, 4096).await
             },
@@ -570,7 +578,6 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
                     .map_err(|_| StreamError::Unavailable)?;
                 std::future::pending::<std::result::Result<Routed, route::Error>>().await
             },
-            async |_| Err(route::Error::InvalidRecord),
         );
         let disconnect = async {
             observed.await?;
@@ -649,17 +656,14 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
                 .await?,
         );
         {
-            let forwarding = route::run_link(
+            let forwarding = source_routing.run_link(
                 link,
-                &local,
+                source_binding.agents().as_ref(),
                 stream.as_ref(),
-                &paths,
-                &source,
                 async |publication: route::Publication| {
                     publication.publish(&client, 4, &paths, 4096).await
                 },
                 async |envelope| route::admit(&client, 1, &envelope, 4096).await,
-                async |_| Err(route::Error::InvalidRecord),
             );
             let receiving = route::run_link(
                 receiving,

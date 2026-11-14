@@ -33,7 +33,51 @@ pub(super) fn error(error: route::Error) -> Error {
     }
 }
 
+fn account_error(error: Error) -> route::Error {
+    match error {
+        Error::Stream(error) => route::Error::Stream(error),
+        Error::Actor(error) => route::Error::Actor(*error),
+        _ => route::Error::InvalidRecord,
+    }
+}
+
 impl Routing {
+    /// Drive one accepted link using this node's agent journal and inbox writer.
+    /// The connection owner supplies its authenticated account provider and
+    /// credential-selecting publication callbacks. Dropping this future drops
+    /// the original pumps; their committed cursors survive reconnect.
+    pub async fn run_link<P, A, R, F>(
+        &self,
+        link: route::NodeLink,
+        host: &super::AgentHost<P>,
+        account: &A,
+        publish: R,
+        admit: F,
+    ) -> Result<std::convert::Infallible, route::Error>
+    where
+        P: crate::store::JournalProvider + ?Sized + 'static,
+        A: acyclic_stream::StreamProvider + ?Sized,
+        R: AsyncFnMut(route::Publication) -> Result<(), route::Error>,
+        F: AsyncFnMut(route::Envelope) -> Result<route::Routed, route::Error>,
+    {
+        route::run_link(
+            link,
+            host.provider().as_ref(),
+            account,
+            &self.paths,
+            &self.node,
+            publish,
+            admit,
+            async |record| {
+                host.deliver_routed_peer(self, &record)
+                    .await
+                    .map(|_| ())
+                    .map_err(account_error)
+            },
+        )
+        .await
+    }
+
     /// Lower one sender publication, staging only targets known to be remote.
     /// The host determines locality through its actor store, never directory
     /// presence or a caller-supplied network location. All other effects retain

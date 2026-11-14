@@ -1,5 +1,5 @@
 //! Account admission reads directory rows, never a remote agent's state.
-use super::{Error, PeerResultRoute, PeerRoute, route};
+use super::{Error, PeerResultRoute, PeerRoute, account_error, route};
 use crate::agent::{SessionPublication, SessionRow};
 use acyclic_stream::session::CallAuthorization;
 use acyclic_stream::{CommitCondition, CommitEffect, HeadProjection, HeadsRequest, StreamProvider};
@@ -99,14 +99,6 @@ impl<'a> AccountInput<'a> {
             return Ok(Self::Message(peer));
         }
         PeerResultRoute::parse(message).map(Self::Result)
-    }
-}
-
-fn account_error(error: Error) -> route::Error {
-    match error {
-        Error::Stream(error) => route::Error::Stream(error),
-        Error::Actor(error) => route::Error::Actor(*error),
-        _ => route::Error::InvalidRecord,
     }
 }
 

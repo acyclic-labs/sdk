@@ -355,7 +355,20 @@ fn binding_routed(
     approval_policy: crate::approvals::ApprovalPolicy,
     routing: Option<crate::agent::Routing>,
 ) -> Result<Bound<Counted<MemoryStream>, LogicalObjectStore<acyclic_objects::MemoryObjects>>> {
-    let stream = Arc::new(Counted::new(MemoryStream::default()));
+    binding_on_provider(
+        Arc::new(Counted::new(MemoryStream::default())),
+        executors,
+        approval_policy,
+        routing,
+    )
+}
+
+fn binding_on_provider(
+    stream: Arc<Counted<MemoryStream>>,
+    executors: Arc<dyn TurnExecutors>,
+    approval_policy: crate::approvals::ApprovalPolicy,
+    routing: Option<crate::agent::Routing>,
+) -> Result<Bound<Counted<MemoryStream>, LogicalObjectStore<acyclic_objects::MemoryObjects>>> {
     let objects = acyclic_objects::MemoryObjects::memory();
     Ok(Bound::local_root(
         AuthorityRoot::new(
