@@ -339,6 +339,8 @@ fn owner_exit() -> io::Result<&'static OwnedFd> {
             // while another thread is waiting uninterruptibly on its own mount.
             // SAFETY: gettid has no arguments; pidfd_open transfers a fresh fd.
             let tid = unsafe { libc::syscall(libc::SYS_gettid) };
+            // SAFETY: pidfd_open takes a numeric thread ID and flags, with no pointers;
+            // tid identifies this still-live thread and success transfers a fresh fd.
             let file = unsafe { libc::syscall(libc::SYS_pidfd_open, tid, libc::PIDFD_THREAD) };
             let result = if file < 0 {
                 Err(io::Error::new(
@@ -677,6 +679,7 @@ fn connect_existing(path: &std::path::Path) -> io::Result<Option<UnixStream>> {
 }
 
 fn authenticate(control: UnixStream) -> io::Result<UnixStream> {
+    // SAFETY: ucred contains only integer fields, all valid when zero initialized.
     let mut peer: libc::ucred = unsafe { std::mem::zeroed() };
     let mut size = std::mem::size_of_val(&peer) as libc::socklen_t;
     // SAFETY: SO_PEERCRED fills the initialized peer structure.
@@ -694,7 +697,7 @@ fn authenticate(control: UnixStream) -> io::Result<UnixStream> {
     }
     // A listener created by this client retains its creator's credentials;
     // ownership is authenticated by UID, not the listener's recorded PID.
-    if peer.uid != unsafe { libc::geteuid() } {
+    if peer.uid != crate::private_file::effective_user() {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     Ok(control)
