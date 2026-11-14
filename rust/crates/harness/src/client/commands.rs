@@ -405,6 +405,12 @@ mod tests {
     #[test]
     fn builtins_resolve_and_prompts_pass_through() -> Result<()> {
         let catalog = CommandCatalog::builtins()?;
+        assert!(matches!(
+            catalog.resolve("/diff", 64)?,
+            Some(CommandResolution::Select {
+                query: CommandQuery::Diff
+            })
+        ));
         let view = catalog.resolve("/view compare.md", 64)?;
         assert_eq!(
             view,
