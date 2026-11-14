@@ -1542,10 +1542,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 // Settled under the actor's delivery lock, so an earlier
                 // delivery's success never clears a later one's failure.
                 // A released slot delivered nothing: its input belongs to
-                // the next placer.
+                // the next placer. A retained publication's outcome is still
+                // undecided whatever error reported it: retrying it decides.
                 settlement.failed = result.is_err() || inner.released;
                 if let Err(error) = &result
                     && !error.retryable()
+                    && inner.pending.is_none()
                 {
                     settlement.unavailable = Some(DeliveryFailure {
                         message: format!("actor {actor:?}: {error}"),
