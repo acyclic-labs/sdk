@@ -155,15 +155,40 @@ async fn bad_fixture_and_wrong_expected_answer_each_fail_with_a_record()
         directory.path().join("wrong.json"),
         serde_json::to_vec(&value)?,
     )?;
+    // Instructions live on the file volume, not the journal's: a wrong byte must
+    // fail as a content mismatch, proving the attachment was actually read.
+    let mut instructions = scenario_data::load_value(
+        &corpus(),
+        &corpus().join("discovery/instructions/agents.json"),
+    )?;
+    *instructions
+        .pointer_mut("/expect/request_files/0/0")
+        .ok_or("missing request file expectation")? = "WRONG".into();
+    std::fs::write(
+        directory.path().join("wrong-instructions.json"),
+        serde_json::to_vec(&instructions)?,
+    )?;
     std::fs::write(
         directory.path().join("unknown.json"),
         r#"{"driver":"typo"}"#,
     )?;
     std::fs::write(directory.path().join("malformed.json"), "{")?;
     let report = runner::run(directory.path(), Arc::new(substrate::Local), None, 1).await?;
-    assert_eq!(report.records.len(), 3);
-    assert_eq!(report.failed, 3);
+    assert_eq!(report.records.len(), 4);
+    assert_eq!(report.failed, 4);
     assert!(!report.success());
+    let wrong = report
+        .records
+        .iter()
+        .find(|record| record.case.contains("wrong-instructions"))
+        .ok_or("missing instruction record")?;
+    assert!(
+        wrong
+            .reason
+            .contains(r#"request_files: expected [["WRONG"]], got [["Root rules"]]"#),
+        "{}",
+        wrong.reason
+    );
     Ok(())
 }
 
