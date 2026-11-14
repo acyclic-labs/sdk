@@ -28,6 +28,9 @@ test('native Node and Bun failures survive discovery, selection and result repor
   for (const file of ['import.test.mjs', 'import.test.ts']) assert.ok(failed.stdout.includes(`NODE_TEST_FAIL ${file}::`), failed.stdout + failed.stderr);
   const summary = JSON.parse((failed.stdout.trim().split('\n').at(-1) ?? assert.fail('missing summary')).replace('NODE_TESTS_RESULT ', ''));
   assert.equal(summary.files, 7); assert.equal(summary.tests, 7); assert.equal(summary.passed, 3); assert.equal(summary.failed, 4);
+  const timing = JSON.parse(failed.stdout.split('\n').find(line => line.startsWith('NODE_TEST_TIMINGS ')).slice('NODE_TEST_TIMINGS '.length));
+  assert.ok(Number.isFinite(timing.seconds) && timing.seconds >= 0);
+  assert.ok(timing.slowest.some(row => row.file === 'node.test.mjs' && row.name === 'parent > failure <&> 😀' && Number.isFinite(row.seconds)));
   assert.equal(bunResults(readFileSync(join(root, 'observability/bun-test.xml'), 'utf8'), () => {}).failed, 1);
   const selected = run(['passed.test.mjs']);
   assert.equal(selected.status, 0, selected.stdout + selected.stderr);

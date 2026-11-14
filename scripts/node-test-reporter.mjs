@@ -4,11 +4,23 @@ import {inspect} from 'node:util';
 
 // Node's event stream retains test ancestry and original assertion diagnostics.
 export default async function* report(events) {
- const ancestry = [];
+ const ancestry = [], slowest = [];
  let summary;
  const stable = value => String(value).replaceAll('\r', '\\r').replaceAll('\n', '\\n');
  for await (const {type, data} of events) {
   if (type === 'test:start') { ancestry.length = data.nesting; ancestry.push(data.name); }
+  if ((type === 'test:pass' || type === 'test:fail') && data.details?.type !== 'suite' && !data.todo && !data.skip && data.file) {
+   const seconds = data.details?.duration_ms / 1000;
+   if (Number.isFinite(seconds)) {
+    const file = relative(process.cwd(), data.file).replaceAll('\\', '/');
+    const name = [...ancestry.slice(0, data.nesting), data.name].join(' > ');
+    const timing = {file, name, seconds};
+    slowest.push(timing);
+    slowest.sort((a, b) => b.seconds - a.seconds);
+    slowest.length = Math.min(slowest.length, 10);
+    if (seconds >= 10) yield `NODE_TEST_OVER_BUDGET ${JSON.stringify(timing)}\n`;
+   }
+  }
   if (type === 'test:fail' && !data.todo && !data.skip) {
    const file = relative(process.cwd(), data.file ?? data.name).replaceAll('\\', '/');
    const name = [...ancestry.slice(0, data.nesting), data.name === data.file ? file : data.name].join(' > ');
@@ -22,5 +34,7 @@ export default async function* report(events) {
  const {tests, passed, failed, cancelled, skipped, todo} = summary.counts;
  const path = process.env.SDK_NODE_TEST_REPORT;
  if (!path) throw new Error('step=locate Node report; recovery command: node scripts/node-tests.mjs --all');
- writeFileSync(path, JSON.stringify({tests, passed, failed: failed + cancelled, skipped: skipped + todo}));
+ const timing = {seconds: summary.duration_ms / 1000, slowest};
+ yield `NODE_TEST_TIMINGS ${JSON.stringify(timing)}\n`;
+ writeFileSync(path, JSON.stringify({tests, passed, failed: failed + cancelled, skipped: skipped + todo, ...timing}));
 }
