@@ -40,7 +40,9 @@ impl MemoryStream {
             .map(AppendRecord::payload_bytes)
             .sum::<usize>();
         let digest = self.append_request_digest(request)?;
-        if let Some(result) = self.replay_append(state, &request.idempotency_key, digest)? {
+        if let Some(result) =
+            self.replay_append(state, &request.idempotency_key, digest, &request.path)?
+        {
             return Ok(Decision::Returned((result, Default::default())));
         }
         let mut probes = self.replay_insertion_probes(request.idempotency_key.as_bytes())?;
