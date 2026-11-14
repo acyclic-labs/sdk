@@ -30,7 +30,7 @@ use acyclic_native_runtime::{LogFrame, PersistenceKey, spawn_persistence};
 use acyclic_stream::OwnedBytes;
 use std::collections::BTreeMap;
 use std::io::Write as _;
-use std::ops::Range;
+use std::ops::{Bound, Range};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -113,6 +113,9 @@ const LOG: &str = "log";
 const NEXT: &str = "log.next";
 /// Dead bytes below this are never compacted: a chunk of work, not a bound.
 pub(crate) const COMPACTION_CHUNK: u64 = 1 << 20;
+/// Index entries compaction copies per hold of the index lock, so readers
+/// wait for one batch, never for the whole index.
+const COMPACTION_BATCH: usize = 256;
 
 /// The log's frame: an operation, the key and, for a put, the value.
 const LOG_FRAME: LogFrame = LogFrame {
@@ -461,26 +464,39 @@ impl Shared {
         let mut end = 0;
         let mut index = BTreeMap::new();
         let mut frame = Vec::new();
-        // Writers are excluded by `log`; the index lock is not held over I/O.
-        let live: Vec<(String, Entry)> = self
-            .index()
-            .iter()
-            .map(|(key, entry)| (key.clone(), entry.clone()))
-            .collect();
-        for (key, Entry { slot, value }) in live {
-            frame.resize(
-                usize::try_from(slot.bytes).map_err(std::io::Error::other)?,
-                0,
-            );
-            read_exact_at(&log.file, slot.frame, &mut frame)?;
-            acyclic_native_runtime::write_all_at(&file, end, &frame, None)?;
-            let moved = Slot {
-                frame: end,
-                value: end + (slot.value - slot.frame),
-                ..slot
+        // Writers are excluded by `log`, so the index is stable between
+        // batches; the index lock is held for one batch's copy, never over I/O.
+        let mut after: Option<String> = None;
+        loop {
+            let batch: Vec<(String, Entry)> = {
+                let held = self.index();
+                let rest = match after.as_deref() {
+                    Some(last) => held.range::<str, _>((Bound::Excluded(last), Bound::Unbounded)),
+                    None => held.range::<str, _>(..),
+                };
+                rest.take(COMPACTION_BATCH)
+                    .map(|(key, entry)| (key.clone(), entry.clone()))
+                    .collect()
             };
-            index.insert(key, Entry { slot: moved, value });
-            end += slot.bytes;
+            let Some((last, _)) = batch.last() else {
+                break;
+            };
+            after = Some(last.clone());
+            for (key, Entry { slot, value }) in batch {
+                frame.resize(
+                    usize::try_from(slot.bytes).map_err(std::io::Error::other)?,
+                    0,
+                );
+                read_exact_at(&log.file, slot.frame, &mut frame)?;
+                acyclic_native_runtime::write_all_at(&file, end, &frame, None)?;
+                let moved = Slot {
+                    frame: end,
+                    value: end + (slot.value - slot.frame),
+                    ..slot
+                };
+                index.insert(key, Entry { slot: moved, value });
+                end += slot.bytes;
+            }
         }
         self.sync_file(&file)?;
         acyclic_native_runtime::durable_rename(
@@ -493,7 +509,9 @@ impl Shared {
         self.counts.flushed.fetch_add(1, Ordering::Relaxed);
         log.file = Arc::new(file);
         log.end = end;
-        *self.index() = index;
+        // The replaced index is dropped after its lock is released.
+        let replaced = std::mem::replace(&mut *self.index(), index);
+        drop(replaced);
         self.synced.fetch_max(log.written, Ordering::AcqRel);
         Ok(())
     }
