@@ -70,7 +70,9 @@ printf '\nmod historical_composition;\n' >> "$runtime/tests.rs"
 run_case "$shard_test" fail "$scratch/shard-before.log"
 grep -qE 'composition changed the actor publication' "$scratch/shard-before.log"
 
-before d269a4731a4b932e31d7256640dccb6b8d8d065d
+# The fix (#3780) sits on d269a473 (#3779), which does not compile acyclic-stream
+# (unlinked `url`); its parent 939245df lacks the same fix and builds.
+before 939245df551
 node --input-type=module - "$scratch/overlay/model-composition.rs" "$model" <<'JS'
 import fs from 'node:fs';
 const [composition, model] = process.argv.slice(2);
@@ -80,7 +82,5 @@ fs.appendFileSync(`${model}/composition.rs`, '\n' + helper[0]);
 JS
 cp "$scratch/overlay/custody.rs" "$model/historical_custody.rs"
 printf '\nmod historical_custody;\n' >> "$model.rs"
-# This revision does not build its gRPC stream feature (unlinked `url`); the
-# custody path needs only test-support.
 run_case "$custody_test" fail "$scratch/custody-before.log" "--features test-support"
 printf 'ACTORS_HISTORY_COMPLETE source=%s cases=4\n' "$source_sha"
