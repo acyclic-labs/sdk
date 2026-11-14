@@ -24,6 +24,8 @@ mod context;
 mod context_documents;
 mod history_retry;
 mod programs;
+#[cfg(target_os = "linux")]
+mod publication_latency;
 mod replay;
 pub(super) mod settings;
 mod signing;
