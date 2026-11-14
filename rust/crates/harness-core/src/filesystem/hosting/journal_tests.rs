@@ -11,6 +11,94 @@ use acyclic_stream::MemoryStream;
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 type Binding = Bound<MemoryStream, acyclic_fs::LogicalObjectStore<acyclic_objects::MemoryObjects>>;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn private_metadata_uses_the_session_cut_before_and_after_an_authored_override() -> TestResult
+{
+    use crate::conversation::{ContentAccess, ContentGrant};
+    let (bound, root) = binding().await?;
+    let state = bound.agents().state(&root).await?;
+    let private = state
+        .volumes
+        .iter()
+        .find(|binding| binding.role == crate::agent::WorkspaceRole::Private)
+        .ok_or("missing private binding")?
+        .volume()?;
+    let (scope, verifier) = bound.volume_scope(&root).await?;
+    let host = bound
+        .volumes()
+        .for_agent_views(
+            bound.agents().provider().clone(),
+            &root,
+            private,
+            &verifier,
+            &scope,
+        )
+        .await?;
+    let grant = ContentGrant::verify_directory_read(&verifier, &scope, private, "", &mut None)?;
+    let original = host
+        .select_private_generation(private, &grant, "ui/title", None, ContentAccess::default())
+        .await?;
+    let before = host
+        .stat_private_path(
+            private,
+            &grant,
+            "ui/title",
+            Some(&original),
+            ContentAccess::default(),
+        )
+        .await?
+        .ok_or("computed title metadata is absent")?;
+    assert_eq!(before.kind, acyclic_fs::kernel::FileKind::Regular);
+    assert_eq!(before.logical_bytes, Some(root.id_text().len() as u64));
+    assert!(
+        host.stat_private_path(
+            private,
+            &grant,
+            "ui/absent",
+            Some(&original),
+            ContentAccess::default(),
+        )
+        .await?
+        .is_none()
+    );
+    let reference = super::super::workspace_ref(
+        private.provider().clone(),
+        &private.storage_name(&mut None)?,
+    )?;
+    host.apply(
+        &reference,
+        None,
+        &[
+            super::super::WorkspaceMutation::CreateDirectory { path: "/ui".into() },
+            super::super::WorkspaceMutation::PutFile {
+                path: "/ui/title".into(),
+                bytes: b"authored title".to_vec().into(),
+            },
+        ],
+        &crate::IdempotencyKey::new("private-title-metadata")?,
+    )
+    .await?;
+    let after = host
+        .stat_private_path(private, &grant, "ui/title", None, ContentAccess::default())
+        .await?
+        .ok_or("authored title metadata is absent")?;
+    assert_eq!(after.logical_bytes, Some(b"authored title".len() as u64));
+    assert_ne!(after.file_id, before.file_id);
+    assert_eq!(
+        host.stat_private_path(
+            private,
+            &grant,
+            "ui/title",
+            Some(&original),
+            ContentAccess::default(),
+        )
+        .await?,
+        Some(before)
+    );
+    Ok(())
+}
+
 struct NoTurns;
 impl TurnExecutors for NoTurns {
     fn executor<'a>(

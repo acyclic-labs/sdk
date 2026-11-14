@@ -143,6 +143,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             crate::executor::preparation_format(format_args!("/{path}"), work)
         })?;
         let _requested_hold = io.guard_owned(requested.capacity() as u64)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(cut) = &selected.snapshot {
+            let stat = self.stat_private_snapshot(cut, &requested, io).await?;
+            selected.recheck(grant, io).await?;
+            return Ok(stat);
+        }
         let stat = io.sdk_if_present(
             selected
                 .generation
