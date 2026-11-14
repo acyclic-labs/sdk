@@ -925,11 +925,8 @@ async fn combined_file_controls_keep_steering_while_paused_through_the_session()
         }
     }
     let inbox = connection.root().inbox().map_err(storage)?;
-    let before = connection
-        .session
-        .tail(inbox.clone())
-        .await
-        .map_err(storage)?;
+    let streams = connection.session.read_provider();
+    let before = streams.tail(inbox.clone()).await.map_err(storage)?;
     let mut lifecycle = connection.supervision_own().await?;
     let changes = vec![
         ClientFileChange {
@@ -958,16 +955,11 @@ async fn combined_file_controls_keep_steering_while_paused_through_the_session()
     // Pause and steering belong to the same control transition. Its public
     // lifecycle event therefore witnesses the original input publication too.
     assert_eq!(
-        connection
-            .session
-            .tail(inbox.clone())
-            .await
-            .map_err(storage)?,
+        streams.tail(inbox.clone()).await.map_err(storage)?,
         before + 1,
         "combined control publication lost or repeated steering"
     );
-    let mut records = connection
-        .session
+    let mut records = streams
         .read(acyclic_stream::ReadRequest {
             key: None,
             path: inbox.clone(),
@@ -993,10 +985,7 @@ async fn combined_file_controls_keep_steering_while_paused_through_the_session()
             .await?,
         generation
     );
-    assert_eq!(
-        connection.session.tail(inbox).await.map_err(storage)?,
-        before + 1
-    );
+    assert_eq!(streams.tail(inbox).await.map_err(storage)?, before + 1);
     assert!(
         provider.request(0).is_none(),
         "paused steering dispatched a model"
