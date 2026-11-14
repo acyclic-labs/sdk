@@ -154,6 +154,9 @@ impl StockExecutor {
                     "host invocation has no issued task context",
                 ));
             }
+            if let Some(control) = journal.supervision().await? {
+                return Ok(ExecutionProgress::Controlled(control));
+            }
             execution.verify_invocation_binding(parent.0, &call.0, Some(&call.1))?;
             call.0
                 .validate_recorded(metadata, execution.invocation_limits(), io)?;

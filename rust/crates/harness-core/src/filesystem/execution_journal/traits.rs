@@ -90,6 +90,17 @@ where
         &self,
     ) -> acyclic_stream::BoxProviderFuture<'_, Result<Option<crate::supervision::Control>>> {
         Box::pin(async {
+            // The point query parks preparation before opening an approval or
+            // prompt. Dispatch still joins the same admissions atomically to
+            // its commit, so a pause racing this query cannot admit paid work.
+            if !self.actor_admissions.is_empty() || self.agent_lineage.is_some() {
+                let mut admission = acyclic_stream::CommitEffect::hard(Vec::new(), Vec::new());
+                match self.fence_dispatch(&mut admission, None).await {
+                    Err(Error::ExecutionControlled(control)) => return Ok(Some(control)),
+                    Err(error) => return Err(error),
+                    Ok(()) => {}
+                }
+            }
             let Some((agent, run, _, _)) = &self.agent_events else {
                 return Ok(None);
             };

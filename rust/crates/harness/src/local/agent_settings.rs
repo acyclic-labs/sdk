@@ -1186,7 +1186,7 @@ mod tests {
                     })
                 })
                 .transpose()
-                .map_err(storage)
+                .map_err(super::storage)
         };
         for (path, source) in [
             ("switch.ts", "export const enabled = false;"),
