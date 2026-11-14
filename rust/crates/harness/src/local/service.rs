@@ -1198,7 +1198,7 @@ mod tests {
                 )?
                 .state_directory(state_dir.path())
                 .compaction(crate::context::CompactionPolicy::Disabled)
-                .workspace_mounting(WorkspaceMounting::Physical),
+                .workspace_mounting(WorkspaceMounting::Native),
             )
             .await?,
         );
@@ -1494,7 +1494,8 @@ mod tests {
                 .await?;
             assert!(
                 matches!(entries.as_slice(), [entry] if entry.outcome.is_completed()),
-                "{name} brief did not complete: {entries:?}"
+                "{name} brief did not complete: {entries:?}; model requests: {:?}",
+                provider.requests()
             );
             descendants.push(selected.clone());
         }
