@@ -66,6 +66,10 @@ impl WorkspaceMounting {
 /// Durable local composition with a required model binding.
 pub struct LocalHarnessConfig {
     pub(super) routing: Option<crate::agent::Routing>,
+    pub(super) account_scope: Option<(
+        acyclic_actors::addressing::AccountId,
+        acyclic_actors::addressing::NamespaceId,
+    )>,
     pub(super) peer_directory: Option<Arc<crate::hosting::PeerDirectory>>,
     pub(super) topology: Option<crate::topology::Topology>,
     pub(super) home_files: std::collections::BTreeMap<String, acyclic_stream::OwnedBytes>,
@@ -273,6 +277,7 @@ impl LocalHarnessConfig {
     fn configuration(workspace: PathBuf, model: Option<(Model, Arc<dyn ModelProvider>)>) -> Self {
         Self {
             routing: None,
+            account_scope: None,
             peer_directory: None,
             topology: None,
             home_files: Default::default(),
@@ -559,20 +564,25 @@ impl LocalHarnessConfig {
 
     /// Bind the admitted node identity used by root placement and peer outbox
     /// publication. The connection owner separately drives its accepted link;
-    /// this configuration contains no credential or network location.
+    /// this selects the local account scope and its local session directory.
     #[must_use]
     pub fn routing(mut self, routing: crate::agent::Routing) -> Self {
         self.routing = Some(routing);
+        self.account_scope = None;
         self.peer_directory = None;
         self
     }
 
-    /// Bind this node and its account directory through the host's existing
-    /// authenticated provider. The host owns the accepted NodeLink and drives
-    /// its pumps; neither credentials nor connection state enter session rows.
+    /// Bind this node's admitted account and namespace, with its directory on
+    /// the host's existing authenticated provider. The host owns the accepted
+    /// NodeLink and drives its pumps; credentials stay in host memory.
     #[must_use]
     pub fn account_routing(
         mut self,
+        scope: (
+            acyclic_actors::addressing::AccountId,
+            acyclic_actors::addressing::NamespaceId,
+        ),
         routing: crate::agent::Routing,
         account: Arc<dyn acyclic_stream::StreamProvider>,
     ) -> Self {
@@ -581,6 +591,7 @@ impl LocalHarnessConfig {
             paths: routing.paths.clone(),
         }));
         self.routing = Some(routing);
+        self.account_scope = Some(scope);
         self
     }
     /// Adds one custom tool to the enabled default set.

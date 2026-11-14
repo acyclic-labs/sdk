@@ -985,8 +985,12 @@ impl LocalHarness {
             Error::Unsupported("an embedded harness has no agent signing custody".into())
         })?;
         let id = crate::agent::AgentId::from_bytes(self.root.into_bytes());
+        let (account, namespace) = self.account_scope.as_ref().map_or(
+            (b"local".as_slice(), b"agents".as_slice()),
+            |(account, namespace)| (account.as_bytes(), namespace.as_str().as_bytes()),
+        );
         let within =
-            ActorReference::new(b"local", b"agents", id.as_str().as_bytes()).map_err(storage)?;
+            ActorReference::new(account, namespace, id.as_str().as_bytes()).map_err(storage)?;
         let turns = Turns {
             routing: self.routing.clone(),
             executors: self.executors(),

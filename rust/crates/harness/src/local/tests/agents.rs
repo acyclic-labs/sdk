@@ -33,6 +33,12 @@ async fn configured_account_directory_supplies_qualified_peers_and_preserves_opt
             )?
             .without_default_tools()
             .account_routing(
+                (
+                    acyclic_actors::addressing::AccountId::new(b"configured-account")
+                        .map_err(agent)?,
+                    acyclic_actors::addressing::NamespaceId::new(b"source-sessions")
+                        .map_err(agent)?,
+                ),
                 crate::agent::Routing {
                     paths: acyclic_actors::route::Paths::new(
                         StreamPath::new("account/routing").map_err(agent)?,
@@ -50,6 +56,8 @@ async fn configured_account_directory_supplies_qualified_peers_and_preserves_opt
         .agents()
         .actor(client.root())
         .map_err(agent)?;
+    assert_eq!(requester.account().as_bytes(), b"configured-account");
+    assert_eq!(requester.namespace().as_str(), "source-sessions");
     let remote_id = crate::agent::AgentId::from_bytes([17; 16]);
     let remote = acyclic_actors::addressing::ActorReference::new(
         requester.account().as_bytes(),

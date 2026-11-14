@@ -88,6 +88,10 @@ pub type LocalFilesystem<A = LocalAuthorityBackend, O = LocalObjectBackend> = Fi
 /// A checkout or volume, durable authority, and the agents hosted on it.
 pub struct LocalHarness {
     routing: Option<crate::agent::Routing>,
+    account_scope: Option<(
+        acyclic_actors::addressing::AccountId,
+        acyclic_actors::addressing::NamespaceId,
+    )>,
     peer_directory: Option<Arc<crate::hosting::PeerDirectory>>,
     topology: Option<crate::topology::Topology>,
     files: Arc<LocalFilesystem>,
