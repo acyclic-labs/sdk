@@ -1,7 +1,7 @@
 //! Causal custody follows an admitted future's poll, never a worker thread.
 use super::{OwnedRecording, Request, SpanId};
 use crate::{BoxProviderFuture, ProviderPlatform, StreamError};
-use std::{cell::RefCell, future::Future, sync::Arc};
+use std::{cell::RefCell, future::Future, pin::Pin, sync::Arc};
 
 pub(super) trait Producer: ProviderPlatform {
     fn enabled(&self) -> bool;
@@ -53,7 +53,7 @@ pin_project_lite::pin_project! {
         active: Option<Active>,
     }
     impl<F> PinnedDrop for Inherited<F> {
-        fn drop(this: std::pin::Pin<&mut Self>) {
+        fn drop(this: Pin<&mut Self>) {
             let mut this = this.project();
             let _restore = Restore(CURRENT.replace(this.active.clone()));
             this.source.set(None);
