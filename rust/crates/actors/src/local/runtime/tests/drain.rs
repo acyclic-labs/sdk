@@ -184,6 +184,23 @@ async fn failure_observers_survive_hibernation_and_unpolled_recovery() -> TestRe
     );
 
     runtime.host(address.clone())?;
+    let slot = runtime.slot(&address).ok_or("missing retained slot")?;
+    let work = runtime.ready[0].take().ok_or("missing original delivery work")?;
+    assert!(runtime.release(&address));
+    runtime.deliver(&address, &slot, Some(work)).await?;
+    let shard = store.scheduling_shard(&address);
+    assert!(
+        runtime.ready[0].failed(shard).contains(&address),
+        "released work lost its scheduling handoff"
+    );
+    assert!(
+        futures::poll!(failed.as_mut()).is_pending(),
+        "a released slot that ran no delivery fabricated a failure"
+    );
+    assert_eq!(handler.active.load(Ordering::SeqCst), 0);
+    drop(slot);
+
+    runtime.host(address.clone())?;
     let mut delivery = Box::pin(runtime.drain_actor(&address));
     assert!(futures::poll!(delivery.as_mut()).is_pending());
     assert_eq!(handler.active.load(Ordering::SeqCst), 1);
