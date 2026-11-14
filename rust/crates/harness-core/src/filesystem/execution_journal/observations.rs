@@ -539,7 +539,6 @@ where
                 return Ok(AppendObservation {
                     accepted,
                     committed_at_micros: None,
-                    #[cfg(feature = "research")]
                     sequence: accepted.then_some(*sequence),
                 });
             }
@@ -596,7 +595,6 @@ where
                 return Ok(AppendObservation {
                     accepted: true,
                     committed_at_micros: Some(committed_at_micros),
-                    #[cfg(feature = "research")]
                     sequence: Some(sequence),
                 });
             }
@@ -615,7 +613,6 @@ use crate::executor::stock_boundary;
 pub(super) struct AppendObservation {
     pub(super) accepted: bool,
     pub(super) committed_at_micros: Option<u64>,
-    #[cfg(feature = "research")]
     pub(super) sequence: Option<u64>,
 }
 
@@ -624,7 +621,6 @@ impl AppendObservation {
         Self {
             accepted: false,
             committed_at_micros: None,
-            #[cfg(feature = "research")]
             sequence: None,
         }
     }

@@ -61,6 +61,26 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn trace_request(
+        &self,
+        request: acyclic_stream::trace::Request,
+    ) -> Option<acyclic_stream::BoxProviderFuture<'_, Result<acyclic_stream::trace::OwnedRecording>>>
+    {
+        let (traces, owner) = self.traces.as_ref()?;
+        let recorder = traces.recorder(owner.as_str()).ok()??;
+        Some(Box::pin(async move {
+            recorder
+                .start(
+                    request.name,
+                    request.mechanism,
+                    request.parent,
+                    request.guarantee,
+                )
+                .await
+                .map(acyclic_stream::trace::Recording::into_owned)
+                .map_err(Error::from)
+        }))
+    }
     fn output_content(
         &self,
         operation: OperationId,
@@ -517,6 +537,47 @@ where
         Some(self)
     }
 
+    fn append_retained_if_tail<'a>(
+        &'a self,
+        operation: OperationId,
+        expected_tail: u64,
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a PreparationIo>,
+    ) -> Option<Result<crate::executor::RetainedExecutionFuture<'a>>> {
+        Some(crate::conversation::BoundedContentFuture::new(
+            io,
+            || async move {
+                let path = crate::executor::with_history_io(io, |work| {
+                    crate::distributed::execution_path(operation, work)
+                })?;
+                let mut commit = None;
+                let sequence = self
+                    .append_projected(
+                        operation,
+                        Some(expected_tail),
+                        key,
+                        event,
+                        &[],
+                        Some(&mut commit),
+                        io,
+                        |receipt| Ok(receipt.sequence),
+                    )?
+                    .await?;
+                let Some(sequence) = sequence else {
+                    return Ok(None);
+                };
+                let commit_id = commit.ok_or(Error::Indeterminate(operation))?;
+                Ok(Some(acyclic_stream::RetainedRecord {
+                    commit_id,
+                    path,
+                    sequence: sequence
+                        .checked_sub(1)
+                        .ok_or(Error::Indeterminate(operation))?,
+                }))
+            },
+        ))
+    }
     fn append_if_tail<'a>(
         &'a self,
         operation: OperationId,

@@ -7,7 +7,7 @@ use super::*;
 pub struct ApplicationSubscription {
     cursor: Cursor,
     subscription: wire::SessionSubscription,
-    completion: Option<oneshot::Receiver<Result<(), StreamError>>>,
+    completion: Option<oneshot::Receiver<Result<bool, StreamError>>>,
 }
 
 /// Custody of one application delivery. Persist the consumer's effects and
@@ -27,7 +27,7 @@ pub struct ApplicationDelivery {
     removed: Arc<signal::Signal<u64>>,
     id: u64,
     credit: Option<Credit>,
-    completion: Option<oneshot::Sender<Result<(), StreamError>>>,
+    completion: Option<oneshot::Sender<Result<bool, StreamError>>>,
 }
 
 impl Client {
@@ -55,14 +55,49 @@ impl Client {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub(super) enum DecisionFailure {
+    #[error("application delivery dropped before committing or discarding its checkpoint")]
+    Abandoned,
+}
+
 impl ApplicationSubscription {
     /// Returns the next delivery, waiting on the preceding application's
     /// decision if it is still outstanding. This wait does not poll the peer.
     pub async fn next(&mut self) -> Result<Option<ApplicationDelivery>, StreamError> {
         if let Some(completion) = self.completion.as_mut() {
-            let result = completion.await.map_err(|_| StreamError::Unavailable);
+            let decision = async {
+                completion
+                    .await
+                    .map_err(|source| StreamError::Unavailable.with_source(source))?
+            };
+            #[cfg(feature = "serde")]
+            let result = crate::trace::observe_outcome(
+                crate::trace::Request {
+                    name: "stream.application_decision_wait",
+                    mechanism: crate::trace::Mechanism::Wait,
+                    parent: None,
+                    guarantee: Some("application_decision_before_replay_advance"),
+                },
+                decision,
+                |result| {
+                    result.as_ref().ok().map(|accepted| {
+                        (
+                            Some(0),
+                            if *accepted {
+                                crate::trace::Outcome::Succeeded
+                            } else {
+                                crate::trace::Outcome::Unsettled
+                            },
+                        )
+                    })
+                },
+            )
+            .await;
+            #[cfg(not(feature = "serde"))]
+            let result = decision.await;
             self.completion = None;
-            result??;
+            result?;
         }
         let Some(delivery) = self.cursor.receive().await? else {
             return Ok(None);
@@ -221,10 +256,10 @@ impl ApplicationDelivery {
             (Ok(true), Some(read)) => self.progress.continue_read(read).map(|()| true),
             (result, _) => result,
         };
-        if result.is_ok() {
+        if let Ok(accepted) = &result {
             drop(self.credit.take());
             if let Some(completion) = self.completion.take() {
-                let _ = completion.send(Ok(()));
+                let _ = completion.send(Ok(*accepted));
             }
         }
         result
@@ -254,7 +289,9 @@ impl Drop for ApplicationDelivery {
     fn drop(&mut self) {
         if let Some(completion) = self.completion.take() {
             self.progress.cancel_and_remove(&self.removed, self.id);
-            let _ = completion.send(Err(StreamError::Unavailable));
+            let _ = completion.send(Err(
+                StreamError::Unavailable.with_source(DecisionFailure::Abandoned)
+            ));
         }
     }
 }

@@ -1,6 +1,7 @@
 use super::*;
 use crate::executor::{ToolErrorClass, ToolFailureCause, ToolFailureKind};
 use acyclic_stream::StreamProviderExt as _;
+use futures::TryStreamExt as _;
 
 fn refusal(step: u32) -> ExecutionEvent {
     ExecutionEvent::ToolFailed {
@@ -66,6 +67,36 @@ async fn terminal_lookup_survives_reconstruction_without_replaying_history() -> 
         );
         for step in 0..64 {
             let key = tool_settlement_key(step, "call", ToolTerminalOutcome::Failed, None)?;
+            if step == 0 {
+                let event = refusal(step);
+                let receipt = journal
+                    .append_retained_if_tail(turn, 1, &key, &event, Some(&io))
+                    .expect("original receipt capability")?
+                    .await?
+                    .expect("accepted failure");
+                let retry = journal
+                    .append_retained_if_tail(turn, 1, &key, &event, Some(&io))
+                    .expect("original receipt capability")?
+                    .await?
+                    .expect("accepted retry");
+                assert_eq!(receipt, retry);
+                assert_eq!(receipt.sequence, 1);
+                let source =
+                    acyclic_stream::Stream::new(journal.stream.clone(), receipt.path.as_str())?;
+                let mut records = source.read(receipt.sequence, 1).await?;
+                let record = records.try_next().await?.expect("original cause record");
+                assert_eq!(record.commit_id, receipt.commit_id);
+                assert_eq!(record.sequence, receipt.sequence);
+                let observation = observations::decode_observation(&record.value, None)?;
+                assert_eq!(observation.event, event);
+                assert!(
+                    journal
+                        .append_retained_if_tail(turn, 0, "refused-receipt", &refusal(1), Some(&io))
+                        .expect("original receipt capability")?
+                        .await?
+                        .is_none()
+                );
+            }
             journal.append(turn, &key, &refusal(step), None)?.await?;
             if ![0, 63].contains(&step) {
                 continue;

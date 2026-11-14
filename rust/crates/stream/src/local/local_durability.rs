@@ -33,6 +33,8 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
+    #[cfg(feature = "serde")]
+    let future = crate::trace::inherit(future);
     DEFERRED.scope(current_deferral(), future)
 }
 
