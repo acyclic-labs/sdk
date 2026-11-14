@@ -240,7 +240,7 @@ impl<P: NativeStreamProvider + ?Sized + 'static> ViewProvider for StreamProvider
         self.revision(source)?;
         Ok(ViewCut {
             sequence: source.epoch,
-            generation: [0; 32],
+            generation: None,
         })
     }
     async fn snapshot(

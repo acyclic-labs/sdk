@@ -1367,7 +1367,7 @@ where
                 Arc::clone(&self.stream),
                 agent_path,
                 private.volume()?,
-                Arc::clone(&storage.reader),
+                storage.reader.clone(),
             )
             .await?;
         #[cfg(target_arch = "wasm32")]

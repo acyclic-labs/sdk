@@ -35,28 +35,18 @@ pub(super) async fn selected_case_export(
     .await?;
     let routed_cut = routed.snapshot(&mut accounting(work)).await?;
     let (page, _, allocation) = routed
-        .list_directory_at_snapshot(&routed_cut, "/evals", None, 2, &mut accounting(work))
+        .list_directory_at_snapshot(&routed_cut, "/evals", None, 1, &mut accounting(work))
         .await?;
-    let page = (page, allocation);
-    assert_eq!(page.0.entries.len(), 2);
-    let position = page.0.entries[0]
-        .continuation
-        .clone()
-        .ok_or("missing producer prefix")?;
-    let cursor = acyclic_fs::LazyDirectoryCursor::after_source(
-        routed_cut.clone(),
-        "/evals",
-        position,
-        config,
-        &mut accounting(work),
-    )?;
+    assert_eq!(page.entries.len(), 1);
+    let cursor = page.next.ok_or("missing producer continuation")?;
+    drop(page.entries);
+    drop(allocation);
     let (encoded, encoded_custody) = cursor.encode(work)?;
     cursor.retire(&mut accounting(work))?;
     let resumed =
         acyclic_fs::LazyDirectoryCursor::decode(&encoded, config.profile, config.limits, work)?;
     drop(encoded);
     drop(encoded_custody);
-    drop(page);
     let (page, _, allocation) = routed
         .list_directory_at_snapshot(
             &routed_cut,

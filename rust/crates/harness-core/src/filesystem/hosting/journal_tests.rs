@@ -2,12 +2,12 @@
 //! timing hook: the next input settles before the original query resumes.
 use super::*;
 use crate::{
-    agent::{AgentId, Control, InboxRecord, Phase},
+    agent::{AgentId, AgentRecord, Control, InboxRecord, Phase},
     conversation::{ContentResidencyVerifier, VolumeClass, VolumeOwner, VolumeRef},
     filesystem::{PRIVATE_VOLUME, TurnAuthority},
     resources::GenerationRef,
 };
-use acyclic_stream::MemoryStream;
+use acyclic_stream::{MemoryStream, StreamProviderExt as _};
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 type Binding = Bound<MemoryStream, acyclic_fs::LogicalObjectStore<acyclic_objects::MemoryObjects>>;

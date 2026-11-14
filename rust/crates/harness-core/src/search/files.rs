@@ -287,6 +287,15 @@ impl FileCursor {
                     PrivateDirectoryEntryKind::File => {
                         cursor.pending = Some(Position { path, offset: 0 })
                     }
+                    // Traversal does not follow links or open special nodes.
+                    PrivateDirectoryEntryKind::SymbolicLink
+                    | PrivateDirectoryEntryKind::Fifo
+                    | PrivateDirectoryEntryKind::Socket
+                    | PrivateDirectoryEntryKind::CharacterDevice
+                    | PrivateDirectoryEntryKind::BlockDevice
+                    | PrivateDirectoryEntryKind::ReparsePoint
+                    | PrivateDirectoryEntryKind::MountBoundary
+                    | PrivateDirectoryEntryKind::Unsupported => retire(path, io)?,
                 }
             }
         }

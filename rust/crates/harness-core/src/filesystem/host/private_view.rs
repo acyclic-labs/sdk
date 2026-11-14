@@ -122,12 +122,18 @@ where
 
 // Keep construction independent of source cuts. The existing lazy workspace
 // captures and validates them only inside an original caller-funded demand.
-struct DeferredView<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource> {
+struct DeferredView<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+    D: DemandSource,
+> {
     workspace: Workspace<A, O>,
     source: Arc<D>,
     store: acyclic_fs::MemoryLazyWorkspaceStore,
 }
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static> DeferredView<A, O, D> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static, D: DemandSource + 'static>
+    DeferredView<A, O, D>
+{
     async fn bind(
         &self,
         ctx: &mut KernelAccounting<'_>,
@@ -142,8 +148,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static> Def
         .map_err(Into::into)
     }
 }
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static> PrivateView
-    for DeferredView<A, O, D>
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static, D: DemandSource + 'static>
+    PrivateView for DeferredView<A, O, D>
 {
     fn workspace_id(&self) -> acyclic_fs::WorkspaceId {
         self.workspace.id()

@@ -11,7 +11,7 @@ async fn hidden_directory_pages_advance_once_at_the_original_generation() -> Res
         VolumeClass::AgentPrivate,
     )
     .await?;
-    let (generation, first) = host
+    let first = host
         .list_private_directory(
             &volume,
             &grant,
@@ -25,6 +25,7 @@ async fn hidden_directory_pages_advance_once_at_the_original_generation() -> Res
         )
         .await?
         .ok_or_else(|| Error::NotFound("fixture directory".into()))?;
+    let generation = first.generation.clone();
     assert!(first.entries.is_empty());
     assert_eq!(first.examined, 1);
     let mut next = first.next;
@@ -62,7 +63,7 @@ async fn hidden_directory_pages_advance_once_at_the_original_generation() -> Res
     let mut examined = first.examined;
     let mut visible = Vec::new();
     while let Some(token) = next {
-        let (selected, page) = host
+        let page = host
             .list_private_directory(
                 &volume,
                 &grant,
@@ -76,7 +77,7 @@ async fn hidden_directory_pages_advance_once_at_the_original_generation() -> Res
             )
             .await?
             .ok_or_else(|| Error::NotFound("fixture directory".into()))?;
-        assert_eq!(selected, generation);
+        assert_eq!(page.generation, generation);
         assert_eq!(page.examined, 1);
         examined += page.examined;
         visible.extend(

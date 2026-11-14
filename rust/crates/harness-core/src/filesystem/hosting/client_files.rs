@@ -644,7 +644,6 @@ async fn file_heads<P: acyclic_stream::StreamProvider + ?Sized>(
         projection: acyclic_stream::HeadProjection::Tail,
         children: None,
         at_least: minimum,
-        at: None,
     };
     let heads = provider
         .heads(request.clone())
