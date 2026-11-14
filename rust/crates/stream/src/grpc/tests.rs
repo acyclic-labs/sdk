@@ -1048,11 +1048,9 @@ async fn server_read_custody_settles_only_at_original_body_eof() -> TestResult {
         .try_collect::<Vec<_>>()
         .await?;
     assert_eq!(empty.len(), 1);
-    assert!(
-        empty
-            .first()
-            .is_some_and(|frame| frame.records.is_empty() && frame.applied.is_some())
-    );
+    let empty = empty.into_iter().next().ok_or("missing empty read frame")?;
+    assert!(empty.applied.is_some());
+    assert!(wire_codec::read_response_records(empty)?.is_empty());
     assert!(
         root.within(service.read(Request::new(wire::ReadRequest {
             path: "server-custody/missing".into(),
