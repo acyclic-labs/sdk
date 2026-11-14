@@ -115,6 +115,24 @@ pub enum WorkspaceLineageError<E: std::error::Error + 'static> {
     TraversalLimit,
 }
 
+impl<E: std::error::Error + 'static> WorkspaceLineageError<E> {
+    /// The same failure with its store cause converted.
+    pub fn map_store<F: std::error::Error + 'static>(
+        self,
+        convert: impl FnOnce(E) -> F,
+    ) -> WorkspaceLineageError<F> {
+        match self {
+            Self::Store(error) => WorkspaceLineageError::Store(convert(error)),
+            Self::Workspace(error) => WorkspaceLineageError::Workspace(error),
+            Self::IncompatibleState => WorkspaceLineageError::IncompatibleState,
+            Self::ConflictingRegistration => WorkspaceLineageError::ConflictingRegistration,
+            Self::Contended => WorkspaceLineageError::Contended,
+            Self::UnauthorizedJoin => WorkspaceLineageError::UnauthorizedJoin,
+            Self::TraversalLimit => WorkspaceLineageError::TraversalLimit,
+        }
+    }
+}
+
 /// Core recursive-workspace graph over one durable lineage adapter.
 pub struct WorkspaceGraph<S> {
     store: S,
