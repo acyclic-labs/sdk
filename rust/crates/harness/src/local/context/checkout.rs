@@ -447,10 +447,7 @@ mod tests {
             .view()
             .open_related(
                 workspace.view().workspace().clone(),
-                &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                    work: &work,
-                    cancellation: &cancellation,
-                },
+                &mut acyclic_fs::kernel::KernelAccounting::native(&work, &cancellation),
             )
             .await
             .map_err(storage)?;
