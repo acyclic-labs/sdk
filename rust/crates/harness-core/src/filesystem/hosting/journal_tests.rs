@@ -16,7 +16,9 @@ type Binding = Bound<MemoryStream, acyclic_fs::LogicalObjectStore<acyclic_object
 async fn private_metadata_uses_the_session_cut_before_and_after_an_authored_override() -> TestResult
 {
     use crate::conversation::{ContentAccess, ContentGrant};
-    let (bound, root) = binding().await?;
+    let (bound, root) = binding()
+        .await
+        .map_err(|error| format!("create metadata session: {error}"))?;
     let state = bound.agents().state(&root).await?;
     let private = state
         .volumes
@@ -34,11 +36,13 @@ async fn private_metadata_uses_the_session_cut_before_and_after_an_authored_over
             &verifier,
             &scope,
         )
-        .await?;
+        .await
+        .map_err(|error| format!("bind metadata view: {error}"))?;
     let grant = ContentGrant::verify_directory_read(&verifier, &scope, private, "", &mut None)?;
     let original = host
         .select_private_generation(private, &grant, "ui/title", None, ContentAccess::default())
-        .await?;
+        .await
+        .map_err(|error| format!("select metadata cut: {error}"))?;
     let before = host
         .stat_private_path(
             private,
@@ -47,7 +51,8 @@ async fn private_metadata_uses_the_session_cut_before_and_after_an_authored_over
             Some(&original),
             ContentAccess::default(),
         )
-        .await?
+        .await
+        .map_err(|error| format!("read computed metadata: {error}"))?
         .ok_or("computed title metadata is absent")?;
     assert_eq!(before.kind, acyclic_fs::kernel::FileKind::Regular);
     assert_eq!(before.logical_bytes, Some(root.id_text().len() as u64));
