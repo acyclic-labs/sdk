@@ -9,14 +9,9 @@ mod command_scope_benchmark {
 
     async fn open(root: &Path, state: &Path) -> Result<crate::LocalHarness> {
         let model = crate::model::Model::new("scripted".into(), "test".into(), "1".into())?;
-        let provider = Arc::new(
-            ScriptedModelProvider::new([ScriptedTurn::Text("done".into())]).with_context_capacity(
-                crate::context::ModelContextCapacity {
-                    context_tokens: 32_768,
-                    output_tokens: Some(4096),
-                },
-            ),
-        );
+        let provider = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
+            "done".into(),
+        )]));
         crate::LocalHarness::open(
             crate::test_support::local_harness_config(root, (model, provider))?
                 .state_directory(state)
