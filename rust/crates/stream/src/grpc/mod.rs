@@ -408,20 +408,23 @@ impl Client {
                             && std::error::Error::source(error).is_none()
                     }) {
                         if let Some(lease) = &lease {
-                            lease.reject().await.map_err(|_| {
-                                Status::unauthenticated("credential source unavailable")
-                            })?;
+                            crate::transport_credential::reject(lease)
+                                .await
+                                .map_err(|error| {
+                                    credential_failure("credential source unavailable", error)
+                                })?;
                         }
                     }
                     if result.is_ok() {
                         if let Some(lease) = &lease {
-                            lease.check().await.map_err(|error| {
-                                let mut status = Status::unauthenticated(
-                                    "credential source unavailable or changed",
-                                );
-                                status.set_source(Arc::new(error));
-                                status
-                            })?;
+                            crate::transport_credential::check(lease)
+                                .await
+                                .map_err(|error| {
+                                    credential_failure(
+                                        "credential source unavailable or changed",
+                                        error,
+                                    )
+                                })?;
                         }
                     }
                     result
@@ -513,14 +516,12 @@ pub(crate) async fn request_authorization(
         return Ok((None, None));
     }
     if let Some(provider) = credential {
-        let token = provider
-            .resolve()
+        let token = crate::transport_credential::resolve(provider)
             .await
-            .map_err(|_| Status::unauthenticated("credential provider failed"))?;
-        token
-            .check()
+            .map_err(|error| credential_failure("credential provider failed", error))?;
+        crate::transport_credential::check(&token)
             .await
-            .map_err(|_| Status::unauthenticated("credential expired or changed"))?;
+            .map_err(|error| credential_failure("credential expired or changed", error))?;
         Ok((
             Some(authorization(&token).map_err(|_| Status::unauthenticated("invalid credential"))?),
             Some(token),
@@ -664,4 +665,13 @@ fn decode_response<T, U>(
         Err(_) => completion.invalid_response(),
     }
     result
+}
+
+fn credential_failure(
+    message: &'static str,
+    error: acyclic_auth::credential::CredentialError,
+) -> Status {
+    let mut status = Status::unauthenticated(message);
+    status.set_source(Arc::new(error));
+    status
 }

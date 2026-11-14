@@ -103,6 +103,11 @@ fn credential_provider_renews_each_physical_retry_without_changing_the_body() {
                         .await;
                     let error = result.err().expect("exhausted credential source refused");
                     prop_assert_eq!(error.category(), StreamError::AccessDenied);
+                    prop_assert!(
+                        std::iter::successors(std::error::Error::source(&error), |source| source
+                            .source())
+                        .any(|source| source.is::<CredentialError>())
+                    );
                     let original = tonic::Status::from(&error);
                     prop_assert_eq!(original.code(), Code::Unauthenticated);
                     prop_assert_eq!(original.message(), "credential provider failed");
@@ -146,7 +151,13 @@ fn session_request_authorization_is_fresh_sensitive_and_has_no_stale_fallback() 
                     Some(&stale),
                     Some(&provider),
                 ));
-                prop_assert_eq!(failed.unwrap_err().code(), Code::Unauthenticated);
+                let failed = failed.unwrap_err();
+                prop_assert_eq!(failed.code(), Code::Unauthenticated);
+                prop_assert!(
+                    std::iter::successors(std::error::Error::source(&failed), |source| source
+                        .source())
+                    .any(|source| source.is::<CredentialError>())
+                );
                 Ok(())
             },
         )
@@ -224,10 +235,68 @@ async fn wire_rejection_and_owner_denial_keep_exact_credential_custody() -> test
         let binding = admitted.binding().expect("trusted lease binding");
         assert_eq!(binding.revision, revision);
         assert_eq!(binding.expires_at_unix_seconds, 100);
-        let error = client
-            .inspect_idempotency(IdempotencyKey::unique())
-            .await
-            .unwrap_err();
+        #[cfg(feature = "serde")]
+        let trace = crate::Stream::new(
+            Arc::new(crate::MemoryStream::default()),
+            "agents/grpc-auth/trace",
+        )?;
+        #[cfg(feature = "serde")]
+        let recorder = Arc::new(crate::trace::Recorder::new(trace.clone(), [96; 16]));
+        #[cfg(feature = "serde")]
+        let root = recorder
+            .start(
+                "owner",
+                crate::trace::Mechanism::ToolCall,
+                None,
+                Some("original_request"),
+            )
+            .await?
+            .into_owned();
+        #[cfg(feature = "serde")]
+        let parent = root.id();
+        let request = client.inspect_idempotency(IdempotencyKey::unique());
+        #[cfg(feature = "serde")]
+        let request = root.within(request);
+        let error = request.await.unwrap_err();
+        #[cfg(feature = "serde")]
+        {
+            use crate::trace::{Mechanism, Observation, Outcome, TraceQuery};
+            let _completion = root.finish_submitted(None, Outcome::Succeeded)?;
+            let mut query = TraceQuery::new(
+                trace.follow(0, Default::default()).await?,
+                Default::default(),
+            );
+            let expected = if code == Code::Unauthenticated { 4 } else { 3 };
+            let mut completed = 0;
+            let mut names = Vec::new();
+            while completed < expected {
+                if let Some(Observation::Completed {
+                    id,
+                    start,
+                    bytes,
+                    result,
+                    ..
+                }) = query.next().await?
+                {
+                    completed += 1;
+                    assert_eq!(result, Outcome::Succeeded);
+                    if id != parent {
+                        assert_eq!(start.parent, Some(parent));
+                        assert_eq!(start.mechanism, Mechanism::AuthCheck);
+                        assert!(start.guarantee.is_some());
+                        assert_eq!(bytes, None, "credential bytes must not enter diagnostics");
+                        names.push(start.name);
+                    }
+                }
+            }
+            names.sort();
+            let mut expected_names = vec!["credential.check", "credential.resolve"];
+            if code == Code::Unauthenticated {
+                expected_names.push("credential.reject");
+            }
+            expected_names.sort();
+            assert_eq!(names, expected_names);
+        }
         assert_eq!(error.category(), StreamError::AccessDenied);
         let original = tonic::Status::from(&error);
         assert_eq!(original.code(), code);

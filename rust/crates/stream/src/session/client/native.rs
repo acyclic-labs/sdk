@@ -1,7 +1,7 @@
 //! gRPC I/O for the same pool used by browser Streams sessions.
 use super::*;
 use crate::grpc::{self, ChannelConnector as Connect};
-use acyclic_auth::credential::{CredentialAction, ResolvedCredential};
+use acyclic_auth::credential::ResolvedCredential;
 use futures::{
     channel::oneshot,
     future::{Either, select},
@@ -23,7 +23,7 @@ struct Grpc {
 struct Input {
     source: transport::Requests,
     lease: Option<ResolvedCredential>,
-    admission: Option<(wire::SessionFrame, CredentialAction<()>)>,
+    admission: Option<(wire::SessionFrame, crate::transport_credential::Check)>,
     failed: Option<oneshot::Sender<StreamError>>,
     ended: bool,
 }
@@ -52,8 +52,8 @@ async fn session_error(
 ) -> transport::Failure {
     if error.code() == tonic::Code::Unauthenticated && std::error::Error::source(&error).is_none() {
         if let Some(lease) = lease {
-            if lease.reject().await.is_err() {
-                return StreamError::AccessDenied.into();
+            if let Err(error) = crate::transport_credential::reject(lease).await {
+                return StreamError::AccessDenied.with_source(error).into();
             }
         }
     }
@@ -76,12 +76,12 @@ impl futures::Stream for Input {
                 let result = futures::ready!(std::pin::Pin::new(check).poll(cx));
                 let frame = std::mem::take(frame);
                 self.admission = None;
-                if result.is_ok() {
+                let Err(error) = result else {
                     return std::task::Poll::Ready(Some(frame));
-                }
+                };
                 self.ended = true;
                 if let Some(failed) = self.failed.take() {
-                    let _ = failed.send(StreamError::AccessDenied);
+                    let _ = failed.send(StreamError::AccessDenied.with_source(error));
                 }
                 return std::task::Poll::Ready(None);
             }
@@ -91,7 +91,7 @@ impl futures::Stream for Input {
                 return std::task::Poll::Ready(None);
             };
             if let Some(lease) = &self.lease {
-                self.admission = Some((frame, lease.check()));
+                self.admission = Some((frame, crate::transport_credential::check(lease)));
             } else {
                 return std::task::Poll::Ready(Some(frame));
             }
@@ -137,7 +137,7 @@ impl transport::Transport for Grpc {
                 Some(provider) => provider
                     .watch()
                     .await
-                    .map_err(|_| StreamError::AccessDenied)?,
+                    .map_err(|error| StreamError::AccessDenied.with_source(error))?,
                 None => None,
             };
             let (authorization, lease) = transport::credential_event(
@@ -152,17 +152,16 @@ impl transport::Transport for Grpc {
             } else {
                 (None, None)
             };
-            let request = self.metadata.request(
-                Input {
-                    source,
-                    lease: lease.clone(),
-                    admission: None,
-                    failed,
-                    ended: false,
-                },
-                authorization,
-                lease.clone(),
-            );
+            let input = Input {
+                source,
+                lease: lease.clone(),
+                admission: None,
+                failed,
+                ended: false,
+            };
+            #[cfg(feature = "serde")]
+            let input = crate::trace::inherit_stream(input);
+            let request = self.metadata.request(input, authorization, lease.clone());
             let mut service = wire::stream_session_service_client::StreamSessionServiceClient::new(
                 acyclic_auth::channel::guard(self.channel.clone()),
             );
@@ -173,7 +172,7 @@ impl transport::Transport for Grpc {
                 }
             })
             .await??;
-            Ok(Box::pin(futures::stream::try_unfold(
+            let body = futures::stream::try_unfold(
                 (response, lease, failure, changed),
                 |(mut response, lease, mut failure, mut changed)| async move {
                     let value = transport::credential_event(&mut changed, async {
@@ -182,14 +181,19 @@ impl transport::Transport for Grpc {
                             Err(error) => return Err(session_error(error, lease.as_ref()).await),
                         };
                         if let Some(lease) = &lease {
-                            lease.check().await.map_err(|_| StreamError::AccessDenied)?;
+                            crate::transport_credential::check(lease)
+                                .await
+                                .map_err(|error| StreamError::AccessDenied.with_source(error))?;
                         }
                         Ok(value)
                     })
                     .await??;
                     Ok(value.map(|value| (value.into(), (response, lease, failure, changed))))
                 },
-            )) as Response)
+            );
+            #[cfg(feature = "serde")]
+            let body = crate::trace::inherit_stream(body);
+            Ok(Box::pin(body) as Response)
         })
     }
 }

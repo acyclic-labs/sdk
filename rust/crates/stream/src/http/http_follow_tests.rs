@@ -6,7 +6,7 @@
     reason = "Test fixtures and assertions must fail immediately on malformed inputs or violated expectations"
 )]
 use super::*;
-use acyclic_grpc_observability::tests::Capture;
+
 use serde_json::json;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -281,45 +281,46 @@ async fn missing_idempotency() -> (IdempotencyKey, Reply) {
 }
 
 #[tokio::test]
-async fn request_path_typed_append_preserves_json_responses_and_validation_trace() {
-    use tracing::instrument::WithSubscriber;
-    use tracing_subscriber::prelude::*;
-
-    let captured = Capture::default();
-    let subscriber = tracing_subscriber::registry().with(captured.clone());
-    async {
-        let server = Server::new(vec![
+async fn request_path_typed_append_preserves_json_responses_and_validation() {
+    let server = Server::new(vec![
             Reply::ok(json!({"ok":true,"start":"0","end":"1","tail":"1","commitId":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","revision":{"scope":"AQ==","incarnation":"AAAAAAAAAAAAAAAAAAAAAQ==","index":"1"}})),
             Reply::ok(json!({"ok":false,"code":"tail_conflict","actualTail":"1"})),
         ]).await;
-        let mut request = AppendRequest {
-            path: path(),
-            records: Vec::new(),
-            if_tail: Some(0),
-            idempotency_key: IdempotencyKey::new(bytes::Bytes::from_static(b"key")).unwrap(),
-        };
-        assert_eq!(server.client.append(request.clone()).await, Err(StreamError::LimitExceeded));
-        assert!(server.requests().is_empty());
-        request.records.push((OwnedBytes::from_static(b"\x00\xff")).into());
-        assert!(matches!(server.client.append(request.clone()).await.unwrap(), AppendOutcome::Committed(AppendReceipt { start: 0, end: 1, tail: 1, .. })));
-        assert_eq!(server.client.append(request).await.unwrap(), AppendOutcome::TailConflict { actual_tail: 1 });
-        let expected = ("/v1/stream/append".into(), json!({
+    let mut request = AppendRequest {
+        path: path(),
+        records: Vec::new(),
+        if_tail: Some(0),
+        idempotency_key: IdempotencyKey::new(bytes::Bytes::from_static(b"key")).unwrap(),
+    };
+    assert_eq!(
+        server.client.append(request.clone()).await,
+        Err(StreamError::LimitExceeded)
+    );
+    assert!(server.requests().is_empty());
+    request
+        .records
+        .push((OwnedBytes::from_static(b"\x00\xff")).into());
+    assert!(matches!(
+        server.client.append(request.clone()).await.unwrap(),
+        AppendOutcome::Committed(AppendReceipt {
+            start: 0,
+            end: 1,
+            tail: 1,
+            ..
+        })
+    ));
+    assert_eq!(
+        server.client.append(request).await.unwrap(),
+        AppendOutcome::TailConflict { actual_tail: 1 }
+    );
+    let expected = (
+        "/v1/stream/append".into(),
+        json!({
             "path":"follow/test", "records":[{"value":"AP8=","keys":[],"attributes":[]}],
             "options":{"ifTail":"0","idempotencyKey":"a2V5"},
-        }));
-        assert_eq!(server.requests(), vec![expected.clone(), expected]);
-    }.with_subscriber(subscriber).await;
-    let evidence = captured.0.lock().unwrap();
-    let calls: Vec<_> = evidence
-        .spans
-        .iter()
-        .filter(|span| span.name == "acyclic.stream.http.call")
-        .collect();
-    assert_eq!(calls.len(), 3);
-    assert!(calls.iter().all(|span| span.closed));
-    assert_eq!(calls[0].fields["outcome"], "err");
-    assert_eq!(calls[0].fields["error.kind"], "limit_exceeded");
-    assert!(calls[1..].iter().all(|span| span.fields["outcome"] == "ok"));
+        }),
+    );
+    assert_eq!(server.requests(), vec![expected.clone(), expected]);
 }
 
 #[tokio::test]
@@ -354,8 +355,31 @@ async fn cancelling_a_pending_unary_body_closes_the_connection() {
         }),
     )
     .await;
+    #[cfg(feature = "serde")]
+    let trace = Stream::new(
+        Arc::new(MemoryStream::default()),
+        "agents/http-cancel/trace",
+    )
+    .unwrap();
+    #[cfg(feature = "serde")]
+    let recorder = Arc::new(crate::trace::Recorder::new(trace.clone(), [95; 16]));
+    #[cfg(feature = "serde")]
+    let root = recorder
+        .start(
+            "http-owner",
+            crate::trace::Mechanism::ToolCall,
+            None,
+            Some("original_request"),
+        )
+        .await
+        .unwrap()
+        .into_owned();
+    #[cfg(feature = "serde")]
+    let parent = root.id();
     {
         let reading = server.client.inspect_idempotency(key);
+        #[cfg(feature = "serde")]
+        let reading = root.within(reading);
         tokio::pin!(reading);
         tokio::select! {
             result = &mut reading => panic!("body completed while held: {}", result.is_ok()),
@@ -369,4 +393,199 @@ async fn cancelling_a_pending_unary_body_closes_the_connection() {
     }
     closed.await.unwrap();
     assert_eq!(server.requests().len(), 1);
+    #[cfg(feature = "serde")]
+    {
+        use crate::trace::{Mechanism, Observation, Outcome, TraceQuery};
+        let _completion = root.finish_submitted(None, Outcome::Succeeded).unwrap();
+        let mut query = TraceQuery::new(
+            trace.follow(0, Default::default()).await.unwrap(),
+            Default::default(),
+        );
+        let mut completed = 0;
+        let mut cancelled = false;
+        while completed < 2 {
+            if let Observation::Completed {
+                id,
+                start,
+                bytes,
+                result,
+                ..
+            } = query
+                .next()
+                .await
+                .unwrap()
+                .expect("original trace must remain readable")
+            {
+                completed += 1;
+                if id == parent {
+                    assert_eq!(result, Outcome::Succeeded);
+                } else {
+                    assert!(
+                        !cancelled,
+                        "one physical request emitted duplicate terminals"
+                    );
+                    cancelled = true;
+                    assert_eq!(start.parent, Some(parent));
+                    assert_eq!(start.mechanism, Mechanism::RoundTrip);
+                    assert_eq!(result, Outcome::Unsettled);
+                    assert_eq!(bytes, None, "a partial response has no settled body size");
+                }
+            }
+        }
+        assert!(cancelled, "dropped HTTP work was reported as settled");
+    }
+}
+
+#[cfg(feature = "serde")]
+#[tokio::test]
+async fn physical_http_exchange_has_owned_round_trip_and_original_body_bytes()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
+    let response = json!({"ok":false,"code":"tail_conflict","actualTail":"1"});
+    let response_bytes = serde_json::to_vec(&response)?.len() as u64;
+    let mut server = Server::new(vec![
+        Reply::ok(response.clone()),
+        Reply::ok(response.clone()),
+    ])
+    .await;
+    let resolutions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let calls = resolutions.clone();
+    server.client.credential = Some(CredentialProvider::new(move || {
+        calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        futures::future::ready(Ok("original-secret-credential".into()))
+    }));
+    let trace = Stream::new(Arc::new(MemoryStream::default()), "agents/http/trace")?;
+    // No active owner: no diagnostic publication, even for an actual exchange.
+    assert_eq!(
+        server
+            .client
+            .request_json("append", || Ok("{}".into()))
+            .await?,
+        response
+    );
+    assert!(matches!(trace.tail().await, Err(StreamError::NotFound)));
+    let recorder = Arc::new(Recorder::new(trace.clone(), [94; 16]));
+    let root = recorder
+        .start(
+            "http-owner",
+            Mechanism::ToolCall,
+            None,
+            Some("original_request"),
+        )
+        .await?
+        .into_owned();
+    let parent = root.id();
+    assert!(
+        root.within(
+            server
+                .client
+                .request_json("append", || Err("limit_exceeded"))
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(
+        server.requests().len(),
+        1,
+        "encoding refusal must not make a round trip"
+    );
+    assert_eq!(
+        root.within(server.client.request_json("append", || Ok("{}".into())))
+            .await?,
+        response
+    );
+    assert_eq!(server.requests().len(), 2);
+    let original_credential = server
+        .client
+        .credential
+        .replace(CredentialProvider::new(|| {
+            futures::future::ready(Err(acyclic_auth::credential::CredentialError::Invalid))
+        }));
+    let refused = root
+        .within(server.client.request_json("append", || Ok("{}".into())))
+        .await
+        .expect_err("the original credential refusal must stop dispatch");
+    server.client.credential = original_credential;
+    assert_eq!(refused.category(), StreamError::AccessDenied);
+    assert_eq!(
+        server.requests().len(),
+        2,
+        "credential refusal made a physical request"
+    );
+    let _completion = root.finish_submitted(None, Outcome::Succeeded)?;
+    let mut query = TraceQuery::new(
+        trace.follow(0, Default::default()).await?,
+        Default::default(),
+    );
+    let mut completed = 0;
+    let mut exchanges = 0;
+    let mut auth_checks = 0;
+    let mut auth_parents = Vec::new();
+    let mut exchange_id = None;
+    let mut refused_credentials = 0;
+    while completed < 7 {
+        if let Some(Observation::Completed {
+            id,
+            start,
+            bytes,
+            result,
+            ..
+        }) = query.next().await?
+        {
+            completed += 1;
+            if start.mechanism != Mechanism::AuthCheck {
+                assert_eq!(result, Outcome::Succeeded);
+            }
+            if start.mechanism == Mechanism::AuthCheck {
+                if result == Outcome::Unsettled {
+                    assert_eq!(start.name, "credential.resolve");
+                    assert_eq!(start.parent, Some(parent));
+                    refused_credentials += 1;
+                } else {
+                    assert_eq!(result, Outcome::Succeeded);
+                }
+                auth_checks += 1;
+                auth_parents.push(start.parent);
+                assert_eq!(
+                    start.guarantee.as_deref(),
+                    Some(if start.name == "credential.resolve" {
+                        "original_credential_source_admission"
+                    } else {
+                        "original_credential_lease_valid_at_boundary"
+                    })
+                );
+                assert_eq!(bytes, None);
+            } else if id != parent {
+                exchanges += 1;
+                exchange_id = Some(id);
+                assert_eq!(start.parent, Some(parent));
+                assert_eq!(start.name, "stream.http.request");
+                assert_eq!(start.mechanism, Mechanism::RoundTrip);
+                assert_eq!(
+                    start.guarantee.as_deref(),
+                    Some("authenticated_bounded_json_response_at_original_route")
+                );
+                assert_eq!(bytes, Some(response_bytes));
+            }
+        }
+    }
+    assert_eq!(exchanges, 1);
+    assert_eq!(auth_checks, 5);
+    assert_eq!(refused_credentials, 1);
+    assert_eq!(
+        auth_parents
+            .iter()
+            .filter(|value| **value == Some(parent))
+            .count(),
+        3
+    );
+    assert_eq!(
+        auth_parents
+            .iter()
+            .filter(|value| **value == exchange_id)
+            .count(),
+        2
+    );
+    assert_eq!(resolutions.load(std::sync::atomic::Ordering::SeqCst), 2);
+    Ok(())
 }
