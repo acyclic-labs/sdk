@@ -314,9 +314,9 @@ where
                     io,
                 )
                 .await?;
-                (Cow::Owned(value.invocation), value.target, hold)
+                (value.invocation, value.target, hold)
             }
-            Invocation::Proposed(value) => (Cow::Owned(value), None, None),
+            Invocation::Proposed(value) => (value, None, None),
         };
         let command = (invocation.name == "shell")
             .then(|| {
