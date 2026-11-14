@@ -53,6 +53,15 @@ impl Default for SourceOptions {
     }
 }
 
+impl SourceOptions {
+    fn validate(&self) -> Result<(), SourceError> {
+        if self.maximum_paths == Some(0) || self.maximum_extent_spans == Some(0) {
+            return Err(SourceError::InvalidOptions);
+        }
+        Ok(())
+    }
+}
+
 /// Durable semantic source state exposed to callers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SourceState {
@@ -595,10 +604,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         path: impl AsRef<Path>,
         options: SourceOptions,
     ) -> Result<Workspace<A, O>, SourceError> {
-        if options.maximum_paths == Some(0) || options.maximum_extent_spans == Some(0) {
-            return Err(SourceError::InvalidOptions);
-        }
-        let workspace = self.open_source_workspace(name.as_ref()).await?;
+        options.validate()?;
+        self.open_source_workspace(name.as_ref())
+            .await?
+            .attach_directory(path, options)
+            .await
+    }
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
+    /// Attach a native directory to this already authenticated workspace.
+    /// The caller retains its original source-administration admission.
+    pub async fn attach_directory(
+        &self,
+        path: impl AsRef<Path>,
+        options: SourceOptions,
+    ) -> Result<Workspace<A, O>, SourceError> {
+        options.validate()?;
+        let mut workspace = self.clone();
+        workspace.source = None;
         let watcher = NativeWatch::open_with_profile(
             path.as_ref(),
             workspace.volume.config().profile,

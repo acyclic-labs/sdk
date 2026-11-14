@@ -31,10 +31,9 @@ mod wire_service;
 pub use wire_service::{
     CredentialGrant, CredentialGrantRequest, CredentialKind, DEFAULT_HOSTED_MAXIMUM_PAGE_ITEMS,
     DEFAULT_HOSTED_MAXIMUM_RESPONSE_BYTES, FILESYSTEM_PROTOCOL_VERSION, FilesystemCredentialIssuer,
-    FilesystemSourceProvider, FilesystemWireLimits, FilesystemWireService,
-    HostedSourceInvalidation, HostedSourceOperation, HostedSourceResult, HostedSourceScope,
-    HostedSourceState, MountOwner, MountRefusal, admit_mount, mount_audience, mount_capability,
-    mount_resource,
+    FilesystemNativeSources, FilesystemSourceProvider, FilesystemWireLimits, FilesystemWireService,
+    HostedSourceInvalidation, HostedSourceResult, HostedSourceState, MountOwner, MountRefusal,
+    admit_mount, mount_audience, mount_capability, mount_resource,
 };
 
 #[cfg(not(target_arch = "wasm32"))]

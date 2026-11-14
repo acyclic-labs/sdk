@@ -627,8 +627,8 @@ where
         request: Request<wire::SourceStateRequest>,
     ) -> Result<Response<wire::SourceResponse>, Status> {
         self.admit(&request)?;
-        let (workspace, scope) = self.source_scope(request.into_inner().workspace).await?;
-        let result = self.source_provider()?.state(scope).await?;
+        let workspace = self.workspace(request.into_inner().workspace).await?;
+        let result = self.source_provider()?.state(&workspace).await?;
         Ok(Response::new(
             self.source_response(&workspace, result).await?,
         ))
@@ -641,13 +641,10 @@ where
         self.admit(&request)?;
         let request = request.into_inner();
         let idempotency_key = operation(request.operation)?;
-        let (workspace, scope) = self.source_scope(request.workspace).await?;
+        let workspace = self.workspace(request.workspace).await?;
         let result = self
             .source_provider()?
-            .reconcile(HostedSourceOperation {
-                scope,
-                idempotency_key,
-            })
+            .reconcile(&workspace, idempotency_key)
             .await?;
         Ok(Response::new(
             self.source_response(&workspace, result).await?,
@@ -661,13 +658,10 @@ where
         self.admit(&request)?;
         let request = request.into_inner();
         let idempotency_key = operation(request.operation)?;
-        let (workspace, scope) = self.source_scope(request.workspace).await?;
+        let workspace = self.workspace(request.workspace).await?;
         let result = self
             .source_provider()?
-            .rescan(HostedSourceOperation {
-                scope,
-                idempotency_key,
-            })
+            .rescan(&workspace, idempotency_key)
             .await?;
         Ok(Response::new(
             self.source_response(&workspace, result).await?,
@@ -681,13 +675,10 @@ where
         self.admit(&request)?;
         let request = request.into_inner();
         let idempotency_key = operation(request.operation)?;
-        let (workspace, scope) = self.source_scope(request.workspace).await?;
+        let workspace = self.workspace(request.workspace).await?;
         let result = self
             .source_provider()?
-            .seal(HostedSourceOperation {
-                scope,
-                idempotency_key,
-            })
+            .seal(&workspace, idempotency_key)
             .await?;
         Ok(Response::new(
             self.source_response(&workspace, result).await?,
