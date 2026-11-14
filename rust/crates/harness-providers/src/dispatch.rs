@@ -103,7 +103,9 @@ pub(crate) async fn authenticate<'a>(
         return Ok((Some(Cow::Owned(key)), account));
     }
     if !authenticated(provider) {
-        return Err(invalid("model provider API key is unavailable"));
+        return Err(invalid(
+            "model provider API key is unavailable; recovery: configure host credentials for the selected provider",
+        ));
     }
     Ok((provider.key.as_deref().map(Cow::Borrowed), None))
 }

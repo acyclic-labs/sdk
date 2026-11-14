@@ -488,6 +488,44 @@ test("a delta condition admits streamed text only while its turn is open", async
   screen.dispose();
 });
 
+test("terminal refusal joins its declared status without hiding unexpected failures", async () => {
+  class ReportedTerminal extends Processes {
+    startTerminal(binary, args, options) { return this.startReported(binary, args, options); }
+  }
+  const root = mkdtempSync(join(tmpdir(), "terminal-refusal-"));
+  try {
+    for (const exit of [1, 0, 2]) {
+      const processes = new ReportedTerminal();
+      try {
+        let captured;
+        const completion = pty(processes, process.execPath, {
+          id: "terminal-refusal", workspace: root,
+          args: ["-e", `
+            const { Socket, connect } = require('node:net');
+            const channel = process.env.ACYCLIC_REPORT_PIPE
+              ? connect(process.env.ACYCLIC_REPORT_PIPE) : new Socket({ fd: 3 });
+            process.stdout.write('original terminal refusal\\r\\n', () => {
+              const failed = { phase: 'execution', cause: 'declared refusal', raw_os_error: null };
+              channel.end(JSON.stringify({ generation: process.env.ACYCLIC_REPORT_GENERATION, failed }) + '\\n',
+                () => process.exit(1));
+            });`],
+          onRequest() { return () => {}; },
+        }, { actions: [], exit, execution_failure: "declared refusal" }, result => { captured = result; });
+        if (exit === 1) {
+          const result = await completion;
+          assert.equal(result.code, 1);
+          assert.equal(result.signal, null, "declared refusal keeps its physical exit");
+          assert.match(result.stdout, /original terminal refusal/);
+        } else if (exit === 0) {
+          await assert.rejects(completion, error => error.code === "PROCESS_EXECUTION_FAILED");
+        } else await assert.rejects(completion, error => error.code === "ERR_ASSERTION");
+        assert.equal(captured.termination.execution_failure.cause, "declared refusal");
+        assert.equal(processes.children.size, 0);
+      } finally { await processes.close(); }
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("captured interrupted recovery admits its wrapped diagnostic through original completion", async () => {
   class TerminalProcess extends Processes {
     startTerminal(binary, args, { cwd, env }) { return this.start(binary, args, { cwd, env }); }

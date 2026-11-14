@@ -34,14 +34,15 @@ seed; a cached smoke receipt proves the recorded campaign, not additional search
 Private generated corpus is discarded after success, so it cannot invalidate the
 retained corpus or silently change the next campaign's starting state.
 
-The external coordinator supplies `fuzz-campaign.mjs` beside its existing
-`action-cache.mjs` and `test-cache.mjs`. Set `SDK_FUZZ_CAMPAIGN` to its absolute
-module path before invoking the command. There is no implicit host path.
+Set `SDK_FUZZ_CAMPAIGN` to the supplied runner module's absolute path before
+invoking the command. There is no implicit host path.
 Missing infrastructure fails explicitly. Supplied runners publish
 their terminal through the `log` callback;
 the entry point publishes FAIL if import or invocation fails before that receipt,
 or if the runner returns without one. A runner that publishes FAIL and then throws
-does not produce a second receipt. Cache assumptions match the
+does not produce a second receipt. A FAIL receipt also exits unsuccessfully when
+the runner returns normally. Repeated terminal receipts are refused before another
+receipt is printed. Cache assumptions match the
 shared tracer: process/kernel state and file metadata are outside the content
 key, and private scratch names have no semantic significance. Non-loopback
 network activity, foreign sockets, namespace changes, privileged executables and

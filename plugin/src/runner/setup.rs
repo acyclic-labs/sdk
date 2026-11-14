@@ -153,7 +153,7 @@ async fn selection_from(
         .model)
 }
 
-const KEYS: &str = "provider key unavailable; recovery: run graphcoder in a terminal to save a key in OS keychain service acyclic-harness, set MORPH_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY / GEMINI_API_KEY (or GOOGLE_API_KEY), or pass --credentials FILE with an api_keys provider map";
+const KEYS: &str = "provider key unavailable; recovery: run graphcoder in a terminal to save a key in the configured OS keychain service, set the selected provider's API key environment variable, or pass --credentials FILE with an api_keys provider map";
 
 pub(super) async fn first_run(
     args: &mut Args,

@@ -112,16 +112,25 @@ export async function pty(processes, binary, fixture, input, capture) {
           `step=assert observed terminal frame: ${visible}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
         failures.accept(diagnostic, action.when, action.assert, visible);
         snapshots.push({ action: index, logical });
-        if (action.prompt !== undefined || action.send !== undefined || action.kill || action.detach) frames.consume();
+        let send = action.send;
+        if (action.choose !== undefined) {
+          assert.equal(send, undefined, "a choice cannot also send raw input");
+          assert.equal(action.prompt, undefined, "a choice cannot also submit a prompt");
+          const choices = logical.split(/\r?\n/).map(line => line.match(/^\s*(\d+)\.\s+(.+?)\s*$/))
+            .filter(choice => choice?.[2] === action.choose);
+          assert.equal(choices.length, 1, `expected one visible choice ${action.choose}: ${logical}`);
+          send = `${choices[0][1]}\r`;
+        }
+        if (action.prompt !== undefined || send !== undefined || action.kill || action.detach) frames.consume();
         trace({ event: "action", prompt_bytes: Buffer.byteLength(action.prompt ?? ""),
-          send: action.send, kill: action.kill, available: frames.available() });
+          send, kill: action.kill, available: frames.available() });
         index++;
-        if (action.prompt !== undefined || action.send !== undefined || action.kill) frames.consume();
+        if (action.prompt !== undefined || send !== undefined || action.kill) frames.consume();
         if (action.prompt !== undefined) {
           prompted = requests;
           running.child.stdin.write(`\x1b[200~${action.prompt}\x1b[201~\r`);
         }
-        if (action.send !== undefined) running.child.stdin.write(action.send);
+        if (send !== undefined) running.child.stdin.write(send);
         if (action.detach) {
           detaching = true;
           running.child.stdin.write("\u0004");
@@ -154,12 +163,12 @@ export async function pty(processes, binary, fixture, input, capture) {
       frames.write(bytes);
     });
     let result;
-    // Interactive waits must stop on native failure; ordinary commands retain
-    // their original exit status so declared refusal cases can assert it.
+    // Successful interactions stop on native failure. Declared refusal cases
+    // join the original exit so cancellation cannot replace its status.
     // A missing interaction is a failed case, never an indefinitely live PTY.
     // This is only a protective bound; every successful action waits on frames.
     const signal = AbortSignal.any([AbortSignal.timeout(120_000),
-      ...(running.failure ? [running.failure] : []), ...(fixture.signal ? [fixture.signal] : [])]);
+      ...((input.exit ?? 0) === 0 && running.failure ? [running.failure] : []), ...(fixture.signal ? [fixture.signal] : [])]);
     try { result = await withCancellation(running, signal); }
     catch (error) {
       (errors ??= []).push(error);
@@ -191,6 +200,7 @@ export async function pty(processes, binary, fixture, input, capture) {
     }
     // A refused start reports only through its termination record.
     const cause = result.termination?.execution_failure;
+    if (input.execution_failure !== undefined) assert.equal(cause?.cause, input.execution_failure);
     assert.equal(index, input.actions.length, `PTY completed ${index}/${input.actions.length} actions: ${cause ? JSON.stringify(cause) : ""}${result.stderr}\n${result.stdout}`);
     if (!input.killed) {
       assert.ok(frames.ready(), `step=admit completed terminal transaction; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);

@@ -3,14 +3,19 @@
 Build `graphcoder` and `harness-mock-model` on the target OS ahead of timing.
 `pty-first-run` also requires `E2E_CREDENTIALS_FIXTURE`, the prebuilt
 `acyclic-harness-providers` example `credential-fixture`. It uses a unique
-service in the real OS keychain and requires both launches to send the role model
-`morph-kimik31`, even though the catalog default is `tiny`. It proves
-headless refusal, early startup keys and cancellation, cancellation at hidden-key entry,
+service in the real OS keychain. The first launch selects the generic `e2e/alternate`
+provider/model from the visible numbered menus; the next launch must reuse that
+selection and its saved key over the catalog default `e2e/tiny`. Both model
+requests must name `alternate`. It proves
+headless refusal with a remedy, early invalid numeric input and correction,
+cancellation before credentials and at hidden-key entry,
 empty/multiline key correction, and the first answer's delta
 before turn settlement. Cancelled input never reaches storage or the model. It then
 removes that isolated service entry through the shared credentials API. On Linux run in
 an isolated unlocked Secret Service session (for example a private D-Bus
 session with gnome-keyring); unavailable keychains fail this acceptance case.
+This credential and terminal case uses physical workspace mounting, so it also
+works without a native mount service.
 The fixture key is never allowed in terminal captures or model context.
 Each child process selects its unique native service with `ACYCLIC_KEYCHAIN_SERVICE`;
 attaching clients carry no credential option. Explicit credential documents may
@@ -29,6 +34,10 @@ binary. Build it with `cargo build --locked -p acyclic-native-runtime --bin acyc
 for the target platform, then supply its absolute executable as `E2E_PROCESS_HOST`.
 Use the same source revision as GraphCoder and retain the successful Cargo output
 and executable digest. Changed host source requires a matching build.
+Headless inputs can declare `descendant_custody: true` when their service
+descendants must retire before the next input. This uses the same native owner
+as terminal inputs.
+GraphCoder orphan-fencing cases retain their direct process launch and recovery oracle.
 External acceptance
 commands run under a Linux subreaper, a macOS session or a Windows Job Object. Normal
 exit and suite cancellation drain their service descendants before returning.

@@ -173,6 +173,12 @@ async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> 
         error.to_string().contains("API key is unavailable"),
         "built-in names do not bypass catalog policy"
     );
+    assert!(
+        error
+            .to_string()
+            .contains("recovery: configure host credentials"),
+        "credential refusal explains how to recover before sending a request"
+    );
     assert_eq!(script.sent.lock().expect("fixture").len(), sent);
     Ok(())
 }
