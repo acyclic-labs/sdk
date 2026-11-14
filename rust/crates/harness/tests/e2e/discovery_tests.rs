@@ -68,16 +68,16 @@ async fn discovery_oracles_distinguish_pinned_and_reloaded_generations() -> Test
 async fn skill_oracles_reject_missing_metadata_wrong_descriptions_and_body_injection() -> TestResult
 {
     let initial = baseline("discovery/skills/lazy.json").await?;
-    for field in ["description", "source", "disabled", "forbidden"] {
+    for field in ["description", "name", "disabled", "forbidden"] {
         let mut case = initial.clone();
         match field {
             "description" => {
-                case["expect"]["requests"][0]["messages"][0]["content"]["$json"][0]["description"] =
+                case["expect"]["requests"][0]["messages"][0]["content"]["$skill_catalog"][0]["description"] =
                     json!("wrong description")
             }
-            "source" => {
-                case["expect"]["requests"][0]["messages"][0]["content"]["$json"][0]["source"]["path"] =
-                    json!("wrong/SKILL.md")
+            "name" => {
+                case["expect"]["requests"][0]["messages"][0]["content"]["$skill_catalog"][0]["name"] =
+                    json!("wrong-name")
             }
             "disabled" => case["discovery"]["policy"]["skill_name"] = Value::Null,
             "forbidden" => {
@@ -113,7 +113,7 @@ async fn skill_body_guards_reject_plain_wrapped_and_structured_text() -> TestRes
         let mut observable = injected.clone();
         observable["expect"]["not_requests"] = json!([]);
         observable["expect"]["requests"][0]["messages"] = json!([
-            {"role":"system","content":{"$json":[{"name":"inspect"}]}},
+            initial["expect"]["requests"][0]["messages"][0].clone(),
             {"role":"system","content":content},
             {"role":"user","content":"Inspect files"}
         ]);

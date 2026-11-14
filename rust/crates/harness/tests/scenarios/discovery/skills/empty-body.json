@@ -1,4 +1,3 @@
 {"seed":{"skills/inspect/SKILL.md":"---\nname: inspect\ndescription: Inspect files\n---\n"},"expect":{"requests":[{
-  "messages":[{"role":"system","content":{"$json":[{"name":"inspect","description":"Inspect files","source":{"path":
-  "skills/inspect/SKILL.md"}}]}},{"role":"user","content":"Inspect files"}]}],"not_requests":[{"messages":[{"content":
+  "messages":[{"role":"system","content":{"$skill_catalog":[{"name":"inspect","description":"Inspect files","id":"*"}]}},{"role":"user","content":"Inspect files"}]}],"not_requests":[{"messages":[{"content":
   {"$contains":"---\nname: inspect\ndescription: Inspect files\n---\n"}}]}],"request_files":[[]]}}
