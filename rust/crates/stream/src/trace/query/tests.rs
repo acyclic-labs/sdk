@@ -51,13 +51,13 @@ async fn owned_executor_preserves_parent_after_submission_scope_returns()
         Ok(AppendOutcome::Committed(_))
     ));
     let mut query = TraceQuery::new(
-        stream.follow(0, Default::default()).await?,
+        stream.read(0, u32::try_from(stream.tail().await?)?).await?,
         Default::default(),
     );
     let mut completed = 0;
     let mut worker_completed = false;
-    while completed < 2 {
-        if let Some(Observation::Completed { start, result, .. }) = query.next().await? {
+    while let Some(observation) = query.next().await? {
+        if let Observation::Completed { start, result, .. } = observation {
             if start.name == "worker_guard" {
                 worker_completed = true;
                 assert_eq!(start.parent, Some(parent));
@@ -69,6 +69,7 @@ async fn owned_executor_preserves_parent_after_submission_scope_returns()
             completed += 1;
         }
     }
+    assert_eq!(completed, 2);
     assert!(worker_completed, "owned worker lost its original parent");
     let tail = stream.tail().await?;
     let (complete, finished) = futures::channel::oneshot::channel();
