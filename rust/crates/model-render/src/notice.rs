@@ -77,14 +77,17 @@ impl PendingNotices {
     /// Consumes the batch. Latest metadata wins; changed paths form a union.
     /// Surviving notices keep their last publication's order. Waking events
     /// and unkeyed events are never collapsed. No history cursor is advanced.
-    pub fn finish(self) -> Vec<Notice> {
+    ///
+    /// # Errors
+    /// Refuses inconsistent coalescing coordinates before publishing a batch.
+    pub fn finish(self) -> Result<Vec<Notice>, RenderError> {
         let mut result: Vec<Option<Notice>> = (0..self.0.len()).map(|_| None).collect();
         let mut keyed = Vec::new();
         for (position, notice) in self.0.into_iter().enumerate() {
             if notice.coalesce_key.is_some() && !notice.wake {
                 keyed.push((position, notice));
             } else {
-                result[position] = Some(notice);
+                *result.get_mut(position).ok_or_else(partition_error)? = Some(notice);
             }
         }
         radix(&mut keyed, |(_, notice)| {
@@ -93,7 +96,7 @@ impl PendingNotices {
                 .as_deref()
                 .unwrap_or_default()
                 .as_bytes()
-        });
+        })?;
         let mut merged: Option<Group> = None;
         for (position, notice) in keyed {
             if let Some(group) = &mut merged
@@ -103,16 +106,16 @@ impl PendingNotices {
                 continue;
             }
             if let Some(group) = merged.take() {
-                let (position, notice) = group.finish();
-                result[position] = Some(notice);
+                let (position, notice) = group.finish()?;
+                *result.get_mut(position).ok_or_else(partition_error)? = Some(notice);
             }
             merged = Some(Group::new(position, notice));
         }
         if let Some(group) = merged {
-            let (position, notice) = group.finish();
-            result[position] = Some(notice);
+            let (position, notice) = group.finish()?;
+            *result.get_mut(position).ok_or_else(partition_error)? = Some(notice);
         }
-        result.into_iter().flatten().collect()
+        Ok(result.into_iter().flatten().collect())
     }
 }
 
@@ -153,27 +156,39 @@ impl Group {
             self.paths.extend(paths);
         }
     }
-    fn finish(mut self) -> (usize, Notice) {
+    fn finish(mut self) -> Result<(usize, Notice), RenderError> {
         if self.has_paths
             && let Some(body) = self.latest.body.as_object_mut()
         {
             radix(&mut self.paths, |path| {
                 path.as_str().unwrap_or_default().as_bytes()
-            });
+            })?;
             self.paths.dedup();
             body.insert("paths".into(), Value::Array(self.paths));
         }
-        (self.position, self.latest)
+        Ok((self.position, self.latest))
     }
+}
+
+#[derive(Clone, Copy, Default)]
+struct Bucket {
+    count: usize,
+    begin: usize,
+    next: usize,
+}
+
+fn partition_error() -> RenderError {
+    RenderError::InvalidItem("notice partition coordinate is inconsistent")
 }
 
 // In-place byte radix partition. Each edge has a fixed 257-symbol alphabet
 // (end plus every byte); comparisons and work cannot grow with key population.
 // Explicit ranges also avoid recursion for arbitrarily long common prefixes.
-fn radix<T>(items: &mut [T], key: impl Fn(&T) -> &[u8]) {
+fn radix<T>(items: &mut [T], key: impl Fn(&T) -> &[u8]) -> Result<(), RenderError> {
     let mut ranges = vec![(0, items.len(), 0)];
     while let Some((start, end, depth)) = ranges.pop() {
-        if end - start < 2 {
+        let range = items.get(start..end).ok_or_else(partition_error)?;
+        if range.len() < 2 {
             continue;
         }
         let symbol = |item: &T| {
@@ -181,35 +196,55 @@ fn radix<T>(items: &mut [T], key: impl Fn(&T) -> &[u8]) {
                 .get(depth)
                 .map_or(0, |byte| usize::from(*byte) + 1)
         };
-        let mut counts = [0usize; 257];
-        for item in &items[start..end] {
-            counts[symbol(item)] += 1;
+        let mut buckets = [Bucket::default(); 257];
+        for item in range {
+            let bucket = buckets.get_mut(symbol(item)).ok_or_else(partition_error)?;
+            bucket.count = bucket.count.checked_add(1).ok_or_else(partition_error)?;
         }
-        let mut begins = [start; 257];
         let mut offset = start;
-        for bucket in 0..257 {
-            begins[bucket] = offset;
-            offset += counts[bucket];
+        for bucket in &mut buckets {
+            bucket.begin = offset;
+            bucket.next = offset;
+            offset = offset
+                .checked_add(bucket.count)
+                .ok_or_else(partition_error)?;
         }
-        let mut next = begins;
-        for bucket in 0..257 {
-            let limit = begins[bucket] + counts[bucket];
-            while next[bucket] < limit {
-                let actual = symbol(&items[next[bucket]]);
-                if actual == bucket {
-                    next[bucket] += 1;
+        for index in 0..buckets.len() {
+            let bucket = *buckets.get(index).ok_or_else(partition_error)?;
+            let limit = bucket
+                .begin
+                .checked_add(bucket.count)
+                .ok_or_else(partition_error)?;
+            loop {
+                let next = buckets.get(index).ok_or_else(partition_error)?.next;
+                if next >= limit {
+                    break;
+                }
+                let actual = symbol(items.get(next).ok_or_else(partition_error)?);
+                if actual == index {
+                    buckets.get_mut(index).ok_or_else(partition_error)?.next =
+                        next.checked_add(1).ok_or_else(partition_error)?;
                 } else {
-                    items.swap(next[bucket], next[actual]);
-                    next[actual] += 1;
+                    let target = buckets.get(actual).ok_or_else(partition_error)?.next;
+                    let [left, right] = items
+                        .get_disjoint_mut([next, target])
+                        .map_err(|_| partition_error())?;
+                    std::mem::swap(left, right);
+                    buckets.get_mut(actual).ok_or_else(partition_error)?.next =
+                        target.checked_add(1).ok_or_else(partition_error)?;
                 }
             }
-            if bucket != 0 && counts[bucket] > 1 {
-                ranges.push((begins[bucket], limit, depth + 1));
+            if index != 0 && bucket.count > 1 {
+                ranges.push((
+                    bucket.begin,
+                    limit,
+                    depth.checked_add(1).ok_or_else(partition_error)?,
+                ));
             }
         }
     }
+    Ok(())
 }
-
 fn escaped(output: &mut String, text: &str) {
     for character in text.chars() {
         match character {

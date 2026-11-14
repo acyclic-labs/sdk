@@ -34,7 +34,7 @@ proptest! {
             }
             expected.insert(position, event);
         }
-        prop_assert_eq!(pending.finish(), expected.into_values().collect::<Vec<_>>());
+        prop_assert_eq!(pending.finish().unwrap(), expected.into_values().collect::<Vec<_>>());
     }
 
     #[test]
@@ -92,5 +92,5 @@ fn malformed_pending_notice_does_not_change_the_batch() {
     // An unkeyed event may carry any JSON body; it cannot erase accumulated paths.
     invalid.coalesce_key = None;
     assert!(invalid.validate().is_ok());
-    assert_eq!(pending.finish(), vec![original]);
+    assert_eq!(pending.finish().unwrap(), vec![original]);
 }

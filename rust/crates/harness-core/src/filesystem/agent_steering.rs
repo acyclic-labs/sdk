@@ -145,15 +145,16 @@ where
         });
         let mut messages = Vec::new();
         let mut notices: Option<NoticeBlocks> = None;
-        let flush_notices = |notices: &mut Option<NoticeBlocks>,
-                             messages: &mut Vec<ModelMessage>| {
-            if let Some(notices) = notices.take() {
-                messages.extend(notices.finish().into_iter().map(|content| ModelMessage {
-                    role: ModelRole::User,
-                    content,
-                }));
-            }
-        };
+        let flush_notices =
+            |notices: &mut Option<NoticeBlocks>, messages: &mut Vec<ModelMessage>| -> Result<()> {
+                if let Some(notices) = notices.take() {
+                    messages.extend(notices.finish()?.into_iter().map(|content| ModelMessage {
+                        role: ModelRole::User,
+                        content,
+                    }));
+                }
+                Ok(())
+            };
         let mut item = 0_u64;
         for (inbox, input) in inputs {
             // Coalesce only consecutive unsent events in this frozen cut, using
@@ -174,7 +175,7 @@ where
             };
             let waking_notice = matches!(&input.input, crate::agent::TurnInput::Notice { .. });
             if !waking_notice {
-                flush_notices(&mut notices, &mut messages);
+                flush_notices(&mut notices, &mut messages)?;
             }
             let content = crate::agent::model_input_at(&self.agent.path, inbox, &input.input)
                 .map_err(Error::from)?;
@@ -301,7 +302,7 @@ where
                 content,
             });
         }
-        flush_notices(&mut notices, &mut messages);
+        flush_notices(&mut notices, &mut messages)?;
         Ok(Selected {
             step,
             cut: BoundaryCut {
