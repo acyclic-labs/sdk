@@ -123,6 +123,183 @@ async fn private_computed_views_reopen_through_the_real_session() -> Result<()> 
     Ok(())
 }
 
+#[tokio::test]
+async fn computed_private_files_capture_the_original_session_cut() -> Result<()> {
+    use crate::conversation::{
+        ContentAccess, ContentCapture, ContentPath, ContentPublisher as _,
+        ContentResidencyVerifier as _,
+    };
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let provider = text();
+    let harness = Arc::new(
+        super::super::open_scripted(
+            volume_config(directory.path(), project, provider.clone())?.without_default_tools(),
+        )
+        .await?,
+    );
+    let connection = harness.connect().await?;
+    let (agents, root) = harness.agents().await?;
+    let root = root.clone();
+    let query = AgentCommand::Directory {
+        agent: root.clone(),
+        target: DirectoryTarget::Private {},
+        path: "ui".into(),
+        generation: None,
+        after_generation: None,
+        page: AgentPageRequest::default(),
+    };
+    let AgentReply::Directory { page } = connection.execute(&query).await? else {
+        return Err(Error::Conflict("computed capture directory reply".into()));
+    };
+    let reply = connection
+        .execute(&AgentCommand::Read {
+            agent: root.clone(),
+            offset: 0,
+            target: ReadTarget::Path {
+                target: DirectoryTarget::Private {},
+                path: "ui/title".into(),
+                generation: page.generation.clone(),
+            },
+        })
+        .await?;
+    let (expected, _) = reply.content().map_err(agent)?;
+    let state = agents.state(&root).await.map_err(agent)?;
+    let private = state
+        .volumes
+        .iter()
+        .find(|binding| binding.role == WorkspaceRole::Private)
+        .ok_or_else(|| Error::NotFound("private volume".into()))?
+        .volume()?;
+    let reader = harness
+        .agents
+        .get()
+        .ok_or_else(|| Error::NotFound("hosted agents".into()))?
+        .server()
+        .bound()
+        .content_reader(&root)
+        .await
+        .map_err(agent)?;
+    let publisher = harness.input_publisher_with_limit(None::<u64>)?;
+    let destination = harness.client_reader()?;
+    let capture = ContentCapture {
+        source: ContentPath {
+            volume: private,
+            granted_prefix: "ui",
+            path: "ui/title",
+            generation: &page.generation,
+        },
+        publisher: publisher.as_ref(),
+        reader: destination.as_ref(),
+        operation: crate::OperationId::from_bytes([73; 16]),
+        path: "inputs/computed-capture/original.txt",
+        media_type: "text/plain",
+        display_name: "title",
+    };
+    let captured = reader
+        .capture_private_path(
+            capture,
+            Some(expected.len() as u64),
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert_eq!(captured.1.as_ref(), expected.as_slice());
+    assert_eq!(captured.0.volume(), publisher.volume());
+    assert_ne!(captured.0.volume(), private);
+    harness
+        .files
+        .apply(
+            &workspace_ref(
+                private.provider().clone(),
+                &private.storage_name(&mut None)?,
+            )?,
+            None,
+            &[
+                WorkspaceMutation::CreateDirectory { path: "/ui".into() },
+                WorkspaceMutation::PutFile {
+                    path: "/ui/title".into(),
+                    bytes: b"authored capture title".to_vec().into(),
+                },
+            ],
+            &crate::IdempotencyKey::new("computed-capture-override")?,
+        )
+        .await?;
+    let replay = reader
+        .capture_private_path(
+            capture,
+            Some(expected.len() as u64),
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert_eq!(replay.0, captured.0);
+    assert_eq!(replay.1, captured.1);
+    assert_eq!(
+        destination
+            .read(&captured.0, expected.len() as u64, None, None)?
+            .await?
+            .as_ref(),
+        expected.as_slice()
+    );
+    let old_cut = reader
+        .capture_private_path(
+            ContentCapture {
+                operation: crate::OperationId::from_bytes([74; 16]),
+                path: "inputs/computed-capture/old-cut.txt",
+                ..capture
+            },
+            Some(expected.len() as u64),
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert_eq!(old_cut.1.as_ref(), expected.as_slice());
+    let AgentReply::Directory { page: current } = connection.execute(&query).await? else {
+        return Err(Error::Conflict("computed capture current cut reply".into()));
+    };
+    let latest = reader
+        .capture_private_path(
+            ContentCapture {
+                source: ContentPath {
+                    generation: &current.generation,
+                    ..capture.source
+                },
+                operation: crate::OperationId::from_bytes([75; 16]),
+                path: "inputs/computed-capture/current.txt",
+                ..capture
+            },
+            None,
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert_eq!(latest.1.as_ref(), b"authored capture title");
+    let denied = crate::Capabilities::default();
+    assert!(
+        reader
+            .capture_private_path(
+                capture,
+                None,
+                ContentAccess {
+                    ceiling: Some(&denied),
+                    io: None
+                }
+            )?
+            .await
+            .is_err(),
+        "an existing capture receipt widened the source caller's authority"
+    );
+    assert!(
+        reader
+            .capture_private_path(
+                capture,
+                Some(expected.len() as u64 - 1),
+                ContentAccess::default()
+            )?
+            .await
+            .is_err()
+    );
+    assert_eq!(provider.request_count(), 0);
+    Ok(())
+}
+
 async fn change(
     harness: &Arc<LocalHarness>,
     op: WorkspaceOp,

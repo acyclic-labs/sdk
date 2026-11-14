@@ -737,7 +737,7 @@ pub struct FilesystemTurnHost<P: ?Sized, A: 'static, O: 'static> {
     clock: Arc<dyn acyclic_actors::local::Clock>,
     host: Arc<FilesystemHost<A, O>>,
     #[cfg(not(target_arch = "wasm32"))]
-    agent_views: bool,
+    pub(super) agent_views: bool,
     issuer: RuntimeAuthority,
     admission: TurnAdmission,
     executors: Arc<dyn TurnExecutors>,

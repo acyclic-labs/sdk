@@ -966,8 +966,23 @@ where
         )
         .await
         .map_err(turn)?;
+        let host = Arc::clone(&self.volumes);
+        #[cfg(not(target_arch = "wasm32"))]
+        let host = if self.turns.agent_views && file.is_none() {
+            host.for_agent_views(
+                self.agents.provider().clone(),
+                agent,
+                authority.private.volume().map_err(turn)?,
+                &authority.verifier,
+                &authority.scope,
+            )
+            .await
+            .map_err(turn)?
+        } else {
+            host
+        };
         super::FilesystemContentVerifier::new(
-            Arc::clone(&self.volumes),
+            host,
             &authority.verifier,
             &authority.scope,
             self.maximum_bytes,

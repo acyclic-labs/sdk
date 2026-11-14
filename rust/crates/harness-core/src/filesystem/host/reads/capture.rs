@@ -176,6 +176,39 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             crate::executor::preparation_format(format_args!("/{path}"), work)
         })?;
         let _hold = io.guard_owned(requested.capacity() as u64)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(cut) = &selected.snapshot {
+            let Some(stat) = self.stat_private_snapshot(cut, &requested, io).await? else {
+                return Ok(None);
+            };
+            if stat.kind != acyclic_fs::kernel::FileKind::Regular {
+                return Err(acyclic_fs::LazyWorkspaceError::NotRegularFile.into());
+            }
+            let length = stat.logical_bytes.ok_or_else(|| {
+                stock_boundary(
+                    Some(io),
+                    crate::wire::ErrorCode::Storage,
+                    "capture source length is missing",
+                )
+            })?;
+            if maximum_bytes.is_some_and(|maximum| length > maximum) {
+                return Err(stock_boundary(
+                    Some(io),
+                    crate::wire::ErrorCode::Invalid,
+                    "captured source exceeds byte bound",
+                )
+                .tool_input());
+            }
+            let (bytes, _) = self
+                .read_private_snapshot(
+                    cut,
+                    &requested,
+                    acyclic_fs::ByteRange { offset: 0, length },
+                    io,
+                )
+                .await?;
+            return Ok(Some(bytes));
+        }
         read_generation_optional(
             &selected.generation,
             &requested,
