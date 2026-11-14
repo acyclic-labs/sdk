@@ -463,10 +463,13 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     ) -> Result<Option<(call::CallPath, Vec<CommitEffect>)>, Error> {
         // A changed host guard is a refusal, never a guest result. Keep the
         // original delivery unapplied, including explicit failure preparation.
-        if matches!(outcome, Some(Err(GuestError::PreconditionChanged))) {
+        if matches!(outcome, Some(Err(failure)) if matches!(failure.category(), GuestError::PreconditionChanged))
+        {
             return Err(Error::PreconditionChanged(Vec::new()));
         }
-        if let Some(Err(failure @ GuestError::Pending(_))) = outcome {
+        if let Some(Err(failure)) = outcome
+            && matches!(failure.category(), GuestError::Pending(_))
+        {
             return Err(Error::Handler(failure.clone()));
         }
         let invocation = delivered
