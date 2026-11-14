@@ -26,9 +26,26 @@ where
     P: StreamProvider,
     I: tonic::service::Interceptor + Clone + Send + Sync + 'static,
 {
+    let client = Client::from_channel(
+        served_channel(provider, interceptor),
+        authorization("fixture")?,
+    );
+    client
+        .session_client()?
+        .register_credential(0, crate::session::testing::credential())?;
+    Ok(client)
+}
+
+/// A lazily connecting channel to `provider`'s gRPC services over in-memory
+/// duplex streams, each request passing through `interceptor` first.
+fn served_channel<P, I>(provider: P, interceptor: I) -> Channel
+where
+    P: StreamProvider,
+    I: tonic::service::Interceptor + Clone + Send + Sync + 'static,
+{
     let provider = Arc::new(provider);
-    let channel = Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(
-        tower::service_fn(move |_| {
+    Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(tower::service_fn(
+        move |_| {
             let provider = Arc::clone(&provider);
             let interceptor = interceptor.clone();
             async move {
@@ -55,13 +72,8 @@ where
                 });
                 Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(client))
             }
-        }),
-    );
-    let client = Client::from_channel(channel, authorization("fixture")?);
-    client
-        .session_client()?
-        .register_credential(0, crate::session::testing::credential())?;
-    Ok(client)
+        },
+    ))
 }
 
 fn unconnected() -> Result<Client, ConnectError> {
@@ -886,12 +898,14 @@ proptest::proptest! {
     }
 }
 
-/// A member's refusal before dispatch replays the same request on the member
-/// the route selects next, without transport backoff; a route that declines
-/// returns the original refusal after one attempt.
+/// A member's refusal before dispatch replays the same request through the
+/// member the route selects next: the unchanged append lands in the second
+/// member's provider only. A route that declines returns the refusal after
+/// one attempt, and nothing lands anywhere.
 #[tokio::test]
 async fn a_routed_refusal_replays_the_same_request_on_the_next_member() -> TestResult {
     struct Members {
+        channels: [Channel; 2],
         current: AtomicUsize,
         replay: bool,
         refused: std::sync::Mutex<Vec<usize>>,
@@ -899,9 +913,10 @@ async fn a_routed_refusal_replays_the_same_request_on_the_next_member() -> TestR
     }
     impl HomeRoute for Members {
         fn current(&self) -> RoutedChannel {
+            let member = self.current.load(Ordering::SeqCst);
             RoutedChannel {
-                member: self.current.load(Ordering::SeqCst),
-                channel: Endpoint::from_static("http://fixture.invalid").connect_lazy(),
+                member,
+                channel: self.channels[member].clone(),
             }
         }
         fn refused<'a>(
@@ -926,7 +941,21 @@ async fn a_routed_refusal_replays_the_same_request_on_the_next_member() -> TestR
         }
     }
     for replay in [true, false] {
+        let (follower, leader) = (MemoryStream::default(), MemoryStream::default());
+        let calls = [Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0))];
+        let refusing = Arc::clone(&calls[0]);
+        let serving = Arc::clone(&calls[1]);
         let route = Arc::new(Members {
+            channels: [
+                served_channel(follower.clone(), move |_: Request<()>| {
+                    refusing.fetch_add(1, Ordering::SeqCst);
+                    Err::<Request<()>, _>(Status::unavailable("not the leader"))
+                }),
+                served_channel(leader.clone(), move |request: Request<()>| {
+                    serving.fetch_add(1, Ordering::SeqCst);
+                    Ok(request)
+                }),
+            ],
             current: AtomicUsize::new(0),
             replay,
             refused: std::sync::Mutex::new(Vec::new()),
@@ -934,33 +963,36 @@ async fn a_routed_refusal_replays_the_same_request_on_the_next_member() -> TestR
         });
         let connect: ChannelConnector =
             Arc::new(|_| Box::pin(async { Err(StreamError::Unavailable.into()) }));
-        let client = Client::from_routed_channel(
+        let mut client = Client::from_routed_channel(
             route.clone(),
             CredentialProvider::transport_identity(),
             connect,
         );
-        let body = Bytes::from_static(b"original");
-        let mut attempts = Vec::new();
-        let result = client
-            .unary(body.clone(), |_, request| {
-                let member = route.current.load(Ordering::SeqCst);
-                attempts.push((member, request.into_inner()));
-                let result = if member == 0 {
-                    Err(Status::unavailable("not the leader"))
-                } else {
-                    Ok(Response::new(()))
-                };
-                Box::pin(async move { result })
-            })
-            .await
-            .and_then(|response| decode_response(response, Ok));
-        assert_eq!(result.is_ok(), replay);
-        let expected = if replay {
-            vec![(0, body.clone()), (1, body)]
-        } else {
-            vec![(0, body)]
+        client.authorization = Some(authorization("fixture")?);
+        let request = AppendRequest {
+            path: StreamPath::new("routed/original")?,
+            records: vec![OwnedBytes::from_static(b"original caller body").into()],
+            if_tail: Some(0),
+            idempotency_key: IdempotencyKey::unique(),
         };
-        assert_eq!(attempts, expected);
+        let result = client.append(request.clone()).await;
+        assert_eq!(result.is_ok(), replay, "{result:?}");
+        let hits = calls.each_ref().map(|calls| calls.load(Ordering::SeqCst));
+        assert_eq!(hits, [1, usize::from(replay)]);
+        assert_eq!(
+            follower
+                .inspect_idempotency(request.idempotency_key.clone())
+                .await?,
+            None
+        );
+        assert_eq!(
+            leader
+                .inspect_idempotency(request.idempotency_key.clone())
+                .await?
+                .is_some(),
+            replay,
+            "the unchanged request lands only on the member that served it"
+        );
         assert_eq!(
             *route
                 .refused
