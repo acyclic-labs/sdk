@@ -380,13 +380,19 @@ async fn an_invalid_alias_rejects_the_complete_batch_before_publication() -> Res
         request_digest: prepared.request_digest(),
         ..parser_dispatch()
     };
-    let mut ordinary = provider.generate(&prepared, dispatch);
+    let mut ordinary = crate::fixtures::without_request_traces(
+        provider.generate(&prepared, dispatch),
+        |event| event,
+    );
     assert!(ordinary.next().await.unwrap().is_err());
     assert!(ordinary.next().await.is_none());
     let work = native_tests::work(&acyclic_fs::CancellationToken::new())?;
-    let mut native = provider
-        .generate_with_native_work(&prepared, dispatch, &work)?
-        .await?;
+    let mut native = crate::fixtures::without_request_traces(
+        provider
+            .generate_with_native_work(&prepared, dispatch, &work)?
+            .await?,
+        |(event, _)| event,
+    );
     assert!(native.next().await.unwrap().is_err());
     assert!(native.next().await.is_none());
     Ok(())
@@ -426,13 +432,19 @@ async fn canonical_name_expansion_obeys_the_aggregate_parser_bound() -> Result<(
         request_digest: prepared.request_digest(),
         ..parser_dispatch()
     };
-    let mut ordinary = provider.generate(&prepared, dispatch);
+    let mut ordinary = crate::fixtures::without_request_traces(
+        provider.generate(&prepared, dispatch),
+        |event| event,
+    );
     let error = ordinary.next().await.unwrap().unwrap_err();
     assert!(error.to_string().contains("aggregate"));
     let work = native_tests::work(&acyclic_fs::CancellationToken::new())?;
-    let mut native = provider
-        .generate_with_native_work(&prepared, dispatch, &work)?
-        .await?;
+    let mut native = crate::fixtures::without_request_traces(
+        provider
+            .generate_with_native_work(&prepared, dispatch, &work)?
+            .await?,
+        |(event, _)| event,
+    );
     let error = native.next().await.unwrap().unwrap_err();
     assert!(error.to_string().contains("aggregate"));
     Ok(())

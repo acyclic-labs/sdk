@@ -145,10 +145,12 @@ async fn cli_unauthorized_recovery_refreshes_then_streams_the_same_prepared_requ
         .with_codex_login(login)
         .resolve("openai/gpt-5")?;
     let (request, dispatch) = crate::tests::request(&provider)?;
-    let events = provider
-        .generate(&request, dispatch)
-        .try_collect::<Vec<_>>()
-        .await?;
+    let events = crate::fixtures::without_request_traces(
+        provider.generate(&request, dispatch),
+        |event| event,
+    )
+    .try_collect::<Vec<_>>()
+    .await?;
     assert_eq!(events.len(), 2);
     let requests = server
         .requests

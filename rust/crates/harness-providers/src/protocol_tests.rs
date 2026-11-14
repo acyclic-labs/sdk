@@ -739,10 +739,12 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoni
         provider.transport =
             crate::deadline::Bounded::new(script.clone(), crate::TimeoutSpec::DEFAULT);
         let (initial, dispatch) = request(&provider)?;
-        let events = provider
-            .generate(&initial, dispatch)
-            .try_collect::<Vec<_>>()
-            .await?;
+        let events = crate::fixtures::without_request_traces(
+            provider.generate(&initial, dispatch),
+            |event| event,
+        )
+        .try_collect::<Vec<_>>()
+        .await?;
         // Replay through the durable serde contract rather than an in-memory signature cache.
         let events: Vec<ModelEvent> =
             serde_json::from_slice(&serde_json::to_vec(&events).expect("encode events"))
@@ -825,10 +827,12 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoni
             request_digest: next.request_digest(),
             ..dispatch
         };
-        let events = provider
-            .generate(&next, next_dispatch)
-            .try_collect::<Vec<_>>()
-            .await?;
+        let events = crate::fixtures::without_request_traces(
+            provider.generate(&next, next_dispatch),
+            |event| event,
+        )
+        .try_collect::<Vec<_>>()
+        .await?;
         assert_eq!(
             events[0],
             ModelEvent::Content {

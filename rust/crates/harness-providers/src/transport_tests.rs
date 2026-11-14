@@ -198,7 +198,12 @@ fn model(base_url: &str) -> Result<(ResolvedModel, Arc<Counted>)> {
 
 async fn generate(provider: &ResolvedModel) -> Result<Vec<ModelEvent>> {
     let (prepared, dispatch) = super::request(provider)?;
-    provider.generate(&prepared, dispatch).try_collect().await
+    crate::fixtures::without_request_traces(
+        provider.generate(&prepared, dispatch),
+        |event| event,
+    )
+    .try_collect()
+    .await
 }
 
 #[tokio::test]
@@ -583,9 +588,12 @@ async fn response_status_keeps_its_original_interruption_before_and_after_output
             let baseline = work.live_allocation_bytes();
             let mut output = 0;
             let error = if native {
-                let mut stream = provider
-                    .generate_with_native_work(&prepared, dispatch, &work)?
-                    .await?;
+                let mut stream = crate::fixtures::without_request_traces(
+                    provider
+                        .generate_with_native_work(&prepared, dispatch, &work)?
+                        .await?,
+                    |(event, _)| event,
+                );
                 let error = loop {
                     match stream.next().await {
                         Some(Ok(event)) => {
@@ -599,7 +607,10 @@ async fn response_status_keeps_its_original_interruption_before_and_after_output
                 assert!(stream.next().await.is_none());
                 error
             } else {
-                let mut stream = provider.generate(&prepared, dispatch);
+                let mut stream = crate::fixtures::without_request_traces(
+                    provider.generate(&prepared, dispatch),
+                    |event| event,
+                );
                 let error = loop {
                     match stream.next().await {
                         Some(Ok(_)) => output += 1,
@@ -709,9 +720,12 @@ async fn compatible_endpoint_refusals_cannot_echo_credentials_into_failures() ->
                     let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;
                     let baseline = work.live_allocation_bytes();
                     let error = {
-                        let mut stream = provider
-                            .generate_with_native_work(&prepared, dispatch, &work)?
-                            .await?;
+                        let mut stream = crate::fixtures::without_request_traces(
+                            provider
+                                .generate_with_native_work(&prepared, dispatch, &work)?
+                                .await?,
+                            |(event, _)| event,
+                        );
                         match stream.next().await {
                             Some(Err(error)) => error,
                             _ => panic!("refused request produced model output"),

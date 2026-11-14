@@ -311,9 +311,12 @@ async fn native_cancellation_wakes_pending_headers_and_success_or_refusal_bodies
         let work = work(&cancel)?;
         let baseline = work.live_allocation_bytes();
         let result = async {
-            let mut stream = provider
-                .generate_with_native_work(&request, dispatch, &work)?
-                .await?;
+            let mut stream = crate::fixtures::without_request_traces(
+                provider
+                    .generate_with_native_work(&request, dispatch, &work)?
+                    .await?,
+                |(event, _)| event,
+            );
             if prefix.is_some() {
                 let (event, custody) = stream.next().await.expect("content before cancellation")?;
                 assert_eq!(
@@ -423,9 +426,12 @@ async fn native_protocol_errors_keep_diagnostic_custody_and_reject_before_http_w
     let work = work(&CancellationToken::new())?;
     let baseline = work.live_allocation_bytes();
     {
-        let mut stream = provider
-            .generate_with_native_work(&request, dispatch, &work)?
-            .await?;
+        let mut stream = crate::fixtures::without_request_traces(
+            provider
+                .generate_with_native_work(&request, dispatch, &work)?
+                .await?,
+            |(event, _)| event,
+        );
         let error = stream
             .next()
             .await

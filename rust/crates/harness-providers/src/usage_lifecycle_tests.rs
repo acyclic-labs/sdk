@@ -345,9 +345,12 @@ async fn truncated_responses_preserve_transport_cause_on_both_provider_paths() -
             // A truncated exchange recovers indefinitely. Observe its cause
             // before the fixture's held timer, then cancel by dropping the stream.
             let event = if native {
-                let mut stream = provider
-                    .generate_with_native_work(&request, dispatch, &work)?
-                    .await?;
+                let mut stream = crate::fixtures::without_request_traces(
+                    provider
+                        .generate_with_native_work(&request, dispatch, &work)?
+                        .await?,
+                    |(event, _)| event,
+                );
                 let (restarted, hold) = stream.next().await.expect("restart event")?;
                 assert!(matches!(restarted, ModelEvent::Restarted), "{restarted:?}");
                 drop(hold);
@@ -355,7 +358,10 @@ async fn truncated_responses_preserve_transport_cause_on_both_provider_paths() -
                 drop(hold);
                 event
             } else {
-                let mut stream = provider.generate(&request, dispatch);
+                let mut stream = crate::fixtures::without_request_traces(
+                    provider.generate(&request, dispatch),
+                    |event| event,
+                );
                 let restarted = stream.next().await.expect("restart event")?;
                 assert!(matches!(restarted, ModelEvent::Restarted), "{restarted:?}");
                 stream.next().await.expect("recovery event")?

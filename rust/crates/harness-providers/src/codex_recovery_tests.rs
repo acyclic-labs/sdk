@@ -306,9 +306,12 @@ async fn cancellation_during_authentication_recovery_releases_the_guard_and_all_
     .resolve("openai/gpt-5")?;
     let (request, dispatch) = crate::tests::request(&provider)?;
     {
-        let mut events = provider
-            .generate_with_native_work(&request, dispatch, &work)?
-            .await?;
+        let mut events = crate::fixtures::without_request_traces(
+            provider
+                .generate_with_native_work(&request, dispatch, &work)?
+                .await?,
+            |(event, _)| event,
+        );
         let error = events
             .next()
             .await
