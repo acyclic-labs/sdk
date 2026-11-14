@@ -45,13 +45,19 @@ pub fn decimal_header<'a, E>(
     let mut remaining = version;
     loop {
         start -= 1;
-        rendered[start] = b'0' + (remaining % 10) as u8;
+        let Some(digit) = rendered.get_mut(start) else {
+            return Err(invalid());
+        };
+        *digit = b'0' + (remaining % 10) as u8;
         remaining /= 10;
         if remaining == 0 {
             break;
         }
     }
-    header(encoded, domain, &rendered[start..], invalid, unsupported)
+    let Some(version) = rendered.get(start..) else {
+        return Err(invalid());
+    };
+    header(encoded, domain, version, invalid, unsupported)
 }
 
 #[cfg(test)]

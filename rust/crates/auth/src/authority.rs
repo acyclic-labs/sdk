@@ -598,7 +598,6 @@ fn permits_inner<const CURRENT: bool>(
     scope: Scope,
 ) -> Result<(), Deny> {
     let admitted = match (scope, r.target) {
-        (Scope::Exact, _) => true,
         (
             Scope::Follow,
             Target::Resource {
@@ -612,7 +611,8 @@ fn permits_inner<const CURRENT: bool>(
                 action: "streams/list",
                 ..
             },
-        ) => true,
+        )
+        | (Scope::Exact, _) => true,
         (
             Scope::ResourceFollow,
             Target::Resource {

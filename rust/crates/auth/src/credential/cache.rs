@@ -116,7 +116,7 @@ impl std::fmt::Debug for CredentialSnapshot {
 
 impl CredentialSnapshot {
     /// Use only expiry/revision authenticated or owned by the source custodian.
-    /// Credentials without known validity should use a raw CredentialProvider.
+    /// Credentials without known validity should use a raw `CredentialProvider`.
     pub fn new(
         token: String,
         revision: CredentialRevision,
@@ -315,12 +315,13 @@ impl CredentialCache {
             .revision
             .as_ref()
             .ok_or(CredentialCacheError::Unavailable)?;
-        if let Some(snapshot) = self.0.current.load() {
-            if valid(&snapshot, &validity).is_ok() && self.0.current.matches(&snapshot) {
-                return Ok(snapshot);
-            }
+        if let Some(snapshot) = self.0.current.load()
+            && valid(&snapshot, &validity).is_ok()
+            && self.0.current.matches(&snapshot)
+        {
+            return Ok(snapshot);
         }
-        let waiter = match self.waiter(validity)? {
+        let waiter = match self.waiter(&validity)? {
             Resolution::Ready(snapshot) => return Ok(snapshot),
             Resolution::Pending(waiter) => waiter,
         };
@@ -362,7 +363,7 @@ impl CredentialCache {
         result
     }
 
-    fn waiter(&self, validity: CredentialValidity) -> Result<Resolution, CredentialCacheError> {
+    fn waiter(&self, validity: &CredentialValidity) -> Result<Resolution, CredentialCacheError> {
         // Declared before the guard so a retired flight drops outside the lock.
         let mut _retired = None;
         let current;
@@ -375,7 +376,7 @@ impl CredentialCache {
         current = self.0.current.load();
         if current
             .as_ref()
-            .is_some_and(|snapshot| valid(snapshot, &validity).is_ok())
+            .is_some_and(|snapshot| valid(snapshot, validity).is_ok())
         {
             drop(state);
             return current

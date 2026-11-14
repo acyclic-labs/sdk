@@ -78,7 +78,7 @@ pub struct SignedRevocation {
     /// Exact delta or checkpoint.
     #[wire(oneof = "1, 2")]
     pub publication: RevocationPublication,
-    /// Ed25519 over REVOCATION_DOMAIN followed by canonical publication bytes.
+    /// Ed25519 over `REVOCATION_DOMAIN` followed by canonical publication bytes.
     #[wire(tag = 3, bytes)]
     pub signature: Vec<u8>,
 }

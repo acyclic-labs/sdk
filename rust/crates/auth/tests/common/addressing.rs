@@ -330,7 +330,10 @@ fn checked(bytes: &[u8]) -> CheckResult {
 }
 
 /// Canonical SDK host/pattern output, with caller-owned URL context for routes.
-pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
+pub type AddressingSeeds = Vec<(String, Vec<u8>)>;
+
+/// Canonical inputs for the shared addressing proofs.
+pub fn seeds() -> Result<AddressingSeeds, Box<dyn std::error::Error>> {
     let value = ResourceIdentity::new(b"account", b"resource")?;
     let host = value.hostname(DOMAIN)?;
     let mut seeds = vec![

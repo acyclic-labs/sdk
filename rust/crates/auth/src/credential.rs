@@ -237,18 +237,17 @@ impl CredentialProvider {
 
     /// Subscribe before resolving or accepting cached reader state, then check
     /// the admitted request's binding and validity. Custodians must publish a
-    /// changed/unavailable revision and call CredentialCache::invalidate on
+    /// changed/unavailable revision and call `CredentialCache::invalidate` on
     /// source events. Raw callbacks return None, never a fabricated identity.
     pub fn watch(&self) -> CredentialAction<Option<CredentialWatch>> {
         match &self.0 {
-            Source::Raw(_) => Ok(None).into(),
+            Source::Raw(_) | Source::TransportIdentity => Ok(None).into(),
             Source::Cached(cache) => cache
                 .watch()
                 .map(Some)
                 .map_err(CredentialError::from)
                 .into(),
             Source::Custodian(source) => source.watch(),
-            Source::TransportIdentity => Ok(None).into(),
         }
     }
 
@@ -326,7 +325,6 @@ pub fn valid_credential(value: &str) -> bool {
 /// The original credential and encoded backing remain caller-owned secrets.
 /// Returns `Invalid` if the encoded length is not representable, or the
 /// original allocation failure as `Provider`, before writing any secret.
-#[must_use]
 pub fn websocket_protocol(credential: &str) -> Result<Zeroizing<String>, CredentialError> {
     use base64::Engine as _;
     const PREFIX: &str = "acyclic.bearer.";
