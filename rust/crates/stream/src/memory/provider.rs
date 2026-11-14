@@ -66,7 +66,7 @@ impl MemoryStream {
         let state = self.state.read().await;
         Ok(self
             .replay_in(&state, idempotency_key.as_bytes())?
-            .map(|(digest, result, index)| IdempotencyObservation {
+            .map(|(digest, result, index, _)| IdempotencyObservation {
                 idempotency_key,
                 request_digest: *digest,
                 outcome: result.clone(),
@@ -878,17 +878,12 @@ impl MemoryStream {
                             let digest = provider.digest(&mut request).map_err(E::from)?;
                             let cut = {
                                 let state = provider.state.read().await;
-                                if let Some((replayed, result, index)) = provider
+                                if let Some(replay) = provider
                                     .replay_in(&state, request.idempotency_key.as_bytes())
                                     .map_err(E::from)?
                                 {
                                     return provider
-                                        .project_replayed_commit(
-                                            &request,
-                                            digest,
-                                            (replayed, result, index),
-                                            accepted,
-                                        )
+                                        .project_replayed_commit(&request, digest, replay, accepted)
                                         .map_err(E::from);
                                 }
                                 // An unguarded Commit observes nothing before
@@ -1095,7 +1090,7 @@ impl MemoryStream {
             state.lookup_replay(key.as_bytes(), |items| meter.examine(items, 0))
         })??;
         let output = match replay {
-            Some((digest, result, index)) => {
+            Some((digest, result, index, _)) => {
                 crate::native::clone_outcome(result, &meter)?.map(|outcome| {
                     Some(IdempotencyObservation {
                         idempotency_key: key,

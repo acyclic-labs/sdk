@@ -526,7 +526,7 @@ impl MemoryStream {
         >,
         StreamError,
     > {
-        if let Some((replayed, result, index)) =
+        if let Some((replayed, result, index, ephemeral)) =
             self.replay_in(state, request.idempotency_key.as_bytes())?
         {
             if *replayed != digest {
@@ -537,13 +537,14 @@ impl MemoryStream {
             };
             let (receipt, mut claim) = self.replayed(request, result, self.revisions.at(index))?;
             let envelope = self.selected_envelope(result, accepted, &mut claim)?;
-            let scope = self.commit_scope(state, request, &receipt.skipped)?;
+            // A saved success owns its selection and durability. Conditions
+            // and lease ownership may have changed since that publication.
             return Ok(Decision::Returned {
                 result: (
                     commit_projection(CommitOutcome::Committed(receipt), envelope)?,
                     claim,
                 ),
-                ephemeral: matches!(scope, Scope::Ephemeral(_)),
+                ephemeral,
             });
         }
         let deadline = deadline

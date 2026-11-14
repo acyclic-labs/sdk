@@ -35,8 +35,8 @@ struct EphemeralRoot {
     payload_bytes: usize,
 }
 
-/// A retained retry result: its request digest, outcome and revision index.
-type Replayed<'a> = (&'a [u8; 32], &'a IdempotencyOutcome, u64);
+/// A retained retry result: its digest, outcome, revision and original scope.
+type Replayed<'a> = (&'a [u8; 32], &'a IdempotencyOutcome, u64, bool);
 
 impl Ephemeral {
     /// The root of the lease owning `path`: through the path itself or its

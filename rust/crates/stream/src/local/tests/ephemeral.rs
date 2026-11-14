@@ -390,3 +390,85 @@ async fn skipped_effects_do_not_change_the_selected_publication_scope() -> Resul
     }
     Ok(())
 }
+
+/// A retained success is independent of later conditions and lease lifetimes.
+#[tokio::test]
+async fn saved_commit_retries_keep_their_original_scope_after_conditions_change() -> Result {
+    for soft_first in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let limits = LocalStreamLimits::default();
+        let provider = LocalStream::open(directory.path(), limits).await?;
+        let base = StreamPath::new("kept/base")?;
+        let kept = StreamPath::new("kept/retried")?;
+        let root = StreamPath::new("scratch")?;
+        let omitted = StreamPath::new("scratch/omitted")?;
+        provider.append(append(&base, 0)?).await?;
+        let lease = provider.lease_ephemeral(root.clone()).await?;
+        provider.append(append(&root, 0)?).await?;
+        let soft = CommitEffect::soft(
+            vec![
+                CommitCondition::Tail {
+                    path: root.clone(),
+                    expected: 0,
+                },
+                CommitCondition::Tail {
+                    path: base.clone(),
+                    expected: 2,
+                },
+            ],
+            vec![CommitMutation::Append {
+                path: omitted.clone(),
+                records: vec![Bytes::from_static(b"must remain omitted").into()],
+            }],
+        );
+        let hard = CommitEffect::hard(
+            vec![CommitCondition::Absent { path: kept.clone() }],
+            vec![CommitMutation::Append {
+                path: kept.clone(),
+                records: vec![Bytes::from_static(b"retained success").into()],
+            }],
+        );
+        let request = CommitRequest {
+            deadline_unix_millis: None,
+            effects: if soft_first {
+                vec![soft, hard]
+            } else {
+                vec![hard, soft]
+            },
+            idempotency_key: IdempotencyKey::unique(),
+        };
+        let original = provider.commit(request.clone()).await?;
+        let CommitOutcome::Committed(receipt) = &original else {
+            return Err("durable selection was refused".into());
+        };
+        assert_eq!(receipt.skipped, [if soft_first { 0 } else { 1 }]);
+        // The durable condition kept the omitted effect replay-safe at its
+        // original publication. It now passes, including with the lease absent.
+        provider.append(append(&base, 1)?).await?;
+        let before_retry = frames(&provider)?;
+        assert_eq!(
+            provider.commit(request.clone()).await,
+            Ok(original.clone()),
+            "saved success must not recheck current conditions"
+        );
+        lease.settle().await?;
+        assert_eq!(provider.commit(request.clone()).await?, original);
+        assert_eq!(frames(&provider)?, before_retry, "retry emits no frame");
+        assert_eq!(provider.tail(kept.clone()).await?, 1);
+        assert_eq!(
+            provider.tail(omitted.clone()).await,
+            Err(StreamError::NotFound)
+        );
+        drop(provider);
+        let reopened = LocalStream::open(directory.path(), limits).await?;
+        let CommitOutcome::Committed(replayed) = reopened.commit(request).await? else {
+            return Err("reopened saved success conflicted".into());
+        };
+        assert_eq!(replayed.commit_id, receipt.commit_id);
+        assert_eq!(replayed.skipped, receipt.skipped);
+        assert_eq!(reopened.tail(kept).await?, 1);
+        assert_eq!(reopened.tail(omitted).await, Err(StreamError::NotFound));
+        assert_eq!(frames(&reopened)?, before_retry);
+    }
+    Ok(())
+}

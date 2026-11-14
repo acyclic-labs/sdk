@@ -30,7 +30,7 @@ impl MemoryStream {
         key: &crate::IdempotencyKey,
         digest: [u8; 32],
     ) -> Result<Option<&'a IdempotencyOutcome>, StreamError> {
-        let Some((replayed, result, _)) = self.replay_in(state, key.as_bytes())? else {
+        let Some((replayed, result, _, _)) = self.replay_in(state, key.as_bytes())? else {
             return Ok(None);
         };
         if *replayed != digest {

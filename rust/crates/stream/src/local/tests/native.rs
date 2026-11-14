@@ -180,6 +180,49 @@ async fn prepared_commits_cannot_spend_a_key_held_by_a_live_lease()
             let lease = provider
                 .lease_ephemeral(StreamPath::new("prepared-private")?)
                 .await?;
+            // Preparation is durable-only, for both its destination and its
+            // observations. Neither can borrow an incarnation-only lease.
+            for destination in [false, true] {
+                let mut leased = request.clone();
+                let effect = leased.effects.first_mut().ok_or("missing effect")?;
+                let replaced = StreamPath::new(if destination {
+                    "prepared/target"
+                } else {
+                    "prepared/owner"
+                })?;
+                for condition in &mut effect.conditions {
+                    if let crate::CommitCondition::Tail { path, expected } = condition
+                        && *path == replaced
+                    {
+                        *path = StreamPath::new("prepared-private")?;
+                        *expected = 0;
+                    }
+                }
+                if destination {
+                    let crate::CommitMutation::Append { path, .. } =
+                        effect.mutations.first_mut().ok_or("missing append")?
+                    else {
+                        return Err("unexpected prepared mutation".into());
+                    };
+                    *path = StreamPath::new("prepared-private")?;
+                }
+                let meter = Arc::new(Meter::local());
+                assert!(matches!(
+                    provider
+                        .native_prepare_commit(
+                            leased,
+                            crate::PreparedRecordCapacity {
+                                payload_bytes: 64,
+                                keys: 64,
+                                attributes: 16,
+                            },
+                            meter.original(),
+                        )
+                        .await?,
+                    Err(StreamError::InvalidArgument)
+                ));
+                meter.assert_refunded();
+            }
             let mut private = plain_append(StreamPath::new("prepared-private")?);
             private.idempotency_key = request.idempotency_key.clone();
             if spent_before_preparation {
