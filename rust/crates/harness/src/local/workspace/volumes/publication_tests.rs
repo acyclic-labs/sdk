@@ -73,7 +73,7 @@ async fn published(scratch: &MountedVolume, path: &str) -> Result<Vec<u8>> {
         .map_err(storage)?
         .value;
     Ok(head
-        .read(path, 64, WorkBudget::UNBOUNDED, &cancellation)
+        .read(path, 4096, WorkBudget::UNBOUNDED, &cancellation)
         .await
         .map_err(storage)?
         .value
@@ -81,6 +81,21 @@ async fn published(scratch: &MountedVolume, path: &str) -> Result<Vec<u8>> {
         .to_vec())
 }
 
+// This command's own view of the home volume.
+fn home(claims: &Claims) -> Result<PathBuf> {
+    claims
+        .mounts()
+        .named(Some("home"))?
+        .1
+        .native_root
+        .override_path()
+        .cloned()
+        .ok_or_else(|| Error::NotFound("home view".into()))
+}
+
+// (i) and (iv): a verified command publishes only after its verification; a
+// command whose caller is lost discards its whole view, and the acknowledged
+// head survives it.
 #[tokio::test]
 async fn publications_keep_all_live_volume_projections_at_the_committed_head() -> Result<()> {
     use crate::agent::{WorkspaceEntry, WorkspaceRole};
@@ -127,10 +142,7 @@ async fn publications_keep_all_live_volume_projections_at_the_committed_head() -
         .view()
         .open_related(
             base.view().workspace().clone(),
-            &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                work: &work,
-                cancellation: &cancellation,
-            },
+            &mut acyclic_fs::kernel::KernelAccounting::native(&work, &cancellation),
         )
         .await
         .map_err(storage)?;
@@ -172,7 +184,17 @@ async fn publications_keep_all_live_volume_projections_at_the_committed_head() -
     let reports = source("reports");
     let observer = source("report-view");
     assert!(Arc::ptr_eq(source("home"), source("home-alias")));
-    native_scope(mounts, async |claims| {
+    // Host sessions keep shared projections live. Commands use independent
+    // private views, so they must not stand in for those sessions here.
+    let mut sessions = Vec::new();
+    for (_, mount) in ordered_mounts(mounts.mounts()) {
+        if let Some(source) = &mount.view.source
+            && let Some(options) = &source.options
+        {
+            sessions.push(source.enter_with_options(options.clone()).await?);
+        }
+    }
+    let checked = async {
         assert!(!ui.destination.join("batch").exists());
         assert!(!reports.destination.join("batch").exists());
         assert!(!observer.destination.join("batch").exists());
@@ -270,32 +292,35 @@ async fn publications_keep_all_live_volume_projections_at_the_committed_head() -
             crate::wire::ErrorCode::Unauthorized,
         );
         assert!(!reports.destination.join("forbidden").exists());
-        Ok(((), claims))
-    })
-    .await?;
-    Ok(())
+        Ok(())
+    }
+    .await;
+    drop(sessions);
+    retire(mounts).await?;
+    checked
 }
 
 #[tokio::test]
-async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledged_head()
--> Result<()> {
+async fn lost_caller_discards_its_whole_view_and_keeps_the_acknowledged_head() -> Result<()> {
     let root = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
     let harness = open(root.path(), state.path()).await?;
     let mounts = &harness.workspace().unwrap().mounts;
     let scratch = mounts.named(Some("home"))?.1.view.source.as_ref().unwrap();
     native_scope(mounts, async |claims| {
-        // Root checkout bindings carry the same explicit native roots as task
-        // aliases, and expose cwd/discovery only while execution projects them.
+        let view = home(&claims)?;
+        // The command's cwd and discovery name its own view, never the
+        // shared binding.
         let prepared = crate::filesystem::native_process::shell::prepare(
             crate::tools::ShellInput {
                 command: crate::tools::ShellCommand::Source("echo root".into()),
-                cwd: Some(HOME_PATH.into()),
+                // The volume address names this command's own view.
+                cwd: Some(format!("volume:///{HOME_PATH}")),
                 timeout_ms: None,
                 background: false,
                 target: None,
             },
-            mounts,
+            claims.mounts(),
             crate::filesystem::native_process::Invocation {
                 executable: std::env::current_exe().map_err(storage)?,
                 argv: Vec::new(),
@@ -309,17 +334,20 @@ async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledge
                 process_custody: None,
             },
             0,
-            std::time::Instant::now(),
         )?;
-        let native = std::fs::canonicalize(&scratch.destination).map_err(storage)?;
-        assert_eq!(prepared.cwd, native);
+        assert_ne!(view, scratch.destination);
+        assert_eq!(prepared.cwd, std::fs::canonicalize(&view).map_err(storage)?);
         let discovery: std::collections::BTreeMap<String, String> =
             serde_json::from_str(&prepared.environment["ACYCLIC_WORKSPACES"]).map_err(storage)?;
         assert_eq!(
             discovery.get("home"),
-            Some(&scratch.destination.to_string_lossy().into_owned())
+            Some(&view.to_string_lossy().into_owned())
         );
-        write_projected(&scratch.destination.join("data"), b"acknowledged")?;
+        write_projected(&view.join("data"), b"acknowledged")?;
+        assert!(
+            published(scratch, "/data").await.is_err(),
+            "an unverified view was published"
+        );
         Ok(((), claims))
     })
     .await?;
@@ -328,28 +356,26 @@ async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledge
     let (started, began) = tokio::sync::oneshot::channel();
     let (retired, retirement) = tokio::sync::oneshot::channel();
     let (release, released) = std::sync::mpsc::channel();
-    let cleaned = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let worker_cleaned = Arc::clone(&cleaned);
-    let destination = scratch.destination.clone();
     let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::seeded(71);
     // The existing native admission was issued on the real clock before this
-    // scope; keep that clock origin while controlling cleanup submission.
+    // scope; keep that clock origin while controlling the discard's task.
     schedule.set_unix_millis(acyclic_stream::UnixMillisClock::now_unix_millis(
         &acyclic_stream::SystemUnixMillisClock,
     ));
-    let mut cancelled = Box::pin(schedule.scope(native_scope(mounts, async |claims| {
+    let mut lost = Box::pin(schedule.scope(native_scope(mounts, async |claims| {
+        let view = home(&claims)?;
         tokio::task::spawn_blocking(move || {
-            write_projected(&destination.join("data"), b"unverified").unwrap();
+            write_projected(&view.join("data"), b"unverified").unwrap();
+            write_projected(&view.join("partial"), b"unverified").unwrap();
             started.send(()).unwrap();
             released.recv().unwrap();
-            worker_cleaned.store(true, std::sync::atomic::Ordering::Release);
             drop(claims);
             retired.send(()).unwrap();
         })
         .await
         .map_err(storage)?;
-        // No verification and no successful return: losing the capture waiter
-        // leaves claims in the worker until its physical cleanup completes.
+        // No verification and no successful return: the worker owns the
+        // claims until its physical cleanup completes.
         Err::<((), Claims), _>(Error::Conflict("unverified worker".into()))
     })));
     let mut began = std::pin::pin!(began);
@@ -359,80 +385,242 @@ async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledge
                 started.map_err(storage)?;
                 break;
             },
-            result = &mut cancelled => panic!("worker did not remain active: {result:?}"),
+            result = &mut lost => panic!("worker did not remain active: {result:?}"),
             boundary = boundaries.recv() => boundary.unwrap().release(),
         }
     }
-    drop(cancelled);
-    let before_cleanup = schedule.trace().len();
-    let mut preflight = Box::pin(sync(mounts));
-    assert!(
-        futures::poll!(&mut preflight).is_pending(),
-        "preflight published an active worker"
-    );
-    drop(preflight);
-    let mut next = Box::pin(native_scope(mounts, async |claims| {
-        assert!(
-            cleaned.load(std::sync::atomic::Ordering::Acquire),
-            "next entrant outran physical cleanup"
-        );
-        assert_eq!(
-            std::fs::read(scratch.destination.join("data")).map_err(storage)?,
-            b"acknowledged",
-            "cancelled command exposed unverified physical bytes"
-        );
-        assert_eq!(published(scratch, "/data").await?, b"acknowledged");
-        write_projected(&scratch.destination.join("data"), b"next verified")?;
-        Ok(((), claims))
-    }));
-    assert!(
-        futures::poll!(&mut next).is_pending(),
-        "next command entered before physical cleanup"
-    );
+    drop(lost);
+    assert_eq!(published(scratch, "/data").await?, b"acknowledged");
     release.send(()).map_err(storage)?;
-    // The same physical worker admits retirement before this event. Drive its
-    // accepted cleanup concurrently with the command waiting for its guard.
     retirement.await.map_err(storage)?;
-    let mut completed = Box::pin(async {
-        let (result, ()) = futures::join!(next, schedule.drained());
-        result
-    });
+    let mut drained = std::pin::pin!(schedule.drained());
     loop {
         tokio::select! {
-            result = &mut completed => {
-                result?;
-                break;
-            },
+            () = &mut drained => break,
             boundary = boundaries.recv() => boundary.unwrap().release(),
         }
     }
-    assert!(
-        schedule.trace()[before_cleanup..]
-            .iter()
-            .any(|event| event == "task:dispatch"),
-        "physical cleanup escaped its original task scope"
-    );
-    assert_eq!(published(scratch, "/data").await?, b"next verified");
-    assert!(scratch.native().await.is_none());
-    assert!(!scratch.destination.exists());
+    // All or nothing: neither unverified write reached the volume.
+    assert_eq!(published(scratch, "/data").await?, b"acknowledged");
+    assert!(published(scratch, "/partial").await.is_err());
+    native_scope(mounts, async |claims| {
+        let view = home(&claims)?;
+        assert_eq!(
+            std::fs::read(view.join("data")).map_err(storage)?,
+            b"acknowledged"
+        );
+        assert!(!view.join("partial").exists());
+        Ok(((), claims))
+    })
+    .await?;
     Ok(())
 }
 
+// Concurrent commands on one volume never serialize at admission. While the
+// first command is inside its scope, holding its own view, a second command
+// enters, writes and hands back; only then does the first leave. The negative
+// control admits each command behind one exclusive per-volume guard, the
+// shape this replaced: the second command finds it held.
 #[tokio::test]
-async fn shared_projection_publication_cannot_isolate_an_unverified_writer() -> Result<()> {
+async fn concurrent_commands_never_serialize_at_admission() -> Result<()> {
+    for serialized in [false, true] {
+        let root = tempfile::tempdir().map_err(storage)?;
+        let state = tempfile::tempdir().map_err(storage)?;
+        let harness = open(root.path(), state.path()).await?;
+        let mounts = &harness.workspace().unwrap().mounts;
+        let scratch = mounts.named(Some("home"))?.1.view.source.as_ref().unwrap();
+        let gate = tokio::sync::Mutex::new(());
+        let admit = || {
+            if !serialized {
+                return Ok(None);
+            }
+            gate.try_lock()
+                .map(Some)
+                .map_err(|_| Error::Conflict("admission is serialized".into()))
+        };
+        let (entered, first_inside) = tokio::sync::oneshot::channel();
+        let (finished, second_finished) = tokio::sync::oneshot::channel::<Result<()>>();
+        let first = async {
+            let _admitted = admit()?;
+            native_scope(mounts, async move |claims| {
+                entered
+                    .send(())
+                    .map_err(|_| Error::Conflict("second command dropped".into()))?;
+                // Stay inside this scope until the second command's whole
+                // lifetime, hand-back included, has ended.
+                let second = second_finished.await.map_err(storage)?;
+                Ok((second, claims))
+            })
+            .await
+        };
+        let second = async {
+            first_inside.await.map_err(storage)?;
+            let result = async {
+                let _admitted = admit()?;
+                native_scope(mounts, async |claims| {
+                    write_projected(&home(&claims)?.join("second"), b"second")?;
+                    Ok(((), claims))
+                })
+                .await
+            }
+            .await;
+            finished
+                .send(result)
+                .map_err(|_| Error::Conflict("first command dropped".into()))
+        };
+        let (first, second) = futures::join!(first, second);
+        second?;
+        let second_inside_first = first?;
+        if serialized {
+            assert!(
+                matches!(&second_inside_first, Err(Error::Conflict(message)) if message.contains("serialized")),
+                "the negative control did not serialize: {second_inside_first:?}"
+            );
+        } else {
+            second_inside_first?;
+            assert_eq!(published(scratch, "/second").await?, b"second");
+        }
+    }
+    Ok(())
+}
+
+// A command's view is a namespace entry of the one live shared instance: the
+// instance stays mounted between commands, so no command mounts or unmounts.
+// Negative control: once its holders are gone, the same check sees it unmounted.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn commands_join_one_live_instance_and_never_mount_it() -> Result<()> {
+    use std::os::unix::fs::MetadataExt as _;
+    let mounted = |path: &Path| -> Result<bool> {
+        let parent = path.parent().ok_or_else(|| Error::Invalid("root".into()))?;
+        Ok(std::fs::metadata(path).map_err(storage)?.dev()
+            != std::fs::metadata(parent).map_err(storage)?.dev())
+    };
+    let root = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
+    let harness = open(root.path(), state.path()).await?;
+    let workspace = harness.workspace().unwrap();
+    // A root of this test's own, never the process's ambient shared root.
+    let admitted = Arc::new(workspace.held_task_mount_root()?);
+    workspace.task_view_admission.get_or_init(|| admitted);
+    let view = || {
+        native_scope(&workspace.mounts, async |claims| {
+            Ok((home(&claims)?, claims))
+        })
+    };
+    let first = view().await?;
+    let instance = first
+        .parent()
+        .ok_or_else(|| Error::Invalid("view has no instance root".into()))?
+        .to_path_buf();
+    assert!(
+        mounted(&instance)?,
+        "the instance was unmounted after the first command"
+    );
+    let second = view().await?;
+    assert_ne!(first, second, "a view name was reused");
+    assert_eq!(second.parent(), Some(instance.as_path()));
+    assert!(
+        mounted(&instance)?,
+        "the instance was unmounted between commands"
+    );
+    harness.disconnect().await?;
+    assert!(!mounted(&instance)?, "the negative control never unmounted");
+    Ok(())
+}
+
+// (ii): a trivial command, preflight included, completes while another
+// command's caller is lost and its worker has not yet cleaned up.
+#[tokio::test]
+async fn a_trivial_command_never_waits_for_a_lost_caller() -> Result<()> {
+    let root = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
+    let harness = open(root.path(), state.path()).await?;
+    let mounts = &harness.workspace().unwrap().mounts;
+    let (started, began) = tokio::sync::oneshot::channel();
+    let (retired, retirement) = tokio::sync::oneshot::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let mut lost = Box::pin(native_scope(mounts, async |claims| {
+        tokio::task::spawn_blocking(move || {
+            started.send(()).unwrap();
+            released.recv().unwrap();
+            drop(claims);
+            retired.send(()).unwrap();
+        })
+        .await
+        .map_err(storage)?;
+        Err::<((), Claims), _>(Error::Conflict("unverified worker".into()))
+    }));
+    tokio::select! {
+        started = began => started.map_err(storage)?,
+        result = &mut lost => panic!("worker did not remain active: {result:?}"),
+    }
+    drop(lost);
+    sync(mounts).await?;
+    native_scope(mounts, async |claims| Ok(((), claims))).await?;
+    release.send(()).map_err(storage)?;
+    retirement.await.map_err(storage)?;
+    Ok(())
+}
+
+// (iii): concurrent commands' disjoint writes both land. Their overlapping
+// write lands with git conflict markers holding both sides, and the later
+// command's result names the path; neither side is silently overwritten.
+#[tokio::test]
+async fn disjoint_writes_land_and_overlapping_writes_carry_git_markers() -> Result<()> {
     let root = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
     let harness = open(root.path(), state.path()).await?;
     let mounts = &harness.workspace().unwrap().mounts;
     let scratch = mounts.named(Some("home"))?.1.view.source.as_ref().unwrap();
-    // Negative control: bypass command serialization exactly as the former
-    // shared projection did. One verified exit also publishes the other writer.
-    let first = scratch.enter(false).await?;
-    let unverified = scratch.enter(false).await?;
-    write_projected(&scratch.destination.join("data"), b"unverified")?;
-    scratch.leave(first).await?;
-    assert_eq!(published(scratch, "/data").await?, b"unverified");
-    scratch.abandon(unverified).await?;
+    native_scope(mounts, async |claims| {
+        write_projected(&home(&claims)?.join("shared"), b"base\n")?;
+        Ok(((), claims))
+    })
+    .await?;
+    let (forked, b_forked) = tokio::sync::oneshot::channel();
+    let (landed, a_landed) = tokio::sync::oneshot::channel();
+    let a = async {
+        let result = native_scope(mounts, async move |claims| {
+            let view = home(&claims)?;
+            write_projected(&view.join("a"), b"a")?;
+            write_projected(&view.join("shared"), b"a\n")?;
+            b_forked.await.map_err(storage)?;
+            Ok(((), claims))
+        })
+        .await;
+        landed.send(()).unwrap();
+        result
+    };
+    let b = native_scope(mounts, async move |claims| {
+        let view = home(&claims)?;
+        forked.send(()).unwrap();
+        write_projected(&view.join("b"), b"b")?;
+        write_projected(&view.join("shared"), b"b\n")?;
+        a_landed.await.map_err(storage)?;
+        assert!(
+            !view.join("a").exists(),
+            "a view saw another command's write"
+        );
+        Ok(((), claims))
+    });
+    let (a, b) = futures::join!(a, b);
+    a?;
+    let error = b.expect_err("the overlapping hand-back must report its conflict");
+    assert!(
+        matches!(&error, Error::Conflict(message) if message.contains("volume:///home/shared")),
+        "{error:?}"
+    );
+    assert_eq!(published(scratch, "/a").await?, b"a");
+    assert_eq!(published(scratch, "/b").await?, b"b");
+    let shared = String::from_utf8(published(scratch, "/shared").await?).map_err(storage)?;
+    assert!(
+        shared.contains("<<<<<<<")
+            && shared.contains("\na\n")
+            && shared.contains("\nb\n")
+            && shared.contains(">>>>>>>"),
+        "{shared}"
+    );
     Ok(())
 }
 
@@ -467,99 +655,17 @@ async fn task_mounts_share_external_bindings_without_authoring_aliases() -> Resu
     Ok(())
 }
 
-// Both bindings are valid. Only physical entry of the second projection fails,
-// after the first has entered, so this exercises partial-entry retirement.
+// Disconnect retirement waits for every host session to leave. A volume a
+// session still uses cannot prevent an idle later volume from retiring first.
 #[tokio::test]
-async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
-    let root = tempfile::tempdir().map_err(storage)?;
-    let state = tempfile::tempdir().map_err(storage)?;
-    let harness = open(root.path(), state.path()).await?;
-    let mounts = &harness.workspace().expect("fixture workspace").mounts;
-    let (_, mount) = mounts.named(Some("home"))?;
-    let scratch = mount.view.source.as_ref().expect("bound scratch source");
-    let blocked = Arc::new(MountedVolume {
-        workspace: crate::tools::git::OwnedView::Volume(scratch.workspace.workspace().clone()),
-        binding_root: Arc::clone(&scratch.binding_root),
-        destination: scratch.binding_root.path().join("zzz"),
-        options: scratch.options.clone(),
-        task_view_admission: Arc::clone(&scratch.task_view_admission),
-        native: StateArc::new(AsyncMutex::new(None)),
-        users: StateArc::new(projection::Users::default()),
-        execution: StateArc::new(AsyncMutex::new(())),
-        _binding: None,
-    });
-    std::fs::write(&blocked.destination, b"authored blocker").map_err(storage)?;
-    let table = super::super::mounts::owner(
-        &mounts.root,
-        (
-            mounts.named(None)?.1.view.entry,
-            "project",
-            &mounts.named(None)?.1.view.volume,
-            "",
-            crate::agent::WorkspaceMode::ReadWrite,
-            None,
-        ),
-        [("home", Arc::clone(scratch)), ("zzz", Arc::clone(&blocked))].map(|(name, source)| {
-            (
-                crate::agent::WorkspaceEntry::initial_volume(
-                    crate::agent::WorkspaceRole::User,
-                    name.into(),
-                    mount.view.volume.clone(),
-                )
-                .id,
-                name.to_owned(),
-                mount.view.volume.clone(),
-                String::new(),
-                crate::agent::WorkspaceMode::ReadWrite,
-                Some(source),
-            )
-        }),
-    )?;
-    assert_eq!(
-        ordered_mounts(table.mounts())
-            .into_iter()
-            .map(|(relative, _)| relative)
-            .collect::<Vec<_>>(),
-        ["volume:///home", "volume:///zzz"]
-    );
-    let ran = std::sync::atomic::AtomicBool::new(false);
-    let error = native_scope(&table, async |claims| {
-        ran.store(true, std::sync::atomic::Ordering::Relaxed);
-        Ok(((), claims))
-    })
-    .await
-    .expect_err("a regular file cannot become the second projection");
-    // The second binding's refusal proves that ordered entry passed the first
-    // binding. An earlier mount failure must not make retirement pass vacuously.
-    assert!(
-        matches!(error, Error::Conflict(message) if message == "volume alias replaces a project file"),
-        "scope did not reach the authored blocker"
-    );
-    assert!(!ran.into_inner());
-    assert!(
-        scratch.native().await.is_none(),
-        "failed later entry stranded the earlier projection"
-    );
-    assert!(!scratch.destination.exists());
-    assert!(blocked.native().await.is_none());
-    assert_eq!(
-        std::fs::read(&blocked.destination).map_err(storage)?,
-        b"authored blocker"
-    );
-    Ok(())
-}
-
-// Disconnect retirement waits for every worker's physical cleanup. A volume a
-// worker still owns cannot prevent an idle later volume from retiring first.
-#[tokio::test]
-async fn retirement_continues_past_a_volume_a_worker_still_owns() -> Result<()> {
+async fn retirement_continues_past_a_volume_a_session_still_uses() -> Result<()> {
     let root = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
     let harness = open(root.path(), state.path()).await?;
     let mounts = &harness.workspace().unwrap().mounts;
     let (_, mount) = mounts.named(Some("home"))?;
     let scratch = mount.view.source.as_ref().unwrap();
-    // `.volumes/aaa` precedes scratch and still has one worker claim.
+    // `.volumes/aaa` precedes scratch and still has one host session.
     let busy = Arc::new(MountedVolume {
         workspace: crate::tools::git::OwnedView::Volume(scratch.workspace.workspace().clone()),
         binding_root: Arc::clone(&scratch.binding_root),
@@ -568,7 +674,7 @@ async fn retirement_continues_past_a_volume_a_worker_still_owns() -> Result<()> 
         task_view_admission: Arc::clone(&scratch.task_view_admission),
         native: StateArc::new(AsyncMutex::new(None)),
         users: StateArc::new(projection::Users::default()),
-        execution: StateArc::new(AsyncMutex::new(())),
+        shared_views: tokio::sync::OnceCell::new(),
         _binding: None,
     });
     let table = super::super::mounts::owner(
@@ -597,22 +703,29 @@ async fn retirement_continues_past_a_volume_a_worker_still_owns() -> Result<()> 
             )
         }),
     )?;
-    let busy_claim = busy.enter(false).await?;
-    drop(scratch.enter(false).await?);
+    let busy_claim = busy
+        .enter_with_options(busy.options.clone().unwrap())
+        .await?;
+    drop(
+        scratch
+            .enter_with_options(scratch.options.clone().unwrap())
+            .await?,
+    );
     let mut retirement = Box::pin(retire(&table));
     assert!(
         futures::poll!(&mut retirement).is_pending(),
-        "retirement completed while a worker still owned its projection"
+        "retirement completed while a session still used its projection"
     );
     let release_worker = async {
         // Retirement has started each projection. This lock waits for the
-        // idle projection's physical cleanup, while the busy claim stays held.
+        // idle projection's physical cleanup, while the busy session stays.
         assert!(
             scratch.native().await.is_none(),
-            "a busy worker stranded a later projection"
+            "a busy session stranded a later projection"
         );
         assert!(!scratch.destination.exists());
-        busy.abandon(busy_claim).await
+        drop(busy_claim);
+        Ok::<_, Error>(())
     };
     let (retired, released) = futures::join!(retirement, release_worker);
     released?;
@@ -639,7 +752,7 @@ async fn projection_lock_order_ignores_alias_order_and_duplicate_bindings() -> R
         task_view_admission: Arc::clone(&first.task_view_admission),
         native: StateArc::new(AsyncMutex::new(None)),
         users: StateArc::new(projection::Users::default()),
-        execution: StateArc::new(AsyncMutex::new(())),
+        shared_views: tokio::sync::OnceCell::new(),
         _binding: None,
     });
     let table = |primary: &Arc<MountedVolume>, named: &Arc<MountedVolume>| {
@@ -665,7 +778,21 @@ async fn projection_lock_order_ignores_alias_order_and_duplicate_bindings() -> R
     };
     let forward = table(first, &second)?;
     let swapped = table(&second, first)?;
-    let duplicate = table(first, first)?;
+    // Attaching two names opens independent sources for the same durable
+    // workspace and binding destination; alias identity is not Arc identity.
+    let alias = Arc::new(MountedVolume {
+        workspace: crate::tools::git::OwnedView::Volume(first.workspace.workspace().clone()),
+        binding_root: Arc::clone(&first.binding_root),
+        destination: first.destination.clone(),
+        options: first.options.clone(),
+        task_view_admission: Arc::clone(&first.task_view_admission),
+        native: StateArc::new(AsyncMutex::new(None)),
+        users: StateArc::new(projection::Users::default()),
+        shared_views: tokio::sync::OnceCell::new(),
+        _binding: None,
+    });
+    assert!(!Arc::ptr_eq(first, &alias));
+    let duplicate = table(first, &alias)?;
     let identities = |table: &Mounts| -> Result<Vec<PathBuf>> {
         Ok(ordered_mounts(table.mounts())
             .into_iter()
@@ -673,6 +800,7 @@ async fn projection_lock_order_ignores_alias_order_and_duplicate_bindings() -> R
             .collect())
     };
     assert_eq!(identities(&forward)?, identities(&swapped)?);
+    assert_eq!(identities(&forward)?.len(), 2);
     assert_eq!(identities(&duplicate)?.len(), 1);
     let former = |table: &Mounts| {
         table
@@ -696,8 +824,53 @@ async fn projection_lock_order_ignores_alias_order_and_duplicate_bindings() -> R
         2,
         "duplicate control did not select its own lock twice"
     );
-    std::fs::create_dir(&first.destination).map_err(storage)?;
-    native_scope(&duplicate, async |claims| Ok(((), claims))).await?;
+    // One view per volume, however many names bind it: every alias names it.
+    native_scope(&duplicate, async |claims| {
+        assert_eq!(claims.views.len(), 1);
+        let roots: std::collections::BTreeSet<_> = claims
+            .mounts()
+            .mounts()
+            .filter_map(|(_, mount)| mount.native_root.override_path().cloned())
+            .collect();
+        assert_eq!(roots.len(), 1);
+        assert!(!roots.contains(&first.destination));
+        let view = home(&claims)?;
+        assert!(view.is_dir());
+        let prepared = crate::filesystem::native_process::shell::prepare(
+            crate::tools::ShellInput {
+                command: crate::tools::ShellCommand::Source("echo alias".into()),
+                cwd: Some("volume:///home".into()),
+                timeout_ms: None,
+                background: false,
+                target: None,
+            },
+            claims.mounts(),
+            crate::filesystem::native_process::Invocation {
+                executable: std::env::current_exe().map_err(storage)?,
+                argv: Vec::new(),
+                cwd: duplicate.root.clone(),
+                environment: Default::default(),
+                inherit_environment: false,
+                execution_grant: None,
+                schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
+                maximum_output_bytes: None,
+                standard_input: None,
+                process_custody: None,
+            },
+            0,
+        )?;
+        assert_eq!(prepared.cwd, std::fs::canonicalize(&view).map_err(storage)?);
+        let discovery: std::collections::BTreeMap<String, String> =
+            serde_json::from_str(&prepared.environment["ACYCLIC_WORKSPACES"]).map_err(storage)?;
+        assert_eq!(
+            discovery.get("home"),
+            Some(&view.to_string_lossy().into_owned())
+        );
+        assert_eq!(discovery.get("project"), discovery.get("home"));
+        Ok(((), claims))
+    })
+    .await?;
     assert!(first.native().await.is_none());
+    assert!(alias.native().await.is_none());
     Ok(())
 }

@@ -68,10 +68,7 @@ pub(super) fn start<P: NativeStreamProvider + ?Sized + 'static>(
             };
             let run = async {
                 let cancellation = original.cancellation();
-                let mut ctx = KernelAccounting::NativeOriginal {
-                    work: &original,
-                    cancellation: &cancellation,
-                };
+                let mut ctx = KernelAccounting::native(&original, &cancellation);
                 // One starting cut avoids replaying history. The existing
                 // multi-path request captures all inputs without a cache.
                 let heads = {
@@ -155,10 +152,7 @@ async fn open<P: NativeStreamProvider + ?Sized>(
         .and_then(Option::as_ref)
         .map_or(0, |head| head.tail);
     let cancellation = original.cancellation();
-    let mut ctx = KernelAccounting::NativeOriginal {
-        work: original,
-        cancellation: &cancellation,
-    };
+    let mut ctx = KernelAccounting::native(original, &cancellation);
     let _floor = RetainedAllocation::claim(std::mem::size_of::<Revision>() as u64, 1, &mut ctx)?;
     let mut request = FollowRequest::new(path, from);
     request.when_absent = WhenAbsent::Wait;

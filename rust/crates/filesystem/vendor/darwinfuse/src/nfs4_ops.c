@@ -1238,7 +1238,8 @@ static uint32_t handle_access(const darwinfuse_config_t *config,
     free(path);
     if (rc != 0) return errno_to_nfs4(rc);
 
-    uint32_t granted = access_granted(&st, fuse_get_context());
+    const struct fuse_context *caller = fuse_get_context();
+    uint32_t granted = access_granted(&st, caller);
     if (is_attribute_inode) {
         /* An attribute directory and its streams carry the owning file's
          * read and write rights; streams are data, never executable. */
@@ -1250,6 +1251,10 @@ static uint32_t handle_access(const darwinfuse_config_t *config,
         granted = rights;
     }
     granted &= requested;
+    DFUSE_LOG("  ACCESS uid=%u gid=%u owner=%u group=%u mode=%o requested=%#x granted=%#x",
+              (unsigned)caller->uid, (unsigned)caller->gid,
+              (unsigned)st.st_uid, (unsigned)st.st_gid,
+              (unsigned)st.st_mode, requested, granted);
 
     /* Encode: supported, access */
     xdr_encode_uint32(rep, requested);  /* supported */

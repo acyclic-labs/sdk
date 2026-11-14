@@ -52,12 +52,7 @@ fn objects() -> MemoryObjectBackend {
 #[tokio::test]
 async fn objects_checkpoint_reopens_and_resumes_on_original_credit() -> Result {
     let cancellation = CancellationToken::new();
-    let mut ctx = KernelAccounting::Standalone {
-        allocations: Default::default(),
-        work: Default::default(),
-        budget: WorkBudget::UNBOUNDED,
-        cancellation: &cancellation,
-    };
+    let mut ctx = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let store = objects();
     let seed: Retained<FoldCheckpoint<Total>> =
         ctx.decode_json(&serde_json::to_vec(&FoldCheckpoint {
@@ -100,10 +95,7 @@ async fn checkpoint_refuses_wrong_prefix_length_and_cancelled_original() -> Resu
     let cancellation = CancellationToken::new();
     let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let mut ctx = KernelAccounting::NativeOriginal {
-        work: &original,
-        cancellation: &cancellation,
-    };
+    let mut ctx = KernelAccounting::native(&original, &cancellation);
     let store = objects();
     let checkpoint = FoldCheckpoint {
         version: 1,
@@ -187,10 +179,7 @@ async fn cold_fold_crosses_the_stream_request_page_boundary() -> Result {
     let cancellation = CancellationToken::new();
     let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let mut ctx = KernelAccounting::NativeOriginal {
-        work: &original,
-        cancellation: &cancellation,
-    };
+    let mut ctx = KernelAccounting::native(&original, &cancellation);
     let streams = Arc::new(MemoryStream::default());
     let path = StreamPath::new("usage/cold")?;
     let count = acyclic_stream::MAX_ITEMS as u64 + 1;
@@ -257,10 +246,7 @@ async fn checkpoint_catalog_reopens_nearest_prefix_and_reads_only_new_events() -
     let cancellation = CancellationToken::new();
     let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let mut ctx = KernelAccounting::NativeOriginal {
-        work: &original,
-        cancellation: &cancellation,
-    };
+    let mut ctx = KernelAccounting::native(&original, &cancellation);
     let streams = Arc::new(MemoryStream::default());
     let objects = Arc::new(objects());
     let path = StreamPath::new("usage/first")?;
@@ -393,7 +379,7 @@ mod equivalence {
         #[test]
         fn checkpoint_tail_matches_full_fold_at_every_cut(records in prop::collection::vec(any::<u8>(), 0..128), chunk in 1u64..32) {
             let cancellation = CancellationToken::new();
-            let mut ctx = KernelAccounting::Standalone { allocations: Default::default(), work: Default::default(), budget: WorkBudget::UNBOUNDED, cancellation: &cancellation };
+            let mut ctx = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
             let chunk = NonZeroU64::new(chunk).unwrap();
             let mut checkpoint = seed();
             for cut in 0..=records.len() {

@@ -343,7 +343,7 @@ impl HostWorkspace {
                 continue;
             };
             self.verify().await?;
-            source.prepare_command().await?;
+            drop(source.prepared_native().await?);
             let options = volume_guard::options(
                 options,
                 Arc::clone(&self.owner),

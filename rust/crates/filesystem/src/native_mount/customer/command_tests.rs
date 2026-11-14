@@ -14,6 +14,323 @@ fn take_trace() -> Vec<&'static str> {
     TRACE.with_borrow_mut(std::mem::take)
 }
 
+type MemoryCommand = Mount<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>;
+
+async fn command_final_join(revoke: bool, guarded: bool) -> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_native_mount_services()?;
+    let cancellation = crate::CancellationToken::new();
+    let work = test_work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
+    let filesystem = crate::Fs::memory();
+    let workspace = filesystem
+        .create_workspace(
+            "command-final-join",
+            crate::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?
+        .value;
+    workspace.write_text("/result", "original").await?;
+    let destination = tempfile::tempdir()?;
+    let command = private_command(&workspace, &work, destination.path(), false).await?;
+    let path = crate::native_mount::adapter::tests::native_test_path("result");
+    command.source.open_file(&path)?.write_range_with_meter(
+        0,
+        crate::kernel::OwnedSourceChunk::claimed(
+            acyclic_stream::OwnedBytes::from_static(b"verified"),
+            0,
+        ),
+        false,
+        &work,
+    )?;
+    let (fork, custody) = command
+        .complete_private_command()
+        .await?
+        .ok_or("missing fork")?;
+    if revoke {
+        let mut checkout = workspace
+            .checkout(
+                crate::model::GenerationSelector::Head,
+                crate::model::CheckoutMode::tracking_transaction(),
+                &work,
+                &cancellation,
+            )
+            .await?;
+        let policy = crate::access::fixtures::denied(crate::access::Action::Write, "result");
+        checkout
+            .write_access_policy(
+                &serde_json::to_vec(&policy)?,
+                crate::NamedAttributeWriteMode::Upsert,
+                &work,
+                &cancellation,
+            )
+            .await?;
+        checkout
+            .commit(
+                crate::OperationId::new(),
+                None,
+                None,
+                None,
+                crate::PublicationPermit::Unrestricted,
+                crate::WorkBudget::UNBOUNDED,
+                &cancellation,
+                |_| async {
+                    Ok::<_, crate::OperationFailure<crate::FsError>>(crate::OperationReceipt {
+                        value: (),
+                        work: crate::WorkCounters::UNCHARGED,
+                    })
+                },
+            )
+            .await
+            .map_err(|failure| failure.error)?;
+    }
+    // Replan after revocation so a stale target alone cannot make this proof
+    // pass: the real original-volume authorization seal must refuse it.
+    let plan = fork
+        .join_into(&workspace)
+        .git_metadata()
+        .plan(crate::WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
+    let options = crate::ApplyOptions {
+        if_target: plan.target_head(),
+        idempotency_key: crate::IdempotencyKey::new(),
+    };
+    if guarded {
+        let outcome = command
+            .apply_private_command_join(&plan, options, None)
+            .await;
+        if revoke {
+            // The shared fixture owner deliberately cannot refresh policy.
+            // A changed persisted cut must reach that refusal, while the
+            // unchanged-policy control above still publishes successfully.
+            assert!(
+                matches!(
+                    outcome,
+                    Err(MountLifecycleError::Source(
+                        MountSourceError::NativeUnsupported
+                    ))
+                ),
+                "changed policy did not reach the fixture owner's refresh refusal: {:?}",
+                outcome.as_ref().err(),
+            );
+        } else {
+            let (outcome, _allocation) = outcome?;
+            assert!(matches!(outcome, crate::JoinOutcome::Applied(_)));
+        }
+    } else {
+        plan.apply(
+            options,
+            Default::default(),
+            crate::PublicationPermit::Unrestricted,
+        )
+        .await?;
+    }
+    let bytes = workspace.read("/result", 8, &work, &cancellation).await?;
+    if revoke {
+        assert_eq!(
+            bytes.as_ref(),
+            b"original",
+            "revoked command reached original volume"
+        );
+    } else {
+        assert_eq!(bytes.as_ref(), b"verified");
+    }
+    custody.settle().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn command_final_join_rechecks_original_authority() -> Result<(), Box<dyn std::error::Error>>
+{
+    command_final_join(false, true).await?;
+    command_final_join(true, true).await
+}
+
+#[tokio::test]
+#[should_panic(expected = "revoked command reached original volume")]
+async fn command_final_join_negative_control_detects_unrestricted_apply() {
+    command_final_join(true, false).await.unwrap();
+}
+
+async fn private_command(
+    workspace: &Workspace<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>,
+    work: &NativeMaterializationWork,
+    destination: &Path,
+    read_only: bool,
+) -> Result<MemoryCommand, Box<dyn std::error::Error>> {
+    let mut options =
+        super::tests::fixture_options(workspace, MountOptions::read_write().private_command())
+            .await?
+            .native_context(work, None, None);
+    if read_only {
+        options = options.restrict_to_read_only();
+    }
+    let source = workspace.native_source(&options).await?;
+    Ok(Mount {
+        source,
+        session: CustomerSession::new(None, work)?,
+        destination: destination.to_owned(),
+        _destination_custody: work.path(destination, None)?.1,
+    })
+}
+
+#[tokio::test]
+async fn command_cleanup_preparation_failure_preserves_its_retirement_state()
+-> Result<(), Box<dyn std::error::Error>> {
+    failed_command_cleanup(false).await
+}
+
+#[tokio::test]
+#[should_panic(expected = "failed cleanup was treated as already retired")]
+async fn command_cleanup_negative_control_detects_premature_retirement() {
+    failed_command_cleanup(true).await.unwrap();
+}
+
+async fn failed_command_cleanup(premature: bool) -> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_native_mount_services()?;
+    let cancellation = crate::CancellationToken::new();
+    let work = test_work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
+    let filesystem = crate::Fs::memory();
+    let workspace = filesystem
+        .create_workspace(
+            "cleanup-failure",
+            crate::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?
+        .value;
+    let destination = tempfile::tempdir()?;
+    let command = private_command(&workspace, &work, destination.path(), false).await?;
+    // A source that has lost its original lifetime cannot fund preparation.
+    // Publishing the retirement flag first would bypass that refusal entirely.
+    command.source.cancel();
+    if premature {
+        command
+            .session
+            .retiring
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+    let result = command.abandon_command().await;
+    assert!(
+        matches!(
+            result,
+            Err(MountLifecycleError::Source(MountSourceError::Stale))
+        ),
+        "failed cleanup was treated as already retired: {result:?}"
+    );
+    assert!(!command.is_retiring());
+    Ok(())
+}
+
+#[tokio::test]
+async fn private_commands_fork_at_first_write_and_keep_the_authorized_source()
+-> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_native_mount_services()?;
+    let cancellation = crate::CancellationToken::new();
+    let work = test_work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
+    let filesystem = crate::Fs::memory();
+    let workspace = filesystem
+        .create_workspace(
+            "private-command",
+            crate::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?
+        .value;
+    workspace.write_text("/result.txt", "original").await?;
+    let origin = workspace.head(&work, &cancellation).await?.id();
+    let destination = tempfile::tempdir()?;
+    let path = crate::native_mount::adapter::tests::native_test_path("result.txt");
+    let write = |mount: &MemoryCommand, bytes: &'static [u8]| {
+        mount.source.open_file(&path)?.write_range_with_meter(
+            0,
+            crate::kernel::OwnedSourceChunk::claimed(
+                acyclic_stream::OwnedBytes::from_static(bytes),
+                0,
+            ),
+            false,
+            &work,
+        )
+    };
+
+    let no_write = private_command(&workspace, &work, destination.path(), false).await?;
+    assert_eq!(no_write.source.volume_id()?, workspace.id().volume_id());
+    assert_eq!(
+        no_write.source.read_range(&path, 0, 8)?.as_ref(),
+        b"original"
+    );
+    assert!(
+        no_write.complete_private_command().await?.is_none(),
+        "read-only work created a fork"
+    );
+
+    let first = private_command(&workspace, &work, destination.path(), false).await?;
+    let second = private_command(&workspace, &work, destination.path(), false).await?;
+    write(&first, b"first!!!")?;
+    write(&first, b"again!!!")?;
+    write(&second, b"second!!")?;
+    assert_eq!(first.source.volume_id()?, workspace.id().volume_id());
+    assert_eq!(first.source.read_range(&path, 0, 8)?.as_ref(), b"again!!!");
+    assert_eq!(second.source.read_range(&path, 0, 8)?.as_ref(), b"second!!");
+    assert_eq!(workspace.head(&work, &cancellation).await?.id(), origin);
+    let (first_fork, first_custody) = first
+        .complete_private_command()
+        .await?
+        .ok_or("missing first fork")?;
+    let (second_fork, second_custody) = second
+        .complete_private_command()
+        .await?
+        .ok_or("missing second fork")?;
+    assert_ne!(first_fork.id(), second_fork.id());
+    assert_eq!(
+        first_fork
+            .read("/result.txt", 8, &work, &cancellation)
+            .await?
+            .as_ref(),
+        b"again!!!"
+    );
+    assert_eq!(
+        second_fork
+            .read("/result.txt", 8, &work, &cancellation)
+            .await?
+            .as_ref(),
+        b"second!!"
+    );
+    assert_eq!(workspace.head(&work, &cancellation).await?.id(), origin);
+    first_custody.settle().await?;
+    second_custody.settle().await?;
+
+    let read_only = private_command(&workspace, &work, destination.path(), true).await?;
+    assert!(matches!(
+        write(&read_only, b"forbidden"),
+        Err(MountSourceError::ReadOnly)
+    ));
+    assert!(read_only.complete_private_command().await?.is_none());
+
+    // Independent ordinary-view control proves the source-head oracle sees
+    // publication, rather than merely observing an unchanging fixture.
+    let options = super::tests::fixture_options(
+        &workspace,
+        MountOptions::read_write().publication(MountPublication::Manual),
+    )
+    .await?
+    .native_context(&work, None, None);
+    let control = workspace.native_source(&options).await?;
+    control.open_file(&path)?.write_range_with_meter(
+        0,
+        crate::kernel::OwnedSourceChunk::claimed(
+            acyclic_stream::OwnedBytes::from_static(b"control!"),
+            0,
+        ),
+        false,
+        &work,
+    )?;
+    control.sync_async(PublicationPermit::Unrestricted).await?;
+    assert_ne!(workspace.head(&work, &cancellation).await?.id(), origin);
+    Ok(())
+}
+
 // Each candidate/control has its own filesystem, checkout, source and journal.
 // No native driver is needed to test the real command publication dispatch;
 // destination retirement is proved separately against the actual fence packet.
@@ -54,7 +371,6 @@ async fn publish_command(
         session: CustomerSession::new(None, &work)?,
         destination: destination.path().to_owned(),
         _destination_custody: work.path(destination.path(), None)?.1,
-        retiring: std::sync::atomic::AtomicBool::new(false),
     };
     let path = {
         #[cfg(unix)]
@@ -259,14 +575,17 @@ async fn view_completion_unmount_and_abandon_retire_only_their_view()
             }
             boundary = events.recv() => {
                 let boundary = boundary.ok_or("retirement submission producer dropped")?;
-                if boundary.name == "blocking:submitted" && cancelled.is_retiring() {
+                if boundary.name == "blocking:submitted" {
                     break boundary;
                 }
                 boundary.release();
             }
         }
     };
-    assert!(cancelled.is_retiring());
+    // The one accepted operation owns preparation as well as detach. At its
+    // submission boundary neither has run; cancellation must preserve that
+    // owner rather than requiring a second submission after preparation.
+    assert!(!cancelled.is_retiring());
     assert!(schedule.pending_native_work() > 0);
     schedule.cancel();
     drop(retirement);
@@ -298,4 +617,97 @@ async fn view_completion_unmount_and_abandon_retire_only_their_view()
     retained.abandon_command().await?;
     assert!(!retained.path().exists());
     Ok(())
+}
+
+// Both callbacks begin before either is joined. The negative control gives
+// them independent command candidates, so the survivor oracle must see a lost
+// mutation even though both writes themselves returned success.
+async fn concurrent_command_first_writes(shared: bool) -> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_native_mount_services()?;
+    let cancellation = crate::CancellationToken::new();
+    let work = test_work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
+    let filesystem = crate::Fs::memory();
+    let workspace = filesystem
+        .create_workspace(
+            "concurrent-command-promotion",
+            crate::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?
+        .value;
+    workspace.write_text("/left", "original").await?;
+    workspace.write_text("/right", "original").await?;
+    let origin = workspace.head(&work, &cancellation).await?.id();
+    let destination = tempfile::tempdir()?;
+    let command = private_command(&workspace, &work, destination.path(), false).await?;
+    let independent = if shared {
+        None
+    } else {
+        Some(private_command(&workspace, &work, destination.path(), false).await?)
+    };
+    let left = crate::native_mount::adapter::tests::native_test_path("left");
+    let right = crate::native_mount::adapter::tests::native_test_path("right");
+    let handles = [
+        command.source.open_file(&left)?,
+        independent
+            .as_ref()
+            .unwrap_or(&command)
+            .source
+            .open_file(&right)?,
+    ];
+    let barrier = std::sync::Barrier::new(2);
+    std::thread::scope(|threads| -> Result<(), Box<dyn std::error::Error>> {
+        let tasks = handles.map(|handle| {
+            let barrier = &barrier;
+            let work = &work;
+            threads.spawn(move || {
+                barrier.wait();
+                handle.write_range_with_meter(
+                    0,
+                    crate::kernel::OwnedSourceChunk::claimed(
+                        acyclic_stream::OwnedBytes::from_static(b"updated!"),
+                        0,
+                    ),
+                    false,
+                    work,
+                )
+            })
+        });
+        for task in tasks {
+            task.join().map_err(|_| "first-write callback panicked")??;
+        }
+        Ok(())
+    })?;
+    assert_eq!(workspace.head(&work, &cancellation).await?.id(), origin);
+    for path in [&left, &right] {
+        assert_eq!(
+            command.source.read_range(path, 0, 8)?.as_ref(),
+            b"updated!",
+            "concurrent first writes lost a mutation"
+        );
+    }
+    let (fork, custody) = command
+        .complete_private_command()
+        .await?
+        .ok_or("missing fork")?;
+    for path in ["/left", "/right"] {
+        assert_eq!(
+            fork.read(path, 8, &work, &cancellation).await?.as_ref(),
+            b"updated!"
+        );
+    }
+    custody.settle().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn concurrent_command_first_writes_share_one_candidate()
+-> Result<(), Box<dyn std::error::Error>> {
+    concurrent_command_first_writes(true).await
+}
+
+#[tokio::test]
+#[should_panic(expected = "concurrent first writes lost a mutation")]
+async fn concurrent_command_first_writes_negative_control_detects_split_candidates() {
+    concurrent_command_first_writes(false).await.unwrap();
 }

@@ -728,10 +728,7 @@ where
     ) -> Result<SourceReference, DemandError> {
         let stop = caller.cancellation();
         let owner = NativeAccounting::take(caller)?;
-        let mut ctx = KernelAccounting::NativeOriginal {
-            work: &owner.work,
-            cancellation: stop,
-        };
+        let mut ctx = KernelAccounting::native(&owner.work, stop);
         let result = async {
             let heads = self
                 .heads(Inputs::Reference, None, &owner.work, &mut ctx)
@@ -780,10 +777,7 @@ where
         self.revision(&source)?;
         let stop = caller.cancellation();
         let owner = NativeAccounting::take(caller)?;
-        let mut ctx = KernelAccounting::NativeOriginal {
-            work: &owner.work,
-            cancellation: stop,
-        };
+        let mut ctx = KernelAccounting::native(&owner.work, stop);
         let result = self.prepare(&source, query, &owner.work, &mut ctx).await;
         drop(ctx);
         owner.restore(caller)?;

@@ -176,10 +176,7 @@ fn path(text: &str) -> NamespacePath {
     .unwrap()
 }
 fn accounting(work: &NativeMaterializationWork) -> KernelAccounting<'_> {
-    KernelAccounting::NativeOriginal {
-        work,
-        cancellation: work.cancellation(),
-    }
+    KernelAccounting::native(work, work.cancellation())
 }
 
 #[tokio::test]

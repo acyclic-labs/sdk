@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 impl<T> MountTable<T> {
     /// One JSON map of visible native workspace names to paths for this target.
+    /// A command's table names that command's private volume views.
     pub fn environment(&self) -> Result<BTreeMap<String, String>> {
         let mut workspaces = BTreeMap::new();
         for (relative, path, mount) in self.native_mounts() {
