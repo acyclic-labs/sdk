@@ -150,19 +150,29 @@ export class GuestActivation<State, Bindings> {
     signal?.addEventListener("abort", abort, { once: true });
     try {
       const deliveryId = trigger.type === "record" ? `record:${trigger.subscription}:${trigger.sequence}` : `alarm:${trigger.generation}`;
-      const event: GuestEvent = trigger.type === "alarm" ? { type: "alarm" } : {
+      const event: GuestEvent = delivery.socket ?? (trigger.type === "alarm" ? { type: "alarm" } : {
         type: "stream", subscription: trigger.subscription, stream: trigger.record.origin,
         sequence: String(trigger.record.sequence), committedAtMicros: String(trigger.record.committedAtMicros),
         value: btoa(Array.from(trigger.record.value, byte => String.fromCharCode(byte)).join("")),
         commitId: Array.from(trigger.record.commitId, byte => byte.toString(16).padStart(2, "0")).join(""),
-      };
+      });
       const context: GuestContext<Bindings> = {
         ...this.#context, deliveryId, admittedIdentity: null, clock: () => nowUnixMs,
         retryKey: effect => retryKey(deliveryId, effect),
       };
       // A reply materializes after the quiesced checkpoint, as the host publishes them.
       let reply: () => Uint8Array | null;
-      if (invocation !== null) {
+      if (event.type === "socket") {
+        const result = await this.event(event, context);
+        if (event.event.type === "open") {
+          if (result === null || result.type !== "socketAccept" && result.type !== "socketReject")
+            throw new Error("socket Open requires an acceptance or rejection");
+          reply = () => wasm.encodeSocketResult(result);
+        } else {
+          if (result !== null) throw new Error("socket records cannot return invocation replies");
+          reply = () => null;
+        }
+      } else if (invocation !== null) {
         // An InvokeActor input is the definition's fetch; its reply is the
         // canonical InvokeActorResponse the front door returns to the caller.
         const { method, url, headers, body } = invocation;
@@ -214,7 +224,7 @@ export interface DefinitionDeployment {
 export function definitionHandler<State, Bindings>(definition: ActorDefinition<State, Bindings>,
   deployment: DefinitionDeployment, env: Bindings): {
   manifest(): Promise<Uint8Array>;
-  onRecord(bytes: Uint8Array, signal?: AbortSignal): Promise<Uint8Array>;
+  onRecord(bytes: Uint8Array, signal?: AbortSignal, socketHost?: GuestContext<Bindings>["socketHost"]): Promise<Uint8Array>;
 } {
   if (definition.abiVersion !== GUEST_ABI_VERSION) throw new Error("unsupported guest ABI");
   const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -226,12 +236,13 @@ export function definitionHandler<State, Bindings>(definition: ActorDefinition<S
       return wasm.encodeManifest(Uint8Array.from(deployment.code), identity.name, identity.version,
         [...deployment.subscriptions], limits?.handlerTimeoutMillis, limits?.memoryBytes, limits?.checkpointBytes);
     },
-    async onRecord(bytes, signal) {
+    async onRecord(bytes, signal, socketHost) {
       const wasm = await loadWasmModule();
       const delivery = wasm.decodeDelivery(bytes);
       const actor = ActorReference.decode(delivery.actor);
       const context: GuestContext<Bindings> = {
         env, clock: () => delivery.nowUnixMs, deliveryId: null, admittedIdentity: null,
+        ...(socketHost === undefined ? {} : { socketHost }),
         actor: { id: decoder.decode(actor.id), account: Array.from(actor.account),
           namespace: decoder.decode(actor.namespace), class: null },
         retryKey() { throw Object.assign(new Error("missing delivery identity"), { type: "missingIdentity" as const }); },

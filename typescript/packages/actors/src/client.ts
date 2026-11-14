@@ -22,6 +22,7 @@ import {
   type ActorsNominalBinding,
 } from "./generated/nominal.js";
 import type { ErrorMetadata } from "./generated/ErrorMetadata.js";
+import type { GuestEvent, GuestEventResult, SocketCommand, SocketReply } from "./generated/guest.js";
 import type { ReadonlyBytes, ReadonlySemantic } from "./generated/readonly.js";
 export type { ReadonlyBytes, ReadonlySemantic } from "./generated/readonly.js";
 export { ActorId, ActorNamespace, CodeSha256, PositiveU64, CurrentHeadMarker } from "./generated/nominal.js";
@@ -332,6 +333,7 @@ interface GuestDelivery {
   readonly actor: Uint8Array;
   readonly epoch: bigint;
   readonly nowUnixMs: bigint;
+  readonly socket: Extract<GuestEvent, { type: "socket" }> | null;
   readonly trigger:
     | { readonly type: "record"; readonly subscription: string; readonly sequence: bigint; readonly record: {
       readonly sequence: bigint; readonly value: Uint8Array; readonly commitId: Uint8Array;
@@ -342,6 +344,9 @@ interface GuestDelivery {
 
 interface WasmActorsModule extends ActorsNominalBinding {
   readonly decodeDelivery: (bytes: Uint8Array) => GuestDelivery;
+  readonly encodeSocketResult: (result: GuestEventResult) => Uint8Array;
+  readonly encodeSocketRequest: (command: SocketCommand, body: Uint8Array) => Uint8Array;
+  readonly decodeSocketReply: (bytes: Uint8Array) => { readonly reply: SocketReply; readonly body: Uint8Array };
   readonly encodeTransition: (codecName: string, codecVersion: string, checkpoint: Uint8Array, response: Uint8Array | null) => Uint8Array;
   readonly decodeInvokeRequest: (bytes: Uint8Array) => { readonly method: string; readonly url: string;
     readonly headers: readonly (readonly [string, string])[]; readonly body: Uint8Array } | null;
