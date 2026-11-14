@@ -1,11 +1,25 @@
 /// A canonical conditional decision, before its visibility transition. The
 /// caller retains publication ownership through any external durable boundary.
 enum Decision<T, F> {
-    Returned(T),
-    Accepted { bytes: usize, install: F },
+    Returned {
+        result: T,
+        ephemeral: bool,
+    },
+    Accepted {
+        bytes: usize,
+        ephemeral: bool,
+        install: F,
+    },
 }
 
 impl<T, F: FnOnce(&mut State, bool, Option<u64>) -> Result<T, StreamError>> Decision<T, F> {
+    /// The planner owns this classification through durability and installation.
+    fn ephemeral(&self) -> bool {
+        match self {
+            Self::Returned { ephemeral, .. } | Self::Accepted { ephemeral, .. } => *ephemeral,
+        }
+    }
+
     fn install(
         self,
         core: &MemoryStream,
@@ -23,8 +37,8 @@ impl<T, F: FnOnce(&mut State, bool, Option<u64>) -> Result<T, StreamError>> Deci
         at_millis: Option<u64>,
     ) -> Result<T, StreamError> {
         match self {
-            Self::Returned(result) => Ok(result),
-            Self::Accepted { bytes, install } => {
+            Self::Returned { result, .. } => Ok(result),
+            Self::Accepted { bytes, install, .. } => {
                 let result = core.publish(bytes, || install(state, durable, at_millis))?;
                 core.applied(state);
                 Ok(result)
@@ -32,6 +46,8 @@ impl<T, F: FnOnce(&mut State, bool, Option<u64>) -> Result<T, StreamError>> Deci
         }
     }
 
+    /// Persists then installs a durable decision. An ephemeral one installs
+    /// at once and never reaches `persist`: no frame, no fsync.
     fn durable(
         self,
         core: &MemoryStream,
@@ -39,8 +55,9 @@ impl<T, F: FnOnce(&mut State, bool, Option<u64>) -> Result<T, StreamError>> Deci
         mut persist: std::pin::Pin<&mut impl Future<Output = Result<Option<u64>, StreamError>>>,
     ) -> impl Future<Output = Result<T, StreamError>> {
         async move {
-            if matches!(&self, Self::Returned(_)) {
-                return self.install(core, &mut state, true);
+            let ephemeral = self.ephemeral();
+            if ephemeral || matches!(&self, Self::Returned { .. }) {
+                return self.install(core, &mut state, !ephemeral);
             }
             // An immediate acknowledgement needs no second state acquisition.
             if let std::task::Poll::Ready(result) = futures::poll!(persist.as_mut()) {
@@ -91,37 +108,45 @@ impl MemoryStream {
             .then_some(_publication);
             let mut state = self.state.write().await;
             match &canonical.command {
-                WriteRequest::Append(request) => self
-                    .plan_append_locked(&mut state, request)?
-                    .durable(self, state, persist.as_mut())
-                    .await
-                    .map(|(result, allocation)| Execution {
-                        outcome: WriteOutcome::Append(result),
-                        _allocation: allocation,
-                    }),
-                WriteRequest::Fork(request) => self
-                    .plan_fork_locked(&mut state, request)?
-                    .durable(self, state, persist.as_mut())
-                    .await
-                    .map(|result| Execution {
-                        outcome: WriteOutcome::Fork(result),
-                        _allocation: None,
-                    }),
+                WriteRequest::Append(request) => {
+                    let plan = self.plan_append_locked(&mut state, request)?;
+                    let ephemeral = plan.ephemeral();
+                    plan.durable(self, state, persist.as_mut())
+                        .await
+                        .map(|(result, allocation)| Execution {
+                            outcome: WriteOutcome::Append(result),
+                            _allocation: allocation,
+                            ephemeral,
+                        })
+                }
+                WriteRequest::Fork(request) => {
+                    let plan = self.plan_fork_locked(&mut state, request)?;
+                    let ephemeral = plan.ephemeral();
+                    plan.durable(self, state, persist.as_mut())
+                        .await
+                        .map(|result| Execution {
+                            outcome: WriteOutcome::Fork(result),
+                            _allocation: None,
+                            ephemeral,
+                        })
+                }
                 WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => {
                     let digest = canonical.digest.ok_or(StreamError::InvalidResponse)?;
-                    self.plan_commit_locked(
+                    let plan = self.plan_commit_locked(
                         &mut state,
                         request,
                         digest,
                         deadline,
                         matches!(&canonical.command, WriteRequest::CommitAccepted(_)),
-                    )?
-                    .durable(self, state, persist.as_mut())
-                    .await
-                    .map(|(result, allocation)| Execution {
-                        outcome: result,
-                        _allocation: allocation,
-                    })
+                    )?;
+                    let ephemeral = plan.ephemeral();
+                    plan.durable(self, state, persist.as_mut())
+                        .await
+                        .map(|(result, allocation)| Execution {
+                            outcome: result,
+                            _allocation: allocation,
+                            ephemeral,
+                        })
                 }
             }
         }

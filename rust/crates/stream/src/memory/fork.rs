@@ -11,11 +11,22 @@ impl MemoryStream {
         StreamError,
     > {
         let digest = fork_digest(request)?;
+        let scope = state.ephemeral.fork_scope(&state.paths, request)?;
         if let Some(result) = self.replay_fork(state, &request.idempotency_key, digest)? {
-            return Ok(Decision::Returned(result));
+            return Ok(Decision::Returned {
+                result: result,
+                ephemeral: matches!(scope, Scope::Ephemeral(_)),
+            });
         }
-        admit_replay(state, self.limits)?;
-        let mut probes = self.replay_insertion_probes(request.idempotency_key.as_bytes())?;
+        let durable = matches!(scope, Scope::Durable);
+        if durable {
+            admit_replay(state, self.limits)?;
+        }
+        let mut probes = if durable {
+            self.replay_insertion_probes(request.idempotency_key.as_bytes())?
+        } else {
+            ReplayProbes::default()
+        };
         let forked_at = crate::preparation::fork_cut(
             request,
             state.tail(&request.source),
@@ -23,9 +34,10 @@ impl MemoryStream {
         )?;
         reserve_fork(state, request, self.limits)?;
         reserve_commit(state, self.limits)?;
-        self.reserve_commit_index(&mut probes)?;
-        let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
-        let commit_id = commit_identity(decision, digest);
+        if durable {
+            self.reserve_commit_index(&mut probes)?;
+        }
+        let (decision, commit_id) = state.identity(&scope, digest)?;
         let receipt = ForkReceipt {
             source: request.source.clone(),
             destination: request.destination.clone(),
@@ -51,7 +63,8 @@ impl MemoryStream {
             self.paths(state, std::iter::once(&receipt.destination), |prefix| {
                 receipt.destination.as_str() == prefix
             })?;
-        let retained = self.reserve_retained(state)?;
+        let retained = durable.then(|| self.reserve_retained(state)).transpose()?;
+        let ephemeral = self.reserve_ephemeral(&scope, &request.idempotency_key)?;
         let time = self.admitted_time(state, [])?;
         bind_envelope(&mut envelope, commit_id, time);
         let mut namespace = stage_namespace(
@@ -62,23 +75,45 @@ impl MemoryStream {
             &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
         )?;
         Ok(Decision::Accepted {
+            ephemeral: matches!(scope, Scope::Ephemeral(_)),
             bytes: 0,
             install: move |state: &mut State, _durable, at_millis| {
                 let _holds = (_histories, _paths);
                 let time = bind_acceptance(&mut namespace, &mut envelope, state, at_millis)?;
-                let retained = self.install_retained(state, retained)?;
-                install_namespace(state, namespace, &envelope)?;
-                state.decision = decision;
-                state.last_committed_at_micros = time;
-                retain(
-                    state,
-                    &mut |items| self.record_replay_probe(&mut probes, items),
-                    Some(envelope),
-                    Some(request.idempotency_key.clone()),
-                    digest,
-                    IdempotencyOutcome::Fork(receipt.clone()),
-                    (Default::default(), retained),
-                );
+                let retained = retained
+                    .map(|retained| self.install_retained(state, retained))
+                    .transpose()?;
+                install_namespace(state, namespace, &envelope, &scope)?;
+                state.advance(&scope, time);
+                let result = IdempotencyOutcome::Fork(receipt.clone());
+                match retained {
+                    Some(retained) => retain(
+                        state,
+                        &mut |items| self.record_replay_probe(&mut probes, items),
+                        Some(envelope),
+                        Some(request.idempotency_key.clone()),
+                        digest,
+                        result,
+                        (Default::default(), retained),
+                    ),
+                    None => state.ephemeral.retain(
+                        self,
+                        &scope,
+                        ephemeral
+                            .unwrap_or_else(|| unreachable!("leased write reserves its indexes")),
+                        RetainedFact {
+                            previous: None,
+                            replay: Some(request.idempotency_key.0.clone()),
+                            next: Default::default(),
+                            digest,
+                            result,
+                            envelope: Some(envelope),
+                            index: decision,
+                            _allocation: Default::default(),
+                            _header: None,
+                        },
+                    ),
+                }
                 Ok(receipt)
             },
         })

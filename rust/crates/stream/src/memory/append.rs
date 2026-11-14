@@ -26,41 +26,49 @@ impl MemoryStream {
         StreamError,
     > {
         #[cfg(not(target_arch = "wasm32"))]
-        let _input = self.adopt(
-            request.records.capacity() * std::mem::size_of::<AppendRecord>()
-                + request
-                    .records
-                    .iter()
-                    .map(|record| record.headers.owned_bytes())
-                    .sum::<usize>(),
-        )?;
+        let _input = self.append_claim(request)?;
         let bytes = request
             .records
             .iter()
             .map(AppendRecord::payload_bytes)
             .sum::<usize>();
         let digest = self.append_request_digest(request)?;
+        let scope = state.ephemeral.append_scope(&state.paths, request)?;
         if let Some(result) = self.replay_append(state, &request.idempotency_key, digest)? {
-            return Ok(Decision::Returned((result, Default::default())));
+            return Ok(Decision::Returned {
+                result: (result, Default::default()),
+                ephemeral: matches!(scope, Scope::Ephemeral(_)),
+            });
         }
-        let mut probes = self.replay_insertion_probes(request.idempotency_key.as_bytes())?;
+        let durable = matches!(scope, Scope::Durable);
+        let mut probes = if durable {
+            self.replay_insertion_probes(request.idempotency_key.as_bytes())?
+        } else {
+            ReplayProbes::default()
+        };
         let start = state.paths.get(&request.path).map_or(0, |path| path.tail);
         if request.if_tail.is_some_and(|expected| expected != start) {
             let result = AppendOutcome::TailConflict { actual_tail: start };
-            return Ok(Decision::Returned((result, Default::default())));
+            return Ok(Decision::Returned {
+                result: (result, Default::default()),
+                ephemeral: matches!(scope, Scope::Ephemeral(_)),
+            });
         }
         // The write's own authority time; the installed rule decides with it
         // before any reservation.
         let time = self.admitted_time(state, &request.records)?;
-        admit_replay(state, self.limits)?;
+        if durable {
+            admit_replay(state, self.limits)?;
+        }
         reserve_append(state, &request.path, &request.records, self.limits)?;
-        self.reserve_commit_index(&mut probes)?;
-        let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
+        if durable {
+            self.reserve_commit_index(&mut probes)?;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
             work.record(work.meter.admit_codec(0, 0, identity_bytes()))?;
         }
-        let commit_id = commit_identity(decision, digest);
+        let (decision, commit_id) = state.identity(&scope, digest)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
             work.record(work.meter.record_codec(0, 0, identity_bytes()))?;
@@ -82,7 +90,8 @@ impl MemoryStream {
         let (paths, _paths) = self.paths(state, std::iter::once(&request.path), |prefix| {
             request.path.as_str() == prefix
         })?;
-        let retained = self.reserve_retained(state)?;
+        let retained = durable.then(|| self.reserve_retained(state)).transpose()?;
+        let ephemeral = self.reserve_ephemeral(&scope, &request.idempotency_key)?;
         let mut envelope = CommittedEnvelope {
             commit_id,
             committed_at_micros: 0,
@@ -98,25 +107,47 @@ impl MemoryStream {
             &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
         )?;
         Ok(Decision::Accepted {
+            ephemeral: matches!(scope, Scope::Ephemeral(_)),
             bytes,
             install: move |state: &mut State, _durable, at_millis| {
                 #[cfg(not(target_arch = "wasm32"))]
                 let _input = _input;
                 let _holds = (_histories, _paths);
                 let time = bind_acceptance(&mut namespace, &mut envelope, state, at_millis)?;
-                let retained = self.install_retained(state, retained)?;
-                install_namespace(state, namespace, &envelope)?;
-                state.decision = decision;
-                state.last_committed_at_micros = time;
-                retain(
-                    state,
-                    &mut |items| self.record_replay_probe(&mut probes, items),
-                    Some(envelope),
-                    Some(request.idempotency_key.clone()),
-                    digest,
-                    IdempotencyOutcome::Append(outcome.clone()),
-                    (allocation, retained),
-                );
+                let retained = retained
+                    .map(|retained| self.install_retained(state, retained))
+                    .transpose()?;
+                install_namespace(state, namespace, &envelope, &scope)?;
+                state.advance(&scope, time);
+                let result = IdempotencyOutcome::Append(outcome.clone());
+                match retained {
+                    Some(retained) => retain(
+                        state,
+                        &mut |items| self.record_replay_probe(&mut probes, items),
+                        Some(envelope),
+                        Some(request.idempotency_key.clone()),
+                        digest,
+                        result,
+                        (allocation, retained),
+                    ),
+                    None => state.ephemeral.retain(
+                        self,
+                        &scope,
+                        ephemeral
+                            .unwrap_or_else(|| unreachable!("leased write reserves its indexes")),
+                        RetainedFact {
+                            previous: None,
+                            replay: Some(request.idempotency_key.0.clone()),
+                            next: Default::default(),
+                            digest,
+                            result,
+                            envelope: Some(envelope),
+                            index: decision,
+                            _allocation: allocation,
+                            _header: None,
+                        },
+                    ),
+                }
                 Ok((outcome, Default::default()))
             },
         })
@@ -142,5 +173,17 @@ impl MemoryStream {
             work.record(work.meter.record_codec(0, 0, hashed))?;
         }
         Ok(digest)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn append_claim(&self, request: &AppendRequest) -> Result<Allocation, StreamError> {
+        self.adopt(
+            request.records.capacity() * std::mem::size_of::<AppendRecord>()
+                + request
+                    .records
+                    .iter()
+                    .map(|record| record.headers.owned_bytes())
+                    .sum::<usize>(),
+        )
     }
 }

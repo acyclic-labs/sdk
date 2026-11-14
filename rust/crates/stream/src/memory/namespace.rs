@@ -530,6 +530,23 @@ impl Namespace {
         changed_at: u64,
         build: &mut NamespaceBuilder<'_>,
     ) -> Result<(), StreamError> {
+        self.replace(path, Some(node), Some(changed_at), build)
+    }
+    /// Removes a present `path` with its whole subtree; its ancestors remain.
+    fn remove(
+        &mut self,
+        path: &StreamPath,
+        build: &mut NamespaceBuilder<'_>,
+    ) -> Result<(), StreamError> {
+        self.replace(path, None, None, build)
+    }
+    fn replace(
+        &mut self,
+        path: &StreamPath,
+        node: Option<Arc<NamespaceNode>>,
+        changed_at: Option<u64>,
+        build: &mut NamespaceBuilder<'_>,
+    ) -> Result<(), StreamError> {
         build.with_frames(path.as_str().split('/').count(), |build, frames| {
             let mut index = &self.roots;
             let mut parts = path.as_str().split('/').peekable();
@@ -554,15 +571,17 @@ impl Namespace {
             let mut next = node;
             let mut root = None;
             while let Some(frame) = frames.pop() {
-                root = index_put(&frame.index, frame.name, Some(next), build)?;
+                root = index_put(&frame.index, frame.name, next.take(), build)?;
                 if let Some(frame) = frames.last() {
                     let parent = frame.parent.as_ref().ok_or(StreamError::Unavailable)?;
                     let children = root.take();
                     let mut data = parent.data.clone();
-                    if width(&children) != width(&parent.children) {
+                    if let Some(changed_at) = changed_at
+                        && width(&children) != width(&parent.children)
+                    {
                         data.changed_at = changed_at;
                     }
-                    next = build.node(data, children, parent.origin.clone())?;
+                    next = Some(build.node(data, children, parent.origin.clone())?);
                 } else {
                     break;
                 }

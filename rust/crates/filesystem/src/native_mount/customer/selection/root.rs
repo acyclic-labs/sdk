@@ -9,7 +9,6 @@ pub(in crate::native_mount::customer) struct AdmittedRoot<'a> {
         crate::kernel::NamespacePath,
         crate::kernel::KernelOwnedAllocation,
     ),
-    text: (String, crate::kernel::KernelOwnedAllocation),
 }
 
 impl<'a> AdmittedRoot<'a> {
@@ -32,15 +31,7 @@ impl<'a> AdmittedRoot<'a> {
             &mut accounting,
             work.cancellation(),
         )?;
-        let text = root
-            .0
-            .unicode_text_with_accounting(&mut accounting, work.cancellation())
-            .map_err(WorkspaceError::from)?;
-        let admitted = Self {
-            selection,
-            root,
-            text,
-        };
+        let admitted = Self { selection, root };
         admitted.require_list()?;
         Ok(admitted)
     }
@@ -112,7 +103,11 @@ impl<'a> AdmittedRoot<'a> {
             lazy.workspace().volume_config(),
         )?;
         let mut accounting = KernelAccounting::native(work, work.cancellation());
-        let root_text = &self.text;
+        let root_text = self
+            .root
+            .0
+            .unicode_text_with_accounting(&mut accounting, work.cancellation())
+            .map_err(WorkspaceError::from)?;
         let selected = lazy.lookup(&root_text.0, &mut accounting).await;
         self.require_list()?;
         let selected = selected?;
@@ -172,7 +167,7 @@ impl<'a> AdmittedRoot<'a> {
         }
         self.require_list()?;
         let source = self.selection.checkout_source(checkout, self.root, work)?;
-        Ok((source, lazy.workspace().id().volume_id(), self.text))
+        Ok((source, lazy.workspace().id().volume_id(), root_text))
     }
 }
 

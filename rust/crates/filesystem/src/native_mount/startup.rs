@@ -78,17 +78,6 @@ impl PreparedNativeMountStart {
         self
     }
 
-    pub(super) fn prepare_view_destination(
-        &mut self,
-        guard: &mut MountDestinationGuard,
-        work: &NativeMaterializationWork,
-    ) -> Result<(), NativeMountError> {
-        if let Some(destination) = self.view_destination.as_mut() {
-            destination.prepare_cleanup(guard, work)?;
-        }
-        Ok(())
-    }
-
     pub(super) fn failed(
         self,
         error: NativeMountError,

@@ -27,7 +27,8 @@ pub(crate) struct Snapshot {
 impl Snapshot {
     fn capture(state: &State) -> Self {
         Self {
-            paths: state.paths.clone(),
+            // Ephemeral subtrees never outlive this incarnation.
+            paths: state.ephemeral.without(&state.paths),
             retained: state.retained.last().map(|entry| entry.fact.clone()),
             first_retained: state.retained.first().map(|entry| entry.fact.clone()),
             retained_len: state.retained.len(),
@@ -371,7 +372,7 @@ fn reconstruct(
             &mut super::NamespaceBuilder::new(&|_| Ok(None)),
         )
         .ok()?;
-        install_namespace(&mut state, namespace, envelope).ok()?;
+        install_namespace(&mut state, namespace, envelope, &super::Scope::Durable).ok()?;
         state.decision = state.decision.checked_add(1)?;
         state.last_committed_at_micros = envelope.committed_at_micros;
         retained
