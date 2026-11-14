@@ -57,6 +57,7 @@ pub(crate) enum AgentStream {
     Inbox,
     Status,
     Conversation,
+    History,
     Membership,
 }
 /// Generation-linked checkpoints, indexed like [`CONVERSATION`].
@@ -394,6 +395,7 @@ impl AgentPath {
             AgentStream::Inbox => [self.as_str(), "", "", "", ""],
             AgentStream::Status => [STATUSES, &self.text[AGENTS.len()..], "", "", ""],
             AgentStream::Conversation => [self.as_str(), "/", CONVERSATION, "", ""],
+            AgentStream::History => [self.as_str(), "/", HISTORY, "", ""],
             AgentStream::Membership => [
                 MEMBERSHIP,
                 "/",
