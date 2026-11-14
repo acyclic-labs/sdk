@@ -217,26 +217,11 @@ impl<
                 used |= source;
                 let moved = (|| {
                     for path in selected.value.drain(..) {
-                        let mut duplicate = false;
-                        for present in &paths.value {
-                            ctx.charge(WorkCounters {
-                                items_examined: 1,
-                                ..WorkCounters::UNCHARGED
-                            })?;
-                            if present == &path {
-                                duplicate = true;
-                                break;
-                            }
-                        }
                         let bytes = path.capacity() as u64;
                         let guard =
                             crate::kernel::split_allocation(&mut selected.allocation, bytes)?;
                         selected.bytes -= bytes;
                         let path = Owned::new(path, guard, bytes);
-                        if duplicate {
-                            path.retire(ctx)?;
-                            continue;
-                        }
                         if let Err(error) = paths.ensure_for_push(usize::MAX, ctx) {
                             path.retire(ctx)?;
                             return Err(error.into());
@@ -258,6 +243,21 @@ impl<
         paths
             .value
             .sort_unstable_by(|a, b| exactify_path_order(a, b));
+        // The required ancestor-first ordering also groups duplicate paths.
+        // Retire their original backing without a second membership index or
+        // a scan of every previously selected path for each incoming entry.
+        let mut duplicate_bytes = 0;
+        paths.value.dedup_by(|duplicate, retained| {
+            if duplicate != retained {
+                return false;
+            }
+            duplicate_bytes += duplicate.capacity() as u64;
+            true
+        });
+        let duplicate_allocation =
+            crate::kernel::split_allocation(&mut paths.allocation, duplicate_bytes)?;
+        paths.bytes -= duplicate_bytes;
+        crate::kernel::retire_allocation(duplicate_allocation, duplicate_bytes, ctx)?;
         Ok((paths, used))
     }
 

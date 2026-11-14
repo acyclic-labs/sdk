@@ -2,6 +2,61 @@ use super::*;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
+async fn selected_import_orders_overlapping_roots_without_pairwise_path_searches() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join("nested")).unwrap();
+    for index in 0..256 {
+        std::fs::write(
+            directory.path().join(format!("nested/file-{index:03}")),
+            b"source",
+        )
+        .unwrap();
+    }
+    let source = native_source(directory.path(), crate::FilesystemProfile::Portable).await;
+    let root = attach(&Fs::memory(), source, MemoryLazyWorkspaceStore::default())
+        .await
+        .unwrap();
+    let cut = root.snapshot(accounting!()).await.unwrap();
+    let state = LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
+    let cancellation = CancellationToken::new();
+    let mut enumeration = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let (expected, _) = root
+        .enumerate_paths("/", cut, &state, &mut enumeration)
+        .await
+        .unwrap();
+    let mut selection = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let (selected, _) = root
+        .selected_paths(cut, &["/".into()], &mut selection)
+        .await
+        .unwrap();
+    assert_eq!(
+        selection.spent().items_examined,
+        enumeration.spent().items_examined,
+        "selection must not compare each entry with all earlier entries"
+    );
+    let mut expected_paths = expected.value.clone();
+    expected_paths.sort_unstable_by(|a, b| exactify_path_order(a, b));
+    assert_eq!(selected.value, expected_paths);
+    selected.retire(&mut selection).unwrap();
+    expected.retire(&mut enumeration).unwrap();
+
+    // Duplicate and overlapping roots still validate and enumerate each
+    // requested root, but transfer every selected path exactly once.
+    let mut overlap = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let (selected, _) = root
+        .selected_paths(
+            cut,
+            &["/nested".into(), "/".into(), "/".into()],
+            &mut overlap,
+        )
+        .await
+        .unwrap();
+    assert_eq!(selected.value, expected_paths);
+    selected.retire(&mut overlap).unwrap();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
 async fn exactification_preserves_removals_after_its_cut_and_prepared_bytes() {
     let directory = tempfile::tempdir().unwrap();
     std::fs::write(directory.path().join("file.txt"), b"original").unwrap();
