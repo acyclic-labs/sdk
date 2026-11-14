@@ -251,6 +251,19 @@ impl LocalUser {
 struct LocalContext(Weak<LocalHarness>);
 
 impl TurnContext for LocalContext {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn program_files(
+        &self,
+        tools: &crate::tool::ToolRegistry,
+        agent: &AgentState,
+        authority: &TurnAuthority,
+    ) -> Result<Option<Arc<crate::plugins::ProgramFiles>>> {
+        let local = self
+            .0
+            .upgrade()
+            .ok_or_else(|| Error::Unsupported("local harness is closed".into()))?;
+        Tasks::program_files(&local.harness, tools, agent, authority)
+    }
     fn prepare_invocation<'a>(
         &'a self,
         (executor, _): (StockExecutor, crate::conversation::Limits),
