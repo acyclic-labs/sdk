@@ -425,6 +425,29 @@ fn assert_attempt_sequence(
                 ..failed_index + usize::try_from(full_attempts).map_err(io::Error::other)?,
         )
         .ok_or(io::ErrorKind::InvalidData)?;
+    assert_failed_attempts(failed, native_error)?;
+    let injected_start = failed_index + failed.len();
+    assert_injected_attempts(
+        attempts
+            .get(injected_start..injected_start + 2)
+            .ok_or(io::ErrorKind::InvalidData)?,
+    )?;
+    let worker = attempts.last().ok_or(io::ErrorKind::InvalidData)?;
+    let worker_attempt = worker.durability.ok_or(io::ErrorKind::InvalidData)?;
+    assert_eq!(worker_attempt.requested, full.requested);
+    assert_eq!(worker_attempt.descriptor, full.descriptor);
+    assert_eq!(worker_attempt.os_error, None);
+    #[cfg(not(target_vendor = "apple"))]
+    assert_eq!(worker_attempt.syscall, full.syscall);
+    #[cfg(target_vendor = "apple")]
+    assert_eq!(worker_attempt.syscall, Some(DurabilitySyscall::FullFsync));
+    Ok(())
+}
+
+fn assert_failed_attempts(
+    failed: &[acyclic_observability::Sample<'_>],
+    native_error: Option<i32>,
+) -> io::Result<()> {
     for attempt in failed {
         assert_eq!(attempt.outcome, Outcome::Err);
         assert!(
@@ -445,11 +468,11 @@ fn assert_attempt_sequence(
             .os_error,
         native_error
     );
-    let injected_start = failed_index + failed.len();
-    for injected in attempts
-        .get(injected_start..injected_start + 2)
-        .ok_or(io::ErrorKind::InvalidData)?
-    {
+    Ok(())
+}
+
+fn assert_injected_attempts(attempts: &[acyclic_observability::Sample<'_>]) -> io::Result<()> {
+    for injected in attempts {
         let evidence = injected.durability.ok_or(io::ErrorKind::InvalidData)?;
         assert_eq!(injected.outcome, Outcome::Err);
         assert_eq!(
@@ -459,15 +482,6 @@ fn assert_attempt_sequence(
         assert_eq!(evidence.os_error, None);
         assert_eq!(evidence.descriptor, Some(0));
     }
-    let worker = attempts.last().ok_or(io::ErrorKind::InvalidData)?;
-    let worker_attempt = worker.durability.ok_or(io::ErrorKind::InvalidData)?;
-    assert_eq!(worker_attempt.requested, full.requested);
-    assert_eq!(worker_attempt.descriptor, full.descriptor);
-    assert_eq!(worker_attempt.os_error, None);
-    #[cfg(not(target_vendor = "apple"))]
-    assert_eq!(worker_attempt.syscall, full.syscall);
-    #[cfg(target_vendor = "apple")]
-    assert_eq!(worker_attempt.syscall, Some(DurabilitySyscall::FullFsync));
     Ok(())
 }
 

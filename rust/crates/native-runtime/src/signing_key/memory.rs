@@ -10,12 +10,14 @@ use zeroize::Zeroizing;
 
 type Secrets = BTreeMap<String, Zeroizing<Vec<u8>>>;
 
+/// An isolated credential store whose secret bytes are zeroized on removal.
 pub struct MemorySigningStore {
     identity: [u8; 32],
     secrets: Arc<Mutex<Secrets>>,
 }
 
 impl MemorySigningStore {
+    /// Creates an empty store with a fresh, independent custody identity.
     pub fn new() -> io::Result<Self> {
         Ok(Self {
             identity: crate::owner_record::new_key()?,
@@ -23,9 +25,11 @@ impl MemorySigningStore {
         })
     }
 
+    /// Returns the number of credentials currently held by this store.
     pub fn len(&self) -> usize {
         self.secrets.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
+    /// Reports whether this store holds no credentials.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

@@ -71,7 +71,7 @@ impl Drop for Pending {
 
 #[test]
 fn retained_future_wakes_and_stop_preserve_exact_original_backing() -> io::Result<()> {
-    crate::initialize_native_io_services().unwrap();
+    crate::initialize_native_io_services()?;
     for complete in [false, true] {
         let observed = Arc::new(ReadBudgetMeter::new(0, 0));
         let meter: Arc<dyn NativeReadMeter> = observed.clone();
@@ -99,7 +99,7 @@ fn retained_future_wakes_and_stop_preserve_exact_original_backing() -> io::Resul
             let wake = probe
                 .wake
                 .lock()
-                .unwrap()
+                .map_err(|_| io::Error::other("poisoned wake"))?
                 .take()
                 .ok_or(io::ErrorKind::InvalidData)?;
             wake.wake();
@@ -114,7 +114,11 @@ fn retained_future_wakes_and_stop_preserve_exact_original_backing() -> io::Resul
         drop(owner);
         // An externally retained event waker still owns the original control
         // allocation. Its last alias, rather than stop, returns that credit.
-        let wake = probe.wake.lock().unwrap().take();
+        let wake = probe
+            .wake
+            .lock()
+            .map_err(|_| io::Error::other("poisoned wake"))?
+            .take();
         drop(wake);
         assert_eq!(observed.memory.load(Ordering::Acquire), 0);
     }
@@ -150,7 +154,7 @@ fn retained_future_refuses_before_poll_and_returns_partial_reservations() {
 
 #[test]
 fn retained_future_panic_retires_the_frame_before_reporting_failure() -> io::Result<()> {
-    crate::initialize_native_io_services().unwrap();
+    crate::initialize_native_io_services()?;
     struct Released(Arc<AtomicBool>);
     impl Drop for Released {
         fn drop(&mut self) {
@@ -181,7 +185,7 @@ fn retained_future_panic_retires_the_frame_before_reporting_failure() -> io::Res
 
 #[test]
 fn retained_future_self_stop_never_claims_callback_quiescence() -> io::Result<()> {
-    crate::initialize_native_io_services().unwrap();
+    crate::initialize_native_io_services()?;
     struct SelfStop {
         owner: Arc<Mutex<Option<crate::OwnedFuture>>>,
         wake: Arc<Mutex<Option<Waker>>>,
@@ -219,15 +223,21 @@ fn retained_future_self_stop_never_claims_callback_quiescence() -> io::Result<()
         retired: Arc::clone(&retired),
     };
     let retained = crate::retain_future(future, &meter)?;
-    *owner.lock().unwrap() = Some(retained);
+    *owner
+        .lock()
+        .map_err(|_| io::Error::other("poisoned owner"))? = Some(retained);
     let pending = wake
         .lock()
-        .unwrap()
+        .map_err(|_| io::Error::other("poisoned wake"))?
         .take()
         .ok_or(io::ErrorKind::InvalidData)?;
     pending.wake();
     assert!(retired.load(Ordering::Acquire));
-    drop(wake.lock().unwrap().take());
+    drop(
+        wake.lock()
+            .map_err(|_| io::Error::other("poisoned wake"))?
+            .take(),
+    );
     assert_eq!(observed.memory.load(Ordering::Acquire), 0);
     Ok(())
 }
@@ -235,7 +245,7 @@ fn retained_future_self_stop_never_claims_callback_quiescence() -> io::Result<()
 #[cfg(feature = "test-support")]
 #[test]
 fn retained_future_foreign_wake_keeps_original_scope_and_restores_the_caller() -> io::Result<()> {
-    crate::initialize_native_io_services().unwrap();
+    crate::initialize_native_io_services()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -289,15 +299,24 @@ fn retained_future_foreign_wake_keeps_original_scope_and_restores_the_caller() -
             })
             .await;
         assert_eq!(foreign_observed, foreign_expected);
-        let records = records.lock().unwrap();
-        assert_eq!(records.len(), 2);
-        assert_eq!(records[0], expected[..16]);
-        assert_eq!(records[1], expected[16..]);
-        drop(records);
+        {
+            let records = records
+                .lock()
+                .map_err(|_| io::Error::other("poisoned records"))?;
+            let [first, second] = records.as_slice() else {
+                return Err(io::Error::other("expected two retained records"));
+            };
+            assert_eq!(first, &expected[..16]);
+            assert_eq!(second, &expected[16..]);
+        }
         assert!(owner.is_stopped());
         owner.stop()?;
         drop(owner);
-        drop(wake.lock().unwrap().take());
+        drop(
+            wake.lock()
+                .map_err(|_| io::Error::other("poisoned wake"))?
+                .take(),
+        );
         original.drained().await;
         assert_eq!(observed.memory.load(Ordering::Acquire), 0);
         Ok(())

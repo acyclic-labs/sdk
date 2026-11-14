@@ -136,19 +136,11 @@ pub(super) struct Boundary {
 /// after it.
 pub(super) fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno> {
     let invalid = Errno(sys::EINVAL);
-    let descriptor = |index: usize| {
-        received
-            .descriptors
-            .get(index)
-            .copied()
-            .filter(|_| index < received.count)
-            .ok_or(invalid)
-    };
     let length = received.length;
     let (slots, flags, uid, gid, owner, mask, signals, ignored, limits, argc, envc) = {
         let mut reader = Reader(body.bytes().get(..length).ok_or(invalid)?);
         let slots = reader.take(3)?;
-        let flags = *reader.take(1)?.first().ok_or(invalid)?;
+        let flags = reader.flags()?;
         let uid = reader.word()?;
         let gid = reader.word()?;
         let owner = Pid::try_from(reader.word()?).map_err(|_| invalid)?;
@@ -167,28 +159,7 @@ pub(super) fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno
             kinds, flags, uid, gid, owner, mask, signals, ignored, limits, argc, envc,
         )
     };
-    // A confined request's original `here` descriptor is its bound cwd.
-    // Reject a second path-based selection before any warden is created.
-    if flags & !(HAS_CWD | HAS_UID | HAS_GID | HAS_BOUNDARY | ON_RELEASE | UNRECORDED) != 0
-        || flags & (HAS_BOUNDARY | HAS_CWD) == (HAS_BOUNDARY | HAS_CWD)
-        || flags & (HAS_BOUNDARY | ON_RELEASE) == (HAS_BOUNDARY | ON_RELEASE)
-        || (flags & UNRECORDED != 0 && flags & HAS_BOUNDARY == 0)
-    {
-        return Err(invalid);
-    }
-    let mut next = 3;
-    let mut streams = [Slot::Null; 3];
-    for (stream, kind) in streams.iter_mut().zip(slots) {
-        *stream = match kind {
-            NULL => Slot::Null,
-            SENT => {
-                next += 1;
-                Slot::Descriptor(descriptor(next - 1)?)
-            }
-            CLOSED => Slot::Closed,
-            _ => return Err(invalid),
-        };
-    }
+    let (streams, next) = stream_slots(received, slots)?;
     let (policy, strings) = if flags & HAS_BOUNDARY != 0 {
         let mut reader = Reader(body.bytes().get(FIXED..length).ok_or(invalid)?);
         let count = usize::try_from(reader.word()?).map_err(|_| invalid)?;
@@ -206,12 +177,12 @@ pub(super) fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno
         let end = start
             .checked_add(count * core::mem::size_of::<entry::Instruction>())
             .ok_or(invalid)?;
-        (Some((descriptor(next)?, start, count)), end)
+        (Some((received.descriptor(next)?, start, count)), end)
     } else {
         (None, FIXED)
     };
     let activity = if flags & ON_RELEASE != 0 {
-        Some(descriptor(next + 2 * usize::from(policy.is_some()))?)
+        Some(received.descriptor(next + 2 * usize::from(policy.is_some()))?)
     } else {
         None
     };
@@ -219,6 +190,97 @@ pub(super) fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno
     {
         return Err(invalid);
     }
+    let Arguments {
+        program,
+        cwd,
+        path,
+        argv,
+        envp,
+        search,
+    } = arguments(body, length, strings, argc, envc, flags)?;
+    let base = body.base;
+    Ok(Spec {
+        reply: received.descriptor(1)?,
+        completion_report: if policy.is_some() {
+            received.descriptor(next + 1)?
+        } else {
+            -1
+        },
+        directory: if flags & UNRECORDED != 0 {
+            -1
+        } else {
+            received.descriptor(0)?
+        },
+        here: received.descriptor(2)?,
+        owner,
+        slots: streams,
+        cwd,
+        uid: (flags & HAS_UID != 0).then_some(uid),
+        gid: (flags & HAS_GID != 0).then_some(gid),
+        mask,
+        signals,
+        ignored,
+        limits,
+        program,
+        search,
+        path,
+        argv,
+        envp,
+        boundary: policy.map(|(ruleset, start, count)| Boundary {
+            ruleset,
+            filter: base.wrapping_add(start).cast(),
+            count,
+        }),
+        activity,
+    })
+}
+
+impl Received {
+    fn descriptor(&self, index: usize) -> Result<Fd, Errno> {
+        self.descriptors
+            .get(index)
+            .copied()
+            .filter(|_| index < self.count)
+            .ok_or(Errno(sys::EINVAL))
+    }
+}
+
+fn stream_slots(received: &Received, slots: [u8; 3]) -> Result<([Slot; 3], usize), Errno> {
+    let invalid = Errno(sys::EINVAL);
+    let mut next = 3;
+    let mut streams = [Slot::Null; 3];
+    for (stream, kind) in streams.iter_mut().zip(slots) {
+        *stream = match kind {
+            NULL => Slot::Null,
+            SENT => {
+                next += 1;
+                Slot::Descriptor(received.descriptor(next - 1)?)
+            }
+            CLOSED => Slot::Closed,
+            _ => return Err(invalid),
+        };
+    }
+    Ok((streams, next))
+}
+
+struct Arguments {
+    program: *const c_char,
+    cwd: Option<*const c_char>,
+    path: Option<*const c_char>,
+    argv: *const *const c_char,
+    envp: *const *const c_char,
+    search: bool,
+}
+
+fn arguments(
+    body: &mut Mapped,
+    length: usize,
+    strings: usize,
+    argc: usize,
+    envc: usize,
+    flags: u8,
+) -> Result<Arguments, Errno> {
+    let invalid = Errno(sys::EINVAL);
     // Every argument and environment entry needs at least its NUL byte.
     // Validate that input-backed bound before allocating pointer storage.
     let strings_required = argc
@@ -287,39 +349,13 @@ pub(super) fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno
     if offset != length {
         return Err(invalid);
     }
-    Ok(Spec {
-        reply: descriptor(1)?,
-        completion_report: if policy.is_some() {
-            descriptor(next + 1)?
-        } else {
-            -1
-        },
-        directory: if flags & UNRECORDED != 0 {
-            -1
-        } else {
-            descriptor(0)?
-        },
-        here: descriptor(2)?,
-        owner,
-        slots: streams,
-        cwd,
-        uid: (flags & HAS_UID != 0).then_some(uid),
-        gid: (flags & HAS_GID != 0).then_some(gid),
-        mask,
-        signals,
-        ignored,
-        limits,
+    Ok(Arguments {
         program,
-        search,
+        cwd,
         path,
         argv: vector.cast_const(),
         envp: environment.cast_const(),
-        boundary: policy.map(|(ruleset, start, count)| Boundary {
-            ruleset,
-            filter: base.wrapping_add(start).cast(),
-            count,
-        }),
-        activity,
+        search,
     })
 }
 
@@ -327,6 +363,20 @@ pub(super) fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno
 struct Reader<'a>(&'a [u8]);
 
 impl<'a> Reader<'a> {
+    fn flags(&mut self) -> Result<u8, Errno> {
+        let flags = *self.take(1)?.first().ok_or(Errno(sys::EINVAL))?;
+        // A confined request's original `here` descriptor is its bound cwd.
+        // Reject a second path-based selection before any warden is created.
+        if flags & !(HAS_CWD | HAS_UID | HAS_GID | HAS_BOUNDARY | ON_RELEASE | UNRECORDED) != 0
+            || flags & (HAS_BOUNDARY | HAS_CWD) == (HAS_BOUNDARY | HAS_CWD)
+            || flags & (HAS_BOUNDARY | ON_RELEASE) == (HAS_BOUNDARY | ON_RELEASE)
+            || (flags & UNRECORDED != 0 && flags & HAS_BOUNDARY == 0)
+        {
+            return Err(Errno(sys::EINVAL));
+        }
+        Ok(flags)
+    }
+
     fn take(&mut self, length: usize) -> Result<&'a [u8], Errno> {
         if length > self.0.len() {
             return Err(Errno(sys::EINVAL));
