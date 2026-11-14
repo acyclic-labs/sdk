@@ -681,6 +681,15 @@ pub fn actor_seeds()
         );
         seeds.push((name, bytes, "guest::wire::encode_transition"));
     }
+    // The TypeScript guest keeps its checkpoint and alarm without store effects.
+    // Capture that complete frame from the Rust writer instead of splicing bytes
+    // out of a creation transition in the consumer's conformance test.
+    let mut unchanged = transition.clone();
+    unchanged.alarm = guest::AlarmChange::Keep;
+    unchanged.effects.clear();
+    let bytes = wire::encode_transition(&unchanged)?;
+    assert_eq!(wire::decode_transition(&bytes)?, unchanged);
+    seeds.push(("transition", bytes, "guest::wire::encode_transition"));
     transition.pause = true;
     let bytes = wire::encode_transition(&transition)?;
     assert_eq!(wire::decode_transition(&bytes)?, transition);

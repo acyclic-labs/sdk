@@ -133,10 +133,9 @@ test("onRecord answers a Rust-captured delivery through the Rust wire codec, ref
   // Strictness is the Rust decoder's (covered by its own tests); an unknown field 15 is refused before the heap.
   await expect(activation.onRecord(Uint8Array.from([...delivery, 0x78, 0x01]))).rejects.toThrow("non-canonical guest delivery");
   expect(restores()).toBe(0);
-  // Alarm keep at tag 4, the empty effect commit and its fixed idempotency key, as Rust writes them.
-  const expected = Uint8Array.from([...captured.subarray(0, 0x5e), 0x3a, 0x1e, ...captured.subarray(captured.length - 30)]);
-  expect(await activation.onRecord(delivery)).toEqual(expected);
-  expect(await activation.onRecord(delivery)).toEqual(expected);
+  // Compare the entire current-format frame with the independent Rust writer.
+  expect(await activation.onRecord(delivery)).toEqual(captured);
+  expect(await activation.onRecord(delivery)).toEqual(captured);
   expect(restores()).toBe(1);
   expect(seen).toEqual([1, 2].map(() => ({ event: { type: "alarm" }, deliveryId: "alarm:1", now: 42n, key: "guest-v1:7:alarm:1:send" })));
   for (const [id, namespace] of [["other", "namespace"], ["codec", "other"]] as const) {
