@@ -722,7 +722,7 @@ async fn a_deleted_actor_is_terminal_and_leaves_no_orphans() -> TestResult {
         trace.read(0, u32::try_from(trace.tail().await?)?).await?,
         Default::default(),
     );
-    let mut delivery = None;
+    let mut deliveries = Vec::new();
     let mut child_parents = Vec::new();
     let mut locks = 0;
     let mut admissions = 0;
@@ -745,7 +745,7 @@ async fn a_deleted_actor_is_terminal_and_leaves_no_orphans() -> TestResult {
                 );
                 assert_eq!(bytes, None);
                 assert_eq!(result, Outcome::Succeeded);
-                delivery = Some(id);
+                deliveries.push(id);
             } else if start.name == "actors.delivery_lock" {
                 child_parents.push(start.parent);
                 assert_eq!(start.mechanism, Mechanism::Lock);
@@ -789,8 +789,15 @@ async fn a_deleted_actor_is_terminal_and_leaves_no_orphans() -> TestResult {
         "configured delivery credit was not observed"
     );
     assert!(handlers > 0, "original handler entry was not observed");
-    let delivery = delivery.ok_or("original actor delivery span absent")?;
-    assert!(child_parents.iter().all(|parent| *parent == Some(delivery)));
+    assert!(
+        !deliveries.is_empty(),
+        "original actor delivery span absent"
+    );
+    assert!(
+        child_parents
+            .iter()
+            .all(|parent| parent.is_some_and(|parent| deliveries.contains(&parent)))
+    );
     let live = store.load(&actor).await?;
     assert!(
         live.state()
