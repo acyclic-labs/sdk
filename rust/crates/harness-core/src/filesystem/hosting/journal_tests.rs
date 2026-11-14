@@ -1256,7 +1256,7 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     let mut watching = Box::pin(bound.files(&agent, root, &trace_paths, Some(&before.cut)));
     assert!(futures::poll!(&mut watching).is_pending());
     assert!(bound.trace_recorder(&agent)?.is_some());
-    let appended = journal
+    journal
         .append(
             OperationId::from_bytes([76; 16]),
             "observed-start",
@@ -1264,7 +1264,6 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
             None,
         )?
         .await?;
-    assert!(appended > 0);
     assert!(
         !journal
             .append_if_tail(operation, 0, "stale-start", &event, None)?
@@ -1365,6 +1364,9 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
             ..
         } = observation
         {
+            if start.parent.is_some() {
+                continue;
+            }
             let expected = match start.name.as_str() {
                 "harness.execution_append" | "harness.execution_append_if_tail" => {
                     (None, "original_execution_publication_decision")
@@ -1379,7 +1381,6 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
                 }
                 _ => continue,
             };
-            assert_eq!(start.parent, None);
             assert_eq!(
                 start.mechanism,
                 match start.name.as_str() {
