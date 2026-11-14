@@ -2487,6 +2487,7 @@ three
         );
         let stop = CancellationToken::new();
         let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
+        eprintln!("C7DBG calc={:?}", main.read("/calc.txt", 1 << 20, &mut work).await.map(|r| String::from_utf8_lossy(r.bytes.as_ref()).into_owned()));
         assert_eq!(
             main.read("/calc.txt", 64, &mut work).await?.bytes.as_ref(),
             b"PARENT ONE

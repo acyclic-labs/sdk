@@ -323,6 +323,7 @@ async fn archive_destroys_the_agents_machines_before_it_closes() -> Result {
         assert!(matches!(delivered, Delivered::Committed { .. }));
         assert!(host.runtime().drain().await.is_empty());
         assert!(host.state(&root).await?.closed);
+        eprintln!("C7DBG executor={stopped_by_executor} root={:?} child={:?} child_closed={:?}", state(&machines, &root).await, state(&machines, &child).await, host.state(&child).await.map(|s| s.closed));
         // The parent closed first and the provider keeps its source for the fork.
         assert_eq!(state(&machines, &root).await?, MachineState::Running);
         // The cascade's archive reaches the child (a running host discovers it

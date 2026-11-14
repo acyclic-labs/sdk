@@ -654,6 +654,7 @@ async fn settled_turns_keep_actions_recorded_before_a_later_provider_failure() -
             if recipient == &to && message.id == intent("sent") && message.body == body)
         );
         // A failed turn settles its entry with the recorded actions too.
+        eprintln!("C7DBG settled outs={:#?}", step.outs);
         assert_eq!(step.outs.len(), 2);
         assert!(matches!(step.wait, Wait::Input));
         let Some(Out::Conversation(entry)) = step.outs.get(1) else {
@@ -983,6 +984,7 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
             &[&provider, &missing_completion, &wrong_completion],
         )
         .await?;
+        eprintln!("C7DBG goal seq={sequence} phase={:?} outs={:#?} status={:?}", settled.state.phase, settled.outs, settled.status);
         assert_eq!(settled.state.phase, Phase::Idle);
         if let Some(message) = continuation(&settled, &path) {
             assert_eq!(message.from, Sender::Agent { path: path.clone() });
@@ -1203,6 +1205,7 @@ async fn an_unlimited_goal_keeps_its_loop_identity_across_counter_boundaries() -
                 acyclic_actors::guest::CancellationToken::new(),
             )
             .await?;
+            eprintln!("C7DBG unlimited outs={:#?}", settled.outs);
             message = continuation(&settled, &path).expect("active unlimited goal continued");
             assert_eq!(message.from, Sender::Agent { path: path.clone() });
             assert_eq!(*message.body, file("GOAL.md")?);
