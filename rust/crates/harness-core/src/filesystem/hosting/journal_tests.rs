@@ -1066,29 +1066,43 @@ async fn input_retries_recover_original_receipts_and_reject_changed_content() ->
     let bytes = crate::contract::canonical_json_bytes(&notice)?;
     for (index, (directory, media, display, same_bytes, valid)) in [
         (
-            "inputs",
+            "events",
             crate::agent::NOTICE_MEDIA_TYPE,
             "notice",
             true,
             true,
+        ),
+        (
+            "inputs",
+            crate::agent::NOTICE_MEDIA_TYPE,
+            "notice",
+            true,
+            false,
         ),
         (
             "inputs/notices",
             crate::agent::NOTICE_MEDIA_TYPE,
             "notice",
             true,
-            true,
+            false,
         ),
-        ("inputs", "text/plain", "notice", true, false),
         (
-            "inputs",
+            "events/notices",
+            crate::agent::NOTICE_MEDIA_TYPE,
+            "notice",
+            true,
+            false,
+        ),
+        ("events", "text/plain", "notice", true, false),
+        (
+            "events",
             crate::agent::NOTICE_MEDIA_TYPE,
             "changed",
             true,
             false,
         ),
         (
-            "inputs",
+            "events",
             crate::agent::NOTICE_MEDIA_TYPE,
             "notice",
             false,
