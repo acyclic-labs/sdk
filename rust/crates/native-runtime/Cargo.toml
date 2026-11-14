@@ -133,4 +133,3 @@ required-features = ["model-checking"]
 name = "owner_count_loom"
 path = "tests/owner_count_loom.rs"
 required-features = ["model-checking"]
-
