@@ -184,14 +184,22 @@ async function execute(test, prepared) {
         if (input.kill) {
           assert.ok(service, "service kill requires its original owner");
           service.killExecutable();
-          await service.closed;
+          if (input.kill === "executable") {
+            const exit = await service.exited;
+            assert.ok(exit.signal || exit.code !== 0, "service executable must be killed");
+            // Recovery must be allowed to fence inherited descriptors before
+            // joining their original transcript. The capture owner stays put.
+            interrupted.push(service.closed.then(() => undefined, failureReport));
+            fixture.args = ownerArguments;
+          } else await service.closed;
           service = undefined;
           continue;
         }
         // The service belongs to the case, rather than to a terminal whose
         // original custody owner correctly retires all of its descendants.
-        service = await processes.startOwned(binary,
-          [...ownerArguments, ...(input.endpoint ? ["serve", "127.0.0.1:0"] : ["--local-service", "--signal-ready"])],
+        const start = input.descendant_custody === false ? "startReported" : "startOwned";
+        service = await processes[start](binary,
+          [...ownerArguments, ...(input.extra_args ?? []), ...(input.endpoint ? ["serve", "127.0.0.1:0"] : ["--local-service", "--signal-ready"])],
           { cwd: fixture.workspace, env: inputFixture.env, scopeCapture: result => {
             captures.push({ ...result, stdout: "" });
             process.stderr.write(`service-termination: ${JSON.stringify({ case: test.id, code: result.code, signal: result.signal, stderr: result.stderr })}\n`);

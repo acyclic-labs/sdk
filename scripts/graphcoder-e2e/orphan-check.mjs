@@ -27,7 +27,7 @@ export function fenced(records, path) {
     for (const pid of pids) assert.equal(alive(pid), false, `native tool process ${pid} survived owner recovery`);
   } finally {
     // These identities came from this suite's loopback fixture. Reap any
-    // survivor even on a failing negative control, leaving no lane-owned work.
+    // survivor even on a failing negative control, leaving no fixture-owned work.
     for (const pid of pids) if (Number.isSafeInteger(pid) && pid > 1 && pid !== process.pid) {
       try { process.kill(pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
     }
