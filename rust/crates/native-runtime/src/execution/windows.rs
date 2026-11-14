@@ -62,6 +62,8 @@ pub(crate) struct Policy {
 // SAFETY: the immutable kernel policy has no thread affinity. Arc owns its
 // one close after every launch/tree retaining this policy has retired.
 unsafe impl Send for Policy {}
+// SAFETY: shared policy access passes an immutable policy handle to the kernel;
+// its final close requires exclusive ownership after every shared launch ends.
 unsafe impl Sync for Policy {}
 
 impl std::fmt::Debug for Policy {
