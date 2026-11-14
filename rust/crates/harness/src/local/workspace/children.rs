@@ -2,7 +2,7 @@
 use super::*;
 
 impl LocalWorkspace {
-    async fn project_view(&self, project: &str) -> Result<View> {
+    pub(in crate::local) async fn project_view(&self, project: &str) -> Result<View> {
         let cancellation = acyclic_fs::CancellationToken::new();
         let project_workspace = self
             .filesystem
