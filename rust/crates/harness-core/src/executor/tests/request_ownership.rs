@@ -178,7 +178,10 @@ fn buffers(messages: &[ModelMessage]) -> (usize, usize) {
     let ModelContent::Part(ModelContentPart::ToolResult {
         content: crate::model::ToolResultContent::Json { value },
         ..
-    }) = &messages.last().unwrap().content
+    }) = &crate::test_support::model_visible_messages(messages)
+        .next_back()
+        .unwrap()
+        .content
     else {
         panic!("result")
     };
@@ -229,7 +232,10 @@ proptest! {
                 content: crate::model::ToolResultContent::Json { value: json!({"nested": ["retained", payload]}) },
             }),
         });
-        let context = crate::context::Context { messages, current_input_index: Some(0), ..Default::default() };
+        let mut context = crate::context::Context { messages, current_input_index: Some(0), ..Default::default() };
+        // Bind the original catalog before observing transfer: adding its
+        // private authentication record is real preparation, not a history copy.
+        session.tools_notice(&mut context, &session.request_tools().unwrap()).unwrap();
         let original = buffers(&context.messages);
         // Isolate copy work from the process-wide schema cache: other tests may
         // evict validators concurrently. Plain history needs no schema lookup.
@@ -237,7 +243,9 @@ proptest! {
         plain_executor.tools = ToolRegistry::default();
         let plain = StockExecution::ordinary(&plain_executor);
         let plain_context = crate::context::Context {
-            messages: context.messages[..context.messages.len() - 2].to_vec(),
+            messages: crate::test_support::model_visible_messages(&context.messages)
+                .take_while(|message| message.role == ModelRole::User)
+                .cloned().collect(),
             current_input_index: Some(0), ..Default::default()
         };
         let mut copied = None;
