@@ -162,6 +162,10 @@ pub trait HomeRoute: Send + Sync {
         member: usize,
         status: &'a Status,
     ) -> futures::future::BoxFuture<'a, bool>;
+    /// `member` served an attempt: a refusal sweep ends there.
+    fn served(&self, member: usize) {
+        let _ = member;
+    }
 }
 
 /// The home channel: one fixed endpoint, or a caller's member route.
@@ -488,6 +492,9 @@ impl Client {
                 .await;
             let error = match result {
                 Ok(response) => {
+                    if let Home::Routed(route) = &self.channel {
+                        route.served(home.member);
+                    }
                     if attempt > 1 {
                         tracing::info!(attempt, "stream rpc recovered");
                     }
