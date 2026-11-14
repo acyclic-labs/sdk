@@ -212,6 +212,28 @@ impl Mode {
 }
 
 impl Platform {
+    async fn request_text(&self, request: &crate::model::ModelRequest) -> Result<String> {
+        let conversation = Conversation::open(self.connection.clone());
+        let mut text = String::new();
+        for message in &request.messages {
+            if message.role == crate::model::ModelRole::System {
+                continue;
+            }
+            if let crate::model::ModelContent::Text(body) = &message.content {
+                text.push_str(body);
+            }
+            for part in message.content.parts() {
+                if let crate::model::ModelContentPart::Text { text: body, .. } = part {
+                    text.push_str(body);
+                }
+            }
+            for (file, _) in message.content.file_parts() {
+                text.push_str(&conversation.text(file).await?);
+            }
+        }
+        Ok(text)
+    }
+
     pub(super) async fn close(mut self) -> Result<()> {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
@@ -224,8 +246,13 @@ impl Platform {
 }
 
 async fn summaries_remain_readable(mode: Mode) -> Result<()> {
-    let provider =
-        scripted(["FIRST", "SUMMARY", "AFTER"].map(|text| ScriptedTurn::Text(text.into())));
+    let provider = Arc::new(
+        ScriptedModelProvider::new(
+            ["FIRST", "SUMMARY", "AFTER"].map(|text| ScriptedTurn::Text(text.into())),
+        )
+        .with_context_capacity(capacity())
+        .reading_content(),
+    );
     let platform = mode.open(provider.clone()).await?;
     let conversation = Conversation::open(platform.connection.clone());
     let mut client = ObservedConversation::observe(conversation, None).await?;
@@ -250,6 +277,12 @@ async fn summaries_remain_readable(mode: Mode) -> Result<()> {
     assert!(after.outcome.is_completed(), "{:?}", after.outcome);
     assert_eq!(provider.request_count(), 3);
     assert_eq!(provider.remaining(), 0);
+    let request = provider
+        .request(2)
+        .ok_or_else(|| Error::NotFound("request after compaction".into()))?;
+    let text = platform.request_text(&request).await?;
+    assert!(text.contains("SUMMARY"), "{text}");
+    assert!(!text.contains("FIRST"), "{text}");
     drop(client);
     platform.close().await
 }
@@ -262,4 +295,56 @@ async fn local_summaries_remain_readable() -> Result<()> {
 #[tokio::test]
 async fn hosted_summaries_remain_readable() -> Result<()> {
     summaries_remain_readable(Mode::Hosted).await
+}
+
+async fn cancelled_input_remains_in_context(mode: Mode) -> Result<()> {
+    let (dispatched, mut requests) = tokio::sync::mpsc::channel(1);
+    let provider = Arc::new(
+        ScriptedModelProvider::new([
+            ScriptedTurn::Events(vec![crate::test_support::ScriptedEvent::Pending {}]),
+            ScriptedTurn::Text("AFTER_REPLY".into()),
+        ])
+        .with_context_capacity(capacity())
+        .reading_content()
+        .with_dispatch_observer(move |_| {
+            let _ = dispatched.try_send(());
+            Box::pin(async { Ok(()) })
+        }),
+    );
+    let platform = mode.open(provider.clone()).await?;
+    let conversation = Conversation::open(platform.connection.clone());
+    let mut client = ObservedConversation::observe(conversation, None).await?;
+    let inbox = client.conversation.send("held", "CANCELLED_PROMPT").await?;
+    tokio::select! {
+        request = requests.recv() => request.ok_or_else(|| Error::Storage("model dispatch producer closed".into()))?,
+        settled = client.settled(inbox) => {
+            let entry = settled?;
+            return Err(Error::Conflict(format!("held turn settled before model dispatch: {:?}", entry.outcome)));
+        }
+    }
+    assert_eq!(client.conversation.cancel().await?, Some(inbox));
+    let (sequence, entry) = client.settled_at(inbox).await?;
+    assert_eq!(entry.outcome, crate::agent::TurnOutcome::Cancelled);
+    assert_eq!(crate::local::agent_conversation::checkpoint(&entry), None);
+    let prompt = client.conversation.turn(sequence, &entry).await?.prompt;
+    assert_eq!(prompt.as_deref(), Some("CANCELLED_PROMPT"));
+    assert_eq!(provider.request_count(), 1);
+    client.send("after", "AFTER_PROMPT").await?;
+    let request = provider
+        .request(1)
+        .ok_or_else(|| Error::NotFound("request after cancellation".into()))?;
+    let text = platform.request_text(&request).await?;
+    assert!(text.contains("CANCELLED_PROMPT"), "{text}");
+    drop(client);
+    platform.close().await
+}
+
+#[tokio::test]
+async fn local_cancelled_input_remains_in_context() -> Result<()> {
+    cancelled_input_remains_in_context(Mode::Local).await
+}
+
+#[tokio::test]
+async fn hosted_cancelled_input_remains_in_context() -> Result<()> {
+    cancelled_input_remains_in_context(Mode::Hosted).await
 }
