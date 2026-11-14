@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { projectGenerated, compatibilityArtifacts, packagedTypeScriptBindings, retiredTypeScriptBindingPackages, writeChanged } from "./generated-bindings.mjs";
+import { projectGenerated, compatibilityArtifacts, packagedTypeScriptBindings, recordGeneration, retiredTypeScriptBindingPackages, writeChanged } from "./generated-bindings.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -17,6 +17,7 @@ export function generateProto(packages = new Set([...packagedTypeScriptBindings.
   }
   const prune = () => {
     for (const [directory, expected] of outputs) {
+      if (!check) recordGeneration("P", directory);
       if (!existsSync(directory)) continue;
       for (const entry of readdirSync(directory, { recursive: true, withFileTypes: true })) {
         const path = join(entry.parentPath, entry.name);

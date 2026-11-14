@@ -55,6 +55,9 @@ export function contractModules(families = []) {
 // Full generation keeps every output. A selection omits outputs only a native build reads unless it asks for them.
 export const keepsGenerator = (generator, families, native) => !generator.nativeOnly || native || families.length === 0;
 
+/** The contract modules are the one computed import: every caller loads them here. @param {string[]} names */
+export const loadContractModules = names => Promise.all(names.map(name => import(`./${name}`)));
+
 export async function generateContracts(mode = "write", families = [], { native = false } = {}) {
   let modules = contractModules(families);
 
@@ -84,7 +87,7 @@ export async function generateContracts(mode = "write", families = [], { native 
     if (process.env.CI_HEAD_SHA && report.source_commit !== process.env.CI_HEAD_SHA) throw new Error("contract checkout differs from CI_HEAD_SHA");
     report.phase = "imports";
     saveReport();
-    let generators = await Promise.all(modules.map(name => import(`./${name}`)));
+    let generators = await loadContractModules(modules);
     const kept = generators.map(generator => keepsGenerator(generator, families, native));
     modules = modules.filter((_, index) => kept[index]);
     generators = generators.filter((_, index) => kept[index]);

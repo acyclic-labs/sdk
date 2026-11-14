@@ -5,6 +5,7 @@ import { generateProto } from "./generate-proto.mjs";
 import { packageClosure } from "./package-closure.mjs";
 import { generateFiles } from "./generated-bindings.mjs";
 import { generateNativeFamilies } from "./native-family.mjs";
+import { memoizedGeneration } from "./generation-cache.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const native = process.argv.includes("--native");
@@ -19,19 +20,26 @@ function run(command, args) {
   if (result.status !== 0) throw new Error(`Generation failed: ${command} ${args.join(" ")}`);
 }
 
-if (packages.has("auth")) await generateFiles(root, output => run("cargo", ["run", "--locked", "--quiet", "-p", "acyclic-auth", "--example", "generate", "--", output]), [], check);
-generateProto(packages, check);
-generateNativeFamilies(packages, check);
-if (packages.has("actors")) {
-  const { write } = await import("./generate-actors.mjs");
-  await write(check);
+async function generate() {
+  if (packages.has("auth")) await generateFiles(root, output => run("cargo", ["run", "--locked", "--quiet", "-p", "acyclic-auth", "--example", "generate", "--", output]), [], check);
+  generateProto(packages, check);
+  generateNativeFamilies(packages, check);
+  if (packages.has("actors")) {
+    const { write } = await import("./generate-actors.mjs");
+    await write(check);
+  }
+  if (packages.has("workers")) {
+    const output = join(root, "typescript/packages/workers/src/generated");
+    await generateFiles(output, destination => run("cargo", ["run", "--locked", "--quiet", "-p", "acyclic-manifest", "--example", "deployment-manifest", "--", destination]), [], check);
+    await generateFiles(join(root, "typescript/packages/workers/test/generated"), destination => run("cargo", ["run", "--locked", "--quiet", "-p", "acyclic-manifest", "--example", "deployment-manifest", "--",
+      destination, join(root, "rust/crates/manifest/fuzz/corpus/manifest_json/valid.json"), "production", "agent"]), [], check);
+  }
+  // Full generation includes Rust-only contracts, including harness fixtures.
+  run(process.execPath, [join(root, "scripts/generate-contracts.mjs"), check ? "check" : "write", ...(selected ? packages : []), ...(native ? ["--native"] : [])]);
+  if (check) run(process.execPath, [join(root, "scripts/check-generated.mjs"), "--no-compile"]);
 }
-if (packages.has("workers")) {
-  const output = join(root, "typescript/packages/workers/src/generated");
-  await generateFiles(output, destination => run("cargo", ["run", "--locked", "--quiet", "-p", "acyclic-manifest", "--example", "deployment-manifest", "--", destination]), [], check);
-  await generateFiles(join(root, "typescript/packages/workers/test/generated"), destination => run("cargo", ["run", "--locked", "--quiet", "-p", "acyclic-manifest", "--example", "deployment-manifest", "--",
-    destination, join(root, "rust/crates/manifest/fuzz/corpus/manifest_json/valid.json"), "production", "agent"]), [], check);
-}
-// Full generation includes Rust-only contracts, including harness fixtures.
-run(process.execPath, [join(root, "scripts/generate-contracts.mjs"), check ? "check" : "write", ...(selected ? packages : []), ...(native ? ["--native"] : [])]);
-if (check) run(process.execPath, [join(root, "scripts/check-generated.mjs"), "--no-compile"]);
+
+// Check mode verifies the checkout, so it always runs. A write is memoized by its exact inputs; full generation also
+// emits the native outputs.
+if (check) await generate();
+else await memoizedGeneration(root, { name: `${selected ?? "all"}${native ? "+native" : ""}`, packages: [...packages], native: native || !selected }, generate);
