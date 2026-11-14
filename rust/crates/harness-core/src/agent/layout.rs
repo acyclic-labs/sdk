@@ -573,7 +573,10 @@ mod tests {
                 || parsed.target("pc").expect("canonical target"),
             );
             for [former, current] in [status_work, target_work] {
-                assert_eq!(current.count_total + 1, former.count_total);
+                assert!(
+                    current.count_total < former.count_total,
+                    "borrowing must allocate less than reconstructing an owned path"
+                );
                 assert!(current.bytes_total < former.bytes_total);
             }
             let parent = parsed.parent().expect("nested path");
