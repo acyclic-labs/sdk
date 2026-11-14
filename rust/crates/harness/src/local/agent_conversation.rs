@@ -297,7 +297,7 @@ impl Conversation {
                     .connection
                     .execute(&AgentCommand::PreparePeer {
                         sender: sender.clone(),
-                        agent: recipient.clone(),
+                        agent: recipient.clone().into(),
                     })
                     .await?
                 {

@@ -34,7 +34,7 @@ impl AgentAddress {
 
     /// Physical subtree inside its owning provider; this discards no stored
     /// qualifier, and must not be used to resolve a peer on another host.
-    pub fn path(&self) -> &AgentPath {
+    pub const fn path(&self) -> &AgentPath {
         &self.path
     }
 

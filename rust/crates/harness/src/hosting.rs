@@ -849,15 +849,42 @@ where
                 let Some(profile) = state.profile else {
                     return Ok(AgentReply::PeerAdmission { admission: None });
                 };
-                Ok(AgentReply::PeerAdmission {
-                    admission: crate::agent::session_peer_admission(
+                if sender.depth() != 0
+                    || agent.path().depth() != 0
+                    || !profile.peers.contains(crate::agent::SEND_PEER)
+                {
+                    return Ok(AgentReply::PeerAdmission { admission: None });
+                }
+                let source = agents.actor(sender)?;
+                let target = agent.actor(&source)?;
+                if source.account() != target.account() || source == target {
+                    return Ok(AgentReply::PeerAdmission { admission: None });
+                }
+                let local = crate::agent::actor_store(agents.provider())?
+                    .contains(&target)
+                    .await
+                    .map_err(|error| Error::Actor(Box::new(error)))?;
+                let admission = if local {
+                    crate::agent::session_peer_admission(
                         &**agents.provider(),
                         &profile.peers,
                         sender,
-                        agent,
+                        agent.path(),
                     )
-                    .await?,
-                })
+                    .await?
+                } else if let Some(directory) = self.platform.peer_directory() {
+                    crate::agent::directory_peer_admission(
+                        &**agents.provider(),
+                        directory.provider.as_ref(),
+                        &profile.peers,
+                        &source,
+                        &target,
+                    )
+                    .await?
+                } else {
+                    None
+                };
+                Ok(AgentReply::PeerAdmission { admission })
             }
             AgentCommand::Settlement { agent, wait } => {
                 let agent = self.within_tree(agent)?;

@@ -14,7 +14,14 @@ async fn authenticated_peer_delivery_pins_attribution_opt_out_and_exact_retry() 
     };
     let bound = binding_routed(Arc::new(Never), Default::default(), Some(routing.clone()))?;
     let stream = bound.agents().provider().clone();
-    let owner = Arc::new(Owner::default());
+    let directory = Arc::new(Counted::new(MemoryStream::default()));
+    let owner = Arc::new(Owner {
+        peer_directory: Some(PeerDirectory {
+            provider: directory.clone(),
+            paths: routing.paths.clone(),
+        }),
+        ..Owner::default()
+    });
     owner.sessions.store(true, Ordering::SeqCst);
     let mut servers = Vec::new();
     for index in [1, 2] {
@@ -105,7 +112,7 @@ async fn authenticated_peer_delivery_pins_attribution_opt_out_and_exact_retry() 
     );
     let prepare = AgentCommand::PreparePeer {
         sender: sender.clone(),
-        agent: recipient.clone(),
+        agent: recipient.clone().into(),
     };
     let AgentReply::PeerAdmission {
         admission: Some(admission),
@@ -137,13 +144,64 @@ async fn authenticated_peer_delivery_pins_attribution_opt_out_and_exact_retry() 
     // A sender's tree credential admits its own attributed peer input without
     // acquiring control over either the directory or the recipient session.
     client.register_credential(0, credential(server.resource()))?;
+    // A qualified peer with the same root ID in another namespace must select
+    // its account row, never the local root's private membership.
+    let foreign = ActorReference::new(b"account", b"other", recipient.id().as_str().as_bytes())?;
+    let local_row = stream
+        .head(row_path.clone())
+        .await?
+        .last
+        .ok_or("local row missing")?;
+    let public_row = SessionRow::new(
+        acyclic_actors::route::NodeId::new(b"remote")?,
+        SessionRow::decode(&local_row)?
+            .profile
+            .ok_or("local profile missing")?,
+        [91; 32],
+    );
+    let publication = SessionPublication {
+        actor: foreign.clone(),
+        row: public_row,
+        intent: crate::agent::intent_key("public-peer", &[])?,
+    };
+    assert!(matches!(
+        directory
+            .commit(acyclic_stream::CommitRequest {
+                deadline_unix_millis: None,
+                idempotency_key: publication.intent.clone(),
+                effects: vec![publication.effect()?],
+            })
+            .await?,
+        acyclic_stream::CommitOutcome::Committed(_)
+    ));
+    let qualified = AgentCommand::PreparePeer {
+        sender: sender.clone(),
+        agent: crate::agent::AgentAddress::qualified(foreign)?,
+    };
+    assert!(matches!(call(&client, "agents", &qualified).await??,
+        AgentReply::PeerAdmission { admission: Some(selected) }
+        if selected.recipient.epoch == Some([91; 32])));
+    let before_foreign_account = directory.requests().control();
+    let other_account = AgentCommand::PreparePeer {
+        sender: sender.clone(),
+        agent: crate::agent::AgentAddress::qualified(ActorReference::new(
+            b"other-account",
+            b"other",
+            recipient.id().as_str().as_bytes(),
+        )?)?,
+    };
+    assert!(matches!(
+        call(&client, "agents", &other_account).await??,
+        AgentReply::PeerAdmission { admission: None }
+    ));
+    assert_eq!(directory.requests().control(), before_foreign_account);
     assert!(!matches!(
         call(
             &client,
             "agents",
             &AgentCommand::PreparePeer {
                 sender: recipient.clone(),
-                agent: sender.clone(),
+                agent: sender.clone().into(),
             }
         )
         .await,

@@ -2,7 +2,7 @@
 //! no request can assert its sender, approval responder or account membership.
 
 use acyclic_harness_core::{
-    agent::{AgentPath, IntentId},
+    agent::{AgentAddress, AgentPath, IntentId},
     conversation::{DirectoryTarget, FileRef, validate_content_path},
     interaction::ApprovalBinding,
     model::ModelContent,
@@ -317,15 +317,15 @@ pub enum AgentCommand {
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         id: IntentId,
     },
-    /// Prepare both root membership guards at one authority cut. This is a
-    /// query, not delivery; the caller retains its result with the prompt.
+    /// Prepare root membership intervals from the owning node or public account
+    /// directory. This is a query, not delivery; retain it with the prompt.
     PreparePeer {
         /// Selected sending root, admitted under this connection's authority.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         sender: AgentPath,
-        /// Exact recipient of the intended message.
+        /// Exact relative or fully qualified recipient of the intended message.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
-        agent: AgentPath,
+        agent: AgentAddress,
     },
     /// Stage canonical user input and send one message with caller-owned intent.
     Prompt {
@@ -889,7 +889,6 @@ impl AgentCommand {
             | Self::SetPeerMembership { agent, .. }
             | Self::MergeSession { agent, .. }
             | Self::Prompt { agent, .. }
-            | Self::PreparePeer { agent, .. }
             | Self::Cancel { agent, .. }
             | Self::Compact { agent, .. }
             | Self::Rewind { agent, .. }
@@ -918,6 +917,7 @@ impl AgentCommand {
             | Self::Read { agent, .. }
             | Self::Stage { agent, .. }
             | Self::Staged { agent, .. } => Some(agent),
+            Self::PreparePeer { agent, .. } => Some(agent.path()),
         }
     }
 
