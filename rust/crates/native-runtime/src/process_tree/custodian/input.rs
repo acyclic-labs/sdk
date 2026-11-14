@@ -184,6 +184,33 @@ mod tests {
         Ok((bytes, retained))
     }
 
+    fn malformed_frames(bytes: &[u8]) -> io::Result<Vec<Vec<u8>>> {
+        let mut malformed = (1..bytes.len())
+            .map(|cut| {
+                bytes
+                    .get(..cut)
+                    .map(<[u8]>::to_vec)
+                    .ok_or(io::ErrorKind::InvalidData)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for version in [0, 2] {
+            let mut frame = bytes.to_vec();
+            *frame.first_mut().ok_or(io::ErrorKind::InvalidData)? = version;
+            malformed.push(frame);
+        }
+        for index in 1..=4 {
+            for sentinel in [0, usize::MAX as u64] {
+                let mut frame = bytes.to_vec();
+                frame
+                    .get_mut(1 + index * 8..1 + (index + 1) * 8)
+                    .ok_or(io::ErrorKind::InvalidData)?
+                    .copy_from_slice(&sentinel.to_le_bytes());
+                malformed.push(frame);
+            }
+        }
+        Ok(malformed)
+    }
+
     #[test]
     fn input_terminal_survives_full_credit_read_and_completion_post_failure() -> io::Result<()> {
         let port = port()?;
@@ -198,7 +225,7 @@ mod tests {
         assert_eq!(packet(&port)?, OPENED);
         assert_eq!(packet(&port)?, INPUT_EXITED);
         input.finish()?;
-        let opened = input.receive.try_recv().unwrap();
+        let opened = input.receive.try_recv().map_err(io::Error::other)?;
         assert_eq!((opened.tree, opened.secret), (7, [3; 16]));
         for (actual, expected) in [opened.job, opened.process, opened.ready, opened.done]
             .into_iter()
@@ -253,27 +280,12 @@ mod tests {
             input.finish().unwrap_err().raw_os_error(),
             Some(ERROR_INVALID_HANDLE.cast_signed())
         );
-        assert_eq!(input.receive.try_recv().unwrap().tree, 7);
+        assert_eq!(input.receive.try_recv().map_err(io::Error::other)?.tree, 7);
 
         // Truncate the original native frame at each byte or mutate its version
         // or selected handle. No invalid owner may reach the credited receiver,
         // including the readiness handle that State::open adopts as OwnedHandle.
-        let mut malformed = (1..bytes.len())
-            .map(|cut| bytes[..cut].to_vec())
-            .collect::<Vec<_>>();
-        for version in [0, 2] {
-            let mut frame = bytes.clone();
-            frame[0] = version;
-            malformed.push(frame);
-        }
-        for index in 1..=4 {
-            for sentinel in [0, usize::MAX as u64] {
-                let mut frame = bytes.clone();
-                frame[1 + index * 8..1 + (index + 1) * 8].copy_from_slice(&sentinel.to_le_bytes());
-                malformed.push(frame);
-            }
-        }
-        for bytes in malformed {
+        for bytes in malformed_frames(&bytes)? {
             let (read, mut write) = pipe()?;
             let mut input = Input::start(io::BufReader::new(read), port.as_raw_handle())?;
             write.write_all(&bytes)?;

@@ -422,48 +422,7 @@ fn probe() -> io::Result<()> {
     // first report before any probe waits for input or a console event.
     writeln!(out)?;
     match mode.to_string_lossy().as_ref() {
-        "conin-file" | "conin-console" => {
-            let name: Vec<u16> = "CONIN$".encode_utf16().chain([0]).collect();
-            let conin = open_file(
-                &name,
-                GENERIC_READ | GENERIC_WRITE,
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
-                0,
-            );
-            let conin = match conin {
-                Ok(conin) => conin,
-                Err(error) => {
-                    writeln!(out, "PROBE=open-failed {error}")?;
-                    return Ok(());
-                }
-            };
-            writeln!(out, "PROBE=reading")?;
-            out.flush()?;
-            let mut buffer = [0_u16; 16];
-            let mut read = 0;
-            // SAFETY: an owned console handle and a buffer of 16 units.
-            let ok = unsafe {
-                if mode == "conin-file" {
-                    ReadFile(
-                        conin.as_raw_handle(),
-                        buffer.as_mut_ptr().cast(),
-                        32,
-                        &raw mut read,
-                        std::ptr::null_mut(),
-                    )
-                } else {
-                    ReadConsoleW(
-                        conin.as_raw_handle(),
-                        buffer.as_mut_ptr().cast(),
-                        16,
-                        &raw mut read,
-                        std::ptr::null(),
-                    )
-                }
-            };
-            let error = io::Error::last_os_error();
-            writeln!(out, "PROBE=returned ok={ok} read={read} error={error}")?;
-        }
+        "conin-file" | "conin-console" => probe_console_read(mode == "conin-file", &mut out)?,
         "title-set" => {
             let title: Vec<u16> = "acyclic-probe-title".encode_utf16().chain([0]).collect();
             // SAFETY: a NUL-terminated title.
@@ -531,6 +490,50 @@ fn probe() -> io::Result<()> {
         other => writeln!(out, "PROBE=unknown {other}")?,
     }
     out.flush()
+}
+
+fn probe_console_read(file: bool, out: &mut impl io::Write) -> io::Result<()> {
+    let name: Vec<u16> = "CONIN$".encode_utf16().chain([0]).collect();
+    let conin = open_file(
+        &name,
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        0,
+    );
+    let conin = match conin {
+        Ok(conin) => conin,
+        Err(error) => {
+            writeln!(out, "PROBE=open-failed {error}")?;
+            return Ok(());
+        }
+    };
+    writeln!(out, "PROBE=reading")?;
+    out.flush()?;
+    let mut buffer = [0_u16; 16];
+    let mut read = 0;
+    // SAFETY: an owned console handle and a buffer of 16 units.
+    let ok = unsafe {
+        if file {
+            ReadFile(
+                conin.as_raw_handle(),
+                buffer.as_mut_ptr().cast(),
+                32,
+                &raw mut read,
+                std::ptr::null_mut(),
+            )
+        } else {
+            ReadConsoleW(
+                conin.as_raw_handle(),
+                buffer.as_mut_ptr().cast(),
+                16,
+                &raw mut read,
+                std::ptr::null(),
+            )
+        }
+    };
+    let error = io::Error::last_os_error();
+    writeln!(out, "PROBE=returned ok={ok} read={read} error={error}")?;
+    Ok(())
 }
 
 fn console_title() -> String {

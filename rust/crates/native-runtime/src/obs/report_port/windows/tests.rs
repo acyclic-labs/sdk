@@ -24,83 +24,37 @@ fn native_pipe_keeps_request_ack_and_producer_loss_on_the_selected_owner() {
     let _subscriber = tracing::dispatcher::set_default(&dispatch);
     runtime.block_on(async {
         if let Ok(mode) = std::env::var(CHILD) {
-            let port = admission.unwrap().and_then(|endpoint| endpoint.map(ReportAdmission::into_port).transpose());
-            if mode == "foreign" {
-                assert!(matches!(port, Err(error) if error.kind() == io::ErrorKind::PermissionDenied));
-                return;
-            }
-            let mut port = port.unwrap().expect("selected launch must expose its port");
-            assert!(matches!(ReportPort::from_environment(), Err(error) if error.kind() == io::ErrorKind::AlreadyExists));
-            if mode == "reject" {
-                let cause = super::super::tests::native_read_refusal();
-                port.reject_startup("setup", &cause).await.unwrap();
-                return;
-            }
-            let (_producer, completion) = tokio::sync::oneshot::channel::<()>();
-            let _wait = (mode == "live")
-                .then(|| crate::obs::waiting("channel-close", "report-control", completion));
-            port.ready().await.unwrap();
-            let request = port.request().await.unwrap();
-            if mode == "withdrawn" {
-                assert!(request.is_none(), "lost request producer must end the wait");
-            } else {
-                let ack = port.snapshot(request.unwrap(), &report);
-                port.acknowledge(&ack).await.unwrap();
-                if mode == "fail-ack" {
-                    port.fail_execution(&super::super::tests::native_read_refusal()).await.unwrap();
-                }
-            }
+            let port = admission
+                .unwrap()
+                .and_then(|endpoint| endpoint.map(ReportAdmission::into_port).transpose());
+            selected_child(&mode, port, &report).await;
             return;
         }
-        for mode in ["ack", "live", "wrong-generation", "expired", "withdrawn", "foreign", "reject", "fail-ack"] {
-            let mut random = [0; 16];
-            getrandom::fill(&mut random).unwrap();
-            let generation = format!("{:032x}", u128::from_ne_bytes(random));
-            let endpoint = format!(r"\\.\pipe\acyclic-report-{generation}");
-            let pipe = ServerOptions::new()
-                .first_pipe_instance(true)
-                .create(&endpoint)
-                .unwrap();
-            let owner = std::process::id();
-            let mut command = Command::new(std::env::current_exe().unwrap());
-            let admitted_owner = if mode == "foreign" { owner ^ 0x8000_0000 } else { owner };
-            command
-                .args(["--exact", TEST, "--nocapture"])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .env(CHILD, mode)
-                .env("ACYCLIC_REPORT_PIPE", endpoint)
-                .env("ACYCLIC_REPORT_GENERATION", &generation)
-                .env("ACYCLIC_REPORT_OWNER_PID", admitted_owner.to_string());
-            let mut tree = crate::ProcessTree::spawn(&mut command).unwrap();
-            let exited = tree.readiness().unwrap();
-            tokio::select! {
-                biased;
-                result = pipe.connect() => result.unwrap(),
-                result = exited => {
-                    result.into_result().expect("original native producer event succeeded");
-                    panic!("selected report producer exited before connecting");
-                },
-            }
-            let mut pipe = BufReader::new(pipe);
+        for mode in [
+            "ack",
+            "live",
+            "wrong-generation",
+            "expired",
+            "withdrawn",
+            "foreign",
+            "reject",
+            "fail-ack",
+        ] {
+            let (mut tree, mut pipe, generation, random) = connect_selected_child(mode).await;
             let mut line = String::new();
             if mode == "foreign" {
                 assert_eq!(pipe.read_line(&mut line).await.unwrap(), 0);
             } else if mode == "reject" {
                 assert_ne!(pipe.read_line(&mut line).await.unwrap(), 0);
                 let rejection: serde_json::Value = serde_json::from_str(&line).unwrap();
-                let original = super::super::tests::native_read_refusal();
-                assert_eq!(rejection["generation"], generation);
-                assert_eq!(rejection["rejected"]["phase"], "setup");
-                assert_eq!(rejection["rejected"]["cause"], original.to_string());
-                assert_eq!(rejection["rejected"]["raw_os_error"], original.raw_os_error().unwrap());
+                assert_native_failure(&rejection, &generation, "rejected", "setup");
                 line.clear();
                 assert_eq!(pipe.read_line(&mut line).await.unwrap(), 0);
             } else {
                 assert_ne!(pipe.read_line(&mut line).await.unwrap(), 0);
                 let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
-                assert_eq!(ready["ready"], true);
-                assert_eq!(ready["generation"], generation);
+                assert_eq!(*field(&ready, ["ready"]), true);
+                assert_eq!(*field(&ready, ["generation"]), generation);
                 if !matches!(mode, "withdrawn" | "foreign") {
                     let request = ReportRequest {
                         request_id: format!("{:032x}", u128::from_ne_bytes(random) ^ 1),
@@ -127,9 +81,11 @@ fn native_pipe_keeps_request_ack_and_producer_loss_on_the_selected_owner() {
                     };
                     assert_eq!(ack.outcome, expected);
                     if mode == "live" {
-                        assert_eq!(ack.waits.len(), 1);
-                        assert_eq!(ack.waits[0].primitive, "channel-close");
-                        assert_eq!(ack.waits[0].key, "report-control");
+                        let [wait] = ack.waits.as_slice() else {
+                            panic!("expected exactly one original wait")
+                        };
+                        assert_eq!(wait.primitive, "channel-close");
+                        assert_eq!(wait.key, "report-control");
                     } else {
                         assert!(ack.waits.is_empty());
                     }
@@ -137,11 +93,7 @@ fn native_pipe_keeps_request_ack_and_producer_loss_on_the_selected_owner() {
                     if mode == "fail-ack" {
                         assert_ne!(pipe.read_line(&mut line).await.unwrap(), 0);
                         let failure: serde_json::Value = serde_json::from_str(&line).unwrap();
-                        let original = super::super::tests::native_read_refusal();
-                        assert_eq!(failure["generation"], generation);
-                        assert_eq!(failure["failed"]["phase"], "execution");
-                        assert_eq!(failure["failed"]["cause"], original.to_string());
-                        assert_eq!(failure["failed"]["raw_os_error"], original.raw_os_error().unwrap());
+                        assert_native_failure(&failure, &generation, "failed", "execution");
                         line.clear();
                     }
                     assert_eq!(pipe.read_line(&mut line).await.unwrap(), 0);
@@ -162,4 +114,101 @@ fn native_pipe_keeps_request_ack_and_producer_loss_on_the_selected_owner() {
             assert!(tree.is_reaped());
         }
     });
+}
+
+async fn selected_child(mode: &str, port: io::Result<Option<ReportPort>>, report: &WaitReport) {
+    if mode == "foreign" {
+        assert!(matches!(port, Err(error) if error.kind() == io::ErrorKind::PermissionDenied));
+        return;
+    }
+    let mut port = port.unwrap().expect("selected launch must expose its port");
+    assert!(
+        matches!(ReportPort::from_environment(), Err(error) if error.kind() == io::ErrorKind::AlreadyExists)
+    );
+    if mode == "reject" {
+        let cause = super::super::tests::native_read_refusal();
+        port.reject_startup("setup", &cause).await.unwrap();
+        return;
+    }
+    let (_producer, completion) = tokio::sync::oneshot::channel::<()>();
+    let _wait = (mode == "live")
+        .then(|| crate::obs::waiting("channel-close", "report-control", completion));
+    port.ready().await.unwrap();
+    let request = port.request().await.unwrap();
+    if mode == "withdrawn" {
+        assert!(request.is_none(), "lost request producer must end the wait");
+    } else {
+        let ack = port.snapshot(request.unwrap(), report);
+        port.acknowledge(&ack).await.unwrap();
+        if mode == "fail-ack" {
+            port.fail_execution(&super::super::tests::native_read_refusal())
+                .await
+                .unwrap();
+        }
+    }
+}
+
+async fn connect_selected_child(
+    mode: &str,
+) -> (
+    crate::ProcessTree,
+    BufReader<tokio::net::windows::named_pipe::NamedPipeServer>,
+    String,
+    [u8; 16],
+) {
+    let mut random = [0; 16];
+    getrandom::fill(&mut random).unwrap();
+    let generation = format!("{:032x}", u128::from_ne_bytes(random));
+    let endpoint = format!(r"\\.\pipe\acyclic-report-{generation}");
+    let pipe = ServerOptions::new()
+        .first_pipe_instance(true)
+        .create(&endpoint)
+        .unwrap();
+    let owner = std::process::id();
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    let admitted_owner = if mode == "foreign" {
+        owner ^ 0x8000_0000
+    } else {
+        owner
+    };
+    command
+        .args(["--exact", TEST, "--nocapture"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .env(CHILD, mode)
+        .env("ACYCLIC_REPORT_PIPE", endpoint)
+        .env("ACYCLIC_REPORT_GENERATION", &generation)
+        .env("ACYCLIC_REPORT_OWNER_PID", admitted_owner.to_string());
+    let mut tree = crate::ProcessTree::spawn(&mut command).unwrap();
+    let exited = tree.readiness().unwrap();
+    tokio::select! {
+        biased;
+        result = pipe.connect() => result.unwrap(),
+        result = exited => {
+            result.into_result().expect("original native producer event succeeded");
+            panic!("selected report producer exited before connecting");
+        },
+    }
+    let pipe = BufReader::new(pipe);
+    (tree, pipe, generation, random)
+}
+
+fn field<'a, const N: usize>(
+    value: &'a serde_json::Value,
+    path: [&str; N],
+) -> &'a serde_json::Value {
+    path.into_iter().fold(value, |value, key| {
+        value.get(key).expect("reported field is present")
+    })
+}
+
+fn assert_native_failure(value: &serde_json::Value, generation: &str, kind: &str, phase: &str) {
+    let original = super::super::tests::native_read_refusal();
+    assert_eq!(*field(value, ["generation"]), generation);
+    assert_eq!(*field(value, [kind, "phase"]), phase);
+    assert_eq!(*field(value, [kind, "cause"]), original.to_string());
+    assert_eq!(
+        *field(value, [kind, "raw_os_error"]),
+        original.raw_os_error().unwrap()
+    );
 }

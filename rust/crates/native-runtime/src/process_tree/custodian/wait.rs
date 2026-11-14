@@ -200,6 +200,7 @@ mod tests {
                 // An unsignaled target must not manufacture physical exit.
                 let (mut message, mut key, mut context) = (0, 0, std::ptr::null_mut());
                 assert_eq!(
+                    // SAFETY: the original port and writable packet outputs remain live through this zero-time observation.
                     unsafe {
                         GetQueuedCompletionStatus(
                             port.as_raw_handle(),
@@ -242,6 +243,10 @@ mod tests {
             drop(process);
         }
 
+        refused_associations(port.as_handle())?;
+        Ok(())
+    }
+    fn refused_associations(port: BorrowedHandle<'_>) -> io::Result<()> {
         // Refused owner synchronization cannot be converted to owner death.
         // SAFETY: duplicate this process with query access, omitting SYNCHRONIZE.
         let restricted = unsafe {
@@ -256,6 +261,7 @@ mod tests {
         let restricted = unsafe { OwnedHandle::from_raw_handle(restricted) };
         // SAFETY: one native observation of this retained original handle.
         assert_eq!(
+            // SAFETY: this deliberately restricted process handle is still owned.
             unsafe { WaitForSingleObject(restricted.as_raw_handle(), 0) },
             WAIT_FAILED
         );
@@ -283,6 +289,7 @@ mod tests {
         // published a terminal to the valid original completion port.
         let (mut message, mut key, mut context) = (0, 0, std::ptr::null_mut());
         assert_eq!(
+            // SAFETY: the original port and all packet output slots remain live.
             unsafe {
                 GetQueuedCompletionStatus(
                     port.as_raw_handle(),
