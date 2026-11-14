@@ -85,6 +85,31 @@ impl ProgramFiles {
         name: &'a str,
         io: Option<&'a PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, (BoundHook, crate::layers::RetainedContentCut<'a>)>> {
+        self.hook_at(journal, operation, name, None, io)
+    }
+
+    /// Bind an event to its admitted registration, then retain that selection
+    /// in the event's original journal. A later registration or approval wake
+    /// cannot replace a program or an import already selected by this event.
+    pub fn hook_for_event<'a>(
+        &'a self,
+        journal: &'a dyn crate::executor::ExecutionJournal,
+        operation: crate::OperationId,
+        name: &'a str,
+        registration: &'a crate::layers::ContentCut,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<BoundedContentFuture<'a, (BoundHook, crate::layers::RetainedContentCut<'a>)>> {
+        self.hook_at(journal, operation, name, Some(registration), io)
+    }
+
+    fn hook_at<'a>(
+        &'a self,
+        journal: &'a dyn crate::executor::ExecutionJournal,
+        operation: crate::OperationId,
+        name: &'a str,
+        registration: Option<&'a crate::layers::ContentCut>,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<BoundedContentFuture<'a, (BoundHook, crate::layers::RetainedContentCut<'a>)>> {
         BoundedContentFuture::new(io, || async move {
             let attempt = io.map(PreparationIo::scoped).transpose()?;
             let temporary = attempt.as_ref();
@@ -100,16 +125,22 @@ impl ProgramFiles {
                     )?,
                 ))
             })?;
-            let cut = crate::layers::ContentSources {
+            let sources = crate::layers::ContentSources {
                 reader: self.reader.as_ref(),
                 seed: None,
                 home: &self.home,
                 configuration: &self.configuration,
                 maximum_bytes: self.maximum_bytes,
                 io,
-            }
-            .retain(journal, operation, &key, &path)
-            .await?;
+            };
+            let cut = match registration {
+                Some(registration) => {
+                    sources
+                        .retain_at(journal, operation, &key, &path, registration)
+                        .await?
+                }
+                None => sources.retain(journal, operation, &key, &path).await?,
+            };
             let (program, _generation, _hold) = self
                 .load_at(
                     "hooks",

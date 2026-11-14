@@ -68,29 +68,73 @@ impl<'io> ContentSources<'_, 'io> {
         key: &str,
         path: &str,
     ) -> Result<RetainedContentCut<'io>> {
+        self.retain_using(journal, operation, key, path, None).await
+    }
+
+    /// Retain a producer's already selected cut in a new execution. Recovery
+    /// reads that execution's original selection first, even if its producer
+    /// now proposes another generation. The current reader still authorizes
+    /// every source read; transferring a descriptor grants no authority.
+    pub async fn retain_at(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation: OperationId,
+        key: &str,
+        path: &str,
+        original: &ContentCut,
+    ) -> Result<RetainedContentCut<'io>> {
+        self.retain_using(journal, operation, key, path, Some(original))
+            .await
+    }
+
+    async fn retain_using(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation: OperationId,
+        key: &str,
+        path: &str,
+        original: Option<&ContentCut>,
+    ) -> Result<RetainedContentCut<'io>> {
         let attempt = self.io.map(PreparationIo::scoped).transpose()?;
         let temporary = attempt.as_ref();
         let reference = match journal.staged_ref(operation, key, temporary)?.await? {
             Some(reference) => reference,
             None => {
-                let (generation, _hold) = self
-                    .reader
-                    .select_private_generation(
-                        self.home,
-                        "",
-                        path,
-                        None,
-                        ContentAccess {
-                            io: temporary,
-                            ceiling: None,
-                        },
-                    )?
-                    .await?;
-                let captured = Captured {
-                    version: 1,
-                    seed: self.seed,
-                    home: (self.home, &generation),
-                    configuration: self.configuration,
+                let selected;
+                let captured = match original {
+                    Some(original) => {
+                        self.check(original)?;
+                        Captured {
+                            version: 1,
+                            seed: original
+                                .seed
+                                .as_ref()
+                                .map(|(volume, generation)| (volume, generation)),
+                            home: (&original.home.0, &original.home.1),
+                            configuration: &original.configuration,
+                        }
+                    }
+                    None => {
+                        selected = self
+                            .reader
+                            .select_private_generation(
+                                self.home,
+                                "",
+                                path,
+                                None,
+                                ContentAccess {
+                                    io: temporary,
+                                    ceiling: None,
+                                },
+                            )?
+                            .await?;
+                        Captured {
+                            version: 1,
+                            seed: self.seed,
+                            home: (self.home, &selected.0),
+                            configuration: self.configuration,
+                        }
+                    }
                 };
                 let bounded;
                 let unbounded;
@@ -120,6 +164,11 @@ impl<'io> ContentSources<'_, 'io> {
         };
         let bytes = journal.load(&reference, temporary)?.await?;
         let (selection, custody) = crate::executor::decode_json::<ContentCut>(&bytes, self.io)?;
+        self.check(&selection)?;
+        Ok(RetainedContentCut { selection, custody })
+    }
+
+    fn check(&self, selection: &ContentCut) -> Result<()> {
         if selection.version != 1
             || &selection.home.0 != self.home
             || selection
@@ -141,6 +190,6 @@ impl<'io> ContentSources<'_, 'io> {
                 reason: "retained content cut has another version or original owner",
             });
         }
-        Ok(RetainedContentCut { selection, custody })
+        Ok(())
     }
 }

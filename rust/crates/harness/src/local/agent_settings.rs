@@ -1169,7 +1169,7 @@ mod tests {
             Arc::new(harness.tools.get("shell", None, None)?.unwrap().clone()),
             None,
         );
-        let (selected, _) = programs
+        let (selected, registered_cut) = programs
             .hook_for_execution(journal.as_ref(), operation, "guard", None)?
             .await?;
         let selected_revision = selected.binding().definition.revision.clone();
@@ -1257,7 +1257,24 @@ mod tests {
         assert!(
             matches!(recovered.on(), config::ProgramTrigger::Stream { path, .. } if path == "events/original")
         );
-        let (current_program, _) = programs
+        // A first event can arrive after its registration's files have changed.
+        // It must still use the registration admitted before that source event.
+        let event = crate::OperationId::new();
+        let event_journal = storage.journal();
+        let (event_program, _) = programs
+            .hook_for_event(
+                event_journal.as_ref(),
+                event,
+                "guard",
+                &registered_cut.selection,
+                None,
+            )?
+            .await?;
+        assert_eq!(
+            event_program.binding().definition.revision,
+            selected_revision
+        );
+        let (current_program, current_cut) = programs
             .hook_for_execution(journal.as_ref(), crate::OperationId::new(), "guard", None)?
             .await?;
         assert_ne!(
@@ -1266,6 +1283,20 @@ mod tests {
         );
         assert!(
             matches!(current_program.on(), config::ProgramTrigger::Stream { path, .. } if path == "events/changed")
+        );
+        let (replayed_event, _) = programs
+            .hook_for_event(
+                event_journal.as_ref(),
+                event,
+                "guard",
+                &current_cut.selection,
+                None,
+            )?
+            .await?;
+        assert_eq!(
+            replayed_event.binding().definition.revision,
+            selected_revision,
+            "approval or event replay replaced an already admitted program"
         );
         assert_eq!(
             original.cut()?,
