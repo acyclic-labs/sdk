@@ -3274,7 +3274,19 @@ async fn a_spawn_chain_binds_its_volumes_at_every_depth() -> Result<()> {
         else {
             return Err(Error::Invalid("spawn was not delivered".into()));
         };
-        settled(&harness, &child).await?;
+        let history = settled(&harness, &child).await?;
+        let entry = ConversationEntry::decode(
+            history
+                .last()
+                .ok_or_else(|| Error::NotFound("spawned command completion".into()))?,
+        )
+        .map_err(agent)?;
+        assert_eq!(
+            entry.outcome,
+            crate::agent::TurnOutcome::Completed,
+            "depth {} must complete its original command: {entry:?}",
+            depth + 1,
+        );
         let state = agents.state(&child).await.map_err(agent)?;
         assert!(
             !matches!(state.phase, crate::agent::Phase::Done { .. }),
