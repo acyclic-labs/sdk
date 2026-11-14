@@ -81,9 +81,13 @@ export type PathHead = PublicWire<WirePathHead, { readonly last?: EncodedRecord;
 export type HeadProjection = "history" | "watermarks" | "tail";
 /** Original publication destination and sequence; independent of current ancestry. */
 export interface RetainedRecord { readonly commitId: Uint8Array; readonly path: string; readonly sequence: bigint }
-export interface HeadsRequest { readonly retained?: readonly RetainedRecord[]; readonly durableThrough?: bigint; readonly paths: readonly string[]; readonly children?: ChildrenPageRequest; readonly limit: number; readonly atLeast?: readonly Revision[]; readonly projection?: HeadProjection }
+export interface HeadsRequest {
+  /** Exact retained authority cut; distinct from the minimum applied floor in atLeast. */
+  readonly at?: Revision;
+  readonly retained?: readonly RetainedRecord[]; readonly durableThrough?: bigint; readonly paths: readonly string[]; readonly children?: ChildrenPageRequest; readonly limit: number; readonly atLeast?: readonly Revision[]; readonly projection?: HeadProjection
+}
 export interface RetainedRecordObservation { readonly path: string; readonly record?: Record }
-export interface Heads { readonly retained: readonly RetainedRecordObservation[]; readonly snapshot: Revision; readonly heads: readonly (PathHead | undefined)[]; readonly children?: ChildrenPage; readonly projection: HeadProjection }
+export interface Heads { readonly applied: Revision; readonly retained: readonly RetainedRecordObservation[]; readonly snapshot: Revision; readonly heads: readonly (PathHead | undefined)[]; readonly children?: ChildrenPage; readonly projection: HeadProjection }
 export type AppendResult =
   | (PublicWire<WireAppendReceipt, { readonly commitId: CommitId }> & { readonly ok: true })
   | (PublicWire<WireTailConflict> & { readonly ok: false; readonly code: "tail_conflict" });
@@ -103,8 +107,8 @@ export interface StreamChild {
   readonly origin?: ForkOrigin;
 }
 /** Each page uses the current snapshot. Supply hierarchyVersion to refuse a changed hierarchy. */
-export type ChildrenPageRequest = Readonly<{ parent?: string; tailStream?: string; after?: string; hierarchyVersion?: CommitId; limit: number }>;
-export interface ChildrenPage { readonly hierarchyVersion: CommitId; readonly children: readonly StreamChild[]; readonly nextAfter?: string }
+export type ChildrenPageRequest = Readonly<{ parent?: string; tailStream?: string; after?: string; offset?: bigint; hierarchyVersion?: CommitId; limit: number }>;
+export interface ChildrenPage { readonly hierarchyVersion: CommitId; readonly children: readonly StreamChild[]; readonly scanned: number; readonly nextAfter?: string }
 export type ForkReceipt = PublicWire<WireForkReceipt, { readonly commitId: CommitId }>;
 
 export type CommitCondition =

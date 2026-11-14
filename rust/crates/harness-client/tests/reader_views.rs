@@ -184,14 +184,22 @@ fn explorer_prefetch_and_expansion_keep_original_provider_cuts() {
             explorer
                 .reader_ref()
                 .cache()
-                .listing(&root.children().unwrap(), 0)
+                .listing(
+                    &root.children().unwrap(),
+                    0,
+                    explorer.reader_ref().policy().listing_limit
+                )
                 .is_some()
         );
         assert_eq!(
             explorer
                 .reader_ref()
                 .cache()
-                .listing(&root.children().unwrap(), 0)
+                .listing(
+                    &root.children().unwrap(),
+                    0,
+                    explorer.reader_ref().policy().listing_limit
+                )
                 .unwrap()
                 .children,
             [StreamPath::new(child.as_str()).unwrap()]

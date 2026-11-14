@@ -55,7 +55,6 @@ where
 
 pub(super) fn mount_lookup(lookup: &LazyLookup, file_id: FileId) -> MountLookup {
     let stat = lookup.stat();
-    let metadata = workspace_metadata(lookup.metadata());
     let (link_count, device) = match lookup {
         LazyLookup::Authored { record, .. } => (record.link_count, None),
         LazyLookup::Shadow {
@@ -69,7 +68,7 @@ pub(super) fn mount_lookup(lookup: &LazyLookup, file_id: FileId) -> MountLookup 
                 _ => None,
             },
         ),
-        LazyLookup::Source { node, .. } => (node.link_count.unwrap_or(1), node.device),
+        LazyLookup::Source { node, .. } => return source_mount_lookup(*node, file_id),
     };
     MountLookup {
         node: MountNode {
@@ -79,7 +78,20 @@ pub(super) fn mount_lookup(lookup: &LazyLookup, file_id: FileId) -> MountLookup 
             link_count,
             device,
         },
-        metadata,
+        metadata: workspace_metadata(lookup.metadata()),
+    }
+}
+
+pub(super) fn source_mount_lookup(node: SourceNode, file_id: FileId) -> MountLookup {
+    MountLookup {
+        node: MountNode {
+            file_id,
+            kind: source_kind(node.kind),
+            logical_bytes: node.logical_bytes.unwrap_or(0),
+            link_count: node.link_count.unwrap_or(1),
+            device: node.device,
+        },
+        metadata: crate::lazy_workspace::source_file_metadata(node.metadata),
     }
 }
 

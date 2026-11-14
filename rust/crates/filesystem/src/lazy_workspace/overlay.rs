@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub(super) struct ShadowRecords {
     pub(super) authored: Option<(FileRecord, crate::WorkspaceMetadata)>,
     pub(super) observed: Option<(
@@ -13,15 +13,16 @@ pub(super) struct ShadowRecords {
 
 impl ShadowRecords {
     pub(super) fn at_source(
-        self,
-        source: SourceReference,
+        &self,
+        source: &SourceReference,
         version: SourceVersion,
     ) -> Option<(FileRecord, crate::WorkspaceMetadata)> {
         self.observed
+            .as_ref()
             .filter(|(original, original_version, _, _)| {
-                *original == source && *original_version == version
+                original == source && *original_version == version
             })
-            .map(|(_, _, record, metadata)| (record, metadata))
+            .map(|(_, _, record, metadata)| (*record, *metadata))
     }
 }
 
@@ -206,7 +207,7 @@ impl<
                             .map(|record| {
                                 decode_shadow_record(&record.content, id, ctx).map(
                                     |(content, metadata)| {
-                                        (record.source, record.version, content, metadata)
+                                        (record.source.clone(), record.version, content, metadata)
                                     },
                                 )
                             })
@@ -256,9 +257,10 @@ impl<
         records: ShadowRecords,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<LazyShadowId, LazyWorkspaceError> {
-        let (durable, count) = match (records.authored, records.observed) {
-            (Some((authored, _)), Some((_, _, observed, _))) => ([authored, observed], 2),
-            (Some((record, _)), None) | (None, Some((_, _, record, _))) => ([record, record], 1),
+        let observed = records.observed.as_ref().map(|(_, _, record, _)| *record);
+        let (durable, count) = match (records.authored, observed) {
+            (Some((authored, _)), Some(observed)) => ([authored, observed], 2),
+            (Some((record, _)), None) | (None, Some(record)) => ([record, record], 1),
             (None, None) => return Err(LazyWorkspaceError::OriginalSnapshotUnavailable),
         };
         let hold = accounted!(ctx, |work, cancel| self
@@ -340,14 +342,14 @@ impl<
 
     pub(super) async fn retain_source_before_image(
         &self,
-        source: SourceReference,
+        source: &SourceReference,
         version: SourceVersion,
         record: FileRecord,
         metadata: crate::WorkspaceMetadata,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
         let state = self.state(ctx).await?;
-        if state.source != source {
+        if &state.source != source {
             return Err(LazyWorkspaceError::StaleSource);
         }
         let mut records = self
@@ -358,12 +360,12 @@ impl<
             .observed
             .as_ref()
             .is_some_and(|(observed_source, observed_version, _, _)| {
-                *observed_source == source && *observed_version == version
+                observed_source == source && *observed_version == version
             })
         {
             return Ok(());
         }
-        records.observed = Some((source, version, record, metadata));
+        records.observed = Some((source.clone(), version, record, metadata));
         let shadows = self
             .insert_shadow_records(state.shadows, record.file_id, records, ctx)
             .await?;

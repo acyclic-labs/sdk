@@ -9,14 +9,8 @@ impl<B: DemandSource, V: DemandSource> Routed<B, V> {
     ) -> Result<Option<Box<dyn SourceWatch>>, DemandError> {
         ctx.check()?;
         let allocation = ctx.claim_owned(std::mem::size_of::<Watches>() as u64, 1)?;
-        let base_sink = self.sink(
-            sink.clone(),
-            self.base.reference().identity,
-            false,
-            ctx,
-            cancel,
-        )?;
-        let view_sink = self.sink(sink, self.view.reference().identity, true, ctx, cancel)?;
+        let base_sink = self.sink(sink.clone(), self.base.identity(), false, ctx, cancel)?;
+        let view_sink = self.sink(sink, self.view.identity(), true, ctx, cancel)?;
         let base = start(&self.base, base_sink, ctx, cancel)?;
         let view = match start(&self.view, view_sink, ctx, cancel) {
             Ok(view) => view,

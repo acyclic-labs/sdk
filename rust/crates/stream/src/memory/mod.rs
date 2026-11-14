@@ -15,7 +15,7 @@ use crate::OwnedBytes as Bytes;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::native::Work;
 use crate::preparation::commit_identity;
-use crate::query_sync::{Mutex, RwLock, watch};
+use crate::query_sync::{Mutex, RwLock};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::request::normalize_commit;
 #[cfg(test)]

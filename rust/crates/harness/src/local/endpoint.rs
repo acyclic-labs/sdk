@@ -438,20 +438,16 @@ impl LocalHarness {
     ///
     /// # Errors
     /// Fails for an embedded harness or when the tree cannot be hosted.
-    pub async fn connect(self: &Arc<Self>) -> Result<Connection> {
-        self.connect_agent(None).await
+    pub fn connect(self: &Arc<Self>) -> impl std::future::Future<Output = Result<Connection>> {
+        self.attach_with_directory(None, true, false)
     }
 
     /// Explicit owner connection to this placement's independent root sessions.
     /// Ordinary connect retains its single-tree credential boundary.
-    pub async fn connect_sessions(self: &Arc<Self>) -> Result<Connection> {
-        self.attach_with_directory(None, true, true).await
-    }
-
-    /// [Self::connect] under a credential minted for the selected agent, the root when
-    /// `None`: the one credential that drives and observes that agent.
-    async fn connect_agent(self: &Arc<Self>, agent: Option<AgentPath>) -> Result<Connection> {
-        self.attach(agent, true).await
+    pub fn connect_sessions(
+        self: &Arc<Self>,
+    ) -> impl std::future::Future<Output = Result<Connection>> {
+        self.attach_with_directory(None, true, true)
     }
 
     /// One connection to `agent`'s tree. A `live` session closes with the
@@ -459,12 +455,12 @@ impl LocalHarness {
     /// session is not bound to it: what the tree already committed (usage,
     /// history, turns) stays readable after a delivery failure stops that
     /// runtime, and each read answers from those records.
-    pub(super) async fn attach(
+    pub(super) fn attach(
         self: &Arc<Self>,
         agent: Option<AgentPath>,
         live: bool,
-    ) -> Result<Connection> {
-        self.attach_with_directory(agent, live, false).await
+    ) -> impl std::future::Future<Output = Result<Connection>> {
+        self.attach_with_directory(agent, live, false)
     }
 
     async fn attach_with_directory(

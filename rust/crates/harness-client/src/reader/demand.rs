@@ -197,9 +197,16 @@ impl Demands {
         }
     }
 
-    pub(super) fn remove_children_after(&mut self, path: &super::StreamPath, index: u32) {
+    pub(super) fn remove_children_after(
+        &mut self,
+        path: &super::StreamPath,
+        index: u32,
+        limit: u32,
+    ) {
         if let Some(first) = index.checked_add(1) {
-            self.remove_range(OpKey::children(path, first, None)..OpKey::children_end(path));
+            self.remove_range(
+                OpKey::children(path, first, limit, None)..OpKey::children_end(path, limit),
+            );
         }
     }
 

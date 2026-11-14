@@ -33,15 +33,17 @@ pub async fn capture_working_documents(
     }
     let mut directories = vec!["context/pins".to_owned()];
     while let Some(directory) = directories.pop() {
-        let mut after = None;
+        // The opaque position keeps its original page custody until the next
+        // request has finished borrowing it.
+        let mut after: Option<(Vec<u8>, _)> = None;
         loop {
-            let Some((page, _hold)) = reader
+            let Some((page, hold)) = reader
                 .list_private_directory(
                     volume,
                     "context",
                     &directory,
                     Some(&capture.generation),
-                    after.as_deref(),
+                    after.as_ref().map(|(cursor, _)| cursor.as_slice()),
                     256,
                     None,
                     None,
@@ -56,15 +58,20 @@ pub async fn capture_working_documents(
                     "context directory changed its selected cut".into(),
                 ));
             }
-            after = page.entries.last().map(|entry| entry.name.clone());
             for entry in page.entries {
                 let path = format!("{directory}/{}", entry.name);
                 match entry.kind {
                     PrivateDirectoryEntryKind::Directory => directories.push(path),
                     PrivateDirectoryEntryKind::File => capture.file(&path).await?,
+                    _ => {
+                        return Err(Error::Invalid(
+                            "working document has an unsupported node kind".into(),
+                        ));
+                    }
                 }
             }
-            if !page.has_more {
+            after = page.next.map(|cursor| (cursor, hold));
+            if after.is_none() {
                 break;
             }
         }

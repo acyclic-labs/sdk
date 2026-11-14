@@ -53,9 +53,9 @@ where
             .await?;
         let mut paths = input.vec(removals.len())?;
         paths.extend(removals.into_iter().map(|(path, _)| path));
-        let operation = selected.map_or_else(
+        let operation = selected.as_ref().map_or_else(
             || requested.unwrap_or(fresh_operation),
-            |(_, _, operation)| operation,
+            |(_, _, operation)| *operation,
         );
         let mut effects = match selected {
             Some((destination, plan, _)) => Some(

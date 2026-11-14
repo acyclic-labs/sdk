@@ -160,7 +160,8 @@ where
             .removals
             .lock()
             .map_err(|_| MountSourceError::Stale)?
-            .publication;
+            .publication
+            .clone();
         if let Some((
             id,
             Some(SelectedImportProof {
@@ -231,7 +232,12 @@ where
                 return Err(MountSourceError::Stale);
             }
             self.lazy
-                .publication_companion_settled(operation, context, Some(generation), accounting)
+                .publication_companion_settled(
+                    operation,
+                    context.clone(),
+                    Some(generation),
+                    accounting,
+                )
                 .await
                 .map_err(lazy_error)?;
             let mut acknowledged = None;

@@ -183,6 +183,7 @@ pub async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), Fail
             .await?;
     }
     let page = |parent: StreamPath, after: Option<StreamPath>| ChildrenPageRequest {
+        offset: 0,
         tail_stream: None,
         parent: Some(parent),
         after,

@@ -25,9 +25,11 @@ where
             .removals
             .lock()
             .map_err(|_| MountSourceError::Stale)?
-            .publication;
-        if let (Some((operation, proof)), Some((_, _, requested))) = (remembered, selected)
-            && (operation != requested || proof != selected_proof)
+            .publication
+            .clone();
+        if let (Some((operation, proof)), Some((_, _, requested))) =
+            (remembered.as_ref(), selected.as_ref())
+            && (operation != requested || proof != &selected_proof)
         {
             return Err(MountSourceError::Stale.into());
         }
@@ -49,11 +51,19 @@ where
                 .operation
                 .is_none_or(|requested| requested == *operation)
         }) {
-            let proof = remembered.and_then(|(_, proof)| proof).or(selected
-                .filter(|(_, _, requested)| *requested == operation)
-                .and(selected_proof));
-            if remembered.is_some_and(|(remembered, _)| remembered != operation)
-                || selected.is_some_and(|(_, _, selected)| selected != operation)
+            let proof = remembered
+                .as_ref()
+                .and_then(|(_, proof)| proof.clone())
+                .or(selected
+                    .as_ref()
+                    .filter(|(_, _, requested)| *requested == operation)
+                    .and(selected_proof.clone()));
+            if remembered
+                .as_ref()
+                .is_some_and(|(remembered, _)| *remembered != operation)
+                || selected
+                    .as_ref()
+                    .is_some_and(|(_, _, selected)| *selected != operation)
             {
                 return Err(MountSourceError::Stale.into());
             }
@@ -78,7 +88,7 @@ where
                             generation,
                             proof,
                             retained,
-                            remembered.map(|(id, _)| id),
+                            remembered.as_ref().map(|(id, _)| *id),
                         ),
                     )
                     .await
@@ -97,7 +107,7 @@ where
                 .map_err(lazy_error)?,
             None => None,
         };
-        if let Some(original) = requested {
+        if let Some(original) = requested.as_ref() {
             if !matches!(original.context, NativeSnapshotContext::Lazy(_)) {
                 return Err(MountSourceError::Stale.into());
             }
@@ -115,19 +125,21 @@ where
                         crate::lazy_workspace::PendingLazyRemoveKind::Mounted { idempotency_key }
                         if Some(idempotency_key.operation_id()) == publication.operation)
                 });
-            if remembered.map(|(operation, _)| operation) != publication.operation
+            if remembered.as_ref().map(|(operation, _)| *operation) != publication.operation
                 && retained != publication.operation
                 && !pending
             {
                 // A settled replay is a point-read of its original receipt.
                 // In particular, do not flush pending later native edits.
-                *publication.acknowledged = Some(original);
-                return Ok(Some(original));
+                *publication.acknowledged = Some(original.clone());
+                return Ok(Some(original.clone()));
             }
         }
 
         if let Some(requested) = publication.operation
-            && (remembered.is_some_and(|(operation, _)| operation != requested)
+            && (remembered
+                .as_ref()
+                .is_some_and(|(operation, _)| *operation != requested)
                 || retained.is_some_and(|operation| operation != requested))
         {
             return Err(MountSourceError::Stale.into());
@@ -140,16 +152,17 @@ where
             return Ok(None);
         }
         let operation = remembered
-            .map(|(operation, _)| operation)
+            .as_ref()
+            .map(|(operation, _)| *operation)
             .or(publication.operation);
-        let committed = if let Some(original) = requested {
+        let committed = if let Some(original) = requested.as_ref() {
             Some((
                 original.operation().ok_or(MountSourceError::Stale)?,
                 original.generation(),
             ))
         } else {
             match operation
-                .or(selected.map(|(_, _, operation)| operation))
+                .or(selected.as_ref().map(|(_, _, operation)| *operation))
                 .or(retained)
             {
                 Some(operation) => self
@@ -165,9 +178,13 @@ where
             }
         };
         if let Some((operation, generation)) = committed {
-            let proof = remembered.and_then(|(_, proof)| proof).or(selected
-                .filter(|(_, _, requested)| *requested == operation)
-                .and(selected_proof));
+            let proof = remembered
+                .as_ref()
+                .and_then(|(_, proof)| proof.clone())
+                .or(selected
+                    .as_ref()
+                    .filter(|(_, _, requested)| *requested == operation)
+                    .and(selected_proof.clone()));
             return self
                 .recover_committed_publication(
                     publication,
@@ -177,7 +194,7 @@ where
                         generation,
                         proof,
                         retained,
-                        remembered.map(|(id, _)| id),
+                        remembered.as_ref().map(|(id, _)| *id),
                     ),
                 )
                 .await
@@ -222,20 +239,20 @@ where
         let (operation, generation, proof, retained, remembered) = committed;
 
         let context = self
-            .publication_context(operation, Some(generation), proof, accounting)
+            .publication_context(operation, Some(generation), proof.clone(), accounting)
             .await?;
         *publication.acknowledged = Some(crate::NativePublicationSnapshot {
-            context,
+            context: context.clone(),
             operation: Some(operation),
             generation,
         });
         if retained == Some(operation) {
-            let published = self.publish_checkout(publication, context).await?;
+            let published = self.publish_checkout(publication, context.clone()).await?;
             if published.operation() != Some(operation) || published.generation() != generation {
                 return Err(MountSourceError::Indeterminate.into());
             }
         }
-        self.finish_publication(operation, generation, proof, context, accounting)
+        self.finish_publication(operation, generation, proof, context.clone(), accounting)
             .await?;
         if remembered == Some(operation) {
             self.finish_detached_publication(publication.work)?;
@@ -244,7 +261,7 @@ where
         self.retire_settled_publication(operation, generation, accounting)
             .await?;
         Ok(crate::NativePublicationSnapshot {
-            context,
+            context: context.clone(),
             operation: Some(operation),
             generation,
         })
@@ -263,7 +280,7 @@ where
         let (operation, proof) = remembered;
 
         let context = self
-            .publication_context(operation, None, proof, accounting)
+            .publication_context(operation, None, proof.clone(), accounting)
             .await?;
         self.complete_publication(publication, (context, operation, proof), accounting)
             .await

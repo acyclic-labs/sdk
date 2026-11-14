@@ -121,6 +121,7 @@ pub(super) fn lazy_state(workspace_id: WorkspaceId, revision: u64) -> LazyWorksp
         ..LazyWorkspaceState::new(
             workspace_id,
             crate::demand::SourceReference {
+                components: acyclic_stream::OwnedBytes::new(),
                 identity: [1; 16],
                 epoch: 0,
             },
@@ -451,7 +452,7 @@ pub(super) fn prepared_origin_fixture(parent: &LazyWorkspaceState) -> LazyWorksp
     let snapshot = crate::LazySnapshotRef::new(
         parent.workspace_id,
         crate::GenerationId::new(Digest::from_bytes([0xa2; 32])),
-        parent.source,
+        parent.source.clone(),
         parent.overlay,
         parent.shadows,
     );
@@ -463,7 +464,7 @@ pub(super) fn prepared_origin_fixture(parent: &LazyWorkspaceState) -> LazyWorksp
             config: crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral),
             phase: crate::LazyForkPhase::Prepared,
         }),
-        source: parent.source,
+        source: parent.source.clone(),
         overlay: parent.overlay,
         shadows: parent.shadows,
         ..lazy_state(WorkspaceId::from_bytes([0xa4; 16]), 1)
@@ -475,7 +476,7 @@ pub(super) fn advanced_origin_parent(parent: &LazyWorkspaceState) -> LazyWorkspa
         revision: parent.revision + 1,
         source: crate::demand::SourceReference {
             epoch: parent.source.epoch + 1,
-            ..parent.source
+            ..parent.source.clone()
         },
         overlay: LazyOverlayId::from_bytes(content_address(&LazyOverlay::Empty).unwrap()),
         shadows: crate::LazyShadowId::from_bytes(

@@ -4,8 +4,9 @@ use super::*;
 /// The accepted native producer keeps the original ledger until settlement.
 /// Cancellation abandons reply delivery; it cannot reactivate the caller's
 /// standalone branch while native work can still charge it.
-pub(crate) struct NativeAccounting {
-    pub(crate) work: crate::NativeMaterializationWork,
+pub struct NativeAccounting {
+    /// The caller's original work owner, including its cancellation and budget.
+    pub work: crate::NativeMaterializationWork,
     baseline: Option<WorkCounters>,
 }
 
@@ -13,7 +14,7 @@ impl NativeAccounting {
     /// Returns a completed output to the same caller without another admission.
     /// Ordinary callers resume ownership of the already charged scratch; native
     /// callers keep the same original allocation guard.
-    pub(crate) fn return_allocation(
+    pub fn return_allocation(
         &self,
         mut allocation: crate::NativeAllocation,
         bytes: u64,
@@ -28,7 +29,11 @@ impl NativeAccounting {
         Ok(KernelOwnedAllocation::NativeOriginal(allocation))
     }
 
-    pub(crate) fn take(accounting: &mut KernelAccounting<'_>) -> Result<Self, crate::FsError> {
+    /// Transfers admission to a native producer without granting new credit.
+    /// The caller must not use `accounting` until `restore` succeeds. Dropping
+    /// this owner abandons delivery and leaves that branch fenced while the
+    /// physical producer or its output retains the original ledger.
+    pub fn take(accounting: &mut KernelAccounting<'_>) -> Result<Self, crate::FsError> {
         accounting.check()?;
         if let Some(work) = accounting.native_work() {
             return Ok(Self {
@@ -65,10 +70,8 @@ impl NativeAccounting {
     }
 
     /// Only the producer's terminal result permits restoring admission.
-    pub(crate) fn restore(
-        self,
-        accounting: &mut KernelAccounting<'_>,
-    ) -> Result<(), crate::FsError> {
+    /// Restore only after the accepted producer has physically completed.
+    pub fn restore(self, accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
         let Some(baseline) = self.baseline else {
             if !accounting
                 .native_work()
@@ -93,5 +96,117 @@ impl NativeAccounting {
             counters.verify(budget)?;
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acyclic_stream::{
+        AppendRequest, HeadProjection, HeadsRequest, IdempotencyKey, MemoryStream,
+        NativeStreamProvider, RevisionCut, StreamPath, StreamProviderExt as _,
+    };
+
+    #[tokio::test]
+    async fn stream_projection_keeps_original_credit_through_native_handoff_and_decode()
+    -> Result<(), Box<dyn std::error::Error>> {
+        #[derive(serde::Deserialize)]
+        struct Text {
+            text: String,
+        }
+        let stream = MemoryStream::default();
+        let path = StreamPath::new("computed/input")?;
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "text": "selected\ntext é",
+            "transcript": [{"parts": ["unselected".repeat(1024)]}]
+        }))?;
+        stream
+            .append(AppendRequest {
+                path: path.clone(),
+                records: vec![bytes.into()],
+                if_tail: None,
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+        let cancellation = crate::CancellationToken::new();
+        let budget = WorkBudget {
+            items_examined: 1_000_000,
+            ..WorkBudget::UNBOUNDED
+        };
+        let mut caller = KernelAccounting::standalone(budget, &cancellation);
+        // Independent leases promote the ordinary ledger once. That control
+        // allocation lives as long as the caller, rather than as read payload.
+        drop(RetainedAllocation::claim(0, 0, &mut caller)?);
+        let baseline = caller
+            .standalone_parts()
+            .ok_or("missing original ledger")?
+            .0
+            .live_bytes();
+        caller.charge_items(7)?;
+        let owner = NativeAccounting::take(&mut caller)?;
+        assert!(matches!(
+            caller.check(),
+            Err(crate::FsError::AccountingHandoffActive)
+        ));
+        let result = stream
+            .native_heads(
+                HeadsRequest {
+                    at: None,
+                    paths: [path].into(),
+                    retained: Default::default(),
+                    projection: HeadProjection::History,
+                    durable_through: None,
+                    children: None,
+                    limit: 1,
+                    at_least: RevisionCut::default(),
+                },
+                owner.work.runtime_meter(),
+            )
+            .await??;
+        let record = result.value().heads[0]
+            .as_ref()
+            .ok_or("missing head")?
+            .last
+            .as_ref()
+            .ok_or("missing record")?;
+        let mut producer = KernelAccounting::native(&owner.work, &cancellation);
+        let decoded = producer.decode_json::<Text>(record.value.as_ref())?;
+        assert_eq!(decoded.text, "selected\ntext é");
+        drop(producer);
+        let completed = owner.work.receipt();
+        owner.restore(&mut caller)?;
+        assert_eq!(caller.spent().items_examined, completed.items_examined);
+        assert_eq!(
+            caller.remaining()?.items_examined,
+            budget.items_examined - completed.items_examined
+        );
+        drop(result);
+        // The decoded value remains funded after both the producer and the
+        // stream result are gone, and returns its credit when it is dropped.
+        let held = caller
+            .standalone_parts()
+            .ok_or("missing original ledger")?
+            .0
+            .live_bytes();
+        assert!(held >= baseline + decoded.text.len() as u64);
+        drop(decoded);
+        assert_eq!(
+            caller
+                .standalone_parts()
+                .ok_or("missing original ledger")?
+                .0
+                .live_bytes(),
+            baseline
+        );
+        let remaining = caller.remaining()?.items_examined;
+        caller.charge_items(remaining)?;
+        assert!(matches!(
+            caller.charge_items(1),
+            Err(crate::FsError::Work(WorkError::BudgetExceeded {
+                counter: "items_examined",
+                ..
+            }))
+        ));
+        Ok(())
     }
 }

@@ -99,7 +99,7 @@ impl LocalHarness {
             publisher,
             directory: crate::context::native_discovery::LazyDiscovery {
                 view,
-                cut,
+                cut: cut.clone(),
                 work: &work,
             },
         };
@@ -164,7 +164,7 @@ impl LocalHarness {
                 .source_path(path, Some(&work))?;
             match view
                 .read_at_snapshot(
-                    cut,
+                    &cut,
                     &format!("/{source_path}"),
                     None,
                     maximum,
@@ -240,7 +240,7 @@ impl LocalHarness {
                 .source_path(path, Some(&work))?;
             let (chunk, _allocation) = view
                 .read_at_snapshot(
-                    cut,
+                    &cut,
                     &format!("/{source_path}"),
                     None,
                     remaining,
@@ -300,7 +300,7 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
         revision: Option<&'a Self::Revision>,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<(Self::Revision, u32)>>> {
         Box::pin(async move {
-            let cut = revision.copied().unwrap_or(self.directory.cut);
+            let cut = revision.unwrap_or(&self.directory.cut);
             let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
                 work: self.directory.work,
                 cancellation: self.directory.work.cancellation(),
@@ -318,7 +318,7 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
                     "instruction entry is not a directory".into(),
                 ));
             }
-            Ok(Some((cut, 0)))
+            Ok(Some((cut.clone(), 0)))
         })
     }
 
@@ -349,7 +349,7 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
             let (bytes, _allocation) = match self
                 .directory
                 .view
-                .read_at_snapshot(*cut, &format!("/{path}"), None, maximum, &mut accounting)
+                .read_at_snapshot(cut, &format!("/{path}"), None, maximum, &mut accounting)
                 .await
             {
                 Ok(file) => file,
@@ -649,8 +649,12 @@ mod tests {
                 shell: "fixture".into(),
             },
         )?;
+        assert_eq!(
+            std::fs::canonicalize(selected.native_cwd()?.expect("selected native cwd"))
+                .map_err(storage)?,
+            std::fs::canonicalize(directory.path().join("selected")).map_err(storage)?
+        );
         assert_eq!(facts.cwd.as_deref(), Some("."));
-
         assert_ne!(selected.native_cwd()?, Some(workspace.path.as_path()));
         Ok(())
     }

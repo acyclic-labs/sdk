@@ -339,6 +339,7 @@ fn declared_method_credentials_match_session_admission() {
                     slots,
                     0,
                     &crate::HeadsRequest {
+                        at: None,
                         paths: [path].into(),
                         retained: Default::default(),
                         durable_through: None,
@@ -547,6 +548,7 @@ fn revision_only_bindings_recheck_credential_context_without_resource_access() {
     });
     auth.register(&mut slots, 0, &bytes, 2).unwrap();
     let request = crate::HeadsRequest {
+        at: None,
         retained: Default::default(),
         durable_through: None,
         projection: Default::default(),

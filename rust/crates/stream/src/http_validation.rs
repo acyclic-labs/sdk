@@ -123,6 +123,12 @@ fn validate_children_page(value: &Value) -> Result {
     let item = object(value)?;
     id(field(item, "hierarchyVersion")?)?;
     let children = array(field(item, "children")?)?;
+    let scanned = field(item, "scanned")?
+        .as_u64()
+        .ok_or("invalid scanned count")?;
+    if scanned > crate::MAX_ITEMS as u64 || children.len() as u64 > scanned {
+        return Err("invalid scanned count");
+    }
     let mut previous: Option<&str> = None;
     for child in children {
         let child = object(child)?;
@@ -150,8 +156,9 @@ fn validate_children_page(value: &Value) -> Result {
     }
     if let Some(next_after) = item.get("nextAfter").filter(|value| !value.is_null()) {
         let next_after = string(next_after)?;
-        if previous != Some(next_after) {
-            return Err("child continuation does not match final child");
+        path(&Value::String(next_after.into()))?;
+        if scanned == 0 || previous.is_some_and(|last| last > next_after) {
+            return Err("child continuation precedes consumed rows");
         }
     }
     Ok(())
@@ -369,6 +376,7 @@ pub fn validate(route: &str, value: &Value) -> Result {
                 }
             }
             validate_revision(field(item, "snapshot")?)?;
+            validate_revision(field(item, "applied")?)?;
             let projection = string(field(item, "projection")?)?;
             if !matches!(projection, "history" | "watermarks" | "tail") {
                 return Err("invalid head projection");
@@ -376,6 +384,7 @@ pub fn validate(route: &str, value: &Value) -> Result {
             for head in array(field(item, "heads")?)? {
                 if !head.is_null() {
                     let item = object(head)?;
+                    u64_string(field(item, "changedAt")?)?;
                     if let Some(through) =
                         item.get("retainedThrough").filter(|value| !value.is_null())
                     {
@@ -407,6 +416,7 @@ pub fn validate(route: &str, value: &Value) -> Result {
         }
         Some("head") => {
             let item = object(value)?;
+            u64_string(field(item, "changedAt")?)?;
             let tail = u64_string(field(item, "tail")?)?;
             if let Some(through) = item.get("retainedThrough").filter(|value| !value.is_null()) {
                 if u64_string(through)? > tail {
@@ -540,21 +550,27 @@ mod tests {
     fn hosted_http_validation_checks_children_page_continuations() -> serde_json::Result<()> {
         let commit_id = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
         let valid = format!(
-            r#"{{"hierarchyVersion":"{commit_id}","children":[{{"path":"runs/a"}},{{"path":"runs/b"}}],"nextAfter":"runs/b"}}"#
+            r#"{{"hierarchyVersion":"{commit_id}","children":[{{"path":"runs/a"}},{{"path":"runs/b"}}],"scanned":2,"nextAfter":"runs/b"}}"#
         );
         assert!(super::validate("children/page", &json_fixture(&valid)?).is_ok());
 
-        let null_continuation =
-            format!(r#"{{"hierarchyVersion":"{commit_id}","children":[],"nextAfter":null}}"#);
+        let hidden = format!(
+            r#"{{"hierarchyVersion":"{commit_id}","children":[],"scanned":2,"nextAfter":"runs/b"}}"#
+        );
+        assert!(super::validate("children/page", &json_fixture(&hidden)?).is_ok());
+
+        let null_continuation = format!(
+            r#"{{"hierarchyVersion":"{commit_id}","children":[],"scanned":0,"nextAfter":null}}"#
+        );
         assert!(super::validate("children/page", &json_fixture(&null_continuation)?).is_ok());
 
         let wrong_continuation = format!(
-            r#"{{"hierarchyVersion":"{commit_id}","children":[{{"path":"runs/a"}}],"nextAfter":"runs/b"}}"#
+            r#"{{"hierarchyVersion":"{commit_id}","children":[{{"path":"runs/a"}}],"scanned":1,"nextAfter":"runs/0"}}"#
         );
         assert!(super::validate("children/page", &json_fixture(&wrong_continuation)?).is_err());
 
         let unordered = format!(
-            r#"{{"hierarchyVersion":"{commit_id}","children":[{{"path":"runs/b"}},{{"path":"runs/a"}}]}}"#
+            r#"{{"hierarchyVersion":"{commit_id}","children":[{{"path":"runs/b"}},{{"path":"runs/a"}}],"scanned":2}}"#
         );
         assert!(super::validate("children/page", &json_fixture(&unordered)?).is_err());
         Ok(())

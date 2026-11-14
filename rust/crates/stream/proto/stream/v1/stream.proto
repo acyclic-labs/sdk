@@ -113,6 +113,8 @@ enum HeadProjection {
 }
 
 message HeadsRequest {
+  // Exact retained namespace cut, independent of the replica-applied floor.
+  Revision at = 8;
   repeated string paths = 1;
   ChildrenPageRequest children = 2;
   uint32 limit = 3;
@@ -144,6 +146,8 @@ message HeadObservation {
 }
 
 message HeadsResponse {
+  // Replica progress; snapshot remains the selected immutable namespace cut.
+  Revision applied = 6;
   Revision snapshot = 1;
   // In exact request order, including explicit absent observations.
   repeated HeadObservation heads = 2;
@@ -159,6 +163,8 @@ message ForkOrigin {
 }
 
 message PathHead {
+  // Last relevant authority revision; interpreted in HeadsResponse.snapshot.
+  uint64 changed_at = 6;
   uint64 tail = 1;
   Record last = 2;
   uint64 durable = 3;
@@ -320,6 +326,8 @@ message Child {
   optional uint64 tail = 4;
 }
 message ChildrenPageRequest {
+  // Indexed skip after `after`, or from the beginning when it is absent.
+  uint64 offset = 6;
   optional string tail_stream = 5;
   optional string parent = 1;
   optional string after = 2;
@@ -331,6 +339,8 @@ message ChildrenPageResponse {
   bytes hierarchy_version = 1;
   repeated Child children = 2;
   optional string next_after = 3;
+  // Raw namespace rows consumed before authorization projection.
+  uint32 scanned = 4;
 }
 
 message TailCondition {

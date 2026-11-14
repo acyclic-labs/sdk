@@ -75,8 +75,8 @@ export class StreamClient {
   }
   heads(request: import("./types.js").HeadsRequest): Promise<import("./types.js").Heads> { return this.provider.heads(structuredClone(request)); }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
-    const { parent, after, hierarchyVersion, limit } = request;
-    const origin = { limit, ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }), ...(parent === undefined ? {} : { parent }) };
+    const { parent, after, offset, hierarchyVersion, limit } = request;
+    const origin = { limit, ...(offset === undefined ? {} : { offset }), ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }), ...(parent === undefined ? {} : { parent }) };
     const authored: ChildrenPageRequest = { ...origin, ...(after === undefined ? {} : { after }), ...(hierarchyVersion === undefined ? {} : { hierarchyVersion: hierarchyVersion.slice() as CommitId }) };
     if (authored.parent !== undefined) validatePathValue(authored.parent);
     if (authored.after !== undefined) {
@@ -96,7 +96,7 @@ export class StreamClient {
         page.hierarchyVersion.some((byte, index) => byte !== expectedVersion[index])) {
       throw new StreamError("hierarchy_changed", "provider changed hierarchy version during pagination");
     }
-    if (page.children.length > authored.limit || (page.nextAfter !== undefined && page.nextAfter !== page.children.at(-1)?.path)) {
+    if (!Number.isInteger(page.scanned) || page.scanned < page.children.length || page.scanned > authored.limit || (page.nextAfter !== undefined && page.scanned === 0)) {
       throw new StreamError("invalid_page", "provider returned an invalid child continuation");
     }
     let previous = authored.after;
@@ -107,6 +107,14 @@ export class StreamClient {
         throw new StreamError("invalid_page", "provider returned non-direct or unordered children");
       }
       previous = child.path;
+    }
+    if (page.nextAfter !== undefined) {
+      validatePathValue(page.nextAfter);
+      if (directParent(page.nextAfter) !== (authored.parent ?? "") ||
+          (authored.after !== undefined && compareStreamPaths(authored.after, page.nextAfter) >= 0) ||
+          (previous !== undefined && compareStreamPaths(previous, page.nextAfter) > 0)) {
+        throw new StreamError("invalid_page", "provider returned an invalid child continuation");
+      }
     }
     return page;
   }

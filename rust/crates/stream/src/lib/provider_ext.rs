@@ -294,6 +294,7 @@ pub trait StreamProviderExt: StreamProvider {
     {
         async move {
             let request = HeadsRequest {
+                at: None,
                 retained: Default::default(),
                 durable_through: None,
                 projection: HeadProjection::Tail,
@@ -453,6 +454,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
     {
         async move {
             let request = HeadsRequest {
+                at: None,
                 retained: Default::default(),
                 durable_through: Some(through),
                 projection: HeadProjection::Watermarks,
@@ -504,6 +506,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
     ) -> impl std::future::Future<Output = Result<ChildrenPage, StreamError>> + ProviderTask {
         async move {
             let selection = HeadsRequest {
+                at: None,
                 retained: Default::default(),
                 durable_through: None,
                 projection: HeadProjection::Watermarks,
@@ -534,6 +537,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
         async move {
             let view = self
                 .heads(HeadsRequest {
+                    at: None,
                     retained: Default::default(),
                     durable_through: None,
                     projection: Default::default(),
@@ -561,6 +565,7 @@ async fn named_head<P: StreamProvider + ?Sized>(
     projection: HeadProjection,
 ) -> Result<PathHead, StreamError> {
     let request = HeadsRequest {
+        at: None,
         retained: Default::default(),
         durable_through: None,
         projection,

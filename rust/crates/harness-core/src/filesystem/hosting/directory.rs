@@ -113,10 +113,11 @@ where
         &self,
         agent: &AgentPath,
         query: DirectoryQuery<'_>,
+        credit: Option<&mut crate::filesystem::DirectoryCredit<'_>>,
     ) -> Result<PrivateDirectoryPage, Error> {
-        if (query.generation.is_none() && query.after_name.is_some())
+        if (query.generation.is_none() && query.after.is_some())
             || (query.after_generation.is_some()
-                && (query.generation.is_some() || query.after_name.is_some()))
+                && (query.generation.is_some() || query.after.is_some()))
         {
             return Err(Error::Record("invalid directory selection"));
         }
@@ -130,42 +131,27 @@ where
                     .await?
             }
         };
-        let after = query
-            .after_name
-            .map(|name| {
-                acyclic_fs::kernel::LogicalName::new(
-                    acyclic_fs::kernel::NameEncoding::Utf8,
-                    name.as_bytes().to_vec(),
-                )
-            })
-            .transpose()
-            .map_err(|_| Error::Record("invalid directory continuation name"))?;
         let options = super::super::DirectoryOptions {
-            generation: Some(&generation),
-            after: after.as_ref(),
+            generation: query.generation,
+            after: query.after,
             maximum_entries: query.maximum_entries,
             ceiling: Some(binding.scope.capabilities()),
         };
         let page = self
             .volumes
-            .list_private_directory(&binding.volume, &binding.grant, &binding.path, options)
+            .list_private_directory_with_credit(
+                &binding.volume,
+                &binding.grant,
+                &binding.path,
+                options,
+                credit,
+            )
             .await
             .map_err(turn)?;
-        let Some((generation, page)) = page else {
-            return Ok(PrivateDirectoryPage {
-                generation,
-                entries: Vec::new(),
-                has_more: false,
-            });
-        };
-        let ledger =
-            crate::filesystem::PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())
-                .map_err(turn)?;
-        let source = ledger
-            .reserve_decode(generation.logical_owned_bytes().map_err(turn)?)
-            .map_err(turn)?;
-        PrivateDirectoryPage::from_filesystem(generation, page, source, &ledger)
-            .map(|(page, _custody)| page)
-            .map_err(turn)
+        Ok(page.unwrap_or(PrivateDirectoryPage {
+            generation,
+            entries: Vec::new(),
+            next: None,
+        }))
     }
 }

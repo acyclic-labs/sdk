@@ -33,6 +33,7 @@ async fn refused_endpoint_finishes_without_scheduling_a_retry() -> TestResult {
     client.register_credential(0, crate::session::testing::credential())?;
     let request = client.heads(
         crate::HeadsRequest {
+            at: None,
             retained: Default::default(),
             durable_through: None,
             projection: crate::HeadProjection::Tail,

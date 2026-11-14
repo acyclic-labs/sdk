@@ -18,8 +18,8 @@ impl<
     /// This is a point comparison, not a complete source-alias enumeration.
     pub async fn matches_optional_content_at_snapshots(
         &self,
-        before: LazySnapshotRef,
-        after: LazySnapshotRef,
+        before: &LazySnapshotRef,
+        after: &LazySnapshotRef,
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<bool, LazyWorkspaceError> {
@@ -57,8 +57,8 @@ impl<
     /// evidence of either progress or unchanged content.
     pub async fn content_changed_at_snapshots(
         &self,
-        before: LazySnapshotRef,
-        after: LazySnapshotRef,
+        before: &LazySnapshotRef,
+        after: &LazySnapshotRef,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<bool>, LazyWorkspaceError> {
         self.validate_snapshot(before, ctx).await?;
@@ -163,8 +163,8 @@ impl<
 
     async fn compare_optional_content(
         &self,
-        left: (LazySnapshotRef, Option<&LazyLookup>),
-        right: (LazySnapshotRef, Option<&LazyLookup>),
+        left: (&LazySnapshotRef, Option<&LazyLookup>),
+        right: (&LazySnapshotRef, Option<&LazyLookup>),
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<bool, LazyWorkspaceError> {
@@ -174,7 +174,7 @@ impl<
                     return Err(LazyWorkspaceError::NotRegularFile);
                 }
                 if matches!(lookup, LazyLookup::Source { .. })
-                    && cut.source != self.source.reference()
+                    && cut.source != self.source.reference(ctx).await?
                 {
                     return Err(LazyWorkspaceError::StaleSource);
                 }

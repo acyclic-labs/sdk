@@ -18,6 +18,10 @@ name = "main"
 path = "tests/main.rs"
 
 [[test]]
+name = "computed_folds"
+path = "tests/computed_folds.rs"
+
+[[test]]
 name = "browser_commit"
 path = "tests/browser_commit.rs"
 required-features = ["browser"]
@@ -73,7 +77,7 @@ thiserror.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
-acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
 base64 = { version = "0.23.1" }
 crc-fast = { version = "1.10.0" }
 

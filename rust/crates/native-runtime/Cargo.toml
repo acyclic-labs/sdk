@@ -115,6 +115,11 @@ path = "tests/wake_loom.rs"
 required-features = ["model-checking"]
 
 [[test]]
+name = "retained_submission_loom"
+path = "tests/retained_submission_loom.rs"
+required-features = ["model-checking"]
+
+[[test]]
 name = "device_flush_loom"
 path = "tests/device_flush_loom.rs"
 required-features = ["model-checking"]

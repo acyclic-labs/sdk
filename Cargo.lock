@@ -731,6 +731,7 @@ dependencies = [
  "prost",
  "prost-build",
  "prost-reflect",
+ "pulldown-cmark",
  "rcgen",
  "regex-lite",
  "reqwest 0.12.28",

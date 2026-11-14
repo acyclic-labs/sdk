@@ -563,6 +563,9 @@ pub struct ChildrenPageRequest {
     pub parent: Option<StreamPath>,
     /// Last path from the preceding page; exclusive.
     pub after: Option<StreamPath>,
+    /// Number of direct children to skip after `after` (or from the beginning).
+    /// This is an indexed rank seek, not a scan through preceding pages.
+    pub offset: u64,
     /// Optional hierarchy fence returned by a preceding page. When supplied,
     /// any hierarchy change refuses the page. When absent, `after` seeks in
     /// the current snapshot; callers requiring stable membership must own
@@ -572,6 +575,19 @@ pub struct ChildrenPageRequest {
     pub limit: u32,
 }
 
+impl ChildrenPageRequest {
+    pub(crate) fn validate(&self) -> Result<(), StreamError> {
+        crate::memory::validate_limit(self.limit)?;
+        if self.after.as_ref().is_some_and(|after| {
+            after.as_str().rsplit_once('/').map(|(parent, _)| parent)
+                != self.parent.as_ref().map(StreamPath::as_str)
+        }) {
+            return Err(StreamError::InvalidArgument);
+        }
+        Ok(())
+    }
+}
+
 /// One coherent hierarchy page and its continuation boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChildrenPage {
@@ -579,7 +595,10 @@ pub struct ChildrenPage {
     pub hierarchy_version: CommitId,
     /// Ordered direct children, at most the requested limit.
     pub children: Vec<Child>,
-    /// Last returned path if another page exists.
+    /// Raw namespace rows consumed, before authorization projection. Byte
+    /// limits may shorten a request; hidden rows still consume its rank span.
+    pub scanned: u32,
+    /// Last consumed path if another raw page exists, even if hidden by authorization.
     pub next_after: Option<StreamPath>,
 }
 
@@ -592,7 +611,9 @@ impl ChildrenPage {
             path.as_str().rsplit_once('/').map(|(parent, _)| parent)
                 == request.parent.as_ref().map(StreamPath::as_str)
         };
-        if self.children.len() > request.limit as usize
+        if self.children.len() > self.scanned as usize
+            || self.scanned > request.limit
+            || (self.next_after.is_some() && self.scanned == 0)
             || request
                 .hierarchy_version
                 .is_some_and(|version| version != self.hierarchy_version)

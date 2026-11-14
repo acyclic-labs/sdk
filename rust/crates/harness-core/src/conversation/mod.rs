@@ -297,6 +297,7 @@ pub use content::{
 pub use directory::{
     DirectoryQuery, DirectoryRead, DirectoryTarget, MAX_PRIVATE_DIRECTORY_PAGE,
     PrivateDirectoryEntry, PrivateDirectoryEntryKind, PrivateDirectoryPage,
+    PrivateDirectoryPageView,
 };
 pub use file_source::{FilePathSelection, PathSelection};
 pub(crate) use file_source::{PathSelectionView, names_generation};

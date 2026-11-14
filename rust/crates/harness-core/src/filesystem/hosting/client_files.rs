@@ -635,6 +635,7 @@ async fn file_heads<P: acyclic_stream::StreamProvider + ?Sized>(
         return Ok((BTreeMap::new(), minimum));
     }
     let request = acyclic_stream::HeadsRequest {
+        at: None,
         limit: u32::try_from(paths.len())
             .map_err(|_| Error::Record("file source selection overflow"))?,
         paths: paths.into_iter().collect(),

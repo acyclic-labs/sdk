@@ -80,7 +80,7 @@ impl<
                     .await?;
             }
             LazyLookup::Source { source, node } => {
-                self.populate_source_node(transaction, path, *source, *node, maximum, ctx)
+                self.populate_source_node(transaction, path, source.clone(), *node, maximum, ctx)
                     .await?;
             }
         }
@@ -181,7 +181,7 @@ impl<
                         .read_metadata_with_accounting(expected, ctx, cancellation(ctx))
                         .await?;
                     self.retain_source_before_image(
-                        *source,
+                        source,
                         node.version,
                         record,
                         crate::WorkspaceMetadata::from_engine(metadata),
@@ -210,6 +210,7 @@ impl<
         crate::heap_future::in_borrowed_frame!(ctx, |ctx| async move {
             let parent = self.namespace_path(parent, ctx)?;
             let result = async {
+                let mut source: Option<SourceReference> = None;
                 for depth in 1..=parent.value.components().len() {
                     let (prefix, allocation) = parent.value.prefix_with_accounting(
                         depth,
@@ -243,13 +244,20 @@ impl<
                         let text = Owned::new(text, allocation, bytes);
                         let result =
                             async {
-                                let source = self.source.reference();
-                                match self.source_lookup(source, &text.value, ctx).await? {
+                                let selected = match &source {
+                                    Some(source) => source.clone(),
+                                    None => {
+                                        let selected = self.source_reference(ctx).await?;
+                                        source = Some(selected.clone());
+                                        selected
+                                    }
+                                };
+                                match self.source_lookup(&selected, &text.value, ctx).await? {
                                     Some(node) if node.kind == SourceNodeKind::Directory => {
                                         self.populate_source_node(
                                             transaction,
                                             &text.value,
-                                            source,
+                                            selected,
                                             node,
                                             0,
                                             ctx,

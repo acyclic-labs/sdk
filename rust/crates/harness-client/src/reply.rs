@@ -50,7 +50,7 @@ pub struct PendingApproval {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum AgentReply {
+pub enum AgentReply<P = acyclic_harness_core::conversation::PrivateDirectoryPage> {
     /// The binding of the tree this endpoint serves the credential.
     Bound {
         /// The canonical bodyless invocation, base64 (standard alphabet,
@@ -227,7 +227,7 @@ pub enum AgentReply {
     /// Authorized names at one generation, without eager file reads.
     Directory {
         /// Ordered visible names and the immutable generation that supplied them.
-        page: PrivateDirectoryPage,
+        page: P,
     },
     /// One range of a read file, and the file's whole length.
     Content {
@@ -836,16 +836,11 @@ fn validate_reply(
             if bytes > request.bytes() as usize || page.entries.len() > request.items() as usize {
                 return Err(CommandError::Capacity);
             }
-            if (page.has_more && page.entries.is_empty())
-                || generation
-                    .as_ref()
-                    .is_some_and(|selected| selected != &page.generation)
+            if generation
+                .as_ref()
+                .is_some_and(|selected| selected != &page.generation)
+                || (page.next.is_some() && page.next.as_deref() == request.cursor())
                 || after_generation.as_ref() == Some(&page.generation)
-                || request.cursor().is_some_and(|after| {
-                    page.entries
-                        .first()
-                        .is_some_and(|entry| entry.name.as_str() <= after)
-                })
             {
                 return Err(CommandError::Invalid);
             }
@@ -1533,9 +1528,11 @@ mod tests {
                 _ => malformed[1].path = "../outside.txt".into(),
             }
             let bytes = Envelope {
-                value: Some(envelope::Value::Reply(serde_json::to_vec(
-                    &AgentReply::Diff { items: malformed },
-                )?)),
+                value: Some(envelope::Value::Reply(serde_json::to_vec(&AgentReply::<
+                    PrivateDirectoryPage,
+                >::Diff {
+                    items: malformed,
+                })?)),
                 reason: None,
             }
             .encode_to_vec();

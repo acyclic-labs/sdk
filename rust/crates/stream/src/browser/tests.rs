@@ -112,6 +112,7 @@ async fn immutable_results_reuse_only_a_durable_browser_cache() {
         .await
         .expect("envelope");
     let retained = crate::HeadsRequest {
+        at: None,
         retained: [crate::RetainedRecord {
             commit_id: receipt.commit_id,
             path: request.path.clone(),
