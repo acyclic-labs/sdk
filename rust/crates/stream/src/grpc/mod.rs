@@ -387,8 +387,11 @@ impl Client {
     {
         let mut backoff = None;
         loop {
+            let request = self
+                .request(body.clone())
+                .await
+                .map_err(|error| status(&error))?;
             let work = async {
-                let request = self.request(body.clone()).await?;
                 let lease = request
                     .extensions()
                     .get::<acyclic_auth::credential::ResolvedCredential>()
