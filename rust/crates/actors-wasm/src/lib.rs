@@ -4,6 +4,7 @@
 
 use acyclic_actors::{client, domain, guest};
 use js_sys::{BigInt, Function, Reflect, Uint8Array};
+use serde::Serialize as _;
 use tokio_util::sync::CancellationToken;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
@@ -151,7 +152,9 @@ pub fn decode_delivery(bytes: &[u8]) -> Result<JsValue, JsValue> {
             event: socket.event,
         });
     let socket = socket
-        .map(|event| serde_wasm_bindgen::to_value(&event))
+        .map(|event| {
+            event.serialize(&serde_wasm_bindgen::Serializer::new().serialize_missing_as_null(true))
+        })
         .transpose()
         .map_err(|_| js_error("invalid_argument", "socket event does not encode"))?
         .unwrap_or(JsValue::NULL);
@@ -286,7 +289,8 @@ pub fn encode_socket_request(command: JsValue, body: Vec<u8>) -> Result<Vec<u8>,
 #[wasm_bindgen(js_name = decodeSocketReply)]
 pub fn decode_socket_reply(bytes: &[u8]) -> Result<JsValue, JsValue> {
     let (reply, body) = guest::decode_socket_reply(bytes).map_err(guest_error)?;
-    let reply = serde_wasm_bindgen::to_value(&reply)
+    let reply = reply
+        .serialize(&serde_wasm_bindgen::Serializer::new().serialize_missing_as_null(true))
         .map_err(|_| js_error("invalid_argument", "socket result does not encode"))?;
     Ok(object(&[
         ("reply", reply),

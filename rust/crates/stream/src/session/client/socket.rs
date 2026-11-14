@@ -6,6 +6,7 @@ use super::*;
 /// lost connection fails it; a socket is never replayed onto another link.
 pub struct ActorSocket {
     cursor: Cursor,
+    credential: u32,
 }
 
 /// Write projection of one original socket. It cannot reopen or replay it,
@@ -38,7 +39,7 @@ impl Client {
                 credential,
             )
             .await?;
-        Ok(ActorSocket { cursor })
+        Ok(ActorSocket { cursor, credential })
     }
 }
 
@@ -54,6 +55,7 @@ impl ActorSocket {
             id: self.cursor.id,
             progress: self.cursor.progress.clone(),
             results,
+            credential: self.credential,
         };
         let pending =
             FuturesUnordered::<BoxProviderFuture<'static, Result<(), StreamError>>>::new();
@@ -135,9 +137,17 @@ struct ForwardInput {
     id: u64,
     progress: Arc<Progress>,
     results: mpsc::Sender<oneshot::Receiver<Result<(), StreamError>>>,
+    credential: u32,
 }
 
 impl SocketInbound for ForwardInput {
+    fn replace_credential(&self, credential: Bytes) -> Result<(), StreamError> {
+        if self.progress.cancelled() || self.progress.ended() {
+            return Err(StreamError::Unavailable);
+        }
+        self.client.register_credential(self.credential, credential)
+    }
+
     fn receive(&self, frame: Bytes) -> Result<(), StreamError> {
         if frame.is_empty() || frame.len() > crate::MAX_RECORD_BYTES {
             return Err(StreamError::InvalidArgument);
