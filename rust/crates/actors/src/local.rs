@@ -48,7 +48,8 @@ use std::{collections::BTreeMap, sync::Arc};
 /// `C` is the retry custody an unknown acknowledgement hands back: the sealed
 /// publication by default. Custody may own a composition with thread-affine
 /// platform handles, so it never travels as a cause; [`Error::into_cause`]
-/// keeps the failure and leaves custody with the caller.
+/// keeps the failure but discards custody. Callers that may retry must
+/// extract custody before converting.
 #[derive(Debug, thiserror::Error)]
 pub enum Error<C = Box<PreparedPublish>> {
     /// A shared call journal is malformed or cannot be addressed.
