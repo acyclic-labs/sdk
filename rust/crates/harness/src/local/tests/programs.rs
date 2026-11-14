@@ -471,6 +471,7 @@ async fn authored_programs_wait_for_the_original_shell_approval_before_native_di
 
 #[tokio::test]
 async fn authored_settings_select_the_next_provider_without_restarting_the_turn() -> Result<()> {
+    eprintln!("settings acceptance: starting");
     use crate::model::{
         ModelDispatch, ModelRequest, ModelStream, NativeToolProfile, PreparedModelRequest,
     };
@@ -515,6 +516,7 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
             request: &'a PreparedModelRequest,
             dispatch: ModelDispatch,
         ) -> ModelStream<'a> {
+            eprintln!("settings model dispatch: {}", request.request().model.name);
             self.provider.generate(request, dispatch)
         }
     }
@@ -617,6 +619,7 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
     config.model = None;
     config.models = Some((models, None));
     let harness = Arc::new(super::open_scripted(config).await?);
+    eprintln!("settings acceptance: harness opened");
     let executable = acyclic_native_runtime::platform_shell()
         .map_err(|error| Error::Storage(error.to_string()))?;
     let mut command = vec![
@@ -659,6 +662,7 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         ScriptedTurn::Text("inherited provider".into()),
     ]);
     let connection = harness.connect().await?;
+    eprintln!("settings acceptance: connection opened");
     pause.arm(&harness, connection.root())?;
     let AgentReply::Spawned { agent: worker, .. } = connection
         .execute(&AgentCommand::Spawn {
@@ -672,12 +676,16 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
     else {
         return Err(Error::Invalid("settings worker did not open".into()));
     };
+    eprintln!("settings acceptance: worker spawned");
     agents::settled(&harness, &worker).await?;
+    eprintln!("settings acceptance: worker settled");
     assert_eq!(first.request_count(), 1);
     let conversation = Conversation::open(connection.select(worker.clone()).await?);
     let mut observed = ObservedConversation::observe(conversation, None).await?;
     let prompt = "Write and use your model settings @source.txt";
+    eprintln!("settings acceptance: sending input");
     let entry = observed.send("select-model", prompt).await?;
+    eprintln!("settings acceptance: input settled");
     assert!(entry.outcome.is_completed(), "{:?}", entry.outcome);
     assert_eq!(
         observed.conversation.output_text(&entry).await?,
