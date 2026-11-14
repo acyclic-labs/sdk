@@ -150,6 +150,8 @@ async fn source_before_images_collection<S: LazyWorkspaceStore>(
     let source = native_source(&source_path, crate::FilesystemProfile::Portable).await;
     let fs_path = directory.path().join("fs");
     let cancellation = CancellationToken::new();
+    let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
     let cut;
     {
         let fs = Fs::local(crate::LocalOptions::new(&fs_path)).await?;
@@ -157,8 +159,23 @@ async fn source_before_images_collection<S: LazyWorkspaceStore>(
         let released = fs
             .local_root_release_barrier()
             .ok_or("local release barrier")?;
-        let root = attach(&fs, Arc::clone(&source), store.clone()).await?;
-        let mut ctx = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        let mut ctx = KernelAccounting::NativeOriginal {
+            work: &work,
+            cancellation: &cancellation,
+        };
+        let (root, _) = LazyWorkspace::attach(
+            &fs,
+            "root",
+            Arc::clone(&source),
+            store.clone(),
+            crate::VolumeInitialization {
+                config: VolumeConfig::portable(crate::Lifecycle::Durable),
+                access_policy: None,
+            },
+            crate::OperationId::new(),
+            &mut ctx,
+        )
+        .await?;
         let lookup = root.lookup("/file", &mut ctx).await?;
         let id = root
             .stable_file_id_for_lookup("/file", &lookup.0, &mut ctx)
@@ -216,7 +233,10 @@ async fn source_before_images_collection<S: LazyWorkspaceStore>(
     source.invalidate();
     let fs = Fs::local(crate::LocalOptions::new(&fs_path)).await?;
     let store = store_for(&fs, directory.path());
-    let mut ctx = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let mut ctx = KernelAccounting::NativeOriginal {
+        work: &work,
+        cancellation: &cancellation,
+    };
     let workspace = fs
         .open_workspace("root", WorkBudget::UNBOUNDED, &cancellation)
         .await?
