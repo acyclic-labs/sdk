@@ -261,9 +261,20 @@ async fn completion_joins_discovery_delivery_and_producer_lifetime() -> TestResu
     }));
     let refused =
         observe_while_running(serving.as_mut(), async { Ok(runtime.complete().await) }).await?;
+    let refused = refused.expect_err("failed original delivery completed successfully");
     assert!(
-        matches!(refused, Err(Error::CompletionFailed(error)) if matches!(error.as_ref(), Error::Handler(_)))
+        matches!(&refused, Error::CompletionFailed(error) if matches!(error.as_ref(), Error::Handler(_)))
     );
+    let source = std::error::Error::source(&refused)
+        .ok_or("completion discarded its original actor failure")?;
+    let original = source
+        .downcast_ref::<Error>()
+        .or_else(|| source.downcast_ref::<Arc<Error>>().map(Arc::as_ref))
+        .ok_or("completion replaced its typed actor failure")?;
+    assert!(matches!(original, Error::Handler(_)));
+    if let Error::CompletionFailed(retained) = &refused {
+        assert!(std::ptr::eq(original, retained.as_ref()));
+    }
     for stop_before_start in [false, true] {
         let provider = Arc::new(Counted::new(MemoryStream::default()));
         let target = LocalTarget::start(&provider, Arc::new(Package::new()?), provider.ledger())?;

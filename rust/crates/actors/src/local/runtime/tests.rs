@@ -696,9 +696,108 @@ async fn a_deleted_actor_is_terminal_and_leaves_no_orphans() -> TestResult {
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
-    );
+    )
+    .with_limits(RuntimeLimits::new(1, 64)?);
     runtime.track(actor.clone())?;
-    runtime.drain_actor(&actor).await?;
+    use acyclic_stream::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
+    let trace = acyclic_stream::Stream::new(provider.clone(), "agents/deleted/trace")?;
+    let recorder = Arc::new(Recorder::new(trace.clone(), [81; 16]));
+    let owner = recorder
+        .start(
+            "original_delivery",
+            Mechanism::ActorDelivery,
+            None,
+            Some("original_actor_request"),
+        )
+        .await?
+        .into_owned();
+    let parent = owner.id();
+    owner.within(runtime.drain_actor(&actor)).await?;
+    let receipt = owner.finish_submitted(None, Outcome::Succeeded)?;
+    assert!(matches!(
+        receipt.result().await?,
+        Ok(acyclic_stream::AppendOutcome::Committed(_))
+    ));
+    let mut query = TraceQuery::new(
+        trace.read(0, u32::try_from(trace.tail().await?)?).await?,
+        Default::default(),
+    );
+    let mut deliveries = Vec::new();
+    let mut child_parents = Vec::new();
+    let mut locks = 0;
+    let mut admissions = 0;
+    let mut handlers = 0;
+    while let Some(observation) = query.next().await? {
+        if let Observation::Completed {
+            id,
+            start,
+            bytes,
+            result,
+            ..
+        } = observation
+        {
+            if start.name == "actors.delivery" {
+                assert_eq!(start.parent, Some(parent));
+                assert_eq!(start.mechanism, Mechanism::ActorDelivery);
+                assert_eq!(
+                    start.guarantee.as_deref(),
+                    Some("settled_actor_input_or_retained_delivery_wake")
+                );
+                assert_eq!(bytes, None);
+                assert_eq!(result, Outcome::Succeeded);
+                deliveries.push(id);
+            } else if start.name == "actors.delivery_lock" {
+                child_parents.push(start.parent);
+                assert_eq!(start.mechanism, Mechanism::Lock);
+                assert_eq!(
+                    start.guarantee.as_deref(),
+                    Some("exclusive_actor_delivery_and_settlement")
+                );
+                assert_eq!(bytes, Some(0));
+                assert_eq!(result, Outcome::Succeeded);
+                locks += 1;
+            } else if start.name == "actors.delivery_admission" {
+                child_parents.push(start.parent);
+                assert_eq!(start.mechanism, Mechanism::Wait);
+                assert_eq!(
+                    start.guarantee.as_deref(),
+                    Some("configured_active_delivery_credit")
+                );
+                assert_eq!(bytes, Some(0));
+                assert_eq!(result, Outcome::Succeeded);
+                admissions += 1;
+            } else if start.name == "actors.handler" {
+                child_parents.push(start.parent);
+                assert_eq!(start.mechanism, Mechanism::ActorDelivery);
+                assert_eq!(
+                    start.guarantee.as_deref(),
+                    Some("admitted_handler_under_original_control_and_deadline")
+                );
+                assert_eq!(bytes, None);
+                assert_eq!(result, Outcome::Succeeded);
+                handlers += 1;
+            }
+        }
+    }
+    assert!(
+        locks > 0,
+        "actor delivery lock lost its original owner or settlement"
+    );
+
+    assert!(
+        admissions > 0,
+        "configured delivery credit was not observed"
+    );
+    assert!(handlers > 0, "original handler entry was not observed");
+    assert!(
+        !deliveries.is_empty(),
+        "original actor delivery span absent"
+    );
+    assert!(
+        child_parents
+            .iter()
+            .all(|parent| parent.is_some_and(|parent| deliveries.contains(&parent)))
+    );
     let live = store.load(&actor).await?;
     assert!(
         live.state()
@@ -752,6 +851,29 @@ async fn a_deleted_actor_is_terminal_and_leaves_no_orphans() -> TestResult {
         crate::local::tests::orphans(&store, &[actor]).await?,
         Vec::<String>::new()
     );
+    // A closed original reservation must retain its actual acquisition failure
+    // without consuming the next actor's input or changing classification.
+    let refused = spawn_with(&store, "closed-admission", &[b"emit"]).await?;
+    runtime.track(refused.clone())?;
+    runtime.admission[0]
+        .as_ref()
+        .ok_or("missing configured credit")?
+        .close();
+    let error = runtime.drain_actor(&refused).await.unwrap_err();
+    assert_eq!(error.kind(), "invalid");
+    assert!(
+        std::error::Error::source(&error)
+            .is_some_and(|source| source.is::<tokio::sync::AcquireError>())
+    );
+    assert_eq!(
+        store
+            .load(&refused)
+            .await?
+            .state()
+            .and_then(|state| state.cursor("inbox")),
+        Some(0)
+    );
+
     Ok(())
 }
 

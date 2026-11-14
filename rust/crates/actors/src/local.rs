@@ -72,7 +72,7 @@ pub enum Error {
     CompletionStopped,
     /// A delivery failed before the host could establish its completion cut.
     #[error("actor runtime completion failed: {0}")]
-    CompletionFailed(Arc<Error>),
+    CompletionFailed(#[source] Arc<Error>),
     /// The original per-agent spend balance refused the candidate.
     #[error(transparent)]
     Escrow(#[from] crate::escrow::Error),
@@ -156,6 +156,9 @@ pub enum Error {
     /// control write or second deletion.
     #[error("actor is deleted")]
     Deleted,
+    /// The original configured delivery-credit owner closed admission.
+    #[error("invalid actor transition: runtime admission is closed")]
+    AdmissionClosed(#[source] tokio::sync::AcquireError),
     /// A request contradicts the durable state machine.
     #[error("invalid actor transition: {0}")]
     Invalid(&'static str),
@@ -231,7 +234,7 @@ impl Error {
             Self::InvocationFailed { .. } => "invocation_failed",
             Self::AlarmNotDue { .. } => "alarm_not_due",
             Self::Deleted => "deleted",
-            Self::Invalid(_) => "invalid",
+            Self::Invalid(_) | Self::AdmissionClosed(_) => "invalid",
         }
     }
 }

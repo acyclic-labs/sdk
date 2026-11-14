@@ -1492,14 +1492,26 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         slot: &Arc<Slot>,
         work: Option<Work<ActorReference>>,
     ) -> Result<bool, Error> {
-        acyclic_observability::async_operation!(
-            "acyclic.actors.deliver",
-            Error::kind,
-            acyclic_native_runtime::obs::OperationSpan::new,
+        acyclic_stream::trace::observe(
+            acyclic_stream::trace::Request {
+                name: "actors.delivery",
+                mechanism: acyclic_stream::trace::Mechanism::ActorDelivery,
+                parent: None,
+                guarantee: Some("settled_actor_input_or_retained_delivery_wake"),
+            },
             async {
                 // Duplicate events for one actor wait outside global admission. Only
                 // an actor that can make progress may occupy an active delivery slot.
-                let mut inner = slot.inner.lock().await;
+                let mut inner = acyclic_stream::trace::observe_guard(
+                    acyclic_stream::trace::Request {
+                        name: "actors.delivery_lock",
+                        mechanism: acyclic_stream::trace::Mechanism::Lock,
+                        parent: None,
+                        guarantee: Some("exclusive_actor_delivery_and_settlement"),
+                    },
+                    slot.inner.lock(),
+                )
+                .await;
                 // The delivery starts once it owns the actor: a waiter owns
                 // nothing and settles nothing. From here it counts in flight
                 // in the shared ready index, whichever consumer started it,
@@ -1517,11 +1529,19 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     unavailable: None,
                 };
                 let result = match &self.admission[self.handler.admission_class(actor).index()] {
-                    Some(admission) => admission
-                        .acquire()
-                        .await
-                        .map(Some)
-                        .map_err(|_| Error::Invalid("runtime admission is closed")),
+                    Some(admission) => acyclic_stream::trace::observe(
+                        acyclic_stream::trace::Request {
+                            name: "actors.delivery_admission",
+                            mechanism: acyclic_stream::trace::Mechanism::Wait,
+                            parent: None,
+                            guarantee: Some("configured_active_delivery_credit"),
+                        },
+                        admission.acquire(),
+                        |_| Some(0),
+                    )
+                    .await
+                    .map(Some)
+                    .map_err(Error::AdmissionClosed),
                     None => Ok(None),
                 };
                 let result = match result.and_then(|admission| {
@@ -1559,8 +1579,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     slot.evict.store(false, Ordering::Release);
                 }
                 result
-            }
+            },
+            |_| None,
         )
+        .await
     }
 
     /// The one entry point of every delivery, activation replays included.
@@ -1964,7 +1986,16 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     ) -> Result<T, Error> {
         let request = self.requests.open(actor, epoch);
         let delivery = delivery(request.id());
-        let handled = invoke(delivery.clone());
+        let handled = core::pin::pin!(acyclic_stream::trace::observe(
+            acyclic_stream::trace::Request {
+                name: "actors.handler",
+                mechanism: acyclic_stream::trace::Mechanism::ActorDelivery,
+                parent: None,
+                guarantee: Some("admitted_handler_under_original_control_and_deadline"),
+            },
+            invoke(delivery.clone()),
+            |_| None,
+        ));
         let delivery = &delivery;
         let interrupted = self.interrupt(inner, cancellation, |subscription, record| {
             Box::pin(async move {
