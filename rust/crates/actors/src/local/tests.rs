@@ -1746,3 +1746,15 @@ async fn values<P: StreamProvider + ?Sized>(
         .try_collect()
         .await?)
 }
+
+/// A provider refusal (a non-leader member's Unavailable) stays in the
+/// runtime error's source chain, so a diagnostic walking sources keeps its
+/// Stream code instead of only the provider's opaque causes.
+#[test]
+fn a_provider_refusal_keeps_its_stream_code_in_the_source_chain() {
+    let error = Error::from(StreamError::Unavailable);
+    assert_eq!(error.kind(), "unavailable");
+    let source =
+        std::error::Error::source(&error).and_then(|source| source.downcast_ref::<StreamError>());
+    assert_eq!(source, Some(&StreamError::Unavailable));
+}
