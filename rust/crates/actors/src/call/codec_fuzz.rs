@@ -16,8 +16,21 @@ const KINDS: [&[u8]; 9] = [
 
 /// Exercise arbitrary payloads, invalid kinds and session paths through the
 /// original decoder and fold. Refusal must leave the reader unchanged.
+///
+/// # Panics
+/// If an admitted record changes when re-encoded or a refusal changes the reader.
 pub fn check(input: &[u8]) {
+    assert_eq!(
+        check_input(input).map_err(|error| error.to_string()),
+        Ok(())
+    );
+}
+
+fn check_input(input: &[u8]) -> Result<(), Error> {
     let (&tag, value) = input.split_first().unwrap_or((&0, &[]));
+    let kind = *KINDS
+        .get(usize::from(tag) % KINDS.len())
+        .ok_or(Error::Malformed("generated call kind is missing"))?;
     let mut attributes = vec![Attribute {
         name: if tag & 64 == 0 {
             KIND
@@ -25,7 +38,7 @@ pub fn check(input: &[u8]) {
             "acyclic.call.v1"
         }
         .into(),
-        value: KINDS[usize::from(tag) % KINDS.len()].into(),
+        value: kind.into(),
     }];
     if tag & 16 != 0 {
         attributes.push(Attribute {
@@ -35,11 +48,11 @@ pub fn check(input: &[u8]) {
     }
     let Ok(headers) = RecordHeaders::new(Vec::new(), attributes) else {
         // Oversized generated headers cannot represent an admitted record.
-        return;
+        return Ok(());
     };
-    let origin = StreamPath::new("generated/call").expect("generated path");
+    let origin = StreamPath::new("generated/call").map_err(Error::Stream)?;
     let reader = Journal::new(&origin);
-    check_record(
+    record_round_trip(
         &Record {
             sequence: u64::from(tag & 32 != 0),
             value: value.into(),
@@ -49,10 +62,17 @@ pub fn check(input: &[u8]) {
             origin,
         },
         &reader,
-    );
+    )
 }
 
 pub(crate) fn check_record(original: &Record, before: &Journal) {
+    assert_eq!(
+        record_round_trip(original, before).map_err(|error| error.to_string()),
+        Ok(())
+    );
+}
+
+fn record_round_trip(original: &Record, before: &Journal) -> Result<(), Error> {
     if let Ok(entry) = Entry::decode(original) {
         let (kind, value, fence) = match &entry {
             Entry::Request(value) => (b"request".as_slice(), value.clone(), None),
@@ -68,11 +88,11 @@ pub(crate) fn check_record(original: &Record, before: &Journal) {
             Entry::Chunk(value) => (b"chunk".as_slice(), value.clone(), None),
             Entry::Terminal(outcome) => (outcome.kind(), outcome.body(), None),
         };
-        let encoded = record(kind, value, fence).expect("decoded entry must encode");
+        let encoded = record(kind, value, fence)?;
         let mut roundtrip = original.clone();
         roundtrip.value = encoded.value;
         roundtrip.headers = encoded.headers;
-        assert_eq!(Entry::decode(&roundtrip).expect("entry roundtrip"), entry);
+        assert_eq!(Entry::decode(&roundtrip)?, entry);
     }
     let mut reader = before.clone();
     if reader.apply(original).is_err() {
@@ -81,6 +101,7 @@ pub(crate) fn check_record(original: &Record, before: &Journal) {
             "refused record changed the original reader"
         );
     }
+    Ok(())
 }
 
 #[cfg(test)]
