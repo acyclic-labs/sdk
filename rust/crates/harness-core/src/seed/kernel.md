@@ -37,7 +37,7 @@ Stock agent execution reviews context outside the worker's turns. The selected m
 
 There is at most one review in flight per worker. Ordinary work continues while it runs. A completed decision can replace only the exact prefix it reviewed, retaining the newer suffix and complete tool exchanges. Until that rewrite, the worker's cached prefix stays unchanged. Review output and its source remain in retained history, and replay reuses the original decision.
 
-The provider's actual capacity remains a separate backstop. At that boundary a worker can wait on its active review's completion; invalid decisions fail without authorising a rewrite. Settlement cancels unfinished review work. Explicitly disabled compaction disables automatic management too.
+The provider's actual capacity remains a separate backstop. At that boundary a worker can wait on its active review's completion; a malformed, empty or invalid decision keeps the unreviewed history and never fails the turn: it is re-asked once with its rejection, then review waits for capacity. Settlement cancels unfinished review work. Explicitly disabled compaction disables automatic management too.
 
 ## Layers
 
