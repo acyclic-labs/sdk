@@ -256,6 +256,114 @@ async fn socket_ledger_exhaustion_preserves_committed_history() -> TestResult {
 }
 
 #[tokio::test]
+async fn socket_host_packets_keep_actor_ownership_binary_and_hibernation_state() -> TestResult {
+    use crate::guest::{
+        SocketCommand, SocketReply, decode_socket_reply, dispatch_socket_request,
+        encode_socket_request,
+    };
+    let executor = Arc::new(HeldCloseExecutor::default());
+    let sockets = Sockets::open(
+        Store::new(Arc::new(MemoryStream::default()), root()?),
+        StreamPath::new("harness/actors/_sockets/v1")?,
+        executor.clone(),
+        Arc::new(SystemClock),
+    )
+    .await?;
+    let (connection, inbox, last, mut frames) =
+        admitted_close_fixture(&sockets, "host-packets").await?;
+    let actor = ActorReference::new(b"account", b"sockets", b"host-packets")?;
+    let foreign = ActorReference::new(b"foreign", b"sockets", b"host-packets")?;
+    let bytes = Bytes::from(vec![0xff; acyclic_stream::MAX_RECORD_BYTES / 2]);
+    let send = encode_socket_request(
+        &SocketCommand::Send {
+            connection: connection.clone(),
+            binary: true,
+        },
+        bytes.clone(),
+    )?;
+    assert!(dispatch_socket_request(&sockets, &foreign, &send).is_err());
+    assert!(matches!(
+        frames.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+    let sent = dispatch_socket_request(&sockets, &actor, &send)?;
+    assert_eq!(
+        decode_socket_reply(&sent)?,
+        (SocketReply::Done, Bytes::new())
+    );
+    assert_eq!(
+        SocketFrame::decode(&frames.try_recv()?)?,
+        SocketFrame::Message(SocketPayload::Binary {
+            binary: bytes.clone()
+        })
+    );
+    for attachment in [Bytes::new(), bytes] {
+        let set = encode_socket_request(
+            &SocketCommand::SetAttachment {
+                connection: connection.clone(),
+            },
+            attachment.clone(),
+        )?;
+        dispatch_socket_request(&sockets, &actor, &set)?;
+        let get = encode_socket_request(
+            &SocketCommand::GetAttachment {
+                connection: connection.clone(),
+            },
+            Bytes::new(),
+        )?;
+        let reply = dispatch_socket_request(&sockets, &actor, &get)?;
+        assert_eq!(
+            decode_socket_reply(&reply)?,
+            (SocketReply::Attachment { present: true }, attachment)
+        );
+    }
+    let auto = encode_socket_request(
+        &SocketCommand::SetAutoResponse {
+            value: Some(WebSocketAutoResponse {
+                request: "ping".into(),
+                response: "pong".into(),
+            }),
+        },
+        Bytes::new(),
+    )?;
+    dispatch_socket_request(&sockets, &actor, &auto)?;
+    sockets.shared.message(
+        &connection,
+        SocketPayload::Text {
+            text: "ping".into(),
+        },
+    )?;
+    assert_eq!(
+        SocketFrame::decode(&frames.try_recv()?)?,
+        SocketFrame::Message(SocketPayload::Text {
+            text: "pong".into()
+        })
+    );
+    assert_eq!(
+        records(&sockets.shared.store, &inbox).await?.len(),
+        1,
+        "keepalive reached the guest"
+    );
+    let close = encode_socket_request(
+        &SocketCommand::Close {
+            connection: connection.clone(),
+            code: 4000,
+            reason: "done".into(),
+        },
+        Bytes::new(),
+    )?;
+    dispatch_socket_request(&sockets, &actor, &close)?;
+    executor.take()?.await;
+    assert!(matches!(
+        SocketFrame::decode(&last.await?)?,
+        SocketFrame::Close { code: 4000, .. }
+    ));
+    assert_eq!(records(&sockets.shared.store, &inbox).await?.len(), 2);
+    assert!(dispatch_socket_request(&sockets, &actor, &send).is_err());
+    Ok(())
+}
+
+#[tokio::test]
 async fn recovery_fences_only_the_selected_hosts_socket_ledger() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let first_root = StreamPath::new("hosts/first/sockets/v1")?;

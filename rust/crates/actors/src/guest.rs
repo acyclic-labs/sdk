@@ -16,6 +16,10 @@ mod runtime;
 pub use runtime::*;
 mod sockets;
 pub use sockets::*;
+mod socket_host;
+pub use socket_host::{
+    SocketCommand, SocketReply, decode_socket_reply, dispatch_socket_request, encode_socket_request,
+};
 mod body;
 pub use body::*;
 mod state;
@@ -169,7 +173,7 @@ pub fn typescript() -> String {
         )+};
     }
     output.push_str(body::JAVASCRIPT_FETCH_RESPONSE);
-    declarations!(WebSocketId, WebSocketAutoResponse, GuestRequest, GuestResponse, SocketPayload, SocketCloseInitiator,
+    declarations!(WebSocketId, WebSocketAutoResponse, SocketCommand, SocketReply, GuestRequest, GuestResponse, SocketPayload, SocketCloseInitiator,
         SocketTransport, GuestSocketEvent, GuestEvent, GuestEventResult,
         CodecIdentity, Checkpoint, GuestError, CheckpointCodec<()>,
         CallerCapability, AdmittedCaller, RuntimeHandle, ActorRuntime,
