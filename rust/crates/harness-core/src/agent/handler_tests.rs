@@ -3,7 +3,6 @@ use crate::agent::{Cancellation, Message, Queued, Sender, TurnFuture, TurnStep, 
 use acyclic_actors::guest::{CancellationToken, SubscriptionCuts, wire};
 use acyclic_stream::{
     AppendRequest, CommitOutcome, MemoryStream, ReadRequest, StreamProvider as _,
-    StreamProviderExt as _,
 };
 use futures::TryStreamExt as _;
 use tokio::sync::oneshot;

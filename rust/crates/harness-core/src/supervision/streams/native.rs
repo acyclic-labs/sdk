@@ -2,7 +2,7 @@
 use super::*;
 use crate::filesystem::{DecodeReservation, PreparationIo};
 use acyclic_fs::NativeMaterializationWork;
-use acyclic_stream::{NativeStreamProvider, OwnedBytes, RevisionCut, StreamProviderExt as _};
+use acyclic_stream::{NativeStreamProvider, OwnedBytes, RevisionCut};
 
 /// One requested signal at an already captured exclusive source cut.
 pub struct SignalFileRead {
