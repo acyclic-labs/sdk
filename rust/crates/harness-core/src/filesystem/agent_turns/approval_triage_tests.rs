@@ -585,6 +585,7 @@ async fn reopening_after_parent_decisions_commits_original_wakes_once() -> TestR
         )?
         .with_close();
         Ok(bound.agents().rehosted(
+            acyclic_actors::guest::Requests::default(),
             Arc::new(handler),
             Arc::new(acyclic_actors::local::SystemClock),
             Some(bound.composer()),
@@ -818,6 +819,7 @@ async fn child_approval_pauses_and_resumes_its_original_operation_after_parent_r
     )?
     .with_close();
     let reopened = bound.agents().rehosted(
+        acyclic_actors::guest::Requests::default(),
         Arc::new(handler),
         Arc::new(acyclic_actors::local::SystemClock),
         Some(bound.composer()),
