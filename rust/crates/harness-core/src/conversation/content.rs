@@ -212,6 +212,9 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
     /// Captures a pinned source under its original grant, policy and caller
     /// ceiling. Rechecks source admission before recovering a destination
     /// receipt; a committed capture never reopens native source contents.
+    /// Native captures sharing a source owner serialize cold admission through
+    /// publication: a simultaneous replay recovers the first completed capture
+    /// before trying the native source, even if that source has disappeared.
     /// Rechecks original admission after loading bytes too. The result names
     /// the actual destination, never a synthetic source file.
     fn capture_private_path<'a>(

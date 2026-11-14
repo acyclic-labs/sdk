@@ -291,6 +291,89 @@ struct Fixture {
     skills: Vec<crate::context::SkillMetadata>,
 }
 
+#[tokio::test]
+async fn pending_capture_replay_reads_the_native_body_once() -> Result<()> {
+    use crate::conversation::{
+        ContentAccess, ContentCapture, ContentPath, ContentResidencyVerifier,
+    };
+    let mut fixture = fixture().await?;
+    let (entered, at_publication) = tokio::sync::oneshot::channel();
+    let (release, resume) = tokio::sync::oneshot::channel();
+    let pause = std::sync::Mutex::new(Some((entered, resume)));
+    Arc::get_mut(&mut fixture.host).unwrap().publication_pause = Some(Arc::new(move || {
+        let pause = pause.lock().unwrap().take();
+        Box::pin(async move {
+            if let Some((entered, resume)) = pause {
+                entered.send(()).unwrap();
+                resume.await.unwrap();
+            }
+        })
+    }));
+    let bindings = fixture.capture_bindings().await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let native_work = || {
+        acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
+    };
+    let work_a = native_work()?;
+    let work_b = native_work()?;
+    let io_a = PreparationIo::from_native_work(&work_a)?;
+    let io_b = PreparationIo::from_native_work(&work_b)?;
+    let source = &fixture.skills[0].source;
+    let capture = ContentCapture {
+        source: ContentPath {
+            volume: &source.root.volume,
+            granted_prefix: &source.root.directory,
+            path: &source.path,
+            generation: &source.generation,
+        },
+        publisher: bindings.publisher.as_ref(),
+        reader: bindings.journal_reader.as_ref(),
+        operation: crate::OperationId::from_bytes([31; 16]),
+        path: "inputs/skills/once/SKILL.md",
+        media_type: "text/markdown",
+        display_name: "SKILL.md",
+    };
+    let first = bindings.reader.capture_private_path(
+        capture,
+        Some(4096),
+        ContentAccess {
+            ceiling: None,
+            io: Some(&io_a),
+        },
+    )?;
+    tokio::pin!(first);
+    tokio::select! {
+        result = &mut first => panic!("capture passed its publication pause: {:?}", result.err()),
+        _ = at_publication => {},
+    }
+    std::fs::remove_file(fixture.home.path().join("first/SKILL.md"))
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let replay = bindings.reader.capture_private_path(
+        capture,
+        Some(4096),
+        ContentAccess {
+            ceiling: None,
+            io: Some(&io_b),
+        },
+    )?;
+    tokio::pin!(replay);
+    // Without source-owner serialization the replay observes no committed
+    // receipt, opens the now-missing native body and fails here.
+    assert!(futures::poll!(&mut replay).is_pending());
+    release.send(()).unwrap();
+    let (first, replay) = futures::join!(first, replay);
+    let (first_ref, first_bytes, _first_hold) = first?;
+    let (replay_ref, replay_bytes, _replay_hold) = replay?;
+    assert_eq!(first_ref, replay_ref);
+    assert_eq!(first_bytes.as_ref(), replay_bytes.as_ref());
+    assert!(String::from_utf8_lossy(&replay_bytes).contains("first body"));
+    Ok(())
+}
+
 async fn fixture() -> Result<Fixture> {
     acyclic_native_runtime::initialize_native_io_services()
         .map_err(|error| Error::Storage(error.to_string()))?;
