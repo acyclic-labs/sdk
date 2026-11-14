@@ -143,15 +143,14 @@ fn file_runtime(
         actor.namespace().as_str().as_bytes(),
         format!("file-controls-{}", root.id()).as_bytes(),
     )?;
-    Ok((
-        acyclic_actors::local::Runtime::new(
-            acyclic_actors::guest::Requests::default(),
-            crate::agent::actor_store(bound.agents().provider())?.with_composer(bound.composer()),
-            bound.handler(),
-            bound.clock.clone(),
-        ),
-        control,
-    ))
+    let runtime = acyclic_actors::local::Runtime::new(
+        acyclic_actors::guest::Requests::default(),
+        crate::agent::actor_store(bound.agents().provider())?.with_composer(bound.composer()),
+        bound.handler(),
+        bound.clock.clone(),
+    );
+    runtime.track(control.clone())?;
+    Ok((runtime, control))
 }
 
 #[tokio::test]
