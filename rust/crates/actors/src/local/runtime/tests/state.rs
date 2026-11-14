@@ -50,7 +50,9 @@ impl Handler for Flushes {
                     deletions: Vec::new(),
                     journal_from: "0".into(),
                     journal: vec![Bytes::from_static(b"one")],
-                    alarm: ActorStateAlarm::Keep,
+                    alarm: ActorStateAlarm::Set {
+                        deadline: "500".into(),
+                    },
                 })
                 .await?;
             assert_eq!(
@@ -165,7 +167,7 @@ async fn final_state_packet_shares_the_delivery_fence_and_preserves_flushed_pref
             Some(&Bytes::from_static(b"first"))
         );
         assert!(state.checkpoint().is_none());
-        assert!(state.alarm().pending().is_none());
+        assert_eq!(state.alarm().pending(), Some(500));
         if deposed {
             let successor = Runtime::new(
                 Requests::default(),
@@ -193,7 +195,7 @@ async fn final_state_packet_shares_the_delivery_fence_and_preserves_flushed_pref
         assert_eq!(state.checkpoint().is_some(), !deposed);
         assert_eq!(
             state.alarm().pending(),
-            if deposed { None } else { Some(1000) }
+            Some(if deposed { 500 } else { 1000 })
         );
     }
     Ok(())
@@ -346,6 +348,7 @@ async fn state_flush_advances_the_delivery_cut_without_reentering_the_handler() 
             state.metadata().collect::<Vec<_>>(),
             vec![("value", &Bytes::from_static(b"second"))]
         );
+        assert_eq!(state.alarm().pending(), Some(1000));
         assert_eq!(
             state
                 .checkpoint()
