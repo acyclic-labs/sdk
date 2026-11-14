@@ -1144,11 +1144,12 @@ impl Error {
     /// Preserve undecided or backpressured host work across the guest boundary.
     pub(crate) fn guest(error: impl Into<Self>) -> acyclic_actors::guest::GuestError {
         let error = error.into();
-        if error.retains_guest_input() {
+        let guest = if error.retains_guest_input() {
             acyclic_actors::guest::GuestError::Pending(error.to_string())
         } else {
-            acyclic_actors::guest::GuestError::Handler(error.to_string()).with_source(error)
-        }
+            acyclic_actors::guest::GuestError::Handler(error.to_string())
+        };
+        guest.with_source(error)
     }
 
     /// A tool's definitive refusal is model feedback. Native accounting and

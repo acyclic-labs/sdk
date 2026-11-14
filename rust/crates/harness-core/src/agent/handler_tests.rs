@@ -577,10 +577,20 @@ async fn alarm_opening_from_overflow_accepts_only_its_selected_input_interrupt()
             CancellationToken::new(),
         )
         .await;
-    assert!(
-        matches!(refused, Err(GuestError::Pending(_))),
-        "capacity must retain replay input"
-    );
+    let failure = refused.expect_err("capacity must retain replay input");
+    assert!(matches!(failure.category(), GuestError::Pending(_)));
+    let mut source = std::error::Error::source(&failure);
+    loop {
+        let cause = source.ok_or("pending guest conversion discarded its Stream cause")?;
+        if let Some(cause) = cause.downcast_ref::<acyclic_stream::StreamError>() {
+            assert!(matches!(
+                cause.category(),
+                acyclic_stream::StreamError::Capacity
+            ));
+            break;
+        }
+        source = cause.source();
+    }
     assert!(
         provider.replay.lock().unwrap().is_none(),
         "capacity fault did not reach inbox replay"
