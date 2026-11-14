@@ -308,7 +308,7 @@ async fn fixture_with_pause(
             volume,
         ));
     }
-    agents.create(&intent("root"), adoption).await?;
+    create_filesystem_root(&agents, &files, &intent("root"), adoption).await?;
     Ok((agents, stream, root, model, files))
 }
 
@@ -371,9 +371,13 @@ async fn create_peer(
     adoption
         .volumes
         .push(home_binding(files, peer, source.volume()?.provider().clone()).await?);
-    agents
-        .create(&intent(&format!("create-{}", peer.id())), adoption)
-        .await?;
+    create_filesystem_root(
+        agents,
+        files,
+        &intent(&format!("create-{}", peer.id())),
+        adoption,
+    )
+    .await?;
     Ok(())
 }
 

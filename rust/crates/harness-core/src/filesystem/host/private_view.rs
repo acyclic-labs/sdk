@@ -173,11 +173,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             work,
             cancellation: work.cancellation(),
         };
-        let allocation = acyclic_fs::kernel::RetainedAllocation::claim(
-            std::mem::size_of::<PrivateSignal>() as u64,
-            1,
-            &mut ctx,
-        )?;
+        let signal_bytes =
+            acyclic_fs::NativeMaterializationWork::shared_allocation_bytes::<PrivateSignal>()
+                .map_err(|_| Error::Invalid("private source signal layout overflow".into()))?;
+        let allocation = acyclic_fs::kernel::RetainedAllocation::claim(signal_bytes, 1, &mut ctx)?;
         let (sender, receiver) = tokio::sync::watch::channel(true);
         let signal = Arc::new(PrivateSignal {
             sender,
@@ -243,7 +242,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             private_navigation,
         )
         .into_source();
-        let source = Arc::new(Routed::new(
+        let source = Routed::new(
             Empty,
             acyclic_fs::kernel::LogicalName::new(
                 acyclic_fs::kernel::NameEncoding::Utf8,
@@ -251,6 +250,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )
             .map_err(|_| io.invalid("invalid private view route"))?,
             source,
+            limits,
+        );
+        let source = Arc::new(Routed::new(
+            source,
+            acyclic_fs::kernel::LogicalName::new(
+                acyclic_fs::kernel::NameEncoding::Utf8,
+                b"evals".to_vec(),
+            )
+            .map_err(|_| io.invalid("invalid evaluation view route"))?,
+            crate::evals::StreamProvider::new(streams.clone(), agent)?.into_source(),
             limits,
         ));
         let mut ctx = KernelAccounting::NativeOriginal {

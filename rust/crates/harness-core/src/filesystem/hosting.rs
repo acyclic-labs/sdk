@@ -173,6 +173,9 @@ impl Prepared {
                 generation,
             )?;
         }
+        super::history::capture_creation(fs, &child, &created, &mut commit)
+            .await
+            .map_err(|error| turn(crate::Error::Storage(error.to_string())))?;
         fs.seal_commit(&mut commit, WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|failure| turn(failure.error.into()))?;
         Ok(Self { child, commit })
