@@ -25,8 +25,13 @@ mod command_scope_benchmark {
         .await
     }
 
-    async fn command(mounts: &Mounts) -> Result<()> {
-        native_scope(mounts, async |claims| Ok(((), claims))).await
+    async fn command(mounts: &Mounts) -> Result<(f64, f64)> {
+        let start = Instant::now();
+        let entered = native_scope(mounts, async |claims| Ok((Instant::now(), claims))).await?;
+        Ok((
+            entered.duration_since(start).as_secs_f64() * 1000.0,
+            entered.elapsed().as_secs_f64() * 1000.0,
+        ))
     }
 
     #[tokio::test]
@@ -68,10 +73,15 @@ mod command_scope_benchmark {
             // Warm driver/session setup before measuring per-command work.
             command(mounts).await?;
             let mut single = Vec::new();
+            let mut admission = Vec::new();
+            let mut completion = Vec::new();
             for _ in 0..10 {
                 let start = Instant::now();
-                command(mounts).await?;
-                single.push(start.elapsed().as_secs_f64() * 1000.0);
+                let (entry, exit) = command(mounts).await?;
+                let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+                admission.push(entry);
+                completion.push(exit);
+                single.push(elapsed);
             }
             let start = Instant::now();
             for result in futures::future::join_all((0..8).map(|_| command(mounts))).await {
@@ -101,6 +111,11 @@ mod command_scope_benchmark {
             held?;
             let contended = contended?;
             single.sort_by(f64::total_cmp);
+            admission.sort_by(f64::total_cmp);
+            completion.sort_by(f64::total_cmp);
+            eprintln!(
+                "COMMAND_SCOPE_PHASES files={files} volumes={volume_count} admission_ms={admission:?} completion_ms={completion:?}",
+            );
             eprintln!(
                 "COMMAND_SCOPE_BENCH files={files} volumes={volume_count} single_ms={single:?} single_p50_ms={} concurrent8_ms={concurrent8} contended_ms={contended}",
                 single[single.len() / 2],

@@ -6,6 +6,12 @@ It exercises the real `native_scope` on a current-thread executor, with zero and
 view admission and completion; it does not measure shell process execution.
 The driver/session is warmed before measurement. Single-command output contains
 ten samples and their upper median; concurrent8 is one batch of eight commands.
+The fixture also prints separately sorted admission and completion samples in
+`COMMAND_SCOPE_PHASES` rows. Admission ends when the real command body starts;
+completion ends when `native_scope` returns. These phases diagnose remaining
+view-entry and retirement cost without adding product instrumentation or changing
+the total-time targets. Sample-vector updates happen after the total-time read.
+
 The contended case enters a holder and keeps it open until the contender ends,
 using channels rather than timing or readiness polling.
 
