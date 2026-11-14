@@ -1516,11 +1516,19 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     cause: None,
                 };
                 let result = match &self.admission[self.handler.admission_class(actor).index()] {
-                    Some(admission) => admission
-                        .acquire()
-                        .await
-                        .map(Some)
-                        .map_err(|_| Error::Invalid("runtime admission is closed")),
+                    Some(admission) => acyclic_stream::trace::observe(
+                        acyclic_stream::trace::Request {
+                            name: "actors.delivery_admission",
+                            mechanism: acyclic_stream::trace::Mechanism::Wait,
+                            parent: None,
+                            guarantee: Some("configured_active_delivery_credit"),
+                        },
+                        admission.acquire(),
+                        |_| Some(0),
+                    )
+                    .await
+                    .map(Some)
+                    .map_err(|_| Error::Invalid("runtime admission is closed")),
                     None => Ok(None),
                 };
                 let result = match result.and_then(|admission| {

@@ -696,7 +696,8 @@ async fn a_deleted_actor_is_terminal_and_leaves_no_orphans() -> TestResult {
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
-    );
+    )
+    .with_limits(RuntimeLimits::new(1, 64)?);
     runtime.track(actor.clone())?;
     use acyclic_stream::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
     let trace = acyclic_stream::Stream::new(provider.clone(), "agents/deleted/trace")?;
@@ -722,6 +723,7 @@ async fn a_deleted_actor_is_terminal_and_leaves_no_orphans() -> TestResult {
         Default::default(),
     );
     let mut locks = 0;
+    let mut admissions = 0;
     while let Some(observation) = query.next().await? {
         if let Observation::Completed {
             start,
@@ -740,6 +742,16 @@ async fn a_deleted_actor_is_terminal_and_leaves_no_orphans() -> TestResult {
                 assert_eq!(bytes, Some(0));
                 assert_eq!(result, Outcome::Succeeded);
                 locks += 1;
+            } else if start.name == "actors.delivery_admission" {
+                assert_eq!(start.parent, Some(parent));
+                assert_eq!(start.mechanism, Mechanism::Wait);
+                assert_eq!(
+                    start.guarantee.as_deref(),
+                    Some("configured_active_delivery_credit")
+                );
+                assert_eq!(bytes, Some(0));
+                assert_eq!(result, Outcome::Succeeded);
+                admissions += 1;
             }
         }
     }
@@ -748,6 +760,10 @@ async fn a_deleted_actor_is_terminal_and_leaves_no_orphans() -> TestResult {
         "actor delivery lock lost its original owner or settlement"
     );
 
+    assert!(
+        admissions > 0,
+        "configured delivery credit was not observed"
+    );
     let live = store.load(&actor).await?;
     assert!(
         live.state()
