@@ -29,12 +29,13 @@ pub trait MachinesProvider: acyclic_stream::ProviderPlatform {
         let _ = (machine, command);
         unsupported("request/response exec")
     }
-    /// Downloads one whole guest file. Range-only providers refuse this mechanism.
+    /// Opens a lazy guest-file download under the original deadline. Dropping
+    /// its stream cancels I/O. Range-only providers refuse this mechanism.
     async fn download_file(
         &self,
         machine: MachineId,
         access: FileAccess,
-    ) -> Result<FileRead, ProviderError> {
+    ) -> Result<FileDownload, ProviderError> {
         let _ = (machine, access);
         unsupported("whole-file download")
     }

@@ -57,6 +57,9 @@ pub async fn verify_files(
             .download_file(machine, access(0).map_err(|e| e.to_string())?)
             .await
             .map_err(|e| e.to_string())?
+            .collect()
+            .await
+            .map_err(|e| e.to_string())?
             != FileRead::Data(bytes)
         {
             return Err("whole-file transfer changed binary content".into());

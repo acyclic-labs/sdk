@@ -53,6 +53,43 @@ pub enum FileRead {
     Errno(NonZeroU32),
 }
 
+/// A lazy whole-file transfer. Each poll admits one transport chunk; dropping
+/// the stream cancels the unread suffix. The original file deadline covers it.
+pub type FileStream =
+    acyclic_stream::BoxProviderStream<'static, Result<bytes::Bytes, ProviderError>>;
+
+/// A whole-file provider retains either its byte stream or its native errno.
+pub enum FileDownload {
+    Data(FileStream),
+    Errno(NonZeroU32),
+}
+
+impl fmt::Debug for FileDownload {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Data(_) => formatter.write_str("Data(<file stream>)"),
+            Self::Errno(errno) => formatter.debug_tuple("Errno").field(errno).finish(),
+        }
+    }
+}
+
+impl FileDownload {
+    /// Explicitly materializes a whole file for whole-file consumers such as
+    /// replacement writes. Range readers consume the stream directly instead.
+    pub async fn collect(self) -> Result<FileRead, ProviderError> {
+        match self {
+            Self::Data(mut stream) => {
+                let mut bytes = Vec::new();
+                while let Some(chunk) = stream.next().await {
+                    bytes.extend_from_slice(&chunk?);
+                }
+                Ok(FileRead::Data(bytes))
+            }
+            Self::Errno(errno) => Ok(FileRead::Errno(errno)),
+        }
+    }
+}
+
 /// A native file write may be short. Lost completion never permits redispatch.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FileWrite {

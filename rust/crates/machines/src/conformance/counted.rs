@@ -15,7 +15,7 @@ impl<P: MachinesProvider> MachinesProvider for Counted<P> {
         &self,
         machine: MachineId,
         access: FileAccess,
-    ) -> Result<FileRead, ProviderError> {
+    ) -> Result<FileDownload, ProviderError> {
         self.record(RequestClass::Data);
         self.inner().download_file(machine, access).await
     }
