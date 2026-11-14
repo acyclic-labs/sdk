@@ -1,0 +1,10 @@
+# Repository-wide Bazel settings. Host settings (remote cache, repository cache) come from
+# each build host's system bazelrc; nothing here names a host.
+
+# Actions see a fixed PATH and no job environment, so every job directory and host shares keys.
+common --incompatible_strict_action_env
+common --experimental_convenience_symlinks=ignore
+build --remote_cache_compression
+build --nobuild_runfile_links
+build --verbose_failures
+test --test_output=errors

@@ -30,6 +30,8 @@ if (packages.has("workers")) {
   await generateFiles(join(root, "typescript/packages/workers/test/generated"), destination => run("cargo", ["run", "--locked", "--quiet", "-p", "acyclic-manifest", "--example", "deployment-manifest", "--",
     destination, join(root, "rust/crates/manifest/fuzz/corpus/manifest_json/valid.json"), "production", "agent"]), [], check);
 }
+// Bazel files restate the Cargo manifests for the whole workspace.
+if (!selected) run(process.execPath, [join(root, "scripts/bazel-build-files.mjs"), check ? "check" : "write"]);
 // Full generation includes Rust-only contracts, including harness fixtures.
 run(process.execPath, [join(root, "scripts/generate-contracts.mjs"), check ? "check" : "write", ...(selected ? packages : [])]);
 if (check) run(process.execPath, [join(root, "scripts/check-generated.mjs"), "--no-compile"]);
