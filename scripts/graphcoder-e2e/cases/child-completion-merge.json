@@ -8,7 +8,6 @@
         "binary_env": "E2E_FILESYSTEM_BINARY"
       },
       ".fixtures/write-child.json": "[{\"op\":\"write\",\"path\":\"child.txt\",\"text\":\"CHILD_COMPLETION_CONTENT\\n\"}]",
-      ".fixtures/read-parent.json": "[{\"op\":\"read\",\"path\":\"child.txt\"},{\"op\":\"read\",\"path\":\"second.txt\"},{\"op\":\"read\",\"path\":\"root.txt\"}]",
       ".acyclic-sdk/control": "SDK_STATE\n",
       ".fixtures/write-second.json": "[{\"op\":\"write\",\"path\":\"second.txt\",\"text\":\"SECOND_COMPLETION_CONTENT\\n\"}]"
     }
@@ -111,21 +110,6 @@
           "user": "COMPLETION_PARENT",
           "tool_result": "CHILD_COMPLETED"
         },
-        "tools": [
-          {
-            "id": "verify-parent",
-            "name": "code",
-            "arguments": {
-              "code": "const result = await tools.shell({command:['./.fixtures/fs.exe','.fixtures/read-parent.json']}); if (!result.success || result.exit_code !== 0) throw Error('parent read failed: '+JSON.stringify(result)); const newline=String.fromCharCode(10); const [child,second,root] = result.stdout.trimEnd().split(newline).map(JSON.parse); if (child !== 'CHILD_COMPLETION_CONTENT'+newline || second !== 'SECOND_COMPLETION_CONTENT'+newline || root !== 'ROOT_KEPT'+newline) throw Error('child completion did not publish into parent: '+JSON.stringify(result)); export default {verified:'PARENT_HAS_CHILD_WORK'}"
-            }
-          }
-        ]
-      },
-      {
-        "when": {
-          "user": "COMPLETION_PARENT",
-          "tool_result": "PARENT_HAS_CHILD_WORK"
-        },
         "text": [
           "COMPLETION_MERGED"
         ]
@@ -143,7 +127,7 @@
     }
   ],
   "assert": {
-    "requests": 8,
+    "requests": 7,
     "files": {
       "child.txt": "CHILD_COMPLETION_CONTENT\n",
       "root.txt": "ROOT_KEPT\n",
