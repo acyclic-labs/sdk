@@ -139,15 +139,11 @@ async fn dependent_resources_keep_original_call_grants_and_live_trust() -> TestR
         ),
         Err(StreamError::AccessDenied)
     );
-    assert_eq!(
+    authority::tests::assert_retained_denial(
         dependency.authorize(
-            "fs:/volume/visible/file",
-            &[],
-            &attributes,
-            PolicyDecision::Deny,
-        ),
-        Err(StreamError::AccessDenied),
-        "dependent disclosure ignored the owner's current policy"
+            "fs:/volume/visible/file", &[], &attributes, PolicyDecision::Deny,
+        ).unwrap_err(),
+        acyclic_auth::DenialCause::OwnerPolicy,
     );
     #[cfg(feature = "test-support")]
     for path in [
@@ -215,15 +211,11 @@ async fn dependent_resources_keep_original_call_grants_and_live_trust() -> TestR
         },
         "fs/list",
     )?;
-    assert_eq!(
+    authority::tests::assert_retained_denial(
         listed.authorize(
-            "fs:/volume/visible",
-            &[],
-            &attributes,
-            PolicyDecision::Allow
-        ),
-        Err(StreamError::AccessDenied),
-        "dependent action was replaced by the host's broader authority"
+            "fs:/volume/visible", &[], &attributes, PolicyDecision::Allow,
+        ).unwrap_err(),
+        acyclic_auth::DenialCause::NotCovered,
     );
     // A second admitted call is an ordered protocol barrier after renewal.
     // The first provider is still suspended on its original result event.
@@ -272,15 +264,11 @@ async fn dependent_resources_keep_original_call_grants_and_live_trust() -> TestR
     let mut revoked = core::pin::pin!(revoked);
     let (_authorization, _producer) = calls.recv().await.ok_or("third call did not dispatch")?;
     state.publish(acyclic_auth::testing::Snapshot::default(), u64::MAX);
-    assert_eq!(
+    authority::tests::assert_retained_denial(
         dependency.authorize(
-            "fs:/volume/visible/file",
-            &[],
-            &attributes,
-            PolicyDecision::Allow,
-        ),
-        Err(StreamError::AccessDenied),
-        "dependent disclosure used a stale trust snapshot"
+            "fs:/volume/visible/file", &[], &attributes, PolicyDecision::Allow,
+        ).unwrap_err(),
+        acyclic_auth::DenialCause::Expired,
     );
     assert!(matches!(
         revoked.next().await,

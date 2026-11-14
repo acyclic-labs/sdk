@@ -416,6 +416,22 @@ fn declared_method_credentials_match_session_admission() {
     }
 }
 
+pub(in crate::session) fn assert_retained_denial(
+    error: StreamError,
+    expected: acyclic_auth::DenialCause,
+) {
+    use std::error::Error as _;
+    assert_eq!(error.category(), StreamError::AccessDenied);
+    let mut source = error.source();
+    while let Some(cause) = source {
+        if let Some(verifier) = cause.downcast_ref::<verify::VerifyError>() {
+            assert_eq!(verifier.denial_cause(), Some(expected));
+            return;
+        }
+        source = cause.source();
+    }
+    panic!("authorization lost its original verifier denial: {error:?}");
+}
 #[test]
 fn product_call_targets_retain_exact_action_resource_and_live_credential() {
     let attributes = RecordAttributes::try_new(vec![]).unwrap();
@@ -464,9 +480,9 @@ fn product_call_targets_retain_exact_action_resource_and_live_credential() {
             original.authorize(&foreign, &[], &attributes, PolicyDecision::Allow),
             Err(StreamError::AccessDenied)
         );
-        assert_eq!(
-            original.authorize(resource, &[], &attributes, PolicyDecision::Deny),
-            Err(StreamError::AccessDenied)
+        assert_retained_denial(
+            original.authorize(resource, &[], &attributes, PolicyDecision::Deny).unwrap_err(),
+            acyclic_auth::DenialCause::OwnerPolicy,
         );
         // A slot replacement cannot substitute another action for the admitted
         // operation, even while the original provider still holds its context.
@@ -494,9 +510,9 @@ fn product_call_targets_retain_exact_action_resource_and_live_credential() {
             Err(StreamError::InvalidArgument)
         ));
         state.publish(signed::Snapshot::default(), u64::MAX);
-        assert_eq!(
-            original.authorize(resource, &[], &attributes, PolicyDecision::Allow),
-            Err(StreamError::AccessDenied)
+        assert_retained_denial(
+            original.authorize(resource, &[], &attributes, PolicyDecision::Allow).unwrap_err(),
+            acyclic_auth::DenialCause::Expired,
         );
     }
 }
