@@ -3,6 +3,8 @@ use super::*;
 use acyclic_native_runtime::testing::{Schedule, fill_seeded, seeded_runtime};
 use std::collections::BTreeMap;
 
+mod lazy;
+
 type Image = BTreeMap<String, Vec<u8>>;
 
 fn choice() -> u8 {
@@ -18,6 +20,34 @@ async fn check<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     // Reopen the immutable generation, rather than trusting a checkout cache.
     let head = unbounded!(workspace, head())?;
     let reopened = unbounded!(workspace, generation(head.id()))?;
+    let mut names = Vec::new();
+    let mut after = None;
+    loop {
+        let (page, _allocation) = unbounded!(workspace, list_directory("/", after.as_ref(), 3))?;
+        names.extend(
+            page.entries
+                .iter()
+                .map(|entry| entry.name.as_bytes().to_vec()),
+        );
+        if !page.has_more {
+            break;
+        }
+        after = Some(
+            page.entries
+                .last()
+                .ok_or("empty nonterminal page")?
+                .name
+                .clone(),
+        );
+    }
+    assert_eq!(
+        names,
+        expected
+            .keys()
+            .map(|path| path.as_bytes()[1..].to_vec())
+            .collect::<Vec<_>>(),
+        "publication exposed an unexpected or missing file"
+    );
     for (path, bytes) in expected {
         assert_eq!(unbounded!(workspace, read(path, 256))?.as_ref(), bytes);
         assert_eq!(unbounded!(reopened, read(path, 256))?.as_ref(), bytes);
@@ -188,6 +218,7 @@ async fn scenario(steps: usize) -> Result<(), Box<dyn Error>> {
         }
         check(&parent, &expected).await?;
     }
+    lazy::scenario(steps).await?;
     Ok(())
 }
 

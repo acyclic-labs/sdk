@@ -22,11 +22,22 @@ generation must agree with it. The obligations are:
 - A failed durability barrier publishes nothing; a lost acknowledgement is
   reconciled by the original operation identity after reopening. A successful
   commit must never be absent from that operation lookup.
+- Paged directory enumeration has exactly the oracle's names, including after
+  a failed or abandoned publication.
+- Reading a native source file leaves it unresolved in the authored generation.
+  Every retained lazy snapshot preserves its authored bytes across later writes.
+
+`seeded_command_range_publications` also drives the production native command
+checkout and completion path. Each seeded range edit is checked against a byte
+array, and completion must publish that array. Retained commands must observe a
+subsequent external publication. This uses the existing mount source and command
+publication fixture without requiring a mounted kernel driver.
 
 The default test uses four seeds and sixteen operations per seed. Replay one
-seed with `ACYCLIC_FS_SEED=<seed> ACYCLIC_FS_SEEDS=1`. A deep sweep uses the same
-test and `ACYCLIC_FS_SEEDS=<count>`; run that command only on an idle-priority
-remote worker. Failures include the seed. The same locked dependencies and
+seed with `ACYCLIC_FS_SEED=<seed> ACYCLIC_FS_SEEDS=1`. The separate deep target is
+`ACYCLIC_FS_SEEDS=<count> bash scripts/sweep-filesystem-simulation.sh`; submit it
+only to an idle-priority remote worker. It lowers CPU priority as well. Failures
+include the seed. The same locked dependencies and
 compiler are required for scheduler replay.
 
 Historical target: commit `2aef6627c360ea70fe544800d656a1af2fcf90ea`
@@ -34,6 +45,7 @@ fixed incremental join ancestry that could overwrite a parent's resolution of
 an earlier child change. The simulator's incremental join operation exercises
 that class. A pre-fix seed result is required before claiming historical proof.
 
-Remaining coverage: lazy source-backed workspace loading, command views,
-physical crash/restart cuts and trace minimization are not yet established by
-this test. In-memory handle reopening is not physical crash durability proof.
+Remaining coverage: physical crash/restart cuts and trace minimization are not
+yet established by this test. In-memory handle reopening is not physical crash
+durability proof. The existing `publication::commit_recovery` suite separately
+checks actual process termination at shared-core physical storage cuts.
