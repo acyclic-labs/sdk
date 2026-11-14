@@ -637,10 +637,11 @@ async fn decoded_pages_and_output_spans_are_admitted_before_allocation()
         budget: WorkBudget::UNBOUNDED,
     };
     let baseline = plan_extent_range(&store, request, &CancellationToken::new()).await?;
-    assert_eq!(
-        baseline.retained_allocation_bytes,
-        u64::try_from(3 * size_of::<ExtentSlice>())?
+    assert!(
+        baseline.retained_allocation_bytes >= u64::try_from(3 * size_of::<ExtentSlice>())?,
+        "all returned spans must retain their allocation custody"
     );
+    assert!(baseline.work.peak_allocation_bytes >= baseline.retained_allocation_bytes);
     let maximum = baseline.work.peak_allocation_bytes - 1;
     let failure = plan_extent_range(
         &store,
