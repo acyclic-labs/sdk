@@ -58,7 +58,7 @@ async fn discarded_source_promotion_retains_before_images_without_overriding_liv
         assert_ne!(unobserved.source, original.source);
         assert_eq!(unobserved.shadows, original.shadows);
         assert!(matches!(
-            root.read_file_at_snapshot(unobserved, id, 64, &mut ctx)
+            root.read_file_at_snapshot(&unobserved, id, 64, &mut ctx)
                 .await,
             Err(LazyWorkspaceError::StaleSource)
         ));
@@ -68,18 +68,18 @@ async fn discarded_source_promotion_retains_before_images_without_overriding_liv
                 b"external"
             );
             assert!(matches!(
-                root.read_at_snapshot(original, "/alias", None, 64, &mut ctx)
+                root.read_at_snapshot(&original, "/alias", None, 64, &mut ctx)
                     .await,
                 Err(LazyWorkspaceError::StaleSource)
             ));
         }
         let (bytes, used_source) = root
-            .read_at_snapshot(original, "/file", None, 64, &mut ctx)
+            .read_at_snapshot(&original, "/file", None, 64, &mut ctx)
             .await?;
         assert_eq!(bytes.bytes.as_ref(), b"original");
         assert!(!used_source);
         assert_eq!(
-            root.read_file_at_snapshot(original, id, 64, &mut ctx)
+            root.read_file_at_snapshot(&original, id, 64, &mut ctx)
                 .await?
                 .bytes
                 .as_ref(),
@@ -87,14 +87,14 @@ async fn discarded_source_promotion_retains_before_images_without_overriding_liv
         );
         let (_, fresh) = promote().await?;
         assert_eq!(
-            root.read_file_at_snapshot(fresh, id, 64, &mut ctx)
+            root.read_file_at_snapshot(&fresh, id, 64, &mut ctx)
                 .await?
                 .bytes
                 .as_ref(),
             b"external"
         );
         assert_eq!(
-            root.read_at_snapshot(fresh, "/file", None, 64, &mut ctx)
+            root.read_at_snapshot(&fresh, "/file", None, 64, &mut ctx)
                 .await?
                 .0
                 .bytes
@@ -102,7 +102,7 @@ async fn discarded_source_promotion_retains_before_images_without_overriding_liv
             b"external"
         );
         assert_eq!(
-            root.read_at_snapshot(original, "/file", None, 64, &mut ctx)
+            root.read_at_snapshot(&original, "/file", None, 64, &mut ctx)
                 .await?
                 .0
                 .bytes
@@ -213,7 +213,7 @@ async fn source_before_images_require_their_original_collection_roots_after_rest
             "collection did not reclaim the unpublished control"
         );
         let read = root
-            .read_at_snapshot(cut, "/file", None, None, &mut ctx)
+            .read_at_snapshot(&cut, "/file", None, None, &mut ctx)
             .await;
         if retain_original {
             let (read, used_source) = read?;
