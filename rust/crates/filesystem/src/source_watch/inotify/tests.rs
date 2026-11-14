@@ -90,8 +90,26 @@ async fn asynchronous_fence_yields_and_abandoned_acquisition_keeps_delivery_live
         "dropping acquisition must retain its producer"
     );
 
-    let mut fence = Box::pin(watch.fence_async_with_work(&mut work));
-    assert!(futures::poll!(fence.as_mut()).is_pending());
+    let mut observers = (0..32)
+        .map(|_| crate::native_host::ordinary_work())
+        .collect::<Vec<_>>();
+    let mut fences = observers
+        .iter_mut()
+        .map(|work| Box::pin(watch.fence_async_with_work(work)))
+        .collect::<Vec<_>>();
+    let mut admission = Vec::new();
+    for fence in &mut fences {
+        let started = std::time::Instant::now();
+        assert!(futures::poll!(fence.as_mut()).is_pending());
+        admission.push(started.elapsed());
+    }
+    admission.sort_unstable();
+    eprintln!(
+        "FENCE_ADMISSION_LATENCY observers={} p50_ns={} p99_ns={}",
+        admission.len(),
+        admission[admission.len() / 2].as_nanos(),
+        admission.last().expect("admitted observers").as_nanos(),
+    );
     crate::cancellation::custody::BEFORE_WAIT.with(|hook| {
         assert!(
             hook.borrow_mut().take().is_some(),
@@ -101,7 +119,9 @@ async fn asynchronous_fence_yields_and_abandoned_acquisition_keeps_delivery_live
     // We reached another executor action while the real delivery cursor was
     // held, after abandoning one queued observer. No worker or timer releases it.
     drop(reading);
-    assert!(fence.await?);
+    for delivered in futures::future::join_all(fences).await {
+        assert!(delivered?);
+    }
     assert!(
         observed.load(Ordering::SeqCst),
         "kernel change was not delivered"
