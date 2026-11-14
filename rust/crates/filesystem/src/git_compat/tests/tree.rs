@@ -249,6 +249,8 @@ diff --git a/dash.txt b/dash.txt\n--- a/dash.txt\n+++ b/dash.txt\n\
         b"--- a/dash.txt\n+++ b/dash.txt\n@@ -1 +1 @@\n one\n--\n",
         b"--- a/dash.txt\n+++ b/dash.txt\n@@ -1 +1 @@\n one\n--",
         b"--- a/dash.txt\n+++ b/dash.txt\n@@ -1 +1 @@\n one\n--  \n",
+        b"--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-one\n+ONE\n\n-TWO\n+two\n",
+        b"--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-one\n+ONE\nindex 1111111..2222222 100644\n-TWO\n+two\n",
     ] {
         assert!(matches!(
             apply_git_patch(
@@ -260,6 +262,11 @@ diff --git a/dash.txt b/dash.txt\n--- a/dash.txt\n+++ b/dash.txt\n\
             .await,
             Err(GitPatchError::Invalid(_))
         ));
+        assert_eq!(
+            unbounded!(workspace, head()).expect("head after refusal").id(),
+            patched.id(),
+            "refused patch published a partial edit"
+        );
     }
 }
 

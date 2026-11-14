@@ -189,6 +189,16 @@ fn parse_unified_patch(bytes: &[u8]) -> Result<Vec<UnifiedPatch<'_>>, GitPatchEr
         let mut hunks = Vec::new();
         while let Some(line) = lines.next_if(|line| !line.starts_with("--- ")) {
             if !line.starts_with("@@ ") {
+                // Check every inter-hunk line: metadata cannot hide later edits.
+                // The exact `-- ` separator belongs to a format-patch signature.
+                if line.starts_with([' ', '+'])
+                    || (line.starts_with('-')
+                        && line.trim_end_matches(['\r', '\n']) != "-- ")
+                {
+                    return Err(GitPatchError::Invalid(
+                        "patch body outside declared hunk counts".to_owned(),
+                    ));
+                }
                 continue;
             }
             let (old_start, old_lines, new_lines) = parse_hunk_header(line)?;
@@ -222,18 +232,6 @@ fn parse_unified_patch(bytes: &[u8]) -> Result<Vec<UnifiedPatch<'_>>, GitPatchEr
             }
             if lines.next_if(|line| line.starts_with('\\')).is_some() {
                 strip_final_newline(&mut hunk_lines)?;
-            }
-            // Git drops body lines past the counts, which would lose edits
-            // without an error. `-- ` is the mail signature.
-            if lines.peek().is_some_and(|line| {
-                line.starts_with([' ', '+'])
-                    || (line.starts_with('-')
-                        && !line.starts_with("--- ")
-                        && line.trim_end_matches(['\r', '\n']) != "-- ")
-            }) {
-                return Err(GitPatchError::Invalid(
-                    "hunk is longer than its header".to_owned(),
-                ));
             }
             hunks.push(UnifiedHunk {
                 old_start,
