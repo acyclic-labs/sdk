@@ -367,8 +367,12 @@ async fn successful_reply_requires_the_original_credential_to_remain_current() {
             (),
             move |_, request| async move {
                 assert!(!request.metadata().contains_key("grpc-timeout"));
-                entered.send(()).map_err(|_| CredentialError::Invalid)?;
-                released.await.unwrap();
+                entered
+                    .send(())
+                    .map_err(|_| tonic::Status::unavailable("fixture observer lost"))?;
+                released
+                    .await
+                    .map_err(|_| tonic::Status::unavailable("fixture release lost"))?;
                 Ok(Response::new(()))
             },
         );
