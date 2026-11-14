@@ -296,6 +296,19 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         &self,
         reference: Option<wire::WorkspaceRef>,
     ) -> Result<Workspace<A, O>, Status> {
+        self.workspace_with_access(reference, &crate::access::Action::ALL)
+            .await
+    }
+
+    /// Resolve an already authenticated deployment request to its canonical
+    /// workspace and intersect its action ceiling with persisted policy.
+    /// Native consumers use this same name/identity validation as RPCs; the
+    /// deployment retains its original account and revocation admission.
+    pub async fn workspace_with_access(
+        &self,
+        reference: Option<wire::WorkspaceRef>,
+        actions: &[crate::access::Action],
+    ) -> Result<Workspace<A, O>, Status> {
         let reference = required(reference, "workspace")?;
         let workspace = self
             .filesystem
@@ -313,7 +326,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             ));
         }
         workspace
-            .bind_coarse_access(&crate::access::Action::ALL, &CancellationToken::new())
+            .bind_coarse_access(actions, &CancellationToken::new())
             .await
             .map_err(|error| status(&error))
     }
