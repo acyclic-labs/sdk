@@ -231,10 +231,14 @@ async fn read_only_bindings_require_read_but_not_write() -> Result<()> {
 async fn child_views_select_roles_without_assuming_names_or_volume_classes() -> Result<()> {
     use crate::agent::{WorkspaceRole, WorkspaceTable};
     use crate::conversation::VolumeOwner;
+    use acyclic_fs::LazyWorkspaceStore as _;
 
     let checkout = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
     std::fs::write(checkout.path().join("source.txt"), b"parent cut").map_err(storage)?;
+    std::fs::create_dir(checkout.path().join(".git")).map_err(storage)?;
+    std::fs::write(checkout.path().join(".git/parent-only"), b"parent metadata")
+        .map_err(storage)?;
     let harness = LocalHarness::open(
         LocalHarnessConfig::native_host(checkout.path())
             .workspace_mounting(WorkspaceMounting::Physical)
@@ -262,7 +266,11 @@ async fn child_views_select_roles_without_assuming_names_or_volume_classes() -> 
         &cancellation,
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    for (index, role) in [(1_u8, WorkspaceRole::User), (2, WorkspaceRole::Home)] {
+    for (index, role, forked) in [
+        (1_u8, WorkspaceRole::User, true),
+        (2, WorkspaceRole::Home, true),
+        (3, WorkspaceRole::Home, false),
+    ] {
         let owner = crate::AgentId::from_bytes([index; 16]);
         let path_id = crate::agent::AgentId::from_bytes([index; 16]);
         let child = parent.agent().child(&path_id).map_err(storage)?;
@@ -274,19 +282,25 @@ async fn child_views_select_roles_without_assuming_names_or_volume_classes() -> 
             VolumeOwner::Agent(owner),
             &mut None,
         )?;
-        workspace
-            .view()
-            .fork(
-                &volume.storage_name(&mut None)?,
-                acyclic_fs::IdempotencyKey::from_bytes([index; 16]),
-                acyclic_fs::PublicationPermit::Unrestricted,
-                &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                    work: &work,
-                    cancellation: &cancellation,
-                },
-            )
-            .await
-            .map_err(storage)?;
+        if forked {
+            workspace
+                .view()
+                .fork(
+                    &volume.storage_name(&mut None)?,
+                    acyclic_fs::IdempotencyKey::from_bytes([index; 16]),
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                    &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                        work: &work,
+                        cancellation: &cancellation,
+                    },
+                )
+                .await
+                .map_err(storage)?;
+        } else {
+            // An own-inherited Home is an ordinary authored volume. Binding it
+            // must not invent a checkout fork or borrow the parent's source.
+            harness.files.create_volume(&volume).await?;
+        }
         let mut entries = vec![WorkspaceEntry::initial_volume(
             role,
             "selected desk".into(),
@@ -317,6 +331,30 @@ async fn child_views_select_roles_without_assuming_names_or_volume_classes() -> 
             Some(owner),
             &mut None,
         )?;
+        if !forked {
+            let grant = crate::conversation::ContentGrant::verify(
+                &harness.verifier,
+                &signed,
+                &volume,
+                VolumeOperation::Write,
+                &mut None,
+            )?;
+            harness
+                .files
+                .put_content(
+                    &volume,
+                    &grant,
+                    "home-only",
+                    b"authored home",
+                    "text/plain",
+                    "home-only",
+                    None,
+                    &crate::IdempotencyKey::new("authored-primary-home".to_owned())?,
+                    None,
+                    crate::conversation::ContentAccess::default(),
+                )
+                .await?;
+        }
         let reference = format!("selected-{index}");
         let opened = parent
             .open_child(&child, &entries, signed.copy(&mut None)?, &reference)
@@ -326,10 +364,32 @@ async fn child_views_select_roles_without_assuming_names_or_volume_classes() -> 
             &volume
         );
         assert_eq!(opened.workspace.mounts.named(None)?.1.view.volume, volume);
-        assert_eq!(
-            std::fs::read(opened.host_cwd().join("source.txt")).map_err(storage)?,
-            b"parent cut"
-        );
+        if forked {
+            assert_eq!(
+                std::fs::read(opened.host_cwd().join("source.txt")).map_err(storage)?,
+                b"parent cut"
+            );
+        } else {
+            assert_eq!(
+                std::fs::read(opened.host_cwd().join("home-only")).map_err(storage)?,
+                b"authored home"
+            );
+            assert!(
+                !opened
+                    .host_cwd()
+                    .join("source.txt")
+                    .try_exists()
+                    .map_err(storage)?
+            );
+            assert!(
+                !opened
+                    .host_cwd()
+                    .join(".git")
+                    .try_exists()
+                    .map_err(storage)?
+            );
+            assert!(opened.workspace.mounts.native_read_roots.is_empty());
+        }
         native_write(&opened.host_cwd().join("child-note"), b"selected write")?;
         opened.capture(OperationId::new()).await?;
         let head = opened
@@ -347,20 +407,62 @@ async fn child_views_select_roles_without_assuming_names_or_volume_classes() -> 
             b"selected write"
         );
         assert!(!parent.host_cwd().join("child-note").exists());
+        let physical = opened.path().to_path_buf();
+        drop(opened);
         let reopened = parent
             .open_child(&child, &entries, signed.copy(&mut None)?, &reference)
             .await?;
-        assert_eq!(reopened.path(), opened.path());
+        assert_eq!(reopened.path(), physical);
+        assert_eq!(
+            std::fs::read(reopened.host_cwd().join("child-note")).map_err(storage)?,
+            b"selected write"
+        );
+        if !forked {
+            assert!(
+                !reopened
+                    .host_cwd()
+                    .join("source.txt")
+                    .try_exists()
+                    .map_err(storage)?
+            );
+            assert!(
+                !reopened
+                    .host_cwd()
+                    .join(".git")
+                    .try_exists()
+                    .map_err(storage)?
+            );
+            assert!(reopened.workspace.mounts.native_read_roots.is_empty());
+            let id = workspace
+                .filesystem
+                .workspace_id(volume.storage_name(&mut None)?)
+                .map_err(storage)?;
+            assert!(
+                workspace
+                    .store
+                    .load_lazy_workspace(
+                        id,
+                        &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                            work: &work,
+                            cancellation: &cancellation,
+                        },
+                    )
+                    .await
+                    .map_err(storage)?
+                    .is_none(),
+                "ordinary Home binding manufactured source-backed state"
+            );
+        }
         // Attaching a root uses that same composed source, regardless of class.
         let attached = HostWorkspace::attach(
-            Arc::clone(&opened.workspace),
+            Arc::clone(&reopened.workspace),
             AgentPath::root(&path_id),
             &signed,
             &harness.verifier,
-            opened.workspace.held_task_mount_root()?,
+            reopened.workspace.held_task_mount_root()?,
         )
         .await?;
-        assert_eq!(attached.path(), opened.path());
+        assert_eq!(attached.path(), reopened.path());
         let denied = signer.bootstrap_scope(
             "missing-selected-read",
             &crate::Capabilities::new(
@@ -374,19 +476,17 @@ async fn child_views_select_roles_without_assuming_names_or_volume_classes() -> 
         )?;
         assert!(matches!(
             HostWorkspace::attach(
-                Arc::clone(&opened.workspace),
+                Arc::clone(&reopened.workspace),
                 AgentPath::root(&path_id),
                 &denied,
                 &harness.verifier,
-                opened.workspace.held_task_mount_root()?,
+                reopened.workspace.held_task_mount_root()?,
             )
             .await,
             Err(Error::Unauthorized(_))
         ));
-        let physical = opened.path().to_path_buf();
         drop(attached);
         drop(reopened);
-        drop(opened);
         workspace.release_physical_bindings(&entries)?;
         assert!(!physical.exists());
         assert!(parent.path().exists());
