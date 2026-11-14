@@ -261,12 +261,16 @@ async fn world(seed: u64, steps: usize) -> Result {
         invariant(&provider, &expected).await?;
         if !retries.is_empty() {
             let (request, receipt) = &retries[choice[2] as usize % retries.len()];
+            // A replay may finish snapshot maintenance made due by an append
+            // whose acknowledgement was lost. It must not append another frame.
+            let appended = provider.inner.journal.lock().unwrap().appended;
             let (replay, mut events) = Schedule::seeded(seed ^ step as u64);
             let actual =
                 journal_lifecycle(&replay, &mut events, provider.append(request.clone())).await??;
             assert_eq!(&actual, receipt, "recovery changed the original receipt");
-            assert!(
-                replay.durable_writes().is_empty(),
+            assert_eq!(
+                provider.inner.journal.lock().unwrap().appended,
+                appended,
                 "replay wrote another journal command"
             );
             invariant(&provider, &expected).await?;
