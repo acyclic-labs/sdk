@@ -1076,11 +1076,17 @@ async fn filesystem_context_borrows_its_resource_and_rechecks_current_authority(
                 root.within_sync(|| context.now_unix_seconds()).unwrap(),
                 signed::NOW
             );
+            let original = context.current().unwrap();
+            root.within_sync(|| context.renew(original.clone()))
+                .unwrap();
+            let observed = root.within_sync(|| context.current()).unwrap();
+            assert!(Arc::ptr_eq(&original, &observed));
             let mut query = TraceQuery::new(
                 trace.follow(0, Default::default()).await.unwrap(),
                 Default::default(),
             );
-            loop {
+            let mut seen = std::collections::BTreeSet::new();
+            while seen.len() != 3 {
                 if let Observation::Completed {
                     start,
                     bytes,
@@ -1088,16 +1094,27 @@ async fn filesystem_context_borrows_its_resource_and_rechecks_current_authority(
                     ..
                 } = query.next().await.unwrap().expect("original trace")
                 {
-                    assert_eq!(start.name, "stream.resource_policy_clock");
                     assert_eq!(start.parent, Some(parent));
-                    assert_eq!(start.mechanism, Mechanism::ProviderCall);
-                    assert_eq!(
-                        start.guarantee.as_deref(),
-                        Some("authenticated_trust_snapshot_with_monotonic_protected_time")
-                    );
+                    let (mechanism, guarantee) = match start.name.as_str() {
+                        "stream.resource_policy_clock" => (
+                            Mechanism::ProviderCall,
+                            "authenticated_trust_snapshot_with_monotonic_protected_time",
+                        ),
+                        "stream.credential_snapshot" => (
+                            Mechanism::Lock,
+                            "atomic_credential_snapshot_against_renewal",
+                        ),
+                        "stream.credential_renewal" => (
+                            Mechanism::Lock,
+                            "atomic_renewal_preserves_account_principal_and_grants",
+                        ),
+                        name => panic!("unexpected request path {name}"),
+                    };
+                    assert_eq!(start.mechanism, mechanism);
+                    assert_eq!(start.guarantee.as_deref(), Some(guarantee));
                     assert_eq!(bytes, Some(0));
                     assert_eq!(result, Outcome::Succeeded);
-                    break;
+                    assert!(seen.insert(start.name));
                 }
             }
             root.finish_submitted(None, Outcome::Succeeded).unwrap();
