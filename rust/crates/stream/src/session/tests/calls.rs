@@ -42,7 +42,7 @@ impl CallProvider for DependentCalls {
 async fn dependent_resources_keep_original_call_grants_and_live_trust() -> TestResult {
     use acyclic_auth::{authority::PolicyDecision, contract::*};
     let state = authority::tests::State::new();
-    let authority = Arc::new(authority::tests::authority(state.clone()));
+    let authority = authority::tests::authority(state.clone());
     let grants = vec![
         ResourceGrant {
             resource: ResourcePattern {

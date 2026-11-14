@@ -157,7 +157,7 @@ async fn socket_input_rechecks_authority_after_the_wait_selects_input() -> TestR
         let received = Arc::new(AtomicUsize::new(0));
         let mut output = serve_on_with_products(
             Arc::new(MemoryStream::default()),
-            Arc::new(authority(state)),
+            authority(state),
             Products {
                 sockets: Some(Arc::new(Echo {
                     gone: std::sync::Mutex::new(Some(gone)),
@@ -355,7 +355,7 @@ async fn socket_input_renewal_preserves_the_certified_account() -> TestResult {
     let state = State::with_trust(Arc::new(trust));
     let mut output = serve_on_with_products(
         Arc::new(MemoryStream::default()),
-        Arc::new(authority(state)),
+        authority(state),
         Products {
             sockets: Some(Arc::new(Echo {
                 gone: std::sync::Mutex::new(Some(gone)),

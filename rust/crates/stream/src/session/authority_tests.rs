@@ -230,8 +230,8 @@ impl AuthorityState for State {
         })
     }
 }
-pub(in crate::session) fn authority(state: Arc<State>) -> Authority {
-    Authority::new(state, "workers:/test".into(), Some("account".into())).unwrap()
+pub(in crate::session) fn authority(state: Arc<State>) -> Arc<Authority> {
+    Arc::new(Authority::new(state, "workers:/test".into(), Some("account".into())).unwrap())
 }
 fn token(path: &str, change: impl Fn(&mut Block)) -> Vec<u8> {
     signed::root(|block| {
@@ -359,7 +359,7 @@ fn declared_method_credentials_match_session_admission() {
             _ => unreachable!("not a Session observation"),
         }
     };
-    let auth = Arc::new(authority(State::new()));
+    let auth = authority(State::new());
     for method in [
         StreamMethod::Read,
         StreamMethod::Follow,
@@ -426,7 +426,7 @@ fn product_call_targets_retain_exact_action_resource_and_live_credential() {
         ("fs:/fixture", "fs/list", "fs/read"),
     ] {
         let state = State::new();
-        let authority = Arc::new(authority(state.clone()));
+        let authority = authority(state.clone());
         let credential = testing::credential_with_grants(vec![ResourceGrant {
             resource: ResourcePattern {
                 name: resource.into(),
@@ -518,7 +518,7 @@ fn bind(
 #[test]
 fn revision_only_bindings_recheck_credential_context_without_resource_access() {
     let state = State::new();
-    let auth = Arc::new(authority(state.clone()));
+    let auth = authority(state.clone());
     let mut slots = Slots::default();
     let bytes = token("allowed", |block| {
         block.caveats.push(Caveat {
@@ -925,7 +925,7 @@ fn live_session(
     )))?;
     let output = serve(
         provider,
-        Arc::new(authority(state)),
+        authority(state),
         "node".into(),
         crate::session::Limits::default(),
         receiver.boxed(),
@@ -958,7 +958,7 @@ fn fs_token(resource: &str, change: impl Fn(&mut Block)) -> Vec<u8> {
 }
 #[test]
 fn filesystem_discovery_defers_only_list_and_checks_full_paths_and_deny_wins() {
-    let auth = Arc::new(authority(State::new()));
+    let auth = authority(State::new());
     let mut slots = Slots::default();
     let bytes = fs_token("fs:/volume/public", |_| {});
     auth.register(&mut slots, 0, &bytes, 2).unwrap();
@@ -1024,7 +1024,7 @@ fn filesystem_prefix_grant_trailing_slash_indexes_the_same_subtree() {
         ("public%2Edir/literal%252F", "public.dir/literal%2F"),
         ("caf%C3%A9", "café"),
     ] {
-        let auth = Arc::new(authority(State::new()));
+        let auth = authority(State::new());
         let mut slots = Slots::default();
         auth.register(
             &mut slots,
@@ -1048,7 +1048,7 @@ fn filesystem_prefix_grant_trailing_slash_indexes_the_same_subtree() {
 async fn filesystem_context_borrows_its_resource_and_rechecks_current_authority() {
     for revoke in [false, true] {
         let state = State::new();
-        let auth = Arc::new(authority(state.clone()));
+        let auth = authority(state.clone());
         let mut slots = Slots::default();
         let bytes = fs_token("fs:/volume/public", |_| {});
         auth.register(&mut slots, 0, &bytes, 2).unwrap();
@@ -1200,7 +1200,7 @@ async fn filesystem_context_borrows_its_resource_and_rechecks_current_authority(
             }
         }
     }
-    let auth = Arc::new(authority(State::new()));
+    let auth = authority(State::new());
     let mut slots = Slots::default();
     auth.register(&mut slots, 0, &fs_token("fs:/volume", |_| {}), 2)
         .unwrap();
@@ -1219,7 +1219,7 @@ async fn filesystem_context_borrows_its_resource_and_rechecks_current_authority(
 }
 #[test]
 fn filesystem_context_rejects_forged_expired_and_wrong_audience_credentials() {
-    let auth = Arc::new(authority(State::new()));
+    let auth = authority(State::new());
     let mut slots = Slots::default();
     let valid = fs_token("fs:/volume", |_| {});
     let mut forged = valid;
