@@ -114,7 +114,7 @@ where
         &self,
         operation: OperationId,
         event: &'a ExecutionEvent,
-        measured: (Option<&ModelEvent>, Option<u64>),
+        measured: (Option<&ModelEvent>, Option<u64>, Option<u64>),
         io: Option<&PreparationIo>,
     ) -> Result<Option<Inputs<'a>>> {
         if self.agent_events.is_none() {
@@ -127,15 +127,15 @@ where
         {
             return Ok(Some(Inputs::PolicyChanged));
         }
-        if let (Some(ModelEvent::Completed { metadata }), usd_nanos) = measured {
+        if let (Some(ModelEvent::Completed { metadata }), usd_nanos, tokens) = measured {
             let reported = crate::executor::ModelTokenUsage::reported(metadata);
             return Ok(Some(Inputs::Usage {
                 spent_tokens: reported.input.is_some_and(|tokens| tokens > 0)
-                    || reported.output.is_some_and(|tokens| tokens > 0),
-                tokens: reported
-                    .input
-                    .zip(reported.output)
-                    .and_then(|(input, output)| input.checked_add(output)),
+                    || reported.output.is_some_and(|tokens| tokens > 0)
+                    || reported.cached.is_some_and(|tokens| tokens > 0)
+                    || reported.cache_write.is_some_and(|tokens| tokens > 0)
+                    || tokens.is_some_and(|tokens| tokens > 0),
+                tokens,
                 usd_nanos,
             }));
         }

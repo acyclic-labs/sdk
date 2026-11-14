@@ -13,10 +13,10 @@
     "steps": [
       {
         "when": {
-          "contains": "Summarize the preceding context for the continuing worker."
+          "contains": "You manage this worker's context outside its turns."
         },
         "text": [
-          "BACKGROUND_SAVED_FACT"
+          "{\"version\":1,\"summary\":\"BACKGROUND_SAVED_FACT\",\"review_at_input_tokens\":18000}"
         ]
       },
       {
@@ -54,8 +54,7 @@
       {
         "when": {
           "tool_result": "recent",
-          "user": "continue BACKGROUND_FACT",
-          "contains": "BACKGROUND_SAVED_FACT"
+          "user": "continue BACKGROUND_FACT"
         },
         "tools": [
           {
@@ -77,6 +76,28 @@
         "text": [
           "BACKGROUND_DONE"
         ]
+      },
+      {
+        "when": {
+          "user": "remember BACKGROUND_FACT",
+          "contains": "What slowed you down or blocked you? Append feedback records; reply none if nothing."
+        },
+        "text": ["none"]
+      },
+      {
+        "when": {
+          "user": "BACKGROUND_RECENT_TASK",
+          "contains": "What slowed you down or blocked you? Append feedback records; reply none if nothing."
+        },
+        "text": ["none"]
+      },
+      {
+        "when": {
+          "user": "continue BACKGROUND_FACT",
+          "tool_result": "BACKGROUND_RECENT_CHILD_DONE",
+          "contains": "What slowed you down or blocked you? Append feedback records; reply none if nothing."
+        },
+        "text": ["none"]
       }
     ]
   },
@@ -116,7 +137,7 @@
     }
   ],
   "assert": {
-    "requests": 6,
+    "requests": 9,
     "last_model_contains": [
       "BACKGROUND_CURRENT_TASK",
       "BACKGROUND_SAVED_FACT",
@@ -125,7 +146,7 @@
     ],
     "last_model_absent": [
       "xxxxxxxxxxxxxxxx",
-      "Summarize the preceding context"
+      "You manage this worker's context outside its turns."
     ]
   }
 }

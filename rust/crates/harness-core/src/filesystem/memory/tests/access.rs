@@ -54,15 +54,7 @@ async fn policy(
         deny.resource.path = path.into();
         policy.layers[0].push(deny);
     }
-    publish_policy(fs, storage, &policy).await
-}
-
-async fn publish_policy(
-    fs: &acyclic_fs::MemoryFs,
-    storage: &MemoryHarnessStorage,
-    policy: &Policy,
-) -> Result<()> {
-    publish_volume_policy(fs, &storage.volume, policy).await
+    publish_volume_policy(fs, storage.volume(), &policy).await
 }
 
 async fn publish_volume_policy(
@@ -324,7 +316,7 @@ async fn filesystem_roles_require_signed_scope_and_caller_ceiling() -> Result<()
                 "native foreign-project reads bypassed their original unsupported boundary",
             );
         assert_eq!(error.code(), crate::wire::ErrorCode::Unsupported);
-        publish_policy(&fs, &storage, &restricted).await?;
+        publish_volume_policy(&fs, storage.volume(), &restricted).await?;
         for io in [None, Some(&owned), Some(&original)] {
             assert_eq!(
                 storage
@@ -387,7 +379,7 @@ async fn filesystem_roles_require_signed_scope_and_caller_ceiling() -> Result<()
         }
         restricted.version += 1;
         restricted.layers[0][0].conditions.role = None;
-        publish_policy(&fs, &storage, &restricted).await?;
+        publish_volume_policy(&fs, storage.volume(), &restricted).await?;
         assert_eq!(
             storage
                 .host
@@ -406,7 +398,7 @@ async fn filesystem_roles_require_signed_scope_and_caller_ceiling() -> Result<()
         deny.actions = [FsAction::Read].into_iter().collect();
         deny.conditions.role = Some("control".into());
         restricted.layers[0].push(deny);
-        publish_policy(&fs, &storage, &restricted).await?;
+        publish_volume_policy(&fs, storage.volume(), &restricted).await?;
         for io in [None, Some(&owned), Some(&original)] {
             for (grant, ceiling) in [
                 (&owner_directory, None),
@@ -525,5 +517,73 @@ async fn local_publication_evidence_rechecks_current_disclosure_policy() -> Resu
         .content_verifier
         .verify_publication(&file, 4096, None)?
         .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn summary_bodies_are_readable_while_execution_state_stays_private() -> Result<()> {
+    let fs = Fs::memory();
+    let storage = MemoryHarnessStorage::from_providers(
+        AgentId::new(),
+        None,
+        fs.clone(),
+        Arc::new(MemoryStream::default()),
+    )
+    .await?;
+    let journal = storage.journal();
+    let operation = OperationId::new();
+    let summary = journal
+        .stage(
+            operation,
+            "summary:0:output",
+            b"retained facts",
+            "text/plain",
+            None,
+        )?
+        .await?;
+    let marker = journal
+        .stage(
+            operation,
+            "backstop:1:marker",
+            b"evicted history",
+            "text/plain",
+            None,
+        )?
+        .await?;
+    let private = journal
+        .stage(
+            operation,
+            "summary:0:source",
+            b"private context",
+            "text/plain",
+            None,
+        )?
+        .await?;
+    let policy: Policy = serde_json::from_slice(include_bytes!("../../host/journal-policy.json"))
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    publish_volume_policy(&fs, summary.volume(), &policy).await?;
+    for (file, expected) in [
+        (&summary, b"retained facts".as_slice()),
+        (&marker, b"evicted history".as_slice()),
+    ] {
+        let bytes = storage
+            .content_reader()
+            .read(file, file.descriptor().byte_length(), None, None)?
+            .await?;
+        assert_eq!(bytes.as_ref(), expected);
+        assert!(
+            !journal.authenticate_summary(file, None)?.await?,
+            "readable bytes alone must not authenticate a summary"
+        );
+    }
+    assert_eq!(
+        storage
+            .content_reader()
+            .read(&private, private.descriptor().byte_length(), None, None)?
+            .await
+            .unwrap_err()
+            .code(),
+        crate::wire::ErrorCode::Unauthorized
+    );
     Ok(())
 }

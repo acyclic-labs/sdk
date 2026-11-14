@@ -31,6 +31,14 @@ This file is read-only. It describes the fixed harness loop; nothing here is con
 - Editing earlier context re-bills every token after the edit.
 - Tool declarations and the system prompt are part of the prefix, so changing them re-bills the whole conversation.
 
+## Automatic context management
+
+Stock agent execution reviews context outside the worker's turns. The selected model receives the original input/cache counters and observed call latency, then chooses whether to keep history or replace an older complete prefix with a summary. It also chooses the input-token budget for its next review; the harness supplies no fixed token threshold or capacity fraction. Missing observations and prices remain unknown.
+
+There is at most one review in flight per worker. Ordinary work continues while it runs. A completed decision can replace only the exact prefix it reviewed, retaining the newer suffix and complete tool exchanges. Until that rewrite, the worker's cached prefix stays unchanged. Review output and its source remain in retained history, and replay reuses the original decision.
+
+The provider's actual capacity remains a separate backstop. At that boundary a worker can wait on its active review's completion; invalid decisions fail without authorising a rewrite. Settlement cancels unfinished review work. Explicitly disabled compaction disables automatic management too.
+
 ## Layers
 
 Relative file paths always name project files, including `.git`, `.volumes`, `.system` and `.home-seed-v1`. Auxiliary volumes use explicit addresses: `volume:///<name>/<path>` for this agent, or `volume://<agent>/<name>/<path>` for another agent. These addresses do not create directories in the project; shell commands use the native paths in the volume context or `ACYCLIC_VOLUME_*` discovery variables.

@@ -52,9 +52,13 @@ pub(crate) fn input_tokens(adapter: Adapter, metadata: &Value) -> Option<u64> {
         Adapter::Gemini => usage["promptTokenCount"].as_u64(),
         Adapter::Responses => usage["input_tokens"].as_u64(),
         Adapter::Anthropic => usage["input_tokens"].as_u64().and_then(|input| {
+            let additional = |key| match usage.get(key) {
+                None | Some(Value::Null) => Some(0),
+                Some(value) => value.as_u64(),
+            };
             input
-                .checked_add(usage["cache_creation_input_tokens"].as_u64().unwrap_or(0))?
-                .checked_add(usage["cache_read_input_tokens"].as_u64().unwrap_or(0))
+                .checked_add(additional("cache_creation_input_tokens")?)?
+                .checked_add(additional("cache_read_input_tokens")?)
         }),
     }
 }

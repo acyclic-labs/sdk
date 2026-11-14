@@ -193,7 +193,7 @@ impl StockExecution<'_> {
         }
     }
 
-    async fn prepare_compacted_request(
+    pub(super) async fn prepare_compacted_request(
         &self,
         input: &TurnInput,
         step: u32,
@@ -305,7 +305,7 @@ impl StockExecution<'_> {
         Ok(())
     }
 
-    async fn finish_compaction(
+    pub(super) async fn finish_compaction(
         &self,
         journal: &dyn ExecutionJournal,
         turn: (&TurnInput, u32),

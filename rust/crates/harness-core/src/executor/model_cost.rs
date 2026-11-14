@@ -765,6 +765,7 @@ mod tests {
             agent_path: Some("/selected-agent".into()),
             sampling: None,
             tokens,
+            complete_input_tokens: None,
             started_at: None,
             completed_at: None,
             latency_ns: None,

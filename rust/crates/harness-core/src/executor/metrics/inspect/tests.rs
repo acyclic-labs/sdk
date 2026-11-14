@@ -118,6 +118,7 @@ fn usage(call: &Call<'_>) -> ModelUsageRecord {
             ..Default::default()
         },
         latency_ns: None,
+        complete_input_tokens: None,
         started_at: None,
         completed_at: None,
         provider_request_id: None,
@@ -545,6 +546,7 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
         agent_path: Some("agents/generated-agent"),
         sampling: request.sampling,
         tokens: super::super::super::ModelTokenUsage::reported(&metadata),
+        complete_input_tokens: None,
         started_at: None,
         completed_at: None,
         latency_ns: None,

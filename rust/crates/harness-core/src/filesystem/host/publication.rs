@@ -29,7 +29,7 @@ pub(in crate::filesystem) struct PublicationLookup<'a> {
     pub key: &'a IdempotencyKey,
     pub expected_path: Option<&'a str>,
     pub maximum_bytes: Option<u64>,
-    pub internal_class: Option<InternalContentClass>,
+    pub internal: bool,
     pub purpose: PublicationPurpose,
     pub scope: &'a Scope,
     pub ceiling: Option<&'a crate::Capabilities>,
@@ -52,7 +52,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             volume,
             key,
             expected_path,
-            internal_class,
+            internal,
             ..
         } = request;
         volume.validate(&mut Some(&mut io.history_io()))?;
@@ -61,7 +61,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         if let Some(path) = expected_path {
             crate::conversation::validate_content_path(path, &mut Some(&mut io.history_io()))?;
-            InternalContentClass::require_path(internal_class, path, Some(io))?;
         }
         let workspace_ref = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
         let hold = io.guard_owned(workspace_ref.logical_owned_bytes()?)?;
@@ -69,7 +68,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let root = self.open(&workspace_ref.0, Some(io)).await?;
         let operation = bounded_io::operation_key(key, Some(io))?;
         let Some((workspace, binding)) = self
-            .content_operation_workspace(&root, operation, internal_class.is_some(), io)
+            .content_operation_workspace(&root, operation, internal, io)
             .await?
         else {
             return Ok(None);
@@ -98,7 +97,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "original upload metadata differs from requested identity",
             ));
         }
-        InternalContentClass::require_path(internal_class, recorded.0.0.path(), Some(io))?;
         let view = self
             .receipt_access(&workspace, original.id(), &request, &recorded.0.0, io)
             .await?;

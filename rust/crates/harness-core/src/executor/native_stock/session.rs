@@ -20,6 +20,7 @@ pub(in crate::executor) struct StockExecution<'a> {
     pub(in crate::executor) request_cache:
         tokio::sync::Mutex<crate::executor::retained_request::RequestCache<'a>>,
     pub(in crate::executor) content_admission: crate::executor::ExecutionJournalCacheId,
+    pub(in crate::executor) review: crate::executor::context_review::Review<'a>,
 }
 
 /// One writer entrance for an execution and its borrowed summary sessions.
@@ -143,6 +144,7 @@ impl<'a> StockExecution<'a> {
             working_tail: tokio::sync::Mutex::new(Default::default()),
             request_cache: tokio::sync::Mutex::new(Default::default()),
             content_admission: Default::default(),
+            review: Default::default(),
         }
     }
     pub(in crate::executor) fn preparing<'b>(
@@ -163,6 +165,7 @@ impl<'a> StockExecution<'a> {
             working_tail: tokio::sync::Mutex::new(Default::default()),
             request_cache: tokio::sync::Mutex::new(Default::default()),
             content_admission: Default::default(),
+            review: Default::default(),
         }
     }
 

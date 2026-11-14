@@ -125,8 +125,23 @@ impl StockExecution<'_> {
         let _execution = journal.claim_execution(input.operation_id, self.io)?;
         self.verify_task_context_binding(input.operation_id)?;
         let mut phase = DispatchPhase::new();
-        let result =
-            ExecutionProgress::controlled(self.execute_turn(input, journal, &mut phase).await);
+        let result = if self.stock.context_management {
+            // Step selection mutates the worker, while the service consumes
+            // each queued job's frozen binding. Both share one funded owner.
+            let review = context_review::Background::shared(self.io)?;
+            let mut service = self.preparing(self.io);
+            let mut worker = self.preparing(self.io);
+            service.review = context_review::Review::Shared(Arc::clone(&review));
+            worker.review = context_review::Review::Shared(review);
+            service.with_context_review(
+                journal,
+                input,
+                worker.execute_turn(input, journal, &mut phase),
+            ).await
+        } else {
+            self.execute_turn(input, journal, &mut phase).await
+        };
+        let result = ExecutionProgress::controlled(result);
         phase
             .finish(result, journal, input.operation_id, self.io)
             .await
@@ -260,10 +275,10 @@ impl StockExecution<'_> {
                 if let Some(control) = journal.supervision().await? {
                     return Ok(ExecutionProgress::Controlled(control));
                 }
-                let part_start = prior_messages.len();
+                let source_messages = prior_messages.len();
                 let collected =
                     self.collect_step_events(input, step, model_events, &mut prior_messages)?;
-                output.include(&collected, &prior_messages[part_start..], self.io)?;
+                output.include(&collected, &prior_messages[source_messages..], self.io)?;
                 let CollectedStep {
                     calls,
                     text,
@@ -271,7 +286,23 @@ impl StockExecution<'_> {
                     completion,
                     parts,
                 } = collected;
+                // The task answer is already accepted during settlement. Its
+                // audit can drain without preparing another context review.
+                #[cfg(not(target_arch = "wasm32"))]
+                let reviewing_work = after_answer.is_none();
+                #[cfg(target_arch = "wasm32")]
+                let reviewing_work = true;
                 if completion == StepCompletion::Incomplete {
+                    if reviewing_work {
+                        self.request_context_review(
+                            journal,
+                            input,
+                            step,
+                            &prior_messages[..source_messages],
+                            &metadata,
+                        )
+                        .await?;
+                    }
                     if !parts {
                         self.append_assistant_part(
                             &mut prior_messages,
@@ -326,6 +357,16 @@ impl StockExecution<'_> {
                     }
                     #[cfg(not(target_arch = "wasm32"))]
                     if let Some(reason) = stop {
+                        if reviewing_work {
+                            self.request_context_review(
+                                journal,
+                                input,
+                                step,
+                                &prior_messages[..source_messages],
+                                &metadata,
+                            )
+                            .await?;
+                        }
                         let answer = if parts { "" } else { text.as_str() };
                         self.continue_after_stop(&mut prior_messages, answer, reason)?;
                         stock_retire_text(text, self.io)?;
@@ -363,6 +404,16 @@ impl StockExecution<'_> {
                         }
                     }
                     return Ok(ExecutionProgress::Ready((text, metadata, parts)));
+                }
+                if reviewing_work {
+                    self.request_context_review(
+                        journal,
+                        input,
+                        step,
+                        &prior_messages[..source_messages],
+                        &metadata,
+                    )
+                    .await?;
                 }
                 stock_retire_text(text, self.io)?;
                 stock_retire_text(std::mem::take(&mut unfinished), self.io)?;

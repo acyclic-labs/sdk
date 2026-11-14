@@ -37,6 +37,8 @@ pub(crate) use execution_journal::ExecutionReplayObservation;
 pub use execution_journal::FilesystemExecutionJournal;
 #[cfg(feature = "test-support")]
 pub use execution_journal::codec_fuzz as execution_codec_fuzz;
+#[cfg(test)]
+pub(crate) use execution_journal::test_support::journal as test_execution_journal;
 #[cfg(not(target_arch = "wasm32"))]
 pub use execution_journal::{
     ContextCheckpoint, ContextPublicationReceipt, ContextPublicationRequest,
