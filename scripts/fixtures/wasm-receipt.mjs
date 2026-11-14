@@ -9,8 +9,8 @@ export async function writeWasmReceiptFixture(parent, key, source, inventory) {
   const hash = bytes => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
   const wasm = Buffer.from("synthetic module bytes; receipt admission only");
   const wasmReceipt = {
-    schema: "acyclic.wasm-build-receipt.v1", family: key, package: family.wasmPackageName, version: family.version,
-    source_commit: source, source_sha256: inventory.source_sha256, source_files: inventory.source_files,
+    schema: "acyclic.wasm-build-receipt.v2", family: key, package: family.wasmPackageName, version: family.version,
+    source_sha256: inventory.source_sha256, source_files: inventory.source_files,
     build: {
       cargo: { version: "synthetic cargo" },
       rustc: { invocation: { source: "rustc-invocation", rustc: "fixture-rustc", target: "wasm32-unknown-unknown" }, identity: { command: "fixture-rustc", output: "synthetic rustc", executable_sha256: `sha256:${"f".repeat(64)}` } },

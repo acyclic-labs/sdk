@@ -39,9 +39,6 @@ for (const name of ["actors", "stream"]) {
       const family = nativeFamily(name);
       const producer = createNativeProducer(family);
       const source = await producer.sourceSnapshot();
-      const revision = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" });
-      assert.ifError(revision.error);
-      assert.equal(revision.status, 0);
       const output = join(temporary, "output");
       const target = join(temporary, "target");
       const env = { ...process.env, CARGO_TARGET_DIR: target, ACYCLIC_WASM_GROUPS_PREPARED: "1" };
@@ -53,7 +50,6 @@ for (const name of ["actors", "stream"]) {
       for (const phase of ["cold", "warm"]) {
         run(process.execPath, ["scripts/build-wasm.mjs", name, output], env);
         const receipt = JSON.parse(await readFile(join(output, "producer-receipt.json"), "utf8"));
-        assert.equal(receipt.source_commit, revision.stdout.trim(), `${phase} source revision`);
         assert.equal(receipt.source_sha256, source.sha256, `${phase} source digest`);
         assert.deepEqual(receipt.source_files, source.files, `${phase} source inventory`);
         assert.equal(receipt.build.module_sha256,

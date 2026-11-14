@@ -115,8 +115,8 @@ async function sourceNativeInventory(sourceSha, { refresh = false } = {}) {
 
 const objectDigest = value => `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
 
-function assertWasmReceipt(receipt, files, sourceSha, expectedSource, version) {
-  if (receipt.schema !== "acyclic.wasm-build-receipt.v1" || receipt.family !== family.key || receipt.package !== family.wasmPackageName || receipt.version !== version || receipt.source_commit !== sourceSha || receipt.source_sha256 !== expectedSource.source_sha256 || JSON.stringify(receipt.source_files) !== JSON.stringify(expectedSource.source_files)) fail("WASM receipt source or package identity differs");
+function assertWasmReceipt(receipt, files, expectedSource, version) {
+  if (receipt.schema !== "acyclic.wasm-build-receipt.v2" || receipt.family !== family.key || receipt.package !== family.wasmPackageName || receipt.version !== version || receipt.source_sha256 !== expectedSource.source_sha256 || JSON.stringify(receipt.source_files) !== JSON.stringify(expectedSource.source_files)) fail("WASM receipt source or package identity differs");
   if (!receipt.build?.cargo?.version || !receipt.build?.rustc?.identity?.output || !/^sha256:[0-9a-f]{64}$/u.test(receipt.build.rustc.identity.executable_sha256 ?? "") || receipt.build.rustc.identity.command !== receipt.build.rustc.invocation?.rustc || receipt.build.rustc.invocation?.source !== "rustc-invocation" || receipt.build.rustc.invocation.target !== "wasm32-unknown-unknown" || !receipt.build?.wasm_bindgen?.version || !/^sha256:[0-9a-f]{64}$/u.test(receipt.build?.module_sha256 ?? "")) fail("WASM captured compiler recipe is missing");
   if (!Array.isArray(receipt.artifacts) || receipt.artifacts.length === 0) fail("WASM artifact inventory is missing");
   const expected = new Set(["package/generated/wasm/producer-receipt.json"]);
@@ -163,7 +163,7 @@ async function verifyNativeAssembly(output, sourceSha, version, expectedInventor
   const parent = archiveFiles(join(output, assembly.parent.asset));
   const wasmBytes = parent.get("package/generated/wasm/producer-receipt.json");
   if (!wasmBytes || `sha256:${createHash("sha256").update(wasmBytes).digest("hex")}` !== assembly.wasm_receipt_sha256) fail("WASM producer receipt digest differs");
-  assertWasmReceipt(JSON.parse(wasmBytes.toString("utf8")), parent, sourceSha, expectedInventory, version);
+  assertWasmReceipt(JSON.parse(wasmBytes.toString("utf8")), parent, expectedInventory, version);
   const neutral = JSON.parse(parent.get("package/package.json").toString("utf8"));
   if (!isDeepStrictEqual(neutral, expectedInventory.parent) || [...parent.keys()].some(path => path.endsWith(".node"))) fail("neutral parent manifest or binary inventory differs");
   const { parent: ignored, ...index } = assembly;
@@ -334,7 +334,7 @@ async function main() {
     const wasmReceiptPath = join(parentRoot, "generated/wasm/producer-receipt.json");
     const wasmReceipt = JSON.parse(await readFile(wasmReceiptPath, "utf8"));
     const wasmFiles = new Map([...wasmArtifactFiles(join(parentRoot, "generated/wasm"), { receipt: true })].map(([path, bytes]) => [`package/${path}`, bytes]));
-    assertWasmReceipt(wasmReceipt, wasmFiles, sourceSha, { source_sha256: source.sha256, source_files: source.files }, manifest.version);
+    assertWasmReceipt(wasmReceipt, wasmFiles, { source_sha256: source.sha256, source_files: source.files }, manifest.version);
     await mkdir(output, { recursive: true });
     const companionOutput = join(output, companionDirectory);
     await mkdir(companionOutput);

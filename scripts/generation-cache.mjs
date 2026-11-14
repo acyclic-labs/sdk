@@ -53,14 +53,17 @@ export function digests(root, paths) {
 
 const digestOf = files => sha256([...files].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([path, digest]) => `${path}\0${digest}\n`).join(""));
 
-// The workspace crates the generators compile. They follow from the manifests and the generation scripts alone, so the
-// result is kept under those inputs' digest and Cargo runs only when one of them changes.
-async function rustCrates(root, inputs) {
-  const cache = join(generationStore(), "crates", `${digestOf(inputs)}.json`);
+// The generators and every crate a contract module builds: its targets' crates and any it compiles itself.
+const generationRoots = async () => [...generatorPackages,
+  ...(await loadContractModules(contractModules())).flatMap(module => [...(module.rust ?? []).map(([name]) => name), ...module.crates ?? []])];
+
+// The workspace crates an action compiles from its root crates. They follow from the manifests and scripts alone, so the
+// result is kept under those inputs' digest and the action's label, and Cargo runs only when one of them changes.
+async function rustCrates(root, inputs, { label, roots: rootNames }) {
+  const cache = join(generationStore(), "crates", `${sha256(`${digestOf(inputs)}\0${label}`)}.json`);
   try { return JSON.parse(readFileSync(cache, "utf8")); }
   catch (error) { if (error.code !== "ENOENT") throw error; }
-  const contracts = await loadContractModules(contractModules());
-  const roots = new Set([...generatorPackages, ...contracts.flatMap(module => [...(module.rust ?? []).map(([name]) => name), ...module.crates ?? []])]);
+  const roots = new Set(await rootNames());
   // Declared path dependencies, optional ones included, need no registry resolution; vendored crates are inputs whole.
   const metadata = JSON.parse(execFileSync("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"],
     { cwd: root, encoding: "utf8", maxBuffer: Infinity, stdio: ["ignore", "pipe", "inherit"] }));
@@ -85,23 +88,30 @@ async function rustCrates(root, inputs) {
   return crates;
 }
 
-async function inputDigests(root) {
-  const inputs = digests(root, inputPaths);
-  for (const [path, digest] of digests(root, await rustCrates(root, inputs))) inputs.set(path, digest);
+const generation = { label: "generation", roots: generationRoots };
+
+async function inputDigests(root, action) {
+  const inputs = digests(root, [...inputPaths, ...action.paths ?? []]);
+  for (const [path, digest] of digests(root, await rustCrates(root, inputs, action))) inputs.set(path, digest);
   return inputs;
 }
 
-/** Every source file the key covers, tracked or untracked but not ignored, repository-relative and sorted. */
-export async function generationInputs(root) {
-  return [...(await inputDigests(root)).keys()].sort();
+/** Every source file an action's key covers, tracked or untracked but not ignored, repository-relative and sorted. */
+export async function generationInputs(root, action = generation) {
+  return [...(await inputDigests(root, action)).keys()].sort();
 }
 
-export async function generationKey(root) {
+/** The key of one action over the toolchain and its input files. Generation and each WASM build are actions of this one
+ * mechanism: an action names its root crates (its Rust inputs are their workspace closure), any further input paths, and
+ * any further parts that select its outputs.
+ * @param {string} root @param {{label: string, roots: () => Promise<string[]>, paths?: string[], parts?: string[]}} [action] */
+export async function generationKey(root, action = generation) {
   const tools = [`sdk-generation-v1\0${process.version}\0${process.platform}-${process.arch}`,
     execFileSync("rustc", ["-vV"], { cwd: root, encoding: "utf8" }),
-    ...["SDK_PROTO_CODEGEN", "ACYCLIC_CARGO_BIN"].map(name => `${name}=${process.env[name] ?? ""}`),
-    process.env.SDK_PROTO_CODEGEN ? sha256(readFileSync(process.env.SDK_PROTO_CODEGEN)) : ""];
-  return sha256(`${tools.map(part => `${part.length}:${part}`).join("")}${digestOf(await inputDigests(root))}`);
+    ...["SDK_PROTO_CODEGEN", "ACYCLIC_CARGO_BIN", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"].map(name => `${name}=${process.env[name] ?? ""}`),
+    process.env.SDK_PROTO_CODEGEN ? sha256(readFileSync(process.env.SDK_PROTO_CODEGEN)) : "",
+    action.label, ...action.parts ?? []];
+  return sha256(`${tools.map(part => `${part.length}:${part}`).join("")}${digestOf(await inputDigests(root, action))}`);
 }
 
 // A request is served by any entry whose generation covered at least its packages and native outputs.
