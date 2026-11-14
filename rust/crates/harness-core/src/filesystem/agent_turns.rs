@@ -2667,7 +2667,9 @@ where
                                     .map(|actor| {
                                         actor.and_then(|actor| {
                                             store.path(&actor).map_err(|error| {
-                                                crate::agent::Error::Actor(Box::new(error))
+                                                crate::agent::Error::Actor(Box::new(
+                                                    error.into_cause(),
+                                                ))
                                             })
                                         })
                                     })

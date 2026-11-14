@@ -1123,7 +1123,7 @@ async fn admitted_close_fixture<P: StreamProvider + ?Sized + 'static>(
         .lock(&connection)
         .sockets
         .get_mut(&connection)
-        .ok_or(Error::Invalid("fixture lost its original open"))?
+        .ok_or("fixture lost its original open")?
         .phase = Phase::Open;
     Ok((connection, inbox, last, frames))
 }

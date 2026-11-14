@@ -30,9 +30,22 @@ impl<P: ?Sized> StreamGitCompatStore<P> {
     }
 }
 
+/// Retry custody of an unresolved command publication: the original sealed
+/// commit, without reconstruction or re-fencing. Its custody graph is erased
+/// here so other workspace failures do not expand it during auto-trait checks.
+#[cfg(not(target_arch = "wasm32"))]
+pub type UnresolvedCommit = Box<dyn FnOnce() -> FilesystemCommit + Send + Sync>;
+/// The browser retains the same owner on its original event loop.
+#[cfg(target_arch = "wasm32")]
+pub type UnresolvedCommit = Box<dyn FnOnce() -> FilesystemCommit>;
+
 /// Original storage and codec failures of stream-backed command state.
+///
+/// `C` is the retry custody of an unresolved publication. Custody may own
+/// thread-affine browser handles, so it never travels as a cause;
+/// [`StreamGitCompatStoreError::into_cause`] keeps the failure without it.
 #[derive(Error)]
-pub enum StreamGitCompatStoreError {
+pub enum StreamGitCompatStoreError<C = UnresolvedCommit> {
     /// The provider failed or could not resolve an exact append.
     #[error(transparent)]
     Authority(#[from] AuthorityStoreError),
@@ -45,14 +58,8 @@ pub enum StreamGitCompatStoreError {
     /// An unresolved publication retains its exact request and custody.
     #[error("stream-backed command publication remains unresolved: {error}")]
     Unknown {
-        /// Returns the original sealed publication without reconstruction or
-        /// re-fencing. Erase its custody graph at the error boundary so other
-        /// workspace failures do not expand it during auto-trait checking.
-        #[cfg(not(target_arch = "wasm32"))]
-        commit: Box<dyn FnOnce() -> FilesystemCommit + Send + Sync>,
-        /// The browser retains the same owner on its original event loop.
-        #[cfg(target_arch = "wasm32")]
-        commit: Box<dyn FnOnce() -> FilesystemCommit>,
+        /// Returns the original sealed publication; `()` in a cause.
+        commit: C,
         /// Original submission failure.
         #[source]
         error: AuthorityStoreError,
@@ -62,7 +69,27 @@ pub enum StreamGitCompatStoreError {
     Incompatible,
 }
 
-impl std::fmt::Debug for StreamGitCompatStoreError {
+/// A command-state failure without retry custody, `Send + Sync` on every
+/// target, so it can be carried as a source by any other error.
+pub type StreamGitCompatStoreCause = StreamGitCompatStoreError<()>;
+
+impl StreamGitCompatStoreError {
+    /// This failure as a cause. An unresolved publication keeps its original
+    /// submission failure; its sealed commit, the only retry custody, is
+    /// dropped here, so callers that may retry must match before converting.
+    #[must_use]
+    pub fn into_cause(self) -> StreamGitCompatStoreCause {
+        match self {
+            Self::Authority(error) => StreamGitCompatStoreError::Authority(error),
+            Self::Stream(error) => StreamGitCompatStoreError::Stream(error),
+            Self::Codec(error) => StreamGitCompatStoreError::Codec(error),
+            Self::Unknown { error, .. } => StreamGitCompatStoreError::Unknown { commit: (), error },
+            Self::Incompatible => StreamGitCompatStoreError::Incompatible,
+        }
+    }
+}
+
+impl<C> std::fmt::Debug for StreamGitCompatStoreError<C> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("StreamGitCompatStoreError")

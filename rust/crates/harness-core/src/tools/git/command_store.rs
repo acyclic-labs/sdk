@@ -48,19 +48,23 @@ impl<P: acyclic_fs::distributed::AuthorityProvider + ?Sized> CommandStore
 
     fn error(error: Self::StoreError) -> Error {
         Error::NativeGit {
-            source: Box::new(super::Failure::StreamState(error)),
+            source: Box::new(super::Failure::StreamState(error.into_cause())),
         }
     }
 
     fn lineage_error(error: WorkspaceLineageError<Self::StoreError>) -> Error {
         Error::NativeGit {
-            source: Box::new(super::Failure::StreamLineage(error)),
+            source: Box::new(super::Failure::StreamLineage(
+                error.map_store(acyclic_fs::StreamGitCompatStoreError::into_cause),
+            )),
         }
     }
 
     fn capture_error(error: GitCaptureAuthenticationError<Self::StoreError>) -> Error {
         Error::NativeGit {
-            source: Box::new(super::Failure::StreamCaptureAuthentication(error)),
+            source: Box::new(super::Failure::StreamCaptureAuthentication(
+                error.map_store(acyclic_fs::StreamGitCompatStoreError::into_cause),
+            )),
         }
     }
 }

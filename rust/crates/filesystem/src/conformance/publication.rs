@@ -148,7 +148,7 @@ where
         for (before, state) in expected.iter().zip(&states) {
             let observed = crate::GitCompatStore::load(&store, before.workspace_id())
                 .await
-                .map_err(|error| WorkspaceError::GitCompat(Box::new(error)))?;
+                .map_err(|error| WorkspaceError::GitCompat(Box::new(error.into_cause())))?;
             if observed.as_ref() != (!concurrent).then_some(state) {
                 return Err(Failure::Invariant(
                     "merge state exposed a partial coupled cut",

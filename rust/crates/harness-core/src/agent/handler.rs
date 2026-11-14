@@ -147,7 +147,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 .agents
                 .store
                 .path(&actor)
-                .map_err(|error| Error::Actor(Box::new(error)))?
+                .map_err(|error| Error::Actor(Box::new(error.into_cause())))?
                 == *source
             {
                 return Ok(true);
@@ -264,7 +264,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
     pub(super) fn wake(&self, actor: &ActorReference) -> Result<CommitEffect, Error> {
         self.store
             .activation(actor)
-            .map_err(|error| Error::Actor(Box::new(error)))
+            .map_err(|error| Error::Actor(Box::new(error.into_cause())))
     }
 
     /// The effects that create `agent`'s actor, dormant until its trigger:
@@ -429,7 +429,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
             .store
             .load(actor)
             .await
-            .map_err(|error| Error::Actor(Box::new(error)))?;
+            .map_err(|error| Error::Actor(Box::new(error.into_cause())))?;
         let state = snapshot.state().ok_or(Error::NoSuchAgent)?;
         let inbox = agent.inbox()?;
         let cursor = state

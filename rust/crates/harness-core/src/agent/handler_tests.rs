@@ -108,7 +108,7 @@ impl TurnDriver for AdmissionWait {
                 .last
                 .ok_or(Error::Record("original admission missing"))?;
             let admission = acyclic_actors::local::AdmissionState::from_record(&record.value)
-                .map_err(|error| Error::Actor(Box::new(error)))?;
+                .map_err(|error| Error::Actor(Box::new(error.into_cause())))?;
             Ok(TurnStep {
                 checkpoint: admission.paused.then(Vec::new),
                 wait: if admission.paused {
