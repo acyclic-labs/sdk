@@ -3,6 +3,32 @@ use acyclic_fs::{OperationReceipt, WorkBudget, WorkCounters};
 use acyclic_stream::{AppendRecord, CommitMutation, CommitRequest, MemoryStream, StreamPath};
 use std::sync::Arc;
 
+fn assert_original_sources_remain_live(commit: &FilesystemCommit) {
+    use acyclic_stream::CommitCondition;
+    use std::collections::BTreeSet;
+
+    let mut heads = BTreeSet::new();
+    let mut live = BTreeSet::new();
+    for condition in commit.request().conditions() {
+        match condition {
+            CommitCondition::Tail { path, .. } => {
+                let source = path.as_str().strip_suffix("/lineage").expect("source head");
+                assert!(heads.insert(source), "duplicate source head fence");
+            }
+            CommitCondition::Absent { path } => {
+                let source = path
+                    .as_str()
+                    .strip_suffix("/retirement")
+                    .expect("source liveness");
+                assert!(live.insert(source), "duplicate source retirement fence");
+            }
+            condition => panic!("unexpected manifest fence: {condition:?}"),
+        }
+    }
+    assert_eq!(heads.len(), super::super::ORDER.len());
+    assert_eq!(heads, live, "every original head must remain live");
+}
+
 #[tokio::test]
 async fn home_apply_denies_before_publication_and_fences_every_original_source()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -559,10 +585,7 @@ async fn native_manifest_conditions_keep_original_commit_custody()
                 .condition(&fs, &mut commit, &io, &cancellation)
                 .await,
         )?;
-        assert_eq!(
-            commit.request().conditions().count(),
-            super::super::ORDER.len()
-        );
+        assert_original_sources_remain_live(&commit);
         let original = commit.request().clone();
         let retained = native.live_allocation_bytes();
         let other = acyclic_fs::NativeMaterializationWork::new(
@@ -768,10 +791,7 @@ async fn every_original_layer_fences_the_same_consuming_commit()
     Manifest::new(std::array::from_fn(|index| &generations[index]))
         .condition(&fs, &mut original, budget, &cancellation)
         .await?;
-    assert_eq!(
-        original.request().conditions().count(),
-        super::super::ORDER.len()
-    );
+    assert_original_sources_remain_live(&original);
     assert!(matches!(
         fs.submit_commit(original, budget, &cancellation)
             .await?

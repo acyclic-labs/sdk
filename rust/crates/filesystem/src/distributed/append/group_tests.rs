@@ -301,7 +301,21 @@ async fn group_checks_every_members_policy_cut_and_the_active_scope() -> TestRes
                 .compare_and_append_group(&members, &[cut_a, cut_b], &mut work, None::<&mut ()>)
                 .await?
         };
-        drop(outcome);
+        let AppendGroupOutcome::Published {
+            receipts,
+            allocation,
+        } = outcome
+        else {
+            return Err("policy refusal did not retain the member outcomes".into());
+        };
+        assert_eq!(receipts.len(), members.len());
+        assert!(receipts.iter().all(|outcome| matches!(
+            outcome,
+            FsAppendOutcome::Conflict { actual }
+                if *actual == Head::genesis(Epoch::GENESIS)
+        )));
+        drop(receipts);
+        drop(allocation);
         assert_eq!(
             store.head(authority, &mut work).await?.sequence,
             Sequence::GENESIS,

@@ -455,10 +455,7 @@ async fn publication_rebases_past_an_unrelated_concurrent_writer() -> Result<()>
             let workspace = opened.clone();
             Box::pin(async move {
                 if armed {
-                    workspace
-                        .write_text("/.system/harness-uploads/racer", "racer")
-                        .await
-                        .unwrap();
+                    workspace.write_text("/concurrent", "racer").await.unwrap();
                 }
             })
         }));
@@ -489,7 +486,7 @@ async fn publication_rebases_past_an_unrelated_concurrent_writer() -> Result<()>
             b"input"
         );
         assert_eq!(
-            host.read(&workspace, None, "/.system/harness-uploads/racer", 64, None)
+            host.read(&workspace, None, "/concurrent", 64, None)
                 .await?
                 .as_ref(),
             b"racer"
@@ -992,6 +989,9 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
             &workspace,
             None,
             &[
+                WorkspaceMutation::CreateDirectory {
+                    path: "/.system".into(),
+                },
                 WorkspaceMutation::CreateDirectory {
                     path: "/.system/harness-uploads".into(),
                 },

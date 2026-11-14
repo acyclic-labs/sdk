@@ -33,7 +33,10 @@ pub enum AppendOutcome {
     Committed(DurableCommit),
     /// The same operation and fingerprint was already durable.
     AlreadyCommitted(DurableCommit),
-    /// The expected head was stale; no bytes were appended.
+    /// An expected head or publication dependency changed; no bytes were appended.
+    /// The authority head can remain unchanged when another source refused the
+    /// publication. Such a candidate needs new dependency evidence, not a retry
+    /// against the same head.
     Conflict {
         /// Linearizable current head.
         actual: Head,

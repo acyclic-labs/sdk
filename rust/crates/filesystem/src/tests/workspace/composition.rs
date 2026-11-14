@@ -350,7 +350,15 @@ async fn restoring_generation_and_context_cut_is_atomic() -> Result<(), Box<dyn 
             );
             assert_eq!(stream.tail(marker.clone()).await?, 1);
         } else {
-            assert!(matches!(outcome, FilesystemCommitOutcome::Rejected(_)));
+            match outcome {
+                FilesystemCommitOutcome::Rejected(conflicts) => assert!(!conflicts.is_empty()),
+                FilesystemCommitOutcome::Unknown { error, .. } => {
+                    panic!("restore attempt {attempt} lost its definitive refusal: {error:?}");
+                }
+                FilesystemCommitOutcome::Committed(_) => {
+                    panic!("restore attempt {attempt} escaped its original conditions");
+                }
+            }
             assert!(stream.tail(marker.clone()).await.is_err());
             assert_eq!(
                 unbounded!(workspace, read("/plan.md", 32))?.as_ref(),
