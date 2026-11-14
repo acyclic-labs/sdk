@@ -60,7 +60,7 @@ impl FileCursor {
                                 after: directory
                                     .after
                                     .as_ref()
-                                    .map(|token| crate::core::copy_text(token, quota))
+                                    .map(|token| crate::core::copy_copy_vector(token, quota))
                                     .transpose()?,
                                 done: directory.done,
                             })

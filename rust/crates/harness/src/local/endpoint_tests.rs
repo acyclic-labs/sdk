@@ -1114,6 +1114,28 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
         ));
         assert_eq!(event, remote_feed.next().await?);
     }
+    let ui_query = |after_generation| AgentCommand::Directory {
+        agent: remote_connection.root().clone(),
+        target: crate::conversation::DirectoryTarget::Private {},
+        path: "ui".into(),
+        generation: None,
+        after_generation,
+        page: acyclic_harness_client::AgentPageRequest::default(),
+    };
+    let AgentReply::Directory { page: initial_ui } =
+        remote_connection.execute(&ui_query(None)).await?
+    else {
+        return Err(Error::Conflict("remote computed UI directory reply".into()));
+    };
+    assert_eq!(
+        initial_ui.generation.as_resource().version(),
+        Some("lazy-v1")
+    );
+    assert!(initial_ui.entries.iter().any(|entry| entry.name == "title"));
+    let ui_wait = ui_query(Some(initial_ui.generation.clone()));
+    let ui_changed = remote_connection.execute(&ui_wait);
+    tokio::pin!(ui_changed);
+    assert!(futures::poll!(&mut ui_changed).is_pending());
     let input = local.send("healthy", "Finish this healthy turn.").await?;
     let (started_position, local_started) = local_feed.next_record().await?;
     assert!(matches!(
@@ -1122,6 +1144,41 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
     ));
     assert_eq!(local_started, remote_feed.next().await?);
     local.settle("healthy", input, &mut observer).await?;
+    let AgentReply::Directory { page: changed_ui } = ui_changed.await? else {
+        return Err(Error::Conflict("remote computed UI event reply".into()));
+    };
+    assert_ne!(changed_ui.generation, initial_ui.generation);
+    let AgentReply::Directory { page: cases } = remote_connection
+        .execute(&AgentCommand::Directory {
+            agent: remote_connection.root().clone(),
+            target: crate::conversation::DirectoryTarget::Private {},
+            path: "evals".into(),
+            generation: None,
+            after_generation: None,
+            page: acyclic_harness_client::AgentPageRequest::default(),
+        })
+        .await?
+    else {
+        return Err(Error::Conflict(
+            "remote computed case directory reply".into(),
+        ));
+    };
+    assert_eq!(cases.entries.len(), 1);
+    let case = remote_connection
+        .execute(&AgentCommand::Read {
+            agent: remote_connection.root().clone(),
+            offset: 0,
+            target: acyclic_harness_client::ReadTarget::Path {
+                target: crate::conversation::DirectoryTarget::Private {},
+                path: format!("evals/{}", cases.entries[0].name),
+                generation: cases.generation,
+            },
+        })
+        .await?;
+    let (case, _) = case.content().map_err(storage)?;
+    let case: serde_json::Value = serde_json::from_slice(&case).map_err(storage)?;
+    assert_eq!(case["cut"]["checkpoint"]["conversation"], 0);
+    assert_eq!(case["outcome"]["checkpoint"]["conversation"], 1);
     let local_cut = local_feed.root_cut().await?;
     let remote_cut = remote_feed.root_cut().await?;
     assert!(!local_feed.reached(&local_cut)?);
