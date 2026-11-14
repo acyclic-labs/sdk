@@ -743,13 +743,22 @@ async fn run(
                 None => break,
             }
         }
+        let request_count = {
+            let state = transport.state.lock().unwrap_or_else(|p| p.into_inner());
+            state.2.len() - start
+        };
+        let failed_phase = if request_count != 3 {
+            Some(agents.settlement_snapshot(&root).await?.1.phase)
+        } else {
+            None
+        };
         let state = transport.state.lock().unwrap_or_else(|p| p.into_inner());
         // The turn's call, its answer and the settlement's retrospective.
         let reported = &state.2[start..];
         assert_eq!(
             reported.len(),
             3,
-            "{family}: pressure turn requests; committed (step, purpose, input): {:?}",
+            "{family}: pressure turn requests; committed (step, purpose, input): {:?}; settlement: {failed_phase:?}",
             observed
                 .iter()
                 .map(|record| (record.dispatch.step, &record.purpose, record.complete_input_tokens))
