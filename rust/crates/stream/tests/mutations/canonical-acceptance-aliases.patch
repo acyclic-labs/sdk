@@ -1,0 +1,13 @@
+diff --git a/rust/crates/stream/src/memory/commit.rs b/rust/crates/stream/src/memory/commit.rs
+index 56ab6d8d2ca..ce00519963a 100644
+--- a/rust/crates/stream/src/memory/commit.rs
++++ b/rust/crates/stream/src/memory/commit.rs
+@@ -903,7 +903,7 @@ fn bind_acceptance(
+             continue;
+         }
+         let path = crate::request::fact_path(fact);
+-        if canonical {
++        if canonical && false {
+             // The canonical spine owns the same new batch. Withdraw its
+             // bounded aliases while binding that original batch once.
+             let roots = namespace
