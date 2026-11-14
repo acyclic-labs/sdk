@@ -1225,6 +1225,20 @@ async fn approval_selection_replays_its_policy_before_any_worker_context() -> Re
         summary: Option<FileRef>,
     }
     impl TurnHost for ControlHost {
+        fn park<'a>(
+            &'a self,
+            agent: &'a AgentState,
+            operation: OperationId,
+        ) -> BoxFuture<'a, acyclic_harness_core::Result<()>> {
+            self.worker.park(agent, operation)
+        }
+        fn settle<'a>(
+            &'a self,
+            agent: &'a AgentState,
+            operation: OperationId,
+        ) -> BoxFuture<'a, acyclic_harness_core::Result<()>> {
+            self.worker.settle(agent, operation)
+        }
         fn select_approvals<'a>(
             &'a self,
             agent: &'a AgentState,
@@ -1263,14 +1277,12 @@ async fn approval_selection_replays_its_policy_before_any_worker_context() -> Re
         fn open<'a>(
             &'a self,
             agent: &'a AgentState,
-            turn: OperationId,
-            inbox: u64,
-            cursor: u64,
+            identity: TurnIdentity,
             input: &'a acyclic_harness_core::model::ModelContent,
             stop: acyclic_actors::guest::CancellationToken,
         ) -> BoxFuture<'a, acyclic_harness_core::Result<OpenTurn>> {
             self.opened.lock().unwrap().push(input.clone());
-            self.worker.open(agent, turn, inbox, cursor, input, stop)
+            self.worker.open(agent, identity, input, stop)
         }
     }
     for (parked, escalated) in [(false, false), (false, true), (true, false), (true, true)] {
