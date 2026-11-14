@@ -139,6 +139,7 @@ fn credential_provider_renews_each_physical_retry_without_changing_the_body() {
                             .result()
                             .await
                             .unwrap()
+                            .as_ref()
                             .unwrap();
                         prop_assert_eq!(trace.tail().await.unwrap(), 4);
                         let mut query = TraceQuery::new(
