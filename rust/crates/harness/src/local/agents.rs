@@ -9,7 +9,6 @@ use crate::{
     agent::{
         AgentHost, AgentPath, AgentState, IntentId, WorkspaceEntry, WorkspaceRole, WorkspaceTable,
     },
-    conversation::{ContentAccess, ContentPublisher},
     executor::{Executor, StockExecutor},
     filesystem::{
         FilesystemTurnHost, HOME_VOLUME, PRIVATE_VOLUME, Tasks, TurnAuthority, TurnContext,
@@ -97,7 +96,7 @@ impl crate::hosting::Platform for LocalUser {
     ) -> BoxProviderFuture<'_, Result<crate::hosting::RootRequest>> {
         Box::pin(async move {
             let local = self.harness()?;
-            let policy = local.root_policy(&agent).await?;
+            let policy = local.preset.approval_policy.clone();
             Ok(crate::hosting::RootRequest {
                 peer: true,
                 agent,
@@ -128,17 +127,19 @@ impl crate::hosting::Platform for LocalUser {
 
     fn prompt_command<'a>(
         &'a self,
+        agent: &'a AgentPath,
         text: &'a str,
     ) -> BoxProviderFuture<'a, Result<Option<String>>> {
-        Box::pin(async move { self.harness()?.resolve_prompt_command(text).await })
+        Box::pin(async move { self.harness()?.resolve_prompt_command(agent, text).await })
     }
 
     fn attachments<'a>(
         &'a self,
+        agent: &'a AgentPath,
         key: &'a [u8],
         text: Option<&'a str>,
     ) -> BoxProviderFuture<'a, Result<Option<crate::conversation::FileRef>>> {
-        Box::pin(async move { self.harness()?.prompt_attachments(key, text).await })
+        Box::pin(async move { self.harness()?.prompt_attachments(agent, key, text).await })
     }
 
     #[cfg(any(test, not(target_arch = "wasm32")))]
@@ -295,11 +296,6 @@ impl TurnContext for LocalContext {
                 .0
                 .upgrade()
                 .ok_or_else(|| Error::Unsupported("local harness is closed".into()))?;
-            let writer = authority
-                .content
-                .writer
-                .as_ref()
-                .ok_or_else(|| Error::Invalid("agent turn has no private writer".into()))?;
             let bindings = local
                 .turn_bindings(
                     agent,
@@ -312,22 +308,19 @@ impl TurnContext for LocalContext {
                 .journal
                 .output_content(turn)?
                 .ok_or_else(|| Error::Invalid("agent turn has no journal content".into()))?;
+            let writer = journal_content
+                .writer
+                .as_deref()
+                .ok_or_else(|| Error::Invalid("agent turn has no journal writer".into()))?;
             let epoch = local
-                .context_epoch(
-                    agent,
-                    &bindings.context,
-                    &**writer,
-                    journal_content
-                        .writer
-                        .as_deref()
-                        .ok_or_else(|| Error::Invalid("agent turn has no journal writer".into()))?,
-                )?
+                .context_epoch(agent, &bindings.context, writer)?
                 .await?;
             let executor = executor
                 .with_context_epoch(
                     &epoch,
                     journal_content.reader.clone(),
                     authority.content.reader.clone(),
+                    journal_content.writer.clone(),
                 )
                 .await?;
             #[cfg(not(target_arch = "wasm32"))]
@@ -335,7 +328,6 @@ impl TurnContext for LocalContext {
                 Some(shell) => executor.with_tool_source(Arc::new(super::programs::Programs {
                     local: Arc::downgrade(&local),
                     home: bindings.context.scratch.clone(),
-                    journal: bindings.context.journal.clone(),
                     verifier: bindings.context.verifier.clone(),
                     scope: bindings.context.scope.copy(&mut None)?,
                     shell,
@@ -346,13 +338,7 @@ impl TurnContext for LocalContext {
             // Before the turn's first request: the step-0 boundary appends
             // what changed since the epoch froze.
             let through = local
-                .announce_changes(
-                    agent,
-                    &epoch,
-                    &bindings.context,
-                    &**writer,
-                    &journal_content,
-                )
+                .announce_changes(agent, &epoch, &bindings.context, &journal_content)
                 .await?;
             if let Some(through) = through {
                 authority
@@ -362,15 +348,7 @@ impl TurnContext for LocalContext {
                     .include_prepared_sources(turn, through)?;
             }
             #[cfg(any(test, not(target_arch = "wasm32")))]
-            let hooks = local
-                .turn_hooks(
-                    turn,
-                    journal_content
-                        .writer
-                        .as_deref()
-                        .ok_or_else(|| Error::Invalid("agent turn has no journal writer".into()))?,
-                )
-                .await?;
+            let hooks = local.turn_hooks(turn, writer).await?;
             let (executor, context) =
                 Tasks::bind(&bindings.harness, executor, agent, turn, authority)?;
             // SessionStart runs once per agent, keyed by the agent itself, so
@@ -428,25 +406,7 @@ impl TurnContext for LocalContext {
                         .context
                         .workspace
                         .as_ref()
-                        .and_then(|workspace| {
-                            if !entry.root.is_empty()
-                                || entry.mode != crate::agent::WorkspaceMode::ReadWrite
-                            {
-                                return None;
-                            }
-                            let volume = entry.as_volume()?;
-                            let (relative, mount) = workspace
-                                .mounts
-                                .mounts()
-                                .find(|(_, mount)| &mount.view.volume == volume)?;
-                            match &mount.native_root {
-                                crate::workspace::NativeRoot::Logical => None,
-                                crate::workspace::NativeRoot::Composed => {
-                                    Some(workspace.mounts.root.join(relative))
-                                }
-                                crate::workspace::NativeRoot::Path(path) => Some(path.clone()),
-                            }
-                        })
+                        .and_then(|workspace| workspace.mounts.native_root_for_entry(entry.id))
                         .map(|path| path.to_string_lossy().into_owned());
                     #[cfg(not(any(test, not(target_arch = "wasm32"))))]
                     let path: Option<String> = None;
@@ -743,9 +703,9 @@ impl LocalHarness {
         content: &'a crate::runtime::ContentBindings,
     ) -> BoxProviderFuture<'a, Result<TurnBindings<'a>>> {
         Box::pin(async move {
-            let project = WorkspaceTable::primary_in(&agent.volumes)
-                .and_then(|binding| binding.as_volume())
+            let primary = WorkspaceTable::primary_in(&agent.volumes)
                 .ok_or_else(|| Error::Invalid("agent has no project volume".into()))?;
+            let project = primary.volume()?;
             let scratch = agent
                 .volumes
                 .iter()
@@ -762,6 +722,7 @@ impl LocalHarness {
                 .ok_or_else(|| Error::Invalid("agent has no private volume".into()))?;
             let context = super::context::Binding {
                 project,
+                project_root: &primary.root,
                 scratch,
                 #[cfg(any(test, not(target_arch = "wasm32")))]
                 journal,
@@ -773,18 +734,6 @@ impl LocalHarness {
                 #[cfg(any(test, not(target_arch = "wasm32")))]
                 workspace: self.workspace.clone(),
             };
-            if project == &self.project
-                && scratch == &self.scratch
-                && agent.volumes.iter().any(|binding| {
-                    binding.role == WorkspaceRole::Shared
-                        && binding.as_volume() == Some(&self.shared)
-                })
-            {
-                return Ok(TurnBindings {
-                    harness: Arc::clone(&self.harness),
-                    context,
-                });
-            }
             let home_content = crate::runtime::ContentBindings {
                 volume: scratch.clone(),
                 reader: Arc::clone(&content.reader),
@@ -797,6 +746,7 @@ impl LocalHarness {
                     None,
                 )?),
             };
+
             #[cfg(any(test, not(target_arch = "wasm32")))]
             if super::open::uses_native_execution(&self.tools)?
                 && let Some(workspace) = &self.workspace
@@ -1011,35 +961,6 @@ impl LocalHarness {
         ))
     }
 
-    /// The configured approval policy, staged once on the root's private
-    /// volume: the root agent's tools run under it.
-    async fn root_policy(
-        &self,
-        root: &crate::agent::AgentId,
-    ) -> Result<crate::conversation::FileRef> {
-        let policy = crate::contract::canonical_json_bytes(&self.preset.approval_policy)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        let mut hasher = blake3::Hasher::new_derive_key("acyclic.local.agent.policy.v1");
-        hasher.update(root.as_str().as_bytes());
-        hasher.update(&[0]);
-        hasher.update(&policy);
-        let mut bytes = [0; 16];
-        hasher.finalize_xof().fill(&mut bytes);
-        let operation = OperationId::from_bytes(bytes);
-        Ok(self
-            .input_publisher_with_limit(self.limits.file_bytes)?
-            .stage_once(
-                operation,
-                &format!("inputs/{operation}.json"),
-                &policy,
-                "application/json",
-                "policy",
-                ContentAccess::default(),
-            )?
-            .await?
-            .0)
-    }
-
     // Hosting is initialized once by the original cell. Erase its future here
     // so every connection holds a pointer instead of the entire startup chain.
     fn host_agents(self: &Arc<Self>) -> BoxProviderFuture<'_, Result<Hosted>> {
@@ -1133,7 +1054,7 @@ impl LocalHarness {
         // another policy would refuse the reopen.
         let existing = AgentPath::root(&id);
         let root = async {
-            let configured = self.root_policy(&id).await?;
+            let configured = self.preset.approval_policy.clone();
             let server = match bound.agents().state(&existing).await {
                 Ok(state) => {
                     if state
@@ -1145,7 +1066,14 @@ impl LocalHarness {
                         return Err(Error::Invalid("this session has another topology; start with a fresh --host-state-directory".into()));
                     }
                     self.require_shared_binding(&state)?;
-                    if state.policy.as_ref() != Some(&configured) {
+                    let bytes = crate::contract::canonical_json_bytes(&configured)
+                        .map_err(|error| Error::Invalid(error.to_string()))?;
+                    let descriptor = crate::conversation::FileDescriptor::from_bytes(
+                        &bytes,
+                        "application/json",
+                        &mut None,
+                    )?;
+                    if state.policy.as_ref().map(|file| file.descriptor()) != Some(&descriptor) {
                         tracing::warn!(
                             "the configured approval policy differs from the one this workspace's \
                              root agent was created with; the agent keeps its original policy"

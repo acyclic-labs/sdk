@@ -116,6 +116,27 @@ impl Limits {
         Ok(())
     }
 
+    /// Bounds bytes and destination before invoking a publication owner.
+    pub(crate) fn validate_publication(
+        &self,
+        path: &str,
+        bytes: u64,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if self.file_bytes.is_some_and(|maximum| bytes > maximum)
+            || self
+                .path_bytes
+                .is_some_and(|maximum| path.len() > maximum.get())
+        {
+            return Err(conversation_error(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "file exceeds task content limits",
+            ));
+        }
+        Ok(())
+    }
+
     /// Checks an immutable file against these limits.
     pub fn validate_file(
         &self,
@@ -269,9 +290,9 @@ pub(crate) use content::content_error;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use content::require_owner_reader;
 pub use content::{
-    BoundedContentFuture, CompositeContentVerifier, ContentAccess, ContentChange,
-    ContentChangeResult, ContentChanges, ContentHold, ContentIo, ContentMountResolver,
-    ContentPublisher, ContentResidencyVerifier, ContentSource,
+    BoundedContentFuture, CapturedContent, CompositeContentVerifier, ContentAccess, ContentCapture,
+    ContentChange, ContentChangeResult, ContentChanges, ContentHold, ContentIo,
+    ContentMountResolver, ContentPath, ContentPublisher, ContentResidencyVerifier, ContentSource,
 };
 pub use directory::{
     DirectoryQuery, DirectoryRead, DirectoryTarget, MAX_PRIVATE_DIRECTORY_PAGE,

@@ -101,6 +101,7 @@ pub use volumes::SpawnVolumes;
 
 pub use checkpoint::MAX_CHECKPOINT_BYTES;
 pub(crate) use checkpoint::{checkpoint_head, checkpoint_state, committed_head};
+pub(crate) use commit::bind_root_policy;
 pub use commit::{
     Spawn, Submitted, archive, create_root, create_root_with_peer, inbox_tail, intent_key, send,
     set_peer_membership, spawn, submit,
@@ -111,8 +112,8 @@ pub use driver::{
     approval_intent, encode_user_input, expand_attachments, model_input, model_input_at,
     turn_announcements, turn_id, turn_notices, turn_segment,
 };
-pub(crate) use handler::{Agents, observe_state};
 pub use handler::{AgentHandler, Companions, INBOX};
+pub(crate) use handler::{Agents, observe_state};
 pub use host::{AgentHost, Delivered, InputProgress, actor_store};
 pub use kernel::{CONTINUE_NOW, MAX_FANOUT};
 pub use layout::{

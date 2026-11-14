@@ -365,21 +365,11 @@ impl TaskContext {
         scope: &RuntimeScope,
         io: Option<&ContentIo>,
     ) -> Result<(FileRef, u64)> {
-        if scope
-            .limits
-            .file_bytes
-            .is_some_and(|maximum| bytes.len() as u64 > maximum)
-            || scope
+        crate::executor::with_history_io(io, |work| {
+            scope
                 .limits
-                .path_bytes
-                .is_some_and(|maximum| path.len() > maximum.get())
-        {
-            return Err(content_error(
-                io,
-                ErrorCode::Invalid,
-                "file exceeds task content limits",
-            ));
-        }
+                .validate_publication(path, bytes.len() as u64, work)
+        })?;
         let content = binding.ok_or_else(|| {
             content_error(io, ErrorCode::Unsupported, "content publisher is not bound")
         })?;
@@ -436,7 +426,7 @@ impl TaskContext {
                 media_type,
                 display_name,
             },
-            scope,
+            &scope.limits,
             io,
         )
         .await
@@ -540,11 +530,11 @@ async fn finish_publication<'io>(
     content: &ContentBindings,
     output: (FileRef, Option<crate::conversation::ContentHold<'io>>),
     expected: PublishedFile<'_>,
-    scope: &RuntimeScope,
+    limits: &Limits,
     io: Option<&'io ContentIo>,
 ) -> Result<(FileRef, u64)> {
     let file = &output.0;
-    crate::executor::with_history_io(io, |work| scope.limits.validate_file(file, work))?;
+    crate::executor::with_history_io(io, |work| limits.validate_file(file, work))?;
     if file.volume() != expected.volume
         || file.path() != expected.path
         || file.display_name() != expected.display_name
@@ -577,6 +567,81 @@ async fn finish_publication<'io>(
         hold.into_retained()?;
     }
     Ok((file, retained))
+}
+
+impl ContentBindings {
+    pub(crate) async fn observe_retained(
+        &self,
+        publisher: &dyn ContentPublisher,
+        operation: OperationId,
+        limits: Limits,
+    ) -> Result<Option<FileRef>> {
+        if publisher.volume() != &self.volume {
+            return Err(Error::Invalid(
+                "retained publisher belongs to another volume".into(),
+            ));
+        }
+        let (file, hold) = publisher
+            .observe_staged_once(operation, None, limits.file_bytes, Default::default())?
+            .await?;
+        if let Some(file) = &file {
+            limits.validate_file(file, &mut None)?;
+            if file.volume() != &self.volume {
+                return Err(Error::Invalid(
+                    "retained receipt belongs to another volume".into(),
+                ));
+            }
+            self.reader
+                .verify_publication(file, file.descriptor().byte_length(), None)?
+                .await?;
+        }
+        if let Some(hold) = hold {
+            hold.into_retained()?;
+        }
+        Ok(file)
+    }
+
+    /// Publishes host-retained bytes through existing custody, without
+    /// borrowing or extending a task's workspace publication grants.
+    pub(crate) async fn retain_once(
+        &self,
+        publisher: &dyn ContentPublisher,
+        operation: OperationId,
+        (path, bytes, media_type, display_name): (&str, &[u8], &str, &str),
+        limits: Limits,
+    ) -> Result<FileRef> {
+        if publisher.volume() != &self.volume {
+            return Err(Error::Invalid(
+                "retained publisher belongs to another volume".into(),
+            ));
+        }
+        limits.validate_publication(path, bytes.len() as u64, &mut None)?;
+        let output = publisher
+            .stage_once(
+                operation,
+                path,
+                bytes,
+                media_type,
+                display_name,
+                crate::conversation::ContentAccess::default(),
+            )?
+            .await?;
+        finish_publication(
+            self,
+            output,
+            PublishedFile {
+                volume: &self.volume,
+                path,
+                bytes,
+                media_type,
+                display_name,
+            },
+            &limits,
+            None,
+        )
+        .await
+        .map(|(file, _)| file)
+    }
 }
 
 #[cfg(test)]

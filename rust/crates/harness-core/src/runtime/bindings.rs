@@ -225,6 +225,7 @@ impl AgentHarness {
             scope,
             output_content: private,
             journal_output: None,
+            journal_publisher: None,
             journal: None,
             agent: None,
             children: None,

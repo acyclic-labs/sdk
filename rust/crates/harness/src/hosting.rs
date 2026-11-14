@@ -136,9 +136,10 @@ pub trait Platform: ProviderPlatform + 'static {
     /// A platform with no project of its own to read expands none.
     fn prompt_command<'a>(
         &'a self,
+        agent: &'a AgentPath,
         text: &'a str,
     ) -> BoxProviderFuture<'a, crate::Result<Option<String>>> {
-        let _ = text;
+        let _ = (agent, text);
         Box::pin(async { Ok(None) })
     }
 
@@ -150,10 +151,11 @@ pub trait Platform: ProviderPlatform + 'static {
     /// its own to read attaches none.
     fn attachments<'a>(
         &'a self,
+        agent: &'a AgentPath,
         key: &'a [u8],
         text: Option<&'a str>,
     ) -> BoxProviderFuture<'a, crate::Result<Option<crate::conversation::FileRef>>> {
-        let _ = (key, text);
+        let _ = (agent, key, text);
         Box::pin(async { Ok(None) })
     }
 
@@ -1161,15 +1163,21 @@ where
                     {
                         Some(body) => (
                             body,
-                            self.platform.attachments(&key, None).await.map_err(turn)?,
+                            self.platform
+                                .attachments(agent, &key, None)
+                                .await
+                                .map_err(turn)?,
                         ),
                         None => {
-                            let expanded =
-                                self.platform.prompt_command(source).await.map_err(turn)?;
+                            let expanded = self
+                                .platform
+                                .prompt_command(agent, source)
+                                .await
+                                .map_err(turn)?;
                             let text = expanded.as_deref().unwrap_or(source);
                             let attachments = self
                                 .platform
-                                .attachments(&key, Some(text))
+                                .attachments(agent, &key, Some(text))
                                 .await
                                 .map_err(turn)?;
                             let body = self

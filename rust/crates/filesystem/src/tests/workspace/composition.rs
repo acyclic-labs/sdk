@@ -732,7 +732,7 @@ async fn root_creation_creates_every_volume_in_the_caller_commit() -> Result<(),
                     counter: "peak_allocation_bytes",
                     observed,
                     maximum,
-                }) if observed == maximum + (creations.len() * std::mem::size_of::<crate::WorkspaceId>()) as u64
+                }) if observed == maximum + (creations.len() * std::mem::size_of::<crate::CreatedGeneration>()) as u64
             ),
             "batch output admission was not first: {failure:?}"
         );
@@ -746,7 +746,7 @@ async fn root_creation_creates_every_volume_in_the_caller_commit() -> Result<(),
             .await?;
         assert_eq!(
             result.1.bytes(),
-            (result.0.capacity() * std::mem::size_of::<crate::WorkspaceId>()) as u64,
+            (result.0.capacity() * std::mem::size_of::<crate::CreatedGeneration>()) as u64,
             "composed output lost its original backing allocation"
         );
         assert!(result.1.work().shares_ledger(&work));
@@ -756,6 +756,9 @@ async fn root_creation_creates_every_volume_in_the_caller_commit() -> Result<(),
     #[cfg(target_arch = "wasm32")]
     let created = unbounded!(fs, prepare_create_many(&creations, &mut commit))?;
     assert_eq!(created.len(), 2);
+    let prepared_private = created[0];
+    assert!(unbounded!(fs, open_workspace("root-private")).is_err());
+    assert!(unbounded!(fs, open_workspace("root-result")).is_err());
     #[cfg(not(target_arch = "wasm32"))]
     {
         let retained = allocation.work().live_allocation_bytes();
@@ -770,6 +773,10 @@ async fn root_creation_creates_every_volume_in_the_caller_commit() -> Result<(),
         return Err("root creation did not commit".into());
     };
     let private = unbounded!(fs, open_workspace("root-private"))?;
+    assert_eq!(
+        unbounded!(private, head())?.id(),
+        prepared_private.generation
+    );
     assert_eq!(
         unbounded!(private, read("/AGENTS.md", 16))?.as_ref(),
         b"be brief"

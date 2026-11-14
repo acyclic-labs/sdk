@@ -17,7 +17,7 @@ mod local_owner;
 pub(in crate::filesystem) use access::owner_mount_options;
 use access::{NativeAccessAuthority, authenticated_mount_options};
 pub use access::{
-    WorkspaceAccess, require_unrestricted_volume_access, require_unrestricted_workspace_read,
+    WorkspaceAccess, require_unrestricted_volume_access, require_workspace_subtree_read,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use local_owner::{

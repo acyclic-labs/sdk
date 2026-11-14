@@ -1,14 +1,12 @@
 use super::MountTable;
 use crate::{Error, Result};
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 
 impl<T> MountTable<T> {
-    /// Explicit native process hints, including each projected path's access mode.
+    /// One JSON map of visible native workspace names to paths for this target.
     pub fn environment(&self) -> Result<BTreeMap<String, String>> {
-        let mut environment = BTreeMap::new();
+        let mut workspaces = BTreeMap::new();
         for (relative, path, mount) in self.native_mounts() {
-            let mut key = String::from("ACYCLIC_VOLUME_");
             let name = if relative.is_empty() {
                 mount.view.name.as_str()
             } else {
@@ -17,32 +15,21 @@ impl<T> MountTable<T> {
                     .or_else(|| relative.strip_prefix("volume://"))
                     .ok_or_else(|| Error::Invalid("invalid volume address".into()))?
             };
-            for component in name.split('/') {
-                if !key.ends_with('_') {
-                    key.push('_');
-                }
-                for byte in component.bytes() {
-                    if byte.is_ascii_alphanumeric() {
-                        key.push(char::from(byte.to_ascii_uppercase()));
-                    } else {
-                        write!(key, "_{byte:02X}")
-                            .map_err(|error| Error::Storage(error.to_string()))?;
-                    }
-                }
-            }
-
             let path = path
                 .to_str()
                 .ok_or_else(|| Error::Invalid("task mount path is not UTF-8".into()))?;
-            if environment.insert(key.clone(), path.into()).is_some()
-                || environment
-                    .insert(format!("{key}_MODE"), mode_name(mount.mode).into())
-                    .is_some()
+            if workspaces
+                .insert(name.to_owned(), path.to_owned())
+                .is_some()
             {
-                return Err(Error::Conflict("volume discovery hints collide".into()));
+                return Err(Error::Conflict("workspace discovery names collide".into()));
             }
         }
-        Ok(environment)
+        Ok(BTreeMap::from([(
+            "ACYCLIC_WORKSPACES".into(),
+            serde_json::to_string(&workspaces)
+                .map_err(|error| Error::Storage(error.to_string()))?,
+        )]))
     }
 
     /// Task-local addresses and modes, independent of host projection paths.

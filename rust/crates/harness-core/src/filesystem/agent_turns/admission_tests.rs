@@ -359,7 +359,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             "bound host custody repeated cryptographic work"
         );
         let control_scope = control_scope?;
-        let guest = admitted.authority(&[]).await?;
+        let guest = admitted.authority(&[], None).await?;
         assert!(!guest.grants.contains(HARNESS_HOST));
         let control_grant = ContentGrant::verify(
             &guest.verifier,
@@ -485,6 +485,98 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             4096,
             None,
         )?;
+        let unselected = host
+            .put_content(
+                &journal,
+                &control_grant,
+                "inputs/skills/unselected/SKILL.md",
+                b"unselected skill body",
+                "text/markdown",
+                "SKILL.md",
+                file_bytes,
+                &crate::IdempotencyKey::new("unselected-skill-body")?,
+                None,
+                Default::default(),
+            )
+            .await?;
+        let turn = OperationId::from_bytes([207; 16]);
+        let other_turn = OperationId::from_bytes([208; 16]);
+        let mut turn_files = Vec::new();
+        for selected in [turn, other_turn] {
+            turn_files.push(
+                host.put_content(
+                    &journal,
+                    &control_grant,
+                    &format!("{TURN_INPUTS}/{selected}/0/0"),
+                    b"admitted steering",
+                    "text/plain",
+                    "steering",
+                    file_bytes,
+                    &crate::IdempotencyKey::new(format!("turn-input-{selected}"))?,
+                    None,
+                    Default::default(),
+                )
+                .await?,
+            );
+        }
+        let native: RuntimeAuthority = root.clone().into();
+        let task = AdmittedAgent::verify(&native, &TurnAdmission::LocalRoot, &path, &volumes)?
+            .authority(&[], Some(turn))
+            .await?;
+        assert!(!task.grants.contains(HARNESS_HOST));
+        let task_reader =
+            FilesystemContentVerifier::new(host.clone(), &task.verifier, &task.scope, 4096, None)?;
+        assert_eq!(
+            task_reader
+                .read(&archived, 4096, None, None)?
+                .await?
+                .as_ref(),
+            b"original checkout guidance"
+        );
+        assert_eq!(
+            task_reader
+                .read(&turn_files[0], 4096, None, None)?
+                .await?
+                .as_ref(),
+            b"admitted steering"
+        );
+        for file in [&turn_files[1], &manifest, &unselected] {
+            let denied = async { task_reader.read(file, 4096, None, None)?.await }
+                .await
+                .expect_err("a turn input route granted another turn or host controls");
+            assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+        }
+        let listing = async {
+            task_reader
+                .list_private_directory(
+                    &journal,
+                    crate::context::ContextEpoch::INSTRUCTIONS_DIRECTORY,
+                    crate::context::ContextEpoch::INSTRUCTIONS_DIRECTORY,
+                    crate::filesystem::DirectoryOptions {
+                        generation: None,
+                        after: None,
+                        maximum_entries: 1,
+                        ceiling: None,
+                    },
+                )
+                .await
+        }
+        .await
+        .expect_err("captured instruction reads granted journal listing");
+        assert_eq!(listing.code(), crate::wire::ErrorCode::Unauthorized);
+        assert_eq!(
+            ContentGrant::verify(
+                &task.verifier,
+                &task.scope,
+                &journal,
+                VolumeOperation::Write,
+                &mut None,
+            )
+            .err()
+            .expect("a turn input route granted journal writes")
+            .code(),
+            crate::wire::ErrorCode::Unauthorized
+        );
         assert!(
             host_reader
                 .read(&manifest, 4096, None, None)?
@@ -1003,7 +1095,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             "reading a foreign journal changed its owner's policy"
         );
         let reader_authority = reader_admission
-            .authority(&[shared.clone(), source_input.clone()])
+            .authority(&[shared.clone(), source_input.clone()], None)
             .await?;
         let foreign_reader = FilesystemContentVerifier::new(
             host.clone(),
@@ -1416,7 +1508,7 @@ async fn wait_selection_survives_reopening_and_reference_replacement() -> Result
     let control_volume = admitted.journal.clone();
     host.create_volume(&control_volume).await?;
     let control_scope = admitted.control_scope(&Capabilities::default()).await?;
-    let authority = admitted.authority(&[]).await?;
+    let authority = admitted.authority(&[], None).await?;
     let grant = crate::conversation::ContentGrant::verify(
         &authority.verifier,
         &authority.scope,
@@ -1832,7 +1924,7 @@ fn pure_agent_admission_has_no_mint_and_intersects_the_actual_private_owner() ->
         |()| {
             futures::executor::block_on(async {
                 AdmittedAgent::verify(&issuer, &admission, &path, &volumes)?
-                    .authority(&[])
+                    .authority(&[], None)
                     .await
                     .map(|_| ())
             })

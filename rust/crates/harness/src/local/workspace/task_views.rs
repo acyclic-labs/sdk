@@ -55,6 +55,7 @@ impl LocalWorkspace {
                         .mount_options(
                             source.workspace.workspace(),
                             Some(&mount.view.volume),
+                            &mount.view.root,
                             !mount.mode.read_only(),
                             &work,
                         )
@@ -200,9 +201,7 @@ impl LocalWorkspace {
         if self.mounting != WorkspaceMounting::Physical {
             return Ok(());
         }
-        let Some(project) = crate::agent::WorkspaceTable::primary_in(bindings)
-            .filter(|binding| binding.role == crate::agent::WorkspaceRole::User)
-        else {
+        let Some(project) = crate::agent::WorkspaceTable::primary_in(bindings) else {
             return Ok(());
         };
         if project.volume()?.class() == crate::conversation::VolumeClass::SessionShared {
@@ -238,11 +237,27 @@ impl LocalWorkspace {
         bindings: &[crate::agent::WorkspaceEntry],
         authority: &crate::filesystem::NativeMountAuthority,
     ) -> Result<Arc<LocalWorkspace>> {
+        let primary = mounts::primary(bindings, project)?;
         let mounts = Arc::new(mounts::owner(
             &self.path,
-            project,
-            None,
-            mounts::auxiliary(bindings).map(|(name, volume)| (name.clone(), volume.clone(), None)),
+            (
+                primary.id,
+                &primary.name,
+                project,
+                &primary.root,
+                primary.mode,
+                None,
+            ),
+            mounts::auxiliary(bindings).map(|(entry, volume)| {
+                (
+                    entry.id,
+                    entry.name.clone(),
+                    volume.clone(),
+                    entry.root.clone(),
+                    entry.mode,
+                    None,
+                )
+            }),
         )?);
         Ok(Arc::new(self.unmounted_task_view(view, mounts, authority)))
     }

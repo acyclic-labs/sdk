@@ -1,11 +1,11 @@
 //! Contract checks shared by native writer captures and fuzzing.
 use super::*;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
-/// Check the deployed record and materialization receipt admission functions.
+/// Check retained records and the shared typed-generation admission contract.
 pub fn check(bytes: &[u8]) {
     let resource = serde_json::from_slice::<crate::resources::ResourceRef>(bytes);
-    let admitted = decode_materialized(bytes);
+    let admitted = serde_json::from_slice::<crate::resources::GenerationRef>(bytes);
     assert_eq!(
         admitted.is_ok(),
         resource
@@ -19,8 +19,10 @@ pub fn check(bytes: &[u8]) {
         wrong["kind"] = "workspace".into();
         assert!(
             matches!(
-                decode_materialized(&serde_json::to_vec(&wrong).unwrap()),
-                Err(Error::Storage(reason)) if reason.contains("typed resource kind mismatch")
+                serde_json::from_slice::<crate::resources::GenerationRef>(
+                    &serde_json::to_vec(&wrong).unwrap()
+                ),
+                Err(error) if error.to_string().contains("typed resource kind mismatch")
             ),
             "foreign skill receipt kind admitted or refusal changed"
         );
@@ -28,7 +30,7 @@ pub fn check(bytes: &[u8]) {
 
     let reference = match serde_json::from_slice::<RetainedSource>(bytes) {
         Ok(RetainedSource::Batch(records)) => records,
-        Ok(record) => HashMap::from([(
+        Ok(record) => BTreeMap::from([(
             blake3::hash(&serde_json::to_vec(&record).unwrap()).to_string(),
             record,
         )]),
@@ -46,6 +48,24 @@ pub fn check(bytes: &[u8]) {
     let selected = reference.keys().min().map(String::as_str).unwrap_or("");
     check_selection(bytes, selected, &reference);
     check_selection(bytes, "absent", &reference);
+    // The indexed storage envelope versions the same source identity codec.
+    let mut envelope = serde_json::json!({
+        "version": 1,
+        "sources": serde_json::from_slice::<serde_json::Value>(bytes).unwrap(),
+    });
+    assert_eq!(
+        retained::decode_stream_records(&serde_json::to_vec(&envelope).unwrap(), selected).is_ok(),
+        retained::decode_records(bytes, selected).is_ok(),
+        "indexed skill records changed source admission",
+    );
+    envelope["version"] = 2.into();
+    assert!(
+        matches!(
+            retained::decode_stream_records(&serde_json::to_vec(&envelope).unwrap(), selected),
+            Err(Error::Unsupported(_)),
+        ),
+        "foreign skill record format admitted"
+    );
 
     // Derive single-record, changed-sibling and nested-batch inputs from the
     // original writer record. These are mutations, not captured wire fixtures.
@@ -57,7 +77,7 @@ pub fn check(bytes: &[u8]) {
         check_selection(
             &single,
             &selected,
-            &HashMap::from([(selected.clone(), record)]),
+            &BTreeMap::from([(selected.clone(), record)]),
         );
         // Build one defect at a time from an admitted original record. A fuzzed
         // bundle may have several unrelated defects with unordered diagnostics.
@@ -94,7 +114,7 @@ pub fn check(bytes: &[u8]) {
 fn check_selection<T: std::borrow::Borrow<RetainedSource> + serde::Serialize>(
     bytes: &[u8],
     selected: &str,
-    reference: &HashMap<String, T>,
+    reference: &BTreeMap<String, T>,
 ) {
     let expected = reference.contains_key(selected)
         && reference.iter().all(|(key, record)| {

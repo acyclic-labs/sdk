@@ -1,7 +1,8 @@
 //! `agent.ts` admission: the six original sources fold over
 //! the model the session was started with; the result selects the model and
-//! its sampling. Each source cut's outcome is recorded as an
-//! [`Admission`](crate::config::Admission) in the journal.
+//! its sampling. Each complete original source cut has an outcome retained
+//! as an Admission in the original owner Streams.
+
 use super::*;
 use crate::config::{self, AdmissionStatus, AgentConfig, Sampling};
 use crate::conversation::{ContentAccess, ContentGrant};
@@ -19,14 +20,16 @@ pub(super) struct Settings {
 pub(super) type Resolve<'a> = Option<&'a (dyn Fn(&str) -> Result<Arc<ResolvedModel>> + Sync)>;
 
 /// What a session's settings are read from and recorded in.
+#[derive(Clone)]
 pub(super) struct Volumes<'a> {
     pub(super) files: &'a Arc<LocalFilesystem>,
     pub(super) verifier: &'a AuthorityVerifier,
     pub(super) signed: &'a Scope,
     pub(super) home: &'a VolumeRef,
-    pub(super) journal: &'a VolumeRef,
     pub(super) seed: (&'a VolumeRef, &'a crate::resources::GenerationRef),
     pub(super) configuration: &'a [Option<crate::layers::PinnedLayer>; 4],
+    pub(super) decisions: crate::config::SettingsAdmissions,
+
     pub(super) maximum_bytes: Option<u64>,
 }
 
@@ -336,6 +339,7 @@ async fn admitted<T>(
 
 /// Records the selected file version's outcome under the complete original
 /// configuration cut, so issuer edits cannot overwrite another cut's outcome.
+
 async fn record(
     volumes: &Volumes<'_>,
     io: Option<&crate::executor::PreparationIo>,
@@ -371,64 +375,24 @@ async fn record(
         error: error.map(Diagnostic),
         at: config::utc_value(clock.now_unix_millis()),
     };
-    let bounded;
-    let unbounded;
-    let bytes: &[u8] = match io {
-        Some(io) => {
-            bounded = io.encode(&admission, volumes.maximum_bytes, false)?;
-            &bounded
-        }
+    let temporary;
+    let io = match io {
+        Some(io) => io,
         None => {
-            unbounded = serde_json::to_vec(&admission)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-            &unbounded
+            temporary = crate::executor::PreparationIo::for_unmeasured(
+                &acyclic_fs::CancellationToken::new(),
+            )?;
+            &temporary
         }
     };
-    let record = crate::executor::with_history_io(io, |work| {
-        crate::executor::preparation_format(
-            format_args!("live/agents/{agent}/admissions/{path}/{cut}/{version}.json"),
-            work,
-        )
-    })?;
-    crate::executor::with_history_io(io, |work| -> Result<()> {
-        if let Some(work) = work.as_deref_mut() {
-            work.hashed_bytes(bytes.len() as u64)?;
-        }
-        Ok(())
-    })?;
-    let digest = blake3::hash(bytes).to_hex();
-    let key = crate::executor::with_history_io(io, |work| {
-        crate::executor::preparation_format(
-            format_args!("admission:{agent}:{path}:{cut}:{version}:{digest}"),
-            work,
-        )
-    })?;
-    let key = crate::IdempotencyKey::new(key)?;
-    let grant = crate::executor::with_history_io(io, |work| {
-        ContentGrant::verify(
-            volumes.verifier,
-            volumes.signed,
-            volumes.journal,
-            VolumeOperation::Write,
-            work,
-        )
-    })?;
     volumes
-        .files
-        .put_content(
-            volumes.journal,
-            &grant,
-            &record,
-            bytes,
-            "application/json",
-            "admission",
+        .decisions
+        .record(
+            agent,
+            (path, cut, version),
+            &admission,
             volumes.maximum_bytes,
-            &key,
-            None,
-            ContentAccess {
-                io,
-                ..ContentAccess::default()
-            },
+            io,
         )
         .await?;
     Ok(())
@@ -757,11 +721,16 @@ mod tests {
             acyclic_fs::LivePublicationObservation::Committed { .. }
         ));
         let volumes = Volumes {
+            decisions: crate::config::SettingsAdmissions::new(
+                harness
+                    .agent_stream
+                    .clone()
+                    .ok_or_else(|| Error::Unsupported("settings needs its owner stream".into()))?,
+            ),
             files: &harness.files,
             verifier: &harness.verifier,
             signed: &harness.signed,
             home: &harness.scratch,
-            journal: &harness.journal,
             seed: (&harness.seed.0, &harness.seed.1),
             configuration: harness.harness.issuer_configuration(),
             maximum_bytes: None,
@@ -774,7 +743,6 @@ mod tests {
         let source = super::super::programs::Programs {
             local: Arc::downgrade(&harness),
             home: harness.scratch.clone(),
-            journal: harness.journal.clone(),
             verifier: harness.verifier.clone(),
             scope: harness.signed.copy(&mut None)?,
             shell: Arc::new(harness.tools.get("shell", None, None)?.unwrap().clone()),
@@ -841,45 +809,34 @@ mod tests {
         )
         .await?;
         let volumes = Volumes {
+            decisions: crate::config::SettingsAdmissions::new(
+                harness
+                    .agent_stream
+                    .clone()
+                    .ok_or_else(|| Error::Unsupported("settings needs its owner stream".into()))?,
+            ),
             files: &harness.files,
             verifier: &harness.verifier,
             signed: &harness.signed,
             home: &harness.scratch,
-            journal: &harness.journal,
             seed: (&harness.seed.0, &harness.seed.1),
             configuration: harness.harness.issuer_configuration(),
             maximum_bytes: None,
         };
-        let grant = ContentGrant::verify_directory_read(
-            &harness.verifier,
-            &harness.signed,
-            &harness.journal,
-            "",
-            &mut None,
-        )?;
         async fn observed(
             volumes: &Volumes<'_>,
-            grant: &ContentGrant,
             agent: AgentId,
             cut: &str,
         ) -> Result<Option<crate::config::Admission>> {
-            let path = format!("live/agents/{agent}/admissions/agent.ts/{cut}/original.json");
+            let work = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             volumes
-                .files
-                .read_private_path_indexed(
-                    volumes.journal,
-                    grant,
-                    &path,
-                    None,
-                    None,
-                    ContentAccess::default(),
-                )
-                .await?
-                .map(|(_, bytes, _)| {
-                    serde_json::from_slice(&bytes)
-                        .map_err(|error| Error::Invalid(error.to_string()))
-                })
-                .transpose()
+                .decisions
+                .latest(agent, config::AGENT, cut, "original", &work)
+                .await
         }
         struct Clock;
         impl acyclic_stream::UnixMillisClock for Clock {
@@ -951,7 +908,7 @@ mod tests {
             })
         ));
         assert!(
-            observed(&volumes, &grant, harness.root, "unfunded")
+            observed(&volumes, harness.root, "unfunded")
                 .await?
                 .is_none()
         );
@@ -966,7 +923,7 @@ mod tests {
             &Clock,
         )
         .await?;
-        let outcome = observed(&volumes, &grant, harness.root, "admitted")
+        let outcome = observed(&volumes, harness.root, "admitted")
             .await?
             .ok_or_else(|| Error::NotFound("funded settings admission".into()))?;
         assert_eq!(outcome.status, AdmissionStatus::Rejected);
@@ -990,6 +947,24 @@ mod tests {
             retained,
             "replaying the same record must retire temporary publication storage"
         );
+        let reason = Error::Invalid("設定\"\n\\".repeat(20_000));
+        let original = reason.to_string();
+        let returned = admitted::<()>(
+            &volumes,
+            Some(&io),
+            harness.root,
+            (config::AGENT, "large-error", "original"),
+            Err(Refused::Settings(AdmissionStatus::Invalid, reason)),
+            &Clock,
+        )
+        .await
+        .expect_err("invalid settings must preserve their original refusal");
+        assert_eq!(returned.to_string(), original);
+        let outcome = observed(&volumes, harness.root, "large-error")
+            .await?
+            .ok_or_else(|| Error::NotFound("large settings admission".into()))?;
+        assert_eq!(outcome.status, AdmissionStatus::Invalid);
+        assert_eq!(outcome.error.as_deref(), Some(original.as_str()));
         cancel.cancel();
         let result = record(
             &volumes,
@@ -1004,7 +979,7 @@ mod tests {
             matches!(result, Err(ref error) if error.code() == crate::wire::ErrorCode::Cancelled)
         );
         assert!(
-            observed(&volumes, &grant, harness.root, "cancelled")
+            observed(&volumes, harness.root, "cancelled")
                 .await?
                 .is_none()
         );
@@ -1047,9 +1022,12 @@ mod tests {
             verifier: &harness.verifier,
             signed: &harness.signed,
             home: &harness.scratch,
-            journal: &harness.journal,
             seed: (&harness.seed.0, &harness.seed.1),
             configuration: harness.harness.issuer_configuration(),
+            decisions: crate::config::SettingsAdmissions::new(
+                harness.agent_stream.clone().expect("fixture owner stream"),
+            ),
+
             maximum_bytes: None,
         };
         let layers = [Layer {
@@ -1142,9 +1120,12 @@ mod tests {
             verifier: &harness.verifier,
             signed: &harness.signed,
             home: &harness.scratch,
-            journal: &harness.journal,
             seed: (&harness.seed.0, &harness.seed.1),
             configuration: harness.harness.issuer_configuration(),
+            decisions: crate::config::SettingsAdmissions::new(
+                harness.agent_stream.clone().expect("fixture owner stream"),
+            ),
+
             maximum_bytes: None,
         };
         let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
@@ -1224,7 +1205,7 @@ mod tests {
             });
             let selected = Volumes {
                 configuration: &configuration,
-                ..volumes
+                ..volumes.clone()
             };
             let operation = crate::OperationId::new();
             let pinned = Tree::for_step(&selected, journal.as_ref(), operation, 0, None).await?;
@@ -1236,7 +1217,7 @@ mod tests {
             });
             let rebound = Volumes {
                 configuration: &advanced,
-                ..selected
+                ..selected.clone()
             };
             let replayed = Tree::for_step(&rebound, journal.as_ref(), operation, 0, None).await?;
             assert_eq!(pinned.cut()?, replayed.cut()?);

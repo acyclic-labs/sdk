@@ -98,7 +98,7 @@ pub mod native_process;
 pub use native_process::NativeProcessObserver;
 mod workspace_access;
 pub use workspace_access::{
-    WorkspaceAccess, require_unrestricted_volume_access, require_unrestricted_workspace_read,
+    WorkspaceAccess, require_unrestricted_volume_access, require_workspace_subtree_read,
 };
 mod native_capture_bounds;
 mod native_contract;
@@ -119,6 +119,7 @@ pub use config::{FilesystemJournalBinding, WorkspaceMutation, WorkspaceObservati
 pub(crate) mod host;
 pub(crate) use host::content_path;
 pub(crate) use host::map_error;
+pub use host::reads::media_type::captured as captured_media_type;
 use host::*;
 pub use host::{FilesystemHost, VolumeImportPlan, filesystem_key, workspace_ref};
 pub(crate) mod access;
@@ -245,7 +246,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         crate::executor::with_history_io(io, |work| {
             crate::conversation::validate_content_path(path, work)
         })?;
-        InternalContentClass::require_path(internal_class, path, io)?;
+        InternalContentClass::require_path(volume, internal_class, path, io)?;
         if internal_class.is_some() && volume.class() != VolumeClass::AgentPrivate {
             return Err(stock_boundary(
                 io,

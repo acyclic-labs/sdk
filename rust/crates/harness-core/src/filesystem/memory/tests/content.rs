@@ -166,23 +166,109 @@ async fn original_publication_receipts_require_write_but_not_directory_listing()
 
 #[tokio::test]
 async fn private_publication_receipts_keep_the_observing_writer() -> Result<()> {
+    use crate::conversation::ContentChange;
+
     let storage = MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
-    // Exercise a valid host whose journal and private publisher share a volume.
-    let journal: Arc<dyn crate::executor::ExecutionJournal> =
-        Arc::new(crate::filesystem::FilesystemExecutionJournal::new(
-            Arc::clone(&storage.stream),
-            Arc::clone(&storage.host),
-            crate::filesystem::FilesystemJournalBinding {
-                volume: &storage.volume,
-                verifier: &storage.verifier(),
-                scope: &storage.scope,
-                io: None,
-            },
-        )?);
+    // The journal's former path families are ordinary data in a different
+    // volume, including through scalar publication and its original receipt.
+    for path in [
+        ".system/personal",
+        "tools/.results/personal",
+        "tools/.model/personal",
+    ] {
+        let operation = OperationId::new();
+        let file = storage
+            .publisher
+            .stage_once(
+                operation,
+                path,
+                b"personal",
+                "text/plain",
+                "personal",
+                Default::default(),
+            )?
+            .await?
+            .0;
+        assert_eq!(storage.read(&file).await?.as_ref(), b"personal");
+        assert_eq!(
+            storage
+                .publisher
+                .observe_staged_once(operation, None, None, Default::default())?
+                .await?
+                .0,
+            Some(file)
+        );
+    }
+    let changes = [
+        ".system/atomic",
+        "tools/.results/atomic",
+        "tools/.model/atomic",
+    ]
+    .map(|path| ContentChange::CreateAbsent {
+        path,
+        bytes: b"atomic",
+        media_type: "text/plain",
+        display_name: "atomic",
+    });
+    storage
+        .publisher
+        .check_change_destinations(&changes, Default::default())?
+        .await?;
+    let atomic_operation = OperationId::new();
+    let original_changes = storage
+        .publisher
+        .stage_changes(
+            &storage.volume,
+            atomic_operation,
+            &changes,
+            Default::default(),
+        )?
+        .await?
+        .0;
+    for file in original_changes.files() {
+        assert_eq!(storage.read(file).await?.as_ref(), b"atomic");
+    }
+    assert_eq!(
+        storage
+            .publisher
+            .observe_changes(&storage.volume, atomic_operation, None, Default::default())?
+            .await?
+            .0
+            .as_ref(),
+        Some(&original_changes)
+    );
+    // Receipt observation retains its private writer independently of the
+    // host journal's read-only tool-output route.
+    let journal: Arc<dyn crate::executor::ExecutionJournal> = storage.journal.clone();
     let turn = OperationId::new();
+    let journal_volume = journal
+        .output_content(turn)?
+        .expect("journal output")
+        .volume;
+    let journal_writer = journal
+        .output_content(turn)?
+        .and_then(|content| content.writer)
+        .expect("host journal writer");
+    let reserved = async {
+        journal_writer
+            .stage_once(
+                OperationId::new(),
+                ".system/personal",
+                b"not a journal record",
+                "text/plain",
+                "personal",
+                Default::default(),
+            )?
+            .await
+    }
+    .await
+    .err()
+    .expect("a generic journal writer bypassed the protected storage families");
+    assert_eq!(reserved.code(), crate::wire::ErrorCode::Invalid);
     let effect = OperationId::new();
     run_admitted_file_case(&storage, Limits::default(), move |task| {
         let journal = Arc::clone(&journal);
+        let journal_volume = journal_volume.clone();
         async move {
             let context = crate::runtime::ToolContext::new(
                 Arc::new(task.with_execution_journal(journal, turn)?),
@@ -224,19 +310,26 @@ async fn private_publication_receipts_keep_the_observing_writer() -> Result<()> 
                 context.task().read_file(&original, None).await?.as_ref(),
                 b"once"
             );
-            let denied = context
-                .task()
-                .stage_file(
-                    Some(original.volume()),
-                    OperationId::new(),
-                    "receipts/forged",
-                    b"forged",
-                    "text/plain",
-                    "forged",
-                )
-                .await
-                .expect_err("receipt replay delegated the read-only journal writer");
-            assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+            for path in [
+                "tools/forged",
+                ".system/personal",
+                "tools/.results/personal",
+                "tools/.model/personal",
+            ] {
+                let denied = context
+                    .task()
+                    .stage_file(
+                        Some(&journal_volume),
+                        OperationId::new(),
+                        path,
+                        b"forged",
+                        "text/plain",
+                        "forged",
+                    )
+                    .await
+                    .expect_err("receipt replay delegated the read-only journal writer");
+                assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+            }
             Ok(())
         }
     })

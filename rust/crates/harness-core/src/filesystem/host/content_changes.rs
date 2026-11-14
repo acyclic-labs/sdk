@@ -82,7 +82,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     change.path(),
                     &mut Some(&mut io.history_io()),
                 )?;
-                InternalContentClass::require_path(None, change.path(), Some(io))?;
+                InternalContentClass::require_path(volume, None, change.path(), Some(io))?;
             }
             let reference = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
             let root = self.open(&reference, Some(io)).await?;
@@ -229,7 +229,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 };
                 require_change_ceiling(action, volume, access.ceiling, &mut checked_actions, io)?;
                 crate::conversation::validate_content_path(path, &mut Some(&mut io.history_io()))?;
-                InternalContentClass::require_path(None, path, Some(io))?;
+                InternalContentClass::require_path(volume, None, path, Some(io))?;
                 if let Some(file) = identity {
                     file.validate(&mut Some(&mut io.history_io()))?;
                     if file.volume() != volume {
@@ -320,7 +320,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     change.path(),
                     &mut Some(&mut io.history_io()),
                 )?;
-                InternalContentClass::require_path(None, change.path(), Some(io))?;
+                InternalContentClass::require_path(volume, None, change.path(), Some(io))?;
                 if let Some(source) = change.source() {
                     source.validate(&mut Some(&mut io.history_io()))?;
                     if source.volume() != volume {
@@ -506,6 +506,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         .begin_transaction_at(&selected, operation, io, io.cancellation())
                         .await,
                 )?;
+                #[cfg(test)]
+                if let Some(pause) = &self.publication_pause {
+                    pause().await;
+                }
                 let fence = view
                     .0
                     .publication_fence()

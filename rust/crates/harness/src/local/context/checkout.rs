@@ -1,20 +1,26 @@
 use super::*;
 
 fn archive_path(name: &str, bytes: &[u8]) -> String {
-    format!("inputs/context/{}/{name}", blake3::hash(bytes))
+    format!(
+        "{}/{}/{name}",
+        ContextEpoch::INSTRUCTIONS_DIRECTORY,
+        blake3::hash(bytes)
+    )
 }
 
 impl LocalHarness {
-    async fn authorize_checkout_context(
+    pub(super) async fn authorize_checkout_context(
         &self,
         physical: &LocalWorkspace,
         workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
         io: &crate::filesystem::PreparationIo,
         authority: (&AuthorityVerifier, &Scope),
     ) -> Result<()> {
-        crate::filesystem::require_unrestricted_workspace_read(
+        let primary = physical.mounts.named(None)?.1;
+        crate::filesystem::require_workspace_subtree_read(
             workspace,
-            &physical.mounts.named(None)?.1.view.volume,
+            &primary.view.volume,
+            &primary.view.root,
             authority.0,
             authority.1,
             io,
@@ -59,7 +65,7 @@ impl LocalHarness {
         // Bound archive paths before asking the source for instruction bodies.
         if names.iter().any(|name| {
             self.limits.path_bytes.is_some_and(|maximum| {
-                "inputs/context/".len() + 64 + 1 + name.len() > maximum.get()
+                ContextEpoch::INSTRUCTIONS_DIRECTORY.len() + 1 + 64 + 1 + name.len() > maximum.get()
             })
         }) {
             return Err(Error::Invalid(
@@ -89,6 +95,7 @@ impl LocalHarness {
         let cut = view.snapshot(&mut accounting).await?;
         let mut source = CheckoutInstructions {
             harness: self,
+            volume: &workspace.mounts.named(None)?.1.view.volume,
             publisher,
             directory: crate::context::native_discovery::LazyDiscovery {
                 view,
@@ -98,7 +105,7 @@ impl LocalHarness {
         };
         let instructions = crate::context::capture_instructions(
             &mut source,
-            "",
+            &workspace.mounts.named(None)?.1.view.root,
             &self.active_directory,
             names,
             bounds,
@@ -150,8 +157,19 @@ impl LocalHarness {
         let cut = view.snapshot(&mut accounting).await?;
         let mut found = Vec::new();
         for (index, path) in paths.iter().enumerate() {
+            let source_path = workspace
+                .mounts
+                .named(None)?
+                .1
+                .source_path(path, Some(&work))?;
             match view
-                .read_at_snapshot(cut, &format!("/{path}"), None, maximum, &mut accounting)
+                .read_at_snapshot(
+                    cut,
+                    &format!("/{source_path}"),
+                    None,
+                    maximum,
+                    &mut accounting,
+                )
                 .await
             {
                 Ok((chunk, _)) => found.push((index, chunk.bytes.as_ref().to_vec())),
@@ -172,17 +190,17 @@ impl LocalHarness {
 }
 
 impl LocalHarness {
-    /// Copies each file `text` mentions, at one snapshot of the selected
-    /// checkout view, onto the root's private volume under the checkout
-    /// context's read authority and the harness's file byte bound. Returns
-    /// their directory below `base`: it is addressed by every copied path and
-    /// its bytes, so it only ever holds one consistent set of copies.
+    /// Copies selected checkout files at one snapshot through the host input
+    /// publisher. Native source authorization is checked before capture and
+    /// after publication, under the original checkout admission and byte bound.
     pub(super) async fn capture_checkout_mentions(
         &self,
         workspace: &LocalWorkspace,
         text: &str,
         base: &str,
-    ) -> Result<String> {
+        publisher: &dyn ContentPublisher,
+        operation: OperationId,
+    ) -> Result<crate::conversation::ContentChanges> {
         let (selected, pending) = workspace.selected_view().await?;
         if let Some((operation, _)) = pending {
             return Err(Error::Indeterminate(OperationId::from_bytes(
@@ -215,8 +233,19 @@ impl LocalHarness {
             if copies.contains_key(path) {
                 continue;
             }
+            let source_path = workspace
+                .mounts
+                .named(None)?
+                .1
+                .source_path(path, Some(&work))?;
             let (chunk, _allocation) = view
-                .read_at_snapshot(cut, &format!("/{path}"), None, remaining, &mut accounting)
+                .read_at_snapshot(
+                    cut,
+                    &format!("/{source_path}"),
+                    None,
+                    remaining,
+                    &mut accounting,
+                )
                 .await?;
             if let Some(remaining) = &mut remaining {
                 *remaining = remaining
@@ -227,7 +256,9 @@ impl LocalHarness {
             }
             copies.insert(path.to_owned(), chunk.bytes);
         }
-        let directory = self.publish_mention_copies(base, copies).await?;
+        let copies = self
+            .publish_mention_copies(base, copies, publisher, operation)
+            .await?;
         // The copies disclose only what the authority still admits.
         self.authorize_checkout_context(
             workspace,
@@ -236,12 +267,13 @@ impl LocalHarness {
             (&self.verifier, &self.signed),
         )
         .await?;
-        Ok(directory)
+        Ok(copies)
     }
 }
 
 struct CheckoutInstructions<'a> {
     harness: &'a LocalHarness,
+    volume: &'a VolumeRef,
     publisher: &'a dyn ContentPublisher,
     directory: crate::context::native_discovery::LazyDiscovery<'a>,
 }
@@ -298,7 +330,8 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<crate::model::ProjectInstruction>>>
     {
         Box::pin(async move {
-            let archive_length = "inputs/context/".len() + 64 + 1 + path.len();
+            let archive_length =
+                ContextEpoch::INSTRUCTIONS_DIRECTORY.len() + 1 + 64 + 1 + path.len();
             if self
                 .harness
                 .limits
@@ -354,10 +387,7 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
                 .0;
             Ok(Some(crate::model::ProjectInstruction::Captured {
                 file,
-                source: crate::model::InstructionIdentity::new(
-                    self.harness.project.clone(),
-                    path.into(),
-                )?,
+                source: crate::model::InstructionIdentity::new(self.volume.clone(), path.into())?,
             }))
         })
     }
@@ -367,6 +397,267 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[tokio::test]
+    async fn rooted_checkout_context_uses_only_the_selected_subtree() -> Result<()> {
+        let directory = tempfile::tempdir().map_err(storage)?;
+        let state = tempfile::tempdir().map_err(storage)?;
+        std::fs::create_dir_all(directory.path().join("selected/src")).map_err(storage)?;
+        for (path, bytes) in [
+            ("AGENTS.md", "outside instructions"),
+            ("selected/AGENTS.md", "selected instructions"),
+            ("selected/src/AGENTS.md", "nested instructions"),
+            ("sample.txt", "outside mention"),
+            ("selected/sample.txt", "selected mention"),
+        ] {
+            std::fs::write(directory.path().join(path), bytes).map_err(storage)?;
+        }
+        for (root, name) in [("", "outside"), ("selected", "inside"), ("peer", "peer")] {
+            let skill = directory
+                .path()
+                .join(root)
+                .join(crate::context::PROJECT_SKILL_ROOTS[0])
+                .join(name);
+            std::fs::create_dir_all(&skill).map_err(storage)?;
+            std::fs::write(
+                skill.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: scoped skill\n---\n{name} body"),
+            )
+            .map_err(storage)?;
+        }
+        let mut harness = LocalHarness::open(
+            crate::LocalHarnessConfig::native_host(directory.path())
+                .workspace_mounting(crate::local::WorkspaceMounting::Physical)
+                .state_directory(state.path().join("runtime")),
+        )
+        .await?;
+        harness.active_directory = "src".into();
+        let workspace = harness.workspace.as_ref().expect("fixture workspace");
+        let mut bindings = harness.session_bindings().to_vec();
+        bindings[0].name = "repository".into();
+        bindings[0].root = "selected".into();
+        bindings[0].mode = crate::agent::WorkspaceMode::ReadOnly;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let view = workspace
+            .view()
+            .open_related(
+                workspace.view().workspace().clone(),
+                &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                    work: &work,
+                    cancellation: &cancellation,
+                },
+            )
+            .await
+            .map_err(storage)?;
+        let selected = workspace
+            .bound_task_view(
+                view,
+                &harness.project,
+                &bindings,
+                &crate::local::workspace::owner::AgentOwner,
+                workspace
+                    .mount_authority
+                    .as_ref()
+                    .expect("fixture mount authority"),
+            )
+            .await?;
+        let issuer = harness.root_authority.as_ref().expect("fixture signer");
+        let sources = crate::context::native_skills::NativeSkills::new(
+            Arc::new(acyclic_stream::MemoryStream::default()),
+            harness.journal.clone(),
+            Some((
+                selected.view(),
+                selected.filesystem.clone(),
+                selected.store.clone(),
+            )),
+            Vec::new(),
+        )?;
+        for (root, expected) in [
+            ("selected", "inside"),
+            ("peer", "peer"),
+            ("selected", "inside"),
+        ] {
+            let skills = sources
+                .catalog(
+                    workspace.source_root.workspace(),
+                    selected.view(),
+                    root,
+                    &mut Default::default(),
+                )?
+                .await?;
+            assert_eq!(
+                skills
+                    .iter()
+                    .map(|skill| skill.name.as_str())
+                    .collect::<Vec<_>>(),
+                [expected],
+                "same-snapshot catalog cache crossed selected roots"
+            );
+        }
+        assert!(
+            sources
+                .catalog(
+                    workspace.source_root.workspace(),
+                    selected.view(),
+                    "../peer",
+                    &mut Default::default()
+                )?
+                .await
+                .is_err()
+        );
+        let scope = issuer.bootstrap_scope(
+            "selected-context",
+            &Capabilities::new([harness
+                .project
+                .directory_read_capability("selected", &mut None)?]),
+            Some(harness.root),
+            &mut None,
+        )?;
+        let publisher = harness.input_publisher_with_limit(1024)?;
+        let found = harness
+            .checkout_instructions_with_work(
+                &selected,
+                &["AGENTS.md".into()],
+                publisher.as_ref(),
+                &mut Default::default(),
+                (&harness.verifier, &scope),
+            )
+            .await?;
+        assert_eq!(found.instructions.len(), 2);
+        let reader = harness.context_reader()?;
+        for (instruction, (path, bytes)) in found.instructions.iter().zip([
+            ("selected/AGENTS.md", b"selected instructions".as_slice()),
+            ("selected/src/AGENTS.md", b"nested instructions".as_slice()),
+        ]) {
+            let crate::model::ProjectInstruction::Captured { file, source } = instruction else {
+                return Err(Error::Invalid("instruction was not captured".into()));
+            };
+            assert_eq!(
+                source,
+                &crate::model::InstructionIdentity::new(harness.project.clone(), path.into())?
+            );
+            assert_eq!(reader.read(file, 1024, None, None)?.await?.as_ref(), bytes);
+        }
+        let denied = issuer.bootstrap_scope(
+            "peer-context",
+            &Capabilities::new([harness
+                .project
+                .directory_read_capability("selected-peer", &mut None)?]),
+            Some(harness.root),
+            &mut None,
+        )?;
+        assert!(matches!(
+            harness
+                .checkout_instructions_with_work(
+                    &selected,
+                    &["AGENTS.md".into()],
+                    publisher.as_ref(),
+                    &mut Default::default(),
+                    (&harness.verifier, &denied),
+                )
+                .await,
+            Err(Error::FilesystemAccessConfiguration("checkout context"))
+        ));
+        {
+            use acyclic_fs::access::{Action, Capability, Generations, Grant, ResourcePattern};
+            for (paths, admitted) in [
+                (["selected", "selected/**"], true),
+                (["selected", "selected/src/**"], false),
+                (["selected-peer", "selected-peer/**"], false),
+            ] {
+                let label = Capability {
+                    layers: vec![
+                        paths
+                            .into_iter()
+                            .map(|path| Grant {
+                                actions: [Action::Read, Action::List].into(),
+                                resource: ResourcePattern {
+                                    lineage_root: None,
+                                    volume: None,
+                                    generations: Generations::All,
+                                    path: path.into(),
+                                },
+                            })
+                            .collect(),
+                    ],
+                    expires_at: None,
+                }
+                .to_scope_label()
+                .map_err(storage)?;
+                let scope = issuer.bootstrap_scope(
+                    "scoped-context-policy",
+                    &Capabilities::new([label]),
+                    Some(harness.root),
+                    &mut None,
+                )?;
+                let result = harness
+                    .checkout_instructions_with_work(
+                        &selected,
+                        &["AGENTS.md".into()],
+                        publisher.as_ref(),
+                        &mut Default::default(),
+                        (&harness.verifier, &scope),
+                    )
+                    .await;
+                if admitted {
+                    assert_eq!(result?.instructions.len(), 2);
+                } else {
+                    assert!(matches!(
+                        result,
+                        Err(Error::FilesystemAccessConfiguration("checkout context"))
+                    ));
+                }
+            }
+        }
+        assert_eq!(
+            harness
+                .checkout_files(&selected, &["sample.txt".into()], Some(1024))
+                .await?,
+            vec![(0, b"selected mention".to_vec())]
+        );
+        assert!(
+            harness
+                .checkout_files(&selected, &["../sample.txt".into()], Some(1024))
+                .await
+                .is_err()
+        );
+        let copies = harness
+            .capture_checkout_mentions(
+                &selected,
+                "@sample.txt",
+                "inputs/rooted",
+                publisher.as_ref(),
+                OperationId::new(),
+            )
+            .await?;
+        assert_eq!(copies.files().count(), 1);
+        let copy = copies.files().next().expect("captured mention");
+        assert_eq!(
+            reader.read(copy, 1024, None, None)?.await?.as_ref(),
+            b"selected mention"
+        );
+        let facts = crate::local::context::environment::gather(
+            selected.native_cwd()?,
+            0,
+            "fixture",
+            &crate::native_environment::PlatformPolicy::Fixture {
+                os: "fixture".into(),
+                shell: "fixture".into(),
+            },
+        )?;
+        assert_eq!(
+            std::fs::canonicalize(facts.cwd.as_ref().expect("selected native cwd"))
+                .map_err(storage)?,
+            std::fs::canonicalize(directory.path().join("selected")).map_err(storage)?
+        );
+        assert_ne!(selected.native_cwd()?, Some(workspace.path.as_path()));
+        Ok(())
+    }
 
     #[tokio::test]
     async fn checkout_instructions_reject_restrictive_authority_before_disclosing_bytes()
@@ -421,6 +712,15 @@ mod tests {
             &mut None,
         )?
         .capability(crate::conversation::VolumeOperation::Read, &mut None)?;
+        let journal = VolumeRef::new(
+            volume.provider().clone(),
+            "journal".to_owned(),
+            crate::conversation::VolumeClass::AgentPrivate,
+            crate::conversation::VolumeOwner::Agent(harness.root),
+            &mut None,
+        )?;
+        let published =
+            journal.directory_read_capability(ContextEpoch::INSTRUCTIONS_DIRECTORY, &mut None)?;
         for (grants, admitted) in [
             (Capabilities::new([read.as_str()]), true),
             (Capabilities::new(["model:generate"]), false),
@@ -429,7 +729,7 @@ mod tests {
         ] {
             let scope = issuer.bootstrap_scope(
                 "context-test",
-                &grants,
+                &Capabilities::new(grants.iter().chain([published.as_str()])),
                 harness.signed.agent(),
                 &mut None,
             )?;
@@ -466,7 +766,13 @@ mod tests {
         .map_err(storage)?;
         harness.signed = issuer.bootstrap_scope(
             "context-test",
-            &Capabilities::new(harness.signed.capabilities().iter().chain([label.as_str()])),
+            &Capabilities::new(
+                harness
+                    .signed
+                    .capabilities()
+                    .iter()
+                    .chain([label.as_str(), published.as_str()]),
+            ),
             harness.signed.agent(),
             &mut None,
         )?;

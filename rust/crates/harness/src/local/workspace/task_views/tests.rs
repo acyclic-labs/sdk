@@ -6,6 +6,7 @@ use tokio::sync::oneshot;
 async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -> Result<()> {
     let directory = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
+    std::fs::create_dir(directory.path().join("selected")).map_err(storage)?;
     let harness = LocalHarness::open(
         crate::LocalHarnessConfig::native_host(directory.path())
             .workspace_mounting(WorkspaceMounting::Physical)
@@ -29,17 +30,31 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         &mut None,
     )?;
     harness.files.create_volume(&private_home).await?;
+    let private_ui = VolumeRef::new(
+        harness.scratch.provider().clone(),
+        "selected-private".into(),
+        harness.scratch.class(),
+        crate::conversation::VolumeOwner::Agent(selected_agent),
+        &mut None,
+    )?;
+    harness.files.create_volume(&private_ui).await?;
     let read = shared.capability(crate::conversation::VolumeOperation::Read, &mut None)?;
     let write = shared.capability(crate::conversation::VolumeOperation::Write, &mut None)?;
     let home_read =
         private_home.capability(crate::conversation::VolumeOperation::Read, &mut None)?;
     let home_write =
         private_home.capability(crate::conversation::VolumeOperation::Write, &mut None)?;
+    let private_read =
+        private_ui.capability(crate::conversation::VolumeOperation::Read, &mut None)?;
+    let private_write =
+        private_ui.capability(crate::conversation::VolumeOperation::Write, &mut None)?;
     let grants = crate::Capabilities::new(harness.signed.capabilities().iter().chain([
         read.as_str(),
         write.as_str(),
         home_read.as_str(),
         home_write.as_str(),
+        private_read.as_str(),
+        private_write.as_str(),
     ]));
     let signed = harness
         .root_authority
@@ -48,20 +63,44 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         .bootstrap_scope("selected-volumes", &grants, Some(selected_agent), &mut None)?;
     let mut session_bindings = harness.session_bindings().to_vec();
     session_bindings[0].name = "repository".into();
+    session_bindings[0].root = "selected".into();
     session_bindings[1].source = crate::agent::WorkspaceSource::Volume(private_home.clone());
     for (role, name) in [
-        (
-            crate::agent::WorkspaceRole::Private,
-            crate::filesystem::PRIVATE_VOLUME,
-        ),
+        (crate::agent::WorkspaceRole::Private, "display"),
         (crate::agent::WorkspaceRole::Internal, "interaction"),
     ] {
         session_bindings.push(crate::agent::WorkspaceEntry::initial_volume(
             role,
             name.into(),
-            harness.scratch.clone(),
+            if role == crate::agent::WorkspaceRole::Private {
+                private_ui.clone()
+            } else {
+                harness.scratch.clone()
+            },
         ));
     }
+    session_bindings.push(crate::agent::WorkspaceEntry::initial_volume(
+        crate::agent::WorkspaceRole::Output,
+        "results".into(),
+        private_ui.clone(),
+    ));
+    session_bindings
+        .iter_mut()
+        .find(|entry| entry.name == "display")
+        .unwrap()
+        .root = "ui".into();
+    session_bindings
+        .iter_mut()
+        .find(|entry| entry.name == "results")
+        .unwrap()
+        .root = "ui".into();
+    let mut archive = crate::agent::WorkspaceEntry::initial_volume(
+        crate::agent::WorkspaceRole::User,
+        "zarchive".into(),
+        private_ui.clone(),
+    );
+    archive.root = "reports".into();
+    session_bindings.push(archive);
     session_bindings
         .iter_mut()
         .find(|entry| entry.name == "shared")
@@ -133,17 +172,40 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
     let home = second.mounts.named(Some(crate::filesystem::HOME_VOLUME))?.1;
     assert_eq!(home.view.volume, private_home);
     assert!(home.native_root.override_path().is_none());
-    for name in [
-        crate::filesystem::PRIVATE_VOLUME,
-        "interaction",
-        "repository",
-    ] {
+    for name in ["interaction", "project", "unknown"] {
         assert!(
             second.mounts.named(Some(name)).is_err(),
             "unexpected auxiliary {name}"
         );
     }
     assert_eq!(second.mounts.named(None)?.1.view.volume, harness.project);
+    assert_eq!(
+        second.mounts.named(Some("repository"))?.1.view.volume,
+        harness.project
+    );
+    let private = second.mounts.named(Some("display"))?.1;
+    assert_eq!(private.view.volume, private_ui);
+    assert!(private.native_root.override_path().is_none());
+    private.check(acyclic_fs::access::Action::Write, "ui/bound-note", 0)?;
+    let output = second.mounts.named(Some("results"))?.1;
+    assert!(output.mode.read_only());
+    output.check(acyclic_fs::access::Action::Read, "ui/bound-note", 0)?;
+    assert!(
+        output
+            .check(acyclic_fs::access::Action::Write, "ui/bound-note", 0)
+            .is_err()
+    );
+    assert_ne!(
+        private.view.source.as_ref().unwrap().destination,
+        output.view.source.as_ref().unwrap().destination,
+        "different binding modes shared a native projection",
+    );
+    let archive = second.mounts.named(Some("zarchive"))?.1;
+    assert_ne!(
+        private.view.source.as_ref().unwrap().destination,
+        archive.view.source.as_ref().unwrap().destination,
+        "different roots shared a native projection"
+    );
     let logical = workspace.context_task_view(
         view().await?,
         &harness.project,
@@ -159,17 +221,123 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
             .volume,
         private_home
     );
-    for name in [
-        crate::filesystem::PRIVATE_VOLUME,
-        "interaction",
-        "repository",
-    ] {
+    for name in ["interaction", "project", "unknown"] {
         assert!(
             logical.mounts.named(Some(name)).is_err(),
             "unexpected auxiliary {name}"
         );
     }
     assert_eq!(logical.mounts.named(None)?.1.view.volume, harness.project);
+    assert_eq!(
+        logical.mounts.named(Some("repository"))?.1.view.volume,
+        harness.project
+    );
+    assert_eq!(
+        logical.mounts.named(Some("display"))?.1.view.volume,
+        private_ui
+    );
+    assert!(logical.mounts.named(Some("results"))?.1.mode.read_only());
+    assert!(matches!(
+        workspace.context_task_view(view().await?, &private_home, &session_bindings, &authority),
+        Err(Error::Unauthorized(_)),
+    ));
+    let remounted = second.mounts_at(&second.path).await?;
+    for entry in &session_bindings {
+        for table in [&second.mounts, &logical.mounts, &remounted] {
+            let selected = table.by_entry(entry.id);
+            if entry.role == crate::agent::WorkspaceRole::Internal {
+                assert!(selected.is_none(), "internal slot must not be exposed");
+            } else {
+                let selected = selected.expect("selected stable workspace slot");
+                assert_eq!(selected.view.name, entry.name);
+                assert_eq!(&selected.view.volume, entry.volume()?);
+                assert_eq!(selected.view.root, entry.root);
+                assert_eq!(super::super::mounts::mode(selected), entry.mode);
+            }
+        }
+    }
+    assert_eq!(
+        remounted.named(Some("repository"))?.1.view.volume,
+        harness.project
+    );
+    assert!(remounted.named(Some("project")).is_err());
+    assert!(remounted.named(Some("results"))?.1.mode.read_only());
+    assert_eq!(remounted.named(Some("results"))?.1.view.root, "ui");
+    assert_eq!(
+        remounted.native_root_for(remounted.named(None)?.1),
+        Some(second.path.join("selected").as_path()),
+    );
+    assert!(
+        remounted.native_read_roots.is_empty(),
+        "a scoped view must not add opaque read roots outside its subtree"
+    );
+    {
+        let host = crate::local::host_workspace::HostWorkspace::attach(
+            Arc::clone(&second),
+            crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([1; 16])),
+            &signed,
+            &harness.verifier,
+            second.held_task_mount_root()?,
+        )
+        .await?;
+        assert_eq!(host.path(), second.path.join("selected"));
+        assert_eq!(
+            Some(host.path()),
+            second.mounts.native_root_for_entry(session_bindings[0].id)
+        );
+        assert_ne!(host.path(), second.path);
+        crate::local::host_workspace::tests::native_write(
+            &host.host_cwd().join("host-note"),
+            b"selected host write",
+        )?;
+        host.capture(OperationId::new()).await?;
+        assert_eq!(
+            std::fs::read(second.path.join("selected/host-note")).map_err(storage)?,
+            b"selected host write"
+        );
+        assert!(!second.path.join("host-note").exists());
+    }
+    let mut read_only_primary = session_bindings.clone();
+    read_only_primary[0].mode = crate::agent::WorkspaceMode::ReadOnly;
+    let read_only = workspace.context_task_view(
+        view().await?,
+        &harness.project,
+        &read_only_primary,
+        &authority,
+    )?;
+    let primary = read_only.mounts.named(None)?.1;
+    assert!(primary.mode.read_only());
+    primary.check(acyclic_fs::access::Action::Read, "selected/file", 0)?;
+    assert!(
+        primary
+            .check(acyclic_fs::access::Action::Write, "selected/file", 0)
+            .is_err()
+    );
+    let options = read_only
+        .mount_options(read_only.view().workspace())
+        .await?;
+    let access = options
+        .require_access_view()
+        .map_err(storage)?
+        .current()
+        .map_err(storage)?;
+    let now = harness.clock.now_unix_millis() / 1000;
+    assert!(
+        access
+            .decide(acyclic_fs::access::Action::Read, "selected/file", now)
+            .allowed
+    );
+    assert!(
+        !access
+            .decide(acyclic_fs::access::Action::Write, "selected/file", now)
+            .allowed
+    );
+    assert!(
+        !access
+            .decide(acyclic_fs::access::Action::Read, "file", now)
+            .allowed,
+        "the authenticated source view must not admit a peer of the selected root"
+    );
     {
         let selected = &second;
         let path = "bound-note";
@@ -191,6 +359,33 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
             &harness.verifier,
             harness.limits.file_bytes,
         );
+        let scope = crate::runtime::RuntimeScope::new(
+            crate::Capabilities::new(signed.capabilities().iter()),
+            Default::default(),
+        )?;
+        let capture = crate::local::checkout_tools::capture::configuration(selected);
+        let commands = super::super::git::Commands {
+            workspace: selected,
+            signed: &signed,
+            verifier: &harness.verifier,
+            clock: harness.clock.as_ref(),
+            capture_options: &capture.0,
+            capture_policy: &capture.1,
+        };
+        for command in [
+            "status",
+            "show HEAD:outside-root",
+            "--volume display status",
+        ] {
+            assert!(
+                matches!(
+                    commands.fs_arguments(command, &scope),
+                    Err(Error::Unauthorized(_))
+                ),
+                "whole-volume version-control access escaped the selected root: {command}"
+            );
+        }
+        commands.fs_arguments("--volume home status", &scope)?;
         let (file, _) = crate::conversation::ContentPublisher::stage_once(
             &publisher,
             OperationId::new(),
@@ -214,12 +409,158 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
                 .as_ref(),
             b"selected private home"
         );
-        assert!(
-            selected
-                .mounts
-                .named(Some(crate::filesystem::PRIVATE_VOLUME))
-                .is_err()
+        let (file, _) = crate::conversation::ContentPublisher::stage_once(
+            &publisher,
+            OperationId::new(),
+            "volume:///display/bound-note",
+            b"model-visible private state",
+            "text/plain",
+            path,
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+        assert_eq!(file.volume(), &private_ui);
+        assert_eq!(file.path(), "ui/bound-note");
+        let reference = crate::filesystem::workspace_ref(
+            private_ui.provider().clone(),
+            &private_ui.storage_name(&mut None)?,
+        )?;
+        assert_eq!(
+            harness
+                .files
+                .read(&reference, None, "/ui/bound-note", 64, None)
+                .await?
+                .as_ref(),
+            b"model-visible private state",
         );
+        let (file, _) = crate::conversation::ContentPublisher::stage_once(
+            &publisher,
+            OperationId::new(),
+            "volume:///repository/project-note",
+            b"selected project subtree",
+            "text/plain",
+            "project-note",
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+        assert_eq!(file.path(), "selected/project-note");
+        assert_eq!(
+            std::fs::read(directory.path().join("selected/project-note")).map_err(storage)?,
+            b"selected project subtree"
+        );
+        assert!(!directory.path().join("project-note").exists());
+        let archive_operation = OperationId::new();
+        let (file, _) = crate::conversation::ContentPublisher::stage_once(
+            &publisher,
+            archive_operation,
+            "volume:///zarchive/bound-note",
+            b"separate source root",
+            "text/plain",
+            path,
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+        assert_eq!(file.path(), "reports/bound-note");
+        assert_eq!(
+            harness
+                .files
+                .read(&reference, None, "/reports/bound-note", 64, None)
+                .await?
+                .as_ref(),
+            b"separate source root"
+        );
+        let (observed, _) = crate::conversation::ContentPublisher::observe_staged_once(
+            &publisher,
+            archive_operation,
+            None,
+            None,
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+        assert_eq!(
+            observed.as_ref(),
+            Some(&file),
+            "receipt recovery must find a later source-root alias"
+        );
+        let (edited, _) = crate::conversation::ContentPublisher::stage_at(
+            &publisher,
+            OperationId::new(),
+            &file,
+            b"edited source root",
+            None,
+            None,
+        )?
+        .await?;
+        assert_eq!(edited.path(), "reports/bound-note");
+        assert_eq!(
+            harness
+                .files
+                .read(&reference, None, "/reports/bound-note", 64, None)
+                .await?
+                .as_ref(),
+            b"edited source root"
+        );
+        let change = |path: &'static str| crate::conversation::ContentChange::CreateAbsent {
+            path,
+            bytes: b"atomic roots",
+            media_type: "text/plain",
+            display_name: "batch",
+        };
+        let (batch, _) = crate::conversation::ContentPublisher::stage_changes(
+            &publisher,
+            &private_ui,
+            OperationId::new(),
+            &[change("ui/batch"), change("reports/batch")],
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+        assert_eq!(batch.members.len(), 2);
+        for path in ["/ui/batch", "/reports/batch"] {
+            assert_eq!(
+                harness
+                    .files
+                    .read(&reference, None, path, 64, None)
+                    .await?
+                    .as_ref(),
+                b"atomic roots"
+            );
+        }
+        assert!(
+            crate::conversation::ContentPublisher::stage_changes(
+                &publisher,
+                &private_ui,
+                OperationId::new(),
+                &[change("ui/not-committed"), change("outside/not-committed")],
+                crate::conversation::ContentAccess::default(),
+            )?
+            .await
+            .is_err()
+        );
+        assert!(
+            harness
+                .files
+                .read(&reference, None, "/ui/not-committed", 64, None)
+                .await
+                .is_err(),
+            "a peer path refusal must not publish its admitted sibling"
+        );
+        for name in ["interaction", "project", "unknown", "results"] {
+            let path = format!("volume:///{name}/bound-note");
+            assert!(
+                crate::conversation::ContentPublisher::stage_once(
+                    &publisher,
+                    OperationId::new(),
+                    &path,
+                    b"refused",
+                    "text/plain",
+                    "refused",
+                    crate::conversation::ContentAccess::default(),
+                )?
+                .await
+                .is_err(),
+                "unexpected writable binding {name}"
+            );
+        }
     }
     for selection in [&changed_bindings, &changed_mode] {
         assert!(matches!(
@@ -353,9 +694,12 @@ async fn shared_selection(
     owner: &dyn ViewOwner,
 ) -> Result<()> {
     use crate::local::checkout_tools::capture;
-    let (options, policy) = capture::configuration(bound);
+    // The admitted owner performs this whole-volume branch transition. The
+    // scoped task cannot invoke that raw facade, but must observe the same
+    // original checkout selection and retain its own path restrictions.
+    let (options, policy) = capture::configuration(admitted);
     let commands = super::super::git::Commands {
-        workspace: bound,
+        workspace: admitted,
         signed: &harness.signed,
         verifier: &harness.verifier,
         clock: &*harness.clock,

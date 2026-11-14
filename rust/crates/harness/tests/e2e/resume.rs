@@ -117,7 +117,7 @@ async fn journal<P: acyclic_harness::store::JournalProvider + 'static>(
     let host = FilesystemHost::new(filesystem, &provider, None)?;
     let volume = VolumeRef::new(
         provider,
-        format!("journal-{}", identity.agent),
+        "journal".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(identity.agent),
         &mut None,
@@ -131,6 +131,7 @@ async fn journal<P: acyclic_harness::store::JournalProvider + 'static>(
     let scope = issuer.bootstrap_scope(
         "owner",
         &Capabilities::new([
+            acyclic_harness::contract::capability::HARNESS_HOST.to_owned(),
             "conversation:bind".to_owned(),
             volume.capability(VolumeOperation::Read, &mut None)?,
             volume.capability(VolumeOperation::Write, &mut None)?,

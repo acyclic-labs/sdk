@@ -62,6 +62,24 @@ pub struct MountOptions {
 }
 
 impl MountOptions {
+    /// Refreshable head projections and immutable historical projections share
+    /// the same read-only mutation boundary.
+    pub(super) fn checkout_mode(&self) -> Result<crate::model::CheckoutMode, MountLifecycleError> {
+        use crate::model::{CheckoutMode, ConsistencyMode, GenerationSelector};
+
+        Ok(if self.writable {
+            CheckoutMode::tracking_transaction()
+        } else {
+            CheckoutMode {
+                consistency: match self.data_selector()? {
+                    GenerationSelector::Head => ConsistencyMode::Manual,
+                    GenerationSelector::Exact(_) => ConsistencyMode::Pinned,
+                },
+                ..CheckoutMode::read_only_pinned()
+            }
+        })
+    }
+
     pub(super) fn data_selector(
         &self,
     ) -> Result<crate::model::GenerationSelector, MountLifecycleError> {
@@ -166,7 +184,8 @@ impl MountOptions {
         self
     }
 
-    /// Creates a pinned immutable mount.
+    /// Creates a read-only mount. Head projections advance only on explicit
+    /// refresh; an authenticated exact-generation selection stays immutable.
     #[must_use]
     pub fn read_only() -> Self {
         Self {

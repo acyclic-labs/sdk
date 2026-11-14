@@ -127,32 +127,37 @@ fn require_volume_operations(
     Ok(())
 }
 
-/// Verify a scope before exposing read-only raw checkout context.
-/// The caller supplies the original selected volume. Without a structured
-/// filesystem capability, the signed scope must grant that volume's reads.
-pub async fn require_unrestricted_workspace_read<
+/// Verify complete read access to the selected workspace subtree.
+/// The original signed grant and persisted policy must admit Read and List
+/// throughout `root`. This grants no access outside that canonical source root.
+pub async fn require_workspace_subtree_read<
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 >(
     workspace: &acyclic_fs::Workspace<A, O>,
     volume: &VolumeRef,
+    root: &str,
     verifier: &AuthorityVerifier,
     scope: &Scope,
     io: &PreparationIo,
     surface: &'static str,
 ) -> Result<()> {
     use crate::filesystem::access;
+    if !root.is_empty() {
+        crate::conversation::validate_content_path(root, &mut Some(&mut io.history_io()))?;
+    }
     verifier.verify(scope, &mut Some(&mut io.history_io()))?;
     let label =
         crate::core::filesystem_scope_label(scope.capabilities(), &mut Some(&mut io.history_io()))?;
-    if label.is_none() {
-        require_volume_operations(
+    if label.is_none()
+        && !crate::core::directory_read_granted_with_work(
             scope.capabilities(),
-            Some(volume),
-            &[VolumeOperation::Read],
-            io,
-            surface,
-        )?;
+            volume,
+            root,
+            &mut Some(&mut io.history_io()),
+        )?
+    {
+        return Err(Error::FilesystemAccessConfiguration(surface));
     }
     let view = access::access_view(
         workspace,
@@ -166,12 +171,16 @@ pub async fn require_unrestricted_workspace_read<
     if view.0.generation_sensitive() || view.0.valid_until().is_some() {
         return Err(Error::FilesystemAccessConfiguration(surface));
     }
-    access::require_unrestricted(
-        &view.0,
+    if view.0.allows_subtree(
+        root,
         &[
             acyclic_fs::access::Action::Read,
             acyclic_fs::access::Action::List,
         ],
-        surface,
-    )
+        access::access_now()?,
+    ) {
+        Ok(())
+    } else {
+        Err(Error::FilesystemAccessConfiguration(surface))
+    }
 }

@@ -195,7 +195,10 @@ impl PreparationIo {
             cancellation.clone(),
         ))
     }
-    pub(crate) fn for_unmeasured(cancellation: &CancellationToken) -> Result<Self> {
+    /// Accounts an operation with no caller-supplied resource allowance.
+    /// Existing measured or native operations must retain their original
+    /// observer; absence of an allowance is genuinely unbounded.
+    pub fn for_unmeasured(cancellation: &CancellationToken) -> Result<Self> {
         cancellation.check()?;
         Ok(Self::owned(
             WorkBudget::UNBOUNDED,

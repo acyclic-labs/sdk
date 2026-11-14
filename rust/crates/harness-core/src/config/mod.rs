@@ -19,6 +19,8 @@
 //! [`compose_with_evidence`] retains those original observations through a
 //! layered fold, including absent roots, pinned generations and its refusal.
 
+#[cfg(not(target_arch = "wasm32"))]
+mod admissions;
 mod plugin;
 mod program;
 pub use program::{HookEvent, ProgramEntry, ProgramManifest, ProgramTrigger};
@@ -26,6 +28,8 @@ pub mod policy;
 mod types;
 #[cfg(not(target_arch = "wasm32"))]
 mod value;
+#[cfg(not(target_arch = "wasm32"))]
+pub use admissions::SettingsAdmissions;
 #[cfg(not(target_arch = "wasm32"))]
 pub use value::ConfigValue;
 

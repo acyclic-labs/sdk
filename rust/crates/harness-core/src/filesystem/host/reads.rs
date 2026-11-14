@@ -1,22 +1,11 @@
 use super::*;
+mod capture;
 pub(crate) mod media_type;
 #[cfg(all(test, not(target_arch = "wasm32"), not(loom)))]
 mod skills_tests;
 #[cfg(all(test, not(loom)))]
 mod tests;
 
-#[cfg(not(target_arch = "wasm32"))]
-struct SkillRead<'a> {
-    volume: &'a VolumeRef,
-    grant: &'a ContentGrant,
-    path: &'a str,
-    source_generation: &'a GenerationRef,
-    maximum_bytes: Option<u64>,
-    access: crate::conversation::ContentAccess<'a, 'a>,
-}
-
-// The selected generation and both policy owners remain together until the
-// disclosure's final currency check. Selection does not require a file to exist.
 struct PrivateReadSelection<'a, A: 'static, O: 'static> {
     workspace: Workspace<A, O>,
     generation: Generation<A, O>,
@@ -158,7 +147,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         io: Option<&PreparationIo>,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
         grant.require(volume, VolumeOperation::Read, io)?;
-        InternalContentClass::require_path(Some(class), path, io)?;
+        InternalContentClass::require_path(volume, Some(class), path, io)?;
         let temporary = PreparationIo::temporary(io)?;
         let io = temporary.as_ref().or(io);
         let unmeasured;
@@ -340,38 +329,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
         self.require_private_directory(volume, grant, path, io)?;
         super::super::access::require_directory_ceiling(ceiling, volume, path, io)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(sources) = self.skill_sources(volume)?
-            && let Some(source_generation) = expected_generation
-            && sources.matches(volume, source_generation, path)
-        {
-            let generation = if let Some(retained) = sources.materialized(source_generation)? {
-                retained
-            } else {
-                self.materialize_skill(
-                    &sources,
-                    SkillRead {
-                        volume,
-                        grant,
-                        path,
-                        source_generation,
-                        maximum_bytes,
-                        access: crate::conversation::ContentAccess { ceiling, io },
-                    },
-                )
-                .await?
-            };
-            return Box::pin(self.read_private_path_indexed(
-                volume,
-                grant,
-                path,
-                Some(&generation),
-                maximum_bytes,
-                crate::conversation::ContentAccess { ceiling, io },
-            ))
-            .await;
-        }
-
         validate_private_read_path(path, io)?;
         let unmeasured;
         let io = if let Some(io) = io {
@@ -737,101 +694,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<acyclic_fs::GenerationId> {
         bounded_io::generation_version(reference.version(), io)
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn materialize_skill(
-        &self,
-        sources: &crate::context::native_skills::NativeSkills,
-        request: SkillRead<'_>,
-    ) -> Result<GenerationRef> {
-        let SkillRead {
-            volume,
-            grant,
-            path,
-            source_generation,
-            maximum_bytes,
-            access: crate::conversation::ContentAccess { ceiling, io },
-        } = request;
-        // Keep the cache recheck, pinned transaction and retained receipt
-        // under the same journal owner. Disjoint first loads never race HEAD.
-        let materializing = sources.materializer.enter().await;
-        if let Some(retained) = sources.materialized(source_generation)? {
-            drop(materializing);
-            return Ok(retained);
-        }
-        let unmeasured;
-        let original_io = io;
-        let io = if let Some(io) = io {
-            io
-        } else {
-            unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-            &unmeasured
-        };
-        let workspace = workspace_ref(self.provider.clone(), &volume.storage_name(&mut None)?)?;
-        let key = IdempotencyKey::new(format!(
-            "skill-body-{}",
-            hex::encode(source_generation.as_resource().key())
-        ))?;
-        // The commit is authoritative if a crash or a failed receipt write
-        // separated publication from the local cache. Never reopen the
-        // host source when its original bytes are already committed.
-        let committed = crate::conversation::BoundedContentFuture::new(Some(io), || {
-            self.operation_generation(&workspace, &key, Some(io))
-        })?
-        .await?;
-        let generation = if let Some(committed) = committed {
-            committed
-        } else {
-            let selected = self.open(&workspace, Some(io)).await?;
-            let label = crate::core::filesystem_scope_label(
-                grant.policy_scope().capabilities(),
-                &mut Some(&mut io.history_io()),
-            )?;
-            let view = super::super::access::access_view(
-                &selected,
-                grant.policy_scope(),
-                None,
-                super::super::access::capability_payload(label, VolumeOperation::Read, io)?,
-                ceiling,
-                io,
-            )
-            .await?;
-            for action in [
-                acyclic_fs::access::Action::List,
-                acyclic_fs::access::Action::Read,
-            ] {
-                super::super::access::require(&view.0, action, path, io)?;
-            }
-            let expected = self.generation_ref_id(view.2, Some(io))?;
-            let bytes = sources
-                .read(volume, source_generation, path, maximum_bytes, original_io)?
-                .await?
-                .ok_or_else(|| Error::NotFound("retained skill source is absent".into()))?;
-            super::super::access::require_current(&selected, &view.0, io).await?;
-            let (directory, _) = path
-                .rsplit_once('/')
-                .ok_or_else(|| Error::Invalid("skill source has no directory".into()))?;
-            self.apply_generation(
-                &workspace,
-                Some(&expected),
-                &[
-                    WorkspaceMutation::CreateDirectory {
-                        path: format!("/{directory}"),
-                    },
-                    WorkspaceMutation::PutFile {
-                        path: format!("/{path}"),
-                        bytes,
-                    },
-                ],
-                key,
-                Some(io),
-            )?
-            .await?
-        };
-        let generation = self.generation_ref_id(generation.id(), original_io)?;
-        sources.retain_materialized(source_generation, &generation)?;
-        drop(materializing);
-        Ok(generation)
-    }
 }
 // Only the selected user path is classified here. Metadata, backing storage,
 // cancellation and accounting failures retain their original terminal cause.
@@ -940,12 +802,7 @@ fn selected_reference<'a>(
                 volume.copy(work)?,
                 stock_string_copy(path, Some(io))?,
                 version,
-                FileDescriptor::from_bytes(
-                    bytes,
-                    crate::model::image_media_type(bytes)
-                        .unwrap_or_else(|| media_type::classify(bytes)),
-                    work,
-                )?,
+                FileDescriptor::from_bytes(bytes, media_type::captured(bytes), work)?,
                 stock_string_copy(path.rsplit('/').next().unwrap_or(path), Some(io))?,
                 work,
             )

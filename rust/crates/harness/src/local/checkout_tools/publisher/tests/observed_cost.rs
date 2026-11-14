@@ -114,7 +114,13 @@ async fn measure_writer_batch(publishers: &[&CheckoutPublisher], layout: &str) -
         for (index, (publisher, (_, file))) in publishers.iter().zip(results).enumerate() {
             let path = format!("{prefix}concurrent-{count}-{index}.txt");
             let bytes = format!("writer {index}\n");
-            let (mount, relative) = publisher.tools.workspace.mounts.file(None, &path)?;
+            let (mount, relative) = publisher.tools.workspace.mounts.file_for(
+                acyclic_fs::access::Action::Read,
+                None,
+                &path,
+                publisher.tools.clock.now_unix_millis() / 1000,
+                None,
+            )?;
             let workspace = mount.view.source.as_ref().map_or_else(
                 || publisher.tools.workspace.view().workspace(),
                 |source| source.workspace.workspace(),

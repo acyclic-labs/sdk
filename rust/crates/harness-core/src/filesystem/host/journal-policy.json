@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "version": 6,
+  "version": 7,
   "layers": [[{
     "id": "host-custody",
     "effect": "allow",
@@ -28,6 +28,13 @@
     "principal": {"attributes": {}},
     "actions": ["read", "read-history"],
     "resource": {"lineage_root": null, "volume": null, "generations": "all", "path": "inputs/messages/**"},
+    "conditions": {}
+  }, {
+    "id": "published-turn-input",
+    "effect": "allow",
+    "principal": {"attributes": {}},
+    "actions": ["read", "read-history"],
+    "resource": {"lineage_root": null, "volume": null, "generations": "all", "path": "inputs/turns/**"},
     "conditions": {}
   }, {
     "id": "published-context",

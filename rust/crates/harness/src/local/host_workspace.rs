@@ -36,10 +36,10 @@ pub(crate) fn child_reference(reference: &str) -> Result<()> {
 /// A native-host agent's workspace, with no execution authority of its own.
 pub struct HostWorkspace {
     workspace: Arc<LocalWorkspace>,
+    cwd: PathBuf,
     agent: AgentPath,
     owner: Arc<dyn ViewOwner>,
     mount_root: Arc<HeldRoot>,
-    project: VolumeRef,
     signed: Scope,
     verifier: crate::core::AuthorityVerifier,
     scope: crate::runtime::RuntimeScope,
@@ -60,10 +60,6 @@ impl HostWorkspace {
         if agent.depth() != 0 {
             return Err(Error::Unauthorized("host root agent has a parent".into()));
         }
-        let project = workspace.mounts.named(None)?.1.view.volume.clone();
-        if project.class() != VolumeClass::Project {
-            return Err(Error::Invalid("host project volume class differs".into()));
-        }
         let canonical_root = std::fs::canonicalize(&workspace.path).map_err(storage)?;
         let mounts = std::fs::canonicalize(admitted_mount_root.path()).map_err(storage)?;
         if mounts != std::fs::canonicalize(&workspace.mount_directory).map_err(storage)?
@@ -83,6 +79,7 @@ impl HostWorkspace {
             )));
         }
         let mut result = Self {
+            cwd: native_cwd(&workspace)?,
             workspace,
             owner: Arc::new(AgentOwner),
             agent,
@@ -93,7 +90,6 @@ impl HostWorkspace {
             signed: signed.copy(&mut None)?,
             verifier: verifier.clone(),
             mount_root: Arc::new(admitted_mount_root),
-            project,
             _native_volumes: Vec::new(),
         };
         result.verify().await?;
@@ -104,7 +100,7 @@ impl HostWorkspace {
     /// The view's canonical path: the identity cwd discovery matches against.
     #[must_use]
     pub fn path(&self) -> &Path {
-        &self.workspace.path
+        &self.cwd
     }
 
     /// Cwd to give the native host before it starts executing this agent: the
@@ -112,7 +108,7 @@ impl HostWorkspace {
     /// prefix. Hosts resolve it back to [`Self::path`] when they report a cwd.
     #[must_use]
     pub fn host_cwd(&self) -> std::borrow::Cow<'_, Path> {
-        acyclic_host_platform::paths::strip_verbatim(&self.workspace.path)
+        acyclic_host_platform::paths::strip_verbatim(self.path())
     }
 
     /// Native discovery for this admitted view, shared with the shell.
@@ -228,7 +224,7 @@ impl HostWorkspace {
         Ok(result)
     }
 
-    /// Mounts spawned child `child`'s project view, idempotently, and names it
+    /// Mounts spawned child `child`'s selected primary, idempotently, and names it
     /// `agents/<reference>` in this view's git facade. The child's volumes
     /// already exist, forked in the spawn's own commit, so this binds the
     /// lazy fork its spawn retained and mounts them; a reopened
@@ -246,21 +242,9 @@ impl HostWorkspace {
                 "host child belongs to another parent".into(),
             ));
         }
-        let bound = |name: &str| {
-            volumes
-                .iter()
-                .find(|binding| binding.name == name)
-                .and_then(|binding| binding.as_volume())
-                .cloned()
-                .ok_or_else(|| Error::Invalid(format!("host child has no {name} volume")))
-        };
-        let project = bound("project")?;
-        bound(crate::filesystem::HOME_VOLUME)?;
-        if project.class() != VolumeClass::Project {
-            return Err(Error::Invalid(
-                "host child project volume class differs".into(),
-            ));
-        }
+        let primary = crate::agent::WorkspaceTable::primary_in(volumes)
+            .ok_or_else(|| Error::Invalid("host child has no primary workspace".into()))?;
+        let project = primary.volume()?;
         // Opening a native fork is the first operation that needs a projection.
         // Roots and physical task views use the admitted checkout directories.
         if self.workspace.mounting == WorkspaceMounting::Native {
@@ -282,7 +266,7 @@ impl HostWorkspace {
             &|| owner.verify(),
         )
         .await?;
-        let view = self.workspace.spawned_project_view(&project).await?;
+        let view = self.workspace.spawned_project_view(project).await?;
         child_reference(reference)?;
         acyclic_fs::GitCompatRepository::new(
             selected.workspace().id(),
@@ -301,15 +285,15 @@ impl HostWorkspace {
             .for_scope(&signed)?;
         let workspace = self
             .workspace
-            .bound_task_view(view, &project, volumes, &*child_owner, &authority)
+            .bound_task_view(view, project, volumes, &*child_owner, &authority)
             .await?;
         verify_root(&self.mount_root)?;
         let mut result = Self {
+            cwd: native_cwd(&workspace)?,
             workspace,
             agent: child.clone(),
             owner: child_owner,
             mount_root: Arc::clone(&self.mount_root),
-            project,
             scope: crate::runtime::RuntimeScope::new(
                 signed.capabilities().clone(),
                 Default::default(),
@@ -326,26 +310,20 @@ impl HostWorkspace {
     /// Fails once the owner lost the view, its volume grants, or its root.
     pub(super) async fn verify(&self) -> Result<()> {
         self.owner.verify().await?;
-        for (volume, operation) in std::iter::once(&self.project)
-            .chain(
-                self.workspace
-                    .mounts
-                    .mounts()
-                    .filter(|(relative, _)| !relative.is_empty())
-                    .map(|(_, mount)| &mount.view.volume),
-            )
-            .flat_map(|volume| {
-                [VolumeOperation::Read, VolumeOperation::Write].map(|operation| (volume, operation))
-            })
-        {
-            if !self
-                .signed
-                .capabilities()
-                .contains(&volume.capability(operation, &mut None)?)
-            {
-                return Err(Error::Unauthorized(
-                    "host workspace project is not granted".into(),
-                ));
+        for (_, mount) in self.workspace.mounts.mounts() {
+            for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+                if operation == VolumeOperation::Write && mount.mode.read_only() {
+                    continue;
+                }
+                if !self
+                    .signed
+                    .capabilities()
+                    .contains(&mount.view.volume.capability(operation, &mut None)?)
+                {
+                    return Err(Error::Unauthorized(
+                        "host workspace volume is not granted".into(),
+                    ));
+                }
             }
         }
         if self.workspace.root_identity()? != self.workspace.identity {
@@ -397,6 +375,13 @@ impl HostWorkspace {
         }
         Ok(())
     }
+}
+
+fn native_cwd(workspace: &LocalWorkspace) -> Result<PathBuf> {
+    workspace
+        .native_cwd()?
+        .map(Path::to_path_buf)
+        .ok_or_else(|| Error::Unauthorized("host primary has no native projection".into()))
 }
 
 fn verify_root(root: &HeldRoot) -> Result<()> {

@@ -713,10 +713,16 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
         model.extend(with_retrospectives([ScriptedTurn::Text(
             "reviewed the original finding".into(),
         )]));
+        if delivery == "follow_up" {
+            model.extend(with_retrospectives([ScriptedTurn::Text(
+                "reviewed the follow-up finding".into(),
+            )]));
+        }
         agents.drain(&child).await?;
+        assert_eq!(agents.state(&child).await?.phase, Phase::Idle, "{delivery}");
         let request = model.last_request().ok_or("child did not run")?;
-        // Steering pins newly admitted files into the recipient's private
-        // volume, so its projection preserves the descriptor, not the address.
+        // Steering pins newly admitted files into the recipient's read-only
+        // turn input route, preserving the descriptor instead of the address.
         let projected = request
             .messages
             .iter()
@@ -730,8 +736,35 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
                 _ => None,
             })
             .ok_or("child did not receive the immutable finding")?;
+        // A fresh turn retains the original admitted journal reference. A
+        // running turn pins it into its already-bound read-only input route.
+        if projected != &item.file {
+            assert_eq!(
+                projected.volume(),
+                &acyclic_harness_core::conversation::journal_volume(
+                    project.provider().clone(),
+                    &child.id(),
+                )?
+            );
+            assert!(projected.path().starts_with("inputs/turns/"));
+        }
+        let projected_authority = agent_authority(
+            &issuer,
+            &TurnAdmission::LocalRoot,
+            &child,
+            &recipient.volumes,
+            std::slice::from_ref(projected),
+        )
+        .await?;
+        let projected_reader = FilesystemContentVerifier::new(
+            files.clone(),
+            &projected_authority.verifier,
+            &projected_authority.scope,
+            LIMITS.maximum_bytes,
+            None,
+        )?;
         assert_eq!(
-            reader
+            projected_reader
                 .read(projected, projected.descriptor().byte_length(), None, None)?
                 .await?
                 .as_ref(),

@@ -69,6 +69,52 @@ impl std::ops::Deref for ObservedHeads {
     }
 }
 
+/// An original append receipt whose native metadata remains with its owner.
+pub(crate) struct ObservedAppend {
+    outcome: acyclic_stream::AppendOutcome,
+    #[cfg(not(target_arch = "wasm32"))]
+    _allocation: Option<acyclic_native_runtime::ReadAllocation>,
+}
+
+impl std::ops::Deref for ObservedAppend {
+    type Target = acyclic_stream::AppendOutcome;
+    fn deref(&self) -> &Self::Target {
+        &self.outcome
+    }
+}
+
+pub(crate) async fn append_with_work<P: crate::store::JournalProvider + ?Sized>(
+    client: &Arc<P>,
+    request: acyclic_stream::AppendRequest,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<ObservedAppend> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(original) = work.as_deref().and_then(|io| io.original_native_work()) {
+        let result = client
+            .native_append(request, original.runtime_meter())
+            .await;
+        let output = crate::distributed::native_call_result(original, result)?
+            .map_err(|source| stream_error_with_work(source, work))?;
+        let (outcome, allocation) = original_sdk_metadata_output(original, output)?.into_parts();
+        return Ok(ObservedAppend {
+            outcome,
+            _allocation: Some(allocation),
+        });
+    }
+    if let Some(observer) = work.as_deref_mut() {
+        observer.begin_call()?;
+    }
+    let outcome = client
+        .append(request)
+        .await
+        .map_err(|source| stream_error_with_work(source, work))?;
+    Ok(ObservedAppend {
+        outcome,
+        #[cfg(not(target_arch = "wasm32"))]
+        _allocation: None,
+    })
+}
+
 pub(crate) async fn heads_with_work<P: crate::store::JournalProvider + ?Sized>(
     client: &Arc<P>,
     request: &acyclic_stream::HeadsRequest,
@@ -299,7 +345,28 @@ pub(crate) async fn one_record<P: crate::store::JournalProvider + ?Sized>(
     .await
 }
 
-/// A keyed selection keeps its inclusive lower bound; an unkeyed selection
+/// The first immutable record carrying an exact indexed key, without a tail read.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) async fn one_keyed_record<P: crate::store::JournalProvider + ?Sized>(
+    client: &Arc<P>,
+    path: &StreamPath,
+    key: Vec<u8>,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<Option<ObservedRecord>> {
+    one_selected_record(
+        client,
+        ReadRequest {
+            key: Some(acyclic_stream::ReadKeySeek::exact(key, u64::MAX)),
+            path: path.clone(),
+            from: 0,
+            limit: 1,
+            at_least: Default::default(),
+        },
+        work,
+    )
+    .await
+}
+/// A keyed selection uses the shared cursor contract; an unkeyed selection
 /// must return the exact cursor. Both reject a producer exceeding one record.
 pub(crate) async fn one_selected_record<P: crate::store::JournalProvider + ?Sized>(
     client: &Arc<P>,
@@ -313,8 +380,8 @@ pub(crate) async fn one_selected_record<P: crate::store::JournalProvider + ?Size
             "single-record selection requires one output slot",
         ));
     }
-    let from = request.from;
-    let keyed = request.key.is_some();
+    let mut from = request.from;
+    let mut key = request.key.clone();
     let mut quota = CodecQuota::new(work, 0)?;
     let mut records = match read_selection(client, request, quota.work()).await? {
         Ok(records) => records,
@@ -336,11 +403,13 @@ pub(crate) async fn one_selected_record<P: crate::store::JournalProvider + ?Size
         if let Some(record) = records.next(quota.work()).await? {
             let held = sdk_record_retained_bytes(&record, quota.work());
             quota.adopt(held)?;
-            if position != 0
-                || record.sequence < from
-                || (!keyed && record.sequence != from)
-                || record.value.len() > acyclic_stream::MAX_RECORD_BYTES
-            {
+            let selected = match key.as_mut() {
+                Some(key) => key
+                    .advance(&mut from, record.sequence, record.headers.keys())
+                    .is_ok(),
+                None => record.sequence == from,
+            };
+            if position != 0 || !selected || record.value.len() > acyclic_stream::MAX_RECORD_BYTES {
                 return Err(boundary(
                     quota.work(),
                     Storage,

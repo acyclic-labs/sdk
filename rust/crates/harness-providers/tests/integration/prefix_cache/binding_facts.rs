@@ -75,9 +75,14 @@ async fn binding_facts_follow_shared_bytes_across_turns_and_forks() -> TestResul
                     limits,
                 )
                 .await?;
-            let (bound_tools, stage) =
-                ContextManifest::bind(reference, bindings.reader.as_ref(), tools.clone(), limits)
-                    .await?;
+            let (bound_tools, stage) = ContextManifest::bind(
+                reference,
+                bindings.reader.as_ref(),
+                bindings.writer.as_deref(),
+                tools.clone(),
+                limits,
+            )
+            .await?;
             let pipeline = ContextPipeline::new([stage]);
             let mut history = Vec::new();
             let mut previous: Option<Bytes> = None;

@@ -128,7 +128,6 @@ pub struct LocalHarness {
     /// [`LocalHarnessConfig::served`].
     served: Option<Arc<dyn Verifier>>,
     active_directory: String,
-    skill_cache: context::skills::Cache,
     #[cfg(any(test, not(target_arch = "wasm32")))]
     settings: Option<Arc<crate::native_settings::SettingsConfig>>,
     /// Plugins admitted at session start, including descriptions, after-hooks
@@ -199,7 +198,8 @@ impl LocalHarness {
     pub const fn scratch(&self) -> &VolumeRef {
         &self.scratch
     }
-    /// Host-only journal storage.
+    /// The root's workspace-private volume (the legacy field is named journal).
+    /// Protected execution journals are separate, owner-bound volumes.
     #[must_use]
     pub const fn journal_volume(&self) -> &VolumeRef {
         &self.journal

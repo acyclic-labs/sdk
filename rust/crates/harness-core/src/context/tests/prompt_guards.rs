@@ -89,8 +89,14 @@ async fn configuration_files_preserve_cached_prompt_prefix() -> Result<()> {
                 payload_limits(),
             )
             .await?;
-        let (_, stage) =
-            ContextManifest::bind(reference, &payloads, tools.clone(), payload_limits()).await?;
+        let (_, stage) = ContextManifest::bind(
+            reference,
+            &payloads,
+            Some(&payloads),
+            tools.clone(),
+            payload_limits(),
+        )
+        .await?;
         let projected = ContextPipeline::new([stage])
             .run(&input(), payload_limits(), None)
             .await?;

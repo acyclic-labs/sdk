@@ -1695,9 +1695,18 @@ async fn names(
     volume: &crate::conversation::VolumeRef,
     path: &str,
 ) -> Result<Vec<String>> {
+    names_with_scope(harness, &harness.signed, volume, path).await
+}
+
+async fn names_with_scope(
+    harness: &LocalHarness,
+    scope: &crate::core::Scope,
+    volume: &crate::conversation::VolumeRef,
+    path: &str,
+) -> Result<Vec<String>> {
     let grant = crate::conversation::ContentGrant::verify_directory_read(
         &harness.verifier,
-        &harness.signed,
+        scope,
         volume,
         "",
         &mut None,
@@ -2043,6 +2052,8 @@ async fn follow_tool_output(
 #[cfg(unix)]
 #[tokio::test]
 async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
+    use crate::conversation::ContentResidencyVerifier as _;
+
     let directory = tempfile::tempdir().map_err(agent)?;
     let home = directory.path().join("home");
     std::fs::create_dir_all(home.join(".claude")).map_err(agent)?;
@@ -2239,8 +2250,12 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
         bound.read_file(&root, &configuration, 0, configuration.descriptor().byte_length()).await,
         Err(crate::agent::Error::Turn(error)) if matches!(*error, Error::Unauthorized(_))
     ));
-    assert_eq!(names(&harness, private, "hooks").await?, [turn.to_string()]);
-    let recorded = names(&harness, private, &format!("hooks/{turn}")).await?;
+    assert_eq!(
+        names_with_scope(&harness, &scope, &content.volume, "hooks").await?,
+        [turn.to_string()]
+    );
+    let recorded =
+        names_with_scope(&harness, &scope, &content.volume, &format!("hooks/{turn}")).await?;
     let [outcome, marker] = recorded.as_slice() else {
         return Err(Error::Conflict(format!(
             "one hook outcome, got {recorded:?}"
@@ -2250,6 +2265,40 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
         outcome.strip_suffix(".json"),
         marker.strip_suffix(".started")
     );
+    for name in &recorded {
+        let path = format!("hooks/{turn}/{name}");
+        let (file, _, _) = content
+            .reader
+            .read_private_path(
+                &content.volume,
+                "",
+                &path,
+                None,
+                harness.limits.file_bytes,
+                Default::default(),
+            )?
+            .await?
+            .ok_or_else(|| Error::NotFound(path.clone()))?;
+        assert_eq!(file.volume(), &content.volume);
+        assert!(matches!(
+            bound.read_file(&root, &file, 0, file.descriptor().byte_length()).await,
+            Err(crate::agent::Error::Turn(error)) if matches!(*error, Error::Unauthorized(_))
+        ));
+        assert!(
+            harness
+                .context_reader()?
+                .read_private_path(
+                    private,
+                    "",
+                    &path,
+                    None,
+                    harness.limits.file_bytes,
+                    Default::default(),
+                )?
+                .await?
+                .is_none()
+        );
+    }
     Ok(())
 }
 
@@ -2258,7 +2307,7 @@ async fn listed(
     harness: &LocalHarness,
     manifest: &crate::conversation::FileRef,
 ) -> Result<Vec<crate::conversation::FileRef>> {
-    let reader = harness.client_reader()?;
+    let reader = super::selected_reader(harness, [manifest])?;
     let bytes = reader
         .read(manifest, manifest.descriptor().byte_length(), None, None)?
         .await?;
@@ -2445,11 +2494,16 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
     .await?;
     let checkout = harness.workspace.as_ref().expect("checkout").path.clone();
     let mut observed = ObservedConversation::open(&harness).await?;
+    let root = observed.conversation.agent().clone();
     let prompt = "inspect @mention.txt and @pixel.png then @mention.txt again";
     // A capture for one message replays its pinned manifest exactly.
-    let first = harness.prompt_attachments(b"direct", Some(prompt)).await?;
+    let first = harness
+        .prompt_attachments(&root, b"direct", Some(prompt))
+        .await?;
     assert_eq!(
-        harness.prompt_attachments(b"direct", Some(prompt)).await?,
+        harness
+            .prompt_attachments(&root, b"direct", Some(prompt))
+            .await?,
         first
     );
     let inbox = observed.conversation.send("mention", prompt).await?;
@@ -2460,9 +2514,11 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
         "the real mention must reach and settle its model request"
     );
     let client = observed.conversation;
-    // Later publications on the private volume leave a replay unchanged.
+    // Later publications leave the pinned journal manifest unchanged.
     assert_eq!(
-        harness.prompt_attachments(b"direct", Some(prompt)).await?,
+        harness
+            .prompt_attachments(&root, b"direct", Some(prompt))
+            .await?,
         first
     );
     let TurnInput::Message {
@@ -2476,9 +2532,14 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
         ));
     };
     // Each mentioned file attaches once, in first-mention order, pinned.
-    let reader = harness.client_reader()?;
+    let files = listed(&harness, manifest).await?;
+    let journal =
+        crate::conversation::journal_volume(harness.project.provider().clone(), &root.id())?;
+    assert_eq!(manifest.volume(), &journal);
+    assert!(files.iter().all(|file| file.volume() == &journal));
+    let reader = super::selected_reader(&harness, &files)?;
     let mut read = Vec::new();
-    for file in listed(&harness, manifest).await? {
+    for file in files {
         read.push((
             file.path()
                 .rsplit('/')
@@ -2538,19 +2599,113 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
     std::fs::write(checkout.join("mention.txt"), "CHANGED\n").map_err(agent)?;
     std::fs::remove_file(checkout.join("pixel.png")).map_err(agent)?;
     assert_eq!(
-        harness.prompt_attachments(b"direct", Some(prompt)).await?,
+        harness
+            .prompt_attachments(&root, b"direct", Some(prompt))
+            .await?,
         first
     );
     assert_eq!(client.send("mention", prompt).await?, inbox);
     // A new message sees the files as they are now.
     let fresh = harness
-        .prompt_attachments(b"fresh", Some("inspect @mention.txt"))
+        .prompt_attachments(&root, b"fresh", Some("inspect @mention.txt"))
         .await?
         .expect("a manifest");
     let fresh = listed(&harness, &fresh).await?;
+    assert!(
+        async { reader.read(&fresh[0], 1 << 20, None, None)?.await }
+            .await
+            .is_err(),
+        "selected attachments granted an unrelated journal input"
+    );
+    let reader = super::selected_reader(&harness, &fresh)?;
     assert_eq!(
         reader.read(&fresh[0], 1 << 20, None, None)?.await?.to_vec(),
         b"CHANGED\n"
+    );
+    // No partial manifest is delivered when one member is absent.
+    assert!(
+        harness
+            .prompt_attachments(&root, b"missing-member", Some("@mention.txt @absent.txt"))
+            .await
+            .is_err()
+    );
+    // Recover a committed copy whose acknowledgement was lost before its
+    // manifest. The source has vanished, so a reread cannot pass this control.
+    use crate::conversation::{ContentAccess, ContentChange};
+    let key = b"copy-ack-lost";
+    let text = "@vanished.txt";
+    let base = format!(
+        "inputs/mentions/{}/{}",
+        blake3::hash(key),
+        blake3::hash(text.as_bytes())
+    );
+    let destination = format!(
+        "{base}/{}",
+        super::super::context::copy_name("vanished.txt")
+    );
+    let operation =
+        super::super::context::publication_operation(b"acyclic.local.mention-copies/v1\0", key);
+    let content = harness
+        .agents
+        .get()
+        .expect("hosted")
+        .server()
+        .bound()
+        .input_content(&root, None)
+        .await
+        .map_err(agent)?;
+    let publisher = content.writer.as_ref().expect("host journal writer");
+    publisher
+        .stage_changes(
+            publisher.volume(),
+            operation,
+            &[ContentChange::CreateAbsent {
+                path: &destination,
+                bytes: b"pinned before interruption",
+                media_type: "text/plain",
+                display_name: destination.rsplit('/').next().unwrap(),
+            }],
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert!(!checkout.join("vanished.txt").exists());
+    let recovered = harness
+        .prompt_attachments(&root, key, Some(text))
+        .await?
+        .expect("recovered manifest");
+    let recovered_files = listed(&harness, &recovered).await?;
+    let reader = super::selected_reader(&harness, &recovered_files)?;
+    assert_eq!(
+        reader
+            .read(&recovered_files[0], 1024, None, None)?
+            .await?
+            .as_ref(),
+        b"pinned before interruption"
+    );
+    // A different source cannot reuse an unfinished copy operation.
+    let conflicting = b"changed-before-manifest";
+    let conflict_operation = super::super::context::publication_operation(
+        b"acyclic.local.mention-copies/v1\0",
+        conflicting,
+    );
+    publisher
+        .stage_changes(
+            publisher.volume(),
+            conflict_operation,
+            &[ContentChange::CreateAbsent {
+                path: "inputs/mentions/other-source/file",
+                bytes: b"unselected",
+                media_type: "text/plain",
+                display_name: "file",
+            }],
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert!(
+        harness
+            .prompt_attachments(&root, conflicting, Some("@mention.txt"))
+            .await
+            .is_err()
     );
     Ok(())
 }
@@ -3049,14 +3204,14 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
     assert_ne!(child_skills, parent_skills);
     for command in ["/context-checkpoint", "/CONTEXT-CHECKPOINT"] {
         assert!(matches!(
-            harness.resolve_prompt_command(command).await,
+            harness.resolve_prompt_command(&root, command).await,
             Err(Error::Conflict(_))
         ));
     }
     // An unambiguous name must still expand in the same catalog.
     assert!(
         harness
-            .resolve_prompt_command("/candidate-search")
+            .resolve_prompt_command(&root, "/candidate-search")
             .await?
             .is_some()
     );
@@ -3274,6 +3429,39 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
         return Err(Error::Invalid("spawn was not delivered".into()));
     };
     let entries = settled(&harness, &child).await?;
+    let (agents, _) = harness.agents().await?;
+    let inherited_policy = agents
+        .state(&child)
+        .await
+        .map_err(agent)?
+        .policy
+        .ok_or_else(|| Error::Invalid("child policy missing".into()))?;
+    let original_policy = agents
+        .state(&root)
+        .await
+        .map_err(agent)?
+        .policy
+        .ok_or_else(|| Error::Invalid("parent policy missing".into()))?;
+    assert_eq!(inherited_policy, original_policy);
+    assert_eq!(
+        inherited_policy.volume(),
+        &crate::conversation::journal_volume(harness.project.provider().clone(), &root.id())?
+    );
+    // An exact file grant does not turn host-only policy into model content.
+    let guest = super::selected_reader(&harness, [&inherited_policy])?;
+    let denied = async {
+        guest
+            .read(
+                &inherited_policy,
+                inherited_policy.descriptor().byte_length(),
+                None,
+                None,
+            )?
+            .await
+    }
+    .await
+    .expect_err("a task read its inherited host policy");
+    assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
     let request = provider
         .request(0)
         .ok_or_else(|| Error::NotFound("child request".into()))?;
@@ -3438,9 +3626,13 @@ async fn project_mentions_keep_their_volume_and_bounded_copy_paths() -> Result<(
             "the prompt started no attached message turn".into(),
         ));
     };
-    // Every member lives beside its manifest on the private volume, inside
-    // the directory a forked child is granted with the manifest; none stays
-    // on the project volume a child does not inherit.
+    let journal = crate::conversation::journal_volume(
+        project.provider().clone(),
+        &client.conversation.agent().id(),
+    )?;
+    assert_eq!(manifest.volume(), &journal);
+    // Every selected member lives beside its manifest on the host journal;
+    // none stays on the project volume a child does not inherit.
     let (base, _) = manifest
         .path()
         .rsplit_once('/')
@@ -3508,7 +3700,7 @@ async fn project_mentions_keep_their_volume_and_bounded_copy_paths() -> Result<(
     let listed = listed(&harness, manifest).await?;
     assert_eq!(listed.len(), 2);
     assert_eq!(listed[0].path().len(), listed[1].path().len());
-    let reader = harness.client_reader()?;
+    let reader = super::selected_reader(&harness, &listed)?;
     for (file, text) in listed.iter().zip(["short\n", "long\n"]) {
         let bytes = reader
             .read(file, file.descriptor().byte_length(), None, None)?
@@ -3614,6 +3806,35 @@ async fn a_small_file_bound_never_fails_a_turn_on_its_lists() -> Result<()> {
         .map(|message| attached(&message.content))
         .collect::<Vec<_>>();
     assert_eq!(replayed, vec![MENTIONS + 1, 1]);
+    // Each file fits on its own; their combined bytes must still be denied.
+    harness
+        .files
+        .apply(
+            &workspace,
+            None,
+            &[
+                crate::filesystem::WorkspaceMutation::PutFile {
+                    path: "/bound-a.txt".into(),
+                    bytes: acyclic_stream::OwnedBytes::from(vec![b'a'; 600]),
+                },
+                crate::filesystem::WorkspaceMutation::PutFile {
+                    path: "/bound-b.txt".into(),
+                    bytes: acyclic_stream::OwnedBytes::from(vec![b'b'; 600]),
+                },
+            ],
+            &crate::contract::IdempotencyKey::new("combined-mention-bound")?,
+        )
+        .await?;
+    assert!(
+        harness
+            .prompt_attachments(
+                client.conversation.agent(),
+                b"combined-denied",
+                Some("@bound-a.txt @bound-b.txt")
+            )
+            .await
+            .is_err()
+    );
     Ok(())
 }
 
@@ -4559,6 +4780,33 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
     assert!(branch.parent().is_none());
     assert_ne!(&branch, root);
     let state = agents.state(&branch).await.map_err(agent)?;
+    let policy = state
+        .policy
+        .as_ref()
+        .ok_or_else(|| Error::Invalid("branch policy missing".into()))?;
+    let journal = crate::conversation::journal_volume(project.provider().clone(), &branch.id())?;
+    assert_eq!(policy.volume(), &journal);
+    let journal_content = super::journal_content(&harness, &branch)?;
+    let bytes = journal_content
+        .reader
+        .read(policy, policy.descriptor().byte_length(), None, None)?
+        .await?;
+    assert_eq!(
+        serde_json::from_slice::<crate::approvals::ApprovalPolicy>(bytes.as_ref())
+            .map_err(agent)?,
+        harness.preset.approval_policy
+    );
+    let source_policy = agents
+        .state(root)
+        .await
+        .map_err(agent)?
+        .policy
+        .ok_or_else(|| Error::Invalid("source policy missing".into()))?;
+    assert_ne!(
+        source_policy.volume(),
+        policy.volume(),
+        "branch retained its source's policy location"
+    );
     assert_eq!(state.conversation_tail, 1);
     assert!(state.open_children.is_empty());
     let actor = crate::agent::actor_store(agents.provider())
@@ -5132,6 +5380,31 @@ async fn an_instruction_edit_appends_a_notice_and_keeps_the_cached_prefix() -> R
             .ok_or_else(|| Error::NotFound(format!("model request {index}")))
     };
     let (first, second) = (request(0)?, request(1)?);
+    let journal =
+        crate::conversation::journal_volume(harness.project.provider().clone(), &root.id())?;
+    let captured = first
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .filter_map(|part| match part {
+            crate::model::ModelContentPart::File {
+                file,
+                policy: crate::model::FileProjectionPolicy::ProjectInstructions(_),
+            } => Some(file),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !captured.is_empty(),
+        "instruction input was not captured as a file"
+    );
+    for file in &captured {
+        assert_eq!(file.volume(), &journal);
+        assert!(file.path().starts_with(&format!(
+            "{}/",
+            crate::context::ContextEpoch::INSTRUCTIONS_DIRECTORY
+        )));
+    }
     let prefix = |request: &crate::model::ModelRequest| {
         let system = request
             .messages

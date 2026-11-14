@@ -57,7 +57,7 @@ async fn journal() -> Result<(Journal, AuthorityRoot)> {
     let agent = AgentId::from_bytes([1; 16]);
     let volume = VolumeRef::new(
         provider,
-        "replay".into(),
+        "journal".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
         &mut None,
@@ -74,6 +74,7 @@ async fn journal() -> Result<(Journal, AuthorityRoot)> {
     let scope = issuer.bootstrap_scope(
         "owner",
         &crate::Capabilities::new([
+            crate::contract::capability::HARNESS_HOST.to_owned(),
             volume.capability(VolumeOperation::Read, &mut None)?,
             volume.capability(VolumeOperation::Write, &mut None)?,
         ]),

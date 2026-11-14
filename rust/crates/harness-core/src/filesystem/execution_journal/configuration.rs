@@ -1,8 +1,5 @@
 use super::*;
 
-#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
-mod tests;
-
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
     P: crate::store::JournalProvider + ?Sized,
@@ -144,8 +141,10 @@ where
             Error::Invalid(reason.into())
         };
         crate::model::charge_items(io, 1)?;
-        if volume.class() != VolumeClass::AgentPrivate || volume.provider() != &host.provider {
-            return Err(invalid("execution journal requires a private volume"));
+        if !volume.is_agent_journal() || volume.provider() != &host.provider {
+            return Err(invalid(
+                "execution journal requires the agent's journal volume",
+            ));
         }
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
             crate::executor::with_history_io(io, |work| {

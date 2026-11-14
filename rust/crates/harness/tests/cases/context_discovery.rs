@@ -30,6 +30,21 @@ struct CountingReader<'a> {
 }
 
 impl ContentResidencyVerifier for CountingReader<'_> {
+    fn capture_private_path<'a>(
+        &'a self,
+        capture: acyclic_harness::conversation::ContentCapture<'a>,
+        maximum_bytes: Option<u64>,
+        access: acyclic_harness::conversation::ContentAccess<'a, 'a>,
+    ) -> Result<
+        acyclic_harness::conversation::BoundedContentFuture<
+            'a,
+            acyclic_harness::conversation::CapturedContent<'a>,
+        >,
+    > {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .capture_private_path(capture, maximum_bytes, access)
+    }
     fn read_private_range<'a, 'io>(
         &'a self,
         volume: &'a VolumeRef,
@@ -280,7 +295,7 @@ impl Fixture {
                 "journal",
                 &Capabilities::new([
                     // This scope belongs to the host journal reader/writer.
-                    acyclic_harness::contract::capability::HARNESS_HOST.into(),
+                    acyclic_harness::contract::capability::HARNESS_HOST.to_owned(),
                     private.capability(VolumeOperation::Read, &mut None)?,
                     private.capability(VolumeOperation::Write, &mut None)?,
                     self.volume.capability(VolumeOperation::Read, &mut None)?,
@@ -445,6 +460,7 @@ async fn production_default_policy_loads_both_instruction_names_in_ancestor_orde
 #[tokio::test]
 async fn skill_invocation_loads_the_pinned_body_and_enforces_limits() -> Result<()> {
     let fixture = Fixture::new().await?;
+    let (publisher, journal_reader, _, _) = manifest::storage(&fixture).await?;
     let original = b"---\nname: inspect\ndescription: Inspect files\n---\noriginal body";
     fixture
         .put("skills/inspect/SKILL.md", original, "skill")
@@ -461,7 +477,14 @@ async fn skill_invocation_loads_the_pinned_body_and_enforces_limits() -> Result<
         reads: AtomicUsize::new(0),
         prefix: std::sync::Mutex::new(None),
     };
-    let message = skill.invoke(&reader, Some(512)).await?;
+    let message = skill
+        .invoke(
+            &reader,
+            publisher.as_ref(),
+            journal_reader.as_ref(),
+            Some(512),
+        )
+        .await?;
     let ModelContent::Text(text) = message.content else {
         return Err(Error::Invalid("expected skill text".into()));
     };
@@ -469,13 +492,23 @@ async fn skill_invocation_loads_the_pinned_body_and_enforces_limits() -> Result<
     assert_eq!(reader.reads.load(Ordering::Relaxed), 1);
     assert!(
         skill
-            .invoke(fixture.reader.as_ref(), Some(8))
+            .invoke(
+                fixture.reader.as_ref(),
+                publisher.as_ref(),
+                journal_reader.as_ref(),
+                Some(8)
+            )
             .await
             .is_err()
     );
     assert!(
         skill
-            .invoke(fixture.reader.as_ref(), Some(0))
+            .invoke(
+                fixture.reader.as_ref(),
+                publisher.as_ref(),
+                journal_reader.as_ref(),
+                Some(0)
+            )
             .await
             .is_err()
     );
@@ -486,7 +519,12 @@ async fn skill_invocation_loads_the_pinned_body_and_enforces_limits() -> Result<
         let captured = declaration.capture(fixture.reader.as_ref()).await?;
         assert!(
             first_skill(&captured)?
-                .invoke(fixture.reader.as_ref(), Some(512))
+                .invoke(
+                    fixture.reader.as_ref(),
+                    publisher.as_ref(),
+                    journal_reader.as_ref(),
+                    Some(512)
+                )
                 .await
                 .is_err()
         );

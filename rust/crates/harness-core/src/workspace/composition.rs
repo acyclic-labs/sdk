@@ -12,12 +12,17 @@ use std::{
 
 /// Host-selected published view. `source` remains unopened during composition.
 pub struct VolumeView<T> {
-    /// Stable lineage name, also used by `fs --volume`.
+    /// Stable slot identity from the admitted workspace table; never authority.
+    pub entry: crate::agent::EntryId,
+    /// Current model-visible binding label; the entry identity survives rename.
     pub name: String,
     /// Host-authenticated agent reference owning this fork.
     pub agent: String,
     /// Provider-owned volume identity.
     pub volume: VolumeRef,
+    /// Canonical source-relative directory exposed as this binding's root.
+    /// Empty selects the whole volume; this is never a native path.
+    pub root: String,
     /// Root-first ancestry of the owning task.
     pub lineage: Vec<String>,
     /// Selected published generation sequence.
@@ -26,7 +31,7 @@ pub struct VolumeView<T> {
     pub head: u64,
     /// Name semantics and limits of this volume.
     pub config: acyclic_fs::VolumeConfig,
-    /// Policy loaded by the host from this volume.
+    /// Host-selected policy, including this binding's access restrictions.
     pub policy: Arc<Policy>,
     /// Lazy provider binding, retained without opening or copying its files.
     pub source: T,
@@ -65,7 +70,7 @@ pub struct Mount<T> {
 }
 
 impl<T> Mount<T> {
-    /// Uses the same compiled decision for tools and native provider callbacks.
+    /// Checks a source-relative path, including this binding's source root.
     pub fn check(&self, action: Action, path: &str, now: u64) -> Result<()> {
         self.check_with_work(action, path, now, None)
     }
@@ -82,6 +87,7 @@ impl<T> Mount<T> {
         if let Some(work) = work {
             work.remaining()?;
         }
+        self.relative_path_with_work(path, work)?;
         if self.access.decide(action, path, now).allowed {
             return Ok(());
         }
@@ -90,6 +96,88 @@ impl<T> Mount<T> {
             "filesystem policy or signed capability denied access",
             work,
         ))
+    }
+
+    /// Maps an immutable source path back into its projected namespace.
+    pub fn relative_path<'a>(&self, path: &'a str) -> Result<&'a str> {
+        crate::tool::ReadPathKind::Directory.validate(path, &mut None)?;
+        self.relative_path_with_work(path, None)
+    }
+
+    fn relative_path_with_work<'a>(
+        &self,
+        path: &'a str,
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<&'a str> {
+        if self.view.root.is_empty() {
+            return Ok(path);
+        }
+        if path == self.view.root {
+            return Ok("");
+        }
+        path.strip_prefix(self.view.root.as_str())
+            .and_then(|suffix| suffix.strip_prefix('/'))
+            .ok_or_else(|| {
+                path_error(
+                    crate::wire::ErrorCode::Unauthorized,
+                    "source path is outside the workspace root",
+                    work,
+                )
+            })
+    }
+
+    /// Converts a namespace-relative path exactly once, using the invocation's
+    /// original allocation ledger. Native roots are already projected and do
+    /// not use this source path for their OS cwd.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn source_path<'a>(
+        &'a self,
+        path: &'a str,
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<Cow<'a, str>> {
+        let io = work
+            .map(crate::filesystem::PreparationIo::from_native_work)
+            .transpose()?;
+        let io = io.as_ref();
+        crate::executor::with_history_io(io, |history| {
+            crate::tool::ReadPathKind::Directory.validate(path, history)
+        })?;
+        self.source_path_validated(path, io)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn source_path_validated<'a>(
+        &'a self,
+        path: &'a str,
+        io: Option<&crate::filesystem::PreparationIo>,
+    ) -> Result<Cow<'a, str>> {
+        if self.view.root.is_empty() {
+            return Ok(Cow::Borrowed(path));
+        }
+        if path.is_empty() {
+            return Ok(Cow::Borrowed(&self.view.root));
+        }
+        let mut source = crate::executor::stock_string_copy(&self.view.root, io)?;
+        for suffix in ["/", path] {
+            crate::executor::stock_string_push(
+                &mut source,
+                suffix,
+                u64::MAX,
+                "workspace source path size overflow",
+                io,
+            )?;
+        }
+        Ok(Cow::Owned(source))
+    }
+
+    /// Checks paths inside an already projected native directory without
+    /// mistaking them for source-volume coordinates.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn check_relative(&self, action: Action, path: &str, now: u64) -> Result<()> {
+        if self.view.root.is_empty() {
+            return self.check(action, path, now);
+        }
+        self.check(action, &self.source_path(path, None)?, now)
     }
 }
 
@@ -110,10 +198,28 @@ pub struct MountTable<T> {
     // Immutable indices into canonical path order. Paths share their allocation
     // with the namespace; neither identity lookup nor iteration copies a path.
     mounted: Vec<(Arc<str>, Mount<T>)>,
-    volumes: std::collections::HashMap<[u8; 32], usize>,
+    volumes: std::collections::HashMap<[u8; 32], Vec<usize>>,
+    slots: std::collections::HashMap<crate::agent::EntryId, Option<usize>>,
 }
 
 impl<T> MountTable<T> {
+    /// The admitted task's stable table slot, independent of names and sources.
+    /// A foreign task's view cannot shadow a slot in this task's table.
+    /// Selection adds no authority; operations still require the mount's check.
+    pub fn by_entry(&self, entry: crate::agent::EntryId) -> Option<&Mount<T>> {
+        self.slots
+            .get(&entry)
+            .copied()
+            .flatten()
+            .map(|index| &self.mounted[index].1)
+    }
+
+    /// Actual native projection of this task's admitted slot, if exposed.
+    pub fn native_root_for_entry(&self, entry: crate::agent::EntryId) -> Option<&Path> {
+        self.by_entry(entry)
+            .and_then(|mount| self.native_root_for(mount))
+    }
+
     /// OS root of an exposed mount; the primary defaults to this task's root.
     /// Named mounts require an explicit native projection.
     pub fn native_root_for<'a>(&'a self, mount: &'a Mount<T>) -> Option<&'a Path> {
@@ -141,106 +247,141 @@ impl<T> MountTable<T> {
         volume: &VolumeRef,
         io: Option<&crate::conversation::ContentIo>,
     ) -> Result<&Mount<T>> {
+        self.volume_mounts(volume, io)?
+            .next()
+            .map(|(_, mount)| mount)
+            .ok_or_else(|| {
+                crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "volume is not mounted in this task view",
+                )
+            })
+    }
+
+    /// The admitted aliases of one volume, using the composition's volume
+    /// index. Selection alone grants no action on a source path.
+    #[doc(hidden)]
+    pub fn volume_mounts<'m>(
+        &'m self,
+        volume: &VolumeRef,
+        io: Option<&crate::conversation::ContentIo>,
+    ) -> Result<impl Iterator<Item = (&'m str, &'m Mount<T>)>> {
         let digest = crate::executor::with_history_io(io, |work| {
             volume.identity_digest(
                 crate::store::default_projection_read_limits().maximum_bytes,
                 work,
             )
         })?;
-        let mount = self
+        Ok(self
             .volumes
             .get(&digest)
-            .and_then(|&index| self.mounted.get(index))
-            .map(|(_, mount)| mount)
-            .filter(|mount| &mount.view.volume == volume);
-        mount.ok_or_else(|| {
-            crate::executor::stock_boundary(
-                io,
-                crate::wire::ErrorCode::Unauthorized,
-                "volume is not mounted in this task view",
+            .into_iter()
+            .flatten()
+            .filter_map(move |&index| self.mounted.get(index))
+            .filter(move |(_, mount)| &mount.view.volume == volume)
+            .map(|(relative, mount)| (relative.as_ref(), mount)))
+    }
+
+    /// An immutable reference names a source volume and path, not a namespace
+    /// alias. Select an admitted binding granting the requested operation;
+    /// named addresses continue to use only their explicitly selected binding.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn by_volume_path(
+        &self,
+        volume: &VolumeRef,
+        path: &str,
+        action: Action,
+        now: u64,
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<&Mount<T>> {
+        let io = work
+            .map(crate::filesystem::PreparationIo::from_native_work)
+            .transpose()?;
+        let digest = crate::executor::with_history_io(io.as_ref(), |history| {
+            volume.identity_digest(
+                crate::store::default_projection_read_limits().maximum_bytes,
+                history,
             )
-        })
+        })?;
+        let mut refused = None;
+        for &index in self.volumes.get(&digest).into_iter().flatten() {
+            let mount = &self.mounted[index].1;
+            if &mount.view.volume != volume {
+                continue;
+            }
+            match mount.check_with_work(action, path, now, work) {
+                Ok(()) => return Ok(mount),
+                Err(error @ Error::Unauthorized(_))
+                | Err(
+                    error @ Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unauthorized,
+                        ..
+                    },
+                ) => {
+                    refused.get_or_insert(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(refused.unwrap_or_else(|| {
+            path_error(
+                crate::wire::ErrorCode::Unauthorized,
+                "volume path is not mounted in this task view",
+                work,
+            )
+        }))
     }
 
-    /// Resolves either a task-relative path or an exact volume's relative path.
+    /// Resolves a file for the operation that will consume its source path.
     #[cfg(not(target_arch = "wasm32"))]
-    #[doc(hidden)]
-    pub fn file<'a>(
+    pub fn file_for<'a>(
         &'a self,
+        action: Action,
         volume: Option<&VolumeRef>,
         path: &'a str,
-    ) -> Result<(&'a Mount<T>, Cow<'a, str>)> {
-        self.file_with_work(volume, path, None)
-    }
-
-    /// Borrowed canonical content-path routing on the original tool ledger.
-    /// Explicit-volume native routing is refused before allocating a path.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[doc(hidden)]
-    pub fn file_with_work<'a>(
-        &'a self,
-        volume: Option<&VolumeRef>,
-        path: &'a str,
+        now: u64,
         work: acyclic_fs::NativeWork<'_>,
     ) -> Result<(&'a Mount<T>, Cow<'a, str>)> {
-        self.path_with_work(volume, path, crate::tool::ReadPathKind::File, work)
+        self.path_for(
+            volume,
+            path,
+            crate::tool::ReadPathKind::File,
+            action,
+            now,
+            work,
+        )
     }
 
-    /// Resolves file bytes or directory names through the same mount table.
+    /// Resolves and authorizes once on the original ledger. Explicit source
+    /// references may use any granting alias; namespace qualifiers cannot.
     #[cfg(not(target_arch = "wasm32"))]
-    #[doc(hidden)]
-    pub fn path_with_work<'a>(
+    pub fn path_for<'a>(
         &'a self,
         volume: Option<&VolumeRef>,
         path: &'a str,
         kind: crate::tool::ReadPathKind,
+        action: Action,
+        now: u64,
         work: acyclic_fs::NativeWork<'_>,
     ) -> Result<(&'a Mount<T>, Cow<'a, str>)> {
-        if volume.is_none() {
-            #[cfg(not(target_arch = "wasm32"))]
-            let io = work
-                .map(crate::filesystem::PreparationIo::from_native_work)
-                .transpose()?;
-            #[cfg(target_arch = "wasm32")]
-            let io: Option<&crate::filesystem::PreparationIo> = None;
-            #[cfg(not(target_arch = "wasm32"))]
-            let io = io.as_ref();
-            let (mount, path) = self.select(path, work)?;
-            crate::executor::with_history_io(io, |history| kind.validate(path, history))?;
-            if Path::new(path)
-                .components()
-                .any(|component| !matches!(component, Component::Normal(_)))
-            {
-                return Err(path_error(
-                    crate::wire::ErrorCode::Invalid,
-                    "path escapes the task view",
-                    work,
-                ));
-            }
-            return Ok((mount, Cow::Borrowed(path)));
-        }
-        #[cfg(not(target_arch = "wasm32"))]
         let io = work
             .map(crate::filesystem::PreparationIo::from_native_work)
             .transpose()?;
-        #[cfg(target_arch = "wasm32")]
-        let io: Option<&crate::conversation::ContentIo> = None;
-        #[cfg(not(target_arch = "wasm32"))]
         let io = io.as_ref();
-        let mount = self.by_volume(volume.expect("explicit volume checked above"), io)?;
-        crate::executor::with_history_io(io, |history| kind.validate(path, history))?;
-        if Path::new(path)
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-        {
-            return Err(path_error(
-                crate::wire::ErrorCode::Invalid,
-                "path escapes the task view",
-                work,
-            ));
-        }
-        Ok((mount, Cow::Borrowed(path)))
+        let (mount, path) = if let Some(volume) = volume {
+            validate_routed_path(path, kind, io, work)?;
+            let mount = self.by_volume_path(volume, path, action, now, work)?;
+            return Ok((mount, Cow::Borrowed(path)));
+        } else {
+            let (mount, path) = self.select(path, work)?;
+            validate_routed_path(path, kind, io, work)?;
+            (mount, mount.source_path_validated(path, io)?)
+        };
+        mount.check_with_work(action, &path, now, work)?;
+        Ok((mount, path))
     }
+
     /// Resolves a qualifier through the visible namespace, never by opening a
     /// model-supplied volume identity.
     #[cfg(not(target_arch = "wasm32"))]
@@ -346,6 +487,27 @@ fn normalize_path(path: &Path) -> Result<String> {
     Ok(relative)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn validate_routed_path(
+    path: &str,
+    kind: crate::tool::ReadPathKind,
+    io: Option<&crate::filesystem::PreparationIo>,
+    work: acyclic_fs::NativeWork<'_>,
+) -> Result<()> {
+    crate::executor::with_history_io(io, |history| kind.validate(path, history))?;
+    if Path::new(path)
+        .components()
+        .any(|part| !matches!(part, Component::Normal(_)))
+    {
+        return Err(path_error(
+            crate::wire::ErrorCode::Invalid,
+            "path escapes the task view",
+            work,
+        ));
+    }
+    Ok(())
+}
+
 fn path_error(
     code: crate::wire::ErrorCode,
     reason: &'static str,
@@ -383,7 +545,23 @@ pub fn compose<T>(
     component(&primary.name)?;
     let primary_address = format!("volume:///{}", primary.name);
     let mut mounts = BTreeMap::new();
+    let mut slots = std::collections::HashMap::new();
     for (index, view) in std::iter::once(primary).chain(volumes).enumerate() {
+        if view.agent == principal.id {
+            match slots.entry(view.entry) {
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(None);
+                }
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    return Err(Error::Conflict(
+                        "task view has duplicate workspace slots".into(),
+                    ));
+                }
+            }
+        }
+        if !view.root.is_empty() {
+            crate::conversation::validate_content_path(&view.root, &mut None)?;
+        }
         let access = PathTrie::compile(
             &view.policy,
             principal,
@@ -399,7 +577,7 @@ pub fn compose<T>(
             capability,
         )
         .map_err(|error| Error::Invalid(error.to_string()))?;
-        let mode = access.subtree_mode("", context.now);
+        let mode = access.subtree_mode(&view.root, context.now);
         let path = if index == 0 {
             String::new()
         } else {
@@ -433,15 +611,16 @@ pub fn compose<T>(
                 "foreign mount must select its latest published generation".into(),
             ));
         }
+        let native_root = if index == 0 && view.root.is_empty() {
+            NativeRoot::Composed
+        } else {
+            NativeRoot::Logical
+        };
         entry.insert(Some(Mount {
             view,
             mode,
             access,
-            native_root: if index == 0 {
-                NativeRoot::Composed
-            } else {
-                NativeRoot::Logical
-            },
+            native_root,
         }));
     }
     let mut mounted = Vec::new();
@@ -452,13 +631,19 @@ pub fn compose<T>(
         let index = match mount {
             Some(mount) => {
                 let index = mounted.len();
+                if mount.view.agent == principal.id {
+                    slots.insert(mount.view.entry, Some(index));
+                }
                 let digest = mount.view.volume.identity_digest(
                     crate::store::default_projection_read_limits().maximum_bytes,
                     &mut None,
                 )?;
-                // Canonical order chooses the same first visible alias for a
-                // repeated volume identity, without an invocation-time scan.
-                volumes_by_identity.entry(digest).or_insert(index);
+                // Index only aliases of this source identity. Source-path
+                // authorization never scans unrelated workspaces or agents.
+                volumes_by_identity
+                    .entry(digest)
+                    .or_insert_with(Vec::new)
+                    .push(index);
                 mounted.push((Arc::clone(&path), mount));
                 Some(index)
             }
@@ -475,6 +660,7 @@ pub fn compose<T>(
         entries,
         mounted,
         volumes: volumes_by_identity,
+        slots,
     })
 }
 

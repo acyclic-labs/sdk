@@ -791,9 +791,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                     .await?;
             }
             if let Out::Diagnostic { diagnostic, text } = out {
-                diagnostic
-                    .stage(self.agents.store.provider().as_ref(), text)
-                    .await?;
+                diagnostic.stage(self.agents.store.provider(), text).await?;
             }
         }
         prepared

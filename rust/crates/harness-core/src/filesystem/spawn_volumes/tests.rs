@@ -171,7 +171,9 @@ async fn inheritance_and_tree_binding_follow_the_entry_in_one_commit()
             path: state.path.inbox()?,
             expected: 1,
         });
-    let refused = spawn.root_volumes(&state, &child, None, refused).await?;
+    let refused = spawn
+        .root_volumes(&state, &child, None, refused, None)
+        .await?;
     let cancellation = CancellationToken::new();
     assert!(matches!(
         host.filesystem
@@ -186,7 +188,9 @@ async fn inheritance_and_tree_binding_follow_the_entry_in_one_commit()
         Err(acyclic_stream::StreamError::NotFound)
     ));
     assert!(host.resolve(&child_journal, None).await.is_err());
-    let commit = spawn.root_volumes(&state, &child, None, request).await?;
+    let commit = spawn
+        .root_volumes(&state, &child, None, request, None)
+        .await?;
     let reference = |entry: &WorkspaceEntry| -> crate::Result<_> {
         super::super::workspace_ref(
             host.provider.clone(),
@@ -242,7 +246,9 @@ async fn inheritance_and_tree_binding_follow_the_entry_in_one_commit()
             }],
         )],
     };
-    let commit = spawn.root_volumes(&state, &session, None, request).await?;
+    let commit = spawn
+        .root_volumes(&state, &session, None, request, None)
+        .await?;
     assert!(matches!(
         host.filesystem
             .submit_commit(commit, WorkBudget::UNBOUNDED, &cancellation)

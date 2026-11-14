@@ -943,6 +943,30 @@ async fn steering_expands_peer_files_with_exact_grants_inside_the_original_admis
         filesystem::{FilesystemContentPublisher, FilesystemContentVerifier},
         model::FileProjectionPolicy,
     };
+    struct CaptureReader {
+        inner: Arc<dyn TurnExecutors>,
+        reader: std::sync::Mutex<Option<Arc<dyn ContentResidencyVerifier>>>,
+    }
+    impl TurnExecutors for CaptureReader {
+        fn executor<'a>(
+            &'a self,
+            agent: &'a AgentState,
+            turn: OperationId,
+            input: &'a ModelContent,
+            authority: &'a acyclic_harness_core::filesystem::TurnAuthority,
+        ) -> BoxProviderFuture<
+            'a,
+            std::result::Result<
+                Arc<dyn acyclic_harness_core::executor::Executor>,
+                acyclic_harness_core::Error,
+            >,
+        > {
+            Box::pin(async move {
+                *self.reader.lock().unwrap() = Some(authority.content.reader.clone());
+                self.inner.executor(agent, turn, input, authority).await
+            })
+        }
+    }
     let stream = Arc::new(MemoryStream::default());
     let path = super::create(stream.as_ref(), id(221)).await?;
     let (filesystem, binding) = private(&path).await?;
@@ -1031,10 +1055,12 @@ async fn steering_expands_peer_files_with_exact_grants_inside_the_original_admis
             INTERACTION_ROUTE.to_owned(),
             own.capability(VolumeOperation::Read, &mut None)?,
             own.capability(VolumeOperation::Write, &mut None)?,
-            journal_of(&own)?.capability(VolumeOperation::Read, &mut None)?,
-            journal_of(&own)?.capability(VolumeOperation::Write, &mut None)?,
             envelope.read_capability(&mut None)?,
         ];
+        if allowed.is_none() {
+            grants.push(journal_of(&own)?.capability(VolumeOperation::Read, &mut None)?);
+            grants.push(journal_of(&own)?.capability(VolumeOperation::Write, &mut None)?);
+        }
         if allowed == Some(true) {
             grants.push(file.read_capability(&mut None)?);
         }
@@ -1064,13 +1090,17 @@ async fn steering_expands_peer_files_with_exact_grants_inside_the_original_admis
         } else {
             TurnAdmission::LocalRoot
         };
+        let captured = Arc::new(CaptureReader {
+            inner: executors(model.clone())?,
+            reader: std::sync::Mutex::new(None),
+        });
         let host = FilesystemTurnHost::new(
             stream.clone(),
             within(),
             filesystem.clone(),
             issuer.clone(),
             admission,
-            executors(model.clone())?,
+            captured.clone(),
             LIMITS,
             Default::default(),
         );
@@ -1100,15 +1130,33 @@ async fn steering_expands_peer_files_with_exact_grants_inside_the_original_admis
         assert_eq!(messages.len(), 1);
         let files: Vec<_> = messages[0].content.file_refs().collect();
         assert_eq!(files.len(), 1);
-        assert_eq!(files[0].volume(), &own);
-        assert_ne!(files[0], &file);
-        let reader = FilesystemContentVerifier::new(
-            filesystem.clone(),
-            &verifier,
-            &scope,
-            LIMITS.maximum_bytes,
-            None,
-        )?;
+        if allowed.is_none() {
+            assert_eq!(files[0].volume(), &journal_of(&own)?);
+            assert!(
+                files[0]
+                    .path()
+                    .starts_with(&format!("inputs/turns/{operation}/"))
+            );
+            assert_ne!(files[0], &file);
+        } else {
+            assert_eq!(files[0], &file);
+            assert!(
+                acyclic_harness_core::conversation::ContentGrant::verify(
+                    &verifier,
+                    &scope,
+                    &journal_of(&own)?,
+                    VolumeOperation::Read,
+                    &mut None,
+                )
+                .is_err()
+            );
+        }
+        let reader = captured
+            .reader
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or("turn reader")?;
         let bytes = reader
             .read(files[0], files[0].descriptor().byte_length(), None, None)?
             .await?;

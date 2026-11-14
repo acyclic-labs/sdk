@@ -4,6 +4,9 @@ use super::*;
 pub type ContentIo = crate::filesystem::PreparationIo;
 /// Retained content metadata ownership.
 pub type ContentHold<'a> = crate::filesystem::DecodeReservation<'a>;
+/// Captured bytes, their actual destination, and destination metadata ownership
+/// in the original ledger, released when the caller drops the result.
+pub type CapturedContent<'a> = (FileRef, acyclic_stream::OwnedBytes, Option<ContentHold<'a>>);
 
 /// Caller authority ceiling and accounting for a content operation.
 /// The ceiling can only narrow the adapter's authenticated workload authority.
@@ -13,6 +16,70 @@ pub struct ContentAccess<'scope, 'io> {
     pub ceiling: Option<&'scope crate::Capabilities>,
     /// Original operation ledger, retained independently from authority.
     pub io: Option<&'io ContentIo>,
+}
+
+/// One pinned source path, independently of its capture destination.
+#[derive(Clone, Copy)]
+pub struct ContentPath<'a> {
+    /// Original source volume; the destination grants no authority here.
+    pub volume: &'a VolumeRef,
+    /// Original directory grant covering the selected source.
+    pub granted_prefix: &'a str,
+    /// Source path in its original volume coordinates.
+    pub path: &'a str,
+    /// Immutable source generation or authenticated native source identity.
+    pub generation: &'a GenerationRef,
+}
+
+/// An explicit capture through an independently authorized publisher.
+#[derive(Clone, Copy)]
+pub struct ContentCapture<'a> {
+    /// Source admitted by the original reader.
+    pub source: ContentPath<'a>,
+    /// Publisher owning the destination and its publication receipts.
+    pub publisher: &'a dyn ContentPublisher,
+    /// Independently authenticated reader of the captured destination.
+    pub reader: &'a dyn ContentResidencyVerifier,
+    /// Caller operation, whose atomic receipt binds every source and file field.
+    pub operation: OperationId,
+    /// Destination path, relative to the publisher's volume. The capture also
+    /// creates `<path>.capture-v1`, containing its immutable source binding.
+    pub path: &'a str,
+    /// Media type retained with the captured bytes.
+    pub media_type: &'a str,
+    /// Display name retained with the captured bytes.
+    pub display_name: &'a str,
+}
+
+impl ContentCapture<'_> {
+    pub(crate) fn source_binding(&self, io: Option<&ContentIo>) -> Result<[u8; 33]> {
+        let identity = (
+            self.source.volume,
+            self.source.path,
+            self.source.generation,
+            self.publisher.volume(),
+            self.path,
+            self.media_type,
+            self.display_name,
+        );
+        crate::executor::with_history_io(io, |work| {
+            const DOMAIN: &str = "acyclic.harness.content-capture.v1";
+            let bytes = crate::executor::json::json_byte_length(&identity, None, work)?;
+            if let Some(work) = work.as_deref_mut() {
+                work.hashed_bytes(
+                    bytes.checked_add(DOMAIN.len() as u64).ok_or_else(|| {
+                        Error::Invalid("capture identity length overflows".into())
+                    })?,
+                )?;
+            }
+            let mut hash = blake3::Hasher::new_derive_key(DOMAIN);
+            serde_json::to_writer(&mut hash, &identity)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            let mut binding = [1; 33];
+            binding[1..].copy_from_slice(hash.finalize().as_bytes());
+            Ok(binding)
+        })
+    }
 }
 
 /// An operation future whose allocation remains owned until its physical drop.
@@ -142,6 +209,27 @@ pub fn require_owner_reader(ceiling: Option<&crate::Capabilities>) -> Result<()>
 /// Filesystem readers intersect caller ceilings with their verified binding;
 /// a caller ceiling supplies no authority of its own.
 pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
+    /// Captures a pinned source under its original grant, policy and caller
+    /// ceiling. Rechecks source admission before recovering a destination
+    /// receipt; a committed capture never reopens native source contents.
+    /// Native captures sharing a source owner serialize cold admission through
+    /// publication: a simultaneous replay recovers the first completed capture
+    /// before trying the native source, even if that source has disappeared.
+    /// Rechecks original admission after loading bytes too. The result names
+    /// the actual destination, never a synthetic source file.
+    fn capture_private_path<'a>(
+        &'a self,
+        _capture: ContentCapture<'a>,
+        _maximum_bytes: Option<u64>,
+        access: ContentAccess<'a, 'a>,
+    ) -> Result<BoundedContentFuture<'a, CapturedContent<'a>>> {
+        Err(content_error(
+            access.io,
+            crate::wire::ErrorCode::Unsupported,
+            "authorized source capture is unavailable",
+        ))
+    }
+
     /// Capability availability; conveys no read authority.
     fn supports_read(&self, _volume: &VolumeRef, io: Option<&ContentIo>) -> Result<bool> {
         if io.is_some() {
@@ -778,6 +866,15 @@ impl CompositeContentVerifier {
 }
 
 impl ContentResidencyVerifier for CompositeContentVerifier {
+    fn capture_private_path<'a>(
+        &'a self,
+        capture: ContentCapture<'a>,
+        maximum_bytes: Option<u64>,
+        access: ContentAccess<'a, 'a>,
+    ) -> Result<BoundedContentFuture<'a, CapturedContent<'a>>> {
+        self.bound_reader(capture.source.volume, access.io)?
+            .capture_private_path(capture, maximum_bytes, access)
+    }
     fn supports_read(&self, volume: &VolumeRef, _io: Option<&ContentIo>) -> Result<bool> {
         if let Some(io) = _io {
             return self

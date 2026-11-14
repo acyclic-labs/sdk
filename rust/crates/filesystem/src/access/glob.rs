@@ -11,17 +11,80 @@ pub(super) fn valid_path(path: &str) -> bool {
 }
 
 pub(super) fn validate(pattern: &str) -> Result<(), InvalidPolicy> {
-    if !valid_path(pattern)
-        || pattern.contains(['[', ']', '{', '}'])
-        || pattern
-            .split('/')
-            .any(|part| part.contains("**") && part != "**")
+    if pattern.contains('\0')
+        || (!pattern.is_empty()
+            && pattern
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == ".."))
     {
         return Err(InvalidPolicy(
-            "expected canonical glob with *, ? or ** components",
+            "expected canonical glob with *, ? or ** components and escaped literals",
         ));
     }
+    for part in pattern.split('/') {
+        let mut star = false;
+        for token in tokens(part) {
+            let next_star = matches!(token?, Token::Star);
+            if star && next_star && part != "**" {
+                return Err(InvalidPolicy("** must occupy a complete component"));
+            }
+            star = next_star;
+        }
+    }
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum Token {
+    Literal(char),
+    Star,
+    Question,
+}
+
+fn tokens(pattern: &str) -> impl Iterator<Item = Result<Token, InvalidPolicy>> + '_ {
+    let mut chars = pattern.chars();
+    std::iter::from_fn(move || {
+        Some(match chars.next()? {
+            '\\' => match chars.next() {
+                Some(ch @ ('*' | '?' | '[' | ']' | '{' | '}')) => Ok(Token::Literal(ch)),
+                _ => Err(InvalidPolicy("invalid glob literal escape")),
+            },
+            '*' => Ok(Token::Star),
+            '?' => Ok(Token::Question),
+            '[' | ']' | '{' | '}' => Err(InvalidPolicy("glob classes are not supported")),
+            ch => Ok(Token::Literal(ch)),
+        })
+    })
+}
+
+pub(super) fn question_count(pattern: &str) -> usize {
+    tokens(pattern)
+        .filter(|token| matches!(token, Ok(Token::Question)))
+        .count()
+}
+
+pub(super) fn literal_subtree(path: &str) -> Result<String, InvalidPolicy> {
+    if !valid_path(path) {
+        return Err(InvalidPolicy("expected canonical literal subtree"));
+    }
+    let escapes = path
+        .chars()
+        .filter(|ch| matches!(*ch, '*' | '?' | '[' | ']' | '{' | '}'))
+        .count();
+    let capacity = path
+        .len()
+        .checked_add(escapes)
+        .and_then(|bytes| bytes.checked_add(3))
+        .ok_or(InvalidPolicy("literal subtree size overflow"))?;
+    let mut escaped = String::with_capacity(capacity);
+    for ch in path.chars() {
+        if matches!(ch, '*' | '?' | '[' | ']' | '{' | '}') {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped.push_str("/**");
+    Ok(escaped)
 }
 
 // Independent reference matcher: dynamic programming over path components.
@@ -53,9 +116,12 @@ pub(super) fn matches(pattern: &str, path: &str, folded: bool) -> bool {
 fn component_matches(pattern: &str, text: &str, folded: bool) -> bool {
     let chars: Vec<_> = text.chars().collect();
     let mut matched: Vec<_> = (0..=chars.len()).map(|index| index == 0).collect();
-    for token in pattern.chars() {
+    for token in tokens(pattern) {
+        let Ok(token) = token else {
+            return false;
+        };
         let mut next = vec![false; chars.len() + 1];
-        if token == '*' {
+        if matches!(token, Token::Star) {
             let mut seen = false;
             for (out, before) in next.iter_mut().zip(&matched) {
                 seen |= *before;
@@ -63,10 +129,15 @@ fn component_matches(pattern: &str, text: &str, folded: bool) -> bool {
             }
         } else {
             for ((out, before), ch) in next.iter_mut().skip(1).zip(&matched).zip(&chars) {
-                *out = *before && (token == '?' || token == *ch);
+                *out = *before
+                    && match token {
+                        Token::Question => true,
+                        Token::Literal(literal) => literal == *ch,
+                        Token::Star => false,
+                    };
             }
         }
-        if token == '?' && folded {
+        if matches!(token, Token::Question) && folded {
             for (index, _) in matched.iter().enumerate().filter(|(_, before)| **before) {
                 for expansion in CASE_FOLD_EXPANSIONS {
                     let end = index + expansion.chars().count();
@@ -209,16 +280,16 @@ impl Nfa {
                     self.node_mut(next)?.edges.push((Symbol::Component, next));
                     current = next;
                 }
-                for ch in part.chars().filter(|_| part != "*") {
+                for token in tokens(part).filter(|_| part != "*") {
                     let next = self.node()?;
-                    match ch {
-                        '*' => {
+                    match token? {
+                        Token::Star => {
                             self.node_mut(current)?.epsilon.push(next);
                             self.node_mut(current)?
                                 .edges
                                 .push((Symbol::Component, current));
                         }
-                        '?' => {
+                        Token::Question => {
                             self.node_mut(current)?
                                 .edges
                                 .push((Symbol::Component, next));
@@ -238,7 +309,7 @@ impl Nfa {
                                 }
                             }
                         }
-                        _ => self
+                        Token::Literal(ch) => self
                             .node_mut(current)?
                             .edges
                             .push((Symbol::Literal(ch), next)),

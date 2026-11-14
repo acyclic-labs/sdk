@@ -136,6 +136,19 @@ impl Capability {
             expires_at: None,
         }
     }
+    /// Exact directory and descendants, treating every root character literally.
+    /// Empty selects the complete volume. No glob in `root` can widen this grant.
+    pub fn subtree(
+        volume: Option<String>,
+        root: &str,
+        actions: &[Action],
+    ) -> Result<Self, InvalidPolicy> {
+        let mut grant = Self::whole_volume(volume, actions);
+        if !root.is_empty() {
+            grant.layers[0][0].resource.path = super::glob::literal_subtree(root)?;
+        }
+        Ok(grant)
+    }
     /// Encode the complete grant as one capability in an existing signed scope.
     pub fn to_scope_label(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(self).map(|json| format!("{SCOPE_PREFIX}{json}"))

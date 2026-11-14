@@ -1409,6 +1409,17 @@ async fn root_admission_requires_the_implicit_journal_before_io() -> Result {
         let request = root(id(1), vec![private.clone()]);
         assert_eq!(bound.admit_root(&request).is_ok(), grants_journal);
         if grants_journal {
+            let mut invalid = root(id(1), vec![private.clone()]);
+            invalid.policy = Some(acyclic_harness_core::approvals::ApprovalPolicy {
+                approvers: Vec::new(),
+            });
+            assert!(bound.admit_root(&invalid).is_err());
+            assert!(
+                bound
+                    .prepare_root(&intent("invalid-policy"), invalid)
+                    .await
+                    .is_err()
+            );
             let mut aliased = root(id(1), vec![private.clone()]);
             aliased.retained.push(WorkspaceEntry::initial_volume(
                 WorkspaceRole::User,
@@ -1419,6 +1430,24 @@ async fn root_admission_requires_the_implicit_journal_before_io() -> Result {
         }
         assert_eq!(bucket.objects().await?, 0);
     }
+    let (placement, bucket) = placed(&stream)?;
+    let mut limits = turns()?;
+    limits.limits.maximum_bytes = Some(8);
+    let bound = Bound::local_root(issuer.clone(), placement, limits)?;
+    let mut oversized = root(id(1), vec![private]);
+    oversized.policy = Some(acyclic_harness_core::approvals::ApprovalPolicy::default());
+    assert!(bound.admit_root(&oversized).is_err());
+    assert!(
+        bound
+            .prepare_root(&intent("oversized-policy"), oversized)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        bucket.objects().await?,
+        0,
+        "a rejected policy wrote seed objects"
+    );
     assert_eq!(stream.calls.load(Ordering::SeqCst), 0);
     Ok(())
 }
@@ -1445,12 +1474,14 @@ async fn create_root_preparation_and_intent_replay_are_exact() -> Result {
         provider()?,
         &journal.storage_name(&mut None)?,
     )?;
-    let first = bound
-        .prepare_root(&intent("root"), root(id(1), vec![private.clone()]))
-        .await?;
-    let again = bound
-        .prepare_root(&intent("root"), root(id(1), vec![private.clone()]))
-        .await?;
+    let configured = acyclic_harness_core::approvals::ApprovalPolicy::deny_all("root-policy");
+    let request = || {
+        let mut request = root(id(1), vec![private.clone()]);
+        request.policy = Some(configured.clone());
+        request
+    };
+    let first = bound.prepare_root(&intent("root"), request()).await?;
+    let again = bound.prepare_root(&intent("root"), request()).await?;
     assert_eq!(first.request(), again.request(), "preparation is exact");
     let other = Bound::local_root(
         AuthorityRoot::new(
@@ -1464,9 +1495,7 @@ async fn create_root_preparation_and_intent_replay_are_exact() -> Result {
         placement(&Arc::new(MemoryStream::default()))?,
         turns()?,
     )?;
-    let misplaced = bound
-        .prepare_root(&intent("root"), root(id(1), vec![private.clone()]))
-        .await?;
+    let misplaced = bound.prepare_root(&intent("root"), request()).await?;
     assert!(matches!(
         misplaced.submit(bound.volumes(), other.agents()).await,
         Err(Error::Record("root activation uses another provider"))
@@ -1482,6 +1511,48 @@ async fn create_root_preparation_and_intent_replay_are_exact() -> Result {
         bound.agents().state(&created).await?.volumes,
         vec![private.clone()]
     );
+    let state = bound.agents().state(&created).await?;
+    let policy = state.policy.as_ref().ok_or("root policy was not adopted")?;
+    assert_eq!(policy.volume(), &journal);
+    assert_eq!(policy.path(), "approval-policy-v1.json");
+    use acyclic_harness_core::conversation::{ContentResidencyVerifier as _, VolumeOperation};
+    let policy_scope = bound
+        .issuer()
+        .issue(
+            None,
+            "root-policy-inspection",
+            &acyclic_harness_core::Capabilities::new([
+                acyclic_harness_core::contract::capability::HARNESS_HOST.to_owned(),
+                journal.capability(VolumeOperation::Read, &mut None)?,
+            ]),
+            Some(acyclic_harness_core::AgentId::from_bytes(id(1).to_bytes())),
+        )
+        .await?;
+    let verifier = bound.issuer().verifier(&mut None)?;
+    let policy_reader = acyclic_harness_core::filesystem::FilesystemContentVerifier::new(
+        Arc::clone(bound.volumes()),
+        &verifier,
+        &policy_scope,
+        None,
+        None,
+    )?;
+    let bytes = policy_reader
+        .read(policy, policy.descriptor().byte_length(), None, None)?
+        .await?;
+    assert_eq!(
+        serde_json::from_slice::<acyclic_harness_core::approvals::ApprovalPolicy>(bytes.as_ref())?,
+        configured
+    );
+    let task_reader = bound.content_reader(&created).await?;
+    assert!(
+        async {
+            task_reader
+                .read(policy, policy.descriptor().byte_length(), None, None)?
+                .await
+        }
+        .await
+        .is_err()
+    );
     // The identical prepared commit and the original intent both replay the
     // same creation.
     assert!(matches!(
@@ -1490,10 +1561,16 @@ async fn create_root_preparation_and_intent_replay_are_exact() -> Result {
     ));
     assert!(matches!(
         bound
-            .create_root(&intent("root"), root(id(1), vec![private.clone()]))
+            .create_root(&intent("root"), request())
             .await?,
         RootSubmission::Created(replayed) if replayed == child
     ));
+    let mut changed = request();
+    changed.policy = Some(acyclic_harness_core::approvals::ApprovalPolicy::accept_all(
+        "root-policy",
+    ));
+    assert!(bound.create_root(&intent("root"), changed).await.is_err());
+    assert_eq!(bound.agents().state(&created).await?.policy, state.policy);
     let (alice, bob) = (
         Sender::User {
             principal: "alice".into(),
@@ -1650,6 +1727,14 @@ async fn create_root_preparation_and_intent_replay_are_exact() -> Result {
     bound
         .stage_text(&created, "message", &bob, &intent("m1"), ("hi", "hi"))
         .await?;
+    let after = policy_reader
+        .read(policy, policy.descriptor().byte_length(), None, None)?
+        .await?;
+    assert_eq!(
+        after.as_ref(),
+        bytes.as_ref(),
+        "later journal inputs changed the root policy snapshot"
+    );
     Ok(())
 }
 

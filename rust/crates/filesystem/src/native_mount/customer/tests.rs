@@ -586,6 +586,101 @@ async fn witnessed_attachment_keeps_the_original_root_and_rejects_unfunded_captu
 }
 
 #[tokio::test]
+async fn read_only_head_sources_refresh_without_mutation_or_advancing_exact_pins()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::native_mount::adapter::tests::{access::compiled, native_test_path};
+
+    crate::initialize_native_mount_services()?;
+    let cancellation = crate::CancellationToken::new();
+    let work = test_work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
+    for lazy_selection in [false, true] {
+        let physical = tempfile::tempdir()?;
+        let lazy = native_lazy_source(physical.path(), "readonly-refresh", &cancellation).await?;
+        let workspace = lazy.workspace();
+        workspace.write_text("/file", "original").await?;
+        let options = fixture_options(workspace, MountOptions::read_only())
+            .await?
+            .native_context(&work, None, None);
+        let source = if lazy_selection {
+            admitted_source(&lazy, &options, &work).await?.0
+        } else {
+            workspace.native_source(&options).await?
+        };
+        let selected = head(workspace, &work).await?;
+        let exact_view = compiled(source.as_ref(), 1, vec![], None)?.with_data_generation(selected);
+        let pinned = workspace
+            .native_source(
+                &options
+                    .clone()
+                    .access_view(Arc::new(crate::access::AccessView::new(exact_view))),
+            )
+            .await?;
+        let file = native_test_path("file");
+        let added = native_test_path("added");
+        assert_eq!(source.read_range(&file, 0, 32)?.as_ref(), b"original");
+        assert!(source.lookup(&added)?.is_none());
+        // The fixture permits every policy action: read-only checkout mode
+        // itself must still reject mutation before and after a refresh.
+        for expected in [b"original".as_slice(), b"new head".as_slice()] {
+            let before = head(workspace, &work).await?;
+            assert!(matches!(
+                source.write_range(&file, 0, bytes::Bytes::from_static(b"denied")),
+                Err(MountSourceError::Filesystem(
+                    crate::FsError::MutationNotAllowed
+                ))
+            ));
+            assert_eq!(head(workspace, &work).await?, before);
+            assert_eq!(source.read_range(&file, 0, 32)?.as_ref(), expected);
+            if expected == b"original" {
+                workspace.write_text("/file", "new head").await?;
+                workspace.write_text("/added", "new name").await?;
+                assert_eq!(source.read_range(&file, 0, 32)?.as_ref(), b"original");
+                assert!(source.lookup(&added)?.is_none());
+                source.sync_async(PublicationPermit::Unrestricted).await?;
+                source.advance_to_head_async().await?;
+                // Receipt recovery can repeat the same clean advance.
+                source.advance_to_head_async().await?;
+                assert_eq!(source.read_range(&added, 0, 32)?.as_ref(), b"new name");
+            }
+        }
+        assert!(matches!(
+            pinned.advance_to_head_async().await,
+            Err(MountSourceError::Filesystem(
+                crate::FsError::RefreshNotAllowed
+            ))
+        ));
+        assert_eq!(pinned.read_range(&file, 0, 32)?.as_ref(), b"original");
+        assert!(pinned.lookup(&added)?.is_none());
+        let before = head(workspace, &work).await?;
+        pinned.sync_async(PublicationPermit::Unrestricted).await?;
+        source.sync_async(PublicationPermit::Unrestricted).await?;
+        assert!(matches!(
+            source
+                .sync_async(PublicationPermit::Lease {
+                    authority_id: [1; 16],
+                    workspace_id: [2; 16],
+                    lease_id: [3; 16],
+                    expires_at_millis: u64::MAX,
+                })
+                .await,
+            Err(MountSourceError::NativeUnsupported)
+        ));
+        source.sync_async(PublicationPermit::Unrestricted).await?;
+        assert_eq!(head(workspace, &work).await?, before);
+        assert_eq!(
+            workspace
+                .read("/file", 32, &work, &cancellation)
+                .await?
+                .as_ref(),
+            b"new head"
+        );
+        source.cancel();
+        pinned.cancel();
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn pinned_native_sources_cannot_publish_and_destinations_preserve_concurrent_head()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture_token = crate::CancellationToken::new();

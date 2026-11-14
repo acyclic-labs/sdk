@@ -99,9 +99,10 @@ impl PreparedLocalHarness {
             verifier: &verifier,
             signed: &signed,
             home: &stored.scratch,
-            journal: &stored.journal,
             seed: (&stored.seed.0, &stored.seed.1),
             configuration: &opening.config.configuration,
+            decisions: crate::config::SettingsAdmissions::new(stored.volume_stream.clone()),
+
             maximum_bytes: opening.config.limits.file_bytes,
         };
         agent_settings::Tree::pinned(&volumes, stored.home_generation.clone(), None)?
@@ -405,7 +406,7 @@ impl Opening {
         #[cfg(any(test, not(target_arch = "wasm32")))]
         let files = retain_skills(
             files,
-            directory.join("skill-sources"),
+            volume_stream.clone(),
             &journal,
             workspace.as_ref(),
             self.user_roots(),
@@ -647,9 +648,10 @@ impl Opening {
             verifier: &verifier,
             signed: &signed,
             home: &scratch,
-            journal: &journal,
             seed: (&seed.0, &seed.1),
             configuration: &self.config.configuration,
+            decisions: crate::config::SettingsAdmissions::new(volume_stream.clone()),
+
             maximum_bytes: self.config.limits.file_bytes,
         };
         #[cfg(any(test, not(target_arch = "wasm32")))]
@@ -742,7 +744,6 @@ impl Opening {
             sampling,
             served: self.config.served,
             active_directory: self.config.active_directory,
-            skill_cache: context::skills::cache(),
             #[cfg(test)]
             context_read_observer: None,
             #[cfg(any(test, not(target_arch = "wasm32")))]
@@ -858,13 +859,13 @@ fn validate_configuration(config: &LocalHarnessConfig) -> Result<()> {
 #[cfg(any(test, not(target_arch = "wasm32")))]
 pub(super) fn retain_skills(
     files: Arc<LocalFilesystem>,
-    directory: PathBuf,
+    records: Arc<dyn acyclic_stream::NativeStreamProvider>,
     journal: &VolumeRef,
     workspace: Option<&Arc<workspace::LocalWorkspace>>,
     user_roots: Vec<PathBuf>,
 ) -> Result<Arc<LocalFilesystem>> {
     files.with_native_skills(crate::context::native_skills::NativeSkills::new(
-        directory,
+        records,
         journal.clone(),
         workspace.map(|workspace| {
             (

@@ -14,7 +14,6 @@ pub(in crate::local) struct Steps {
     local: Weak<LocalHarness>,
     agent: AgentId,
     home: VolumeRef,
-    journal: VolumeRef,
     verifier: AuthorityVerifier,
     scope: Scope,
     reader: Arc<dyn ContentResidencyVerifier>,
@@ -42,7 +41,6 @@ impl Steps {
             local: Arc::downgrade(local),
             agent: AgentId::from_bytes(agent.path.id_bytes()),
             home: volume(WorkspaceRole::Home)?,
-            journal: volume(WorkspaceRole::Private)?,
             verifier: authority.issuer.verifier(&mut None)?,
             scope: authority.scope.copy(&mut None)?,
             reader: Arc::clone(&authority.content.reader),
@@ -73,11 +71,15 @@ impl StepConfiguration for Steps {
                 reason: "local harness is closed",
             })?;
             let volumes = Volumes {
+                decisions: crate::config::SettingsAdmissions::new(
+                    local.agent_stream.clone().ok_or_else(|| {
+                        Error::Unsupported("settings needs its owner stream".into())
+                    })?,
+                ),
                 files: &local.files,
                 verifier: &self.verifier,
                 signed: &self.scope,
                 home: &self.home,
-                journal: &self.journal,
                 seed: (&local.seed.0, &local.seed.1),
                 configuration: local.harness.issuer_configuration(),
                 maximum_bytes: local.limits.file_bytes,

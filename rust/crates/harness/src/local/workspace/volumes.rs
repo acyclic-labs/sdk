@@ -87,23 +87,31 @@ pub(super) async fn attach(
             .await
             .map_err(|failure| Error::from(failure.error))?
             .value;
-        let directory = blake3::hash(mount.view.volume.storage_name(&mut None)?.as_bytes())
+        let mut directory = blake3::hash(mount.view.volume.storage_name(&mut None)?.as_bytes())
             .to_hex()
             .to_string();
+        // A read-only alias must not share the native destination and callback
+        // owner of a writable binding of the same volume.
+        if mount.mode.read_only() {
+            directory.push_str("-ro");
+        }
+        if !mount.view.root.is_empty() {
+            directory.push('-');
+            directory.push_str(blake3::hash(mount.view.root.as_bytes()).to_hex().as_str());
+        }
         let destination = root.path().join(&directory);
         let options = if native {
-            Some(
-                authority
-                    .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?
-                    .mount_options(
-                        &source,
-                        Some(&mount.view.volume),
-                        !mount.mode.read_only(),
-                        &work,
-                    )
-                    .await?
-                    .publication(MountPublication::Manual),
-            )
+            let options = authority
+                .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?
+                .mount_options(
+                    &source,
+                    Some(&mount.view.volume),
+                    &mount.view.root,
+                    !mount.mode.read_only(),
+                    &work,
+                )
+                .await?;
+            Some(options.publication(MountPublication::Manual))
         } else {
             None
         };
@@ -141,7 +149,7 @@ pub(super) async fn attach(
 }
 
 pub(in crate::local) async fn sync(mounts: &Mounts) -> Result<()> {
-    for (_, mount) in ordered_mounts(mounts)? {
+    for (_, mount) in ordered_mounts(mounts.mounts()) {
         if let Some(source) = &mount.view.source {
             // This call precedes the command scope. Share its execution guard
             // so preflight cannot publish another worker's unverified effects.
@@ -160,9 +168,11 @@ pub(in crate::local) async fn sync(mounts: &Mounts) -> Result<()> {
 
 type BoundMount = crate::workspace::Mount<Option<Arc<MountedVolume>>>;
 
-fn ordered_mounts(mounts: &Mounts) -> Result<Vec<(&str, &BoundMount)>> {
+pub(in crate::local) fn ordered_mounts<'a>(
+    mounts: impl IntoIterator<Item = (&'a str, &'a BoundMount)>,
+) -> Vec<(&'a str, &'a BoundMount)> {
     let mut ordered = std::collections::BTreeMap::new();
-    for (relative, mount) in mounts.mounts() {
+    for (relative, mount) in mounts {
         if let Some(source) = &mount.view.source {
             // The binding is validated even when another name already selects
             // this projection. Lock order belongs to the volume and physical
@@ -174,7 +184,7 @@ fn ordered_mounts(mounts: &Mounts) -> Result<Vec<(&str, &BoundMount)>> {
             ordered.entry(key).or_insert((relative, mount));
         }
     }
-    Ok(ordered.into_values().collect())
+    ordered.into_values().collect()
 }
 
 /// The single native execution scope shared by the shell and hooks. Entry projects
@@ -260,7 +270,7 @@ pub(in crate::local) async fn native_scope<T>(
         unverified: Unverified::default(),
     };
     let mut projected = Ok(());
-    for (_, mount) in ordered_mounts(mounts)? {
+    for (_, mount) in ordered_mounts(mounts.mounts()) {
         if let Some(source) = &mount.view.source
             && source.options.is_some()
         {

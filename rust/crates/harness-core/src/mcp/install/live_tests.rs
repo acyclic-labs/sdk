@@ -241,7 +241,7 @@ async fn live_mcp_case(compose: bool, pinned: bool) -> Result<()> {
         .await?;
     let epoch = crate::context::ContextEpoch::from_manifest(manifest);
     let executor = executor
-        .with_context_epoch(&epoch, journal.clone(), journal.clone())
+        .with_context_epoch(&epoch, journal.clone(), journal.clone(), None)
         .await?;
     let input = TurnInput {
         max_steps: None,
@@ -333,7 +333,7 @@ async fn live_mcp_case(compose: bool, pinned: bool) -> Result<()> {
         RuntimeScope::new(grants.clone(), crate::conversation::Limits::default())?,
         Arc::new(FixedToolPolicy::new(ToolPolicyDecision::Allow)?),
     )?
-    .with_context_epoch(&epoch, journal.clone(), journal.clone())
+    .with_context_epoch(&epoch, journal.clone(), journal.clone(), None)
     .await?;
     assert_eq!(
         detached.execute(input.clone(), journal.as_ref()).await?,
@@ -360,7 +360,7 @@ async fn live_mcp_case(compose: bool, pinned: bool) -> Result<()> {
         RuntimeScope::new(grants, crate::conversation::Limits::default())?,
         Arc::new(FixedToolPolicy::new(ToolPolicyDecision::Allow)?),
     )?
-    .with_context_epoch(&epoch, journal.clone(), journal.clone())
+    .with_context_epoch(&epoch, journal.clone(), journal.clone(), None)
     .await?;
     recovery.execute(input, &pending).await?;
     assert_eq!(

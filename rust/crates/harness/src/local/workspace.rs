@@ -143,6 +143,11 @@ pub(super) fn attach_operation(task: TaskId) -> acyclic_fs::OperationId {
 }
 
 impl LocalWorkspace {
+    /// The selected native cwd, independent of the whole-volume capture path.
+    pub(in crate::local) fn native_cwd(&self) -> Result<Option<&Path>> {
+        Ok(self.mounts.native_root_for(self.mounts.named(None)?.1))
+    }
+
     pub(super) async fn mount_options(
         &self,
         workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
@@ -154,11 +159,13 @@ impl LocalWorkspace {
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let primary = self.mounts.named(None)?.1;
         authority
             .mount_options(
                 workspace,
-                Some(&self.mounts.named(None)?.1.view.volume),
-                true,
+                Some(&primary.view.volume),
+                &primary.view.root,
+                !primary.mode.read_only(),
                 &work,
             )
             .await
@@ -172,25 +179,49 @@ impl LocalWorkspace {
         let primary = self.mounts.named(None)?.1;
         let mut mounts = mounts::owner(
             path,
-            &primary.view.volume,
-            None,
+            (
+                primary.view.entry,
+                &primary.view.name,
+                &primary.view.volume,
+                &primary.view.root,
+                mounts::mode(primary),
+                None,
+            ),
             self.mounts
                 .mounts()
                 .filter(|(relative, _)| !relative.is_empty())
                 .map(|(_, mount)| {
                     (
+                        mount.view.entry,
                         mount.view.name.clone(),
                         mount.view.volume.clone(),
+                        mount.view.root.clone(),
+                        mounts::mode(mount),
                         mount.view.source.clone(),
                     )
                 }),
         )?;
         mounts.scratch_root = self.mounts.scratch_root.clone();
-        mounts.native_read_roots = self
-            .opaque_native_directories()?
-            .into_iter()
-            .map(|(_, path)| (path, self.source_root.clone()))
-            .collect();
+        if primary.view.root.is_empty() {
+            mounts.native_read_roots = self
+                .opaque_native_directories()?
+                .into_iter()
+                .map(|(_, path)| (path, self.source_root.clone()))
+                .collect();
+        } else {
+            // Native mounts already project the subtree. Physical capture
+            // retains the whole-volume root; only the process root is scoped.
+            let exposed = if self.mounted.is_some() {
+                path.to_path_buf()
+            } else {
+                path.join(&primary.view.root)
+            };
+            for (relative, mount) in mounts.mounts_mut() {
+                if relative.is_empty() {
+                    mount.native_root = crate::workspace::NativeRoot::Path(exposed.clone());
+                }
+            }
+        }
         volumes::bind_roots(&mut mounts)?;
         Ok(Arc::new(mounts))
     }
@@ -228,6 +259,7 @@ impl LocalWorkspace {
         authority: &crate::filesystem::NativeMountAuthority,
         binding: &acyclic_fs::kernel::allocation::RetainedArc<bindings::Binding>,
     ) -> Result<Arc<Mounts>> {
+        let primary = mounts::primary(bindings, project)?;
         // Bind auxiliary volumes outside the sparse projection. Linux's
         // elevated mount helper cannot traverse an owner-only FUSE parent.
         let directory = blake3::Hash::from_bytes(binding.key).to_hex();
@@ -243,15 +275,32 @@ impl LocalWorkspace {
         let native = self.mounting == WorkspaceMounting::Native;
         let mut mounts = mounts::owner(
             root.path(),
-            project,
-            None,
-            mounts::auxiliary(bindings).map(|(name, volume)| {
+            (
+                primary.id,
+                &primary.name,
+                project,
+                &primary.root,
+                primary.mode,
+                None,
+            ),
+            mounts::auxiliary(bindings).map(|(entry, volume)| {
                 let source = self
                     .mounts
                     .mounts()
-                    .find(|(_, mount)| &mount.view.volume == volume)
+                    .find(|(_, mount)| {
+                        &mount.view.volume == volume
+                            && mounts::mode(mount) == entry.mode
+                            && mount.view.root == entry.root
+                    })
                     .and_then(|(_, mount)| mount.view.source.clone());
-                (name.clone(), volume.clone(), source)
+                (
+                    entry.id,
+                    entry.name.clone(),
+                    volume.clone(),
+                    entry.root.clone(),
+                    entry.mode,
+                    source,
+                )
             }),
         )?;
         mounts.scratch_root = self.mounts.scratch_root.clone();
@@ -480,11 +529,38 @@ pub(super) async fn open(
         .map_err(storage)?;
     let mut mounts = mounts::owner(
         &path,
-        volume,
-        None,
-        attach
-            .auxiliary()
-            .map(|(name, volume)| (name.into(), volume.clone(), None)),
+        (
+            crate::agent::WorkspaceEntry::initial_volume(
+                crate::agent::WorkspaceRole::User,
+                "project".into(),
+                volume.clone(),
+            )
+            .id,
+            "project",
+            volume,
+            "",
+            crate::agent::WorkspaceMode::ReadWrite,
+            None,
+        ),
+        attach.auxiliary().map(|(name, volume)| {
+            (
+                crate::agent::WorkspaceEntry::initial_volume(
+                    if name == crate::filesystem::HOME_VOLUME {
+                        crate::agent::WorkspaceRole::Home
+                    } else {
+                        crate::agent::WorkspaceRole::Shared
+                    },
+                    name.into(),
+                    volume.clone(),
+                )
+                .id,
+                name.into(),
+                volume.clone(),
+                String::new(),
+                crate::agent::WorkspaceMode::ReadWrite,
+                None,
+            )
+        }),
     )?;
     mounts.scratch_root = Some(
         volumes::held_directories(&host, Path::new("scratch"))?

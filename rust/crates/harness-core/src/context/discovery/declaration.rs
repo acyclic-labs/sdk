@@ -224,14 +224,14 @@ impl ContextDiscoveryLimits {
     }
 }
 
-/// Immutable path selected by discovery; resolving it never follows a newer head.
+/// Immutable source selected by discovery; resolution never follows a newer head.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct PinnedContextPath {
     /// Declared volume and read boundary.
     pub root: ContextRoot,
-    /// Exact retained filesystem generation.
+    /// Exact filesystem generation or owner-authenticated native source pin.
     #[cfg_attr(
         feature = "wasm",
         tsify(type = "WasmResourceRefWire & { kind: 'generation' }")
@@ -293,7 +293,9 @@ impl PinnedContextPath {
         Ok(())
     }
 
-    /// Loads a body through the ordinary authorized pinned read, checking provider output.
+    /// Loads an immutable filesystem body through the ordinary pinned reader.
+    /// Native source pins require explicit capture through the original reader
+    /// and independently authorized destination publisher.
     pub async fn read(
         &self,
         reader: &dyn ContentResidencyVerifier,

@@ -35,12 +35,9 @@ where
     )?;
     let host = FilesystemHost::new(filesystem, &provider, None)?;
     let agent = crate::AgentId::from_bytes([81; 16]);
-    let volume = VolumeRef::new(
+    let volume = crate::conversation::journal_volume(
         provider,
-        "append-cost".into(),
-        VolumeClass::AgentPrivate,
-        crate::conversation::VolumeOwner::Agent(agent),
-        &mut None,
+        &crate::agent::AgentId::from_bytes([81; 16]),
     )?;
     host.create_volume(&volume).await?;
     let issuer = crate::core::AuthorityRoot::host_owned(
@@ -54,6 +51,7 @@ where
     let scope = issuer.bootstrap_scope(
         "owner",
         &crate::Capabilities::new([
+            crate::contract::capability::HARNESS_HOST.to_owned(),
             volume.capability(VolumeOperation::Read, &mut None)?,
             volume.capability(VolumeOperation::Write, &mut None)?,
         ]),

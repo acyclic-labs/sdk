@@ -7,6 +7,8 @@ pub struct TaskContext {
     pub(super) scope: RuntimeScope,
     pub(super) output_content: ContentBindings,
     pub(super) journal_output: Option<ContentBindings>,
+    /// Host custody for retained effects; never selected by guest publication.
+    pub(super) journal_publisher: Option<Arc<dyn ContentPublisher>>,
     pub(super) journal: Option<(Arc<dyn crate::executor::ExecutionJournal>, OperationId)>,
     /// The agent whose turn this is, with the volumes it binds.
     pub(super) agent: Option<(crate::agent::AgentPath, Vec<crate::agent::WorkspaceEntry>)>,
@@ -49,6 +51,7 @@ impl TaskContext {
 
     /// Retains the finalized journal and its read-only public tool-output route.
     /// Ordinary content keeps its publisher; only `tools/` is delegated here.
+    /// Retained lifecycle effects keep the journal publisher in host custody.
     pub fn with_execution_journal(
         mut self,
         journal: Arc<dyn crate::executor::ExecutionJournal>,
@@ -60,10 +63,11 @@ impl TaskContext {
             .map(|content| content.volume.directory_read_capability("tools", &mut None))
             .transpose()?;
         let mut output = journal.output_content(operation)?;
+        let mut publisher = None;
         let grant = output
             .as_mut()
             .map(|content| {
-                content.writer = None;
+                publisher = content.writer.take();
                 content.volume.directory_read_capability("tools", &mut None)
             })
             .transpose()?;
@@ -75,8 +79,27 @@ impl TaskContext {
                 .chain(grant.as_deref()),
         );
         self.journal_output = output;
+        self.journal_publisher = publisher;
         self.journal = Some((journal, operation));
         Ok(self)
+    }
+
+    /// Protected host publication, independent of workspace and tool grants.
+    /// A missing journal never selects the task's private publisher instead.
+    pub(crate) fn retained_content(&self) -> Result<(&ContentBindings, &dyn ContentPublisher)> {
+        let content = self
+            .journal_output
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("retained effects require a bound journal".into()))?;
+        let publisher = self.journal_publisher.as_deref().ok_or_else(|| {
+            Error::Unsupported("retained effects require a journal publisher".into())
+        })?;
+        if !content.volume.is_agent_journal() || publisher.volume() != &content.volume {
+            return Err(Error::Invalid(
+                "retained effects require the agent's journal".into(),
+            ));
+        }
+        Ok((content, publisher))
     }
 
     /// Follows this turn's original journal stop signal.

@@ -255,6 +255,7 @@ impl StockExecutor {
         epoch: &crate::context::ContextEpoch,
         manifest_reader: Arc<dyn crate::conversation::ContentResidencyVerifier>,
         reader: Arc<dyn crate::conversation::ContentResidencyVerifier>,
+        publisher: Option<Arc<dyn crate::conversation::ContentPublisher>>,
     ) -> Result<Self> {
         let reference = epoch.manifest().clone();
         if self.context.contains_stage("context-manifest") {
@@ -266,6 +267,7 @@ impl StockExecutor {
             reference,
             manifest_reader.as_ref(),
             reader.as_ref(),
+            publisher.as_deref(),
             self.tools,
             self.limits,
             None,

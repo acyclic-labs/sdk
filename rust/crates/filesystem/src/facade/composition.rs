@@ -76,6 +76,17 @@ pub struct ForkedGeneration {
     pub generation: GenerationId,
 }
 
+/// Initial immutable generation held by a composed workspace creation.
+/// Its files can be named in the caller's other records before the containing
+/// commit publishes the workspace and those records atomically.
+#[derive(Clone, Copy, Debug)]
+pub struct CreatedGeneration {
+    /// Destination workspace identity.
+    pub workspace: crate::WorkspaceId,
+    /// Exact initial generation, retained by the unsent commit.
+    pub generation: GenerationId,
+}
+
 impl<P: ?Sized, O> Fs<StreamAuthorityStore<P>, O> {
     /// The Stream provider holding this filesystem's authority, so callers can
     /// compose their own records into the same consistency domain.
@@ -463,14 +474,14 @@ where
     }
 
     /// Adds every fresh workspace to `commit`, all-or-none with the caller's
-    /// mutations. Returns each workspace identity, in order.
+    /// mutations. Returns each workspace and its held initial generation, in order.
     pub async fn prepare_create_many<W: FsWork>(
         &self,
         creations: &[CreateSpec<'_>],
         commit: &mut FilesystemCommit,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::OwnedOutput<Vec<crate::WorkspaceId>, WorkspaceError> {
+    ) -> W::OwnedOutput<Vec<CreatedGeneration>, WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
         // All-or-none, even when this future is dropped mid-way: the guard
         // removes every entry, contribution and hold this call added unless
@@ -500,7 +511,7 @@ where
         commit: &mut FilesystemCommit,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<crate::WorkspaceId, WorkspaceError> {
+    ) -> Result<CreatedGeneration, WorkspaceError> {
         accounting.check()?;
         let id = self.workspace_id_for_name(&spec.name, accounting)?;
         let volume_id = id.volume_id();
@@ -555,7 +566,10 @@ where
         recorded?;
         commit.hold(prepared.hold);
         result.map_err(|error| WorkspaceError::from(FsError::from(error)))?;
-        Ok(id)
+        Ok(CreatedGeneration {
+            workspace: id,
+            generation: GenerationId::from_root(generation_root),
+        })
     }
 
     /// Conditions `commit` on `source` still being its workspace's head when

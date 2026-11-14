@@ -651,7 +651,7 @@ impl NativeAgents {
                 false,
             )
             .map_err(storage)?;
-        Prepared::prepare(&self.files, spawn, &fresh)
+        Prepared::prepare(&self.files, spawn, &fresh, None)
             .await
             .map_err(storage)
     }

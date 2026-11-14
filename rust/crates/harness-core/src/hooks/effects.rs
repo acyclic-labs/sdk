@@ -32,9 +32,6 @@ pub fn record_operation(
     OperationId::from_bytes(operation)
 }
 
-#[cfg(test)]
-mod tests;
-
 pub(crate) fn phase_operation(tool: OperationId, event: HookEvent) -> OperationId {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"harness:tool-hook:v1\0");
@@ -54,7 +51,7 @@ pub(crate) fn approval_identity(manifest: [u8; 32]) -> crate::registry::Componen
 }
 
 /// Runs one event's hooks at most once per call operation. A start marker
-/// is staged on the agent's private volume before the hooks run, and the
+/// is staged on the host journal before the hooks run, and the
 /// outcome at `hooks/{turn}/{operation}.json` after, so a rebuilt turn reads
 /// the outcome back and never runs the hooks again. A turn that finds the
 /// marker but no outcome was interrupted mid-run: the hooks may have acted,
@@ -63,6 +60,7 @@ pub(crate) fn approval_identity(manifest: [u8; 32]) -> crate::registry::Componen
 /// no outcome returns `None`.
 /// The original execution journal's child-effect claim excludes concurrent
 /// attempts before any replay read; a live duplicate refuses with conflict.
+
 pub async fn run_once<F, Fut>(
     context: &crate::runtime::ToolContext,
     event: HookEvent,
@@ -73,10 +71,22 @@ where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = crate::Result<HookOutput>>,
 {
+    let (content, publisher) = context.task().retained_content()?;
+    let limits = context.effective_scope().limits();
     let operation = phase_operation(context.operation_id(), event);
     let owner = context.task().claim_effect(operation, None)?;
-    if let (Some(file), _) = context.observe_staged_file_once(operation, None).await? {
-        let bytes = context.task().read_file(&file, None).await?;
+    if let Some(file) = content
+        .observe_retained(publisher, operation, limits)
+        .await?
+    {
+        let (bytes, _hold) = crate::conversation::verified_content_bytes(
+            content.reader.as_ref(),
+            &file,
+            limits.file_bytes,
+            None,
+            None,
+        )
+        .await?;
         let output = serde_json::from_slice(&bytes)
             .map(Some)
             .map_err(|error| crate::Error::Invalid(format!("retained hook outcome: {error}")))?;
@@ -89,36 +99,41 @@ where
     }
     let started = start_operation(operation);
     let path = format!("hooks/{}/{operation}", context.turn_id());
-    let output = if context
-        .observe_staged_file_once(started, None)
+    let output = if content
+        .observe_retained(publisher, started, limits)
         .await?
-        .0
         .is_some()
     {
         interrupted()?
     } else {
-        context
-            .stage_file_once(
+        content
+            .retain_once(
+                publisher,
                 started,
-                &format!("{path}.started"),
-                b"{}",
-                "application/json",
-                event.name(),
-                None,
+                (
+                    &format!("{path}.started"),
+                    b"{}",
+                    "application/json",
+                    event.name(),
+                ),
+                limits,
             )
             .await?;
         run().await?
     };
     let bytes = serde_json::to_vec(&output)
         .map_err(|error| crate::Error::Invalid(format!("hook outcome: {error}")))?;
-    context
-        .stage_file_once(
+    content
+        .retain_once(
+            publisher,
             operation,
-            &format!("{path}.json"),
-            &bytes,
-            "application/json",
-            event.name(),
-            None,
+            (
+                &format!("{path}.json"),
+                &bytes,
+                "application/json",
+                event.name(),
+            ),
+            limits,
         )
         .await?;
     owner.release();
@@ -133,3 +148,6 @@ fn start_operation(operation: OperationId) -> OperationId {
     hasher.finalize_xof().fill(&mut id);
     OperationId::from_bytes(id)
 }
+
+#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+mod tests;

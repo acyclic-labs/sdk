@@ -27,7 +27,7 @@ proptest! {
                 let manifest = ContextManifest { sources, ..Default::default() };
                 let reference = manifest.publish(&payloads, crate::OperationId::new(),
                     &format!("manifest/{group}.json"), payload_limits()).await?;
-                let (_, stage) = ContextManifest::bind(reference, &payloads,
+                let (_, stage) = ContextManifest::bind(reference, &payloads,Some(&payloads),
                     crate::tool::ToolRegistry::default(), payload_limits()).await?;
                 pipeline = pipeline.with(stage);
             }

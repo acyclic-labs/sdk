@@ -41,7 +41,7 @@ struct Source {
 enum RetainedSource {
     Native(Box<Source>),
     Shadow(Box<ShadowSource>),
-    Batch(std::collections::HashMap<String, RetainedSource>),
+    Batch(std::collections::BTreeMap<String, RetainedSource>),
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -57,10 +57,6 @@ use retained::RetainedBatch;
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub mod codec_fuzz;
-
-fn decode_materialized(bytes: &[u8]) -> Result<crate::resources::GenerationRef> {
-    serde_json::from_slice(bytes).map_err(storage)
-}
 
 /// A user catalog and the watch generation it was scanned at.
 type UserCatalog = Option<(u64, SkillCatalog)>;
@@ -172,7 +168,7 @@ impl UserWatch {
     }
 }
 
-type Catalog = Option<(acyclic_fs::LazySnapshotId, u64, SkillCatalog)>;
+type Catalog = Option<(acyclic_fs::LazySnapshotId, String, u64, SkillCatalog)>;
 
 #[derive(Clone)]
 struct SkillWorkspace {
@@ -183,7 +179,6 @@ struct SkillWorkspace {
 
 #[doc(hidden)]
 pub struct NativeSkills {
-    directory: PathBuf,
     journal: VolumeRef,
     workspace: Option<SkillWorkspace>,
     pub(crate) materializer: super::skill_materializer::SkillMaterializer,
@@ -207,7 +202,6 @@ impl NativeSkills {
     /// Retained source storage and decoded records remain shared without I/O.
     pub fn for_volume(&self, journal: VolumeRef) -> Arc<Self> {
         Arc::new(Self {
-            directory: self.directory.clone(),
             journal,
             workspace: self.workspace.clone(),
             materializer: super::skill_materializer::SkillMaterializer::new(),
@@ -223,71 +217,38 @@ impl NativeSkills {
     }
 
     pub(crate) fn retain_sources_from(&mut self, previous: &Self) {
-        self.directory = previous.directory.clone();
+        self.records = previous.records.clone();
         self.materializer = previous.materializer.clone();
     }
 
     pub(crate) fn volume(&self) -> &VolumeRef {
         &self.journal
     }
-    pub(crate) fn materialized(
-        &self,
-        generation: &crate::resources::GenerationRef,
-    ) -> Result<Option<crate::resources::GenerationRef>> {
-        let path = self.directory.join(format!(
-            "{}.body.json",
-            hex::encode(generation.as_resource().key())
-        ));
-        match std::fs::read(path) {
-            Ok(bytes) => decode_materialized(&bytes).map(Some),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(storage(error)),
-        }
-    }
-
-    pub(crate) fn retain_materialized(
-        &self,
-        source: &crate::resources::GenerationRef,
-        generation: &crate::resources::GenerationRef,
-    ) -> Result<()> {
-        let path = self.directory.join(format!(
-            "{}.body.json",
-            hex::encode(source.as_resource().key())
-        ));
-        let temporary = self
-            .directory
-            .join(crate::identity::fresh_uuid().to_string());
-        std::fs::write(&temporary, serde_json::to_vec(generation).map_err(storage)?)
-            .map_err(storage)?;
-        if let Err(error) = std::fs::rename(&temporary, &path) {
-            std::fs::remove_file(&temporary).map_err(storage)?;
-            if !path.exists() {
-                return Err(storage(error));
-            }
-        }
-        Ok(())
-    }
-
     pub(crate) fn matches(
         &self,
         volume: &VolumeRef,
         generation: &crate::resources::GenerationRef,
         path: &str,
     ) -> bool {
+        let Some(digest) = path
+            .strip_prefix("inputs/skills/")
+            .and_then(|path| path.strip_suffix("/SKILL.md"))
+        else {
+            return false;
+        };
+        let mut key = [0; 32];
         volume == &self.journal
-            && path
-                == format!(
-                    "inputs/skills/{}/SKILL.md",
-                    hex::encode(generation.as_resource().key())
-                )
+            && hex::decode_to_slice(digest, &mut key).is_ok()
+            && key.as_slice() == generation.as_resource().key()
     }
+    /// Binds retained source metadata to the original owner's native Streams.
+    /// Source pins and body publication keep their original volume admission.
     pub fn new(
-        directory: PathBuf,
+        records: Arc<dyn acyclic_stream::NativeStreamProvider>,
         journal: VolumeRef,
         workspace: Option<(&View, acyclic_fs::LocalFs, acyclic_fs::LocalCoreStateStore)>,
         user_roots: Vec<PathBuf>,
     ) -> Result<Arc<Self>> {
-        std::fs::create_dir_all(&directory).map_err(storage)?;
         let workspace = workspace
             .map(|(view, filesystem, store)| {
                 let cancellation = acyclic_fs::CancellationToken::new();
@@ -305,7 +266,6 @@ impl NativeSkills {
             })
             .transpose()?;
         Ok(Arc::new(Self {
-            directory,
             journal,
             workspace,
             materializer: super::skill_materializer::SkillMaterializer::new(),
@@ -316,7 +276,7 @@ impl NativeSkills {
             user_watch: Arc::default(),
             #[cfg(test)]
             user_pages: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            records: retained::RecordCache::default(),
+            records: retained::RecordCache::new(records),
         }))
     }
 
@@ -372,9 +332,6 @@ impl NativeSkills {
         if path != format!("inputs/skills/{digest}/SKILL.md") {
             return Ok(None);
         }
-        let Some(retained) = self.records.read(self.directory.clone(), digest).await? else {
-            return Ok(None);
-        };
         let cancellation = acyclic_fs::CancellationToken::new();
         let owned;
         let work = if let Some(io) = io {
@@ -384,6 +341,9 @@ impl NativeSkills {
         } else {
             owned = native_work(&cancellation)?;
             &owned
+        };
+        let Some(retained) = self.records.read(digest, work).await? else {
+            return Ok(None);
         };
         match retained.as_ref() {
             RetainedSource::Batch(_) => Err(Error::Invalid("nested retained skill batch".into())),
@@ -503,10 +463,14 @@ impl NativeSkills {
         &'a self,
         root: &'a Path,
         view: &'a View,
+        source_root: &'a str,
         bounds: &'a mut DiscoveryWork,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<SkillMetadata>>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             bounds.limits.validate()?;
+            if !source_root.is_empty() {
+                crate::conversation::validate_content_path(source_root, &mut None)?;
+            }
             let before = *bounds;
             let cancellation = acyclic_fs::CancellationToken::new();
             let work = native_work(&cancellation)?;
@@ -516,8 +480,9 @@ impl NativeSkills {
             };
             let cut = view.snapshot(&mut accounting).await?;
             let mut cached = crate::sync::owned::lock_owned(self.cache.clone()).await;
-            if let Some((id, generation, catalog)) = &*cached
+            if let Some((id, root, generation, catalog)) = &*cached
                 && id == &cut.id
+                && root == source_root
                 && *generation == self.user_watch.current()
                 && let Some(skills) = catalog.reuse(bounds)?
             {
@@ -549,10 +514,15 @@ impl NativeSkills {
                 records: &mut records,
             };
             for directory in PROJECT_SKILL_ROOTS {
+                let directory = if source_root.is_empty() {
+                    std::borrow::Cow::Borrowed(directory)
+                } else {
+                    std::borrow::Cow::Owned(format!("{source_root}/{directory}"))
+                };
                 skills.extend(
                     discover_skills_from(
                         &mut scan,
-                        directory,
+                        &directory,
                         "SKILL.md",
                         bounds,
                         Some(&cut),
@@ -563,9 +533,10 @@ impl NativeSkills {
             }
             let catalog = SkillCatalog::capture(skills.clone(), *bounds, before)?;
             drop(scan);
-            records.publish(self.directory.clone()).await?;
+            records.publish(&self.records, &work).await?;
             // An unwatchable user source must not enter either catalog cache.
-            *cached = generation.map(|generation| (cut.id, generation, catalog));
+            *cached =
+                generation.map(|generation| (cut.id, source_root.into(), generation, catalog));
             Ok(skills)
         })
     }
@@ -597,6 +568,8 @@ impl NativeSkills {
             }
             let (generation, mut skills) = self.source_user_catalog(bounds)?.await?;
             let mut records = RetainedBatch::default();
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let work = native_work(&cancellation)?;
             for skill in &mut skills {
                 if skill.source.root.volume == self.journal {
                     continue;
@@ -604,8 +577,8 @@ impl NativeSkills {
                 let retained = self
                     .records
                     .read(
-                        self.directory.clone(),
                         hex::encode(skill.source.generation.as_resource().key()),
+                        &work,
                     )
                     .await?
                     .ok_or_else(|| {
@@ -625,7 +598,7 @@ impl NativeSkills {
                     records.retain(&self.journal, RetainedSource::Native(Box::new(source)))?;
             }
             let catalog = SkillCatalog::capture(skills.clone(), *bounds, before)?;
-            records.publish(self.directory.clone()).await?;
+            records.publish(&self.records, &work).await?;
             *cached = generation.map(|generation| (generation, catalog));
             Ok((generation, skills))
         })
@@ -693,7 +666,7 @@ impl NativeSkills {
                 );
             }
             let catalog = SkillCatalog::capture(skills.clone(), *bounds, before)?;
-            records.publish(self.directory.clone()).await?;
+            records.publish(&self.records, &work).await?;
             *cached = generation.map(|generation| (generation, catalog));
             Ok((generation, skills))
         })
@@ -985,7 +958,7 @@ mod binding_tests {
     use super::*;
     use crate::{
         Capabilities,
-        conversation::{ContentAccess, ContentGrant, VolumeClass, VolumeOperation, VolumeOwner},
+        conversation::{ContentAccess, VolumeClass, VolumeOperation, VolumeOwner},
         core::{AggregateKind, Authority, AuthorityRoot},
         filesystem::{FilesystemHost, PreparationIo},
         resources::ProviderRef,
@@ -1020,7 +993,7 @@ mod binding_tests {
             &mut None,
         )?;
         let sources = NativeSkills::new(
-            home.path().join("retained"),
+            Arc::new(acyclic_stream::MemoryStream::default()),
             volume,
             None,
             vec![home.path().join("skills")],
@@ -1075,7 +1048,7 @@ mod binding_tests {
         assert_eq!(
             names(
                 sources
-                    .catalog(&checkout, &view, &mut DiscoveryWork::default())?
+                    .catalog(&checkout, &view, "", &mut DiscoveryWork::default())?
                     .await?
             ),
             ["first"]
@@ -1121,7 +1094,7 @@ mod binding_tests {
         assert_eq!(listed, ["first", "second"]);
         let mut listed = names(
             sources
-                .catalog(&checkout, &view, &mut DiscoveryWork::default())?
+                .catalog(&checkout, &view, "", &mut DiscoveryWork::default())?
                 .await?,
         );
         listed.sort();
@@ -1153,7 +1126,7 @@ mod binding_tests {
         let parent = volume(1)?;
         let child = volume(2)?;
         let sources = NativeSkills::new(
-            home.path().join("retained"),
+            Arc::new(acyclic_stream::MemoryStream::default()),
             parent.clone(),
             None,
             vec![home.path().join("skills")],
@@ -1203,13 +1176,50 @@ mod binding_tests {
             Some(crate::AgentId::from_bytes([2; 16])),
             &mut None,
         )?;
-        let grant = ContentGrant::verify_directory_read(
+        use crate::conversation::{
+            ContentCapture, ContentPath, ContentPublisher, ContentResidencyVerifier,
+        };
+        let reader = crate::filesystem::FilesystemContentVerifier::new(
+            host.clone(),
             &issuer.verifier(&mut None)?,
             &scope,
-            &child,
-            "inputs/skills",
+            None,
+            None,
+        )?;
+        let journal = crate::conversation::journal_volume(
+            provider,
+            &crate::agent::AgentId::from_bytes([2; 16]),
+        )?;
+        host.create_volume(&journal).await?;
+        let owner = AuthorityRoot::host_owned(
+            "capture",
+            [41; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "capture".into(),
+            },
+        );
+        let scope = owner.bootstrap_scope(
+            "capture",
+            &Capabilities::new([
+                crate::contract::capability::HARNESS_HOST.to_owned(),
+                journal.capability(VolumeOperation::Read, &mut None)?,
+                journal.capability(VolumeOperation::Write, &mut None)?,
+            ]),
+            Some(crate::AgentId::from_bytes([2; 16])),
             &mut None,
         )?;
+        let verifier = owner.verifier(&mut None)?;
+        let publisher = crate::filesystem::FilesystemContentPublisher::new(
+            host.clone(),
+            &journal,
+            &verifier,
+            &scope,
+            None,
+            None,
+        )?;
+        let journal_reader =
+            crate::filesystem::FilesystemContentVerifier::new(host, &verifier, &scope, None, None)?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = native_work(&cancellation)?;
         let io = PreparationIo::from_native_work(&work)?;
@@ -1217,41 +1227,50 @@ mod binding_tests {
             ceiling: None,
             io: Some(&io),
         };
-        // Negative controls use the actual child grant: neither the original
-        // parent reference nor relabeling its outer volume can read the body.
-        assert!(matches!(
-            host.read_private_path(
-                &parent,
-                &grant,
-                &parent_source.path,
-                Some(&parent_source.generation),
-                4096,
-                ContentAccess::default(),
-            )
-            .await,
-            Err(Error::Unauthorized(_))
-        ));
-        assert!(matches!(
-            host.read_private_path(
-                &child,
-                &grant,
-                &parent_source.path,
-                Some(&parent_source.generation),
-                4096,
-                access,
-            )
-            .await,
-            Err(Error::Unauthorized(_))
-        ));
-        let (_, bytes) = host
-            .read_private_path(
-                &child,
-                &grant,
-                &child_source.path,
-                Some(&child_source.generation),
-                4096,
-                access,
-            )
+        let request = ContentCapture {
+            source: ContentPath {
+                volume: &child,
+                granted_prefix: "inputs/skills",
+                path: &child_source.path,
+                generation: &child_source.generation,
+            },
+            publisher: publisher.as_ref(),
+            reader: journal_reader.as_ref(),
+            operation: crate::OperationId::from_bytes([8; 16]),
+            path: "inputs/skills/child/SKILL.md",
+            media_type: "text/markdown",
+            display_name: "SKILL.md",
+        };
+        // The original parent volume and a relabeled parent pin both refuse
+        // under the actual child's source grant, independently of custody.
+        for volume in [&parent, &child] {
+            let foreign = ContentCapture {
+                source: ContentPath {
+                    volume,
+                    path: &parent_source.path,
+                    generation: &parent_source.generation,
+                    ..request.source
+                },
+                ..request
+            };
+            assert_eq!(
+                reader
+                    .capture_private_path(foreign, Some(4096), access)?
+                    .await
+                    .err()
+                    .expect("capture must refuse")
+                    .code(),
+                crate::wire::ErrorCode::Unauthorized
+            );
+        }
+        let (captured, captured_bytes, _capture_hold) = reader
+            .capture_private_path(request, Some(4096), access)?
+            .await?;
+        assert_eq!(captured_bytes.as_ref(), body);
+        assert_eq!(captured.volume(), publisher.volume());
+        assert_ne!(captured.volume(), &child);
+        let bytes = journal_reader
+            .read(&captured, 4096, None, Some(&io))?
             .await?;
         assert_eq!(bytes.as_ref(), body);
         Ok(())

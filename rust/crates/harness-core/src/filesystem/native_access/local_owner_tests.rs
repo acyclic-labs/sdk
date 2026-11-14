@@ -234,7 +234,7 @@ async fn readonly_import(bytes: &[u8], flow: Preparation, ceiling: ReadCeiling) 
         let scope = issuer.bootstrap_scope("native-volume", &grants, None, &mut None)?;
         let options = authenticated_mount_options(
             lazy.workspace(),
-            original,
+            Some(original),
             NativeAccessAuthority {
                 verifier: &issuer.verifier(&mut None)?,
                 scope: &scope,

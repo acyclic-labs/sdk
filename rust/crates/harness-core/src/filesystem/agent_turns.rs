@@ -40,6 +40,8 @@ use std::sync::Arc;
 
 pub use crate::conversation::{PRIVATE_VOLUME, private_volume};
 
+pub(super) const TURN_INPUTS: &str = "inputs/turns";
+
 #[cfg(test)]
 #[path = "agent_turns/admission_tests.rs"]
 mod admission_tests;
@@ -248,31 +250,53 @@ impl<'v> AdmittedAgent<'v> {
     /// `external` file on a volume the agent does not bind (a message or
     /// result from another agent) is granted alone, by its exact version; an
     /// admitted agent reads what its admission grants.
-    pub(super) async fn authority(self, external: &[FileRef]) -> Result<AgentAuthority<'v>> {
-        let (grants, scope) = match self.parent {
-            Some(parent) => {
-                let grants = Capabilities::new(
-                    parent
-                        .capabilities()
-                        .iter()
-                        .filter(|label| *label != crate::contract::capability::HARNESS_HOST)
-                        .map(str::to_owned),
-                );
-                let scope = self
-                    .issuer
-                    .issue(Some(parent), "agent", &grants, Some(self.owner))
-                    .await?;
-                (scope.capabilities().clone(), scope)
-            }
-            None => {
-                let grants = Capabilities::new(root_grants(self.volumes, &self.journal, external)?);
-                let scope = self
-                    .issuer
-                    .issue(None, "agent", &grants, Some(self.owner))
-                    .await?;
-                (grants, scope)
-            }
-        };
+    pub(super) async fn authority(
+        self,
+        external: &[FileRef],
+        turn: Option<OperationId>,
+    ) -> Result<AgentAuthority<'v>> {
+        let (grants, scope) =
+            match self.parent {
+                Some(parent) => {
+                    let grants = Capabilities::new(
+                        parent
+                            .capabilities()
+                            .iter()
+                            .filter(|label| *label != crate::contract::capability::HARNESS_HOST)
+                            .map(str::to_owned),
+                    );
+                    let scope = self
+                        .issuer
+                        .issue(Some(parent), "agent", &grants, Some(self.owner))
+                        .await?;
+                    (scope.capabilities().clone(), scope)
+                }
+                None => {
+                    let mut grants = root_grants(self.volumes, &self.journal, external)?;
+                    if let Some(turn) = turn {
+                        // Keep the fixed native input route alongside the journal
+                        // policy's ordinary read admission (including summaries).
+                        grants.push(self.journal.directory_read_capability(
+                            &format!("{TURN_INPUTS}/{turn}"),
+                            &mut None,
+                        )?);
+                        // Captured instructions are immutable published input,
+                        // including snapshots retained across checkpoints. This
+                        // read route excludes manifests, configuration and other
+                        // input categories; it grants neither listing nor writes.
+                        grants.push(self.journal.directory_read_capability(
+                            crate::context::ContextEpoch::INSTRUCTIONS_DIRECTORY,
+                            &mut None,
+                        )?);
+                    }
+                    let grants = Capabilities::new(grants);
+                    let scope = self
+                        .issuer
+                        .issue(None, "agent", &grants, Some(self.owner))
+                        .await?;
+                    (grants, scope)
+                }
+            };
         let verifier = self.issuer.verifier(&mut None)?;
         Ok(AgentAuthority {
             issuer: self.issuer,
@@ -562,7 +586,7 @@ pub async fn agent_authority<'v>(
     external: &[FileRef],
 ) -> Result<AgentAuthority<'v>> {
     AdmittedAgent::verify(issuer, admission, path, volumes)?
-        .authority(external)
+        .authority(external, None)
         .await
 }
 
@@ -1214,7 +1238,7 @@ where
         saved: Option<&[crate::agent::SavedVolume]>,
     ) -> Result<Vec<crate::agent::HistoryVolume>> {
         use acyclic_fs::access::{Action, ActionSet};
-        let authority = self.admit(agent)?.authority(&[]).await?;
+        let authority = self.admit(agent)?.authority(&[], None).await?;
         let cancel = acyclic_fs::CancellationToken::new();
         let io = super::PreparationIo::for_unmeasured(&cancel)?;
         let label = crate::core::filesystem_scope_label(authority.scope.capabilities(), &mut None)?;
@@ -1325,6 +1349,7 @@ where
         Arc<AgentInternalFiles<A, O>>,
     )> {
         let local_root = admitted.parent.is_none();
+        let turn = context.as_ref().map(|context| context.turn);
         let storage = crate::core::until_turn_stopped(
             stop.clone(),
             self.journal_storage(&admitted, retained, external),
@@ -1336,7 +1361,8 @@ where
             grants: mut capabilities,
             verifier,
             private,
-        } = crate::core::until_turn_stopped(stop.clone(), admitted.authority(external)).await?;
+        } = crate::core::until_turn_stopped(stop.clone(), admitted.authority(external, turn))
+            .await?;
         // The turn's reader and writer take no content bound of their own:
         // each caller states its bound, and harness-owned records (manifests,
         // settled outputs, policies) are read at their pinned length, so a
@@ -2626,9 +2652,9 @@ where
                     (turn, inbox, initial_through),
                     Arc::clone(&bindings.journal.files),
                     Arc::clone(&bindings.journal.reader),
-                    Arc::clone(bindings.content.writer.as_ref().ok_or_else(|| {
-                        Error::Invalid("agent turn has no private writer".into())
-                    })?),
+                    crate::executor::ExecutionJournal::output_content(&journal, turn)?
+                        .and_then(|content| content.writer)
+                        .ok_or_else(|| Error::Invalid("agent turn has no journal writer".into()))?,
                     self.executors.content_limits().render_bytes,
                 );
                 // Each call dispatches only once the effects of the turn's earlier

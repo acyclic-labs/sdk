@@ -8,7 +8,7 @@ use crate::{
     executor::{ExecutionEvent, ExecutionJournal},
     filesystem::{
         FilesystemExecutionJournal, FilesystemJournalBinding, StockExecutors, Tasks,
-        agent_authority,
+        agent_journal_authority,
     },
     model::{Model, ModelEvent, ToolCall},
     runtime::{Bindings, InProcessTargets, RuntimeScope},
@@ -354,7 +354,8 @@ async fn observe(
     use acyclic_harness_client::ReadTarget;
     let bound = server.bound();
     let state = bound.agents().state(agent).await?;
-    let authority = agent_authority(
+    let (volume, authority) = agent_journal_authority(
+        bound.volumes(),
         bound.issuer(),
         bound.admission(),
         agent,
@@ -406,7 +407,9 @@ async fn observe(
             .await
             .ok_or("conversation producer lost")??;
         let entry = ConversationEntry::decode(&record.value)?;
-        if entry.output.volume() != authority.private.volume()? {
+        // A fork retains its parent's earlier conversation, but this observer
+        // waits for the selected agent's own original execution.
+        if entry.output.volume() != &volume {
             continue;
         }
         break entry;
@@ -425,7 +428,7 @@ async fn observe(
         bound.agents().provider().clone(),
         bound.volumes().clone(),
         FilesystemJournalBinding {
-            volume: authority.private.volume()?,
+            volume: &volume,
             verifier: &authority.verifier,
             scope: &authority.scope,
             io: None,
@@ -464,12 +467,8 @@ async fn observe(
     // whatever bytes a later raw writer puts at the same path.
     let expected = journal.load(&file, None)?.await?;
     let workspace = crate::resources::WorkspaceRef::new(
-        authority.private.volume()?.provider().clone(),
-        authority
-            .private
-            .volume()?
-            .storage_name(&mut None)?
-            .into_bytes(),
+        volume.provider().clone(),
+        volume.storage_name(&mut None)?.into_bytes(),
         None,
     )?;
     bound
