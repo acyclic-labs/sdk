@@ -93,6 +93,146 @@ fn events() -> Vec<ModelEvent> {
 }
 
 #[tokio::test]
+async fn count_transport_traces_survive_reload_without_admitting_generation() -> Result<()> {
+    use acyclic_stream::trace::{Mechanism, Outcome, SpanEvent, SpanId, TraceRecord};
+
+    let (mut journal, _issuer) = test_support::journal().await?;
+    let operation = OperationId::new();
+    let id = SpanId {
+        process: [2; 16],
+        sequence: 0,
+    };
+    let traces = [
+        ModelEvent::Trace {
+            record: TraceRecord::V1(SpanEvent::Started {
+                id,
+                parent: None,
+                name: "model.response_headers".into(),
+                mechanism: Mechanism::RoundTrip,
+                at_ns: 10,
+                guarantee: Some("receive_response_headers".into()),
+            }),
+        },
+        ModelEvent::Trace {
+            record: TraceRecord::V1(SpanEvent::Finished {
+                id,
+                at_ns: 20,
+                bytes: None,
+                result: Outcome::Succeeded,
+            }),
+        },
+    ];
+    assert!(
+        crate::executor::append_model_event(
+            &journal,
+            operation,
+            "unbound",
+            (0, ModelPurpose::Count),
+            &traces[0],
+            None,
+            None,
+        )
+        .await
+        .is_err(),
+        "count transport requires an initial request binding"
+    );
+    journal
+        .append(
+            operation,
+            "started",
+            &ExecutionEvent::Started {
+                request_digest: [1; 32],
+            },
+            None,
+        )?
+        .await?;
+
+    for (index, trace) in traces.iter().enumerate() {
+        // Drop the authenticated cache before both new appends and exact retries.
+        // The next append must recover its state from the durable journal.
+        for _ in 0..2 {
+            *journal.verified.get_mut() = SummaryCache::default();
+            crate::executor::append_model_event(
+                &journal,
+                operation,
+                &format!("count:{index}"),
+                (0, ModelPurpose::Count),
+                trace,
+                None,
+                None,
+            )
+            .await?;
+        }
+    }
+    for purpose in [
+        ModelPurpose::Count,
+        ModelPurpose::Response,
+        ModelPurpose::Summary,
+    ] {
+        for invalid in [
+            ModelEvent::Content {
+                delta: "output".into(),
+            },
+            ModelEvent::Completed {
+                metadata: serde_json::json!({}),
+            },
+        ] {
+            assert!(
+                crate::executor::append_model_event(
+                    &journal,
+                    operation,
+                    "generation",
+                    (0, purpose),
+                    &invalid,
+                    None,
+                    None,
+                )
+                .await
+                .is_err(),
+                "an observation cannot invent a generation dispatch"
+            );
+        }
+    }
+    let records = journal.records(operation, 0, 64, None).await?;
+    assert_eq!(records.len(), 3, "reload/retry duplicated transport work");
+    for (record, expected) in records[1..].iter().zip(&traces) {
+        let ExecutionEvent::Model {
+            event,
+            purpose: ModelPurpose::Count,
+            usage: None,
+            ..
+        } = &record.event
+        else {
+            panic!("count trace lost its original private payload");
+        };
+        let bytes = journal.load(event, None)?.await?;
+        assert_eq!(
+            &crate::executor::decode_model_payload(event.descriptor().media_type(), &bytes, None,)?,
+            expected
+        );
+    }
+    // Counting never claims the response slot at this step.
+    let prepared = request()?;
+    let reference =
+        crate::test_support::stage_model_request(&journal, operation, "request", &prepared).await?;
+    journal
+        .append(
+            operation,
+            "response",
+            &ExecutionEvent::ModelStarted {
+                step: 0,
+                purpose: ModelPurpose::Response,
+                request_digest: prepared.request_digest(),
+                request: reference,
+                context: None,
+            },
+            None,
+        )?
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn committed_archive_fences_dispatch_before_its_actor_consumes_the_control() -> Result<()> {
     use crate::agent::{ForkAdopted, IntentId, Sender, Submitted};
     use acyclic_actors::{

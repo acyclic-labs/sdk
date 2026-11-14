@@ -59,6 +59,16 @@ impl ExecutionSummary {
                 purpose: crate::executor::ModelPurpose::Count,
                 ..
             } => self.tail > 0,
+            ExecutionEvent::Model {
+                purpose: crate::executor::ModelPurpose::Count,
+                usage,
+                ..
+            }
+            | ExecutionEvent::ModelInline {
+                purpose: crate::executor::ModelPurpose::Count,
+                usage,
+                ..
+            } => self.tail > 0 && usage.is_none(),
             ExecutionEvent::ContextPrepared { step, .. } => {
                 self.tail > 0
                     && !self.contexts.contains_key(step, io)?
@@ -180,6 +190,18 @@ impl ExecutionSummary {
         ) {
             return Ok(());
         }
+        if matches!(
+            event,
+            ExecutionEvent::Model {
+                purpose: crate::executor::ModelPurpose::Count,
+                ..
+            } | ExecutionEvent::ModelInline {
+                purpose: crate::executor::ModelPurpose::Count,
+                ..
+            }
+        ) {
+            return require_count_trace(model, io);
+        }
         if let ExecutionEvent::Model { step, purpose, .. }
         | ExecutionEvent::ModelInline { step, purpose, .. }
         | ExecutionEvent::ModelWait { step, purpose, .. } = event
@@ -296,6 +318,14 @@ impl ExecutionSummary {
                 purpose: crate::executor::ModelPurpose::Count,
                 ..
             } => {}
+            ExecutionEvent::Model {
+                purpose: crate::executor::ModelPurpose::Count,
+                ..
+            }
+            | ExecutionEvent::ModelInline {
+                purpose: crate::executor::ModelPurpose::Count,
+                ..
+            } => require_count_trace(model, io)?,
             ExecutionEvent::Model { step, purpose, .. }
             | ExecutionEvent::ModelInline { step, purpose, .. }
             | ExecutionEvent::ModelWait { step, purpose, .. } => {
@@ -438,6 +468,20 @@ impl ExecutionSummary {
     pub(super) fn quiescent(&self, io: Option<&PreparationIo>) -> Result<bool> {
         crate::model::charge_items(io, 1)?;
         Ok(self.pending_dispatches == 0)
+    }
+}
+
+// Counting has observable transport work, but no generation dispatch or usage.
+// Keep its traces without creating a model attempt that recovery could resume.
+fn require_count_trace(model: Option<&ModelEvent>, io: Option<&PreparationIo>) -> Result<()> {
+    if matches!(model, Some(ModelEvent::Trace { .. })) {
+        Ok(())
+    } else {
+        Err(canonical_boundary(
+            io,
+            crate::wire::ErrorCode::Conflict,
+            "token-count observation is not a transport trace",
+        ))
     }
 }
 

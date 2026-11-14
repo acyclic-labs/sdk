@@ -270,6 +270,14 @@ where
             ExecutionEvent::ModelWait {
                 purpose: crate::executor::ModelPurpose::Count,
                 ..
+            }
+            | ExecutionEvent::Model {
+                purpose: crate::executor::ModelPurpose::Count,
+                ..
+            }
+            | ExecutionEvent::ModelInline {
+                purpose: crate::executor::ModelPurpose::Count,
+                ..
             } => {}
             ExecutionEvent::ModelStarted { step, purpose, .. }
             | ExecutionEvent::Model { step, purpose, .. }
@@ -346,6 +354,14 @@ where
                 roots[1] = Some(store(writer, roots[1], step.digest(io)?, value, io).await?);
             }
             ExecutionEvent::ModelWait {
+                purpose: crate::executor::ModelPurpose::Count,
+                ..
+            }
+            | ExecutionEvent::Model {
+                purpose: crate::executor::ModelPurpose::Count,
+                ..
+            }
+            | ExecutionEvent::ModelInline {
                 purpose: crate::executor::ModelPurpose::Count,
                 ..
             } => {}
