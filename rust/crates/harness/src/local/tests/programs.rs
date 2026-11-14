@@ -1013,7 +1013,7 @@ async fn refused_settings_preserve_the_published_file_and_running_model() -> Res
             let refused = false;
             try { await write(path, 'export default {', before.version); }
             catch (error) {
-                if (!(error instanceof Error)) throw error;
+                if (!(error instanceof Error) || error.class !== 'invalid') throw error;
                 refused = true;
             }
             const after = await read(path);
