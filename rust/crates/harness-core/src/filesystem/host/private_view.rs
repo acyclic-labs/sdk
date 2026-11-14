@@ -25,6 +25,13 @@ pub(super) trait PrivateView: Send + Sync {
         ctx: &'a mut KernelAccounting<'_>,
         io: &'a PreparationIo,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, LazySnapshotRef>>;
+    fn stat<'a>(
+        &'a self,
+        cut: &'a LazySnapshotRef,
+        path: &'a str,
+        ctx: &'a mut KernelAccounting<'_>,
+        io: &'a PreparationIo,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<acyclic_fs::WorkspaceStat>>>;
     fn read<'a>(
         &'a self,
         cut: &'a LazySnapshotRef,
@@ -86,6 +93,20 @@ where
     ) -> Result<crate::conversation::BoundedContentFuture<'a, LazySnapshotRef>> {
         crate::conversation::BoundedContentFuture::new(Some(io), || async move {
             self.snapshot(ctx).await.map_err(Into::into)
+        })
+    }
+    fn stat<'a>(
+        &'a self,
+        cut: &'a LazySnapshotRef,
+        path: &'a str,
+        ctx: &'a mut KernelAccounting<'_>,
+        io: &'a PreparationIo,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<acyclic_fs::WorkspaceStat>>>
+    {
+        crate::conversation::BoundedContentFuture::new(Some(io), || async move {
+            self.workspace_stat_at_snapshot(cut, path, ctx)
+                .await
+                .map_err(Into::into)
         })
     }
     fn read<'a>(
@@ -375,6 +396,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             quota.transfer();
             Ok(reference)
         })
+    }
+
+    pub(super) async fn stat_private_snapshot(
+        &self,
+        cut: &LazySnapshotRef,
+        path: &str,
+        io: &PreparationIo,
+    ) -> Result<Option<acyclic_fs::WorkspaceStat>> {
+        let view = self
+            .private_view
+            .as_ref()
+            .filter(|view| view.workspace_id() == cut.workspace_id)
+            .ok_or_else(|| io.invalid("private source binding is unavailable"))?;
+        let owner = io.account(acyclic_fs::kernel::NativeAccounting::take)?;
+        let native_io = PreparationIo::from_native_work(&owner.work)?;
+        let mut ctx = KernelAccounting::NativeOriginal {
+            work: &owner.work,
+            cancellation: io.cancellation(),
+        };
+        let result = async { view.stat(cut, path, &mut ctx, &native_io)?.await }.await;
+        drop(ctx);
+        io.account(|ctx| owner.restore(ctx))?;
+        result
     }
 
     pub(super) async fn read_private_snapshot(
