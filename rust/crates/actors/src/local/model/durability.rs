@@ -256,8 +256,8 @@ async fn control_replay_requires_durability(
         creation.join(store.activation(&actor)?)?;
         store.submit(creation).await?;
         let before = store.load(&actor).await?;
-        let schedule = store.scheduling_path(store.scheduling_shard(&actor))?;
-        let activations = provider.inner.tail(schedule.clone()).await?;
+        let schedule = store.scheduling_path(store.scheduling_shard(&target))?;
+        let activations = store.head(&schedule).await?.map_or(0, |head| head.tail);
         assert!(matches!(
             replay_control(&store, &actor, fork).await,
             Err(Error::Unknown {
