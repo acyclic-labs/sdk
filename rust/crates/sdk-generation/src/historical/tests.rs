@@ -758,7 +758,7 @@ impl Fixture {
     }
 }
 fn cargo() -> PathBuf {
-    PathBuf::from(env!("CARGO"))
+    PathBuf::from(std::env::var_os("CARGO").expect("the test runner names Cargo in CARGO"))
 }
 #[test]
 fn dependency_archive_initial_import_uses_verified_registry_facts() {

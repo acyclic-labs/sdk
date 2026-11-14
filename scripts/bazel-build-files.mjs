@@ -65,10 +65,12 @@ const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "
 const memberDirs = [...members].map(id => dir(packages.get(id))).sort((a, b) => b.length - a.length);
 const ownerOf = file => memberDirs.find(d => file.startsWith(`${d}/`)) ?? "";
 const within = (owner, file) => (owner ? file.slice(owner.length + 1) : file);
-// Files that a member's Rust sources read at compile time outside their target's own globs:
-// `#[path]` modules and include!, include_str! or include_bytes! literals, split into library and
-// test-target inputs. A path this misses fails the sandboxed compile loudly; it is never read stale.
+// The files one crate's compile reads, from its root: `mod` children, `#[path]` modules and
+// include!, include_str! or include_bytes! literals, followed through every Rust file reached.
+// `mod` children are taken from both module layouts; a candidate that exists but is unused is an
+// extra input only. A file this misses fails the sandboxed compile loudly; it is never read stale.
 const EMBED = /include(?:_str|_bytes)?!\(\s*(concat!\(\s*env!\(\s*"CARGO_MANIFEST_DIR"\s*\)\s*,\s*)?"([^"]+)"|#\[path\s*=\s*()"([^"]+)"\]/g;
+const MOD = /^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?mod[ \t]+(?:r#)?(\w+)[ \t]*;/gm;
 const TEST_DIRS = /^(tests|benches|examples)\//;
 const trackedSet = new Set(tracked);
 const exported = new Map();
@@ -79,23 +81,37 @@ function fileLabel(file) {
   exported.get(owner).add(within(owner, file));
   return `//${owner}:${within(owner, file)}`;
 }
-const embeds = new Map(memberDirs.map(d => [d, { lib: new Set(), tests: new Set() }]));
-for (const file of tracked) {
-  const owner = ownerOf(file);
-  if (!owner || !file.endsWith(".rs")) continue;
-  for (const [, manifestRelative, literal, , module] of fs.readFileSync(path.join(root, file), "utf8").matchAll(EMBED)) {
-    const target = path.posix.normalize(path.posix.join(manifestRelative ? owner : path.posix.dirname(file), literal ?? module));
-    if (!trackedSet.has(target)) continue;
-    const bucket = embeds.get(owner)[TEST_DIRS.test(within(owner, file)) ? "tests" : "lib"];
-    // Same-package files are rendered relative to the package and filtered against each target's globs.
-    bucket.add(ownerOf(target) === owner ? within(owner, target) : fileLabel(target));
+function closure(crateDir, rootFile) {
+  const seen = new Set([rootFile]), queue = [rootFile];
+  while (queue.length) {
+    const file = queue.pop(), here = path.posix.dirname(file);
+    const text = fs.readFileSync(path.join(root, file), "utf8");
+    const stem = path.posix.join(here, path.posix.basename(file, ".rs"));
+    const found = [];
+    for (const [, manifestRelative, literal, , module] of text.matchAll(EMBED)) {
+      found.push(path.posix.normalize(path.posix.join(manifestRelative ? crateDir : here, literal ?? module)));
+    }
+    for (const [, name] of text.matchAll(MOD)) {
+      for (const base of [here, stem]) found.push(`${base}/${name}.rs`, `${base}/${name}/mod.rs`);
+    }
+    for (const next of found) {
+      if (!trackedSet.has(next) || seen.has(next)) continue;
+      seen.add(next);
+      if (next.endsWith(".rs")) queue.push(next);
+    }
   }
+  return seen;
 }
-for (const id of members) {
-  for (const target of packages.get(id).targets) {
-    const file = path.relative(root, target.src_path).replaceAll("\\", "/");
-    if (ownerOf(file) !== dir(packages.get(id))) fileLabel(file);
+// The inputs a target reads beyond its globs, as srcs (Rust) and compile_data (other files):
+// same-package paths relative to the package, other packages' files by exported label.
+function extraInputs(crateDir, rootFile, covered) {
+  const srcs = [], data = [];
+  for (const file of [...closure(crateDir, rootFile)].sort()) {
+    const owner = ownerOf(file);
+    if (owner === crateDir && covered(within(owner, file))) continue;
+    (file.endsWith(".rs") ? srcs : data).push(owner === crateDir ? within(owner, file) : fileLabel(file));
   }
+  return { srcs, data };
 }
 // Starlark rendering.
 const list = items => (items.length ? `[\n${items.map(i => `        ${q(i)},\n`).join("")}    ]` : "[]");
@@ -178,10 +194,18 @@ function buildFile(p) {
     return ownerOf(relative) === dir(p) ? within(dir(p), relative) : fileLabel(relative);
   };
   const opt = packageOpt(p.name);
-  const embedded = embeds.get(dir(p));
-  // Embedded files outside the library globs, and outside an integration test's directory.
-  const libEmbeds = list([...[...embedded.lib].filter(f => f.startsWith("//") || TEST_DIRS.test(f) || f === "build.rs").sort(), ...(readsRepository(p) ? repositorySources : [])]);
-  const testEmbeds = testDir => list([...embedded.tests].filter(f => f.startsWith("//") || (testDir !== "." && !f.startsWith(`${testDir}/`))).sort());
+  const repoRelative = target => path.relative(root, target.src_path).replaceAll("\\", "/");
+  // Library and binary globs: the package's files outside its test, bench and example trees.
+  const libCovered = file => !TEST_DIRS.test(file) && file !== "build.rs";
+  const extras = (target, covered) => extraInputs(dir(p), repoRelative(target), covered);
+  // srcs and compile_data of a library-shaped target: the package globs plus its extra inputs.
+  const libInputs = target => {
+    const extra = extras(target, libCovered);
+    return [
+      ["srcs", plus(glob(["**/*.rs"], ["build.rs", ...NOT_LIB]), list(extra.srcs))],
+      ["compile_data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), list([...extra.data, ...(readsRepository(p) ? repositorySources : [])]))],
+    ];
+  };
   const env = Object.fromEntries([["CARGO_PKG_NAME", p.name], ["CARGO_PKG_DESCRIPTION", p.description], ["CARGO_PKG_REPOSITORY", p.repository], ["CARGO_PKG_LICENSE", p.license], ["CARGO_PKG_RUST_VERSION", p.rust_version]].filter(([, v]) => v));
   const common = target => [
     ["edition", q(target.edition)],
@@ -218,18 +242,18 @@ function buildFile(p) {
     );
   };
   if (script) {
-    // A build script compiles from its own sources and `#[path]` modules and runs over every package file.
-    const modules = [...fs.readFileSync(script.src_path, "utf8").matchAll(/#\[path\s*=\s*"([^"]+)"\]/g)].map(m => m[1]);
+    // A build script compiles from its own module closure and runs over every package file.
+    const extra = extras(script, () => false);
     rules.push(["cargo_build_script", [
       ["name", q("build_script")],
       ["crate_root", q(local(script.src_path))],
-      ["srcs", list([local(script.src_path), ...modules])],
-      ["compile_data", glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB])],
+      ["srcs", list(extra.srcs)],
+      ["compile_data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), list(extra.data))],
       ["data", plus(glob(["**"], ["BUILD.bazel", ...NOT_LIB]), list(readsRepository(p) ? repositorySources : []), scriptEnv.get(p.id).length ? platformSelect(p.id, vars => vars.map(([, file]) => file)) : undefined)],
       ["pkg_name", q(p.name)],
       ["links", p.links ? q(p.links) : undefined],
       ...common(script),
-      ["build_script_env", scriptEnv.get(p.id).length ? `PACKAGE_ENV | ${platformSelect(p.id, vars => Object.fromEntries(vars.map(([variable, file]) => [variable, `\${pwd}/$(execpath ${file})`])))}` : "PACKAGE_ENV"],
+      ["build_script_env", scriptEnv.get(p.id).length ? `PACKAGE_ENV | ${platformSelect(p.id, vars => Object.fromEntries(vars.map(([variable, file]) => [variable, `$\${pwd}/$(execpath ${file})`])))}` : "PACKAGE_ENV"],
       ...deps(["build"], { deps: "build = True", procMacros: "build_proc_macro = True", aliases: "build = True, build_proc_macro = True" }),
     ]]);
   }
@@ -238,14 +262,15 @@ function buildFile(p) {
     rules.push([proc ? "rust_proc_macro" : "rust_library", [
       ["name", q(crateName(lib))],
       ["crate_root", q(local(lib.src_path))],
-      ["srcs", plus(glob(["**/*.rs"], ["build.rs", ...NOT_LIB]), list(local(lib.src_path).startsWith("//") ? [local(lib.src_path)] : []))],
-      ["compile_data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), libEmbeds)],
+      ...libInputs(lib),
       ...common(lib),
       ...deps([null], { deps: "normal = True", procMacros: "proc_macro = True", aliases: "" }, ownDeps),
       ["visibility", q(["//visibility:public"])],
     ]]);
+    // The crate's tests compile its sources again; rust_test does not inherit compile_data.
     if (lib.test) test(`${crateName(lib)}_test`, [
       ["crate", q(`:${crateName(lib)}`)],
+      ["compile_data", list(extras(lib, libCovered).data)],
       ...common(lib).filter(([k]) => k !== "rustc_env"),
       ...deps(["dev"], { deps: "normal_dev = True", procMacros: "proc_macro_dev = True", aliases: "normal_dev = True, proc_macro_dev = True" }),
     ]);
@@ -254,8 +279,7 @@ function buildFile(p) {
     rules.push(["rust_binary", [
       ["name", q(bin.name)],
       ["crate_root", q(local(bin.src_path))],
-      ["srcs", plus(glob(["**/*.rs"], ["build.rs", ...NOT_LIB]), list(local(bin.src_path).startsWith("//") ? [local(bin.src_path)] : []))],
-      ["compile_data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), libEmbeds)],
+      ...libInputs(bin),
       ...common(bin),
       ...deps([null], { deps: "normal = True", procMacros: "proc_macro = True", aliases: "" }, [...ownLib, ...ownDeps], ownMacro),
       ["visibility", q(["//visibility:public"])],
@@ -264,8 +288,7 @@ function buildFile(p) {
     const binCrate = bin.name.replaceAll("-", "_");
     if (bin.test) test(lib && binCrate === crateName(lib) ? `${binCrate}_bin_test` : `${binCrate}_test`, [
       ["crate_root", q(local(bin.src_path))],
-      ["srcs", plus(glob(["**/*.rs"], ["build.rs", ...NOT_LIB]), list(local(bin.src_path).startsWith("//") ? [local(bin.src_path)] : []))],
-      ["compile_data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), libEmbeds)],
+      ...libInputs(bin),
       ...common(bin),
       ...deps([null, "dev"], { deps: "normal = True, normal_dev = True", procMacros: "proc_macro = True, proc_macro_dev = True", aliases: "normal = True, normal_dev = True, proc_macro = True, proc_macro_dev = True" },
         [...ownLib, ...ownDeps], ownMacro),
@@ -273,11 +296,12 @@ function buildFile(p) {
   }
   const enabled = new Set(features[0]);
   for (const target of p.targets.filter(t => t.kind.includes("test") && (t["required-features"] ?? []).every(f => enabled.has(f)))) {
-    const root = local(target.src_path), testDir = root.startsWith("//") ? "." : path.posix.dirname(root);
+    const crateRoot = local(target.src_path), testDir = crateRoot.startsWith("//") ? "." : path.posix.dirname(crateRoot);
+    const extra = extras(target, file => testDir === "." || file.startsWith(`${testDir}/`));
     test(lib && target.name === crateName(lib) ? `${target.name}_integration` : target.name, [
-      ["crate_root", q(root)],
-      ["srcs", plus(glob([testDir === "." ? "**/*.rs" : `${testDir}/**/*.rs`], []), list(root.startsWith("//") ? [root] : []))],
-      ["compile_data", plus(glob([testDir === "." ? "**" : `${testDir}/**`], ["**/*.rs", "BUILD.bazel"]), testEmbeds(testDir))],
+      ["crate_root", q(crateRoot)],
+      ["srcs", plus(glob([testDir === "." ? "**/*.rs" : `${testDir}/**/*.rs`], []), list(extra.srcs))],
+      ["compile_data", plus(glob([testDir === "." ? "**" : `${testDir}/**`], ["**/*.rs", "BUILD.bazel"]), list(extra.data))],
       ...common(target),
       ...deps([null, "dev"], { deps: "normal = True, normal_dev = True", procMacros: "proc_macro = True, proc_macro_dev = True", aliases: "normal = True, normal_dev = True, proc_macro = True, proc_macro_dev = True" },
         [...ownLib, ...ownDeps], ownMacro),
@@ -292,7 +316,7 @@ function buildFile(p) {
     `FEATURES = ${perTriple(features, list)}\n\n`,
     `PACKAGE_ENV = ${q(env)}\n`,
   ];
-  return header.join("") + rules.map(([kind, attrs]) => `\n${rule(kind, attrs)}`).join("") + sourcesRule + exportsRule(dir(p));
+  return header.join("") + rules.map(([kind, attrs]) => `\n${rule(kind, attrs)}`).join("") + sourcesRule;
 }
 
 function moduleFile() {
@@ -344,11 +368,13 @@ function moduleFile() {
   ].join("");
 }
 
+// Bodies first: rendering them records every file another package takes by label.
+const bodies = new Map([...members].map(id => [dir(packages.get(id)), buildFile(packages.get(id))]));
 const files = new Map([
   ["cargo.MODULE.bazel", moduleFile()],
   ["BUILD.bazel", `${HEADER}\nexports_files(${list(["Cargo.lock", "Cargo.toml"])})\n${platformRules}${sourcesRule}${exportsRule("")}`],
 ]);
-for (const id of members) files.set(`${dir(packages.get(id))}/BUILD.bazel`, buildFile(packages.get(id)));
+for (const [owner, body] of bodies) files.set(`${owner}/BUILD.bazel`, body + exportsRule(owner));
 // A generated file whose package left the workspace is stale.
 for (const file of execFileSync("git", ["ls-files", "*BUILD.bazel"], { cwd: root, encoding: "utf8" }).split("\n").filter(Boolean)) {
   if (!files.has(file) && fs.readFileSync(path.join(root, file), "utf8").startsWith(HEADER)) files.set(file, null);
