@@ -25,6 +25,7 @@ mod context_documents;
 mod history_retry;
 mod platform;
 mod programs;
+mod publication_latency;
 mod replay;
 pub(super) mod settings;
 mod signing;
