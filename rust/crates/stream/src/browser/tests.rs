@@ -805,6 +805,7 @@ fn javascript_retains_original_refusal_through_reply_cause_wrappers() {
             message: "unavailable",
             details: &[],
             owned: &[],
+            cause_is_embedded: false,
         },
         None,
     )

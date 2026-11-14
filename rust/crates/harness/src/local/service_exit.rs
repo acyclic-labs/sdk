@@ -156,6 +156,7 @@ impl Observation {
                 message: "stream unavailable",
                 details: &[],
                 owned: &[],
+                cause_is_embedded: false,
             },
             Some(Cause::new("service.owner", reason)),
         )

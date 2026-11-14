@@ -834,11 +834,7 @@ fn attributed_unavailability_survives_transport_round_trips() {
         );
     }
     let decoded = status(&encoded);
-    let refusal = decoded
-        .source()
-        .unwrap()
-        .downcast_ref::<acyclic_auth::refusal::Refusal>()
-        .unwrap();
+    let refusal = decoded.member_refusal().unwrap();
     assert!(refusal.original().is_none());
     assert_eq!(decoded.category(), StreamError::Unavailable);
     assert!(decoded.uncertain());

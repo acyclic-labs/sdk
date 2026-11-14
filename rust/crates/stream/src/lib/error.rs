@@ -157,6 +157,7 @@ impl StreamError {
                 message: "stream unavailable",
                 details: b"",
                 owned: &[],
+                cause_is_embedded: false,
             },
             None,
         )
