@@ -322,11 +322,26 @@ async fn isolation<P: StreamProvider + ?Sized>(
             tail_stream: None,
             parent: Some(parent.clone()),
             after: None,
+            offset: 0,
             hierarchy_version: None,
-            limit: 16,
+            limit: 1,
         })
         .await?;
     if page.children.iter().map(|child| &child.path).ne([source]) {
+        return Err(violated!());
+    }
+    // Private siblings sort before the source, but consume no public rank.
+    let end = provider
+        .children_page(ChildrenPageRequest {
+            tail_stream: None,
+            parent: Some(parent.clone()),
+            after: None,
+            offset: 1,
+            hierarchy_version: Some(page.hierarchy_version),
+            limit: 1,
+        })
+        .await?;
+    if !end.children.is_empty() {
         return Err(violated!());
     }
     provider

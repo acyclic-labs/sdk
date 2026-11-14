@@ -669,6 +669,7 @@ impl Namespace {
                         index: cursor.children.clone(),
                         name: segment(&cursor.children, text).ok_or(StreamError::Unavailable)?,
                         parent: Some(cursor.clone()),
+                        alias: cursor.alias,
                     });
                     cursor = child;
                 }

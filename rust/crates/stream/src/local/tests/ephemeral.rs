@@ -138,6 +138,7 @@ async fn an_unreleased_ephemeral_fork_never_outlives_its_incarnation() -> Result
             tail_stream: None,
             parent: None,
             after: None,
+            offset: 0,
             hierarchy_version: None,
             limit: 16,
         })

@@ -369,6 +369,7 @@ fn reconstruct(
             paths,
             histories,
             envelope,
+            &super::Scope::Durable,
             &mut super::NamespaceBuilder::new(&|_| Ok(None)),
         )
         .ok()?;

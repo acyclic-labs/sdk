@@ -228,10 +228,7 @@ impl MemoryStream {
             return Err(StreamError::IdempotencyMismatch);
         }
         for condition in request.conditions() {
-            if !state
-                .paths
-                .contains_key(crate::CommitCondition::path(condition))
-            {
+            if !state.contains_path(crate::CommitCondition::path(condition)) {
                 return Err(StreamError::NotFound);
             }
             if self.condition_conflict(state, condition)?.is_some() {
