@@ -2,6 +2,32 @@
 use super::*;
 use acyclic_native_runtime::testing::{Schedule, fill_seeded, seeded_runtime};
 
+mod composition;
+mod local;
+
+async fn drive<T>(
+    schedule: &Schedule,
+    boundaries: &mut tokio::sync::mpsc::UnboundedReceiver<
+        acyclic_native_runtime::testing::Boundary,
+    >,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    let mut turn = Box::pin(schedule.scope(future));
+    let result = loop {
+        tokio::select! {
+            result = &mut turn => break result,
+            boundary = boundaries.recv() => boundary.expect("boundary channel closed").release(),
+        }
+    };
+    drop(turn);
+    loop {
+        tokio::select! {
+            () = schedule.drained() => return result,
+            boundary = boundaries.recv() => boundary.expect("drain channel closed").release(),
+        }
+    }
+}
+
 #[derive(Default)]
 struct Expected {
     sent: u64,
@@ -15,10 +41,10 @@ struct Expected {
     delivered: Option<u64>,
 }
 
-async fn open(
-    store: &Store<MemoryStream>,
+async fn open<P: StreamProvider + 'static>(
+    store: &Store<P>,
     addresses: &[ActorReference],
-) -> Result<Runtime<MemoryStream>, Box<dyn std::error::Error>> {
+) -> Result<Runtime<P>, Box<dyn std::error::Error>> {
     let runtime = Runtime::new(
         crate::guest::Requests::default(),
         store.clone(),
@@ -255,15 +281,8 @@ fn replay(seed: u64) -> TestResult {
     eprintln!("seed={seed}");
     seeded_runtime(seed)?.block_on(async {
         tokio::time::pause();
-            let (schedule, mut boundaries) = Schedule::seeded(seed);
-            let turn = schedule.scope(history(&schedule));
-            tokio::pin!(turn);
-            loop {
-                tokio::select! {
-                    result = &mut turn => return result.map_err(|error| format!("seed={seed}: {error}").into()),
-                    boundary = boundaries.recv() => boundary.ok_or("boundary channel closed")?.release(),
-                }
-            }
+        let (schedule, mut boundaries) = Schedule::seeded(seed);
+        drive(&schedule, &mut boundaries, history(&schedule)).await
     })
 }
 

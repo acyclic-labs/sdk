@@ -2,6 +2,8 @@
 use super::*;
 use acyclic_native_runtime::testing::{Schedule, fill_seeded, seeded_runtime};
 
+mod custody;
+
 fn replay(seed: u64) -> Result<(), Failure> {
     seeded_runtime(seed)?.block_on(async {
         tokio::time::pause();
@@ -17,9 +19,7 @@ fn replay(seed: u64) -> Result<(), Failure> {
                     _ => Fault::LoseAck,
                 })
                 .collect();
-            run(Shape::Atomic, plan).await?;
-            composition::activation_extensions(choices.into_iter().map(|choice| 3 + choice % 3)).await?;
-            composition::copied_custody(choices[..2].iter().map(|choice| choice % 2 == 0)).await
+            run(Shape::Atomic, plan).await
         });
         tokio::pin!(turn);
         loop {

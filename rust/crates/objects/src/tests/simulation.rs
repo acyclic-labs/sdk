@@ -4,6 +4,31 @@ use acyclic_native_runtime::testing::{Schedule, fill_seeded, seeded_runtime};
 
 type Failure = Box<dyn std::error::Error>;
 
+mod local;
+
+async fn drive<T>(
+    schedule: &Schedule,
+    boundaries: &mut tokio::sync::mpsc::UnboundedReceiver<
+        acyclic_native_runtime::testing::Boundary,
+    >,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    let mut turn = Box::pin(schedule.scope(future));
+    let result = loop {
+        tokio::select! {
+            result = &mut turn => break result,
+            boundary = boundaries.recv() => boundary.expect("boundary channel closed").release(),
+        }
+    };
+    drop(turn);
+    loop {
+        tokio::select! {
+            () = schedule.drained() => return result,
+            boundary = boundaries.recv() => boundary.expect("drain channel closed").release(),
+        }
+    }
+}
+
 async fn history() -> Result<(), Failure> {
     let store = Store::new(MemoryMedium::default());
     let blobs = store.account(b"simulation")?;
@@ -49,6 +74,12 @@ async fn history() -> Result<(), Failure> {
         let mut requests = Vec::new();
         for index in 0..known.len() {
             let (input, _) = &known[(index + usize::from(choices[2])) % known.len()];
+            requests.push((Digest::of(input), ByteRange::FULL, 64));
+            expected.push(Ok(input.clone()));
+            if (index + usize::from(choices[5])) % 7 == 0 {
+                requests.push((Digest::of(input), ByteRange::new(1, 1), 64));
+                expected.push(Err(ErrorCode::RangeNotSatisfiable));
+            }
             let start = usize::from(choices[3]) % input.len();
             let end = start + 1 + usize::from(choices[4]) % (input.len() - start);
             requests.push((
@@ -56,18 +87,17 @@ async fn history() -> Result<(), Failure> {
                 ByteRange::new(start as u64, end as u64),
                 64,
             ));
-            expected.push(input[start..end].to_vec());
+            expected.push(Ok(input[start..end].to_vec()));
         }
         let reads = blobs.get_batch(requests).await;
         assert_eq!(reads.len(), expected.len());
         for (read, bytes) in reads.into_iter().zip(expected) {
-            assert_eq!(read?.body().as_ref(), bytes);
+            assert_eq!(
+                read.map(|object| object.body().as_ref().to_vec())
+                    .map_err(|error| error.code),
+                bytes
+            );
         }
-        let invalid = blobs.get(digest, ByteRange::new(1, 1), 64).await;
-        assert_eq!(
-            invalid.err().ok_or("empty range accepted")?.code,
-            ErrorCode::RangeNotSatisfiable
-        );
     }
     Ok(())
 }
@@ -77,14 +107,7 @@ fn replay(seed: u64) -> Result<(), Failure> {
     seeded_runtime(seed)?.block_on(async {
         tokio::time::pause();
         let (schedule, mut boundaries) = Schedule::seeded(seed);
-        let turn = schedule.scope(history());
-        tokio::pin!(turn);
-        loop {
-            tokio::select! {
-                result = &mut turn => return result,
-                boundary = boundaries.recv() => boundary.ok_or("boundary channel closed")?.release(),
-            }
-        }
+        drive(&schedule, &mut boundaries, history()).await
     })
 }
 
