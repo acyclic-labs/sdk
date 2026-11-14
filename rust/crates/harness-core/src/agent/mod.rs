@@ -167,7 +167,7 @@ pub enum Error {
     Stream(acyclic_stream::StreamError),
     /// Actor runtime failure.
     #[error(transparent)]
-    Actor(Box<acyclic_actors::local::Error>),
+    Actor(Box<acyclic_actors::local::Cause>),
     /// Turn driver failure.
     #[error(transparent)]
     Turn(Box<crate::Error>),
