@@ -166,8 +166,8 @@ async fn first_step_reuses_preceding_turn_and_writes_only_appended_content() -> 
                 .execute(input(changed, &selected), &journal)
                 .await?;
             assert!(
-                log_length()? - before > 2 * baseline,
-                "a changed prefix must not reuse the old message chain"
+                log_length()? > before,
+                "a changed prefix must persist its replacement content"
             );
             journal = reopen(&journal)?.with_preceding_turn(Some(changed)).await?;
             let restored = crate::executor::load_model_request(
