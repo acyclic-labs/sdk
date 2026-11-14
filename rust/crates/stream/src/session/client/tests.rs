@@ -634,6 +634,12 @@ async fn blocked_registration_and_one_shot_reply_are_reported_waits() -> TestRes
             .count(),
         1
     );
+    assert!(
+        waits
+            .snapshot()
+            .iter()
+            .any(|wait| wait.primitive == "session-open" && wait.origin.is_some())
+    );
     drop(opening);
     assert!(waits.snapshot().is_empty());
     assert_eq!(client.pool.active.load(Ordering::Acquire), 0);

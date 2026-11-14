@@ -886,10 +886,9 @@ impl Client {
             #[cfg(not(feature = "serde"))]
             receipt.await
         };
-        let registered = operation
-            .clone()
-            .scope(super::runtime::waiting("session-open", id, registration))
-            .await;
+        let registration =
+            operation.in_scope(|| super::runtime::waiting("session-open", id, registration));
+        let registered = operation.clone().scope(registration).await;
         if let Err(error) = registered {
             cursor.observation.finish(Some(&error));
             return Err(error);
@@ -944,8 +943,10 @@ impl Cursor {
         match self.receiver.try_recv() {
             Ok(received) => Some(received),
             Err(_) => {
-                let work =
-                    super::runtime::waiting("session-delivery", self.id, self.receiver.recv());
+                let work = self.receiver.recv();
+                let work = self.observation.operation.in_scope(|| {
+                    super::runtime::waiting("session-delivery", self.id, work)
+                });
                 #[cfg(feature = "serde")]
                 {
                     let progress = &self.progress;
