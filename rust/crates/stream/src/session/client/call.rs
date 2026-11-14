@@ -9,6 +9,22 @@ enum ReplyFailure {
         expected: Option<usize>,
         received: usize,
     },
+    #[error("reply advertises {advertised} bytes beyond original bound {maximum}")]
+    Bound { maximum: usize, advertised: usize },
+    #[error("reply total changed from {expected} to {advertised} after {received} bytes")]
+    Changed {
+        expected: usize,
+        advertised: usize,
+        received: usize,
+    },
+    #[error("reply payload kind is invalid after {received} bytes")]
+    Payload { received: usize },
+    #[error("reply fragment of {fragment} bytes after {received} exceeds total {advertised}")]
+    Length {
+        advertised: usize,
+        received: usize,
+        fragment: usize,
+    },
     #[error("reply failed after {received} bytes; expected {expected:?}: {source}")]
     Source {
         expected: Option<usize>,
@@ -276,10 +292,26 @@ impl Client {
                     .map_err(|source| ReplyFailure::source(source, total, received))?
                     .ok_or_else(|| ReplyFailure::ended(total, received))?;
                 let length = wire_codec::session::actor_call_total(&data)?;
-                if maximum_reply_bytes.is_some_and(|maximum| length > maximum)
-                    || total.is_some_and(|old| old != length)
+                if let Some(maximum) = maximum_reply_bytes
+                    && length > maximum
                 {
-                    return Err(StreamError::InvalidResponse);
+                    return Err(
+                        StreamError::InvalidResponse.with_source(ReplyFailure::Bound {
+                            maximum,
+                            advertised: length,
+                        }),
+                    );
+                }
+                if let Some(expected) = total
+                    && expected != length
+                {
+                    return Err(
+                        StreamError::InvalidResponse.with_source(ReplyFailure::Changed {
+                            expected,
+                            advertised: length,
+                            received,
+                        }),
+                    );
                 }
                 let bytes = match data.item {
                     Some(
@@ -287,12 +319,21 @@ impl Client {
                         | wire::session_data::Item::ChildrenPage(bytes)
                         | wire::session_data::Item::Heads(bytes),
                     ) => bytes,
-                    _ => return Err(StreamError::InvalidResponse),
+                    _ => {
+                        return Err(StreamError::InvalidResponse
+                            .with_source(ReplyFailure::Payload { received }));
+                    }
                 };
                 let received = received
                     .checked_add(bytes.len())
                     .filter(|received| *received <= length)
-                    .ok_or(StreamError::InvalidResponse)?;
+                    .ok_or_else(|| {
+                        StreamError::InvalidResponse.with_source(ReplyFailure::Length {
+                            advertised: length,
+                            received,
+                            fragment: bytes.len(),
+                        })
+                    })?;
                 let chunk = crate::body::BodyChunk::new(bytes, credit);
                 if received == length && cursor.input.is_some() {
                     // A complete reply retires only its half. The same input

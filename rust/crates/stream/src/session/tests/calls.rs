@@ -832,10 +832,15 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
         .actor_call_chunks(&invocation, 0, Some(body.len() - 1))
         .await?;
     let mut refused = core::pin::pin!(refused);
-    assert!(matches!(
-        refused.next().await,
-        Some(Err(StreamError::InvalidResponse))
-    ));
+    let error = match refused.next().await {
+        Some(Err(error)) => error,
+        _ => return Err("oversized original reply was accepted".into()),
+    };
+    assert_eq!(error.category(), StreamError::InvalidResponse);
+    assert!(
+        std::error::Error::source(&error).is_some(),
+        "original reply bound cause was lost"
+    );
 
     let stopped = client
         .actor_call_chunks(&invocation, 0, Some(body.len()))
