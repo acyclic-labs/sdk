@@ -236,94 +236,104 @@ impl ToolServer {
                 }
                 None => return Ok(()),
             };
-            let method = message.get("method").and_then(Value::as_str);
-            if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0") || method.is_none() {
-                let id = message.get("id").unwrap_or(&Value::Null);
-                queue(backlog, &failure(id, -32600, "Invalid Request"))?;
-                continue;
-            }
-            let params = message.get("params").unwrap_or(&Value::Null);
-            let Some(id) = message.get("id") else {
-                if method == Some("notifications/cancelled")
-                    && let Some(request) = params.get("requestId")
-                {
-                    for call in parked.extract_if(.., |call| &call.id == request) {
-                        provider.cancel(&call.key);
-                        queue(backlog, &failure(&call.id, -32800, "Request cancelled"))?;
-                    }
+            self.dispatch(provider, &message, &mut parked, &mut initialized, backlog)?;
+        }
+    }
+    fn dispatch<P: ToolProvider>(
+        &self,
+        provider: &mut P,
+        message: &Value,
+        parked: &mut Vec<Parked>,
+        initialized: &mut bool,
+        backlog: &mut VecDeque<Vec<u8>>,
+    ) -> Result<(), ServeError<P::Error>> {
+        let method = message.get("method").and_then(Value::as_str);
+        if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0") || method.is_none() {
+            let id = message.get("id").unwrap_or(&Value::Null);
+            queue(backlog, &failure(id, -32600, "Invalid Request"))?;
+            return Ok(());
+        }
+        let params = message.get("params").unwrap_or(&Value::Null);
+        let Some(id) = message.get("id") else {
+            if method == Some("notifications/cancelled")
+                && let Some(request) = params.get("requestId")
+            {
+                for call in parked.extract_if(.., |call| &call.id == request) {
+                    provider.cancel(&call.key);
+                    queue(backlog, &failure(&call.id, -32800, "Request cancelled"))?;
                 }
-                continue;
-            };
-            if !id.is_string() && !id.is_number() {
-                queue(
-                    backlog,
-                    &failure(&Value::Null, -32600, "Invalid request ID"),
-                )?;
-                continue;
             }
-            let reply = match method {
-                Some("initialize") => match params.get("protocolVersion").and_then(Value::as_str) {
-                    None => failure(id, -32602, "Missing protocol version"),
-                    Some(requested) => {
-                        initialized = true;
-                        let version = SUPPORTED
-                            .into_iter()
-                            .find(|supported| *supported == requested)
-                            .unwrap_or(PROTOCOL_VERSION);
-                        json!({"jsonrpc":"2.0","id":id,"result":{
+            return Ok(());
+        };
+        if !id.is_string() && !id.is_number() {
+            queue(
+                backlog,
+                &failure(&Value::Null, -32600, "Invalid request ID"),
+            )?;
+            return Ok(());
+        }
+        let reply = match method {
+            Some("initialize") => match params.get("protocolVersion").and_then(Value::as_str) {
+                None => failure(id, -32602, "Missing protocol version"),
+                Some(requested) => {
+                    *initialized = true;
+                    let version = SUPPORTED
+                        .into_iter()
+                        .find(|supported| *supported == requested)
+                        .unwrap_or(PROTOCOL_VERSION);
+                    json!({"jsonrpc":"2.0","id":id,"result":{
                             "protocolVersion":version,
                             "capabilities":{"tools":{}},
                             "serverInfo":{"name":self.name,"version":self.version}}})
-                    }
-                },
-                Some("ping") => json!({"jsonrpc":"2.0","id":id,"result":{}}),
-                _ if !initialized => failure(id, -32000, "Initialize first"),
-                Some("tools/list") => json!({"jsonrpc":"2.0","id":id,"result":provider.tools()}),
-                Some("tools/call") => {
-                    let name = params
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default();
-                    let tools = provider.tools();
-                    let listed =
-                        tools
-                            .get("tools")
-                            .and_then(Value::as_array)
-                            .is_some_and(|tools| {
-                                tools.iter().any(|tool| {
-                                    tool.get("name").and_then(Value::as_str) == Some(name)
-                                })
-                            });
-                    let arguments = params.get("arguments").unwrap_or(&Value::Null);
-                    match listed.then(|| provider.call(name, arguments)) {
-                        None => failure(id, -32602, "Unknown tool"),
-                        Some(Ok(ToolCall::Answer(value))) => result(id, Ok(value)),
-                        Some(Ok(ToolCall::Failed(value))) => result(id, Err(value)),
-                        Some(Ok(ToolCall::Invalid(message))) => failure(id, -32602, &message),
-                        Some(Ok(ToolCall::Busy(message))) => failure(id, -32000, &message),
-                        Some(Ok(ToolCall::Park(key))) if parked.len() >= self.parked => {
-                            provider.cancel(&key);
-                            result(id, Err(json!("parked call bound reached")))
-                        }
-                        Some(Ok(ToolCall::Park(key))) => {
-                            parked.push(Parked {
-                                id: id.clone(),
-                                key,
-                                token: params
-                                    .pointer("/_meta/progressToken")
-                                    .filter(|token| token.is_string() || token.is_number())
-                                    .cloned(),
-                                progress: 0,
-                            });
-                            continue;
-                        }
-                        Some(Err(error)) => result(id, Err(json!(error.to_string()))),
-                    }
                 }
-                _ => failure(id, -32601, "Method not found"),
-            };
-            queue(backlog, &reply)?;
-        }
+            },
+            Some("ping") => json!({"jsonrpc":"2.0","id":id,"result":{}}),
+            _ if !*initialized => failure(id, -32000, "Initialize first"),
+            Some("tools/list") => json!({"jsonrpc":"2.0","id":id,"result":provider.tools()}),
+            Some("tools/call") => {
+                let name = params
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let tools = provider.tools();
+                let listed = tools
+                    .get("tools")
+                    .and_then(Value::as_array)
+                    .is_some_and(|tools| {
+                        tools
+                            .iter()
+                            .any(|tool| tool.get("name").and_then(Value::as_str) == Some(name))
+                    });
+                let arguments = params.get("arguments").unwrap_or(&Value::Null);
+                match listed.then(|| provider.call(name, arguments)) {
+                    None => failure(id, -32602, "Unknown tool"),
+                    Some(Ok(ToolCall::Answer(value))) => result(id, Ok(value)),
+                    Some(Ok(ToolCall::Failed(value))) => result(id, Err(value)),
+                    Some(Ok(ToolCall::Invalid(message))) => failure(id, -32602, &message),
+                    Some(Ok(ToolCall::Busy(message))) => failure(id, -32000, &message),
+                    Some(Ok(ToolCall::Park(key))) if parked.len() >= self.parked => {
+                        provider.cancel(&key);
+                        result(id, Err(json!("parked call bound reached")))
+                    }
+                    Some(Ok(ToolCall::Park(key))) => {
+                        parked.push(Parked {
+                            id: id.clone(),
+                            key,
+                            token: params
+                                .pointer("/_meta/progressToken")
+                                .filter(|token| token.is_string() || token.is_number())
+                                .cloned(),
+                            progress: 0,
+                        });
+                        return Ok(());
+                    }
+                    Some(Err(error)) => result(id, Err(json!(error.to_string()))),
+                }
+            }
+            _ => failure(id, -32601, "Method not found"),
+        };
+        queue(backlog, &reply)?;
+        Ok(())
     }
 }
 
