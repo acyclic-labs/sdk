@@ -22,15 +22,19 @@ macro_rules! cargo_binary {
             .or_else(|| ::std::env::var_os(concat!("NEXTEST_BIN_EXE_", $name).replace('-', "_")));
         let path = selected.map_or_else(
             || {
-                ::std::path::PathBuf::from(option_env!(concat!("CARGO_BIN_EXE_", $name)).expect(
-                    concat!("test binary was not supplied by Cargo or nextest: ", $name),
-                ))
+                option_env!(concat!("CARGO_BIN_EXE_", $name))
+                    .map_or_else(::std::path::PathBuf::new, ::std::path::PathBuf::from)
             },
             ::std::path::PathBuf::from,
         );
+        // An executable missing from Cargo and nextest leaves an empty path.
         assert!(
             path.is_absolute(),
-            "test binary path must be absolute: {}",
+            concat!(
+                "test binary ",
+                $name,
+                " must be supplied by Cargo or nextest as an absolute path: {}"
+            ),
             path.display()
         );
         path

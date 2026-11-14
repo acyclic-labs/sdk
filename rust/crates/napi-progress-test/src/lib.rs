@@ -16,19 +16,24 @@ fn local_failure(error: impl std::fmt::Display) -> Error {
 }
 
 // This control calls the original Node reference API to reach its disposal path.
-#[allow(unsafe_code)]
+#[allow(
+    unsafe_code,
+    reason = "the control drives the raw Node-API disposal path"
+)]
 fn abort_queued(raw: napi::sys::napi_threadsafe_function, abort: bool) -> Result<()> {
     if !abort {
         return Ok(());
     }
-    // The pending future retains the original handle throughout this call.
-    // Acquire and release one test-owned reference to request queue disposal.
+    // SAFETY: the pending future retains the original handle throughout this
+    // call, so acquiring one test-owned reference is valid.
     let acquired = unsafe { napi::sys::napi_acquire_threadsafe_function(raw) };
     if acquired != napi::sys::Status::napi_ok {
         return Err(local_failure(format!(
             "callback acquire failed: {acquired}"
         )));
     }
+    // SAFETY: this releases exactly the reference acquired above, requesting
+    // queue disposal while the original handle is still retained.
     let released = unsafe {
         napi::sys::napi_release_threadsafe_function(
             raw,
