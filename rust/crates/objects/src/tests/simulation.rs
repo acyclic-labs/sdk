@@ -65,6 +65,7 @@ async fn history() -> Result<(), Failure> {
 }
 
 fn replay(seed: u64) -> Result<(), Failure> {
+    eprintln!("seed={seed}");
     seeded_runtime(seed)?.block_on(async {
         let (schedule, mut boundaries) = Schedule::seeded(seed);
         let turn = schedule.scope(history());

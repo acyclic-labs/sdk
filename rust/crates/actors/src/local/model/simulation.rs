@@ -16,7 +16,8 @@ fn replay(seed: u64) -> Result<(), Failure> {
                     _ => Fault::LoseAck,
                 })
                 .collect();
-            run(Shape::Atomic, plan).await
+            run(Shape::Atomic, plan).await?;
+            composition::activation_extensions(choices.into_iter().map(|choice| 3 + choice % 3)).await
         });
         tokio::pin!(turn);
         loop {
@@ -31,6 +32,7 @@ fn replay(seed: u64) -> Result<(), Failure> {
 #[test]
 fn seeded_delivery_alarm_and_composed_effects() -> Result<(), Failure> {
     for seed in [0, 1, 7, 42] {
+        eprintln!("seed={seed}");
         replay(seed).map_err(|error| format!("seed={seed}: {error}"))?;
     }
     Ok(())
