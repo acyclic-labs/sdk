@@ -207,6 +207,7 @@ impl Error {
             | Self::PreconditionUnchanged
             | Self::InvocationFailed { .. }
             | Self::Deleted
+            | Self::AdmissionClosed(_)
             | Self::Invalid(_) => false,
         }
     }
