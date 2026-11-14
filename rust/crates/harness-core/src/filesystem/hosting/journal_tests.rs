@@ -2,6 +2,7 @@
 //! timing hook: the next input settles before the original query resumes.
 use super::*;
 use crate::{
+    InteractionId,
     agent::{AgentId, InboxRecord, Phase},
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
     filesystem::{PRIVATE_VOLUME, TurnAuthority},
