@@ -7,7 +7,8 @@ import { checkGenerated, projectGenerated } from "./generated-bindings.mjs";
 
 // Rust-owned contracts mirrored into TypeScript. Each module lists the Rust
 // targets it reads as [package, kind, name] and renders their stdout into
-// repository-relative files.
+// repository-relative files. A module that compiles crates itself lists them
+// as `crates`: a memoized generation keys on their sources.
 const availableModules = [
   "generate-stream-authorization.mjs",
   "generate-objects-authorization.mjs",

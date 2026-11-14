@@ -26,23 +26,27 @@ const generatorPackages = ["acyclic-auth", "sdk-proto-codegen", "acyclic-actors"
 const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
 const git = (root, args) => execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: Infinity }).split("\0").filter(Boolean);
 
-// Each input file's digest without reading clean files: the index already holds a tracked file's blob id. Only files
-// whose working copy differs from the index, and untracked files, are read and hashed.
-function digests(root, paths) {
+// Each present input file's Git blob id, the one content identity whatever the file's Git state: a commit, a stage or a
+// deletion that leaves the bytes as they are leaves the key as it is. The index already holds a clean file's id; only
+// files whose working copy differs from the index, and untracked files, are hashed, through Git's own filters.
+export function digests(root, paths) {
   const files = new Map();
   for (const line of git(root, ["ls-files", "-s", "-z", "--", ...paths])) {
     const tab = line.indexOf("\t");
-    files.set(line.slice(tab + 1), `blob:${line.slice(0, tab).split(" ")[1]}`);
+    files.set(line.slice(tab + 1), line.slice(0, tab).split(" ")[1]);
   }
+  const changed = [];
   for (const record of git(root, ["status", "--porcelain=v2", "-z", "--untracked-files=all", "--no-renames", "--", ...paths])) {
     // `1 XY sub mH mI mW hH hI path`, `u XY sub m1 m2 m3 mW h1 h2 h3 path`, `? path`.
     const fields = record.startsWith("1 ") ? 8 : record.startsWith("u ") ? 10 : record.startsWith("? ") ? 1 : -1;
     if (fields < 0) continue;
     const path = record.split(" ").slice(fields).join(" ");
-    let content;
-    try { content = `file:${sha256(readFileSync(join(root, path)))}`; }
-    catch (error) { if (error.code !== "ENOENT") throw error; content = "deleted"; }
-    files.set(path, content);
+    files.delete(path);
+    if (lstatSync(join(root, path), { throwIfNoEntry: false })) changed.push(path);
+  }
+  if (changed.length > 0) {
+    const ids = execFileSync("git", ["hash-object", "--stdin-paths"], { cwd: root, input: changed.join("\n"), encoding: "utf8", maxBuffer: Infinity }).split("\n");
+    changed.forEach((path, index) => files.set(path, ids[index]));
   }
   return files;
 }
@@ -56,7 +60,7 @@ async function rustCrates(root, inputs) {
   try { return JSON.parse(readFileSync(cache, "utf8")); }
   catch (error) { if (error.code !== "ENOENT") throw error; }
   const contracts = await loadContractModules(contractModules());
-  const roots = new Set([...generatorPackages, ...contracts.flatMap(module => (module.rust ?? []).map(([name]) => name))]);
+  const roots = new Set([...generatorPackages, ...contracts.flatMap(module => [...(module.rust ?? []).map(([name]) => name), ...module.crates ?? []])]);
   // Declared path dependencies, optional ones included, need no registry resolution; vendored crates are inputs whole.
   const metadata = JSON.parse(execFileSync("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"],
     { cwd: root, encoding: "utf8", maxBuffer: Infinity, stdio: ["ignore", "pipe", "inherit"] }));

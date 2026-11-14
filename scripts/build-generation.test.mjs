@@ -221,3 +221,36 @@ test("a memoized generation restores exactly what its run projected and pruned, 
     rmSync(store, { recursive: true, force: true });
   }
 });
+
+test("a generation key covers every crate a generator compiles and names content alone, whatever its Git state", async () => {
+  const { digests, generationInputs } = await import("./generation-cache.mjs");
+  const store = mkdtempSync(join(tmpdir(), "sdk-memo-store-"));
+  const repository = mkdtempSync(join(tmpdir(), "sdk-memo-digests-"));
+  const previous = process.env.SDK_GENERATION_CACHE;
+  process.env.SDK_GENERATION_CACHE = store;
+  try {
+    // N-API declarations compile crates no contract target depends on; their sources are inputs all the same.
+    const inputs = new Set(await generationInputs(process.cwd()));
+    for (const crate of ["actors-napi", "stream-napi", "filesystem-napi", "filesystem"]) {
+      assert.ok(inputs.has(`rust/crates/${crate}/src/lib.rs`), `${crate} sources are generation inputs`);
+    }
+    const git = (...args) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args], { cwd: repository });
+    git("init", "-q");
+    writeFileSync(join(repository, "kept"), "kept");
+    writeFileSync(join(repository, "edited"), "before");
+    git("add", "."); git("commit", "-q", "-m", "base");
+    writeFileSync(join(repository, "edited"), "after");
+    writeFileSync(join(repository, "added"), "added");
+    rmSync(join(repository, "kept"));
+    const working = digests(repository, ["."]);
+    git("add", "-A");
+    assert.deepEqual(digests(repository, ["."]), working, "staging keeps every identity");
+    git("commit", "-q", "-m", "next");
+    assert.deepEqual(digests(repository, ["."]), working, "committing keeps every identity");
+    assert.deepEqual([...working.keys()].sort(), ["added", "edited"], "a deleted file is absent, as after its deletion commits");
+  } finally {
+    if (previous === undefined) delete process.env.SDK_GENERATION_CACHE; else process.env.SDK_GENERATION_CACHE = previous;
+    rmSync(store, { recursive: true, force: true });
+    rmSync(repository, { recursive: true, force: true });
+  }
+});
