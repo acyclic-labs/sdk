@@ -30,6 +30,10 @@ clock, pause or resume admission, and discard/recreate the Runtime with new
 placement commands. Every step joins the finite delivery operation and checks
 all three persisted actors and their outputs. Restart currently retains the
 provider; physical journal reopen and crash-during-delivery are still required.
+Each seed also closes real admission credit while handlers hold all admitted
+slots. Already accepted deliveries must finish, the queued deliveries must
+return the typed permanent refusal without consuming input, and a fresh Runtime
+must recover the refused inputs without duplicating accepted outputs.
 
 ## Objects
 
