@@ -924,7 +924,7 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
             Ok::<_, Box<dyn std::error::Error>>(())
         };
         tokio::select! {
-            result = bound.agents().run(|actor, error| { if completion != 3 { panic!("quiet actor {actor:?}: {error}"); } }) => match result {
+            result = bound.agents().run(|actor, error| panic!("quiet actor {actor:?}: {error}")) => match result {
                 Err(error) => return Err(error.into()), Ok(never) => match never {},
             },
             result = exercise => result?,
