@@ -336,8 +336,12 @@ fn incomplete_exchange_refusal_precedes_output_copy_and_releases_graph_custody()
                     work,
                 )
             });
-            assert!(matches!(result, Err(crate::Error::Invalid(reason))
-                if reason == "compaction boundary splits a tool exchange"));
+            let error = result.expect_err("an incomplete exchange must be refused");
+            assert_eq!(error.code(), crate::wire::ErrorCode::Invalid);
+            assert_eq!(
+                error.to_string(),
+                "compaction boundary splits a tool exchange"
+            );
             assert_eq!(io.owned_bytes()?, 0);
         }
     }
