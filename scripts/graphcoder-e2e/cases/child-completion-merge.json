@@ -4,10 +4,13 @@
     "kind": "git",
     "files": {
       "root.txt": "ROOT_KEPT\n",
-      ".fixtures/fs.exe": { "binary_env": "E2E_FILESYSTEM_BINARY" },
+      ".fixtures/fs.exe": {
+        "binary_env": "E2E_FILESYSTEM_BINARY"
+      },
       ".fixtures/write-child.json": "[{\"op\":\"write\",\"path\":\"child.txt\",\"text\":\"CHILD_COMPLETION_CONTENT\\n\"}]",
-      ".fixtures/read-parent.json": "[{\"op\":\"read\",\"path\":\"child.txt\"},{\"op\":\"read\",\"path\":\"root.txt\"}]",
-      ".acyclic-sdk/control": "SDK_STATE\n"
+      ".fixtures/read-parent.json": "[{\"op\":\"read\",\"path\":\"child.txt\"},{\"op\":\"read\",\"path\":\"second.txt\"},{\"op\":\"read\",\"path\":\"root.txt\"}]",
+      ".acyclic-sdk/control": "SDK_STATE\n",
+      ".fixtures/write-second.json": "[{\"op\":\"write\",\"path\":\"second.txt\",\"text\":\"SECOND_COMPLETION_CONTENT\\n\"}]"
     }
   },
   "model": {
@@ -26,6 +29,16 @@
               "role": "worker",
               "model": "e2e/tiny"
             }
+          },
+          {
+            "id": "spawn-second",
+            "name": "spawn",
+            "arguments": {
+              "name": "second",
+              "task": "COMPLETION_SECOND",
+              "role": "worker",
+              "model": "e2e/tiny"
+            }
           }
         ]
       },
@@ -40,7 +53,8 @@
             "name": "wait",
             "arguments": {
               "agents": [
-                "worker"
+                "worker",
+                "second"
               ]
             }
           }
@@ -71,6 +85,29 @@
       },
       {
         "when": {
+          "user": "COMPLETION_SECOND"
+        },
+        "tools": [
+          {
+            "id": "write-second",
+            "name": "code",
+            "arguments": {
+              "code": "const result = await tools.shell({command:['./.fixtures/fs.exe','.fixtures/write-second.json']}); if (!result.success || result.exit_code !== 0) throw Error('child write failed: '+JSON.stringify(result)); export default {written:'CHILD_WRITE_OK'}"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "COMPLETION_SECOND",
+          "tool_result": "CHILD_WRITE_OK"
+        },
+        "text": [
+          "CHILD_COMPLETED"
+        ]
+      },
+      {
+        "when": {
           "user": "COMPLETION_PARENT",
           "tool_result": "CHILD_COMPLETED"
         },
@@ -79,7 +116,7 @@
             "id": "verify-parent",
             "name": "code",
             "arguments": {
-              "code": "const result = await tools.shell({command:['./.fixtures/fs.exe','.fixtures/read-parent.json']}); if (!result.success || result.exit_code !== 0) throw Error('parent read failed: '+JSON.stringify(result)); const newline=String.fromCharCode(10); const [child,root] = result.stdout.trimEnd().split(newline).map(JSON.parse); if (child !== 'CHILD_COMPLETION_CONTENT'+newline || root !== 'ROOT_KEPT'+newline) throw Error('child completion did not publish into parent: '+JSON.stringify(result)); export default {verified:'PARENT_HAS_CHILD_WORK'}"
+              "code": "const result = await tools.shell({command:['./.fixtures/fs.exe','.fixtures/read-parent.json']}); if (!result.success || result.exit_code !== 0) throw Error('parent read failed: '+JSON.stringify(result)); const newline=String.fromCharCode(10); const [child,second,root] = result.stdout.trimEnd().split(newline).map(JSON.parse); if (child !== 'CHILD_COMPLETION_CONTENT'+newline || second !== 'SECOND_COMPLETION_CONTENT'+newline || root !== 'ROOT_KEPT'+newline) throw Error('child completion did not publish into parent: '+JSON.stringify(result)); export default {verified:'PARENT_HAS_CHILD_WORK'}"
             }
           }
         ]
@@ -96,7 +133,9 @@
     ]
   },
   "inputs": [
-    { "mode": "service" },
+    {
+      "mode": "service"
+    },
     {
       "mode": "headless",
       "text": "COMPLETION_PARENT",
@@ -104,11 +143,26 @@
     }
   ],
   "assert": {
-    "requests": 6,
+    "requests": 8,
     "files": {
       "child.txt": "CHILD_COMPLETION_CONTENT\n",
-      "root.txt": "ROOT_KEPT\n"
-    }
+      "root.txt": "ROOT_KEPT\n",
+      "second.txt": "SECOND_COMPLETION_CONTENT\n"
+    },
+    "tool_results": [
+      {
+        "settled": [
+          {
+            "name": "worker",
+            "answer": "CHILD_COMPLETED"
+          },
+          {
+            "name": "second",
+            "answer": "CHILD_COMPLETED"
+          }
+        ]
+      }
+    ]
   },
   "physical": true,
   "adapter": "responses"
