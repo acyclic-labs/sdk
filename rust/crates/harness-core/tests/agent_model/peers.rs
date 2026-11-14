@@ -145,6 +145,94 @@ async fn membership_epochs_close_atomically_and_cannot_be_revived() -> Result {
 }
 
 #[tokio::test]
+async fn revoked_remote_send_does_not_stall_its_source_publication() -> Result {
+    use acyclic_actors::{
+        addressing::ActorReference,
+        route::{NodeId, Paths},
+    };
+    for delivery in [MessageDelivery::Steer, MessageDelivery::FollowUp] {
+        let provider = MemoryStream::default();
+        let sender = create(&provider, id(92)).await?;
+        let recipient = create(&provider, id(93)).await?;
+        let admission = session_peer_admission(
+            &provider,
+            &Capabilities::new([SEND_PEER]),
+            &sender,
+            &recipient,
+        )
+        .await?
+        .ok_or("admission missing")?;
+        let routing = Routing {
+            paths: Paths::new(StreamPath::new("routing")?),
+            node: NodeId::new(b"source")?,
+        };
+        let within = ActorReference::new(b"account", b"agents", sender.id().as_str().as_bytes())?;
+        let state = AgentState::adopted(sender.clone(), &adopted(sender.id()))?;
+        let step = Step {
+            outs: effect_outs(
+                &state,
+                vec![TurnEffect::Send {
+                    peer: Some(admission.clone()),
+                    delivery,
+                    to: recipient.clone(),
+                    id: intent("held-send"),
+                    re: None,
+                    body: Box::new(super::driver::file("message.md")?),
+                    attachments: None,
+                }],
+            ),
+            state,
+            status: None,
+            alarm: Alarm::Clear,
+        };
+        let request = routing.lower(
+            &within,
+            &BTreeSet::from([recipient]),
+            &step,
+            1,
+            intent_key("held-publication", &[])?,
+        )?;
+        submit(
+            &provider,
+            set_peer_membership(&provider, &sender, &user(), &intent("opt-out"), false).await?,
+        )
+        .await?;
+        // Negative control: a source-only hard revocation fence prevents this
+        // already recorded turn from ever completing, even after rejoin.
+        let mut stalled = request.clone();
+        stalled.effects[0]
+            .conditions
+            .extend(admission.sender.conditions(&sender)?);
+        assert!(matches!(
+            provider.commit(stalled).await?,
+            CommitOutcome::Conflict(_)
+        ));
+        assert!(matches!(
+            provider.commit(request.clone()).await?,
+            CommitOutcome::Committed(_)
+        ));
+        let path = routing.paths.outbox(&routing.node)?;
+        assert_eq!(provider.tail(path.clone()).await?, 1);
+        let record = provider
+            .record_at(path.clone(), 0)
+            .await?
+            .ok_or("outbox missing")?;
+        let envelope = acyclic_actors::route::Publication::decode(&record.value)?.delivery()?;
+        assert_eq!(
+            PeerRoute::parse(&envelope)?.admission(),
+            &admission,
+            "the account must receive the original interval, not a new grant"
+        );
+        assert!(matches!(
+            provider.commit(request).await?,
+            CommitOutcome::Committed(_)
+        ));
+        assert_eq!(provider.tail(path).await?, 1);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn absent_recipient_refusal_and_notice_share_the_original_commit() -> Result {
     use acyclic_actors::{
         addressing::ActorReference,
