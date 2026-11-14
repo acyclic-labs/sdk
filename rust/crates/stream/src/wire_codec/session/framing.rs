@@ -1,6 +1,26 @@
 //! Protobuf message boundaries over a byte stream with arbitrary chunking.
 use super::{StreamError, decode_frame, wire};
 
+#[derive(Debug, thiserror::Error)]
+enum FramingFailure {
+    #[error("session length prefix exceeds {bytes} bytes")]
+    Prefix { bytes: usize },
+    #[error("unsupported session gRPC flag {flag}")]
+    Flag { flag: u8 },
+    #[error("noncanonical session length {length} encoded in {bytes} bytes")]
+    Noncanonical { length: usize, bytes: usize },
+    #[error("session frame length {length} exceeds maximum {maximum}")]
+    Length { length: usize, maximum: usize },
+    #[error(
+        "session frame ended with {prefix_bytes} prefix bytes, advertised {length:?}, received {received}"
+    )]
+    Incomplete {
+        prefix_bytes: usize,
+        length: Option<usize>,
+        received: usize,
+    },
+}
+
 /// Incremental length-delimited session frames. Retains only an incomplete
 /// frame; complete contiguous frames decode directly from their input chunk.
 pub struct FrameDecoder<T = wire::SessionFrame> {
@@ -56,17 +76,24 @@ impl<T> FrameDecoder<T> {
             };
             *input = rest;
             if self.prefix_len == self.prefix.len() {
-                return Err(StreamError::InvalidResponse);
+                return Err(
+                    StreamError::InvalidResponse.with_source(FramingFailure::Prefix {
+                        bytes: self.prefix_len,
+                    }),
+                );
             }
             self.prefix[self.prefix_len] = byte;
             self.prefix_len += 1;
             let length = if self.grpc {
                 if self.prefix[0] != 0 {
-                    return Err(if self.prefix[0] == 1 {
+                    return Err((if self.prefix[0] == 1 {
                         StreamError::Unsupported
                     } else {
                         StreamError::InvalidResponse
-                    });
+                    })
+                    .with_source(FramingFailure::Flag {
+                        flag: self.prefix[0],
+                    }));
                 }
                 if self.prefix_len != 5 {
                     continue;
@@ -74,28 +101,42 @@ impl<T> FrameDecoder<T> {
                 u32::from_be_bytes(
                     self.prefix[1..5]
                         .try_into()
-                        .map_err(|_| StreamError::InvalidResponse)?,
+                        .map_err(|source| StreamError::InvalidResponse.with_source(source))?,
                 ) as usize
             } else {
                 if byte & 0x80 != 0 {
                     if self.prefix_len == self.prefix.len() {
-                        return Err(StreamError::InvalidResponse);
+                        return Err(StreamError::InvalidResponse.with_source(
+                            FramingFailure::Prefix {
+                                bytes: self.prefix_len,
+                            },
+                        ));
                     }
                     continue;
                 }
                 let length = prost::decode_length_delimiter(&self.prefix[..self.prefix_len])
-                    .map_err(|_| StreamError::InvalidResponse)?;
+                    .map_err(|source| StreamError::InvalidResponse.with_source(source))?;
                 if prost::length_delimiter_len(length) != self.prefix_len {
-                    return Err(StreamError::InvalidResponse);
+                    return Err(StreamError::InvalidResponse.with_source(
+                        FramingFailure::Noncanonical {
+                            length,
+                            bytes: self.prefix_len,
+                        },
+                    ));
                 }
                 length
             };
             if length > self.maximum {
-                return Err(StreamError::LimitExceeded);
+                return Err(
+                    StreamError::LimitExceeded.with_source(FramingFailure::Length {
+                        length,
+                        maximum: self.maximum,
+                    }),
+                );
             }
             self.length = Some(length);
         }
-        let length = self.length.ok_or(StreamError::InvalidResponse)?;
+        let length = self.length.ok_or_else(|| self.incomplete())?;
         let frame = if self.body.is_empty() && input.len() >= length {
             let (frame, rest) = input.split_at(length);
             *input = rest;
@@ -123,8 +164,16 @@ impl<T> FrameDecoder<T> {
         if self.prefix_len == 0 && self.length.is_none() {
             Ok(())
         } else {
-            Err(StreamError::InvalidResponse)
+            Err(self.incomplete())
         }
+    }
+
+    fn incomplete(&self) -> StreamError {
+        StreamError::InvalidResponse.with_source(FramingFailure::Incomplete {
+            prefix_bytes: self.prefix_len,
+            length: self.length,
+            received: self.body.len(),
+        })
     }
 }
 
@@ -133,17 +182,22 @@ pub fn encode_grpc_frame(frame: &wire::SessionFrame) -> Result<Vec<u8>, StreamEr
     use prost::Message as _;
     let length = frame.encoded_len();
     if length > crate::MAX_COMMAND_BYTES {
-        return Err(StreamError::LimitExceeded);
+        return Err(
+            StreamError::LimitExceeded.with_source(FramingFailure::Length {
+                length,
+                maximum: crate::MAX_COMMAND_BYTES,
+            }),
+        );
     }
     let mut bytes = Vec::with_capacity(5 + length);
     bytes.push(0);
     bytes.extend_from_slice(
         &u32::try_from(length)
-            .map_err(|_| StreamError::LimitExceeded)?
+            .map_err(|source| StreamError::LimitExceeded.with_source(source))?
             .to_be_bytes(),
     );
     frame
         .encode(&mut bytes)
-        .map_err(|_| StreamError::InvalidResponse)?;
+        .map_err(|source| StreamError::InvalidResponse.with_source(source))?;
     Ok(bytes)
 }

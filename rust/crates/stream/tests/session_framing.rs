@@ -85,20 +85,20 @@ async fn producer_loss_and_malformed_lengths_never_accept_a_partial_frame()
         let mut decoder = FrameDecoder::default();
         let mut partial = &bytes[..end];
         assert_eq!(decoder.read(&mut partial)?, None);
-        assert_eq!(decoder.finish(), Err(StreamError::InvalidResponse));
+        assert_failure(decoder.finish(), StreamError::InvalidResponse);
     }
     for malformed in [vec![0x80; 10], vec![0x80, 0]] {
-        assert_eq!(
+        assert_failure(
             FrameDecoder::default().read(&mut malformed.as_slice()),
-            Err(StreamError::InvalidResponse)
+            StreamError::InvalidResponse,
         );
     }
     let mut excessive = Vec::new();
     prost::encode_length_delimiter(acyclic_stream::MAX_COMMAND_BYTES + 1, &mut excessive)
         .map_err(|_| StreamError::InvalidArgument)?;
-    assert_eq!(
+    assert_failure(
         FrameDecoder::default().read(&mut excessive.as_slice()),
-        Err(StreamError::LimitExceeded)
+        StreamError::LimitExceeded,
     );
     Ok(())
 }
@@ -128,20 +128,32 @@ async fn grpc_provider_frames_survive_transport_chunks_and_reject_lost_producers
     for end in [1, 4, 5, 4096, first.len() - 1] {
         let mut decoder = FrameDecoder::grpc();
         assert_eq!(decoder.read(&mut &first[..end])?, None);
-        assert_eq!(decoder.finish(), Err(StreamError::InvalidResponse));
+        assert_failure(decoder.finish(), StreamError::InvalidResponse);
     }
     for (flag, error) in [
         (1, StreamError::Unsupported),
         (2, StreamError::InvalidResponse),
         (128, StreamError::InvalidResponse),
     ] {
-        assert_eq!(FrameDecoder::grpc().read(&mut &[flag][..]), Err(error));
+        assert_failure(FrameDecoder::grpc().read(&mut &[flag][..]), error);
     }
     let mut excessive = vec![0];
     excessive.extend_from_slice(&((acyclic_stream::MAX_COMMAND_BYTES + 1) as u32).to_be_bytes());
-    assert_eq!(
+    assert_failure(
         FrameDecoder::grpc().read(&mut excessive.as_slice()),
-        Err(StreamError::LimitExceeded)
+        StreamError::LimitExceeded,
     );
     Ok(())
+}
+
+fn assert_failure<T>(result: Result<T, StreamError>, category: StreamError) {
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => panic!("invalid original session frame was accepted"),
+    };
+    assert_eq!(error.category(), category);
+    assert!(
+        std::error::Error::source(&error).is_some(),
+        "session framing lost its original failure cause"
+    );
 }
