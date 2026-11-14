@@ -1,5 +1,6 @@
 //! Stateful production-volume simulation. See docs/filesystem-simulation.md.
 use super::*;
+use acyclic_native_runtime::testing::sweep::{minimize, seeds, sweep};
 use acyclic_native_runtime::testing::{Schedule, fill_seeded, seeded_runtime};
 use std::collections::BTreeMap;
 
@@ -217,7 +218,7 @@ async fn scenario(actions: &[Action]) -> Result<(), Box<dyn Error>> {
         }
         check(&parent, &expected).await?;
     }
-    lazy::scenario(actions.len()).await?;
+    lazy::scenario(actions).await?;
     Ok(())
 }
 
@@ -240,12 +241,28 @@ fn run(seed: u64, actions: &[Action]) -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn seeded_volume_history() -> Result<(), Box<dyn Error>> {
-    let first = std::env::var("ACYCLIC_FS_SEED").map_or(Ok(0), |seed| seed.parse::<u64>())?;
-    let count = std::env::var("ACYCLIC_FS_SEEDS").map_or(Ok(4), |count| count.parse::<u64>())?;
-    for offset in 0..count {
-        let seed = first.wrapping_add(offset);
-        let actions = history(seed, 16)?;
-        run(seed, &actions).unwrap_or_else(|error| panic!("volume seed={seed}: {error}"));
-    }
+    let swept = sweep("filesystem volume history", seeds(0..4), |seed| {
+        let actions = history(seed, 16).map_err(|error| error.to_string())?;
+        // Use the shared panic/error capture while shrinking as well. Keep the
+        // original invariant report so a different failure cannot replace it.
+        let attempt = |candidate: &[Action]| {
+            sweep("volume candidate", 0..1, |_| {
+                run(seed, candidate).map_err(|error| error.to_string())
+            })
+            .map(|_| ())
+            .map_err(|failure| failure.report)
+        };
+        let Err(report) = attempt(&actions) else {
+            return Ok(());
+        };
+        let minimal = minimize(actions, |candidate| {
+            attempt(candidate).as_ref().err() == Some(&report)
+        });
+        Err(format!("{report}\nminimal actions: {minimal:#?}"))
+    })?;
+    eprintln!(
+        "volume histories: {} seeds in {:?}",
+        swept.seeds, swept.elapsed
+    );
     Ok(())
 }
