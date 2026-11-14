@@ -1,6 +1,5 @@
 //! Request canonicalization and unambiguous DNS/IP grant admission properties.
-#[path = "common/mod.rs"]
-mod common;
+use crate::signed::claims as common;
 use acyclic_auth::{authority::*, contract::*, socket::*, valid_resource};
 use common::*;
 use proptest::prelude::*;

@@ -1,6 +1,5 @@
 //! Runtime minting through the same verifier used by capability holders.
-#[path = "common/signed.rs"]
-mod signed;
+use crate::signed;
 use acyclic_auth::{authority, contract::*, verify::*};
 use signed::*;
 

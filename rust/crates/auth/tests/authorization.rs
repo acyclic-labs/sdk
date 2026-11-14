@@ -1,6 +1,6 @@
 //! The derive parser is compiled from its actual source, with no model copy.
 #[path = "../../contract-derive/src/authorization.rs"]
-mod authorization;
+mod declarations;
 use proptest::prelude::*;
 use prost_reflect::DescriptorPool;
 use std::{fs, process::Command};
@@ -22,11 +22,11 @@ fn authorization_strings_round_trip() {
         // the retired parallel Actors vocabulary.
         for unknown in ["streams/raed", "execution/actor-turn", "new-product/read"] {
             let input = format!("auth(action = {unknown:?}, resource = \"stream_path\")");
-            prop_assert!(syn::meta::parser(|meta| authorization::fields(&meta).map(|_| ())).parse_str(&input).is_err());
+            prop_assert!(syn::meta::parser(|meta| declarations::fields(&meta).map(|_| ())).parse_str(&input).is_err());
         }
         let input=format!("auth(action = \"streams/follow\", action = \"fs/read\", extractor = {value:?})");
         let mut declaration=String::new();
-        syn::meta::parser(|meta| { declaration=authorization::fields(&meta)?; Ok(()) }).parse_str(&input).unwrap();
+        syn::meta::parser(|meta| { declaration=declarations::fields(&meta)?; Ok(()) }).parse_str(&input).unwrap();
         let root=tempfile::tempdir().unwrap();
         let proto=format!("syntax = \"proto3\"; package test; import \"validation/v1/options.proto\"; message Empty {{}} service Test {{ rpc Call(Empty) returns (Empty) {{ option (acyclic.validation.v1.auth) = {{ {declaration} }}; }} }}");
         fs::write(root.path().join("test.proto"),proto).unwrap();
@@ -56,7 +56,7 @@ proptest! {
     #[test]
     fn arbitrary_authorization_input_never_panics(text in ".{0,1024}") {
         let mut result=None;
-        let parsed=syn::meta::parser(|meta| {result=Some(authorization::fields(&meta)?);Ok(())}).parse_str(&text);
+        let parsed=syn::meta::parser(|meta| {result=Some(declarations::fields(&meta)?);Ok(())}).parse_str(&text);
         if parsed.is_ok() && let Some(declaration)=result { prop_assert!(!declaration.is_empty()); }
     }
 }

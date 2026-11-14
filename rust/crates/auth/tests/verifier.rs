@@ -3,8 +3,7 @@
 mod current_trust;
 #[path = "verifier/proof_storage.rs"]
 mod proof_storage;
-#[path = "common/signed.rs"]
-mod signed;
+use crate::signed;
 use acyclic_auth::{authority::PolicyDecision, contract::*, verify::*};
 use ed25519_dalek::Signer;
 use proptest::prelude::*;

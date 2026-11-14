@@ -1,8 +1,7 @@
 //! Generated synthetic signing material only; no captured credentials.
+use crate::signed as capability;
 use acyclic_auth::{contract::*, revocation::*, trust::Snapshot, verify::*};
 use ed25519_dalek::{Signer, SigningKey};
-#[path = "common/signed.rs"]
-mod capability;
 
 fn signed(publication: RevocationPublication) -> SignedRevocation {
     let signature = SigningKey::from_bytes(&[19; 32])

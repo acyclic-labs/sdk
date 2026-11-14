@@ -1,6 +1,5 @@
 //! Real shared client + signed authority, against a disposable contract provider.
-#[path = "common/signed.rs"]
-mod signed;
+use crate::signed;
 use acyclic_auth::{
     authority::{PolicyDecision, Scope, Target as AuthorityTarget},
     contract::*,

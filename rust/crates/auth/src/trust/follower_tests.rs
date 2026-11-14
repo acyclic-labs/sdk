@@ -474,10 +474,10 @@ fn account_events_preserve_exact_dependencies_without_unrelated_wakes() {
     assert!((&mut other_event).now_or_never().is_none());
 
     observe_clock_and_global(
-        world,
+        &world,
         trust,
-        first,
-        other,
+        &first,
+        &other,
         second,
         (first_wakes, other_wakes),
         other_event,
@@ -485,10 +485,10 @@ fn account_events_preserve_exact_dependencies_without_unrelated_wakes() {
 }
 
 fn observe_clock_and_global(
-    world: World,
+    world: &World,
     trust: Follower,
-    first: verify::TrustEvidence,
-    other: verify::TrustEvidence,
+    first: &verify::TrustEvidence,
+    other: &verify::TrustEvidence,
     mut second: AccountRoot,
     wakes: (Arc<Wakes>, Arc<Wakes>),
     other_event: crate::trust::Changed,
@@ -554,17 +554,17 @@ fn observe_clock_and_global(
     drop(unchanged_time);
     let other_event = other.changed(&trust);
 
-    assert_global_transitions(&world, trust, &first, &other, other_event);
+    assert_global_transitions(world, &trust, first, other, other_event);
 }
 
 fn assert_global_transitions(
     world: &World,
-    trust: Follower,
+    trust: &Follower,
     first: &verify::TrustEvidence,
     other: &verify::TrustEvidence,
     other_event: crate::trust::Changed,
 ) {
-    let rotated = first.changed(&trust);
+    let rotated = first.changed(trust);
     let mut frontier = EnvironmentFrontier::genesis("test", AnchorKeys::new(world.issuer.anchor()));
     let successor = Issuer::new("test", key(7));
     let rotation = world
@@ -576,27 +576,24 @@ fn assert_global_transitions(
     assert_eq!(other_event.now_or_never(), Some(Ok(())));
 
     // Global withdrawal never locks or scans accounts to notify their waits.
-    let fenced = first.changed(&trust);
-    let other_fenced = other.changed(&trust);
+    let fenced = first.changed(trust);
+    let other_fenced = other.changed(trust);
     let accounts = trust.accounts.write().unwrap();
     trust.fence(FenceCause::LostFollow);
     assert_eq!(fenced.now_or_never(), Some(Ok(())));
     assert_eq!(other_fenced.now_or_never(), Some(Ok(())));
     drop(accounts);
-    let mut resumed = first.changed(&trust);
+    let mut resumed = first.changed(trust);
     assert!((&mut resumed).now_or_never().is_none());
     trust.resume();
     assert_eq!(resumed.now_or_never(), Some(Ok(())));
-    let closed = first.changed(&trust);
+    let closed = first.changed(trust);
     trust.close(FenceCause::Shutdown);
     assert_eq!(closed.now_or_never(), Some(Err(SourceClosed)));
-    assert_eq!(
-        first.changed(&trust).now_or_never(),
-        Some(Err(SourceClosed))
-    );
+    assert_eq!(first.changed(trust).now_or_never(), Some(Err(SourceClosed)));
 
     // A retained account operation cannot keep the global producer alive.
-    let trust = follower(&world);
+    let trust = follower(world);
     let retained = trust.find_account("account").unwrap().unwrap();
     let mut lost = first.changed(&trust);
     assert!((&mut lost).now_or_never().is_none());
