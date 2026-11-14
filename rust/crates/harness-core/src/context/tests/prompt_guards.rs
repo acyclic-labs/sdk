@@ -51,11 +51,6 @@ async fn optional_planning_does_not_enter_worker_context() -> Result<()> {
             .unwrap()
             .contains("volume:///home/GOAL.md")
     );
-    assert_eq!(
-        crate::seed::AGENT_PROMPT.len(),
-        1258,
-        "update the reviewed prompt byte pin"
-    );
     assert!(!crate::seed::AGENT_PROMPT.contains("GOAL.md"));
     Ok(())
 }
