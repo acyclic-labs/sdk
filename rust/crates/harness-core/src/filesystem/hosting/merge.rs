@@ -16,18 +16,20 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         let store = StreamGitCompatStore::new(StreamAuthorityStore::new(
             self.volumes.filesystem.stream_provider(),
         ));
-        self.merge_session_with_store(agent, parent, operation, store)
+        self.merge_session_with_store(agent, parent, operation, store, None)
             .await
     }
 
     /// The same join using the host's existing repository and lineage store.
-    /// Native adapters retain their checkout's durable Git state.
+    /// Native adapters retain their checkout's durable Git state and original
+    /// source-backed view for inherited files absent from authored generations.
     pub async fn merge_session_with_store<S: crate::tools::git::CommandStore>(
         &self,
         agent: &AgentPath,
         parent: &AgentPath,
         operation: OperationId,
         store: S,
+        parent_view: Option<crate::tools::git::View<'_, P, O>>,
     ) -> crate::Result<Option<String>> {
         if agent == parent || agent.parent().is_some_and(|path| &path != parent) {
             return Err(crate::Error::Invalid(
@@ -153,6 +155,11 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
             .await
             .map_err(S::lineage_error)?
         };
+        if parent_view.is_some_and(|view| view.workspace().id() != selected.id()) {
+            return Err(crate::Error::Conflict(
+                "parent checkout selection changed".into(),
+            ));
+        }
         let branch = format!("agents/{}", agent.id());
         repository
             .register_branch_workspace(branch.clone(), source.id(), None, false)
@@ -173,7 +180,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
                 access: &access,
                 filesystem: &self.volumes.filesystem,
                 store: &store,
-                view: crate::tools::git::View::Volume(&selected),
+                view: parent_view.unwrap_or(crate::tools::git::View::Volume(&selected)),
                 root: std::path::Path::new("/"),
                 repository: root.id(),
                 lease: None,

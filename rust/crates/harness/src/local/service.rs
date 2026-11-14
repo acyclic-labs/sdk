@@ -1171,6 +1171,122 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unprojected_parent_merges_disjoint_inherited_edits() -> Result<()> {
+        use crate::local::{WorkspaceMounting, sessions};
+        use acyclic_fs::facade::FsWork as _;
+        let checkout = tempfile::tempdir().map_err(storage)?;
+        let state_dir = tempfile::tempdir().map_err(storage)?;
+        std::fs::write(checkout.path().join("inherited.txt"), b"one\ntwo\nthree\n")
+            .map_err(storage)?;
+        let provider = Arc::new(
+            ScriptedModelProvider::new([ScriptedTurn::Text("ready".into())]).with_context_capacity(
+                crate::context::ModelContextCapacity {
+                    context_tokens: 32_768,
+                    output_tokens: Some(4096),
+                    output_shares_context: false,
+                },
+            ),
+        );
+        let local = super::super::LocalHarness::open(
+            local_harness_config(
+                checkout.path(),
+                (
+                    Model::new("scripted".into(), "test".into(), "1".into())?,
+                    provider,
+                ),
+            )?
+            .state_directory(state_dir.path())
+            .compaction(crate::context::CompactionPolicy::Disabled)
+            .workspace_mounting(WorkspaceMounting::Physical),
+        )
+        .await?;
+        let directory = local.connect_sessions().await?;
+        let parent = sessions::create(&directory, "parent", None).await?;
+        let crate::client::AgentReply::Spawned { agent, .. } = parent
+            .execute(&crate::client::AgentCommand::Spawn {
+                parent: parent.root().clone(),
+                id: crate::agent::IntentId::try_from("child").map_err(storage)?,
+                brief: crate::model::ModelContent::Text("wait for integration".into()),
+                role: "worker".into(),
+            })
+            .await?
+        else {
+            return Err(Error::Invalid("missing child".into()));
+        };
+        let child = parent.select(agent).await?;
+        assert!(matches!(
+            Conversation::open(child.clone())
+                .wait_current_input()
+                .await?
+                .phase,
+            crate::agent::Phase::Idle
+        ));
+        let workspace = local.workspace.as_ref().unwrap();
+        let mut parent_view = None;
+        for (connection, bytes) in [
+            (&parent, b"ONE\ntwo\nthree\n".as_slice()),
+            (&child, b"one\ntwo\nTHREE\n".as_slice()),
+        ] {
+            let state = local
+                .agents()
+                .await?
+                .0
+                .state(connection.root())
+                .await
+                .map_err(storage)?;
+            let binding = crate::agent::WorkspaceTable::primary_in(&state.volumes)
+                .ok_or_else(|| Error::Invalid("missing project".into()))?;
+            let view = workspace.spawned_project_view(binding.volume()?).await?;
+            assert!(!workspace.has_physical_task_source(&view)?);
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+            let authored = view
+                .workspace()
+                .head(budget, &cancellation)
+                .await
+                .map_err(storage)?;
+            assert!(
+                authored
+                    .value
+                    .read("/inherited.txt", 1024, budget, &cancellation)
+                    .await
+                    .is_err(),
+                "the merge base must leave inherited content demand-backed"
+            );
+            view.write(
+                "/inherited.txt",
+                acyclic_stream::OwnedBytes::copy_from_slice(bytes),
+                acyclic_fs::IdempotencyKey::from_bytes(crate::OperationId::new().into_bytes()),
+                acyclic_fs::PublicationPermit::Unrestricted,
+                &mut budget.accounting(&cancellation),
+            )
+            .await
+            .map_err(storage)?;
+            if connection.root() == parent.root() {
+                parent_view = Some(view);
+            }
+        }
+        assert!(sessions::merge(&child, "merge-child").await?.is_some());
+        let bytes = parent_view
+            .unwrap()
+            .read(
+                "/inherited.txt",
+                1024,
+                &mut acyclic_fs::WorkBudget::UNBOUNDED
+                    .accounting(&acyclic_fs::CancellationToken::new()),
+            )
+            .await
+            .map_err(storage)?
+            .bytes;
+        assert_eq!(bytes.as_ref(), b"ONE\ntwo\nTHREE\n");
+        assert_eq!(
+            std::fs::read(checkout.path().join("inherited.txt")).map_err(storage)?,
+            b"one\ntwo\nthree\n"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn session_merges_publish_checkout_files_and_preserve_conflicts() -> Result<()> {
         use crate::local::{WorkspaceMounting, sessions};
         use acyclic_fs::facade::FsWork as _;
