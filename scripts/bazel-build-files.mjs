@@ -97,6 +97,32 @@ for (const id of members) {
     if (ownerOf(file) !== dir(packages.get(id))) fileLabel(file);
   }
 }
+// Files of third-party build dependencies that a build script reads, from
+// [package.metadata.bazel.build-script-env]: VARIABLE = "package/path". Each file is exported from
+// the package's crate universe repository and named to the script by its execution path.
+const staged = new Map();
+function stagedFile(spec) {
+  const [, name, file] = /^([^/]+)\/(.+)$/.exec(spec) ?? [];
+  const found = base.packages.filter(p => p.name === name && !members.has(p.id));
+  if (found.length !== 1) throw new Error(`STEP_FAILED bazel-build-files: build-script-env names ${spec}, but ${found.length} third-party packages are named ${name}`);
+  const repo = `crates__${name}-${found[0].version}`;
+  if (!staged.has(repo)) staged.set(repo, { name, version: found[0].version, files: new Set() });
+  staged.get(repo).files.add(file);
+  return `@${repo}//:${file}`;
+}
+const scriptEnv = new Map([...members].map(id => {
+  const p = packages.get(id);
+  return [id, Object.entries(p.metadata?.bazel?.["build-script-env"] ?? {}).map(([variable, spec]) => [variable, stagedFile(spec)])];
+}));
+// A package with [package.metadata.bazel] repository-rust-sources = true compiles and builds
+// from every Rust source in the repository; each package then exports its own as `rust_sources`.
+const readsRepository = p => p.metadata?.bazel?.["repository-rust-sources"] === true;
+const repositorySources = [...members].some(id => readsRepository(packages.get(id)))
+  ? ["//:rust_sources", ...memberDirs.map(d => `//${d}:rust_sources`).sort()]
+  : [];
+const sourcesRule = repositorySources.length
+  ? `\n${rule("filegroup", [["name", q("rust_sources")], ["srcs", glob(["**/*.rs"], [])], ["visibility", q(["//visibility:public"])]])}\n`
+  : "";
 const exportsRule = owner => (exported.has(owner) ? `\nexports_files(${list([...exported.get(owner)].sort())}, visibility = ["//visibility:public"])\n` : "");
 
 const cargo = tables("Cargo.toml");
@@ -140,7 +166,7 @@ function buildFile(p) {
   const opt = packageOpt(p.name);
   const embedded = embeds.get(dir(p));
   // Embedded files outside the library globs, and outside an integration test's directory.
-  const libEmbeds = list([...embedded.lib].filter(f => f.startsWith("//") || TEST_DIRS.test(f) || f === "build.rs").sort());
+  const libEmbeds = list([...[...embedded.lib].filter(f => f.startsWith("//") || TEST_DIRS.test(f) || f === "build.rs").sort(), ...(readsRepository(p) ? repositorySources : [])]);
   const testEmbeds = testDir => list([...embedded.tests].filter(f => f.startsWith("//") || (testDir !== "." && !f.startsWith(`${testDir}/`))).sort());
   const env = Object.fromEntries([["CARGO_PKG_NAME", p.name], ["CARGO_PKG_DESCRIPTION", p.description], ["CARGO_PKG_REPOSITORY", p.repository], ["CARGO_PKG_LICENSE", p.license], ["CARGO_PKG_RUST_VERSION", p.rust_version]].filter(([, v]) => v));
   const common = target => [
@@ -185,11 +211,11 @@ function buildFile(p) {
       ["crate_root", q(local(script.src_path))],
       ["srcs", list([local(script.src_path), ...modules])],
       ["compile_data", glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB])],
-      ["data", glob(["**"], ["BUILD.bazel", ...NOT_LIB])],
+      ["data", plus(glob(["**"], ["BUILD.bazel", ...NOT_LIB]), list([...scriptEnv.get(p.id).map(([, file]) => file), ...(readsRepository(p) ? repositorySources : [])]))],
       ["pkg_name", q(p.name)],
       ["links", p.links ? q(p.links) : undefined],
       ...common(script),
-      ["build_script_env", "PACKAGE_ENV"],
+      ["build_script_env", scriptEnv.get(p.id).length ? `PACKAGE_ENV | ${q(Object.fromEntries(scriptEnv.get(p.id).map(([variable, file]) => [variable, `\${pwd}/$(execpath ${file})`])))}` : "PACKAGE_ENV"],
       ...deps(["build"], { deps: "build = True", procMacros: "build_proc_macro = True", aliases: "build = True, build_proc_macro = True" }),
     ]]);
   }
@@ -252,7 +278,7 @@ function buildFile(p) {
     `FEATURES = ${perTriple(features, list)}\n\n`,
     `PACKAGE_ENV = ${q(env)}\n`,
   ];
-  return header.join("") + rules.map(([kind, attrs]) => `\n${rule(kind, attrs)}`).join("") + exportsRule(dir(p));
+  return header.join("") + rules.map(([kind, attrs]) => `\n${rule(kind, attrs)}`).join("") + sourcesRule + exportsRule(dir(p));
 }
 
 function moduleFile() {
@@ -295,13 +321,18 @@ function moduleFile() {
       ["manifests", list(["//:Cargo.toml"])],
       ["supported_platform_triples", list(TRIPLES)],
     ]),
-    `use_repo(crate, "crates")\n`,
+    ...[...staged].sort().map(([, { name, version, files }]) => `${rule("crate.annotation", [
+      ["crate", q(name)],
+      ["version", q(`=${version}`)],
+      ["additive_build_file_content", q(`exports_files(${JSON.stringify([...files].sort())})\n`)],
+    ])}\n`),
+    `use_repo(${["crate", "crates", ...[...staged.keys()].sort()].map((r, i) => (i ? q(r) : r)).join(", ")})\n`,
   ].join("");
 }
 
 const files = new Map([
   ["cargo.MODULE.bazel", moduleFile()],
-  ["BUILD.bazel", `${HEADER}\nexports_files(${list(["Cargo.lock", "Cargo.toml"])})\n${exportsRule("")}`],
+  ["BUILD.bazel", `${HEADER}\nexports_files(${list(["Cargo.lock", "Cargo.toml"])})\n${sourcesRule}${exportsRule("")}`],
 ]);
 for (const id of members) files.set(`${dir(packages.get(id))}/BUILD.bazel`, buildFile(packages.get(id)));
 // A generated file whose package left the workspace is stale.

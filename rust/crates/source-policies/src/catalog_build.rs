@@ -6,6 +6,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// The repository root relative to this package. The catalog names each
+/// source from the compiling package's manifest directory, never by a path of
+/// the build script's own sandbox or checkout.
+pub const ROOT: &str = "../../..";
+
 pub const ROOTS: [&str; 7] = [
     "rust/crates",
     "rust/fuzz",
@@ -60,17 +65,19 @@ fn collect(
         if metadata.is_dir() {
             collect(root, &path, active, files)?;
         } else if path.extension().is_some_and(|extension| extension == "rs") {
-            if !path.canonicalize()?.starts_with(root) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "source file escapes repository",
-                ));
-            }
+            // The file is named inside a held directory of the root. Build
+            // systems may stage it as a link, so its bytes are read by name.
             files.push(path);
         }
     }
     assert!(active.remove(&real));
     Ok(())
+}
+
+fn entry(name: &str) -> String {
+    format!(
+        "({name:?}, include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/{ROOT}/\", {name:?}))),"
+    )
 }
 
 pub fn generate(root: &Path, output: &Path) -> io::Result<()> {
@@ -91,14 +98,14 @@ pub fn generate(root: &Path, output: &Path) -> io::Result<()> {
                     io::Error::new(io::ErrorKind::InvalidData, "non-UTF-8 Rust source path")
                 })?
                 .replace('\\', "/");
-            Ok((name, path))
+            Ok(name)
         })
         .collect::<io::Result<Vec<_>>>()?;
-    sources.sort_by(|left, right| left.0.cmp(&right.0));
+    sources.sort();
     let mut generated = fs::File::create(output.join("repository-rust-sources.rs"))?;
     writeln!(generated, "&[")?;
-    for (name, path) in sources {
-        writeln!(generated, "({name:?}, include_str!({path:?})),")?;
+    for name in sources {
+        writeln!(generated, "{}", entry(&name))?;
     }
     writeln!(generated, "]")
 }
@@ -151,8 +158,9 @@ mod tests {
             generate(&root, &output)?;
             expected.sort_by(|left, right| left.0.cmp(&right.0));
             let mut contents = String::from("&[\n");
-            for (name, path) in expected {
-                contents.push_str(&format!("({name:?}, include_str!({path:?})),\n"));
+            for (name, _) in expected {
+                contents.push_str(&entry(name));
+                contents.push('\n');
             }
             contents.push_str("]\n");
             assert_eq!(

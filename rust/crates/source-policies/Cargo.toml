@@ -8,3 +8,7 @@ publish = false
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
+
+[package.metadata.bazel]
+# Bazel stages every Rust source for the catalog that build.rs embeds.
+repository-rust-sources = true
