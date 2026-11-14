@@ -92,10 +92,7 @@ impl Drop for Change {
 // Both publication and final producer retirement transfer wake custody outside
 // the original lock; callbacks may immediately re-enter the event.
 fn dispatch(mut waiters: FixedIndex<Option<Waker>, (), 8>) {
-    let extracted = waiters
-        .extract_prefix(&[], |_| {})
-        .expect("empty prefix fits every key");
-    for entry in extracted.into_entries(|_| {}) {
+    for entry in waiters.extract_all().into_entries(|_| {}) {
         let (_, wake, ()) = entry.into_parts();
         if let Some(wake) = wake {
             wake.wake();

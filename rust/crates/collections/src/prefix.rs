@@ -174,6 +174,17 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         }
     }
 
+    /// Extracts the whole index in O(1), leaving it empty. No prefix is
+    /// checked, so unlike [`Self::extract_prefix`] this cannot fail.
+    pub fn extract_all(&mut self) -> ExtractedPrefix<V, A, N> {
+        ExtractedPrefix {
+            entries: FixedIndex {
+                root: self.root.take(),
+            },
+            parent: None,
+        }
+    }
+
     /// Extracts every key starting with the exact original byte prefix.
     ///
     /// This is retained-owner cleanup: the caller serializes the original
@@ -203,12 +214,7 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
             parent: None,
         };
         if prefix.is_empty() {
-            return Ok(ExtractedPrefix {
-                entries: FixedIndex {
-                    root: self.root.take(),
-                },
-                parent: None,
-            });
+            return Ok(self.extract_all());
         }
 
         let mut cursor = self.root.as_ref();
