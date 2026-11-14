@@ -17,9 +17,8 @@ async fn original_guard_unlock_precedes_its_trace_settlement()
         guarantee: Some("exclusive_original_state"),
     };
     drop(observe_guard(request(), mutex.lock()).await);
-    assert_eq!(
-        stream.tail().await?,
-        0,
+    assert!(
+        matches!(stream.tail().await, Err(crate::StreamError::NotFound)),
         "unobserved guard published diagnostics"
     );
     let recorder = Arc::new(Recorder::new(stream.clone(), [73; 16]));
