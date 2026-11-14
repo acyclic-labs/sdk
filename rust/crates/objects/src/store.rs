@@ -518,7 +518,7 @@ fn medium(error: MediumError) -> Error {
         MediumError::Ambiguous(_) => "outcome_unknown",
         MediumError::Failed(_) => "failed",
     };
-    Error::caused(ErrorCode::Unavailable, Cause::new("objects.medium", reason))
+    Error::caused(ErrorCode::Unavailable, Cause::new("objects.medium", reason)).with_source(error)
 }
 
 /// A fresh owner nonce.
