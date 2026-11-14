@@ -52,6 +52,15 @@ fn closed_diagnostics_preserve_every_declared_category() {
 
 #[test]
 fn actor_call_chunks_preserve_order_total_and_finite_fragment_work() {
+    let rejected = |result: Result<u64, StreamError>| {
+        let error = result.expect_err("invalid original finite reply fragment accepted");
+        assert_eq!(error.category(), StreamError::InvalidResponse);
+        assert!(
+            std::error::Error::source(&error).is_some(),
+            "reply fragment discarded its original rejection cause"
+        );
+        true
+    };
     let total = crate::MAX_RECORD_BYTES + 1;
     let mut data = wire::SessionData {
         after: Some(wire::SessionCursor {
@@ -69,18 +78,18 @@ fn actor_call_chunks_preserve_order_total_and_finite_fragment_work() {
     data.item = Some(Item::ActorCall(Bytes::from_static(b"x")));
     assert_eq!(actor_call_sequence(1, &opaque, &data), Ok(1));
     assert!(
-        actor_call_sequence(0, &opaque, &data).is_err(),
+        rejected(actor_call_sequence(0, &opaque, &data)),
         "a hole must be refused"
     );
     let changed = ((total + 1) as u64).to_le_bytes();
     assert!(
-        actor_call_sequence(1, &changed, &data).is_err(),
+        rejected(actor_call_sequence(1, &changed, &data)),
         "a changed response cannot be spliced"
     );
     data.after.as_mut().unwrap().next = 1;
     data.accepted = 1;
     assert!(
-        actor_call_sequence(0, &[], &data).is_err(),
+        rejected(actor_call_sequence(0, &[], &data)),
         "small nonterminal fragments must not amplify work"
     );
     for after in [

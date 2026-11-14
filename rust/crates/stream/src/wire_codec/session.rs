@@ -92,6 +92,26 @@ enum ReplyCursorFailure {
     Empty,
 }
 
+#[derive(Debug, thiserror::Error)]
+enum ReplyFragmentFailure {
+    #[error("finite reply fragment has no reply payload")]
+    Payload,
+    #[error("finite reply position {next} is outside advertised total {total}")]
+    Position { next: u64, total: usize },
+    #[error(
+        "finite reply fragment at {next}: cursor={advertised}, bytes={bytes}, total={total}, accepted={accepted}, durable={durable}, changed={changed}"
+    )]
+    Shape {
+        next: u64,
+        advertised: u64,
+        bytes: usize,
+        total: usize,
+        accepted: u64,
+        durable: u64,
+        changed: bool,
+    },
+}
+
 /// Admit one ordered, bounded fragment without returning credit or advancing
 /// application progress. The entire response belongs to this one generation.
 pub fn actor_call_sequence(
@@ -99,24 +119,44 @@ pub fn actor_call_sequence(
     previous_opaque: &[u8],
     data: &wire::SessionData,
 ) -> Result<u64, StreamError> {
-    let after = data.after.as_ref().ok_or(StreamError::InvalidResponse)?;
+    let after = data
+        .after
+        .as_ref()
+        .ok_or_else(|| StreamError::InvalidResponse.with_source(ReplyCursorFailure::Missing))?;
     let total = actor_call_total(data)?;
-    let chunk = reply_chunk(data.item.as_ref()).ok_or(StreamError::InvalidResponse)?;
-    let start = usize::try_from(next)
-        .ok()
-        .and_then(|index| index.checked_mul(crate::MAX_RECORD_BYTES))
+    let chunk = reply_chunk(data.item.as_ref())
+        .ok_or_else(|| StreamError::InvalidResponse.with_source(ReplyFragmentFailure::Payload))?;
+    let index =
+        usize::try_from(next).map_err(|source| StreamError::InvalidResponse.with_source(source))?;
+    let start = index
+        .checked_mul(crate::MAX_RECORD_BYTES)
         .filter(|start| *start < total)
-        .ok_or(StreamError::InvalidResponse)?;
+        .ok_or_else(|| {
+            StreamError::InvalidResponse.with_source(ReplyFragmentFailure::Position { next, total })
+        })?;
     if chunk.is_empty()
         || chunk.len() > crate::MAX_RECORD_BYTES
         || chunk.len() > total
         || chunk.len() != (total - start).min(crate::MAX_RECORD_BYTES)
         || (!previous_opaque.is_empty() && previous_opaque != after.opaque.as_ref())
-        || after.next != next.checked_add(1).ok_or(StreamError::OutOfRange)?
+        || after.next
+            != next.checked_add(1).ok_or_else(|| {
+                StreamError::OutOfRange.with_source(ReplyFragmentFailure::Position { next, total })
+            })?
         || data.accepted != after.next
         || data.durable != 0
     {
-        return Err(StreamError::InvalidResponse);
+        return Err(
+            StreamError::InvalidResponse.with_source(ReplyFragmentFailure::Shape {
+                next,
+                advertised: after.next,
+                bytes: chunk.len(),
+                total,
+                accepted: data.accepted,
+                durable: data.durable,
+                changed: !previous_opaque.is_empty() && previous_opaque != after.opaque.as_ref(),
+            }),
+        );
     }
     Ok(next)
 }
