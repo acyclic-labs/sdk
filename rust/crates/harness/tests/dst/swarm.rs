@@ -5,8 +5,8 @@
 //! plays every agent's steps; the seeded executor and entropy choose the
 //! interleaving (children settling mid-parent-turn, concurrently, on any
 //! activation shard). After the root's prompt, the whole tree must settle and
-//! every turn must complete. A failure reports the seed and the 1-minimal
-//! subset of the seed's steps that still fails.
+//! every turn must complete. A failure reports the seed; replaying that one
+//! seed (`DST_SEED=<n>`) also shrinks its steps to a 1-minimal failing plan.
 use super::*;
 use acyclic_harness::{
     agent::{AgentPath, ConversationEntry, TurnOutcome, decode_record, inbox_tail},
@@ -411,24 +411,40 @@ fn run_world(seed: u64, plan: &[Step]) -> std::result::Result<(), String> {
     })
 }
 
-/// The seed's world; on failure, the minimal still-failing plan as its trace.
+/// The seed's world, run once. The sweep stops at its first failing seed.
 fn world(seed: u64) -> std::result::Result<(), String> {
+    run(seed, &generate(seed))
+}
+
+/// Shrinks a failing seed's plan to the 1-minimal subset that still fails.
+/// Replays many worlds, so it runs only when one seed is reproduced.
+fn minimal_trace(seed: u64) -> String {
     let plan = generate(seed);
-    let Err(failure) = run(seed, &plan) else {
-        return Ok(());
-    };
     let minimal = sweep::minimize(plan.clone(), |candidate| run(seed, candidate).is_err());
-    let last = run(seed, &minimal).err().unwrap_or_else(|| failure.clone());
-    Err(format!(
-        "{failure}\nminimal plan ({} of {} steps), failing with: {last}\n{minimal:#?}",
+    let failure = run(seed, &minimal).err().unwrap_or_default();
+    format!(
+        "minimal plan ({} of {} steps), failing with: {failure}
+{minimal:#?}",
         minimal.len(),
         plan.len()
-    ))
+    )
 }
 
 #[test]
 fn seeded_swarms_settle_and_complete_every_turn() {
-    let swept = sweep::sweep("swarm", sweep::seeds(SEEDS), world).unwrap_or_else(|f| panic!("{f}"));
+    let seeds = sweep::seeds(SEEDS);
+    let single = seeds.end - seeds.start == 1;
+    let swept = sweep::sweep("swarm", seeds, world).unwrap_or_else(|failure| {
+        let trace = if single {
+            minimal_trace(failure.seed)
+        } else {
+            format!("minimal trace: rerun with DST_SEED={}", failure.seed)
+        };
+        panic!(
+            "{failure}
+{trace}"
+        )
+    });
     eprintln!(
         "swarm: {} seeds in {:?} ({:?} per 1000 seeds)",
         swept.seeds,
