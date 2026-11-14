@@ -13,30 +13,18 @@ fn discovery_defers_only_record_facts_and_never_current_authority() {
         (Scope::Children, "streams/list", "streams:/events"),
         (Scope::ResourceFollow, "fs/list", "fs:/volume"),
     ] {
-        assert_discovery_scope(scope, action, resource);
+        assert_discovery_scope(scope, action, resource).expect("discovery scope fixture");
     }
 }
 
-fn assert_discovery_scope(scope: Scope, action: &str, resource: &str) {
+fn assert_discovery_scope(
+    scope: Scope,
+    action: &str,
+    resource: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let trust = signed::Snapshot::default();
-    let token = signed::root(|block| {
-        block
-            .certificates
-            .as_mut()
-            .unwrap()
-            .keys
-            .first_mut()
-            .expect("signed root certificate")
-            .key
-            .grants = signed::claims::grants(resource, true, action);
-        block.caveats.push(Caveat {
-            kind: CaveatKind::Pin(Pin {
-                name: "record".into(),
-                value: PinValue::Literal(b"ok".to_vec()),
-            }),
-        });
-    });
-    let capability = verify(&token, &trust, signed::NOW).unwrap();
+    let token = discovery_token(resource, action)?;
+    let capability = verify(&token, &trust, signed::NOW)?;
     let empty = RecordAttributes::default();
     let usage = signed::limits(None);
     let mut request = signed::request(resource, &empty, &usage);
@@ -58,8 +46,7 @@ fn assert_discovery_scope(scope: Scope, action: &str, resource: &str) {
     let pinned = RecordAttributes::try_new(vec![Attribute {
         name: "record".into(),
         value: b"ok".to_vec(),
-    }])
-    .unwrap();
+    }])?;
     request.attributes = &pinned;
     assert_eq!(
         capability.authorize(&trust, &request, PolicyDecision::Allow, Scope::Exact),
@@ -76,17 +63,15 @@ fn assert_discovery_scope(scope: Scope, action: &str, resource: &str) {
     }
     request.audience = "workers:/other";
     // The token is explicitly pinned to its recipient, below.
-    let audience_bound = capability
-        .attenuate(
-            vec![Caveat {
-                kind: CaveatKind::Audience(acyclic_auth::contract::ResourcePattern {
-                    name: "workers:/test".into(),
-                    prefix: false,
-                }),
-            }],
-            &[9; 32],
-        )
-        .unwrap();
+    let audience_bound = capability.attenuate(
+        vec![Caveat {
+            kind: CaveatKind::Audience(acyclic_auth::contract::ResourcePattern {
+                name: "workers:/test".into(),
+                prefix: false,
+            }),
+        }],
+        &[9; 32],
+    )?;
     assert!(
         audience_bound
             .authorize(&trust, &request, PolicyDecision::Allow, scope)
@@ -115,4 +100,29 @@ fn assert_discovery_scope(scope: Scope, action: &str, resource: &str) {
             .authorize(&unavailable, &request, PolicyDecision::Allow, scope)
             .is_err()
     );
+    Ok(())
+}
+
+fn discovery_token(resource: &str, action: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut configured = false;
+    let token = signed::root(|block| {
+        if let Some(certificate) = block
+            .certificates
+            .as_mut()
+            .and_then(|certificates| certificates.keys.first_mut())
+        {
+            certificate.key.grants = signed::claims::grants(resource, true, action);
+            configured = true;
+        }
+        block.caveats.push(Caveat {
+            kind: CaveatKind::Pin(Pin {
+                name: "record".into(),
+                value: PinValue::Literal(b"ok".to_vec()),
+            }),
+        });
+    });
+    if !configured {
+        return Err("signed root certificate absent".into());
+    }
+    Ok(token)
 }
