@@ -1643,7 +1643,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Inp
     ) -> Result<Option<FileRef>, Error> {
         let authority = self.authority;
         let encoded;
-        let (source, payload, extension) = match input {
+        let (source, payload, extension, directory) = match input {
             StagedInput::Notice(notice) => {
                 encoded = crate::contract::canonical_json_bytes(notice)
                     .map_err(|error| turn(crate::Error::Invalid(error.to_string())))?;
@@ -1651,12 +1651,14 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Inp
                     encoded.as_slice(),
                     Some((encoded.as_slice(), crate::agent::NOTICE_MEDIA_TYPE)),
                     "json",
+                    "events",
                 )
             }
             StagedInput::Text { source, text } => (
                 source.as_bytes(),
                 text.map(|text| (text.as_bytes(), "text/plain")),
                 "txt",
+                "inputs",
             ),
             StagedInput::Content(content) => {
                 encoded = crate::agent::encode_user_input(content).map_err(turn)?;
@@ -1673,6 +1675,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Inp
                     encoded.as_slice(),
                     Some((encoded.as_slice(), crate::agent::USER_INPUT_MEDIA_TYPE)),
                     "json",
+                    "inputs",
                 )
             }
         };
@@ -1688,6 +1691,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Inp
         // The existing publication owns both the submitted source identity
         // and expanded bytes; no separate replay record is needed.
         let name = format!("{operation}-{}.{extension}", blake3::hash(source));
+        let path = format!("{directory}/{name}");
         let publisher = FilesystemContentPublisher::new(
             Arc::clone(self.volumes),
             self.volume,
@@ -1708,7 +1712,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Inp
             .await
             .map_err(turn)?;
         if let Some(file) = staged.as_ref() {
-            if file.path().rsplit('/').next() != Some(name.as_str()) {
+            if file.path() != path {
                 return Err(Error::Conflict("input identity reused with changed source"));
             }
             if let Some((bytes, media_type)) = payload
@@ -1727,7 +1731,6 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Inp
         let Some((bytes, media_type)) = payload.filter(|_| staged.is_none()) else {
             return Ok(staged);
         };
-        let path = format!("inputs/{name}");
         let staged = publisher
             .stage_once(
                 operation,

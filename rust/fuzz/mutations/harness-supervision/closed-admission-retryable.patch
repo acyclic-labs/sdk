@@ -1,0 +1,15 @@
+diff --git a/rust/crates/actors/src/local.rs b/rust/crates/actors/src/local.rs
+--- a/rust/crates/actors/src/local.rs
++++ b/rust/crates/actors/src/local.rs
+@@ -201,9 +201,9 @@ impl Error {
+             | Self::Conflict
+             | Self::PreconditionChanged(_)
+             | Self::Paused
+-            | Self::AlarmNotDue { .. } => true,
++            | Self::AlarmNotDue { .. }
++            | Self::AdmissionClosed(_) => true,
+             Self::Call(_)
+-            | Self::AdmissionClosed(_)
+             | Self::InvocationTerminated { .. }
+             | Self::Clock(_)
+             | Self::CompletionStopped

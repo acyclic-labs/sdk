@@ -41,6 +41,69 @@ impl Handler for RefusedRecord {
     }
 }
 
+#[tokio::test]
+async fn closed_admission_reports_unavailability_without_consuming_the_original_input() -> TestResult
+{
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let address = spawn_with(&store, "closed-admission", &[b"emit"]).await?;
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    )
+    .with_limits(RuntimeLimits::new(1, 1)?);
+    runtime.admission[crate::guest::AdmissionClass::Work.index()]
+        .as_ref()
+        .ok_or("configured admission missing")?
+        .close();
+    runtime.track(address.clone())?;
+    let mut unavailable = runtime.unavailable(&address)?;
+    assert!(matches!(
+        runtime.drain_actor(&address).await,
+        Err(Error::AdmissionClosed(_))
+    ));
+    assert!(
+        matches!(futures::poll!(unavailable.as_mut()), std::task::Poll::Ready(cause)
+            if cause.to_string().contains("runtime admission is closed")),
+        "closed admission did not publish its original unavailability"
+    );
+    assert_eq!(
+        runtime
+            .store()
+            .load(&address)
+            .await?
+            .state()
+            .ok_or("missing actor state")?
+            .cursor("inbox"),
+        Some(0)
+    );
+    assert!(
+        records(&*provider, "out/closed-admission")
+            .await?
+            .is_empty()
+    );
+    drop(unavailable);
+    drop(runtime);
+
+    // A replacement admission owner can still execute that exact input once.
+    let recovered = Runtime::new(
+        crate::guest::Requests::default(),
+        Store::new(Arc::clone(&provider), root()?),
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    )
+    .with_limits(RuntimeLimits::new(1, 1)?);
+    recovered.track(address.clone())?;
+    recovered.drain_actor(&address).await?;
+    assert_eq!(
+        records(&*provider, "out/closed-admission").await?,
+        vec![Bytes::from_static(b"r0")]
+    );
+    Ok(())
+}
+
 /// Every failure settles its input within the one delivery: a decided one
 /// through the failure transition, an undecided one by redelivering at once,
 /// and one undecided again on redelivery through the failure transition.
