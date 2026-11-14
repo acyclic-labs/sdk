@@ -127,7 +127,10 @@ async fn publications_keep_all_live_volume_projections_at_the_committed_head() -
         .view()
         .open_related(
             base.view().workspace().clone(),
-            &mut acyclic_fs::kernel::KernelAccounting::native(&work, &cancellation),
+            &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work: &work,
+                cancellation: &cancellation,
+            },
         )
         .await
         .map_err(storage)?;

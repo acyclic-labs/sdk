@@ -167,7 +167,10 @@ async fn read_only_bindings_require_read_but_not_write() -> Result<()> {
         .view()
         .open_related(
             workspace.view().workspace().clone(),
-            &mut acyclic_fs::kernel::KernelAccounting::native(&work, &cancellation),
+            &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work: &work,
+                cancellation: &cancellation,
+            },
         )
         .await
         .map_err(storage)?;
@@ -277,7 +280,10 @@ async fn child_views_select_roles_without_assuming_names_or_volume_classes() -> 
                 &volume.storage_name(&mut None)?,
                 acyclic_fs::IdempotencyKey::from_bytes([index; 16]),
                 acyclic_fs::PublicationPermit::Unrestricted,
-                &mut acyclic_fs::kernel::KernelAccounting::native(&work, &cancellation),
+                &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                    work: &work,
+                    cancellation: &cancellation,
+                },
             )
             .await
             .map_err(storage)?;
