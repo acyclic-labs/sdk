@@ -22,7 +22,7 @@ impl Default for NameIndex {
 }
 
 impl NameIndex {
-    pub(super) fn insert(&mut self, name: &str, canonical: &str) -> Option<String> {
+    pub(super) fn insert(&mut self, name: &str, canonical: &str) -> Result<(), String> {
         let mut node = 0;
         for byte in name.bytes().map(|byte| byte.to_ascii_lowercase()) {
             step();
@@ -36,7 +36,13 @@ impl NameIndex {
                 }
             };
         }
-        self.nodes[node].canonical.replace(canonical.into())
+        if let Some(owner) = &self.nodes[node].canonical {
+            return Err(format!(
+                "duplicate command or alias {name:?}: already registered by {owner:?}"
+            ));
+        }
+        self.nodes[node].canonical = Some(canonical.into());
+        Ok(())
     }
 
     pub(super) fn get(&self, name: &str) -> Option<&str> {
@@ -70,7 +76,7 @@ mod tests {
         // catalog size. Retained nodes are also linear in definition bytes.
         #[test]
         fn discovery_index_work_is_linear(
-            names in proptest::collection::btree_set("[a-zA-Z0-9:_-]{1,48}", 1..256),
+            names in proptest::collection::btree_set("[a-z0-9:_-]{1,48}", 1..256),
         ) {
             STEPS.with(|steps| steps.set(0));
             let mut index = NameIndex::default();
@@ -78,7 +84,7 @@ mod tests {
             for name in &names {
                 let canonical = name.to_ascii_lowercase();
                 budget += name.len();
-                index.insert(name, &canonical);
+                prop_assert!(index.insert(name, &canonical).is_ok());
                 budget += name.len();
                 prop_assert_eq!(index.get(&name.to_ascii_uppercase()), Some(canonical.as_str()));
                 let absent = format!("{name}!");
@@ -87,6 +93,17 @@ mod tests {
             }
             prop_assert!(STEPS.with(|steps| steps.get()) <= budget);
             prop_assert!(index.nodes.len() <= 1 + names.iter().map(String::len).sum::<usize>());
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn conflicting_registration_retains_the_original_owner(name in "[a-z0-9:_-]{1,48}") {
+            let mut index = NameIndex::default();
+            prop_assert!(index.insert(&name, "original").is_ok());
+            prop_assert!(index.insert(&name.to_ascii_uppercase(), "replacement").is_err());
+            prop_assert_eq!(index.get(&name), Some("original"));
+            prop_assert_eq!(index.get(&name.to_ascii_uppercase()), Some("original"));
         }
     }
 }

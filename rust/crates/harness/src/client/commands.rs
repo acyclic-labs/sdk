@@ -1,6 +1,7 @@
 //! One command catalog drives completion, help and slash resolution.
 //!
-//! Built-in commands are data (`commands.json`). Prompt commands are
+//! Built-in commands are data (`commands.json`), checked at build time through
+//! the same name index used for runtime catalogs. Prompt commands are
 //! Markdown files a project declares under `.claude/commands` or
 //! `.codex/prompts`, and skills are `SKILL.md` files under the skill roots;
 //! both are resolved by name when a prompt selects them, through
@@ -146,9 +147,7 @@ impl CommandCatalog {
             }
             for name in std::iter::once(&spec.name).chain(&spec.aliases) {
                 validate_name(name)?;
-                if names.insert(name, &spec.name).is_some() {
-                    return Err(Error::Conflict("duplicate command or alias".into()));
-                }
+                names.insert(name, &spec.name).map_err(Error::Conflict)?;
             }
             if spec.description.trim().is_empty() || spec.description.contains('\0') {
                 return Err(Error::Invalid("invalid command description".into()));
