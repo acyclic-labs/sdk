@@ -389,13 +389,15 @@ impl WasmAgentClient {
     /// The live-tail eviction edge, distinct from its recovery cursor.
     #[wasm_bindgen(js_name = firstSequence)]
     pub fn first_sequence(&self) -> Result<u64, JsValue> {
-        self.with_client(|client| client.conversation().first_sequence())
+        self.with_client(|client| client.conversation().map(|view| view.first_sequence()))?
+            .map_err(client_error)
     }
 
     /// Retained displayed turns, capped by the shared Rust StreamView policy.
     #[wasm_bindgen(js_name = recordCount)]
     pub fn record_count(&self) -> Result<usize, JsValue> {
-        self.with_client(|client| client.conversation().records().len())
+        self.with_client(|client| client.conversation().map(|view| view.records().len()))?
+            .map_err(client_error)
     }
 
     /// Decode and copy one visible turn through the same native reader.
