@@ -16,6 +16,7 @@ pub struct ContentCut {
     version: u32,
     /// Optional immutable seed volume; built-in-only trees have no volume seed.
     #[serde(deserialize_with = "Option::<(VolumeRef, GenerationRef)>::deserialize")]
+    #[heap_layout(as = Option<(VolumeRef, GenerationRef)>)]
     pub seed: Option<(VolumeRef, GenerationRef)>,
     /// Original writable home and its selected generation.
     pub home: (VolumeRef, GenerationRef),
