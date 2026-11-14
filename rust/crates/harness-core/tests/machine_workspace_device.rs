@@ -94,6 +94,7 @@ async fn device_directory_preserves_home_path_reads_and_edits() -> Result {
     let provider = Arc::new(MemoryStream::default());
     let sockets = Sockets::open(
         Store::new(provider.clone(), StreamPath::new("harness/actors")?),
+        StreamPath::new("harness/actors/_sockets/v1")?,
         Arc::new(PlatformExecutor),
         Arc::new(SystemClock),
     )
@@ -370,6 +371,7 @@ async fn committed_handover(refused_close: bool) -> Result {
     let actor = attach(&store, &paths, target.clone()).await?;
     let sockets = Sockets::open(
         Store::new(provider.clone(), StreamPath::new("harness/actors")?),
+        StreamPath::new("harness/actors/_sockets/v1")?,
         Arc::new(PlatformExecutor),
         Arc::new(SystemClock),
     )
