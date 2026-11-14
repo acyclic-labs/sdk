@@ -292,7 +292,7 @@ async fn pause_retained_delivery(committed: bool, settlement_lost: bool) -> Test
 }
 
 #[derive(Clone, Copy, Debug)]
-enum Fault {
+pub(super) enum Fault {
     Load,
     Refuse,
     Unknown,
@@ -306,14 +306,14 @@ struct Cut {
 }
 
 #[derive(Default)]
-struct Provider {
+pub(super) struct Provider {
     inner: MemoryStream,
     cut: Mutex<Option<Cut>>,
     cuts: AtomicUsize,
 }
 
 impl Provider {
-    fn arm(&self, fault: Fault) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+    pub(super) fn arm(&self, fault: Fault) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
         let (entered, observing) = oneshot::channel();
         let (release, released) = oneshot::channel();
         *self.cut.lock().expect("cut lock") = Some(Cut {

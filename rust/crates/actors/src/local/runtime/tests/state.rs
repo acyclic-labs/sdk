@@ -8,6 +8,8 @@ struct Flushes {
     requests: Requests,
     calls: AtomicU64,
     retained: std::sync::Mutex<Option<ActorStateHost>>,
+    entered: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<crate::guest::RequestId>>>,
+    gate: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 impl Handler for Flushes {
@@ -22,7 +24,20 @@ impl Handler for Flushes {
         _: crate::guest::CancellationToken,
     ) -> GuestFuture<'a, Transition> {
         Box::pin(async move {
-            self.calls.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(
+                self.calls.fetch_add(1, Ordering::SeqCst),
+                0,
+                "state publication re-entered the handler"
+            );
+            if let Some(entered) = self.entered.lock().unwrap().take() {
+                let _ = entered.send(delivery.request);
+            }
+            if let Some(gate) = &self.gate {
+                gate.acquire()
+                    .await
+                    .map_err(|error| crate::guest::GuestError::Handler(error.to_string()))?
+                    .forget();
+            }
             let state = self.requests.state(delivery.request)?;
             *self.retained.lock().unwrap() = Some(state.clone());
             assert_eq!(state.seed().await?.journal_tail, "0");
@@ -92,6 +107,8 @@ async fn state_flush_advances_the_delivery_cut_without_reentering_the_handler() 
             requests: requests.clone(),
             calls: AtomicU64::new(0),
             retained: std::sync::Mutex::new(None),
+            entered: std::sync::Mutex::new(None),
+            gate: None,
         });
         let runtime = Runtime::new(
             requests,
@@ -167,5 +184,152 @@ async fn state_flush_advances_the_delivery_cut_without_reentering_the_handler() 
             Err(crate::guest::GuestError::Revoked)
         ));
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn unknown_state_flush_retains_its_publication_without_reentering_the_handler() -> TestResult
+{
+    let provider = Arc::new(super::pause::Provider::default());
+    let store = Store::new(provider.clone(), root()?);
+    let requests = Requests::default();
+    let mut manifest = crate::guest::wire::decode_manifest(&crate::guest::wire::encode_manifest(
+        Package::new()?.manifest(),
+    ))?;
+    manifest
+        .bindings
+        .push(crate::domain::Binding::actor_state("STATE".into())?);
+    let (entered, observing) = tokio::sync::oneshot::channel();
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let handler = Arc::new(Flushes {
+        manifest,
+        requests: requests.clone(),
+        calls: AtomicU64::new(0),
+        retained: std::sync::Mutex::new(None),
+        entered: std::sync::Mutex::new(Some(entered)),
+        gate: Some(gate.clone()),
+    });
+    let runtime = Runtime::new(
+        requests,
+        store.clone(),
+        handler.clone(),
+        Arc::new(SystemClock),
+    );
+    let address = spawn_with(&store, "uncertain-state", &[b"emit"]).await?;
+    runtime.place(address.clone(), 1).await?;
+    let delivery = runtime.drain_event(&address);
+    let release = async {
+        observing.await?;
+        let (entered, release) = provider.arm(super::pause::Fault::Unknown);
+        gate.add_permits(1);
+        entered.await?;
+        release
+            .send(())
+            .map_err(|_| "lost state publication producer")?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    };
+    let (delivered, released) = futures::join!(delivery, release);
+    released?;
+    assert!(
+        matches!(delivered, Err(Error::Stream(StreamError::Unavailable))),
+        "{delivered:?}"
+    );
+    let slot = runtime
+        .slot(&address)
+        .ok_or("missing unsettled state owner")?;
+    assert!(slot.inner.lock().await.pending.is_some());
+    runtime.pause(&address, true).await?;
+    assert!(slot.inner.lock().await.pending.is_none());
+    let cut = store.load(&address).await?;
+    let state = cut.state().ok_or("missing committed state")?;
+    assert_eq!(state.cursor("inbox"), Some(0));
+    assert_eq!(state.journal_tail, 1);
+    assert_eq!(
+        state.metadata.get("value"),
+        Some(&Bytes::from_static(b"first"))
+    );
+    assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
+    let retained = handler
+        .retained
+        .lock()
+        .unwrap()
+        .take()
+        .ok_or("missing state capability")?;
+    assert!(matches!(
+        retained.seed().await,
+        Err(crate::guest::GuestError::Revoked)
+    ));
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn handler_deadline_revokes_state_calls_but_retains_the_dispatched_flush() -> TestResult {
+    let provider = Arc::new(super::pause::Provider::default());
+    let store = Store::new(provider.clone(), root()?);
+    let requests = Requests::default();
+    let mut manifest = crate::guest::wire::decode_manifest(&crate::guest::wire::encode_manifest(
+        Package::new()?.manifest(),
+    ))?;
+    manifest
+        .bindings
+        .push(crate::domain::Binding::actor_state("STATE".into())?);
+    manifest.limits = crate::domain::ActorLimits::new(Some(10), None, None)?;
+    let (entered, observing) = tokio::sync::oneshot::channel();
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let handler = Arc::new(Flushes {
+        manifest,
+        requests: requests.clone(),
+        calls: AtomicU64::new(0),
+        retained: std::sync::Mutex::new(None),
+        entered: std::sync::Mutex::new(Some(entered)),
+        gate: Some(gate.clone()),
+    });
+    let runtime = Runtime::new(
+        requests.clone(),
+        store.clone(),
+        handler.clone(),
+        Arc::new(SystemClock),
+    );
+    let address = spawn_with(&store, "deadline-state", &[b"emit"]).await?;
+    runtime.place(address.clone(), 1).await?;
+    let mut delivery = Box::pin(runtime.drain_event(&address));
+    let request = match futures::future::select(delivery.as_mut(), observing).await {
+        futures::future::Either::Right((request, _)) => request?,
+        futures::future::Either::Left((result, _)) => {
+            return Err(format!("delivery ended before handler admission: {result:?}").into());
+        }
+    };
+    let (entered, release) = provider.arm(super::pause::Fault::Commit);
+    gate.add_permits(1);
+    match futures::future::select(delivery.as_mut(), entered).await {
+        futures::future::Either::Right((entered, _)) => entered?,
+        futures::future::Either::Left((result, _)) => {
+            return Err(format!("delivery ended before native publication: {result:?}").into());
+        }
+    }
+    tokio::time::advance(std::time::Duration::from_millis(10)).await;
+    // Drive the original timeout event once. The publication remains physically
+    // held at its provider, while the request must already be revoked.
+    assert!(futures::poll!(delivery.as_mut()).is_pending());
+    assert!(matches!(
+        requests.admit(request),
+        Err(crate::guest::GuestError::Revoked)
+    ));
+    release
+        .send(())
+        .map_err(|_| "state publication owner was dropped at its caller deadline")?;
+    assert!(matches!(
+        delivery.await,
+        Err(Error::Invalid("handler exceeded its manifest timeout"))
+    ));
+    let cut = store.load(&address).await?;
+    let state = cut.state().ok_or("missing committed state")?;
+    assert_eq!(state.cursor("inbox"), Some(0));
+    assert_eq!(state.journal_tail, 1);
+    assert_eq!(
+        state.metadata.get("value"),
+        Some(&Bytes::from_static(b"first"))
+    );
+    assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
     Ok(())
 }
