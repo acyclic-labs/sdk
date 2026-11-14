@@ -1089,7 +1089,7 @@ async fn original_session_admission_emits_its_current_trust_guarantee()
     let mut slots = Slots::default();
     session_authority.register(&mut slots, 0, &token("records", |_| {}), 1)?;
     let resource_state = State::new();
-    let resource_authority = authority(resource_state.clone());
+    let resource_authority = Arc::new(authority(resource_state.clone()));
     let mut resource_slots = Slots::default();
     resource_authority.register(&mut resource_slots, 0, &fs_token("fs:/volume", |_| {}), 1)?;
     let (_, _, resource) = resource_authority
