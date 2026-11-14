@@ -75,6 +75,62 @@ fn host_with_writer() -> io::Result<(UnixStream, PacketDeviceRetirement, UnixStr
 }
 
 #[test]
+fn full_request_window_keeps_unadmitted_packets_in_the_kernel()
+-> Result<(), Box<dyn std::error::Error>> {
+    if crate::private_file::with_isolated_user_runtime(
+        "process_tree::packet_device::tests::wire::full_request_window_keeps_unadmitted_packets_in_the_kernel",
+    )? {
+        return Ok(());
+    }
+    let (mut source, custody, mut kernel, device) = host_with_writer()?;
+    for unique in 2..66 {
+        let original = request(1, unique, unsafe { libc::geteuid() }, b"child\0");
+        kernel.write_all(&original)?;
+        let mut delivered = vec![0; original.len()];
+        source.read_exact(&mut delivered)?;
+        assert_eq!(delivered, original);
+    }
+    let parked = request(1, 66, unsafe { libc::geteuid() }, b"parked\0");
+    kernel.write_all(&parked)?;
+    let mut notification = [0; 40];
+    notification[..4].copy_from_slice(&40_u32.to_ne_bytes());
+    notification[4..8].copy_from_slice(&2_i32.to_ne_bytes());
+    notification[16..24].copy_from_slice(&1_u64.to_ne_bytes());
+    source.write_all(&notification)?;
+    let mut published = [0; 40];
+    kernel.read_exact(&mut published)?;
+    assert_eq!(published, notification);
+    assert_eq!(
+        custody.publication(true)?,
+        PacketDevicePublication::Published
+    );
+    // Notification completion is an event barrier after the host's progress
+    // pass. An uncredited packet must still belong to the physical endpoint,
+    // where closing the device can refuse it even if the backend dies.
+    let mut pending: libc::c_int = 0;
+    // SAFETY: pending is live writable storage for FIONREAD's integer result.
+    if unsafe { libc::ioctl(device.as_raw_fd(), libc::FIONREAD, &raw mut pending) } < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    assert_eq!(usize::try_from(pending)?, parked.len());
+    let mut reply = [0; OUTPUT_HEADER];
+    fuse_protocol::reply_header(&mut reply, OUTPUT_HEADER, 2, None)
+        .map_err(io::Error::from_raw_os_error)?;
+    source.write_all(&reply)?;
+    let mut published_reply = [0; OUTPUT_HEADER];
+    kernel.read_exact(&mut published_reply)?;
+    assert_eq!(published_reply, reply);
+    assert_eq!(
+        custody.publication(false)?,
+        PacketDevicePublication::Published
+    );
+    let mut delivered = vec![0; parked.len()];
+    source.read_exact(&mut delivered)?;
+    assert_eq!(delivered, parked);
+    Ok(())
+}
+
+#[test]
 fn notification_backpressure_does_not_stop_kernel_request_delivery()
 -> Result<(), Box<dyn std::error::Error>> {
     if crate::private_file::with_isolated_user_runtime(
