@@ -17,12 +17,12 @@ trap restore EXIT
 cd "$source_root"
 
 run_case() {
-    local test=$1 expected=$2 log=$3 features=${4:---all-features}
+    local test=$1 expected=$2 log=$3
     local result=0 revision
     revision=$(git rev-parse HEAD)
     # Compile, then run the one test under the suite's 10 s per-test limit.
     (
-        cargo test --locked $features -p acyclic-actors --lib --no-run 2>&1 | tee "$log.build"
+        cargo test --locked --all-features -p acyclic-actors --lib --no-run 2>&1 | tee "$log.build"
         binary=$(grep -oE '\([^()]*/acyclic_actors-[0-9a-f]+\)' "$log.build" | tail -1 | tr -d '()')
         cd rust/crates/actors
         timeout --signal=KILL 10 "$binary" "$test" --nocapture
@@ -50,12 +50,9 @@ run_case "$custody_test" pass "$scratch/custody-fixed.log"
 # The overlay sources, taken from the source revision before any checkout.
 testing=rust/crates/native-runtime/src/testing
 runtime=rust/crates/actors/src/local/runtime
-model=rust/crates/actors/src/local/model
 mkdir "$scratch/overlay"
 cp "$testing/sweep.rs" "$scratch/overlay/sweep.rs"
 cp "$runtime/tests/simulation/composition.rs" "$scratch/overlay/composition.rs"
-cp "$model/simulation/custody.rs" "$scratch/overlay/custody.rs"
-cp "$model/composition.rs" "$scratch/overlay/model-composition.rs"
 
 # The drivers report through the shared core's sweep, which postdates both.
 before() {
@@ -70,17 +67,11 @@ printf '\nmod historical_composition;\n' >> "$runtime/tests.rs"
 run_case "$shard_test" fail "$scratch/shard-before.log"
 grep -qE 'composition changed the actor publication' "$scratch/shard-before.log"
 
-# The fix (#3780) sits on d269a473 (#3779), which does not compile acyclic-stream
-# (unlinked `url`); its parent 939245df lacks the same fix and builds.
-before 939245df551
-node --input-type=module - "$scratch/overlay/model-composition.rs" "$model" <<'JS'
-import fs from 'node:fs';
-const [composition, model] = process.argv.slice(2);
-const helper = fs.readFileSync(composition, 'utf8').match(/pub\(super\) async fn copied_custody\([\s\S]*?\n}\n/);
-if (!helper) throw Error('copied custody test helper missing');
-fs.appendFileSync(`${model}/composition.rs`, '\n' + helper[0]);
-JS
-cp "$scratch/overlay/custody.rs" "$model/historical_custody.rs"
-printf '\nmod historical_custody;\n' >> "$model.rs"
-run_case "$custody_test" fail "$scratch/custody-before.log" "--features test-support"
+# No revision before the copied-custody fix (#3780) compiles acyclic-stream
+# (its gRPC module names an unlinked `url`). The control is instead the source
+# revision with exactly that fix's product hunk reverted.
+git checkout -q -f "$source_sha"
+git show 829464b4df7 --format= -- rust/crates/actors/src/local.rs | git apply -R
+printf 'ACTORS_HISTORY_CONTROL source=%s minus=829464b4df7:local.rs\n' "$source_sha"
+run_case "$custody_test" fail "$scratch/custody-before.log"
 printf 'ACTORS_HISTORY_COMPLETE source=%s cases=4\n' "$source_sha"

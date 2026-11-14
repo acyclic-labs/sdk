@@ -72,8 +72,8 @@ is a substitute for historical negative controls.
 
 Historical targets are the shared scheduling-shard composition fix
 `fe83ab67b5c` (pre-fix `88ea479eabc9f73daaebc248cfdac5026b2a1720`) and copied
-custody fix `829464b4df7` (pre-fix `939245df551`; its direct parent
-`d269a4731a4` does not compile `acyclic-stream`). Both still need executed failing
+custody fix `829464b4df7` (no earlier revision compiles `acyclic-stream`,
+so its control reverts exactly that fix's `local.rs` hunk on the source). Both still need executed failing
 seed/trace and matching passing fixed-revision evidence. These results have not
 yet been established by these drivers; the added scenarios remain unvalidated.
 After the source revision compiles, `bash scripts/qualify-actors-history.sh`
