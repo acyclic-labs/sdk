@@ -164,11 +164,21 @@ function buildFile(p) {
       ...deps([null], { deps: "normal = True", procMacros: "proc_macro = True", aliases: "" }, [...(lib ? [`:${crateName(lib)}`] : []), ...ownDeps]),
       ["visibility", q(["//visibility:public"])],
     ]]);
+    // A binary's own #[cfg(test)] cases, as `cargo test` runs them.
+    const binCrate = bin.name.replaceAll("-", "_");
+    if (bin.test) test(lib && binCrate === crateName(lib) ? `${binCrate}_bin_test` : `${binCrate}_test`, [
+      ["crate_root", q(local(bin.src_path))],
+      ["srcs", glob(["**/*.rs"], ["build.rs", ...NOT_LIB])],
+      ["compile_data", glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB])],
+      ...common(bin),
+      ...deps([null, "dev"], { deps: "normal = True, normal_dev = True", procMacros: "proc_macro = True, proc_macro_dev = True", aliases: "normal = True, normal_dev = True, proc_macro = True, proc_macro_dev = True" },
+        [...(lib ? [`:${crateName(lib)}`] : []), ...ownDeps]),
+    ]);
   }
   const enabled = new Set(features[0]);
   for (const target of p.targets.filter(t => t.kind.includes("test") && (t["required-features"] ?? []).every(f => enabled.has(f)))) {
     const root = local(target.src_path), testDir = path.posix.dirname(root);
-    test(target.name === crateName(lib ?? {}) ? `${target.name}_integration` : target.name, [
+    test(lib && target.name === crateName(lib) ? `${target.name}_integration` : target.name, [
       ["crate_root", q(root)],
       ["srcs", glob([`${testDir}/**/*.rs`], [])],
       ["compile_data", glob([`${testDir}/**`], ["**/*.rs"])],
