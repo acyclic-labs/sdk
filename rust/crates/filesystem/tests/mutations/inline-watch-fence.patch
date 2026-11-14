@@ -1,0 +1,11 @@
+diff --git a/rust/crates/filesystem/src/watch.rs b/rust/crates/filesystem/src/watch.rs
+--- a/rust/crates/filesystem/src/watch.rs
++++ b/rust/crates/filesystem/src/watch.rs
+@@ -3733,7 +3733,6 @@ impl NativeWatch {
+             meter,
+         )
+         .map_err(&failure)?
+-        .offloaded()
+         .await
+         .map_err(failure)?
+     }
