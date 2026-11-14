@@ -7,6 +7,8 @@ include!("access_tests.rs");
 mod authority_error_tests;
 #[path = "metadata_tests.rs"]
 mod metadata_tests;
+#[path = "transfer_tests.rs"]
+mod transfer_tests;
 
 struct TestIssuer;
 
