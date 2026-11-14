@@ -14,13 +14,16 @@ pub struct CanonicalBinding<'a> {
     pub refused: &'a [String],
 }
 /// The authority needed to resolve one public namespace selection.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ReadPathKind {
     /// A file's bytes.
     File,
     /// A directory's child names; the empty relative path selects its root.
     Directory,
 }
+
+crate::core::ownership::owned_enum!(ReadPathKind { File, Directory });
 
 impl ReadPathKind {
     /// Checks a tool address after separating its explicit volume qualifier.

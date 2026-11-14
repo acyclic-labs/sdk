@@ -21,6 +21,8 @@ acyclic_test_support::counting_allocator!();
 
 // Everything below the client and host compositions lives in
 // `acyclic-harness-core`; its public items keep their paths here.
+/// Authorized search over original agent records and versioned file views.
+pub use acyclic_harness_core::search as history_search;
 pub use acyclic_harness_core::*;
 /// Provider-neutral web search, with credentials confined to the host.
 pub use acyclic_harness_search as search;
