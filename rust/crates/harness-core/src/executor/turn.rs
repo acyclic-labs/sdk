@@ -125,14 +125,23 @@ impl StockExecution<'_> {
         let _execution = journal.claim_execution(input.operation_id, self.io)?;
         self.verify_task_context_binding(input.operation_id)?;
         let mut phase = DispatchPhase::new();
-        let result = ExecutionProgress::controlled(
-            self.with_context_review(
+        let result = if self.stock.context_management {
+            // Step selection mutates the worker, while the service consumes
+            // each queued job's frozen binding. Both share one funded owner.
+            let review = context_review::Background::shared(self.io)?;
+            let mut service = self.preparing(self.io);
+            let mut worker = self.preparing(self.io);
+            service.review = context_review::Review::Shared(Arc::clone(&review));
+            worker.review = context_review::Review::Shared(review);
+            service.with_context_review(
                 journal,
                 input,
-                self.execute_turn(input, journal, &mut phase),
-            )
-            .await,
-        );
+                worker.execute_turn(input, journal, &mut phase),
+            ).await
+        } else {
+            self.execute_turn(input, journal, &mut phase).await
+        };
+        let result = ExecutionProgress::controlled(result);
         phase
             .finish(result, journal, input.operation_id, self.io)
             .await

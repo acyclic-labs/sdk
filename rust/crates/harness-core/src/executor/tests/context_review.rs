@@ -44,7 +44,7 @@ async fn terminal_replies_prepare_no_review_source_at_any_history_size() -> Resu
         )
         .with_automatic_compaction()?;
         if retrospective {
-            stock = stock.with_plugins(plugins.as_ref())?;
+            stock = stock.with_plugins(Arc::clone(&plugins))?;
         }
         let mut messages: Vec<_> = (0..count)
             .map(|index| ModelMessage {
