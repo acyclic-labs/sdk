@@ -194,6 +194,7 @@ async fn ancestor_pause_parks_on_its_original_publication_and_resume_survives_ha
             Subscription {
                 path: path.inbox()?,
                 cursor: 1,
+                paused: false,
             },
         )]);
         let CommitOutcome::Committed(_) = provider
