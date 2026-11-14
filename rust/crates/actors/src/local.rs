@@ -76,8 +76,10 @@ pub enum Error {
     /// The original per-agent spend balance refused the candidate.
     #[error(transparent)]
     Escrow(#[from] crate::escrow::Error),
-    /// Canonical provider failure, including uncertain acknowledgement.
-    #[error(transparent)]
+    /// Canonical provider failure, including uncertain acknowledgement. Not
+    /// transparent: the StreamError stays in the source chain, so diagnostics
+    /// keep its code instead of only its own opaque causes.
+    #[error("actor stream provider failed: {0}")]
     Stream(#[from] StreamError),
     /// The provider did not establish an outcome. Retry this exact publication;
     /// its request and participant custody remain together.
