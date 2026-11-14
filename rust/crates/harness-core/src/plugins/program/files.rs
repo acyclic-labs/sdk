@@ -8,6 +8,8 @@ use crate::layers::PinnedLayer;
 use crate::resources::GenerationRef;
 use crate::tool::{Tool, ToolRegistry, ToolSource};
 use std::sync::Arc;
+mod catalogue;
+pub use catalogue::{HookCatalogueCursor, HookCataloguePage};
 
 /// Demand-only program files on the same content reader as the original task.
 /// Construction reads no manifest, scans no directory and starts no follower.

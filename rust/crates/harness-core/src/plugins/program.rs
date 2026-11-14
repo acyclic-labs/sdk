@@ -6,7 +6,7 @@ use crate::{
     tool::ToolDefinition,
 };
 mod files;
-pub use files::ProgramFiles;
+pub use files::{HookCatalogueCursor, HookCataloguePage, ProgramFiles};
 
 /// A manifest and entry bytes selected from one caller-pinned effective tree.
 /// The revision includes imported manifest modules and both native entries.
