@@ -238,6 +238,42 @@ async fn native_publication_projection_keeps_exact_frame_funding() -> MemoryResu
             drop(output);
         }
         lookup_meter.assert_refunded();
+        let denied = Arc::new(Meter::default());
+        denied.deny_allocation.store(true, Ordering::SeqCst);
+        let result = root
+            .within(provider.native_append(
+                AppendRequest {
+                    path: path("native/refused")?,
+                    records: vec![OwnedBytes::from_static(b"refused").into()],
+                    if_tail: Some(0),
+                    idempotency_key: IdempotencyKey::unique(),
+                },
+                denied.original(),
+            ))
+            .await;
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("native allocation refusal lost its original outer error"),
+        };
+        assert_eq!(
+            error
+                .get_ref()
+                .and_then(|source| source.downcast_ref::<crate::test_meter::NativeDenial>())
+                .map(|denial| denial.0),
+            Some("allocation")
+        );
+        denied.assert_refunded();
+        let missing = root
+            .within(provider.native_latest_before(
+                path("native/missing")?,
+                None,
+                1,
+                Default::default(),
+                lookup_meter.original(),
+            ))
+            .await?;
+        assert!(matches!(missing, Err(StreamError::NotFound)));
+        lookup_meter.assert_refunded();
         let parent = root.id();
         let _completion = root.finish_submitted(None, crate::trace::Outcome::Succeeded)?;
         let mut query = crate::trace::TraceQuery::new(
@@ -247,7 +283,8 @@ async fn native_publication_projection_keeps_exact_frame_funding() -> MemoryResu
         let mut completed = 0;
         let mut appends = 0;
         let mut lookups = 0;
-        while completed < 3 {
+        let mut unsettled = std::collections::BTreeMap::new();
+        while completed < 5 {
             let observation = query
                 .next()
                 .await?
@@ -261,6 +298,16 @@ async fn native_publication_projection_keeps_exact_frame_funding() -> MemoryResu
             } = observation
             {
                 completed += 1;
+                if result == crate::trace::Outcome::Unsettled {
+                    assert_eq!(start.parent, Some(parent));
+                    assert_eq!(bytes, None);
+                    assert!(matches!(
+                        start.name.as_str(),
+                        "stream.native_append" | "stream.native_latest_before"
+                    ));
+                    *unsettled.entry(start.name).or_insert(0) += 1;
+                    continue;
+                }
                 assert_eq!(result, crate::trace::Outcome::Succeeded);
                 if id != parent {
                     if start.name == "stream.native_latest_before" {
@@ -288,9 +335,11 @@ async fn native_publication_projection_keeps_exact_frame_funding() -> MemoryResu
         }
         assert_eq!(appends, 1);
         assert_eq!(lookups, 1);
+        assert_eq!(unsettled["stream.native_append"], 1);
+        assert_eq!(unsettled["stream.native_latest_before"], 1);
         assert_eq!(
             trace.tail().await?,
-            6,
+            10,
             "diagnostic and unrelated native appends must not record themselves"
         );
     }
