@@ -22,6 +22,8 @@ pub enum ToolErrorClass {
     Denied,
     /// Any other definitive failure.
     Failed,
+    /// The requester or responder cancelled the operation.
+    Cancelled,
 }
 
 impl ToolErrorClass {
@@ -35,10 +37,10 @@ impl ToolErrorClass {
             Code::Conflict => Self::Conflict,
             Code::Unsupported => Self::Unsupported,
             Code::Unauthorized => Self::Unauthorized,
-            Code::InteractionDeclined
-            | Code::InteractionDenied
-            | Code::InteractionCancelled
-            | Code::InteractionExpired => Self::Denied,
+            Code::Cancelled | Code::InteractionCancelled => Self::Cancelled,
+            Code::InteractionDeclined | Code::InteractionDenied | Code::InteractionExpired => {
+                Self::Denied
+            }
             _ => Self::Failed,
         }
     }
@@ -51,6 +53,7 @@ impl ToolErrorClass {
             Self::Unauthorized => "unauthorized",
             Self::Denied => "denied",
             Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
         }
     }
 }

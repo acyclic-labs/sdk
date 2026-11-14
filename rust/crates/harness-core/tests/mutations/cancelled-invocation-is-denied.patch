@@ -1,0 +1,8 @@
+diff --git a/rust/crates/harness-core/src/executor/tool_failure.rs b/rust/crates/harness-core/src/executor/tool_failure.rs
+--- a/rust/crates/harness-core/src/executor/tool_failure.rs
++++ b/rust/crates/harness-core/src/executor/tool_failure.rs
+@@ -39,3 +39,3 @@
+             Code::Unauthorized => Self::Unauthorized,
+-            Code::Cancelled | Code::InteractionCancelled => Self::Cancelled,
++            Code::Cancelled | Code::InteractionCancelled => Self::Denied,
+             Code::InteractionDeclined | Code::InteractionDenied | Code::InteractionExpired => {

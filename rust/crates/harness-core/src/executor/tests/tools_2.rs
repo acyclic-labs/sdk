@@ -253,29 +253,45 @@ async fn tool_refusals_and_failures_settle_and_only_harness_faults_end_the_turn(
         for (error, expected) in [
             (
                 unauthorized,
-                Some(
+                Some((
                     "tool execution failed: unauthorized: file tool requires original source read grant",
-                ),
+                    ToolErrorClass::Unauthorized,
+                )),
             ),
             (
                 missing,
-                Some("tool execution failed: resource not found: src/lib.rs"),
+                Some((
+                    "tool execution failed: resource not found: src/lib.rs",
+                    ToolErrorClass::NotFound,
+                )),
             ),
             (
                 invalid,
-                Some("tool execution failed: invalid request: tool arguments are malformed"),
+                Some((
+                    "tool execution failed: invalid request: tool arguments are malformed",
+                    ToolErrorClass::Invalid,
+                )),
             ),
             (
                 cancelled,
-                Some("tool execution failed: interaction cancelled"),
+                Some((
+                    "tool execution failed: interaction cancelled",
+                    ToolErrorClass::Cancelled,
+                )),
             ),
             (
                 refused,
-                Some("tool execution failed: tool rejected: original read grant is absent"),
+                Some((
+                    "tool execution failed: tool rejected: original read grant is absent",
+                    ToolErrorClass::Unauthorized,
+                )),
             ),
             (
                 process,
-                Some("tool execution failed: cwd missing-cwd does not exist"),
+                Some((
+                    "tool execution failed: cwd missing-cwd does not exist",
+                    ToolErrorClass::NotFound,
+                )),
             ),
             // Negative control: a harness fault never settles as a model-visible result.
             (storage, None),
@@ -316,7 +332,7 @@ async fn tool_refusals_and_failures_settle_and_only_harness_faults_end_the_turn(
             let output = executor.execute(input, &journal).await;
             let dispatched = usize::from(stage == Stage::Execute);
             match expected {
-                Some(expected) => {
+                Some((expected, class)) => {
                     assert_eq!(output?.text, "done", "{stage:?}");
                     assert_eq!(model.requests().len(), 2);
                     assert_eq!(
@@ -324,6 +340,20 @@ async fn tool_refusals_and_failures_settle_and_only_harness_faults_end_the_turn(
                             .as_deref(),
                         Some(expected),
                         "{stage:?}"
+                    );
+                    let recorded = journal.0.lock().unwrap();
+                    let recorded_class = recorded.iter().find_map(|record| match &record.event {
+                        ExecutionEvent::ToolFailed {
+                            call_id,
+                            cause: Some(cause),
+                            ..
+                        } if call_id == "call-1" => Some(cause.class),
+                        _ => None,
+                    });
+                    assert_eq!(
+                        recorded_class,
+                        Some(class),
+                        "{stage:?}: wrong settled tool failure class"
                     );
                 }
                 None => {
