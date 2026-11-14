@@ -279,13 +279,21 @@ pub fn confirm_follow(
     Ok(())
 }
 
+#[derive(Debug, thiserror::Error)]
+enum SnapshotCursorFailure {
+    #[error("snapshot continuation requires a nonzero cut")]
+    ZeroCut,
+    #[error("initial snapshot cursor carries {bytes} unexpected anchor bytes")]
+    InitialAnchor { bytes: usize },
+}
+
 /// Complete record continuation at a nonzero cut, including its immutable anchor.
 /// The provider-owned `opaque` field carries the 32-byte commit ID of `next - 1`.
 /// ALL-record route adapters resume this token through [`follow_records`], and
 /// retain it unchanged on placement moves. No new frame or cursor schema is used.
 pub fn record_cursor(next: u64, preceding: CommitId) -> Result<wire::SessionCursor, StreamError> {
     if next == 0 {
-        return Err(StreamError::InvalidArgument);
+        return Err(StreamError::InvalidArgument.with_source(SnapshotCursorFailure::ZeroCut));
     }
     Ok(wire::SessionCursor {
         next,
@@ -299,7 +307,11 @@ pub fn record_anchor(cursor: &wire::SessionCursor) -> Result<Option<CommitId>, S
         return if cursor.opaque.is_empty() {
             Ok(None)
         } else {
-            Err(StreamError::InvalidArgument)
+            Err(
+                StreamError::InvalidArgument.with_source(SnapshotCursorFailure::InitialAnchor {
+                    bytes: cursor.opaque.len(),
+                }),
+            )
         };
     }
     let anchor = cursor

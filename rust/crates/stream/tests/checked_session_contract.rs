@@ -112,6 +112,9 @@ proptest! {
             prop_assert!(std::error::Error::source(error)
                 .is_some_and(|source| source.is::<std::array::TryFromSliceError>()));
         }
+        if let Err(error) = &actual {
+            prop_assert!(std::error::Error::source(error).is_some());
+        }
         prop_assert_eq!(actual.map(|id| id.map(|id| *id.as_bytes())).map_err(|error| error.category()), expected);
     }
 
@@ -123,7 +126,9 @@ proptest! {
         prop_assert_eq!(decoded.opaque.as_ref(), &anchor);
         prop_assert_eq!(record_anchor(&decoded).map(|id| id.map(|id| *id.as_bytes())), Ok(Some(anchor)));
         prop_assert_eq!(decoded.next, next);
-        prop_assert_eq!(record_cursor(0, CommitId::from_bytes(anchor)), Err(StreamError::InvalidArgument));
+        let error = record_cursor(0, CommitId::from_bytes(anchor)).unwrap_err();
+        prop_assert_eq!(error.category(), StreamError::InvalidArgument);
+        prop_assert!(std::error::Error::source(&error).is_some());
     }
 
     #[test]

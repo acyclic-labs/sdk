@@ -131,7 +131,10 @@ fn snapshot(cursor: &wire::SessionCursor, fault: Fault) -> Result<(), &'static s
                 opaque: anchor.to_vec().into(),
             })
         };
-        require(encoded == expected, "snapshot encode bytes")?;
+        require(
+            encoded.map_err(|error| error.category()) == expected,
+            "snapshot encode bytes",
+        )?;
     }
     Ok(())
 }
