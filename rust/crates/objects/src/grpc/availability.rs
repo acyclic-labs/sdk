@@ -15,12 +15,12 @@ impl GrpcObjects {
             let message = wire::AvailabilityRequest {
                 digest: Some(digest.into()),
             };
-            let lease = credential
-                .lease
-                .as_ref()
-                .ok_or(Error::from(wire::ErrorCode::AccessDenied))?;
-            let request = acyclic_auth::channel::retained_request(message, lease)
-                .map_err(|status| error_from_status(&status))?;
+            let mut request = match &credential.lease {
+                Some(lease) => acyclic_auth::channel::retained_request(message, lease)
+                    .map_err(|status| error_from_status(&status))?,
+                None => Request::new(message),
+            };
+            self.metadata.apply(&mut request);
             let response = Self::client(
                 acyclic_auth::channel::guard(self.channel.clone())
                     .with_context(self.context.clone()),

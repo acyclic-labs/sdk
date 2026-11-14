@@ -17,6 +17,9 @@ use tonic::{
     transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity},
 };
 
+mod metadata;
+pub use metadata::{InvalidRequestMetadata, RequestMetadata};
+
 /// Authenticated peer policy, including member/SVID verification supplied by
 /// the trust custodian. No identity or issuer is inferred from bearer claims.
 pub enum PeerTrust<'a> {
@@ -309,11 +312,18 @@ where
     let deadline = budget.deadline();
     budget
         .run(async {
-            let lease = credential.resolve().await.map_err(credential_error)?;
+            let lease = if credential.is_transport_identity() {
+                None
+            } else {
+                Some(credential.resolve().await.map_err(credential_error)?)
+            };
             if let Budget::Operation { context, .. } = budget {
                 context.check().map_err(stopped_status)?;
             }
-            let request = request(body, &lease, deadline)?;
+            let request = match &lease {
+                Some(lease) => request(body, lease, deadline)?,
+                None => with_deadline(Request::new(body), deadline)?,
+            };
             let context = match budget {
                 Budget::Operation { context, .. } => Some(context.clone()),
                 Budget::Deadline(_) => None,
@@ -322,10 +332,13 @@ where
             if response.as_ref().is_err_and(|error| {
                 error.code() == tonic::Code::Unauthenticated
                     && std::error::Error::source(error).is_none()
-            }) {
+            }) && let Some(lease) = &lease
+            {
                 lease.reject().await.map_err(credential_error)?;
             }
-            if response.is_ok() {
+            if response.is_ok()
+                && let Some(lease) = &lease
+            {
                 lease.check().await.map_err(credential_error)?;
             }
             response
@@ -340,6 +353,13 @@ pub fn request<T>(
     lease: &ResolvedCredential,
     deadline: Option<tokio::time::Instant>,
 ) -> Result<Request<T>, Status> {
+    with_deadline(retained_request(body, lease)?, deadline)
+}
+
+fn with_deadline<T>(
+    mut request: Request<T>,
+    deadline: Option<tokio::time::Instant>,
+) -> Result<Request<T>, Status> {
     let remaining = deadline
         .map(|deadline| {
             deadline
@@ -348,7 +368,6 @@ pub fn request<T>(
                 .ok_or_else(|| Status::deadline_exceeded("operation deadline expired"))
         })
         .transpose()?;
-    let mut request = retained_request(body, lease)?;
     if let Some(remaining) = remaining {
         request.set_timeout(remaining);
     }

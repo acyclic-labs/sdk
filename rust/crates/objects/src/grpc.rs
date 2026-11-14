@@ -49,9 +49,22 @@ pub struct GrpcObjects {
     context: Option<acyclic_auth::operation::Context>,
     transfer_timeout: Option<std::time::Duration>,
     revisions: RevisionArc<RevisionTracker>,
+    metadata: acyclic_auth::channel::RequestMetadata,
 }
 
 impl GrpcObjects {
+    /// Sets immutable ASCII routing metadata on every unary call and
+    /// Availability opening. Credentials and caller deadlines keep precedence.
+    ///
+    /// # Errors
+    /// Rejects invalid ASCII metadata and authorization overrides.
+    pub fn with_request_metadata<K: AsRef<str>, V: AsRef<str>>(
+        mut self,
+        entries: impl IntoIterator<Item = (K, V)>,
+    ) -> Result<Self, acyclic_auth::channel::InvalidRequestMetadata> {
+        self.metadata = acyclic_auth::channel::RequestMetadata::new(entries)?;
+        Ok(self)
+    }
     /// Bind every stage, including hashing, credential resolution, connection
     /// readiness and response admission, to the original operation budget.
     /// Clones retain that same deadline and cancellation event.
@@ -184,6 +197,7 @@ impl GrpcObjects {
             context: None,
             transfer_timeout: None,
             revisions: RevisionArc::default(),
+            metadata: Default::default(),
         }
     }
 
@@ -302,6 +316,7 @@ macro_rules! call {
             budget,
             $value,
             |channel, mut request| async move {
+                $self.metadata.apply(&mut request);
                 minimum(&mut request, floor);
                 Self::client(channel).$rpc(request).await
             },

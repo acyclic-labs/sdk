@@ -10,7 +10,7 @@ use prost::Message;
 use thiserror::Error;
 use tonic::{
     Code, Request, Response, Status,
-    metadata::{Ascii, MetadataKey, MetadataMap, MetadataValue},
+    metadata::{Ascii, MetadataValue},
     transport::{Channel, Endpoint},
 };
 use tracing::field::Empty;
@@ -99,30 +99,7 @@ pub struct Client {
     session_connector: Option<ChannelConnector>,
 }
 
-/// Immutable metadata shared by all physical request paths.
-#[derive(Clone, Default)]
-pub(crate) struct RequestMetadata(Arc<MetadataMap>);
-
-impl RequestMetadata {
-    pub(crate) fn request<T>(
-        &self,
-        body: T,
-        authorization: Option<MetadataValue<Ascii>>,
-        lease: Option<acyclic_auth::credential::ResolvedCredential>,
-    ) -> Request<T> {
-        let mut request = Request::new(body);
-        *request.metadata_mut() = (*self.0).clone();
-        if let Some(lease) = lease {
-            request.extensions_mut().insert(lease);
-        }
-        if let Some(authorization) = authorization {
-            request
-                .metadata_mut()
-                .insert("authorization", authorization);
-        }
-        request
-    }
-}
+use acyclic_auth::channel::RequestMetadata;
 
 /// Caller-owned policy for a service-provided session route. The connector must
 /// authenticate the advertised member and admit the endpoint before connecting;
@@ -167,22 +144,7 @@ impl Client {
         mut self,
         entries: impl IntoIterator<Item = (K, V)>,
     ) -> Result<Self, ConnectError> {
-        let mut metadata = MetadataMap::new();
-        for (key, value) in entries {
-            let key = MetadataKey::<Ascii>::from_bytes(key.as_ref().as_bytes())
-                .map_err(|_| ConnectError::InvalidMetadata)?;
-            if key == "authorization" {
-                return Err(ConnectError::InvalidMetadata);
-            }
-            let value = value.as_ref();
-            if !value.is_ascii() {
-                return Err(ConnectError::InvalidMetadata);
-            }
-            let value = MetadataValue::<Ascii>::try_from(value)
-                .map_err(|_| ConnectError::InvalidMetadata)?;
-            metadata.append(key, value);
-        }
-        self.metadata = RequestMetadata(Arc::new(metadata));
+        self.metadata = RequestMetadata::new(entries).map_err(|_| ConnectError::InvalidMetadata)?;
         self.sessions = Arc::new(crate::session::Cache::new());
         Ok(self)
     }

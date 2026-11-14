@@ -158,6 +158,54 @@ fn channel_over(resolve: AccountResolver) -> Channel {
 }
 
 #[tokio::test]
+async fn transport_identity_metadata_scopes_blob_calls_and_availability() -> TestResult {
+    let store = crate::Store::new(crate::MemoryMedium::default());
+    let first = Arc::new(store.account(b"metadata-first")?);
+    let second = Arc::new(store.account(b"metadata-second")?);
+    let resolve: AccountResolver = {
+        let first = first.clone();
+        let second = second.clone();
+        Arc::new(move |metadata| {
+            if metadata.contains_key("authorization") {
+                return Err(wire::ErrorCode::AccessDenied.into());
+            }
+            match metadata
+                .get("x-account")
+                .and_then(|value| value.to_str().ok())
+            {
+                Some("first") => Ok(first.clone() as Arc<dyn Blobs>),
+                Some("second") => Ok(second.clone() as Arc<dyn Blobs>),
+                _ => Err(wire::ErrorCode::AccessDenied.into()),
+            }
+        })
+    };
+    let channel = channel_over(resolve);
+    let client = GrpcObjects::over(channel.clone(), CredentialProvider::transport_identity())
+        .with_request_metadata([("x-account", "first")])?;
+    let other = GrpcObjects::over(channel, CredentialProvider::transport_identity())
+        .with_request_metadata([("x-account", "second")])?;
+    crate::conformance::verify(&client, &other, "native-metadata").await?;
+    let digest = Digest::of(b"restored object");
+    let mut observation = client.availability(digest).await?;
+    first.availability_source().restored(digest)?;
+    observation.changed().await?;
+    let unknown = client
+        .clone()
+        .with_request_metadata([("x-account", "unknown")])?;
+    assert_eq!(
+        unknown.usage().await.unwrap_err().code,
+        wire::ErrorCode::AccessDenied
+    );
+    assert!(
+        client
+            .clone()
+            .with_request_metadata([("authorization", "Bearer replacement")])
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn caller_supplied_channel_refreshes_credentials_for_each_rpc() -> TestResult {
     let provider = Arc::new(MemoryObjects::memory());
     let observed = Arc::new(Mutex::new(Vec::new()));

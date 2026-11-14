@@ -19,7 +19,7 @@ pub(crate) struct Credential {
 
 impl Credential {
     pub(crate) async fn resolve(provider: Option<&CredentialProvider>) -> Result<Self, Error> {
-        let Some(provider) = provider else {
+        let Some(provider) = provider.filter(|provider| !provider.is_transport_identity()) else {
             return Ok(Self {
                 lease: None,
                 stop: Box::pin(future::pending()),
