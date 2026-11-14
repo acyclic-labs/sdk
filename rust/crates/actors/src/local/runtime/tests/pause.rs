@@ -292,7 +292,7 @@ async fn pause_retained_delivery(committed: bool, settlement_lost: bool) -> Test
 }
 
 #[derive(Clone, Copy, Debug)]
-enum Fault {
+pub(super) enum Fault {
     Load,
     Refuse,
     Unknown,
@@ -306,14 +306,26 @@ struct Cut {
 }
 
 #[derive(Default)]
-struct Provider {
+pub(super) struct Provider {
     inner: MemoryStream,
     cut: Mutex<Option<Cut>>,
+    journal: Mutex<Option<Cut>>,
     cuts: AtomicUsize,
 }
 
 impl Provider {
-    fn arm(&self, fault: Fault) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+    pub(super) fn hold_journal(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (entered, observing) = oneshot::channel();
+        let (release, released) = oneshot::channel();
+        *self.journal.lock().expect("journal lock") = Some(Cut {
+            fault: Fault::Load,
+            entered,
+            released,
+        });
+        (observing, release)
+    }
+
+    pub(super) fn arm(&self, fault: Fault) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
         let (entered, observing) = oneshot::channel();
         let (release, released) = oneshot::channel();
         *self.cut.lock().expect("cut lock") = Some(Cut {
@@ -382,6 +394,15 @@ impl StreamProvider for Provider {
         self.inner.inspect_idempotency(key).await
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
+        let cut = if request.path.as_str().ends_with("/journal") {
+            self.journal.lock().expect("journal lock").take()
+        } else {
+            None
+        };
+        if let Some(cut) = cut {
+            let _ = cut.entered.send(());
+            cut.released.await.map_err(|_| StreamError::Unavailable)?;
+        }
         self.inner.read(request).await
     }
     async fn follow(&self, request: FollowRequest) -> Result<FollowStream, StreamError> {

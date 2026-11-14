@@ -21,8 +21,9 @@ pub use body::*;
 mod state;
 pub use state::GuestState;
 mod state_transaction;
+pub(crate) use state_transaction::StateCommand;
 pub use state_transaction::{
-    ActorMetadataWrite, ActorStateAlarm, ActorStateCommit, ActorStateSeed,
+    ActorMetadataWrite, ActorStateAlarm, ActorStateCommit, ActorStateHost, ActorStateSeed,
 };
 mod handler;
 mod hosted;

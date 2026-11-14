@@ -8,7 +8,7 @@
 //! [`Store::activation`] for that actor in the same commit, and the dispatcher's
 //! assigned shard follow wakes it. A delivery reads its inputs with bounded finite reads.
 use super::ready::{Flight, ReadySet, Registration, Work};
-use super::{Error, PreparedPublish, Snapshot, State, Store, scheduling};
+use super::{Error, PreparedPublish, Publication, Snapshot, State, Store, owned, scheduling};
 use acyclic_stream::StreamProviderExt as _;
 mod clock;
 mod completion;
@@ -19,6 +19,7 @@ mod interrupt;
 mod limits;
 mod pause;
 mod placement;
+mod state;
 mod subscriptions;
 use crate::addressing::{AccountId, ActorReference, NamespaceId};
 use crate::guest::{Delivery, Handler, Transition, Trigger};
@@ -1841,6 +1842,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 record: record.clone(),
                 subscriptions: subscriptions.clone(),
             };
+            let mut handled_cut = Arc::clone(&snapshot);
             let invoked = |delivery| {
                 self.handler
                     .on_record(delivery, state.checkpoint(), cancellation.clone())
@@ -1853,6 +1855,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     cancellation.clone(),
                     delivery,
                     state.checkpoint(),
+                    &mut handled_cut,
                     invoked,
                 )
                 .await
@@ -1872,6 +1875,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             let publication = (|| -> Result<PreparedPublish, Error> {
                 let mut publication = match result {
                     Ok(transition) => self.prepare_transition(
+                        &handled_cut,
                         &snapshot,
                         epoch,
                         &trigger,
@@ -1884,7 +1888,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                             return Err(Error::Handler(failure));
                         };
                         let publication = self.store.prepare_failed_input(
-                            &snapshot,
+                            &handled_cut,
                             epoch,
                             &trigger,
                             input,
@@ -1904,7 +1908,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             let mut result = match publication {
                 Ok(publication) => {
                     inner.pending =
-                        Some((Arc::clone(&snapshot), publication, subscription.clone()));
+                        Some((Arc::clone(&handled_cut), publication, subscription.clone()));
                     settle_pending(&self.store, inner).await
                 }
                 Err(Error::PreconditionChanged(conflicts)) => {
@@ -1942,6 +1946,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                             cancellation.clone(),
                             delivery,
                             state.checkpoint(),
+                            &mut handled_cut,
                             invoked,
                         )
                         .await
@@ -1958,6 +1963,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         transition
                             .map(|transition| {
                                 let mut publication = self.prepare_transition(
+                                    &handled_cut,
                                     &snapshot,
                                     epoch,
                                     &trigger,
@@ -1973,7 +1979,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     match publication {
                         Ok(Some(publication)) => {
                             inner.pending =
-                                Some((Arc::clone(&snapshot), publication, subscription.clone()));
+                                Some((Arc::clone(&handled_cut), publication, subscription.clone()));
                             result = settle_pending(&self.store, inner).await;
                         }
                         Ok(None) => {}
@@ -2004,59 +2010,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         }
     }
 
-    /// Every handler entry uses the same manifest deadline and control fence,
-    /// including recovery from a definitive publication refusal. Each
-    /// invocation gets its own capability binding, revoked when it returns,
-    /// times out or is cancelled, so a task it leaves behind holds nothing.
-    async fn handled<'f, T>(
-        &self,
-        inner: &mut Inner,
-        actor: &ActorReference,
-        epoch: u64,
-        cancellation: crate::guest::CancellationToken,
-        delivery: impl FnOnce(crate::guest::RequestId) -> Delivery,
-        checkpoint: Option<&crate::guest::Checkpoint>,
-        invoke: impl FnOnce(Delivery) -> crate::guest::GuestFuture<'f, T>,
-    ) -> Result<T, Error> {
-        let request = self.requests.open(actor, epoch);
-        let delivery = delivery(request.id());
-        let handled = core::pin::pin!(acyclic_stream::trace::observe(
-            acyclic_stream::trace::Request {
-                name: "actors.handler",
-                mechanism: acyclic_stream::trace::Mechanism::ActorDelivery,
-                parent: None,
-                guarantee: Some("admitted_handler_under_original_control_and_deadline"),
-            },
-            invoke(delivery.clone()),
-            |_| None,
-        ));
-        let delivery = &delivery;
-        let interrupted = self.interrupt(inner, cancellation, |subscription, record| {
-            Box::pin(async move {
-                self.handler
-                    .accepts_interrupt(delivery, checkpoint, &subscription, &record)
-                    .await
-            })
-        });
-        let interrupted = core::pin::pin!(interrupted);
-        let timeout: BoxProviderFuture<'_, ()> = Box::pin(async {
-            match self.handler.manifest().limits.handler_timeout_millis() {
-                None => futures::future::pending::<()>().await,
-                Some(milliseconds) => sleep(milliseconds).await,
-            }
-        });
-        match futures::future::select(handled, futures::future::select(timeout, interrupted)).await
-        {
-            futures::future::Either::Left((transition, _)) => transition.map_err(Error::from),
-            futures::future::Either::Right((futures::future::Either::Left(_), _)) => {
-                Err(Error::Invalid("handler exceeded its manifest timeout"))
-            }
-            futures::future::Either::Right((futures::future::Either::Right((error, _)), _)) => {
-                Err(error)
-            }
-        }
-    }
-
     /// Every handler publication (a transition, a failed input, an
     /// `on_failure` transition) carries the handler's conditions and, when its
     /// state holds guest-added interests, the marker that restores them.
@@ -2073,6 +2026,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     fn prepare_transition(
         &self,
         snapshot: &Snapshot,
+        admitted: &Snapshot,
         epoch: u64,
         trigger: &Trigger,
         record: Option<&Record>,
@@ -2088,9 +2042,19 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         {
             return Err(Error::Invalid("checkpoint exceeds the manifest limit"));
         }
-        let mut publication = self
-            .store
-            .prepare_publish(snapshot, epoch, trigger, record, transition, identity)?;
+        // A state flush can replace the desired alarm while this delivery
+        // still consumes its originally admitted generation.
+        let mut publication = self.store.prepare_publication(
+            snapshot,
+            owned(snapshot, epoch)?.clone(),
+            &owned(admitted, epoch)?.alarm,
+            Publication {
+                trigger,
+                delivered: record,
+                transition,
+                key: identity,
+            },
+        )?;
         if self
             .handler
             .revalidate_foreign_conflicts(&self.store.actor(snapshot.path())?)

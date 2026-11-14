@@ -150,7 +150,13 @@ pub struct Requests(Arc<std::sync::Mutex<Bindings>>);
 #[derive(Debug, Default)]
 struct Bindings {
     next: u64,
-    live: std::collections::HashMap<u64, (ActorReference, u64)>,
+    live: std::collections::HashMap<u64, BoundRequest>,
+}
+#[derive(Debug)]
+struct BoundRequest {
+    actor: ActorReference,
+    epoch: u64,
+    state: Option<super::ActorStateHost>,
 }
 /// One open binding; dropping it closes the request.
 #[derive(Debug)]
@@ -182,19 +188,42 @@ impl Requests {
         let mut bindings = self.bindings();
         bindings.next = bindings.next.wrapping_add(1);
         let id = bindings.next;
-        bindings.live.insert(id, (actor.clone(), epoch));
+        bindings.live.insert(
+            id,
+            BoundRequest {
+                actor: actor.clone(),
+                epoch,
+                state: None,
+            },
+        );
         Request {
             id: RequestId(id),
             requests: self.clone(),
         }
     }
+    /// Native state of this live request, when its manifest declares it.
+    pub fn state(&self, request: RequestId) -> Result<super::ActorStateHost, GuestError> {
+        self.bindings()
+            .live
+            .get(&request.0)
+            .and_then(|binding| binding.state.clone())
+            .ok_or(GuestError::Revoked)
+    }
+
+    pub(crate) fn bind_state(&self, request: RequestId, state: super::ActorStateHost) {
+        let mut bindings = self.bindings();
+        if let Some(binding) = bindings.live.get_mut(&request.0) {
+            binding.state = Some(state);
+        }
+    }
+
     /// The actor and epoch a live request is bound to; a closed or unknown
     /// request is refused.
     pub fn admit(&self, request: RequestId) -> Result<(ActorReference, u64), GuestError> {
         self.bindings()
             .live
             .get(&request.0)
-            .cloned()
+            .map(|binding| (binding.actor.clone(), binding.epoch))
             .ok_or(GuestError::Revoked)
     }
 }
