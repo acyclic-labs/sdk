@@ -29,4 +29,6 @@ pub use after::{AfterHook, seed};
 #[cfg(not(target_arch = "wasm32"))]
 mod program;
 #[cfg(not(target_arch = "wasm32"))]
-pub use program::{BoundHook, LoadedProgram, ProgramFiles, load_program};
+pub use program::{
+    BoundHook, HookCatalogueCursor, HookCataloguePage, LoadedProgram, ProgramFiles, load_program,
+};
