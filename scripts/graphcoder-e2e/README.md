@@ -34,6 +34,10 @@ binary. Build it with `cargo build --locked -p acyclic-native-runtime --bin acyc
 for the target platform, then supply its absolute executable as `E2E_PROCESS_HOST`.
 Use the same source revision as GraphCoder and retain the successful Cargo output
 and executable digest. Changed host source requires a matching build.
+Headless inputs can declare `descendant_custody: true` when their service
+descendants must retire before the next input. This uses the same native owner
+as terminal inputs.
+GraphCoder orphan-fencing cases retain their direct process launch and recovery oracle.
 External acceptance
 commands run under a Linux subreaper, a macOS session or a Windows Job Object. Normal
 exit and suite cancellation drain their service descendants before returning.

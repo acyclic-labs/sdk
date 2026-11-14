@@ -250,11 +250,13 @@ async function execute(test, prepared) {
       await withFileSource(processes, fixture, input.file_source, async (path, closed) => {
         const arguments_ = [...fixture.args, ...args, ...(input.extra_args ?? [])]
           .map(argument => argument === "{{file_source}}" ? path : argument);
-        const running = await processes.startReported(binary, arguments_, { cwd: input.cwd ?? fixture.workspace, env: inputFixture.env });
+        if (input.descendant_custody) assert.equal(input.mode, "headless", "descendant custody requires a headless input");
+        const start = input.descendant_custody ? "startReportedOwned" : "startReported";
+        const running = await processes[start](binary, arguments_, { cwd: input.cwd ?? fixture.workspace, env: inputFixture.env });
         if (input.kill_on) {
           const signal = AbortSignal.any([running.failure, fixture.signal]);
           await withCancellation(running, signal, Promise.race([fixture.waitRequest(input.kill_on), running.closed.then(result => { throw new Error(`exited before kill point: ${JSON.stringify(result)}`); })]));
-          running.child.kill("SIGKILL");
+          running.killExecutable();
           const result = await running.exited;
           assert.ok(result.signal || result.code !== 0);
           interrupted.push(retainCapture(running.closed, captures));
@@ -262,7 +264,7 @@ async function execute(test, prepared) {
         } else if (input.mode === "jsonl") {
           // Message `<operation>:e2e`: rerunning the operation replays its answer.
           running.child.stdin.end(input.stdin ?? JSON.stringify({ prompt: input.text ?? "hello", id: messageId }) + "\n");
-        } else running.child.stdin.end();
+        } else if (!input.descendant_custody) running.child.stdin.end();
         let result;
         try { result = await withCancellation(running, fixture.signal, closed(running)); }
         catch (error) { captures.push(await running.closed); throw error; }

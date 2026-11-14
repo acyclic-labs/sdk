@@ -11,7 +11,7 @@
     { "when": { "user": "next configured prompt" }, "text": ["NEXT_CONFIGURED_ANSWER"] }
   ] },
   "inputs": [
-    { "mode": "headless", "args": ["-p", "must not prompt"], "exit": 1,
+    { "mode": "headless", "descendant_custody": true, "args": ["-p", "must not prompt"], "exit": 1,
       "stderr_contains": ["model provider API key is unavailable", "recovery:"],
       "stdout_absent": ["GraphCoder first run", "API key (hidden)"] },
     { "mode": "pty", "text": "\u0003", "exit": 1, "actions": [] },
