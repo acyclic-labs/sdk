@@ -100,7 +100,7 @@ mod volumes;
 pub use volumes::SpawnVolumes;
 
 pub use checkpoint::MAX_CHECKPOINT_BYTES;
-pub(crate) use checkpoint::{checkpoint_head, checkpoint_state, committed_head};
+pub(crate) use checkpoint::{checkpoint_head, committed_head};
 pub(crate) use commit::bind_root_policy;
 pub use commit::{
     Spawn, Submitted, archive, create_root, create_root_with_peer, inbox_tail, intent_key, send,

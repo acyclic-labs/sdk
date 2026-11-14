@@ -18,7 +18,7 @@ use crate::{
     resources::{GenerationRef, ProviderRef, WorkspaceRef},
 };
 use acyclic_fs::WorkCounters;
-use acyclic_fs::kernel::{AttributeClass, AttributeName, FileKind, LogicalName, NameEncoding};
+use acyclic_fs::kernel::{AttributeClass, AttributeName, FileKind, LogicalName};
 use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, Digest, DirectoryPage, Fs, Generation, GenerationId,
     IdempotencyKey as FilesystemKey, JoinPlan, TransactionCommit, Workspace, WorkspaceError,

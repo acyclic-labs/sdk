@@ -50,9 +50,6 @@ pub use evaluate::{
     prepare,
 };
 
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use evaluate::compile_module;
-
 #[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
 #[doc(hidden)]
 pub use evaluate::model;
