@@ -106,8 +106,12 @@ where
     ) -> std::result::Result<T, E> {
         match &self.traces {
             Some((traces, owner)) => {
+                // Lend one pinned work future through the observation layers:
+                // their frames retain a reference, not nested copies of its type.
+                // Fuse drops completed work before diagnostic finalization.
+                let mut work = std::pin::pin!(futures::FutureExt::fuse(work));
                 traces
-                    .observe(owner.as_str(), request, work, bytes)
+                    .observe(owner.as_str(), request, work.as_mut(), bytes)
                     .await
                     .result
             }
