@@ -309,6 +309,15 @@ impl Handler for OrderedPackage {
 async fn indexed_inputs_preserve_source_order_without_changing_default_fairness() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let source = StreamPath::new("indexed/order")?;
+    let combined = AppendRecord::changes(
+        b"original publication",
+        &["inbox", "z"].map(|key| acyclic_stream::wire::ChangeEntry {
+            key: Bytes::copy_from_slice(key.as_bytes()),
+            operation: "put".into(),
+            metadata: Bytes::copy_from_slice(key.as_bytes()),
+        }),
+        vec![],
+    )?;
     provider
         .append(AppendRequest {
             path: source.clone(),
@@ -326,6 +335,14 @@ async fn indexed_inputs_preserve_source_order_without_changing_default_fairness(
                 .collect::<Result<_, StreamError>>()?,
             if_tail: Some(0),
             idempotency_key: key("ordered/source")?,
+        })
+        .await?;
+    provider
+        .append(AppendRequest {
+            path: source.clone(),
+            records: vec![combined.clone()],
+            if_tail: Some(3),
+            idempotency_key: key("ordered/combined")?,
         })
         .await?;
     for ordered in [false, true] {
@@ -420,6 +437,25 @@ async fn indexed_inputs_preserve_source_order_without_changing_default_fairness(
                 bound.paused = true;
             }
             assert!(runtime.next_record(&state, None).await?.is_none());
+        }
+        let mut state = snapshot.state().ok_or("missing ordered state")?.clone();
+        for subscription in state.subscriptions.values_mut() {
+            subscription.cursor = 3;
+        }
+        for after in [None, Some("inbox"), Some("z")] {
+            let (trigger, record, _) = runtime
+                .next_record(&state, after)
+                .await?
+                .ok_or("missing combined publication")?;
+            assert_eq!(
+                trigger.record_position().map(|(_, sequence)| sequence),
+                Some(3)
+            );
+            assert_eq!(
+                record.value, combined.value,
+                "atomic change entries were projected"
+            );
+            assert_eq!(record.headers, combined.headers);
         }
     }
     Ok(())

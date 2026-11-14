@@ -2230,6 +2230,39 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 sequence: record.sequence,
             },
         };
+        let record = if matches!(&trigger, Trigger::KeyedRecord { .. })
+            && acyclic_stream::is_changes(&record.headers)
+        {
+            // Follow projects typed entries. It selects the position, but an
+            // actor consumes the original atomic publication, including changes
+            // selected by another subscription. This point read buys that
+            // whole-record guarantee without scanning the unselected backlog.
+            let mut original = self
+                .store
+                .provider()
+                .read(acyclic_stream::ReadRequest {
+                    key: None,
+                    path: subscription.path.clone(),
+                    from: record.sequence,
+                    limit: 1,
+                    at_least: Default::default(),
+                })
+                .await?;
+            let original = original
+                .next()
+                .await
+                .transpose()?
+                .ok_or(Error::Invalid("selected publication is absent"))?;
+            if original.sequence != record.sequence
+                || original.commit_id != record.commit_id
+                || original.origin != record.origin
+            {
+                return Err(Error::Invalid("selected publication identity differs"));
+            }
+            original
+        } else {
+            record
+        };
         Ok(Some((trigger, record)))
     }
 }

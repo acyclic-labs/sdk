@@ -395,6 +395,8 @@ pub trait Handler: acyclic_stream::ProviderPlatform {
     /// A selected filter must require at least one index key. Key ranges use
     /// source sequence order, even when key order differs or a record has
     /// several matching keys. Attribute clauses retain their stream semantics.
+    /// Selection does not project delivery: handlers receive the original whole
+    /// record, including typed changes selected by other subscriptions.
     fn subscription_filter(
         &self,
         _id: &str,
