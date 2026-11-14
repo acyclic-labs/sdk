@@ -238,6 +238,51 @@ impl<
         result
     }
 
+    /// Complete no-follow metadata at the same immutable authored/source cut
+    /// as a range read. Resolving metadata never materializes the file body.
+    pub async fn workspace_stat_at_snapshot(
+        &self,
+        cut: &LazySnapshotRef,
+        path: &str,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Option<crate::WorkspaceStat>, LazyWorkspaceError> {
+        let (lookup, _, guard) = self.lookup_at_snapshot(cut, path, ctx).await?;
+        let Some(lookup) = lookup else {
+            crate::kernel::retire_allocation(guard, 0, ctx)?;
+            return Ok(None);
+        };
+        let result = async {
+            let stat = lookup.stat();
+            let kind = match stat.kind {
+                SourceNodeKind::RegularFile => FileKind::Regular,
+                SourceNodeKind::Directory => FileKind::Directory,
+                SourceNodeKind::SymbolicLink => FileKind::SymbolicLink,
+                SourceNodeKind::Fifo => FileKind::Fifo,
+                SourceNodeKind::Socket => FileKind::Socket,
+                SourceNodeKind::CharacterDevice => FileKind::CharacterDevice,
+                SourceNodeKind::BlockDevice => FileKind::BlockDevice,
+                SourceNodeKind::Unsupported => return Err(LazyWorkspaceError::UnsupportedNode),
+            };
+            let link_count = match &lookup {
+                LazyLookup::Authored { record, .. } => record.link_count,
+                LazyLookup::Shadow {
+                    source_link_count, ..
+                } => *source_link_count,
+                LazyLookup::Source { node, .. } => node.link_count.unwrap_or(1),
+            };
+            Ok(Some(crate::WorkspaceStat {
+                file_id: self.stable_file_id_for_lookup(path, &lookup, ctx).await?,
+                kind,
+                link_count,
+                logical_bytes: stat.logical_bytes,
+                metadata: lookup.metadata(),
+            }))
+        }
+        .await;
+        self.retire_lookup((lookup, guard), ctx)?;
+        result
+    }
+
     pub(crate) async fn inspect_unauthored(
         &self,
         checkout: &mut crate::Checkout<A, O>,
