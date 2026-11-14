@@ -106,7 +106,13 @@ proptest! {
             (1.., Ok(anchor)) => Ok(Some(anchor)),
             _ => Err(StreamError::InvalidArgument),
         };
-        prop_assert_eq!(record_anchor(&decoded).map(|id| id.map(|id| *id.as_bytes())), expected);
+        let actual = record_anchor(&decoded);
+        if next != 0 && decoded.opaque.len() != 32 {
+            let error = actual.as_ref().unwrap_err();
+            prop_assert!(std::error::Error::source(error)
+                .is_some_and(|source| source.is::<std::array::TryFromSliceError>()));
+        }
+        prop_assert_eq!(actual.map(|id| id.map(|id| *id.as_bytes())).map_err(|error| error.category()), expected);
     }
 
     #[test]

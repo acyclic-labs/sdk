@@ -306,7 +306,7 @@ pub fn record_anchor(cursor: &wire::SessionCursor) -> Result<Option<CommitId>, S
         .opaque
         .as_ref()
         .try_into()
-        .map_err(|_| StreamError::InvalidArgument)?;
+        .map_err(|source| StreamError::InvalidArgument.with_source(source))?;
     Ok(Some(CommitId::from_bytes(anchor)))
 }
 
