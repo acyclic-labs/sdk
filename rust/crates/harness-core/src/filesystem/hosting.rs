@@ -114,6 +114,8 @@ impl Prepared {
     /// Preparation retains publication custody without making the root visible.
     /// A supplied policy is seeded in the journal and bound to its exact initial
     /// generation in the adoption before the shared commit is sealed.
+    /// `cuts` is the same volume-resource owner used by subsequent forks;
+    /// it retains lazy source cuts for pre-existing project bindings.
     ///
     /// # Errors
     /// Invalid placement, conflicting volume creation or storage failure.
@@ -122,6 +124,7 @@ impl Prepared {
         Spawn { child, request }: Spawn,
         fresh: &[WorkspaceEntry],
         policy: Option<crate::approvals::ApprovalPolicy>,
+        cuts: Option<&dyn super::VolumeResources>,
     ) -> Result<Self, Error>
     where
         P: AuthorityProvider + ?Sized + 'static,
@@ -173,7 +176,7 @@ impl Prepared {
                 generation,
             )?;
         }
-        super::history::capture_creation(fs, &child, &created, &mut commit)
+        super::history::capture_creation(fs, &child, &created, cuts, &mut commit)
             .await
             .map_err(|error| turn(crate::Error::Storage(error.to_string())))?;
         fs.seal_commit(&mut commit, WorkBudget::UNBOUNDED, &cancellation)
@@ -1566,7 +1569,14 @@ where
         if indexed {
             self.index_session(&child, &mut request)?;
         }
-        Prepared::prepare(&self.volumes, Spawn { child, request }, &fresh, policy).await
+        Prepared::prepare(
+            &self.volumes,
+            Spawn { child, request },
+            &fresh,
+            policy,
+            self.spawns.volume_resources(),
+        )
+        .await
     }
 
     /// Submits `prepared` once and settles it: committed, the root is hosted;

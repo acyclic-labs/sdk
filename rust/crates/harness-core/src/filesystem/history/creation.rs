@@ -8,6 +8,7 @@ pub(in crate::filesystem) async fn capture_creation<P, O>(
     fs: &Fs<StreamAuthorityStore<P>, O>,
     agent: &AgentPath,
     prepared: &[acyclic_fs::CreatedGeneration],
+    cuts: Option<&dyn super::super::VolumeResources>,
     commit: &mut FilesystemCommit,
 ) -> Result<(), GuestError>
 where
@@ -119,7 +120,7 @@ where
                 .await
                 .map_err(|failure| guest(failure.error))?;
             volumes.push(
-                retention::retain(fs, (agent, 0), binding, &head, None, commit, &cancellation)
+                retention::retain(fs, (agent, 0), binding, &head, cuts, commit, &cancellation)
                     .await?,
             );
         }

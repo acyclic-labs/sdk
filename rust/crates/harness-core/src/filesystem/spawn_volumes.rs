@@ -82,6 +82,9 @@ pub trait VolumeResources: acyclic_stream::ProviderPlatform + 'static {
 }
 
 impl<P: ?Sized, O> FilesystemSpawnVolumes<P, O> {
+    pub(super) fn volume_resources(&self) -> Option<&dyn VolumeResources> {
+        self.cuts.as_deref()
+    }
     /// Volumes on `host`, whose authority must be the agents' stream
     /// provider.
     #[must_use]
@@ -754,7 +757,14 @@ where
         }
         prepared.extend(created);
         for agent in &self.journals {
-            super::history::capture_creation(fs, agent, &prepared, &mut commit).await?;
+            super::history::capture_creation(
+                fs,
+                agent,
+                &prepared,
+                self.cuts.as_deref(),
+                &mut commit,
+            )
+            .await?;
         }
         fs.seal_commit(&mut commit, WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|failure| crate::Error::guest(failure.error))?;

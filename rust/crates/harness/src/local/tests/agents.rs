@@ -4196,6 +4196,97 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
 }
 
 #[tokio::test]
+async fn historical_session_forks_keep_source_only_files_from_adoption() -> Result<()> {
+    use acyclic_fs::{CancellationToken, WorkBudget};
+    let directory = tempfile::tempdir().map_err(agent)?;
+    std::fs::write(
+        directory.path().join("source-only.txt"),
+        b"original native source",
+    )
+    .map_err(agent)?;
+    let provider = super::scripted([
+        crate::test_support::ScriptedTurn::Text("parent answer".into()),
+        crate::test_support::ScriptedTurn::Text("child answer".into()),
+    ]);
+    let harness = Arc::new(
+        super::open_scripted(super::checkout_config(
+            directory.path(),
+            (super::model()?, provider),
+        )?)
+        .await?,
+    );
+    let (agents, root) = harness.agents().await?;
+    let (agents, root) = (Arc::clone(agents), root.clone());
+    let connection = harness.connect().await?;
+    let client = Conversation::open(connection.clone());
+    client
+        .send("original", "settle one turn without changing project files")
+        .await?;
+    settled(&harness, &root).await?;
+    let workspace = harness
+        .workspace
+        .as_ref()
+        .ok_or_else(|| Error::Invalid("historical session has no native workspace".into()))?;
+    let cancellation = CancellationToken::new();
+    let authored = workspace
+        .view()
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(|failure| agent(failure.error))?
+        .value;
+    assert!(
+        authored
+            .stat("/source-only.txt", WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .is_err(),
+        "fixture must remain source-only at the fork boundary"
+    );
+    let crate::client::AgentReply::Spawned { agent: child, .. } = connection
+        .execute(&crate::client::AgentCommand::Fork {
+            continuation: None,
+            parent: root,
+            id: crate::agent::IntentId::try_from("source-only-history").map_err(agent)?,
+            at: 0,
+            brief: crate::model::ModelContent::Text("continue the original files".into()),
+            role: "worker".into(),
+        })
+        .await?
+    else {
+        return Err(Error::Invalid(
+            "historical fork returned another reply".into(),
+        ));
+    };
+    settled(&harness, &child).await?;
+    let state = agents.state(&child).await.map_err(agent)?;
+    let project = state
+        .volumes
+        .iter()
+        .find_map(|binding| {
+            binding
+                .as_volume()
+                .filter(|volume| volume.class() == crate::conversation::VolumeClass::Project)
+        })
+        .ok_or_else(|| Error::Invalid("historical child has no project".into()))?;
+    let selected = workspace.spawned_project_view(project).await?;
+    let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| agent(error))?;
+    let bytes = selected
+        .read(
+            "/source-only.txt",
+            64,
+            &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work: &work,
+                cancellation: &cancellation,
+            },
+        )
+        .await
+        .map_err(agent)?;
+    assert_eq!(bytes.bytes.as_slice(), b"original native source");
+    Ok(())
+}
+
+#[tokio::test]
 async fn historical_child_settles_after_its_parent_has_later_context_segments() -> Result<()> {
     use crate::filesystem::VolumeResources;
     use acyclic_fs::{CancellationToken, WorkBudget};
