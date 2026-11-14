@@ -65,7 +65,7 @@ fn granted_cwd_keeps_the_original_object_across_path_replacement() {
         let cwd = grant
             .validate_launch(Some(&selected), command.get_env_clear())
             .unwrap();
-        let boundary = match grant.prepare_launch(Some(cwd), None) {
+        let boundary = match grant.prepare_launch(Some(cwd.as_ref()), None) {
             Ok(boundary) => boundary,
             Err(error) if error.kind() == io::ErrorKind::Unsupported => {
                 assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
@@ -83,7 +83,7 @@ fn granted_cwd_keeps_the_original_object_across_path_replacement() {
         let absent = grant.validate_launch(Some(&selected), true).unwrap();
         let denied = crate::tests::ReadBudgetMeter::new(0, u64::MAX);
         let error = grant
-            .prepare_launch(Some(absent), Some(&denied))
+            .prepare_launch(Some(absent.as_ref()), Some(&denied))
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Other);
         std::os::unix::fs::symlink(&external, &selected).unwrap();
@@ -100,7 +100,7 @@ fn granted_cwd_keeps_the_original_object_across_path_replacement() {
         );
         // A replacement in the earlier validation/preparation interval must
         // instead refuse: openat2 cannot traverse this substituted symlink.
-        let error = grant.prepare_launch(Some(cwd), None).unwrap_err();
+        let error = grant.prepare_launch(Some(cwd.as_ref()), None).unwrap_err();
         assert_eq!(error.raw_os_error(), Some(libc::ELOOP));
         std::fs::remove_file(&selected).unwrap();
         std::fs::remove_dir(&held).unwrap();
@@ -233,7 +233,7 @@ fn closed_stream_probe() {
     let cwd = grant
         .validate_launch(command.get_current_dir(), command.get_env_clear())
         .unwrap();
-    let boundary = match grant.prepare_launch(Some(cwd), None) {
+    let boundary = match grant.prepare_launch(Some(cwd.as_ref()), None) {
         Ok(boundary) => boundary,
         Err(error) if error.kind() == io::ErrorKind::Unsupported => {
             assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());

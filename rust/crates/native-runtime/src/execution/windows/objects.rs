@@ -16,8 +16,8 @@ use windows_sys::{
     Win32::{
         Foundation::{RtlNtStatusToDosError, UNICODE_STRING},
         Storage::FileSystem::{
-            FILE_ATTRIBUTE_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
-            FILE_TRAVERSE, SYNCHRONIZE,
+            FILE_ATTRIBUTE_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_READ,
+            FILE_SHARE_WRITE, FILE_TRAVERSE, SYNCHRONIZE,
         },
         System::IO::IO_STATUS_BLOCK,
     },
@@ -64,10 +64,10 @@ pub(in crate::execution) fn open_beneath(
             } else {
                 0
             };
-        let traverse = if directory || components.peek().is_some() {
+        let access = if directory || components.peek().is_some() {
             FILE_TRAVERSE
         } else {
-            0
+            FILE_READ_DATA
         };
         let child =
             crate::meter::native_control_attempt(meter, crate::NativeOperationKind::Read, || {
@@ -79,7 +79,7 @@ pub(in crate::execution) fn open_beneath(
                 let status = unsafe {
                     NtCreateFile(
                         &raw mut handle,
-                        FILE_READ_ATTRIBUTES | SYNCHRONIZE | traverse,
+                        FILE_READ_ATTRIBUTES | SYNCHRONIZE | access,
                         &raw const attributes,
                         &raw mut result,
                         std::ptr::null(),

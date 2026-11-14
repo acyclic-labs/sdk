@@ -761,8 +761,79 @@ fn scoped_native_reads_pin_the_original_parent_and_refuse_escape() {
         );
     }
     #[cfg(windows)]
-    assert!(std::fs::rename(&original, temp.path().join("retired")).is_err());
+    {
+        assert!(std::fs::rename(&original, temp.path().join("retired")).is_err());
+        let source = original.join("source");
+        let renamed = original.join("renamed");
+        std::fs::write(&source, "retained read").unwrap();
+        let retained = windows::open_beneath(
+            &ceiling.policy.workspace._object,
+            Path::new("source"),
+            false,
+            None,
+        )
+        .unwrap();
+        assert!(std::fs::rename(&source, &renamed).is_err());
+        drop(retained);
+        std::fs::rename(&source, &renamed).unwrap();
+    }
 }
+#[cfg(windows)]
+#[test]
+fn dos_and_verbatim_cwds_bind_the_same_granted_directory() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("workspace");
+    let read = temp.path().join("read");
+    let write = temp.path().join("write");
+    let foreign = temp.path().join("workspace-neighbor");
+    for path in [&workspace, &read, &write, &foreign] {
+        std::fs::create_dir(path).unwrap();
+        std::fs::create_dir(path.join("nested")).unwrap();
+    }
+    let grant = ExecutionGrant::composed(
+        &workspace,
+        ExecutionAccess::WorkspaceWrite,
+        [write.clone()],
+        [read.clone()],
+        ExecutionNetwork::Isolated,
+    )
+    .unwrap();
+    for root in [&workspace, &read, &write] {
+        for path in [root.clone(), root.join("nested")] {
+            let canonical = std::fs::canonicalize(&path).unwrap();
+            let spellings = [
+                crate::paths::strip_verbatim(&canonical).into_owned(),
+                canonical,
+            ];
+            for spelling in spellings {
+                let cwd = grant.validate_launch(Some(&spelling), true).unwrap();
+                let selected = grant.policy.cwd_root(&cwd).unwrap();
+                let root = selected.bind_controlled(None).unwrap();
+                let relative = cwd.strip_prefix(&selected.path).unwrap();
+                let directory = if relative.as_os_str().is_empty() {
+                    root
+                } else {
+                    windows::open_beneath(&root, relative, true, None).unwrap()
+                };
+                let expected = BoundPath::new(&path).unwrap();
+                assert_eq!(crate::file_identity(&directory).unwrap(), expected.identity);
+            }
+        }
+    }
+    for spelling in [
+        foreign,
+        PathBuf::from("workspace"),
+        workspace.join("..").join("workspace-neighbor"),
+    ] {
+        let error = grant.validate_launch(Some(&spelling), true).unwrap_err();
+        assert!(
+            error
+                .get_ref()
+                .is_some_and(|cause| cause.is::<ExecutionRefusal>())
+        );
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub(crate) fn system_read_roots() -> Vec<PathBuf> {
     ["/usr", "/bin", "/lib", "/lib64", "/etc/ld.so.cache"]

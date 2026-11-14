@@ -4,10 +4,11 @@
 
 use super::{BoundPath, ExecutionAccess, ExecutionNetwork, Grant, refused, unavailable};
 use std::{
+    borrow::Cow,
     ffi::c_void,
     fs::File,
     io,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, OnceLock},
 };
 use windows_sys::Win32::Foundation::HANDLE;
@@ -17,6 +18,20 @@ pub(super) use objects::{open_beneath, validate_stdio};
 mod specification;
 
 pub(super) const REQUIRED_CAPABILITY: &str = "windows-psec-1.1";
+
+pub(super) fn launch_path(path: &Path) -> io::Result<Cow<'_, Path>> {
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+
+    if matches!(path.components().next(), Some(std::path::Component::Prefix(prefix)) if prefix.kind().is_verbatim())
+    {
+        return Ok(Cow::Borrowed(path));
+    }
+    // Reuse the one lossless DOS namespace normalizer, without a filesystem
+    // lookup or a second implementation of drive/UNC/verbatim spelling.
+    let (path, _) = crate::namespace::namespace_path(path, None)?;
+    let path = path.strip_suffix(&[0]).ok_or(io::ErrorKind::InvalidInput)?;
+    Ok(Cow::Owned(PathBuf::from(OsString::from_wide(path))))
+}
 
 type Create = unsafe extern "system" fn(*const c_void, u32, u32, *mut HANDLE) -> i32;
 type Close = unsafe extern "system" fn(HANDLE);
@@ -154,8 +169,8 @@ impl Prepared {
         {
             drop(root.bind_controlled(meter)?);
         }
-        let cwd = cwd.unwrap_or(&grant.workspace);
-        let selected = grant.cwd_root(cwd)?;
+        let cwd = super::launch_path(cwd.unwrap_or(&grant.workspace))?;
+        let selected = grant.cwd_root(&cwd)?;
         let root = selected.bind_controlled(meter)?;
         let relative = cwd.strip_prefix(&selected.path).map_err(refused)?;
         let cwd = if relative.as_os_str().is_empty() {
