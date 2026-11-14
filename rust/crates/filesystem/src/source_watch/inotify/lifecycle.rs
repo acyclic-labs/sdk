@@ -304,6 +304,13 @@ impl NativeSourceWatch {
         self.shared.read_events_and_deliver(work)
     }
 
+    pub(crate) async fn fence_events_async_with_work<W: SourceDemandReadWork>(
+        &self,
+        work: &mut W,
+    ) -> Result<bool, DemandError> {
+        self.shared.read_events_and_deliver_async(work).await
+    }
+
     pub(crate) fn delivery(&self) -> &Delivery {
         &self.shared.delivery
     }

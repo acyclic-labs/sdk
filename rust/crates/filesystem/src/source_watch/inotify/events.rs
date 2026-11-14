@@ -125,6 +125,26 @@ impl Shared {
         self.read_events_and_deliver_locked(&mut reading, work)
     }
 
+    pub(super) async fn read_events_and_deliver_async<W: SourceDemandReadWork>(
+        &self,
+        work: &mut W,
+    ) -> Result<bool, DemandError> {
+        work.check()?;
+        hub::hub()?.check()?;
+        if self.delivery.original.is_some() && !self.delivery.is_exact() {
+            return Ok(false);
+        }
+        // Cancellation of acquisition must also return an owed service pass,
+        // after the mutex future has returned any assigned permit.
+        let served = OwedService(self);
+        let raw = self.reading.raw.lock_async().await;
+        let mut reading = ReadingGuard {
+            raw,
+            _served: served,
+        };
+        self.read_events_and_deliver_locked(&mut reading, work)
+    }
+
     /// [`Self::read_events_and_deliver`] under a held cursor.
     #[allow(
         clippy::too_many_lines,

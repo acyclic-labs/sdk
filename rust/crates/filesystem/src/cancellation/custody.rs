@@ -25,6 +25,11 @@ impl<T> Custody<T> {
         self.0.try_lock().ok()
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn lock_async(&self) -> MutexGuard<'_, T> {
+        self.0.lock().await
+    }
+
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn get_mut(&mut self) -> &mut T {
         self.0.get_mut()

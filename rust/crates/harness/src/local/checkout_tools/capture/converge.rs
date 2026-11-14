@@ -101,6 +101,9 @@ pub(super) fn capture<'a>(
         }
         baseline |= matches!(initial, Some(WatchBatch::RescanRequired { .. }));
         if !baseline {
+            #[cfg(target_os = "linux")]
+            cursor.watcher.fence_async().await.map_err(storage)?;
+            #[cfg(not(target_os = "linux"))]
             cursor.watcher.fence().map_err(storage)?;
             #[cfg(all(test, not(loom)))]
             cursor.inject("fence")?;
