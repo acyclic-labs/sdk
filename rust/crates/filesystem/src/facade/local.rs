@@ -203,11 +203,13 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     ) -> Result<Self, FsError> {
         Self::local_with_anchor(options, Some(ownership)).await
     }
-    async fn local_with_anchor(
+    // Keep root initialization behind one cold-path future boundary so callers
+    // do not embed the Stream/Objects initialization graph in their own frames.
+    fn local_with_anchor(
         options: LocalOptions,
         external_owner: Option<OwnershipAnchor>,
-    ) -> Result<Self, FsError> {
-        (async move {
+    ) -> acyclic_stream::BoxProviderFuture<'static, Result<Self, FsError>> {
+        Box::pin(async move {
             // Registry operations never suspend. A synchronous lock prevents unrelated
             // runtime executors from owning asynchronous wake handoffs for this map.
             static REGISTRY: OnceLock<std::sync::Mutex<LocalRootRegistry>> = OnceLock::new();
@@ -276,7 +278,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             existing.live = Arc::downgrade(&fs.inner);
             Ok(fs)
         })
-        .await
     }
     pub(super) async fn open_local_unshared(
         options: LocalOptions,
