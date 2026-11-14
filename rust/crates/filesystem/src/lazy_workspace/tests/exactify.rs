@@ -34,7 +34,7 @@ async fn fork_base_refines_only_deletions_added_after_its_cut() {
         .await
         .unwrap();
     let cancellation = CancellationToken::new();
-    let mut complete = WorkBudget::UNBOUNDED.accounting(&cancellation);
+    let mut complete = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let all = child
         .source_tombstones_owned(usize::MAX, None, &mut complete)
         .await
@@ -47,7 +47,7 @@ async fn fork_base_refines_only_deletions_added_after_its_cut() {
         ["/file-000", "/file-128"]
     );
     all.retire(&mut complete).unwrap();
-    let mut frontier = WorkBudget::UNBOUNDED.accounting(&cancellation);
+    let mut frontier = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let added = child
         .source_tombstones_owned(usize::MAX, Some(cut.overlay), &mut frontier)
         .await
