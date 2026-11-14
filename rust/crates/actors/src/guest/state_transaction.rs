@@ -70,6 +70,10 @@ pub(crate) enum StateCommand {
         ActorStateCommit,
         tokio::sync::oneshot::Sender<Result<(), super::GuestError>>,
     ),
+    Stage(
+        ActorStateCommit,
+        tokio::sync::oneshot::Sender<Result<(), super::GuestError>>,
+    ),
     Read(
         u64,
         u32,
@@ -104,6 +108,16 @@ impl ActorStateHost {
     /// capability. The runtime retains an unknown publication itself.
     pub async fn commit(&self, packet: ActorStateCommit) -> Result<(), super::GuestError> {
         self.request(|reply| StateCommand::Commit(packet, reply))
+            .await
+    }
+
+    /// Retain the final unflushed packet for this delivery's publication.
+    /// This acknowledgement is not durability: the packet, checkpoint,
+    /// effects and consumed input publish together only after the handler
+    /// returns successfully. Failure discards it but preserves prior flushes.
+    /// No further flush or final packet is accepted after this handoff.
+    pub async fn stage(&self, packet: ActorStateCommit) -> Result<(), super::GuestError> {
+        self.request(|reply| StateCommand::Stage(packet, reply))
             .await
     }
 

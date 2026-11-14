@@ -625,7 +625,7 @@ impl PreparedPublish {
     /// Add one effect. Hard effects join the canonical hard publication;
     /// soft effects apply or skip their entire mutation group together.
     /// Guest effects cannot mutate any runtime-owned stream: the actor's
-    /// failure, custody and placement records, or its root's runtime
+    /// failure, custody, placement and journal records, or its root's runtime
     /// namespaces (scheduling, dispatcher, sockets).
     pub fn join(&mut self, effect: CommitEffect) -> Result<(), Error> {
         if self

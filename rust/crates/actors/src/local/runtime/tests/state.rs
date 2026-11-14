@@ -1,6 +1,6 @@
 use super::*;
 use crate::guest::{
-    ActorMetadataWrite, ActorStateAlarm, ActorStateCommit, ActorStateHost, Requests,
+    ActorMetadataWrite, ActorStateAlarm, ActorStateCommit, ActorStateHost, GuestError, Requests,
 };
 
 struct Flushes {
@@ -10,6 +10,7 @@ struct Flushes {
     retained: std::sync::Mutex<Option<ActorStateHost>>,
     entered: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<crate::guest::RequestId>>>,
     gate: Option<Arc<tokio::sync::Semaphore>>,
+    stage_final: bool,
 }
 
 impl Handler for Flushes {
@@ -50,27 +51,32 @@ impl Handler for Flushes {
                     deletions: Vec::new(),
                     journal_from: "0".into(),
                     journal: vec![Bytes::from_static(b"one")],
-                    alarm: ActorStateAlarm::Keep,
+                    alarm: ActorStateAlarm::Set {
+                        deadline: "500".into(),
+                    },
                 })
                 .await?;
             assert_eq!(
                 state.read_journal(0, 10).await?,
                 vec![Bytes::from_static(b"one")]
             );
-            state
-                .commit(ActorStateCommit {
-                    writes: vec![ActorMetadataWrite {
-                        key: "value".into(),
-                        value: Bytes::from_static(b"second"),
-                    }],
-                    deletions: Vec::new(),
-                    journal_from: "1".into(),
-                    journal: vec![Bytes::from_static(b"two")],
-                    alarm: ActorStateAlarm::Set {
-                        deadline: "1000".into(),
-                    },
-                })
-                .await?;
+            let packet = ActorStateCommit {
+                writes: vec![ActorMetadataWrite {
+                    key: "value".into(),
+                    value: Bytes::from_static(b"second"),
+                }],
+                deletions: Vec::new(),
+                journal_from: "1".into(),
+                journal: vec![Bytes::from_static(b"two")],
+                alarm: ActorStateAlarm::Set {
+                    deadline: "1000".into(),
+                },
+            };
+            if self.stage_final {
+                state.stage(packet).await?;
+            } else {
+                state.commit(packet).await?;
+            }
             Ok(Transition {
                 response: None,
                 checkpoint: Checkpoint {
@@ -87,9 +93,210 @@ impl Handler for Flushes {
     }
 }
 
+struct HoldFinal {
+    inner: Flushes,
+    entered: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    finish: tokio::sync::Semaphore,
+}
+
+impl Handler for HoldFinal {
+    fn manifest(&self) -> &Manifest {
+        self.inner.manifest()
+    }
+
+    fn on_record<'a>(
+        &'a self,
+        delivery: Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        cancellation: crate::guest::CancellationToken,
+    ) -> GuestFuture<'a, Transition> {
+        Box::pin(async move {
+            let transition = self
+                .inner
+                .on_record(delivery, checkpoint, cancellation)
+                .await?;
+            let _ = self.entered.lock().unwrap().take().unwrap().send(());
+            self.finish.acquire().await.unwrap().forget();
+            Ok(transition)
+        })
+    }
+}
+
+#[tokio::test]
+async fn final_state_packet_shares_the_delivery_fence_and_preserves_flushed_prefix() -> TestResult {
+    for deposed in [false, true] {
+        let store = Store::new(Arc::new(MemoryStream::default()), root()?);
+        let requests = Requests::default();
+        let mut manifest = crate::guest::wire::decode_manifest(
+            &crate::guest::wire::encode_manifest(Package::new()?.manifest()),
+        )?;
+        manifest
+            .bindings
+            .push(crate::domain::Binding::actor_state("STATE".into())?);
+        let (entered, observing) = tokio::sync::oneshot::channel();
+        let handler = Arc::new(HoldFinal {
+            inner: Flushes {
+                manifest,
+                requests: requests.clone(),
+                calls: AtomicU64::new(0),
+                retained: std::sync::Mutex::new(None),
+                entered: std::sync::Mutex::new(None),
+                gate: None,
+                stage_final: true,
+            },
+            entered: std::sync::Mutex::new(Some(entered)),
+            finish: tokio::sync::Semaphore::new(0),
+        });
+        let runtime = Runtime::new(
+            requests,
+            store.clone(),
+            handler.clone(),
+            Arc::new(Manual(AtomicU64::new(100))),
+        );
+        let address = spawn_with(&store, "joined-state", &[b"emit"]).await?;
+        runtime.place(address.clone(), 1).await?;
+        let before = store.load(&address).await?;
+        let previous_checkpoint = before
+            .state()
+            .ok_or("missing initial actor state")?
+            .checkpoint()
+            .cloned();
+        let final_checkpoint = Checkpoint {
+            codec: handler.manifest().codec.clone(),
+            bytes: Bytes::from_static(b"finished"),
+        };
+        let delivery = runtime.drain_event(&address);
+        futures::pin_mut!(delivery);
+        match futures::future::select(delivery.as_mut(), observing).await {
+            futures::future::Either::Right((entered, _)) => entered?,
+            futures::future::Either::Left((result, _)) => {
+                return Err(format!("ended before stage: {result:?}").into());
+            }
+        }
+        let prefix = store.load(&address).await?;
+        let state = prefix.state().ok_or("missing flushed prefix")?;
+        assert_eq!(state.cursor("inbox"), Some(0));
+        assert_eq!(state.journal_tail, 1);
+        assert_eq!(
+            state.metadata.get("value"),
+            Some(&Bytes::from_static(b"first"))
+        );
+        assert_eq!(state.checkpoint(), previous_checkpoint.as_ref());
+        assert_eq!(state.alarm().pending(), Some(500));
+        if deposed {
+            let successor = Runtime::new(
+                Requests::default(),
+                store.clone(),
+                handler.clone(),
+                Arc::new(Manual(AtomicU64::new(100))),
+            );
+            successor.place(address.clone(), 2).await?;
+        }
+        handler.finish.add_permits(1);
+        let delivered = delivery.await;
+        assert_eq!(delivered.is_err(), deposed, "{delivered:?}");
+        let cut = store.load(&address).await?;
+        let state = cut.state().ok_or("missing final cut")?;
+        assert_eq!(state.cursor("inbox"), Some(u64::from(!deposed)));
+        assert_eq!(state.journal_tail, if deposed { 1 } else { 2 });
+        assert_eq!(
+            state.metadata.get("value"),
+            Some(&Bytes::from_static(if deposed {
+                b"first"
+            } else {
+                b"second"
+            }))
+        );
+        assert_eq!(
+            state.checkpoint(),
+            if deposed {
+                previous_checkpoint.as_ref()
+            } else {
+                Some(&final_checkpoint)
+            }
+        );
+        assert_eq!(
+            state.alarm().pending(),
+            Some(if deposed { 500 } else { 1000 })
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn stale_epoch_flush_is_a_typed_revocation_and_publishes_nothing() -> TestResult {
+    let store = Store::new(Arc::new(MemoryStream::default()), root()?);
+    let requests = Requests::default();
+    let mut manifest = crate::guest::wire::decode_manifest(&crate::guest::wire::encode_manifest(
+        Package::new()?.manifest(),
+    ))?;
+    manifest
+        .bindings
+        .push(crate::domain::Binding::actor_state("STATE".into())?);
+    let (entered, observing) = tokio::sync::oneshot::channel();
+    let handler = Arc::new(Flushes {
+        manifest,
+        requests: requests.clone(),
+        calls: AtomicU64::new(0),
+        retained: std::sync::Mutex::new(None),
+        entered: std::sync::Mutex::new(Some(entered)),
+        gate: Some(Arc::new(tokio::sync::Semaphore::new(0))),
+        stage_final: true,
+    });
+    let runtime = Runtime::new(
+        requests.clone(),
+        store.clone(),
+        handler.clone(),
+        Arc::new(SystemClock),
+    );
+    let address = spawn_with(&store, "stale-state", &[b"emit"]).await?;
+    runtime.place(address.clone(), 1).await?;
+    let delivery = runtime.drain_event(&address);
+    futures::pin_mut!(delivery);
+    let request = match futures::future::select(delivery.as_mut(), observing).await {
+        futures::future::Either::Right((request, _)) => request?,
+        futures::future::Either::Left((result, _)) => {
+            return Err(format!("ended before admission: {result:?}").into());
+        }
+    };
+    let owner = requests.state(request)?;
+    let successor = Runtime::new(
+        Requests::default(),
+        store.clone(),
+        handler,
+        Arc::new(SystemClock),
+    );
+    successor.place(address.clone(), 2).await?;
+    let flushing = owner.commit(ActorStateCommit {
+        writes: vec![ActorMetadataWrite {
+            key: "stale".into(),
+            value: Bytes::from_static(b"forbidden"),
+        }],
+        deletions: Vec::new(),
+        journal_from: "0".into(),
+        journal: vec![Bytes::from_static(b"forbidden")],
+        alarm: ActorStateAlarm::Set {
+            deadline: "1000".into(),
+        },
+    });
+    let (delivered, flushed) = futures::join!(delivery, flushing);
+    assert!(delivered.is_err());
+    assert_eq!(flushed, Err(GuestError::Revoked));
+    let cut = store.load(&address).await?;
+    let state = cut.state().ok_or("missing current owner cut")?;
+    assert_eq!(state.epoch(), 2);
+    assert_eq!(state.cursor("inbox"), Some(0));
+    assert_eq!(state.journal_tail, 0);
+    assert!(state.metadata.is_empty());
+    assert!(state.alarm().pending().is_none());
+    Ok(())
+}
+
 #[tokio::test]
 async fn state_flush_advances_the_delivery_cut_without_reentering_the_handler() -> TestResult {
-    for alarm_delivery in [false, true] {
+    for (alarm_delivery, stage_final) in
+        [(false, false), (false, true), (true, false), (true, true)]
+    {
         let provider = Arc::new(MemoryStream::default());
         let store = Store::new(provider.clone(), root()?);
         let address = actor("state-owner")?;
@@ -109,6 +316,7 @@ async fn state_flush_advances_the_delivery_cut_without_reentering_the_handler() 
             retained: std::sync::Mutex::new(None),
             entered: std::sync::Mutex::new(None),
             gate: None,
+            stage_final,
         });
         let runtime = Runtime::new(
             requests,
@@ -166,6 +374,7 @@ async fn state_flush_advances_the_delivery_cut_without_reentering_the_handler() 
             state.metadata().collect::<Vec<_>>(),
             vec![("value", &Bytes::from_static(b"second"))]
         );
+        assert_eq!(state.alarm().pending(), Some(1000));
         assert_eq!(
             state
                 .checkpoint()
@@ -208,6 +417,7 @@ async fn unknown_state_flush_retains_its_publication_without_reentering_the_hand
         retained: std::sync::Mutex::new(None),
         entered: std::sync::Mutex::new(Some(entered)),
         gate: Some(gate.clone()),
+        stage_final: true,
     });
     let runtime = Runtime::new(
         requests,
@@ -284,6 +494,7 @@ async fn handler_deadline_cancels_reads_and_revokes_calls_but_retains_publicatio
             retained: std::sync::Mutex::new(None),
             entered: std::sync::Mutex::new(Some(entered)),
             gate: Some(gate.clone()),
+            stage_final: true,
         });
         let runtime = Runtime::new(
             requests.clone(),
