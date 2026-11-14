@@ -147,7 +147,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         io: Option<&PreparationIo>,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
         grant.require(volume, VolumeOperation::Read, io)?;
-        InternalContentClass::require_path(Some(class), path, io)?;
+        InternalContentClass::require_path(volume, Some(class), path, io)?;
         let temporary = PreparationIo::temporary(io)?;
         let io = temporary.as_ref().or(io);
         let unmeasured;

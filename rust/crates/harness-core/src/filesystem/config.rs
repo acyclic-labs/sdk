@@ -64,12 +64,17 @@ pub(crate) enum InternalContentClass {
 
 impl InternalContentClass {
     pub(in crate::filesystem) fn require_path(
+        volume: &VolumeRef,
         class: Option<Self>,
         path: &str,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         let permitted = match class {
             Some(class) => class.contains_path(path),
+            // These are journal families, not reserved names in an owner's
+            // ordinary volume. The journal's identity and policy own the
+            // protected namespace independently of its path spelling.
+            None if !volume.is_agent_journal() => true,
             None => {
                 path != ".system"
                     && !path.starts_with(".system/")

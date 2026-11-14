@@ -246,7 +246,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         crate::executor::with_history_io(io, |work| {
             crate::conversation::validate_content_path(path, work)
         })?;
-        InternalContentClass::require_path(internal_class, path, io)?;
+        InternalContentClass::require_path(volume, internal_class, path, io)?;
         if internal_class.is_some() && volume.class() != VolumeClass::AgentPrivate {
             return Err(stock_boundary(
                 io,
