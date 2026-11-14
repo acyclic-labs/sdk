@@ -226,7 +226,6 @@ pub fn encode_transition(
             bytes: checkpoint.into(),
         },
         alarm: guest::AlarmChange::Keep,
-        pause: false,
         effects: Vec::new(),
         participant: None,
         subscriptions: Vec::new(),
