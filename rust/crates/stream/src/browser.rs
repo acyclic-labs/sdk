@@ -391,7 +391,7 @@ impl StreamProvider for BrowserStream {
                     async |provider| {
                         provider
                             .capture_heads(&request, crate::memory::HeadDurability::Durable)
-                            .await
+                            .await.map(|captured| captured.view)
                     },
                     |view| {
                         view.retained
@@ -404,7 +404,7 @@ impl StreamProvider for BrowserStream {
         self.with_provider(async move |provider| {
             provider
                 .capture_heads(&request, crate::memory::HeadDurability::Durable)
-                .await
+                .await.map(|captured| captured.view)
         })
         .await
     }

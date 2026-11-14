@@ -386,7 +386,7 @@ impl StreamProvider for JournalStream {
         self.query(async move |provider| {
             provider
                 .capture_heads(&request, crate::memory::HeadDurability::Durable)
-                .await
+                .await.map(|captured| captured.view)
         })
         .await
     }

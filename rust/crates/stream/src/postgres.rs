@@ -434,7 +434,7 @@ impl StreamProvider for PostgresStream {
                     .inner
                     .core
                     .capture_heads(&request, crate::memory::HeadDurability::Durable)
-                    .await?;
+                    .await?.view;
                 if !current
                     && view
                         .retained
@@ -448,7 +448,7 @@ impl StreamProvider for PostgresStream {
                         .inner
                         .core
                         .capture_heads(&request, crate::memory::HeadDurability::Durable)
-                        .await;
+                        .await.map(|captured| captured.view);
                 }
                 Ok(view)
             }
