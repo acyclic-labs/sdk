@@ -387,8 +387,10 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
     where
         Self: NativeStreamProvider,
     {
+        #[cfg(feature = "serde")]
+        let path = request.path.clone();
         let future = self.native_write(WriteRequest::Append(request), meter);
-        async move {
+        let work = async move {
             let result = future.await?;
             Ok(result.and_then(|output| {
                 let (outcome, allocation) = output.into_parts();
@@ -399,6 +401,26 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
                     _ => Err(StreamError::InvalidResponse),
                 }
             }))
+        };
+        async move {
+            #[cfg(feature = "serde")]
+            if !crate::trace::is_source(&path) {
+                return crate::trace::observe_outcome(
+                    crate::trace::Request {
+                        name: "stream.native_append",
+                        mechanism: crate::trace::Mechanism::Commit,
+                        parent: None,
+                        guarantee: Some("native_funded_atomic_contiguous_append_decision"),
+                    },
+                    work,
+                    |result| match result {
+                        Ok(Ok(_)) => Some((None, crate::trace::Outcome::Succeeded)),
+                        Ok(Err(_)) | Err(_) => None,
+                    },
+                )
+                .await;
+            }
+            work.await
         }
     }
     #[cfg(not(target_arch = "wasm32"))]

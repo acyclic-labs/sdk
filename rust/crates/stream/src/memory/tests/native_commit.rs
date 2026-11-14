@@ -126,6 +126,18 @@ async fn native_publication_projection_keeps_exact_frame_funding() -> MemoryResu
         idempotency_key: IdempotencyKey::unique(),
     };
     let accepted = provider.append(request.clone()).await?;
+    #[cfg(feature = "serde")]
+    let trace = crate::Stream::new(Arc::new(provider.clone()), "native/projection-trace")?;
+    #[cfg(feature = "serde")]
+    let root = Arc::new(crate::trace::Recorder::new(trace.clone(), [73; 16]))
+        .start(
+            "native request",
+            crate::trace::Mechanism::ToolCall,
+            None,
+            Some("original_native_request"),
+        )
+        .await?
+        .into_owned();
     let mut measurements = Vec::new();
     for projected in [false, true] {
         let meter = Arc::new(Meter::default());
@@ -138,6 +150,9 @@ async fn native_publication_projection_keeps_exact_frame_funding() -> MemoryResu
                 2,
                 "projection deferred frame admission"
             );
+            #[cfg(feature = "serde")]
+            let output = root.within(future).await??;
+            #[cfg(not(feature = "serde"))]
             let output = future.await??;
             assert_eq!(output.value(), &accepted);
             drop(output);
@@ -171,6 +186,66 @@ async fn native_publication_projection_keeps_exact_frame_funding() -> MemoryResu
     assert_eq!(future.await??.value(), &accepted);
     assert_eq!(meter.held.load(Ordering::SeqCst), 0);
     meter.assert_refunded();
+    #[cfg(feature = "serde")]
+    {
+        let source_meter = Arc::new(Meter::default());
+        let output = root
+            .within(provider.native_append(
+                AppendRequest {
+                    path: trace.path().clone(),
+                    records: vec![OwnedBytes::from_static(b"unused").into()],
+                    if_tail: Some(u64::MAX),
+                    idempotency_key: IdempotencyKey::unique(),
+                },
+                source_meter.original(),
+            ))
+            .await??;
+        assert!(matches!(output.value(), AppendOutcome::TailConflict { .. }));
+        drop(output);
+        source_meter.assert_refunded();
+        let parent = root.id();
+        let _completion = root.finish_submitted(None, crate::trace::Outcome::Succeeded)?;
+        let mut query = crate::trace::TraceQuery::new(
+            trace.follow(0, Default::default()).await?,
+            Default::default(),
+        );
+        let mut completed = 0;
+        let mut appends = 0;
+        while completed < 2 {
+            let observation = query
+                .next()
+                .await?
+                .ok_or("native trace ended before settlement")?;
+            if let crate::trace::Observation::Completed {
+                id,
+                start,
+                bytes,
+                result,
+                ..
+            } = observation
+            {
+                completed += 1;
+                assert_eq!(result, crate::trace::Outcome::Succeeded);
+                if id != parent {
+                    appends += 1;
+                    assert_eq!(start.name, "stream.native_append");
+                    assert_eq!(start.parent, Some(parent));
+                    assert_eq!(start.mechanism, crate::trace::Mechanism::Commit);
+                    assert_eq!(
+                        start.guarantee.as_deref(),
+                        Some("native_funded_atomic_contiguous_append_decision")
+                    );
+                    assert_eq!(bytes, None);
+                }
+            }
+        }
+        assert_eq!(appends, 1);
+        assert_eq!(
+            trace.tail().await?,
+            4,
+            "diagnostic and unrelated native appends must not record themselves"
+        );
+    }
     Ok(())
 }
 
