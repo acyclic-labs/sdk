@@ -8,12 +8,6 @@ pub(super) trait LazyNode:
     const FAMILY: &'static str;
 
     fn address(id: Self::Id) -> [u8; 32];
-
-    fn retain_decoded(
-        &mut self,
-        allocation: &mut crate::kernel::KernelOwnedAllocation,
-        ctx: &mut crate::kernel::KernelAccounting<'_>,
-    ) -> Result<(), crate::FsError>;
 }
 
 impl LazyNode for LazyOverlay {
@@ -23,21 +17,6 @@ impl LazyNode for LazyOverlay {
     fn address(id: Self::Id) -> [u8; 32] {
         id.into_bytes()
     }
-
-    fn retain_decoded(
-        &mut self,
-        allocation: &mut crate::kernel::KernelOwnedAllocation,
-        ctx: &mut crate::kernel::KernelAccounting<'_>,
-    ) -> Result<(), crate::FsError> {
-        if let Self::Node {
-            change: crate::lazy_workspace::LazyOverlayChange::Observe { source, .. },
-            ..
-        } = self
-        {
-            source.retain_decoded(allocation, ctx)?;
-        }
-        Ok(())
-    }
 }
 
 impl LazyNode for crate::LazyShadow {
@@ -46,21 +25,6 @@ impl LazyNode for crate::LazyShadow {
 
     fn address(id: Self::Id) -> [u8; 32] {
         id.into_bytes()
-    }
-
-    fn retain_decoded(
-        &mut self,
-        allocation: &mut crate::kernel::KernelOwnedAllocation,
-        ctx: &mut crate::kernel::KernelAccounting<'_>,
-    ) -> Result<(), crate::FsError> {
-        if let Self::Node {
-            observed: Some(observed),
-            ..
-        } = self
-        {
-            observed.source.retain_decoded(allocation, ctx)?;
-        }
-        Ok(())
     }
 }
 

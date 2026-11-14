@@ -82,6 +82,9 @@ pub trait VolumeResources: acyclic_stream::ProviderPlatform + 'static {
 }
 
 impl<P: ?Sized, O> FilesystemSpawnVolumes<P, O> {
+    pub(super) fn volume_resources(&self) -> Option<&dyn VolumeResources> {
+        self.cuts.as_deref()
+    }
     /// Volumes on `host`, whose authority must be the agents' stream
     /// provider.
     #[must_use]
@@ -696,11 +699,13 @@ where
                 .await
                 .map_err(|error| error.with_context("capturing turn volume history"))?;
         }
-        fs.prepare_fork_many(&forks, &mut commit, WorkBudget::UNBOUNDED, &cancellation)
+        let mut prepared = fs
+            .prepare_fork_many(&forks, &mut commit, WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map_err(|failure| {
                 crate::Error::guest(failure.error).with_context("preparing spawned volume forks")
-            })?;
+            })?
+            .value;
         // Sources read one after another are one consistent cut only if none
         // advanced before the commit applies: each source forked at its head
         // must still be at that head, or the whole spawn is refused. A
@@ -749,6 +754,17 @@ where
                     generation,
                 )
                 .map_err(crate::Error::guest)?;
+        }
+        prepared.extend(created);
+        for agent in &self.journals {
+            super::history::capture_creation(
+                fs,
+                agent,
+                &prepared,
+                self.cuts.as_deref(),
+                &mut commit,
+            )
+            .await?;
         }
         fs.seal_commit(&mut commit, WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|failure| crate::Error::guest(failure.error))?;

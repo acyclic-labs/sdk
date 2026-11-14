@@ -1,6 +1,96 @@
 use super::*;
 
 #[tokio::test]
+async fn frozen_directory_identity_survives_source_rebinding_and_pending_removal() {
+    for rebind in [false, true] {
+        let fs = Fs::memory();
+        let mut source = CountingSource::new(Bytes::new());
+        source.node.kind = SourceNodeKind::Directory;
+        source.node.logical_bytes = None;
+        let source = Arc::new(source);
+        let store = MemoryLazyWorkspaceStore::default();
+        let root = attach(&fs, source.clone(), store.clone()).await.unwrap();
+        root.promote(
+            "/directory",
+            0,
+            IdempotencyKey::new(),
+            crate::PublicationPermit::Unrestricted,
+            accounting!(),
+        )
+        .await
+        .unwrap();
+        let expected = root
+            .source_file_id(&source.node.file_identity, accounting!())
+            .unwrap();
+        let (child, cut) = root
+            .fork(
+                "child",
+                IdempotencyKey::new(),
+                crate::PublicationPermit::Unrestricted,
+                accounting!(),
+            )
+            .await
+            .unwrap();
+        let before = child
+            .workspace_stat_at_snapshot(&cut, "/directory", accounting!())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(before.file_id, expected);
+        if rebind {
+            let _live = child
+                .bind_fork_source(Arc::new(crate::demand::Empty), accounting!())
+                .await
+                .unwrap();
+        } else {
+            // A real durable in-progress removal at another path must not
+            // affect a previously retained directory cut.
+            let prior = child.state(accounting!()).await.unwrap();
+            let overlay = child
+                .insert_overlay(
+                    prior.overlay,
+                    "/unrelated",
+                    LazyOverlayChange::Tombstone { removed: None },
+                    accounting!(),
+                )
+                .await
+                .unwrap();
+            let pending = LazyWorkspaceState {
+                revision: prior.revision + 1,
+                overlay,
+                pending_remove: Some(PendingLazyRemove {
+                    prior_overlay: prior.overlay,
+                    prior_shadows: prior.shadows,
+                    prepared_overlay: overlay,
+                    kind: PendingLazyRemoveKind::SourceOnly,
+                }),
+                ..prior.clone()
+            };
+            assert!(
+                store
+                    .compare_and_swap_lazy_workspace(
+                        child.workspace().id(),
+                        prior.revision,
+                        pending,
+                        accounting!(),
+                    )
+                    .await
+                    .unwrap()
+            );
+        }
+        assert_eq!(
+            child
+                .workspace_stat_at_snapshot(&cut, "/directory", accounting!())
+                .await
+                .unwrap(),
+            Some(before),
+        );
+        assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
+        assert_eq!(source.counts.pages.load(Ordering::Relaxed), 0);
+    }
+}
+
+#[tokio::test]
 async fn an_authored_file_hides_descendants_at_live_and_frozen_cuts() {
     let fs = Fs::memory();
     let root = attach(

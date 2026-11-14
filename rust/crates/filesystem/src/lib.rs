@@ -224,6 +224,7 @@ pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, O
 pub use cancellation::{CancellationError, CancellationToken, Cancelled};
 #[cfg(not(target_arch = "wasm32"))]
 pub use core_state::{DeferredDurability, LocalCoreStateStore, LocalCoreStateStoreError};
+pub use distributed::StreamStateStoreError;
 pub use distributed::{
     AuthorityPlacement, FilesystemAppendPreparation, FilesystemCommit, FilesystemCommitOutcome,
     FilesystemCommitResult, PreparedFilesystemAppend, PreparedFilesystemCommit,
@@ -270,7 +271,7 @@ pub use git_compat::{
     git_merge_resolution, git_restore_paths, git_tracked_paths_after, grep_git_generation,
     parse_git_public_command, walk_git_tree,
 };
-pub use git_compat::{GitCompatCas, StreamGitCompatStore, StreamGitCompatStoreError};
+pub use git_compat::{GitCompatCas, StreamGitCompatStore};
 
 pub use kernel::{
     DependencyRegion, DependencyState, DependencyUse, DirectoryPage, ExtentSeekTarget,

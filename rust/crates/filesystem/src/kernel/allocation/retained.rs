@@ -437,7 +437,7 @@ impl RetainedAllocation {
 
     /// Returns this lease to scratch on the same original accounting frame.
     /// Ownership changes without releasing bytes or admitting them again.
-    fn take_owned(
+    pub(crate) fn take_owned(
         &mut self,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(KernelOwnedAllocation, u64), crate::FsError> {

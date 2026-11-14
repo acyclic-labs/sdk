@@ -1,5 +1,7 @@
 #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
 use super::*;
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_stream::StreamProviderExt as _;
 
 /// Bounded reclamation result for the canonical local Stream/Objects composition.
 #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
@@ -124,6 +126,8 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             let shadow_limits = self
                 .mark_local_authorities(&mut marker, cancellation)
                 .await?;
+            marker.set_limits(shadow_limits);
+            self.mark_sparse_shadows(&mut marker, cancellation).await?;
             #[cfg(not(target_arch = "wasm32"))]
             {
                 let multipart = crate::active_s3_multipart_objects(
@@ -341,6 +345,83 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         }
     }
     /// Marks every live generation of every authority, releasing the
+    /// Sparse nodes are permanent companion records on the original provider.
+    /// Mark them one page at a time; a hierarchy change refuses the sweep.
+    async fn mark_sparse_shadows(
+        &self,
+        marker: &mut crate::kernel::Marker<'_, LocalObjectBackend>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), FsError> {
+        let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, cancellation)
+            .map_err(|(error, _)| FsError::from(error))?;
+        let mut ctx = KernelAccounting::native(&work, cancellation);
+        let parent = acyclic_stream::StreamPath::new("fs/sparse-v1/shadows")
+            .map_err(|error| FsError::Authority(error.into()))?;
+        let provider = self.inner.authority.provider();
+        let mut after = None;
+        let mut hierarchy_version = None;
+        loop {
+            cancellation.check()?;
+            let page = provider
+                .children_page(acyclic_stream::ChildrenPageRequest {
+                    offset: 0,
+                    tail_stream: None,
+                    parent: Some(parent.clone()),
+                    after,
+                    hierarchy_version,
+                    limit: 256,
+                })
+                .await;
+            let page = match page {
+                Ok(page) => page,
+                Err(error) if error.code() == acyclic_stream::StreamError::NotFound.code() => {
+                    return Ok(());
+                }
+                Err(error) => return Err(FsError::Authority(error.into())),
+            };
+            for child in &page.children {
+                let address = child
+                    .path
+                    .as_str()
+                    .rsplit('/')
+                    .next()
+                    .ok_or(FsError::InvalidAuthorityHistory)?;
+                let address: [u8; 32] = hex::decode(address)
+                    .map_err(|_| FsError::InvalidAuthorityHistory)?
+                    .try_into()
+                    .map_err(|_| FsError::InvalidAuthorityHistory)?;
+                let node = crate::LazyWorkspaceStore::load_lazy_shadow(
+                    &self.inner.authority,
+                    crate::LazyShadowId::from_bytes(address),
+                    &mut ctx,
+                )
+                .await
+                .map_err(|error| FsError::Object(ObjectStoreError::Rejected(error.to_string())))?
+                .ok_or(FsError::InvalidAuthorityHistory)?;
+                let (node, allocation) = node;
+                if let crate::LazyShadow::Node {
+                    authored, observed, ..
+                } = node
+                {
+                    for content in authored
+                        .into_iter()
+                        .chain(observed.map(|record| record.content))
+                    {
+                        let record = crate::kernel::decode_file_record(&content.record)
+                            .map_err(|_| FsError::InvalidAuthorityHistory)?;
+                        marker.record(&record).await.map_err(mark_error)?;
+                    }
+                }
+                drop(allocation);
+            }
+            let Some(next) = page.next_after else {
+                return Ok(());
+            };
+            after = Some(next);
+            hierarchy_version = Some(page.hierarchy_version);
+        }
+    }
+
     pub(super) async fn mark_local_authorities(
         &self,
         marker: &mut crate::kernel::Marker<'_, LocalObjectBackend>,

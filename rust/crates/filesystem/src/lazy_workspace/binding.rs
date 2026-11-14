@@ -224,7 +224,9 @@ impl<
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn watch_source(
+    /// Subscribes to unresolved source changes only while a consumer retains
+    /// the returned owner. A frozen fork has no live source subscription.
+    pub fn watch_source(
         &self,
         sink: Arc<dyn crate::demand::SourceChangeSink>,
         ctx: &mut KernelAccounting<'_>,

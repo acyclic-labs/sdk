@@ -192,9 +192,9 @@ impl<
         let swapped = self
             .store
             .compare_and_swap_lazy_workspace(id, 0, state, ctx)
-            .await;
-        drop(hold);
-        if swapped? {
+            .await
+            .map_err(|error| error.retain_publication_hold(hold))?;
+        if swapped {
             return Ok(cut);
         }
         Err(LazyWorkspaceError::Concurrent)

@@ -44,7 +44,7 @@ impl CommandStore for LocalCoreStateStore {
 impl<P: acyclic_fs::distributed::AuthorityProvider + ?Sized> CommandStore
     for acyclic_fs::StreamGitCompatStore<P>
 {
-    type StoreError = acyclic_fs::StreamGitCompatStoreError;
+    type StoreError = acyclic_fs::StreamStateStoreError;
 
     fn error(error: Self::StoreError) -> Error {
         Error::NativeGit {
