@@ -172,6 +172,7 @@ async fn host_invocations_share_canonical_admission_approval_and_receipts() -> R
             assert!(hooks.is_empty());
             assert!(model.requests().is_empty());
         }
+        let executor: &dyn Executor = &executor;
         let owner = journal
             .acquire_effect(parent, call.operation_id, None)?
             .into_owner(None)?;
