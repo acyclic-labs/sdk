@@ -795,6 +795,7 @@ mod indexed_trace_tests {
             .await?;
         let original_head = provider.head(data.path().clone()).await?;
         let child_request = ChildrenPageRequest {
+            offset: 0,
             tail_stream: None,
             parent: Some(data.path().clone()),
             after: None,
@@ -1008,6 +1009,7 @@ mod indexed_trace_tests {
             next_children
         );
         root.within(provider.children_page(ChildrenPageRequest {
+            offset: 0,
             tail_stream: None,
             parent: Some(trace.path().clone()),
             after: None,
