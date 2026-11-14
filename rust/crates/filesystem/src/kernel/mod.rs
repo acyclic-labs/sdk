@@ -151,7 +151,6 @@ pub(crate) use closure::prove_blob_closure_async;
 pub use closure::{
     ClosureError, ClosureLimits, GenerationProof, GenerationProofFailure, prove_generation_closure,
 };
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use codec::Encoder;
 pub use codec::{
     CanonicalDecodeError, DecodeLimits, EncodeAllocationStep, EncodeError, EncodeWorkStep,

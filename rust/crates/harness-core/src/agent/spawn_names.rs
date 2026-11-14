@@ -83,7 +83,7 @@ pub async fn resolve_spawn_name<P: crate::store::JournalProvider + ?Sized + 'sta
         let snapshot = store
             .load(&actor)
             .await
-            .map_err(|error| Error::Actor(Box::new(error)))?;
+            .map_err(|error| Error::Actor(Box::new(error.into_cause())))?;
         let Some(state) = snapshot.state() else {
             return Ok(SpawnResolution::Free(generation));
         };
