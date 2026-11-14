@@ -1,21 +1,13 @@
 //! Clone-safe ownership of an original local error, independent of its public category.
 use std::{error::Error, sync::Arc};
 
-/// Native error custody crosses workers; browser error custody stays local.
-#[cfg(not(target_arch = "wasm32"))]
+/// An original cause. Failures cross tasks and workers on every target, so a
+/// cause is `Send + Sync` everywhere; a thread-affine JavaScript value is
+/// converted to an owned Rust error before it becomes a cause.
 pub trait Source: Error + Send + Sync + 'static {}
-#[cfg(not(target_arch = "wasm32"))]
 impl<T: Error + Send + Sync + 'static> Source for T {}
-/// Browser sources may own thread-affine JavaScript objects.
-#[cfg(target_arch = "wasm32")]
-pub trait Source: Error + 'static {}
-#[cfg(target_arch = "wasm32")]
-impl<T: Error + 'static> Source for T {}
 
-#[cfg(not(target_arch = "wasm32"))]
 type Original = dyn Error + Send + Sync;
-#[cfg(target_arch = "wasm32")]
-type Original = dyn Error;
 
 /// A category together with its original concrete local cause.
 ///
