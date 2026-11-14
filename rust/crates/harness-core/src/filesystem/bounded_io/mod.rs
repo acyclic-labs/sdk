@@ -549,8 +549,14 @@ impl PreparationIo {
             }),
         }
     }
+    #[track_caller]
     pub(crate) fn guard_owned(&self, bytes: u64) -> Result<DecodeReservation<'_>> {
         if bytes > self.owned_bytes()? {
+            eprintln!(
+                "R44_QUOTA_PROBE caller={} requested={bytes} retained={}",
+                std::panic::Location::caller(),
+                self.owned_bytes()?
+            );
             return Err(self.invalid("owned buffer exceeds retained quota"));
         }
         let reservation = DecodeReservation {
