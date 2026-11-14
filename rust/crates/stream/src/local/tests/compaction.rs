@@ -40,6 +40,9 @@ async fn assert_snapshot_restores(
 
 #[test]
 fn accepted_follow_discovery_and_relay_watermarks_progress_while_compaction_is_held() -> Result {
+    let _serial = PERSIST_BLOCKER_TESTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -219,8 +222,16 @@ fn append_to_follow_progresses_across_repeated_compactions() -> Result {
 }
 
 /// Snapshot device work cannot own the admission of unrelated durable writes.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unrelated_mutations_complete_before_snapshot_device_release() -> Result {
+#[test]
+fn unrelated_mutations_complete_before_snapshot_device_release() -> Result {
+    let _serial = PERSIST_BLOCKER_TESTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
     let directory = tempfile::tempdir()?;
     let limits = LocalStreamLimits {
         compaction_operations: 4,
@@ -348,6 +359,7 @@ async fn unrelated_mutations_complete_before_snapshot_device_release() -> Result
         );
     }
     Ok(())
+    })
 }
 
 /// Reopen actual flushed files at each transition, including an absent/torn
@@ -498,48 +510,57 @@ async fn rotated_prefix_and_suffix_survive_each_checkpoint_cut() -> Result {
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn rotation_waits_for_the_original_flush_owner_after_an_explicit_flush() -> Result {
-    let directory = tempfile::tempdir()?;
-    let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
-    let (entered, held) = tokio::sync::oneshot::channel();
-    let (release, device) = std::sync::mpsc::channel();
-    *JOURNAL_FLUSHED_BLOCKER.lock().map_err(|_| "flush gate")? = Some((
-        Arc::as_ptr(&provider.inner.journal) as usize,
-        entered,
-        device,
-    ));
-    let mut writing = tokio::spawn({
-        let provider = provider.clone();
-        async move {
-            provider
-                .append(AppendRequest {
-                    path: StreamPath::new("pending/flush")?,
-                    records: vec![Bytes::from_static(b"accepted").into()],
-                    if_tail: None,
-                    idempotency_key: IdempotencyKey::unique(),
-                })
-                .await
-        }
-    });
-    journal_started(held, &mut writing).await?;
-    let visibility = provider.inner.visibility.write().await;
-    provider.flush()?;
-    let through = provider
-        .inner
-        .journal
+#[test]
+fn rotation_waits_for_the_original_flush_owner_after_an_explicit_flush() -> Result {
+    let _serial = PERSIST_BLOCKER_TESTS
         .lock()
-        .map_err(|_| "journal lock")?
-        .appended;
-    let mut rotation = Box::pin(provider.await_rotation_ready(through));
-    let parked = futures::poll!(rotation.as_mut()).is_pending();
-    // Both success and the negative control release the physical owner first.
-    drop(release);
-    if parked {
-        rotation.await?;
-    }
-    drop(visibility);
-    writing.await??;
-    assert!(parked, "rotation raced a live earlier-file flush owner");
-    Ok(())
+        .unwrap_or_else(PoisonError::into_inner);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let directory = tempfile::tempdir()?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        let (entered, held) = tokio::sync::oneshot::channel();
+        let (release, device) = std::sync::mpsc::channel();
+        *JOURNAL_FLUSHED_BLOCKER.lock().map_err(|_| "flush gate")? = Some((
+            Arc::as_ptr(&provider.inner.journal) as usize,
+            entered,
+            device,
+        ));
+        let mut writing = tokio::spawn({
+            let provider = provider.clone();
+            async move {
+                provider
+                    .append(AppendRequest {
+                        path: StreamPath::new("pending/flush")?,
+                        records: vec![Bytes::from_static(b"accepted").into()],
+                        if_tail: None,
+                        idempotency_key: IdempotencyKey::unique(),
+                    })
+                    .await
+            }
+        });
+        journal_started(held, &mut writing).await?;
+        let visibility = provider.inner.visibility.write().await;
+        provider.flush()?;
+        let through = provider
+            .inner
+            .journal
+            .lock()
+            .map_err(|_| "journal lock")?
+            .appended;
+        let mut rotation = Box::pin(provider.await_rotation_ready(through));
+        let parked = futures::poll!(rotation.as_mut()).is_pending();
+        // Both success and the negative control release the physical owner first.
+        drop(release);
+        if parked {
+            rotation.await?;
+        }
+        drop(visibility);
+        writing.await??;
+        assert!(parked, "rotation raced a live earlier-file flush owner");
+        Ok(())
+    })
 }
