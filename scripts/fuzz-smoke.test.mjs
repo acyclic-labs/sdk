@@ -78,3 +78,24 @@ test('real campaign completion and exact closure reuse preserve every smoke obli
     }
   } finally { rmSync(root, {recursive: true, force: true}); }
 });
+
+// This checks the public command and supplied-module receipt protocol, not campaign quality.
+test('supplied campaign receipts determine the command outcome', () => {
+  const root = mkdtempSync(join(tmpdir(), 'campaign-receipt-control-'));
+  try {
+    const module = join(root, 'campaign.mjs');
+    for (const [receipts, code] of [[['PASS'], 0], [['FAIL'], 1], [['PASS', 'FAIL'], 1]]) {
+      writeFileSync(module, `export function campaign({log}) {
+        for (const status of ${JSON.stringify(receipts)})
+          log('FUZZ_CAMPAIGN_TERMINAL ' + status + ' ' + JSON.stringify({version: 1, status}));
+      }`);
+      const result = spawnSync(process.execPath, [entry, 'selected-binary', 'retained-corpus', '--', '-runs=1'],
+        {env: {...process.env, SDK_FUZZ_CAMPAIGN: module}, encoding: 'utf8'});
+      assert.equal(result.status, code, result.stdout + result.stderr);
+      const terminals = (result.stdout + result.stderr).split(/\r?\n/)
+        .filter(line => line.startsWith('FUZZ_CAMPAIGN_TERMINAL '));
+      assert.equal(terminals.length, 1, result.stdout + result.stderr);
+      assert.ok(terminals[0].startsWith('FUZZ_CAMPAIGN_TERMINAL ' + receipts[0] + ' '));
+    }
+  } finally { rmSync(root, {recursive: true, force: true}); }
+});

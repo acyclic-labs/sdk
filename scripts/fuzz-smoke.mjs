@@ -3,11 +3,15 @@
 import {pathToFileURL} from 'node:url';
 
 const [binary, corpus, separator, ...args] = process.argv.slice(2);
-let terminal = false;
+let terminal;
 // The runner publishes through this callback; the entry point covers failures
 // before publication, including import, invocation and runner cleanup errors.
 const log = line => {
-  if (/^FUZZ_CAMPAIGN_TERMINAL (PASS|FAIL) /.test(line)) terminal = true;
+  const receipt = /^FUZZ_CAMPAIGN_TERMINAL (PASS|FAIL) /.exec(line);
+  if (receipt) {
+    if (terminal) throw Error("campaign published more than one terminal receipt");
+    terminal = receipt[1];
+  }
   console.log(line);
 };
 try {
@@ -17,6 +21,7 @@ try {
   if (typeof campaign !== 'function') throw Error('campaign export must be a function');
   await campaign({binary, corpus, args, log});
   if (!terminal) throw Error('campaign returned without a terminal receipt');
+  if (terminal === 'FAIL') process.exitCode = 1;
 } catch (error) {
   if (!terminal) console.error('FUZZ_CAMPAIGN_TERMINAL FAIL ' + JSON.stringify({version: 1, status: 'FAIL', binary, corpus, args, error: error instanceof Error ? error.message : String(error)}));
   process.exitCode = 1;
