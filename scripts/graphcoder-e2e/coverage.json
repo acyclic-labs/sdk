@@ -64,7 +64,13 @@
         "pty-question",
         "question-headless",
         "question-headless-approval-eof",
-        "question-write-hook-deny"
+        "question-write-hook-deny",
+        "search-cross-agent-git",
+        "search-cross-agent-plain",
+        "search-history-paged-git",
+        "search-history-paged-plain",
+        "search-acl-git",
+        "search-acl-plain"
       ]
     },
     "A4": {
@@ -155,6 +161,12 @@
         "instructions-and-skills",
         "memory-skill-files",
         "skill-invocation",
+        "evals-no-secrets-plain",
+        "evals-no-secrets-git",
+        "evals-projection-plain",
+        "evals-projection-git",
+        "evals-to-skill-plain",
+        "evals-to-skill-git",
         "file-mention",
         "pty-mention",
         "custom-slash-command"

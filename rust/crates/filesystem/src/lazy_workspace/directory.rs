@@ -39,6 +39,8 @@ impl LazyDirectoryNode {
 /// A bounded merged page and its continuation.
 #[derive(Debug)]
 pub struct LazyDirectoryPage {
+    /// Physical candidates consumed before authored-shadow filtering.
+    pub examined: u32,
     /// At most the requested number of visible entries.
     pub entries: Vec<LazyDirectoryEntry>,
     /// Continuation for the same cut and directory.
@@ -47,6 +49,8 @@ pub struct LazyDirectoryPage {
 /// One bounded directory page with its transportable continuation.
 #[derive(Debug)]
 pub struct LazyDirectoryListing {
+    /// Physical candidates consumed before authored-shadow filtering.
+    pub examined: u32,
     /// Visible entry metadata, without reading any file bodies.
     pub entries: Vec<LazyDirectoryEntry>,
     /// Canonical name-free continuation for the selected cut and directory.
@@ -71,6 +75,7 @@ impl LazyDirectoryPage {
         };
         Ok((
             LazyDirectoryListing {
+                examined: self.examined,
                 entries: self.entries,
                 next,
             },
@@ -305,6 +310,7 @@ impl<
             prior = Some(Owned::new(cursor.directory, cursor.allocation, bytes));
         }
         let mut used = false;
+        let mut examined = 0;
         let result = async {
             let authored = checkout
                 .lookup_no_follow_with_metadata_with_accounting(
@@ -397,6 +403,8 @@ impl<
                                 return Err(error);
                             }
                         };
+                        examined = u32::try_from(page.entries.len())
+                            .map_err(|_| LazyWorkspaceError::TooLarge)?;
                         let retained = page.retained_bytes();
                         let mut source_guard = ctx.claim_owned(0, 0)?;
                         let projected = async {
@@ -489,6 +497,8 @@ impl<
                             }
                             Err(error) => return Err(error.into()),
                         };
+                        examined = u32::try_from(page.entries.len())
+                            .map_err(|_| LazyWorkspaceError::TooLarge)?;
                         return authored_entries(page, guard, ctx);
                     }
                 }
@@ -505,8 +515,14 @@ impl<
                 return Err(error);
             }
         };
-        let (page, allocation) =
-            finish_directory_page(DirectoryCut::Computed(cut), directory, entries, next, ctx)?;
+        let (page, allocation) = finish_directory_page(
+            DirectoryCut::Computed(cut),
+            directory,
+            entries,
+            next,
+            examined,
+            ctx,
+        )?;
         Ok((page, used, allocation))
     }
     async fn project_source_page(
@@ -652,6 +668,7 @@ fn finish_directory_page(
     directory: Owned<NamespacePath>,
     entries: Owned<Vec<LazyDirectoryEntry>>,
     next: Option<(LazyDirectoryPhase, KernelOwnedAllocation)>,
+    examined: u32,
     ctx: &mut KernelAccounting<'_>,
 ) -> Result<(LazyDirectoryPage, KernelOwnedAllocation), LazyWorkspaceError> {
     let next = if let Some((phase, mut guard)) = next {
@@ -669,6 +686,7 @@ fn finish_directory_page(
     };
     Ok((
         LazyDirectoryPage {
+            examined,
             entries: entries.value,
             next,
         },
@@ -732,6 +750,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> crate::Generation<A, O> {
                     &cxl,
                 )
                 .await?;
+            let mut examined = 0;
             let listed = async {
                 let position = match cursor {
                     Some(cursor) => {
@@ -761,6 +780,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> crate::Generation<A, O> {
                         &cxl,
                     )
                     .await?;
+                examined =
+                    u32::try_from(page.entries.len()).map_err(|_| LazyWorkspaceError::TooLarge)?;
                 authored_entries(page, allocation, ctx)
             }
             .await;
@@ -772,7 +793,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> crate::Generation<A, O> {
                     return Err(error);
                 }
             };
-            finish_directory_page(cut, directory, entries, next, ctx)
+            finish_directory_page(cut, directory, entries, next, examined, ctx)
         }
         .await;
         self.workspace.check_current_access(ctx, &cxl).await?;

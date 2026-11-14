@@ -81,21 +81,13 @@ where
                 drop(owner);
                 None
             };
-            let meter = original.map(|work| work.runtime_meter());
-            let source = carrier
-                .with_accounting(|ctx| {
-                    Ok(runtime.block_on(|| lazy.source_reference(ctx), meter.as_deref()))
-                })?
-                .map_err(|error| NativeMountError::Source(adapter::capture_io_error(error)))?
-                .map_err(|error| NativeMountError::Source(lazy_error(error)))?;
-            let source_epoch = AtomicU64::new(source.epoch);
             Ok(Self {
                 lazy,
                 authored,
                 root: inputs.root,
                 runtime,
                 source_view,
-                source_epoch,
+                source_cut: Mutex::new(None),
                 removals: Mutex::new(MountedRemovals::default()),
                 detached,
                 open_sources,
@@ -325,12 +317,17 @@ where
             WorkBudget::UNBOUNDED,
             self.authored.cancellation(),
         );
-        if self
-            .lazy
-            .publication_cut(None, &mut accounting)
-            .await
-            .is_ok_and(|state| state.source.epoch == self.source_epoch.load(Ordering::Relaxed))
-        {
+        let unchanged = match self.lazy.publication_cut(None, &mut accounting).await {
+            Ok(state) => {
+                self.source_cut
+                    .lock()
+                    .map_err(|_| MountSourceError::Stale)?
+                    .as_ref()
+                    == Some(&state.source)
+            }
+            Err(_) => false,
+        };
+        if unchanged {
             let result = self.authored.advance_to_head_async().await;
             return result;
         }
@@ -357,7 +354,10 @@ where
         .await;
 
         if let Ok(source) = &result {
-            self.source_epoch.store(source.epoch, Ordering::Relaxed);
+            *self
+                .source_cut
+                .lock()
+                .map_err(|_| MountSourceError::Stale)? = Some(source.clone());
             self.source_view.finish_transition();
         }
         result.map(|_| ())

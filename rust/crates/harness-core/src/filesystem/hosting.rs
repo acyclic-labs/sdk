@@ -108,8 +108,8 @@ pub struct Prepared {
 }
 
 impl Prepared {
-    /// Composes an admitted root adoption with its fresh volumes and its
-    /// implicit journal, outside the workspace table, in one sealed commit.
+    /// Composes an admitted root adoption with its fresh
+    /// volumes and implicit journal in one sealed commit.
     /// The caller authenticates the adoption and fresh bindings before IO.
     /// Preparation retains publication custody without making the root visible.
     /// A supplied policy is seeded in the journal and bound to its exact initial
@@ -173,6 +173,19 @@ impl Prepared {
                 generation,
             )?;
         }
+        super::history::capture_creation(
+            fs,
+            &child,
+            |workspace| {
+                created
+                    .iter()
+                    .find(|entry| entry.workspace == workspace)
+                    .map(|entry| entry.generation)
+            },
+            &mut commit,
+        )
+        .await
+        .map_err(|error| turn(crate::Error::Storage(error.to_string())))?;
         fs.seal_commit(&mut commit, WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|failure| turn(failure.error.into()))?;
         Ok(Self { child, commit })
@@ -976,8 +989,23 @@ where
         )
         .await
         .map_err(turn)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let host = {
+            let volume = state
+                .volumes
+                .iter()
+                .find(|binding| binding.role == crate::agent::WorkspaceRole::Private)
+                .ok_or(Error::Record("agent has no private volume"))?
+                .volume()?;
+            self.volumes
+                .for_evaluations(self.agents.provider().clone(), agent, volume)
+                .await
+                .map_err(turn)?
+        };
+        #[cfg(target_arch = "wasm32")]
+        let host = Arc::clone(&self.volumes);
         super::FilesystemContentVerifier::new(
-            Arc::clone(&self.volumes),
+            host,
             &authority.verifier,
             &authority.scope,
             self.maximum_bytes,

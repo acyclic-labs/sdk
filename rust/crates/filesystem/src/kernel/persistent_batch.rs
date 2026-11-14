@@ -424,6 +424,36 @@ pub(crate) fn sort_indexed<K: Ord>(
 }
 
 /// One bounded in-place sort for metered kernel and namespace buffers.
+/// Checks a bounded selection for duplicates without changing producer order.
+/// Scratch storage, comparisons and moves use the original accounting context.
+pub fn all_unique_by_with_accounting<T: Copy>(
+    values: impl ExactSizeIterator<Item = T>,
+    accounting: &mut KernelAccounting<'_>,
+    compare: impl Fn(&T, &T) -> std::cmp::Ordering,
+) -> Result<bool, crate::FsError> {
+    let mut scratch = Owned::<Vec<T>>::allocate(values.len(), accounting)?;
+    let result = (|| {
+        for value in values {
+            scratch.push(value, accounting)?;
+        }
+        sort_by_with_accounting(&mut scratch.value, accounting, &compare)?;
+        accounting.perform(
+            WorkCounters {
+                items_examined: usize_to_u64(scratch.value.len().saturating_sub(1)),
+                ..WorkCounters::UNCHARGED
+            },
+            || {
+                scratch
+                    .value
+                    .windows(2)
+                    .all(|pair| !compare(&pair[0], &pair[1]).is_eq())
+            },
+        )
+    })();
+    scratch.retire(accounting)?;
+    result
+}
+
 pub fn sort_by_with_accounting<T>(
     values: &mut [T],
     accounting: &mut KernelAccounting<'_>,

@@ -28,6 +28,7 @@ async fn scoped_credentials_share_the_pool_and_retire_after_the_last_cursor() ->
             durable_through: None,
             children: None,
             at_least: Default::default(),
+            at: None,
         })
         .await?;
     assert_eq!(

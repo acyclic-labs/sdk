@@ -178,8 +178,9 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
     assert_eq!(
         view.lazy
             .original_publication_cuts(operation, &mut accounting)
-            .await?,
-        Some(cuts.clone())
+            .await?
+            .as_ref(),
+        Some(&cuts)
     );
     assert!(
         !view
@@ -298,7 +299,7 @@ async fn caller_selected_publication_replays_a_clean_receipt_without_claiming_la
             .await
             .map_err(|(cause, _)| cause)?;
         assert_eq!(replay, clean);
-        assert_eq!(acknowledged, Some(clean.clone()));
+        assert_eq!(acknowledged.as_ref(), Some(&clean));
         assert_eq!(work.receipt().authority_records_appended, appended);
         if let Some(pending) = pending {
             let mut checkout = view.authored.shared_checkout().lock().await;

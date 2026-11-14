@@ -33,6 +33,30 @@ fn target(
     invocation: &ToolInvocation,
     work: acyclic_fs::NativeWork<'_>,
 ) -> Result<Workspace> {
+    if invocation.name == "fs"
+        && let Some(command) = invocation
+            .arguments
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+    {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = work {
+            work.charge(acyclic_fs::WorkCounters {
+                items_examined: command.len() as u64,
+                ..Default::default()
+            })?;
+        }
+        if super::command::scoped_search(command)? {
+            let filesystem = context.task().harness.filesystem.as_ref().ok_or_else(|| {
+                boundary(
+                    work,
+                    crate::wire::ErrorCode::Unsupported,
+                    "search has no filesystem binding",
+                )
+            })?;
+            return Ok(Workspace::Filesystem(Arc::clone(filesystem)));
+        }
+    }
     if let Some(target) = &context.execution_target {
         return Ok(Workspace::Target(Arc::clone(target)));
     }
@@ -114,23 +138,30 @@ impl ToolExecutor for WorkspaceExecutor {
         &'a self,
         context: Option<&'a ToolContext>,
         invocation: &'a ToolInvocation,
-        work: acyclic_fs::NativeWork<'a>,
-    ) -> Option<BoxProviderFuture<'a, Result<()>>> {
-        let context = context?;
-        if let Some(target) = &context.execution_target {
-            target
-                .executor
-                .authorize_replay(Some(context), invocation, work)
-        } else if invocation.name == "fs" {
-            context
-                .task()
-                .harness
-                .filesystem
-                .as_ref()?
-                .authorize_replay(Some(context), invocation, work)
-        } else {
-            None
-        }
+        result: &'a ToolResult,
+        io: Option<&'a crate::filesystem::PreparationIo>,
+    ) -> Result<Option<crate::conversation::BoundedContentFuture<'a, ()>>> {
+        let Some(context) = context else {
+            return Ok(None);
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let work = io.and_then(crate::filesystem::PreparationIo::original_native_work);
+        #[cfg(target_arch = "wasm32")]
+        let work = None;
+        let selected = target(context, invocation, work)?;
+        Ok(Some(crate::conversation::BoundedContentFuture::new(
+            io,
+            || async move {
+                if let Some(authorization) =
+                    selected
+                        .executor()
+                        .authorize_replay(Some(context), invocation, result, io)?
+                {
+                    authorization.await?;
+                }
+                Ok(())
+            },
+        )?))
     }
 
     fn authorize(

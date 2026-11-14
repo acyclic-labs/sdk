@@ -142,6 +142,7 @@ impl<C: FilesystemCut> acyclic_fs::demand::View for FilesystemView<C> {
             },
         )?;
         page.finish(
+            cursor.as_ref().map_or(0, SourceCursor::offset),
             next.map(SourceCursor::position),
             SourceVersion([0; 32]),
             ctx,

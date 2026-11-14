@@ -23,8 +23,7 @@ use crate::{
     tool::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult},
 };
 use acyclic_fs::{
-    AsyncAuthorityStore, AsyncObjectStore, DirectoryPage, Fs, MemoryAuthorityBackend,
-    MemoryObjectBackend,
+    AsyncAuthorityStore, AsyncObjectStore, Fs, MemoryAuthorityBackend, MemoryObjectBackend,
     kernel::{FileKind, LogicalName, NameEncoding},
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;

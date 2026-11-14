@@ -149,6 +149,7 @@ where
             .await
             .map_err(turn)?;
         Ok(page.unwrap_or(PrivateDirectoryPage {
+            examined: 0,
             generation,
             entries: Vec::new(),
             next: None,

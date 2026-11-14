@@ -1899,7 +1899,7 @@ async fn placement_and_restart_admit_only_one_publishing_activation() -> TestRes
         handler.clone(),
         Arc::new(SystemClock),
     )
-    .externally_placed();
+    .with_external_placement(unrequested());
     restarted.place(address.clone(), 3).await?;
     handler.gate.add_permits(1);
     restarted.drain_actor(&address).await?;

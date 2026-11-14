@@ -1347,6 +1347,8 @@ where
         let trace_owner = admitted.path;
         let local_root = admitted.parent.is_none();
         let turn = context.as_ref().map(|context| context.turn);
+        #[cfg(not(target_arch = "wasm32"))]
+        let agent_path = admitted.path;
         let storage = crate::core::until_turn_stopped(
             stop.clone(),
             self.journal_storage(&admitted, retained, external),
@@ -1364,8 +1366,15 @@ where
         // each caller states its bound, and harness-owned records (manifests,
         // settled outputs, policies) are read at their pinned length, so a
         // configured file bound limits admitted content, never the turn.
+        #[cfg(not(target_arch = "wasm32"))]
+        let reader_host = self
+            .host
+            .for_evaluations(Arc::clone(&self.stream), agent_path, private.volume()?)
+            .await?;
+        #[cfg(target_arch = "wasm32")]
+        let reader_host = Arc::clone(&self.host);
         let mut reader = FilesystemContentVerifier::new(
-            Arc::clone(&self.host),
+            Arc::clone(&reader_host),
             &verifier,
             &scope,
             crate::conversation::MAX_EXACT_JS_INTEGER,
@@ -1403,7 +1412,7 @@ where
                 )
                 .await?;
                 reader = FilesystemContentVerifier::new(
-                    Arc::clone(&self.host),
+                    Arc::clone(&reader_host),
                     &verifier,
                     &scope,
                     crate::conversation::MAX_EXACT_JS_INTEGER,

@@ -113,8 +113,8 @@ pub(crate) use merge::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use merge::{MergeFileTableRequest, merge_file_tables_with_accounting, resolve_three};
-pub use persistent_batch::sort_by_with_accounting;
 pub(crate) use persistent_batch::{IndexedKey, sort_indexed};
+pub use persistent_batch::{all_unique_by_with_accounting, sort_by_with_accounting};
 pub(crate) use persistent_diff::{
     ValueChange, diff_file_records_with_accounting, diff_tree_entries_with_accounting,
 };

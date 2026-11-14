@@ -101,6 +101,20 @@ fn committing(
     )?)
 }
 
+async fn create_filesystem_root(
+    agents: &AgentHost<MemoryStream>,
+    files: &Host,
+    intent: &IntentId,
+    adoption: ForkAdopted,
+) -> Result<AgentPath> {
+    use acyclic_harness_core::filesystem::hosting::{Prepared, RootSubmission};
+    let spawn = agents.prepare_root(intent, adoption, false)?;
+    let prepared = Prepared::prepare(files, spawn, &[]).await?;
+    match prepared.submit(files, agents).await? {
+        RootSubmission::Created(path) => Ok(path),
+        RootSubmission::Unknown(_) => Err("root publication is unknown".into()),
+    }
+}
 async fn deliver(
     host: &AgentHost<MemoryStream>,
     path: &AgentPath,
@@ -873,7 +887,7 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
         })
         .await?;
     let history = HistoryCheckpoint {
-        version: 2,
+        version: 3,
         live_children: false,
         conversation: 1,
         checkpoint: None,
@@ -884,10 +898,16 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
         },
         volumes: Vec::new(),
     };
+    let mut baseline = history.clone();
+    baseline.conversation = 0;
+    baseline.context.tail = 0;
     stream
         .append(acyclic_stream::AppendRequest {
             path: path.history()?,
-            records: vec![serde_json::to_vec(&history)?.into()],
+            records: vec![
+                serde_json::to_vec(&baseline)?.into(),
+                serde_json::to_vec(&history)?.into(),
+            ],
             if_tail: Some(0),
             idempotency_key: intent_key("settled-steering-history", &["original"])?,
         })
@@ -1554,8 +1574,9 @@ async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else(
     ));
     let mut adoption = adopted(id(3));
     adoption.volumes = vec![binding];
+    let files = host.clone();
     let host = committing(&stream, &host, driver)?;
-    host.create(&intent("root"), adoption).await?;
+    create_filesystem_root(&host, &files, &intent("root"), adoption).await?;
     let first = deliver(&host, &path, requested("r1", &path)).await?;
     assert_eq!(first.phase, Phase::Idle);
     assert_eq!(first.conversation_tail, 1);
@@ -1622,8 +1643,9 @@ async fn accepted_context_request_identity_survives_settlement() -> Result {
     ));
     let mut adoption = adopted(id(3));
     adoption.volumes = vec![binding];
+    let files = host.clone();
     let host = committing(&stream, &host, driver)?;
-    host.create(&intent("root"), adoption).await?;
+    create_filesystem_root(&host, &files, &intent("root"), adoption).await?;
     let record = InboxRecord::Context(ContextRequest {
         by: super::user(),
         id: request_id.clone(),
@@ -1702,8 +1724,9 @@ async fn every_request_retains_the_roster_across_history_and_compaction_boundari
         ));
         let mut adoption = adopted(id(31));
         adoption.volumes = vec![binding];
+        let files = host.clone();
         let host = committing(&stream, &host, driver)?;
-        host.create(&intent("root"), adoption).await?;
+        create_filesystem_root(&host, &files, &intent("root"), adoption).await?;
         let mut announced = Vec::new();
         let mut roster_file = None;
         for n in 0..6 {
@@ -1812,7 +1835,7 @@ async fn a_child_inherits_context_but_retains_its_own_observed_answer_across_tur
     let mut adoption = adopted(id(5));
     adoption.volumes = vec![binding];
     let root_host = committing(&stream, &host, ExecutorDriver::new(turn_host.clone()))?;
-    root_host.create(&intent("root"), adoption).await?;
+    create_filesystem_root(&root_host, &host, &intent("root"), adoption).await?;
     let parent_state = deliver(&root_host, &parent, requested("p1", &parent)).await?;
     assert_eq!(parent_state.phase, Phase::Idle);
     assert_eq!(parent_state.conversation_tail, 1);
@@ -2037,8 +2060,9 @@ async fn admitted_root_after_its_child(
         let driver = driver(root_scope);
         let mut adoption = adopted(id(base));
         adoption.volumes = vec![binding];
+        let files = host.clone();
         let host = committing(&stream, &host, driver)?;
-        host.create(&intent("root"), adoption).await?;
+        create_filesystem_root(&host, &files, &intent("root"), adoption).await?;
         let stepped = deliver(&host, &root, first).await?;
         if matches!(stepped.phase, Phase::Done { .. }) {
             return Ok((model.requests(), *result, stepped.phase));

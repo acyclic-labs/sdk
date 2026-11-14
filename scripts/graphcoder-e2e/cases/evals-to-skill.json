@@ -1,0 +1,114 @@
+{
+  "id": "evals-to-skill",
+  "workspace": {
+    "kind": [
+      "plain",
+      "git"
+    ],
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "PREPARE_LEARNING"
+        },
+        "text": [
+          "Proposed result for review."
+        ]
+      },
+      {
+        "when": {
+          "user": "LEARN_REJECT"
+        },
+        "text": [
+          "Rejected result retained for review."
+        ]
+      },
+      {
+        "when": {
+          "user": "LEARN_OVERRIDE"
+        },
+        "text": [
+          "Override retained for review."
+        ]
+      },
+      {
+        "tools": [
+          {
+            "arguments": {
+              "code": "const root='volume:///private/evals'; const cases=[]; let after; let more;\ndo { const page=await tools.read({path:root,selection:{kind:'directory',limit:1,after}}); for(const entry of page.entries) { if(entry.kind!=='file') continue; const file=await tools.read({path:entry.path,version:entry.version}); if(file.page?.next!=null) throw Error('fixture case unexpectedly spans a byte page'); const value=JSON.parse(file.text); const input=value.decision.input.message; if(!input) continue; const original=await tools.read({path:'volume:///output/'+input.body.path,version:JSON.stringify(input.body)}); if(original.page?.next!=null) throw Error('fixture input unexpectedly spans a byte page'); if(original.text.includes('LEARN_REJECT') || original.text.includes('LEARN_OVERRIDE')) { if(value.cut.checkpoint?.conversation!==value.source.sequence || value.outcome.checkpoint?.conversation!==value.source.sequence+1) throw Error('case history boundaries differ from its original turn'); cases.push({source:value.source,cut:value.cut,decision:original.text,outcome:value.outcome}); } } more=page.hasMore; if(more) { const next=page.next; if(!next || next===after) throw Error('directory continuation did not advance'); after=next; } } while(more);\nif(!cases.some(value=>value.decision.includes('LEARN_REJECT')) || !cases.some(value=>value.decision.includes('LEARN_OVERRIDE'))) throw Error('original rejection and override cases were not projected');\nawait tools.write({path:'volume:///home/skills/learned-contract-rule/SKILL.md',content:'---\\nname: learned-contract-rule\\ndescription: Check the public contract before changing a result.\\n---\\nLEARNED_CONTRACT_BODY\\nCheck the public contract before changing a result.\\n'});\nawait tools.write({path:'volume:///private/ui/eval-learning.md',content:JSON.stringify({proposal:'skills/learned-contract-rule/SKILL.md',cases})});\nexport default {cases:cases.length,review:'ui/eval-learning.md'};"
+            },
+            "name": "code",
+            "id": "learn-original-cases"
+          }
+        ],
+        "when": {
+          "user": "LEARN_REVIEW"
+        }
+      },
+      {
+        "when": {
+          "tool_result": "cases",
+          "user": "LEARN_REVIEW"
+        },
+        "text": [
+          "LEARNING_PROPOSAL_READY"
+        ]
+      },
+      {
+        "when": {
+          "user": "USE_LEARNED_RULE",
+          "contains": "LEARNED_CONTRACT_BODY"
+        },
+        "text": [
+          "LEARNED_RULE_USED"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "answer": "Proposed result for review.",
+      "text": "PREPARE_LEARNING"
+    },
+    {
+      "mode": "headless",
+      "answer": "Rejected result retained for review.",
+      "operation": "00000000-0000-0000-0000-000000000002",
+      "text": "LEARN_REJECT: Reject the proposed result because it changes the public contract."
+    },
+    {
+      "mode": "headless",
+      "answer": "Override retained for review.",
+      "operation": "00000000-0000-0000-0000-000000000003",
+      "text": "LEARN_OVERRIDE: Override the earlier result; retain the original public contract."
+    },
+    {
+      "mode": "headless",
+      "answer": "LEARNING_PROPOSAL_READY",
+      "operation": "00000000-0000-0000-0000-000000000004",
+      "text": "/learn-from-evals LEARN_REVIEW: inspect the original cases and propose a skill with source evidence for review."
+    },
+    {
+      "mode": "headless",
+      "answer": "LEARNED_RULE_USED",
+      "operation": "00000000-0000-0000-0000-000000000005",
+      "text": "/learned-contract-rule USE_LEARNED_RULE"
+    }
+  ],
+  "assert": {
+    "last_model_contains": [
+      "LEARNED_CONTRACT_BODY"
+    ],
+    "tool_contains": [
+      "eval-learning.md",
+      "cases"
+    ],
+    "requests": 6,
+    "model_contains": [
+      "Read the selected agent's private evals/ directory"
+    ]
+  }
+}

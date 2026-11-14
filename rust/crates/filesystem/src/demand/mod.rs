@@ -47,7 +47,7 @@ pub use empty::Empty;
 mod routed;
 pub use routed::Routed;
 #[cfg(test)]
-mod computed_tests;
+pub(crate) mod computed_tests;
 
 /// Native provider backed by a held, no-follow directory capability.
 #[cfg(not(target_arch = "wasm32"))]

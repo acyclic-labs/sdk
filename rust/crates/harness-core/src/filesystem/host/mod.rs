@@ -195,7 +195,7 @@ pub(in crate::filesystem) use publication::{
 };
 mod content_selection;
 mod diff;
-mod directory;
+pub(in crate::filesystem) mod directory;
 mod family;
 mod keys;
 mod metadata;

@@ -303,3 +303,5 @@ mod uncertain_tests {
         assert!(!Error::Turn(Box::new(crate::Error::Invalid("definitive".into()))).uncertain());
     }
 }
+
+pub(crate) use records::decode_record_accounted;

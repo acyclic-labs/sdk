@@ -51,10 +51,11 @@ impl Provider {
         }
     }
     fn append(&self, bytes: Bytes, ctx: &mut KernelAccounting<'_>) {
+        let delivery = self.sink.lock().unwrap();
         let epoch = self.epoch.load(Ordering::SeqCst) + 1;
         self.data.lock().unwrap().insert(epoch, bytes);
         self.epoch.store(epoch, Ordering::SeqCst);
-        if let Some(sink) = self.sink.lock().unwrap().as_ref() {
+        if let Some(sink) = delivery.as_ref() {
             sink.changed(&epoch, ctx).unwrap();
         }
     }
@@ -137,22 +138,44 @@ impl ViewProvider for Provider {
     }
 }
 struct Watch(Arc<Mutex<Option<Arc<dyn ViewChangeSink<u64>>>>>);
+impl Watch {
+    fn retire(&self) {
+        self.0.lock().unwrap().take();
+    }
+}
 impl SourceWatch for Watch {
     fn fence(&self, _: &mut KernelAccounting<'_>) -> Result<SourceFence, DemandError> {
-        Ok(SourceFence::Confirmed)
+        match self.0.lock().unwrap().as_ref() {
+            Some(_) => Ok(SourceFence::Confirmed),
+            None => Err(DemandError::SourceUnavailable),
+        }
     }
     fn stop(&self, _: &mut KernelAccounting<'_>) -> Result<(), DemandError> {
-        self.0.lock().unwrap().take();
+        self.retire();
         Ok(())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stop_with_cleanup_wait(&self, wait: &CancellationToken) -> Result<(), DemandError> {
+        wait.check().map_err(|_| DemandError::Cancelled)?;
+        self.retire();
+        Ok(())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
+        self.retire();
+        Ok(())
+    }
+    fn is_stopped(&self) -> bool {
+        self.0.lock().unwrap().is_none()
     }
     fn logical_owned_bytes(&self) -> u64 {
         std::mem::size_of::<Self>() as u64
     }
     fn is_exact(&self) -> bool {
-        true
+        !self.is_stopped()
     }
 }
-struct Projection(Arc<Counts>);
+struct Projection(Arc<Counts>, bool, bool);
 fn name() -> LogicalName {
     LogicalName::new(NameEncoding::Utf8, b"index.md".to_vec()).unwrap()
 }
@@ -188,7 +211,10 @@ impl View for Projection {
         Ok(if path.is_root() {
             Some(metadata(None))
         } else if path.components() == [name()] {
-            Some(metadata(Some(bytes.len() as u64)))
+            Some(SourceNode {
+                logical_bytes: self.2.then_some(bytes.len() as u64),
+                ..metadata(Some(bytes.len() as u64))
+            })
         } else {
             None
         })
@@ -222,7 +248,13 @@ impl View for Projection {
             1,
         );
         SourceDirectoryPage::copied(
-            std::iter::once((&name(), metadata(Some(bytes.len() as u64)))),
+            std::iter::once((
+                &name(),
+                SourceNode {
+                    logical_bytes: (!self.1).then_some(bytes.len() as u64),
+                    ..metadata(Some(bytes.len() as u64))
+                },
+            )),
             Some(next),
             SourceVersion([0; 32]),
             ctx,
@@ -290,8 +322,16 @@ macro_rules! ctx {
 }
 fn computed(provider: &Provider) -> Computed<Projection, Provider> {
     Computed::new(
-        Arc::new(Projection(provider.counts.clone())),
+        Arc::new(Projection(provider.counts.clone(), false, true)),
         provider.clone(),
+    )
+}
+
+pub(crate) fn unknown_length_source(lookup_length: bool) -> impl DemandSource {
+    let provider = Provider::new();
+    Computed::new(
+        Arc::new(Projection(provider.counts.clone(), true, lookup_length)),
+        provider,
     )
 }
 
@@ -711,7 +751,7 @@ fn computed_changes_deliver_without_a_timer_or_readiness_probe() {
 #[test]
 fn computed_idle_cost_is_independent_of_agent_count() {
     let provider = Provider::new();
-    let view = Arc::new(Projection(provider.counts.clone()));
+    let view = Arc::new(Projection(provider.counts.clone(), false, true));
     for count in [10, 100_000] {
         let allocated = acyclic_test_support::measure(|| {
             for _ in 0..count {

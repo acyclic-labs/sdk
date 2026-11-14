@@ -639,8 +639,7 @@ impl DiscoverySource for VolumeDiscovery<'_> {
             }
             Ok(Some(DiscoveryPage {
                 revision: page.generation,
-                scanned: u32::try_from(page.entries.len())
-                    .map_err(|_| Error::Invalid("entry count overflow".into()))?,
+                scanned: page.examined,
                 entries: page.entries.into_iter().map(Into::into).collect(),
                 next: page.next,
             }))

@@ -229,9 +229,11 @@ mod tests {
         ) {
             let snapshot = crate::Revision { scope: crate::RevisionScope::new(Vec::new()), incarnation: 1, index: 0 };
             let mut view = crate::Heads {
+                applied: crate::Revision { scope: crate::RevisionScope::new(Vec::new()), incarnation: 1, index: 0 },
                 retained: Default::default(), projection: crate::HeadProjection::Watermarks,
                 snapshot: snapshot.clone(), applied: snapshot,
                 heads: tails.into_iter().map(|tail| Some(crate::PathHead {
+                    changed_at: 0,
                     retained_through: through.filter(|through| *through <= tail),
                     tail, changed_at: tail, last: None, durable: 0, origin: None,
                 })).collect(), children: None,

@@ -168,7 +168,7 @@ impl<
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<bool, LazyWorkspaceError> {
-        for (cut, lookup) in [left, right] {
+        for (cut, lookup) in [&left, &right] {
             if let Some(lookup) = lookup {
                 if lookup.stat().kind != SourceNodeKind::RegularFile {
                     return Err(LazyWorkspaceError::NotRegularFile);

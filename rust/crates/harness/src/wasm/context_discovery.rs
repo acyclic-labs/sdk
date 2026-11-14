@@ -244,6 +244,11 @@ impl ContentResidencyVerifier for BrowserReader {
                     .map_err(platform_error)?;
             Ok(Some((
                 PrivateDirectoryPage {
+                    examined: from_js(
+                        Reflect::get(&result, &JsValue::from_str("examined"))
+                            .map_err(platform_error)?,
+                    )
+                    .map_err(platform_error)?,
                     generation,
                     entries,
                     next,

@@ -1,1 +1,1 @@
-{"generation":{"kind":"generation","provider":{"namespace":"test","family":"filesystem","version":"2"},"key":[1,2,3],"version":"7"},"entries":[{"name":"README.md","kind":"file"},{"name":"src","kind":"directory"}],"next":[1,2,3]}
+{"generation":{"kind":"generation","provider":{"namespace":"test","family":"filesystem","version":"2"},"key":[1,2,3],"version":"7"},"examined":2,"entries":[{"name":"README.md","kind":"file"},{"name":"src","kind":"directory"}],"next":[1,2,3]}

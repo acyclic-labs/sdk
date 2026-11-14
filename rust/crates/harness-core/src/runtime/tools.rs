@@ -1161,7 +1161,7 @@ impl ToolContext {
             ))
             .tool_input());
         }
-        if let Some((binding, relative)) = self.task().private_content_path(path, io)? {
+        if let Some((binding, relative)) = self.task().private_content_read_path(path, io)? {
             return Ok((&binding.volume, std::borrow::Cow::Borrowed(relative)));
         }
         for (prefix, layer) in self.task().harness.read_only_layers() {

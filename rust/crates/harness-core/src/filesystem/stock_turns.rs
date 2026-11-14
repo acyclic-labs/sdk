@@ -100,6 +100,11 @@ impl Tasks {
         turn: OperationId,
         authority: &TurnAuthority,
     ) -> Result<(StockExecutor, TaskContext)> {
+        let harness = authority
+            .workspace_tools
+            .as_ref()
+            .map(|filesystem| harness.with_filesystem(Arc::clone(filesystem)))
+            .unwrap_or_else(|| Arc::clone(harness));
         let context = harness
             .agent_context(&authority.grants, authority.content.clone())?
             .with_execution_journal(Arc::clone(&authority.journal), turn)?

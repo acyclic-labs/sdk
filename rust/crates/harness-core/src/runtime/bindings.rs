@@ -1,6 +1,7 @@
 use super::*;
 
 /// Immutable runtime bindings that every agent turn context shares.
+#[derive(Clone)]
 pub struct AgentHarness {
     pub(crate) targets: Option<Arc<dyn super::TargetResolver>>,
     pub(crate) filesystem: Option<Arc<dyn FilesystemExecutor>>,
@@ -125,6 +126,13 @@ impl Bindings {
 }
 
 impl AgentHarness {
+    /// Bind one turn's scoped filesystem while retaining its execution targets.
+    pub fn with_filesystem(&self, filesystem: Arc<dyn FilesystemExecutor>) -> Arc<Self> {
+        Arc::new(Self {
+            filesystem: Some(filesystem),
+            ..self.clone()
+        })
+    }
     /// Original user/org, scope, template and parent pins, in that order.
     pub fn issuer_configuration(&self) -> &[Option<crate::layers::PinnedLayer>; 4] {
         &self.configuration

@@ -821,9 +821,6 @@ impl AgentCommand {
                 if after_generation.is_some() && (generation.is_some() || page.cursor().is_some()) {
                     return Err(CommandError::Invalid);
                 }
-                if generation.is_none() && page.cursor().is_some() {
-                    return Err(CommandError::Invalid);
-                }
                 if !path.is_empty() {
                     validate_content_path(path, &mut None).map_err(|_| CommandError::Invalid)?;
                 }

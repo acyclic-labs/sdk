@@ -1014,6 +1014,7 @@ where
                     if credit.is_none() {
                         let end = AgentReply::Directory {
                             page: PrivateDirectoryPageView {
+                                examined: u32::MAX,
                                 generation,
                                 entries: &[],
                                 next: None,
@@ -1021,6 +1022,7 @@ where
                         };
                         let more = AgentReply::Directory {
                             page: PrivateDirectoryPageView {
+                                examined: u32::MAX,
                                 generation,
                                 entries: &[],
                                 next: Some(&[]),
@@ -1304,7 +1306,7 @@ where
                             .map_err(|_| Error::Record("invalid history cursor"))?;
                         let cursor: HistoryCursor = serde_json::from_slice(&bytes)
                             .map_err(|_| Error::Record("invalid history cursor"))?;
-                        if cursor.version != 1
+                        if cursor.version != 2
                             || cursor.agent != *agent
                             || cursor.before > cursor.tail
                         {
@@ -1313,9 +1315,13 @@ where
                         cursor
                     }
                     None => {
-                        let tail = self.tail(agent.history()?).await?;
+                        let tail = self
+                            .tail(agent.history()?)
+                            .await?
+                            .checked_sub(1)
+                            .ok_or(Error::Record("history adoption boundary is absent"))?;
                         HistoryCursor {
-                            version: 1,
+                            version: 2,
                             agent: agent.clone(),
                             before: tail,
                             tail,
@@ -1331,7 +1337,7 @@ where
                         .read(acyclic_stream::ReadRequest {
                             key: None,
                             path: agent.history()?,
-                            from: start,
+                            from: start + 1,
                             limit: count as u32,
                             at_least: Default::default(),
                         })
@@ -1339,8 +1345,8 @@ where
                         .map_err(Error::Stream)?;
                     while let Some(record) = records.try_next().await.map_err(Error::Stream)? {
                         let item = crate::agent::HistoryCheckpoint::summary(&record.value)?;
-                        let sequence = start + items.len() as u64;
-                        if record.sequence != sequence || item.conversation != sequence + 1 {
+                        let sequence = start + 1 + items.len() as u64;
+                        if record.sequence != sequence || item.conversation != sequence {
                             return Err(Error::Record("history page differs from indexed cut"));
                         }
                         items.push(item);
@@ -1931,6 +1937,23 @@ struct PageCredit {
 }
 
 impl PageCredit {
+    /// A complete page needs only its producer's existing continuation. This
+    /// also preserves whole-page serving for producers without interior cuts.
+    fn fits_page(
+        &self,
+        items: &[impl serde::Serialize],
+        next: Option<&str>,
+    ) -> Result<bool, Error> {
+        let mut bytes = next.map_or(self.end_envelope, |next| {
+            self.next_envelope + next.len() as u64
+        });
+        for (index, item) in items.iter().enumerate() {
+            bytes += page_json_bytes(item)? + u64::from(index != 0);
+        }
+        Ok(acyclic_harness_client::encoded_agent_reply_size(bytes)
+            .is_ok_and(|encoded| encoded <= self.maximum))
+    }
+
     fn new(
         page: &AgentPageRequest,
         empty: impl Fn(Option<String>) -> AgentReply,

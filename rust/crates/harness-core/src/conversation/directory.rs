@@ -99,17 +99,20 @@ pub struct PrivateDirectoryPage {
         tsify(type = "WasmResourceRefWire & { kind: 'generation' }")
     )]
     pub generation: GenerationRef,
-    /// Ordered entries returned for the requested directory segment.
+    /// Entries in the producer's traversal order, preserved by continuations.
     pub entries: Vec<PrivateDirectoryEntry>,
     /// Opaque continuation at the same directory and generation.
     pub next: Option<Vec<u8>>,
+    /// Physical candidates consumed before policy filtering.
+    pub examined: u32,
 }
 
 /// Maximum number of entries admitted in one private-directory page.
 pub const MAX_PRIVATE_DIRECTORY_PAGE: usize = u32::MAX as usize;
 
 impl PrivateDirectoryPage {
-    /// Rejects malformed, duplicate, or out-of-order names independently of the concrete Filesystem page implementation.
+    /// Rejects malformed or duplicate names independently of the concrete
+    /// Filesystem page implementation. Producer order need not be lexical.
     pub fn validate(&self) -> Result<()> {
         self.validate_with_io(None)
     }
@@ -119,6 +122,7 @@ impl PrivateDirectoryPage {
             self.generation.validate(history)?;
             if self.entries.len() as u64 > MAX_PRIVATE_DIRECTORY_PAGE as u64
                 || self.next.as_ref().is_some_and(Vec::is_empty)
+                || self.entries.len() > self.examined as usize
             {
                 return Err(crate::store::guarded_boundary(
                     history,
@@ -126,22 +130,47 @@ impl PrivateDirectoryPage {
                     "private directory page exceeds its bound or cannot advance",
                 ));
             }
-            let mut previous: Option<&[u8]> = None;
             for entry in &self.entries {
                 validate_content_path(&entry.name, history)?;
-                if entry.name.contains('/')
-                    || previous.is_some_and(|name| entry.name.as_bytes() <= name)
-                {
+                if entry.name.contains('/') {
                     return Err(crate::store::guarded_boundary(
                         history,
                         crate::wire::ErrorCode::Invalid,
-                        "private directory page names are not ordered",
+                        "private directory page contains a non-child name",
                     ));
                 }
-                previous = Some(entry.name.as_bytes());
             }
             Ok(())
-        })
+        })?;
+        let unique = |ctx: &mut acyclic_fs::kernel::KernelAccounting<'_>| {
+            acyclic_fs::kernel::all_unique_by_with_accounting(
+                self.entries.iter().map(|entry| entry.name.as_str()),
+                ctx,
+                |left, right| left.cmp(right),
+            )
+        };
+        let distinct = if let Some(io) = io {
+            io.account(unique)?
+        } else {
+            let mut allocations = acyclic_fs::kernel::allocation::AllocationLedger::default();
+            let mut work = acyclic_fs::WorkCounters::UNCHARGED;
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let mut ctx = acyclic_fs::kernel::KernelAccounting::borrowed_standalone(
+                &mut allocations,
+                &mut work,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            );
+            unique(&mut ctx)?
+        };
+        if !distinct {
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "private directory page contains duplicate names",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -150,6 +179,7 @@ impl PrivateDirectoryPage {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrivateDirectoryPageView<'a> {
+    pub examined: u32,
     pub generation: &'a GenerationRef,
     pub entries: &'a [PrivateDirectoryEntry],
     pub next: Option<&'a [u8]>,
@@ -161,6 +191,7 @@ impl Serialize for PrivateDirectoryPage {
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
         PrivateDirectoryPageView {
+            examined: self.examined,
             generation: &self.generation,
             entries: &self.entries,
             next: self.next.as_deref(),

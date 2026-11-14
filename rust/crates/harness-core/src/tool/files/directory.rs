@@ -55,6 +55,8 @@ pub struct DirectoryEntry {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct DirectoryReadResult {
+    /// Physical candidates consumed before policy filtering.
+    pub examined: u32,
     /// Ordered children.
     pub entries: Vec<DirectoryEntry>,
     /// Opaque continuation for this directory at the same immutable selection.
@@ -113,6 +115,7 @@ fn public_parent(path: &str) -> &str {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Page<'a> {
+    examined: u32,
     entries: Vec<Entry<'a>>,
     next: Option<String>,
     #[serde(skip)]
@@ -226,6 +229,7 @@ pub(super) async fn read(
     };
     let encoded = value(
         &Page {
+            examined: page.examined,
             entries,
             next,
             _next_hold: next_hold,
@@ -245,7 +249,7 @@ pub(super) fn project(
 ) -> Result<(Value, acyclic_fs::NativeCustody)> {
     validate_input(input, limit, work)?;
     let (result, _hold) = decode::<DirectoryReadResult>(&result.value, work)?;
-    if result.entries.len() > limit as usize {
+    if result.examined > limit || result.entries.len() > result.examined as usize {
         return Err(executor::rejection(
             work,
             "directory result exceeds its selection or cannot advance",
@@ -257,16 +261,34 @@ pub(super) fn project(
     if let Some(next) = &result.next {
         decode_cursor(next, work)?;
     }
-    let mut previous: Option<&str> = None;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    #[cfg(not(target_arch = "wasm32"))]
+    let ledger = match work {
+        Some(work) => crate::executor::PreparationIo::from_native_work(work)?,
+        None => crate::executor::PreparationIo::for_unmeasured(&cancellation)?,
+    };
+    #[cfg(target_arch = "wasm32")]
+    let ledger = crate::executor::PreparationIo::for_unmeasured(&cancellation)?;
+    if !ledger.account(|ctx| {
+        acyclic_fs::kernel::all_unique_by_with_accounting(
+            result.entries.iter().map(|entry| entry.name.as_str()),
+            ctx,
+            |left, right| left.cmp(right),
+        )
+    })? {
+        return Err(executor::rejection(
+            work,
+            "directory result contains duplicate names",
+        ));
+    }
     for entry in &result.entries {
         if entry.name.is_empty()
             || entry.name.contains('/')
             || matches!(entry.name.as_str(), "." | "..")
-            || previous.is_some_and(|previous| entry.name.as_bytes() <= previous.as_bytes())
         {
             return Err(executor::rejection(
                 work,
-                "directory result names are not ordered children",
+                "directory result names are not children",
             ));
         }
         let (expected, _hold) = child_path(public_parent(&input.path), &entry.name, work)?;
@@ -276,7 +298,6 @@ pub(super) fn project(
                 "directory result belongs to another path",
             ));
         }
-        previous = Some(&entry.name);
     }
     schema::project_json(&result, work)
 }

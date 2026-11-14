@@ -121,6 +121,49 @@ where
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
+    /// Binds the selected agent's read-only evaluation route over its existing
+    /// private workspace. Cases remain demands on the original stream owner;
+    /// the companion contains only the empty authored/source merge roots.
+    pub(in crate::filesystem) async fn for_evaluations<P>(
+        self: &Arc<Self>,
+        streams: Arc<P>,
+        agent: &crate::agent::AgentPath,
+        volume: &VolumeRef,
+    ) -> Result<Arc<Self>>
+    where
+        P: acyclic_stream::NativeStreamProvider + ?Sized + 'static,
+    {
+        use acyclic_fs::demand::{Empty, Routed};
+        let cancel = acyclic_fs::CancellationToken::new();
+        let work =
+            acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancel)
+                .map_err(|(error, _)| Error::from(error))?;
+        let io = PreparationIo::from_native_work(&work)?;
+        let reference = bounded_io::content_workspace(&self.provider, volume, Some(&io))?;
+        let _reference_hold = io.guard_owned(reference.logical_owned_bytes()?)?;
+        let workspace = self.open(&reference, Some(&io)).await?;
+        let config = workspace.volume_config();
+        let source = Arc::new(Routed::new(
+            Empty,
+            LogicalName::new(NameEncoding::Utf8, b"evals".to_vec())
+                .map_err(|_| io.invalid("evaluation route name is invalid"))?,
+            crate::evals::StreamProvider::new(streams, agent)?.into_source(),
+            config.limits,
+        ));
+        let mut ctx = KernelAccounting::NativeOriginal {
+            work: &work,
+            cancellation: &cancel,
+        };
+        let view = LazyWorkspace::bind(
+            workspace,
+            source,
+            acyclic_fs::MemoryLazyWorkspaceStore::default(),
+            &mut ctx,
+        )
+        .await?;
+        self.for_private_view(volume, view.share(&mut ctx)?)
+    }
+
     /// Binds an existing private lazy workspace to the same authorized range reader.
     /// Construction starts no IO, mount, watch, cache or background task.
     pub fn for_private_view<D: DemandSource + 'static, S: LazyWorkspaceStore>(

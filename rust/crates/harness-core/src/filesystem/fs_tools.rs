@@ -8,6 +8,7 @@ use crate::{
 use acyclic_fs::distributed::AuthorityProvider;
 use acyclic_fs::{StreamAuthorityStore, StreamGitCompatStore, WorkspaceGraph, WorkspaceResolver};
 use acyclic_stream::BoxProviderFuture;
+mod search;
 
 // This boundary is only for reads that own no admitted publication. The
 // command future itself must retain an accepted or unresolved commit.
@@ -29,6 +30,7 @@ pub(super) async fn read_before_effect<T>(
 
 /// Filesystem commands over the remote placement itself, without a machine.
 pub struct FilesystemTools<P: ?Sized + 'static, O: 'static> {
+    agent: crate::agent::AgentPath,
     host: Arc<FilesystemHost<StreamAuthorityStore<P>, O>>,
     store: StreamGitCompatStore<P>,
     volumes: BTreeMap<String, crate::agent::WorkspaceEntry>,
@@ -67,6 +69,8 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
         // or serializing all volume references for every command and replay.
         let mut identity = blake3::Hasher::new();
         identity.update(b"acyclic.filesystem.tool-binding.v1");
+        identity.update(&(agent.path.as_str().len() as u64).to_be_bytes());
+        identity.update(agent.path.as_str().as_bytes());
         for part in [
             host.provider.namespace(),
             host.provider.family(),
@@ -81,6 +85,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
             identity.update(&crate::contract::canonical_json_bytes(binding)?);
         }
         Ok(Self {
+            agent: agent.path.clone(),
             host,
             store,
             volumes,
@@ -145,6 +150,13 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| Error::Invalid("fs requires a command string".into()))?;
         let parsed = crate::tools::parse_fs_command(command)?;
+        if search::selected(&parsed) {
+            if reconcile {
+                self.search_selection(&parsed, &context)?;
+                return Ok(None);
+            }
+            return self.search(&parsed, &context).await.map(Some);
+        }
         let volume = self.target(&parsed, &context)?;
         let reference =
             super::workspace_ref(self.host.provider.clone(), &volume.storage_name(&mut None)?)?;
@@ -302,57 +314,102 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Too
         &'a self,
         context: Option<&'a ToolContext>,
         invocation: &'a ToolInvocation,
-        work: acyclic_fs::NativeWork<'a>,
-    ) -> Option<BoxProviderFuture<'a, Result<()>>> {
-        Some(Box::pin(async move {
-            #[cfg(not(target_arch = "wasm32"))]
-            if work.is_some() {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
-                    reason: "filesystem replay requires its ordinary provider context",
-                });
-            }
-            let _ = work;
-            let context = context.ok_or_else(|| {
-                Error::Unauthorized("filesystem replay has no task context".into())
-            })?;
-            let command = invocation
-                .arguments
-                .get("command")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| Error::Invalid("fs requires a command string".into()))?;
-            let parsed = match crate::tools::parse_fs_command(command) {
-                Ok(parsed) => parsed,
-                // Rejected syntax never selected a source or read its data.
-                Err(Error::Invalid(_)) => return Ok(()),
-                Err(error) => return Err(error),
-            };
-            let volume = self.target(&parsed, context)?;
-            let reference =
-                super::workspace_ref(self.host.provider.clone(), &volume.storage_name(&mut None)?)?;
-            let mut cancellation = context.model_cancellation(None)?;
-            let root =
-                read_before_effect(&mut cancellation, self.host.open(&reference, None)).await?;
-            let access = WorkspaceAccess::new(
-                &self.verifier,
-                &self.scope,
-                context.effective_scope().grants(),
-                Some(volume),
-            )?;
-            read_before_effect(&mut cancellation, access.require(&root)).await?;
-            read_before_effect(&mut cancellation, async {
-                (crate::tools::git::RepositoryAccess {
-                    access: &access,
-                    filesystem: &self.host.filesystem,
-                    store: &self.store,
-                    current: &root,
-                    repository: root.id(),
+        result: &'a ToolResult,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<Option<crate::conversation::BoundedContentFuture<'a, ()>>> {
+        Ok(Some(crate::conversation::BoundedContentFuture::new(
+            io,
+            || async move {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(io) = io
+                    && let Some(work) = io.original_native_work()
+                {
+                    let original_io = PreparationIo::from_native_work(work)?;
+                    let io = &original_io;
+                    let context = context.ok_or_else(|| {
+                        crate::executor::stock_boundary(
+                            Some(io),
+                            crate::wire::ErrorCode::Unauthorized,
+                            "filesystem replay has no task context",
+                        )
+                    })?;
+                    self.authorize(None, Some(context), invocation, Some(work))?;
+                    let command = invocation
+                        .arguments
+                        .get("command")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| {
+                            crate::executor::stock_boundary(
+                                Some(io),
+                                crate::wire::ErrorCode::Invalid,
+                                "fs requires a command string",
+                            )
+                        })?;
+                    let parsed =
+                        match crate::tools::fs_command::parse_fs_command_with_io(command, Some(io))
+                        {
+                            Ok(parsed) => parsed,
+                            Err(error) if error.code() == crate::wire::ErrorCode::Invalid => {
+                                return Ok(());
+                            }
+                            Err(error) => return Err(error),
+                        };
+                    let hold = io.guard_owned(io.owned_bytes()?)?;
+                    self.authorize_search_result(&parsed, context, result, Some(io))
+                        .await?;
+                    drop(parsed);
+                    drop(hold);
+                    return Ok(());
+                }
+                let context = context.ok_or_else(|| {
+                    Error::Unauthorized("filesystem replay has no task context".into())
+                })?;
+                let command = invocation
+                    .arguments
+                    .get("command")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| Error::Invalid("fs requires a command string".into()))?;
+                let parsed = match crate::tools::parse_fs_command(command) {
+                    Ok(parsed) => parsed,
+                    // Rejected syntax never selected a source or read its data.
+                    Err(Error::Invalid(_)) => return Ok(()),
+                    Err(error) => return Err(error),
+                };
+                if search::selected(&parsed) {
+                    self.authorize(None, Some(context), invocation, None)?;
+                    self.authorize_search_result(&parsed, context, result, io)
+                        .await?;
+                    return Ok(());
+                }
+                let volume = self.target(&parsed, context)?;
+                let reference = super::workspace_ref(
+                    self.host.provider.clone(),
+                    &volume.storage_name(&mut None)?,
+                )?;
+                let mut cancellation = context.model_cancellation(None)?;
+                let root =
+                    read_before_effect(&mut cancellation, self.host.open(&reference, None)).await?;
+                let access = WorkspaceAccess::new(
+                    &self.verifier,
+                    &self.scope,
+                    context.effective_scope().grants(),
+                    Some(volume),
+                )?;
+                read_before_effect(&mut cancellation, access.require(&root)).await?;
+                read_before_effect(&mut cancellation, async {
+                    (crate::tools::git::RepositoryAccess {
+                        access: &access,
+                        filesystem: &self.host.filesystem,
+                        store: &self.store,
+                        current: &root,
+                        repository: root.id(),
+                    })
+                    .require_saved_result_access()
+                    .await
                 })
-                .require_saved_result_access()
                 .await
-            })
-            .await
-        }))
+            },
+        )?))
     }
 
     fn authorize(
@@ -362,11 +419,29 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Too
         invocation: &ToolInvocation,
         work: acyclic_fs::NativeWork<'_>,
     ) -> Result<()> {
-        if work.is_some() {
-            return Err(Error::Unsupported(
-                "filesystem command requires its ordinary provider context".into(),
-            ));
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = work {
+            let io = PreparationIo::from_native_work(work)?;
+            let refused = || {
+                crate::executor::stock_boundary(
+                    Some(&io),
+                    crate::wire::ErrorCode::Unauthorized,
+                    "filesystem command identity or grant changed",
+                )
+            };
+            let context = context.ok_or_else(refused)?;
+            if invocation.name != "fs"
+                || invocation.operation_id != context.operation_id()
+                || invocation.call_id != context.call_id()
+                || !context.effective_scope().grants().contains("tool:call:fs")
+            {
+                return Err(refused());
+            }
+            return crate::executor::with_history_io(Some(&io), |history| {
+                self.verifier.verify(&self.scope, history)
+            });
         }
+        let _ = work;
         let context = context
             .ok_or_else(|| Error::Unauthorized("filesystem command has no task context".into()))?;
         if invocation.name != "fs"
@@ -382,6 +457,45 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Too
             ));
         }
         self.verifier.verify(&self.scope, &mut None)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn supports_native_execution(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        work.remaining()?;
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn execute_with_native_context<'a>(
+        &'a self,
+        context: &'a ToolContext,
+        invocation: &'a ToolInvocation,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<acyclic_fs::NativeFutureBundle<'a, (ToolResult, acyclic_fs::NativeAllocation), Error>>
+    {
+        acyclic_fs::NativeFutureBundle::new(work, || self.search_native(invocation, context, work))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn reconcile_with_native_context<'a>(
+        &'a self,
+        context: &'a ToolContext,
+        invocation: &'a ToolInvocation,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<
+        acyclic_fs::NativeFutureBundle<
+            'a,
+            (Option<ToolResult>, acyclic_fs::NativeAllocation),
+            Error,
+        >,
+    > {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
+            let (result, custody) = self.search_native(invocation, context, work).await?;
+            Ok((Some(result), custody))
+        })
     }
 
     fn execute<'a>(

@@ -259,6 +259,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         held.adopt(reference.logical_owned_bytes()?)?;
         let mut selected = (
             PrivateDirectoryPage {
+                examined: 0,
                 generation: reference,
                 entries: Vec::new(),
                 next: None,
@@ -291,7 +292,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             };
             guard().await?;
             io.charge(WorkCounters {
-                items_examined: incoming.0.entries.len() as u64,
+                items_examined: u64::from(incoming.0.examined),
                 ..Default::default()
             })?;
             let now = super::super::access::access_now()?;
@@ -336,6 +337,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 selected.1.absorb(offered.1)?;
             }
             drop(entries);
+            selected.0.examined = selected
+                .0
+                .examined
+                .checked_add(incoming.0.examined)
+                .ok_or_else(|| io.invalid("directory work count overflows"))?;
             let old = selected.0.next.take();
             let bytes = old.as_ref().map_or(0, |next| next.capacity() as u64);
             drop(old);
@@ -354,13 +360,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 break;
             }
         }
-        io.account(|ctx| {
-            acyclic_fs::kernel::sort_by_with_accounting(
-                &mut selected.0.entries,
-                ctx,
-                |left, right| left.name.as_bytes().cmp(right.name.as_bytes()),
-            )
-        })?;
+        selected.0.validate_with_io(Some(io))?;
         selection.require_current(io).await?;
         request.grant.recheck(Some(io))?;
         Ok(Some(selected))

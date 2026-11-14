@@ -270,17 +270,20 @@ impl TurnContext for LocalContext {
         agent: &'a AgentState,
         turn: OperationId,
     ) -> BoxProviderFuture<'a, Result<()>> {
-        Box::pin(async move {
-            let local = self
-                .0
-                .upgrade()
-                .ok_or_else(|| Error::Unsupported("local harness is closed".into()))?;
-            #[cfg(any(test, not(target_arch = "wasm32")))]
-            local.merge_completed_workspace(agent, turn).await?;
-            #[cfg(not(any(test, not(target_arch = "wasm32"))))]
+        let Some(local) = self.0.upgrade() else {
+            return Box::pin(std::future::ready(Err(Error::Unsupported(
+                "local harness is closed".into(),
+            ))));
+        };
+        #[cfg(any(test, not(target_arch = "wasm32")))]
+        {
+            local.merge_completed_workspace(agent, turn)
+        }
+        #[cfg(not(any(test, not(target_arch = "wasm32"))))]
+        {
             let _ = (local, agent, turn);
-            Ok(())
-        })
+            Box::pin(std::future::ready(Ok(())))
+        }
     }
 
     fn prepare<'a>(
@@ -548,42 +551,55 @@ impl LocalHarness {
     /// reconciliation) under the parent's guard, now if the parent's checkout
     /// is idle, else before the parent's next command reads it.
     #[cfg(any(test, not(target_arch = "wasm32")))]
-    async fn merge_completed_workspace(&self, agent: &AgentState, turn: OperationId) -> Result<()> {
-        let (Some(parent), Some(root)) = (&agent.parent, &self.workspace) else {
-            return Ok(());
-        };
-        let hosted = self
-            .agents
-            .get()
-            .ok_or_else(|| Error::Unsupported("agent hosting is closed".into()))?;
-        let parent = hosted.agents().state(parent).await.map_err(storage)?;
-        let child_project = completion_project(agent)?;
-        let parent_project = completion_project(&parent)?;
-        if child_project == parent_project {
-            return Ok(());
-        }
+    fn merge_completed_workspace<'a>(
+        self: Arc<Self>,
+        agent: &'a AgentState,
+        turn: OperationId,
+    ) -> BoxProviderFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let (Some(parent), Some(root)) = (&agent.parent, &self.workspace) else {
+                return Ok(());
+            };
+            let hosted = self
+                .agents
+                .get()
+                .ok_or_else(|| Error::Unsupported("agent hosting is closed".into()))?;
+            let parent = hosted.agents().state(parent).await.map_err(storage)?;
+            let child_project = completion_project(agent)?;
+            let parent_project = completion_project(&parent)?;
+            if child_project == parent_project {
+                return Ok(());
+            }
 
-        // A timed-out shell retains this guard through cleanup and capture.
-        // Include that work and queued descendant publications in one cut.
-        let own = self
-            .completion_target(root, agent, &child_project, turn)
-            .await?;
-        let source = own.source().await?;
-        let target = self
-            .completion_target(root, &parent, &parent_project, turn)
-            .await?;
-        let branch = format!("agents/{}", agent.path.id());
-        target
-            .commands()
-            .hand_back(
-                &target.context(),
-                branch,
-                acyclic_fs::GitGenerationRef {
-                    workspace_id: source.workspace_id,
-                    generation: source.generation,
-                },
+            // A timed-out shell retains this guard through cleanup and capture.
+            // Include that work and queued descendant publications in one cut.
+            let own = self
+                .completion_target(root, agent, &child_project, turn)
+                .await?;
+            let source = own.source().await?;
+            let target = self
+                .completion_target(root, &parent, &parent_project, turn)
+                .await?;
+            let branch = format!("agents/{}", agent.path.id());
+            acyclic_fs::GitCompatRepository::new(
+                target.workspace.view().workspace().id(),
+                target.workspace.store.clone(),
             )
+            .register_branch_workspace(branch.clone(), source.workspace_id, None, false)
             .await
+            .map_err(storage)?;
+            target
+                .commands()
+                .hand_back(
+                    &target.context(),
+                    branch,
+                    acyclic_fs::GitGenerationRef {
+                        workspace_id: source.workspace_id,
+                        generation: source.generation,
+                    },
+                )
+                .await
+        })
     }
 
     /// The checkout a completion publishes into, with the receiving agent's
@@ -997,6 +1013,7 @@ impl LocalHarness {
                 None => turns,
             };
             turns
+                .with_filesystem_tools()
                 .with_approvers(self.approval_models.clone())
                 .with_goals(self.goal_continuations)
         };

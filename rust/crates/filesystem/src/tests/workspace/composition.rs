@@ -756,7 +756,8 @@ async fn root_creation_creates_every_volume_in_the_caller_commit() -> Result<(),
     #[cfg(target_arch = "wasm32")]
     let created = unbounded!(fs, prepare_create_many(&creations, &mut commit))?;
     assert_eq!(created.len(), 2);
-    let prepared_private = created[0];
+    let selected = [created[0], created[1]];
+    let prepared_private = selected[0];
     assert!(unbounded!(fs, open_workspace("root-private")).is_err());
     assert!(unbounded!(fs, open_workspace("root-result")).is_err());
     #[cfg(not(target_arch = "wasm32"))]
@@ -781,7 +782,20 @@ async fn root_creation_creates_every_volume_in_the_caller_commit() -> Result<(),
         unbounded!(private, read("/AGENTS.md", 16))?.as_ref(),
         b"be brief"
     );
-    assert!(unbounded!(fs, open_workspace("root-result")).is_ok());
+    let result = unbounded!(fs, open_workspace("root-result"))?;
+    for (workspace, original) in [(&private, selected[0]), (&result, selected[1])] {
+        assert_eq!(workspace.id(), original.workspace);
+        assert_eq!(unbounded!(workspace, head())?.id(), original.generation);
+    }
+    private
+        .write_text("/AGENTS.md", "changed after creation")
+        .await?;
+    assert_ne!(unbounded!(private, head())?.id(), selected[0].generation);
+    let original = unbounded!(private, generation(selected[0].generation))?;
+    assert_eq!(
+        unbounded!(original, read("/AGENTS.md", 16))?.as_ref(),
+        b"be brief"
+    );
     assert_eq!(
         stream
             .tail(StreamPath::new("harness/agents/child/state")?)

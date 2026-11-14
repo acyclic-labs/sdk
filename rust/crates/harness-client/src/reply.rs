@@ -833,7 +833,7 @@ fn validate_reply(
             },
         ) => {
             page.validate().map_err(|_| CommandError::Invalid)?;
-            if bytes > request.bytes() as usize || page.entries.len() > request.items() as usize {
+            if bytes > request.bytes() as usize || page.examined > request.items() {
                 return Err(CommandError::Capacity);
             }
             if generation

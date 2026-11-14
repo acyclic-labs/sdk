@@ -377,3 +377,83 @@ async fn selected_fork_continues_past_batch_boundaries_and_duplicate_prefixes()
     assert!(unbounded!(child, read("/omitted", 16)).is_err());
     Ok(())
 }
+
+#[tokio::test]
+async fn selected_generation_export_excludes_omitted_and_later_content()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let parent = unbounded!(fs, create_workspace("export-source"))?;
+    let cut = b"original selected context";
+    let outcome = b"original selected outcome";
+    let omitted = b"unrelated private credential specimen";
+    let later = b"later unselected context";
+    parent
+        .write_text("/cut.json", std::str::from_utf8(cut)?)
+        .await?;
+    parent
+        .write_text("/outcome.json", std::str::from_utf8(outcome)?)
+        .await?;
+    parent
+        .write_text("/private.txt", std::str::from_utf8(omitted)?)
+        .await?;
+    let selected = unbounded!(parent, head())?;
+    parent
+        .write_text("/cut.json", std::str::from_utf8(later)?)
+        .await?;
+    let export = fork_workspace(
+        &parent,
+        "export-selection",
+        ForkOptions::from_generation(selected, IdempotencyKey::new())
+            .inherit_paths(vec!["/cut.json".into(), "/outcome.json".into()]),
+    )
+    .await?;
+    let checkout = export
+        .checkout(
+            GenerationSelector::Head,
+            CheckoutMode::read_only_pinned(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?
+        .value;
+    let manifest = checkout
+        .export_manifest(WorkBudget::UNBOUNDED, &cancellation)
+        .await?
+        .value;
+    let mut cursor = crate::kernel::TransferCursor::START;
+    let mut found_cut = false;
+    let mut found_outcome = false;
+    loop {
+        let batch = fs
+            .export_generation_batch(
+                &manifest,
+                cursor,
+                1,
+                parent.volume_config().limits.maximum_object_bytes,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value;
+        for object in &batch.objects {
+            let bytes = object.bytes.as_ref();
+            let contains = |needle: &[u8]| bytes.windows(needle.len()).any(|part| part == needle);
+            assert!(
+                !contains(omitted),
+                "omitted content entered the transfer closure"
+            );
+            assert!(!contains(later), "export substituted a later generation");
+            found_cut |= contains(cut);
+            found_outcome |= contains(outcome);
+        }
+        let Some(next) = batch.next else { break };
+        assert!(next.next_object() > cursor.next_object());
+        cursor = next;
+    }
+    assert!(
+        found_cut && found_outcome,
+        "selected bodies must be transferable"
+    );
+    Ok(())
+}

@@ -382,7 +382,7 @@ impl PreparationIo {
         }
     }
     #[inline]
-    pub(in crate::filesystem) fn account<T>(
+    pub(crate) fn account<T>(
         &self,
         operation: impl FnOnce(&mut KernelAccounting<'_>) -> std::result::Result<T, acyclic_fs::FsError>,
     ) -> std::result::Result<T, acyclic_fs::FsError> {
@@ -549,6 +549,38 @@ impl PreparationIo {
             }),
         }
     }
+    /// Joins an already admitted native result to this preparation's custody.
+    /// Returning a ledger allocation alone does not transfer its scope owner.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn accept_native_output(
+        &self,
+        owner: &acyclic_fs::kernel::NativeAccounting,
+        allocation: acyclic_fs::NativeAllocation,
+        bytes: u64,
+    ) -> Result<()> {
+        match owner.return_allocation(allocation, bytes)? {
+            KernelOwnedAllocation::Standalone => {
+                let Self::Owned { work, custody, .. } = self else {
+                    return Err(self.invalid("native result belongs to another preparation ledger"));
+                };
+                let state = work
+                    .lock()
+                    .map_err(|_| self.invalid("preparation accounting is poisoned"))?;
+                state
+                    .1
+                    .as_ref()
+                    .map_err(|error| acyclic_fs::FsError::from(*error))?;
+                custody
+                    .record(0, bytes)
+                    .map_err(acyclic_fs::FsError::from)?;
+                Ok(())
+            }
+            KernelOwnedAllocation::NativeOriginal(allocation) => {
+                self.absorb_native_custody(allocation)
+            }
+        }
+    }
+
     pub(crate) fn guard_owned(&self, bytes: u64) -> Result<DecodeReservation<'_>> {
         if bytes > self.owned_bytes()? {
             return Err(self.invalid("owned buffer exceeds retained quota"));
@@ -677,3 +709,18 @@ impl PreparationIo {
     }
 }
 use crate::executor::stock_boundary;
+
+impl PreparationIo {
+    /// Admits initialized temporary byte storage on the original ledger.
+    pub(crate) fn buffer(&self, length: usize) -> Result<(Vec<u8>, DecodeReservation<'_>)> {
+        let mut bytes = Vec::new();
+        crate::store::history::reserve(&mut bytes, length, &mut self.history_io())?;
+        let hold = self.guard_owned(bytes.capacity() as u64)?;
+        self.charged(WorkCounters {
+            bytes_copied: length as u64,
+            ..Default::default()
+        })?;
+        bytes.resize(length, 0);
+        Ok((bytes, hold))
+    }
+}

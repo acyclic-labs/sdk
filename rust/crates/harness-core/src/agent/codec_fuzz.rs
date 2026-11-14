@@ -277,14 +277,12 @@ fn roster(bytes: &[u8]) {
 
 fn history(bytes: &[u8]) {
     if let Ok(summary) = HistoryCheckpoint::summary(bytes) {
-        assert_ne!(summary.conversation, 0);
         assert!(summary.context_tail <= summary.conversation);
     }
     let Ok(value) = HistoryCheckpoint::decode(bytes) else {
         return;
     };
-    assert_eq!(value.version, 2);
-    assert_ne!(value.conversation, 0);
+    assert_eq!(value.version, 3);
     assert!(value.context.tail <= value.conversation);
     assert!(value.checkpoint.is_none_or(|cut| cut < value.conversation));
     assert!(
@@ -315,16 +313,12 @@ fn history(bytes: &[u8]) {
     // Refusals are derived from an admitted writer record, so they cannot pass
     // just because an unrelated malformed field kept the decoder unreachable.
     let mut invalid = value.clone();
-    for version in [0, 1, u32::MAX] {
+    for version in [0, 1, 2, u32::MAX] {
         invalid.version = version;
         let bytes = encode(&invalid);
         assert!(HistoryCheckpoint::decode(&bytes).is_err());
         assert!(HistoryCheckpoint::summary(&bytes).is_err());
     }
-    invalid = value.clone();
-    invalid.conversation = 0;
-    assert!(HistoryCheckpoint::decode(&encode(&invalid)).is_err());
-    assert!(HistoryCheckpoint::summary(&encode(&invalid)).is_err());
     invalid = value.clone();
     invalid.checkpoint = Some(value.conversation);
     assert!(HistoryCheckpoint::decode(&encode(&invalid)).is_err());
@@ -787,7 +781,7 @@ pub fn history_seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::erro
     use super::{ContextCut, SavedVolume, WorkspaceEntry};
     use crate::conversation::{VolumeClass, VolumeOwner, VolumeRef};
     let mut checkpoint = HistoryCheckpoint {
-        version: 2,
+        version: 3,
         live_children: false,
         conversation: 1,
         checkpoint: None,
@@ -803,6 +797,12 @@ pub fn history_seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::erro
     checkpoint.checkpoint = Some(u64::MAX - 1);
     checkpoint.context.tail = u64::MAX;
     checkpoint.context.checkpoint = Some(u64::MAX - 1);
+    let mut adoption = checkpoint.clone();
+    adoption.conversation = 0;
+    adoption.checkpoint = None;
+    adoption.context.tail = 0;
+    adoption.context.checkpoint = None;
+    seeds.push(("history-adoption", serde_json::to_vec(&adoption)?));
     for index in 0..8 {
         checkpoint.volumes.push(SavedVolume {
             binding: WorkspaceEntry::initial_volume(
@@ -842,6 +842,60 @@ mod tests {
         for (_, bytes) in super::seeds().expect("production agent writers") {
             super::check(&bytes);
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn accounted_records_share_exact_wire_consumption_and_original_custody() {
+        acyclic_native_runtime::initialize_native_io_services().expect("native services");
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .map_err(|(error, _)| error)
+        .expect("original work");
+        let baseline = work.live_allocation_bytes();
+        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+            work: &work,
+            cancellation: &cancellation,
+        };
+        for (_, bytes) in super::seeds().expect("production agent writers") {
+            if !bytes.starts_with(&super::super::RECORD_VERSION.to_be_bytes()) {
+                continue;
+            }
+            let ordinary = super::records::decode_record::<serde_json::Value>(&bytes)
+                .expect("original record");
+            let decoded = super::records::decode_record_accounted::<serde_json::Value>(
+                &bytes,
+                &mut accounting,
+            )
+            .expect("funded original record");
+            assert_eq!(*decoded, ordinary);
+            drop(decoded);
+            assert_eq!(work.live_allocation_bytes(), baseline);
+            // An extra value and truncated integer are both trailing input,
+            // including when a trailing decoder reports unexpected EOF.
+            for suffix in [&[0xc0][..], &[0xce][..], &[0xce, 0][..]] {
+                let mut trailing = bytes.clone();
+                trailing.extend_from_slice(suffix);
+                assert!(super::records::decode_record::<serde_json::Value>(&trailing).is_err());
+                assert!(
+                    super::records::decode_record_accounted::<serde_json::Value>(
+                        &trailing,
+                        &mut accounting,
+                    )
+                    .is_err()
+                );
+                assert_eq!(work.live_allocation_bytes(), baseline);
+            }
+        }
+        cancellation.cancel();
+        assert!(
+            super::records::decode_record_accounted::<serde_json::Value>(&[], &mut accounting,)
+                .is_err()
+        );
+        assert_eq!(work.live_allocation_bytes(), baseline);
     }
 }
 
