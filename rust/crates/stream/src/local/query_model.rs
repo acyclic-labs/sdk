@@ -71,6 +71,8 @@ pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
         file: acyclic_native_runtime::CachedFile::new(file, &path, true, true)?,
         epoch: 0,
         operations: 0,
+        compacting: false,
+        recovered_archive: false,
         bytes: header.len() as u64,
         limits,
         appended: 0,

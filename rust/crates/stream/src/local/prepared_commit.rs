@@ -48,7 +48,7 @@ impl LocalStream {
                                 let frame =
                                     PreparedFrame::reserve(frame_capacity, Some(Arc::clone(&work)))
                                         .map_err(|error| stream.frame_error(error))?;
-                                work.reserve_durability(4)?;
+                                work.reserve_durability(DURABILITY_OPERATIONS_PER_FRAME)?;
                                 let slot = work.record(
                                     crate::native::NativeCommitRecordSlot::new(&work.meter),
                                 )?;
@@ -182,11 +182,16 @@ impl LocalStream {
             Ok((outcome, execution._allocation))
         });
         let _retained = self.release_publication(publication);
-        if result.is_ok() {
-            self.compact_if_due().await?;
-        }
+        let compaction = if result.is_ok() {
+            self.prepare_compaction().await?
+        } else {
+            None
+        };
         let required = self.inner.required()?;
         drop(visibility);
+        if let Some(compaction) = compaction {
+            self.finish_compaction(compaction).await?;
+        }
         self.await_publication(required).await?;
         result
     }

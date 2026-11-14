@@ -1,0 +1,11 @@
+diff --git a/rust/crates/stream/src/local/compaction.rs b/rust/crates/stream/src/local/compaction.rs
+--- a/rust/crates/stream/src/local/compaction.rs
++++ b/rust/crates/stream/src/local/compaction.rs
+@@ -63,6 +63,7 @@ impl LocalStream {
+     }
+ 
+     async fn finish_compaction(&self, mut pending: PendingCompaction) -> Result<(), StreamError> {
++        let _visibility = self.inner.visibility.write().await;
+         let span = obs::OperationSpan::new(tracing::debug_span!("acyclic.stream.compact"));
+         let key = PersistenceKey::new(Arc::as_ptr(&self.inner.journal) as usize, pending.epoch);
+         spawn_blocking("streams", "compact", key, move || {

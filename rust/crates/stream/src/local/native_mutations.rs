@@ -105,13 +105,24 @@ impl LocalStream {
                         .await;
                         stream.inner.commit_clock.unpin();
                         let _retained = stream.release_publication(publication);
-                        if result.is_ok()
-                            && let Err(error) = stream.compact_if_due().await
+                        let compaction = if result.is_ok() {
+                            match stream.prepare_compaction().await {
+                                Ok(compaction) => compaction,
+                                Err(error) => {
+                                    result = Err(error);
+                                    None
+                                }
+                            }
+                        } else {
+                            None
+                        };
+                        let required = stream.inner.required();
+                        drop(visibility);
+                        if let Some(compaction) = compaction
+                            && let Err(error) = stream.finish_compaction(compaction).await
                         {
                             result = Err(error);
                         }
-                        let required = stream.inner.required();
-                        drop(visibility);
                         let result = match required {
                             Ok(required) => stream.await_publication(required).await.and(result),
                             Err(error) => Err(error),

@@ -796,6 +796,11 @@ async fn native_compaction_drains_accepted_controls_and_actual_close()
         .ok_or("late cancelled compaction fabricated an acknowledgement")?;
     assert_original_denial(&error, "cancelled");
     assert_eq!(
+        meter.durability_operations.load(Ordering::SeqCst),
+        7,
+        "sealed prefix, rotation, snapshot and retirement must account every durability operation"
+    );
+    assert_eq!(
         std::fs::metadata(directory.path().join(JOURNAL_FILE))?.len(),
         HEADER_BYTES as u64
     );

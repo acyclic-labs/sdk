@@ -142,6 +142,20 @@ impl LocalStream {
         if let Some(error) = replay_error {
             return Err(error);
         }
+        if journal.recovered_archive {
+            // Recovery is not exposed until both journal epochs have been
+            // replayed and collapsed into one durable checkpoint.
+            let state = provider.capture_state().await;
+            let key = PersistenceKey::new(Arc::as_ptr(&commit_clock) as usize, 0);
+            journal = spawn_blocking("streams", "recover_snapshot", key, move || {
+                journal.compact(&state.encode(), None)?;
+                remove_archive(&journal.root, None)?;
+                journal.recovered_archive = false;
+                Ok::<_, LocalStreamError>(journal)
+            })
+            .await
+            .map_err(|_| LocalStreamError::Executor)??;
+        }
         journal._ownership_anchor = ownership_anchor;
         commit_clock.unpin();
         let (failed, _) = watch::channel(None);
@@ -480,68 +494,6 @@ impl LocalStream {
         None
     }
 
-    /// Writes the whole state as the snapshot and starts the journal again,
-    async fn compact_if_due(&self) -> Result<(), StreamError> {
-        if !self
-            .inner
-            .journal
-            .lock()
-            .map_err(|_| self.inner.poison())?
-            .compaction_due()
-        {
-            return Ok(());
-        }
-        let state = self.inner.provider.capture_state().await;
-        let inner = Arc::clone(&self.inner);
-        let work = self.work.clone();
-        let span = obs::OperationSpan::new(tracing::debug_span!("acyclic.stream.compact"));
-        let key = PersistenceKey::new(Arc::as_ptr(&inner.journal) as usize, 0);
-        spawn_blocking("streams", "compact", key, move || {
-            span.in_scope(|| {
-                let state = state.encode();
-                let mut journal = inner
-                    .journal
-                    .lock()
-                    .map_err(|_| LocalStreamError::Corrupt)?;
-                #[cfg(test)]
-                {
-                    let identity = Arc::as_ptr(&inner.journal) as usize;
-                    let gate = {
-                        let mut hook = JOURNAL_COMPACT_BLOCKER
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner);
-                        if hook
-                            .as_ref()
-                            .is_some_and(|(expected, _, _)| *expected == identity)
-                        {
-                            hook.take()
-                        } else {
-                            None
-                        }
-                    };
-                    if let Some((_, started, release)) = gate {
-                        let _ = started.send(());
-                        let _ = release.recv();
-                    }
-                }
-                let flushed = journal.compact(&state, work.as_ref())?;
-                let appended = journal.appended;
-                inner.publish_synced(&mut journal, appended, SyncCompletion::Flushed(flushed));
-                Ok::<_, LocalStreamError>(())
-            })
-        })
-        .await
-        .map_err(|_| LocalStreamError::Executor)
-        .and_then(|result| result)
-        .map_err(|error| {
-            self.inner.fail(LocalStreamFailure::local(
-                "compact",
-                &error,
-                self.work.as_deref(),
-            ))
-        })
-    }
-
     // Called under visibility before releasing an ordinary replay. A deferred
     // original must become required, without appending a duplicate frame.
     fn require_accepted<const REQUIRE: bool>(&self) -> Result<(), StreamError> {
@@ -559,10 +511,14 @@ impl LocalStream {
                 .lock()
                 .map_err(|_| StreamError::Unavailable)?;
             if !reserved
-                && journal.synced < journal.appended
+                && (journal.synced < journal.appended || journal.compaction_due())
                 && let Some(work) = &self.work
             {
-                work.reserve_durability(1)?;
+                work.reserve_durability(if journal.compaction_due() {
+                    DURABILITY_OPERATIONS_PER_FRAME
+                } else {
+                    1
+                })?;
             }
             journal.required = journal.appended;
         }
@@ -716,7 +672,7 @@ impl LocalStream {
             let operation = span.clone();
             let pending = spawn(publication_scope(async move {
                 let task = std::pin::pin!(async {
-                    let (result, required) = {
+                    let (result, required, compaction) = {
                         let _visibility = stream.inner.visibility.write().await;
                         stream.check_available()?;
                         let publication = stream.inner.publication.write().await;
@@ -724,11 +680,16 @@ impl LocalStream {
                         let result = mutation(stream.clone()).await;
                         stream.inner.commit_clock.unpin();
                         let _retained = stream.release_publication(publication);
-                        if result.is_ok() {
-                            stream.compact_if_due().await?;
-                        }
-                        (result, stream.inner.required()?)
+                        let compaction = if result.is_ok() {
+                            stream.prepare_compaction().await?
+                        } else {
+                            None
+                        };
+                        (result, stream.inner.required()?, compaction)
                     };
+                    if let Some(compaction) = compaction {
+                        stream.finish_compaction(compaction).await?;
+                    }
                     stream.await_publication(required).await?;
                     result
                 });

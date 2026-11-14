@@ -31,6 +31,8 @@ pub(crate) mod parking_model;
 // Recovery tests exercise snapshots even without the local storage backend.
 #[cfg(any(test, not(target_arch = "wasm32")))]
 mod snapshot;
+#[cfg(any(test, not(target_arch = "wasm32")))]
+pub(crate) use snapshot::Snapshot;
 #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
 pub(crate) use snapshot::check_codec as check_snapshot_codec;
 

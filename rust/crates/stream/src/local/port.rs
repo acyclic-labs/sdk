@@ -3,8 +3,8 @@ use crate::replicated::{
     AppendIf, CommandJournal, JournalEntry, JournalFrame as Frame, JournalPage,
 };
 
-/// One exclusively owned journal epoch. Cursors are byte positions; compaction
-/// starts a new instance after installing its snapshot under visibility.
+/// One exclusively owned journal epoch. Cursors are byte positions; rotation
+/// selects the next epoch before snapshot I/O releases the sealed prefix.
 pub(super) struct LocalPort {
     pub(super) stream: LocalStream,
     prepared: Option<PreparedFrame>,
@@ -167,7 +167,7 @@ impl CommandJournal for LocalPort {
             let (mut prepared, allocation) = if let Some(work) = &self.stream.work {
                 work.reserve_durability(
                     (frames.len() as u64)
-                        .checked_mul(4)
+                        .checked_mul(super::DURABILITY_OPERATIONS_PER_FRAME)
                         .ok_or(StreamError::Capacity)?,
                 )?;
                 let mut allocation = acyclic_native_runtime::ReadAllocation::empty(&work.meter);

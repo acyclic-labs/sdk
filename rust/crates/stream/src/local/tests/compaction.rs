@@ -102,7 +102,9 @@ fn accepted_follow_discovery_and_relay_watermarks_progress_while_compaction_is_h
                 assert_eq!(record.sequence, 1);
                 assert_eq!(resumed.next().await.ok_or("resume ended")??, record);
                 let marks = provider.watermarks(path.clone()).await?;
-                assert_eq!(marks, crate::StreamWatermarks { accepted: 2, durable: 1 });
+                // Rotation flushed the sealed prefix before the active file
+                // could certify any suffix, independently of snapshot I/O.
+                assert_eq!(marks, crate::StreamWatermarks { accepted: 2, durable: 2 });
                 let mut head = provider.read(ReadRequest {
  key: None, path: path.clone(), from: 1, limit: 1, at_least: Default::default() }).await?;
                 assert_eq!(head.next().await.ok_or("head ended")??, record);
@@ -315,6 +317,154 @@ async fn unrelated_mutations_complete_before_snapshot_device_release() -> Result
                 .tail(StreamPath::new(format!("agents/worker-{index}/execution"))?)
                 .await?,
             1
+        );
+    }
+    Ok(())
+}
+
+/// Reopen actual flushed files at each transition, including an absent/torn
+/// next header and a durable snapshot whose previous file was not retired.
+#[tokio::test]
+async fn rotated_prefix_and_suffix_survive_each_checkpoint_cut() -> Result {
+    let source = tempfile::tempdir()?;
+    let limits = LocalStreamLimits {
+        compaction_operations: 4,
+        ..LocalStreamLimits::default()
+    };
+    let provider = LocalStream::open(source.path(), limits).await?;
+    let prefix = StreamPath::new("volumes/project/commits")?;
+    let suffix = StreamPath::new("agents/worker/execution")?;
+    let key = IdempotencyKey::unique();
+    let original = provider
+        .append(AppendRequest {
+            path: prefix.clone(),
+            records: vec![Bytes::from_static(b"original prefix").into()],
+            if_tail: None,
+            idempotency_key: key.clone(),
+        })
+        .await?;
+    assert!(matches!(original, AppendOutcome::Committed(_)));
+    let original = provider.inspect_idempotency(key.clone()).await?;
+    let visibility = provider.inner.visibility.write().await;
+    let through = provider
+        .inner
+        .journal
+        .lock()
+        .map_err(|_| "journal lock")?
+        .appended;
+    provider.await_flushed(through).await?;
+    let state = provider.inner.provider.capture_state().await;
+    let inner = Arc::clone(&provider.inner);
+    let epoch = spawn_blocking(
+        "streams",
+        "rotate",
+        PersistenceKey::new(Arc::as_ptr(&inner.journal) as usize, 0),
+        move || {
+            inner
+                .journal
+                .lock()
+                .map_err(|_| LocalStreamError::Corrupt)?
+                .rotate(None)
+        },
+    )
+    .await??;
+    drop(visibility);
+    assert!(matches!(
+        provider
+            .append(AppendRequest {
+                path: suffix.clone(),
+                records: vec![Bytes::from_static(b"original suffix").into()],
+                if_tail: None,
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?,
+        AppendOutcome::Committed(_)
+    ));
+    let archived = std::fs::read(source.path().join(JOURNAL_PREVIOUS))?;
+    let active = std::fs::read(source.path().join(JOURNAL_FILE))?;
+    let snapshot = encode_snapshot(limits, epoch, &state.encode())?;
+    let incarnation = std::fs::read(source.path().join(INCARNATION_FILE))?;
+    drop(provider);
+    // Each image is a physically possible prefix of the shared producer.
+    for (name, active, snapshot, archive, expected_suffix) in [
+        ("before header creation", None, None, true, 0),
+        (
+            "torn header",
+            Some(&active[..HEADER_BYTES / 2]),
+            None,
+            true,
+            0,
+        ),
+        ("whole header", Some(&active[..HEADER_BYTES]), None, true, 0),
+        (
+            "acknowledged suffix",
+            Some(active.as_slice()),
+            None,
+            true,
+            1,
+        ),
+        (
+            "snapshot installed",
+            Some(active.as_slice()),
+            Some(snapshot.as_slice()),
+            true,
+            1,
+        ),
+        (
+            "archive retired",
+            Some(active.as_slice()),
+            Some(snapshot.as_slice()),
+            false,
+            1,
+        ),
+    ] {
+        let image = tempfile::tempdir()?;
+        if let Some(active) = active {
+            std::fs::write(image.path().join(JOURNAL_FILE), active)?;
+        }
+        if let Some(snapshot) = snapshot {
+            std::fs::write(image.path().join(SNAPSHOT_FILE), snapshot)?;
+        }
+        if archive {
+            std::fs::write(image.path().join(JOURNAL_PREVIOUS), &archived)?;
+        }
+        std::fs::write(image.path().join(INCARNATION_FILE), &incarnation)?;
+        for _ in 0..2 {
+            let restored = LocalStream::open(image.path(), limits).await?;
+            assert_eq!(
+                restored.tail(prefix.clone()).await?,
+                1,
+                "sealed prefix missing at {name}"
+            );
+            assert_eq!(
+                restored.tail(suffix.clone()).await?,
+                expected_suffix,
+                "active suffix changed at {name}"
+            );
+            assert_eq!(
+                restored.inspect_idempotency(key.clone()).await?,
+                original,
+                "canonical receipt changed at {name}"
+            );
+            assert!(
+                !image.path().join(JOURNAL_PREVIOUS).exists(),
+                "archive not retired at {name}"
+            );
+            drop(restored);
+        }
+    }
+    // A torn sealed file was already acknowledged and cannot be repaired as
+    // if it were an unacknowledged active-file suffix.
+    for length in [HEADER_BYTES - 1, archived.len() - 1] {
+        let image = tempfile::tempdir()?;
+        std::fs::write(image.path().join(JOURNAL_PREVIOUS), &archived[..length])?;
+        std::fs::write(image.path().join(JOURNAL_FILE), &active[..HEADER_BYTES])?;
+        assert!(
+            matches!(
+                LocalStream::open(image.path(), limits).await,
+                Err(LocalStreamError::Corrupt)
+            ),
+            "torn sealed prefix was accepted"
         );
     }
     Ok(())

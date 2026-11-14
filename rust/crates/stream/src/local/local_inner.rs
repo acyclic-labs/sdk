@@ -6,11 +6,11 @@ struct LocalInner {
     replica_clock: Arc<crate::replicated::ReplicaClock>,
     // Lock order: visibility -> publication -> journal -> synced watch; never acquire provider state while holding journal.
     journal: Arc<Mutex<Journal>>,
-    // Serializes mutations and their snapshot/journal cut, including compaction.
+    // Serializes mutations and journal rotation, never snapshot encoding or I/O.
     // Lock order: visibility -> publication -> provider state -> journal/watch.
     visibility: RwLock<()>,
     // Accepted readers use only this fence. It ends after the frame is written,
-    // before compaction performs device work under the outer visibility fence.
+    // before snapshot device work, which owns only the sealed journal prefix.
     publication: RwLock<()>,
     /// Ordered and device-flushed cuts, published together under the journal lock.
     synced: watch::Sender<SyncProgress>,

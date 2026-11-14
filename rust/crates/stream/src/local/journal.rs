@@ -14,7 +14,13 @@ impl Journal {
         };
         // A store holding no snapshot and no whole journal header has issued
         // no publication, so it starts a new incarnation.
-        let fresh = snapshot.is_none() && journal_bytes < HEADER_BYTES as u64;
+        let archived_bytes = match std::fs::metadata(root.join(JOURNAL_PREVIOUS)) {
+            Ok(metadata) => Some(metadata.len()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        let fresh =
+            snapshot.is_none() && journal_bytes < HEADER_BYTES as u64 && archived_bytes.is_none();
         // The scope names the directory itself, not the spelling used to open
         // it, so a relative, absolute or linked path keeps saved revisions.
         let scope = crate::AppliedRevisions::storage_scope(
@@ -26,7 +32,7 @@ impl Journal {
             Recovered::Incarnation(scope, incarnation(root, fresh)?),
         )
         .map_err(|_| LocalStreamError::Executor)?;
-        let epoch = match snapshot {
+        let mut epoch = match snapshot {
             Some(snapshot) => {
                 blocking_send(
                     recovered,
@@ -65,6 +71,8 @@ impl Journal {
             file,
             epoch,
             operations: 0,
+            compacting: false,
+            recovered_archive: archived_bytes.is_some(),
             bytes: 0,
             limits,
             appended: 0,
@@ -78,6 +86,31 @@ impl Journal {
             #[cfg(feature = "test-support")]
             flushed: 0,
         };
+        let mut replayed_archive = false;
+        if let Some(length) = archived_bytes {
+            if length < HEADER_BYTES as u64 {
+                return Err(LocalStreamError::Corrupt);
+            }
+            let mut archived = File::open(root.join(JOURNAL_PREVIOUS))?;
+            let mut header = [0; HEADER_BYTES];
+            archived.read_exact(&mut header)?;
+            let archived_epoch = decode_header(&header, limits)?;
+            if archived_epoch == epoch {
+                journal.replay(&archived, length, recovered, span)?;
+                // Rotation follows a device flush: a torn sealed prefix is
+                // corruption, never a repairable active-journal suffix.
+                if journal.torn_tail.is_some() {
+                    return Err(LocalStreamError::Corrupt);
+                }
+                epoch = epoch.checked_add(1).ok_or(LocalStreamError::Corrupt)?;
+                journal.epoch = epoch;
+                journal.operations = 0;
+                journal.bytes = 0;
+                replayed_archive = true;
+            } else if archived_epoch > epoch {
+                return Err(LocalStreamError::Corrupt);
+            }
+        }
         let header_bytes =
             u64::try_from(HEADER_BYTES).map_err(|_| LocalStreamError::InvalidLimits)?;
         // Recovery reads by position, so it holds one descriptor throughout.
@@ -114,7 +147,7 @@ impl Journal {
             Some(found) if found == epoch => {}
             // The snapshot for the next epoch landed before the journal
             // restarted, so it already holds every frame here.
-            Some(found) if found.checked_add(1) == Some(epoch) => {
+            Some(found) if !replayed_archive && found.checked_add(1) == Some(epoch) => {
                 if !validate_recovery(recovered)? {
                     return Ok(journal);
                 }
@@ -259,43 +292,62 @@ impl Journal {
     }
 
     fn compaction_due(&self) -> bool {
-        self.operations > 0
+        !self.compacting
+            && self.operations > 0
             && (self.operations >= self.limits.compaction_operations / 2
                 || self.bytes >= self.limits.compaction_bytes / 2)
     }
 
-    /// Makes `state`, which holds every frame so far, the snapshot the
+    /// Seal the flushed prefix before the next file acknowledges any frame.
+    /// Mutation visibility excludes appends, and the caller drained old flushes.
+    fn rotate(&mut self, work: Option<&Arc<crate::native::Work>>) -> Result<u64, LocalStreamError> {
+        if self.compacting
+            || self.syncing
+            || self.flushed_sequence.is_none_or(|cut| cut < self.appended)
+        {
+            return Err(LocalStreamError::Corrupt);
+        }
+        let epoch = self.epoch.checked_add(1).ok_or(LocalStreamError::Corrupt)?;
+        let active = self.root.join(JOURNAL_FILE);
+        let previous = self.root.join(JOURNAL_PREVIOUS);
+        if previous.try_exists()? {
+            return Err(LocalStreamError::Corrupt);
+        }
+        acyclic_native_runtime::rename_file(&active, &previous)?;
+        // Preserve the acknowledged prefix's name before replacing its former
+        // name. A crash during the next creation can then replay the prefix.
+        sync_snapshot_directory(&self.root, work)?;
+        let file = OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&active)?;
+        acyclic_native_runtime::write_file_all(&mut &file, &encode_header(self.limits, epoch)?)?;
+        match work {
+            Some(work) => work.sync(|| sync_file(&file, LocalDurability::FullFlush))?,
+            None => sync_file(&file, LocalDurability::FullFlush)?,
+        }
+        sync_snapshot_directory(&self.root, work)?;
+        self.file = acyclic_native_runtime::CachedFile::new(file, &active, true, true)?;
+        self.epoch = epoch;
+        self.operations = 0;
+        self.bytes = HEADER_BYTES as u64;
+        #[cfg(feature = "test-support")]
+        {
+            self.flushed = self.bytes;
+        }
+        self.compacting = true;
+        Ok(epoch)
+    }
+
+    /// Startup has no concurrent appends and can collapse an interrupted cut.
     fn compact(
         &mut self,
         state: &[u8],
         work: Option<&Arc<crate::native::Work>>,
     ) -> Result<DeviceFlushed, LocalStreamError> {
         let epoch = self.epoch.checked_add(1).ok_or(LocalStreamError::Corrupt)?;
-        let temporary = self.root.join(SNAPSHOT_TEMPORARY);
-        let snapshot = self.root.join(SNAPSHOT_FILE);
-        {
-            let mut file = File::create(&temporary)?;
-            acyclic_native_runtime::write_file_all(
-                &mut file,
-                &encode_snapshot(self.limits, epoch, state)?,
-            )?;
-            match work {
-                Some(work) => work.sync(|| sync_file(&file, LocalDurability::FullFlush))?,
-                None => sync_file(&file, LocalDurability::FullFlush)?,
-            }
-        }
-        acyclic_native_runtime::rename_file(&temporary, &snapshot)?;
-        // The renamed snapshot's name is durable before the journal it
-        // replaces is emptied.
-        match work {
-            Some(work) => work.sync(|| {
-                acyclic_native_runtime::sync_parent(
-                    &self.root,
-                    native_durability(LocalDurability::FullFlush),
-                )
-            })?,
-            None => sync_directory(&self.root, LocalDurability::FullFlush)?,
-        }
+        let _ = install_snapshot(&self.root, self.limits, epoch, state, work)?;
         // Retiring the old journal must preserve every receipt previously
         // issued, including receipts issued before this provider was reopened.
         self.restart(epoch, work)?;

@@ -1,0 +1,11 @@
+diff --git a/rust/crates/stream/src/local/journal.rs b/rust/crates/stream/src/local/journal.rs
+--- a/rust/crates/stream/src/local/journal.rs
++++ b/rust/crates/stream/src/local/journal.rs
+@@ -98,7 +98,6 @@ impl Journal {
+             archived.read_exact(&mut header)?;
+             let archived_epoch = decode_header(&header, limits)?;
+             if archived_epoch == epoch {
+-                journal.replay(&archived, length, recovered, span)?;
+                 // Rotation follows a device flush: a torn sealed prefix is
+                 // corruption, never a repairable active-journal suffix.
+                 if journal.torn_tail.is_some() {

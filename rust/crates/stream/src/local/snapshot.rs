@@ -25,6 +25,50 @@ fn encode_snapshot(
     Ok(encoded)
 }
 
+fn sync_snapshot_directory(
+    root: &Path,
+    work: Option<&Arc<crate::native::Work>>,
+) -> Result<(), LocalStreamError> {
+    match work {
+        Some(work) => work.sync(|| {
+            acyclic_native_runtime::sync_parent(root, native_durability(LocalDurability::FullFlush))
+        })?,
+        None => sync_directory(root, LocalDurability::FullFlush)?,
+    }
+    Ok(())
+}
+
+/// Install a complete immutable cut before retiring anything it replaces.
+fn install_snapshot(
+    root: &Path,
+    limits: LocalStreamLimits,
+    epoch: u64,
+    state: &[u8],
+    work: Option<&Arc<crate::native::Work>>,
+) -> Result<DeviceFlushed, LocalStreamError> {
+    let temporary = root.join(SNAPSHOT_TEMPORARY);
+    let snapshot = root.join(SNAPSHOT_FILE);
+    {
+        let mut file = File::create(&temporary)?;
+        acyclic_native_runtime::write_file_all(&mut file, &encode_snapshot(limits, epoch, state)?)?;
+        match work {
+            Some(work) => work.sync(|| sync_file(&file, LocalDurability::FullFlush))?,
+            None => sync_file(&file, LocalDurability::FullFlush)?,
+        }
+    }
+    acyclic_native_runtime::rename_file(&temporary, &snapshot)?;
+    sync_snapshot_directory(root, work)?;
+    Ok(DeviceFlushed)
+}
+
+fn remove_archive(
+    root: &Path,
+    work: Option<&Arc<crate::native::Work>>,
+) -> Result<(), LocalStreamError> {
+    std::fs::remove_file(root.join(JOURNAL_PREVIOUS))?;
+    sync_snapshot_directory(root, work)
+}
+
 /// The snapshot below `root`, if one was installed. It is written whole
 fn read_snapshot(
     root: &Path,

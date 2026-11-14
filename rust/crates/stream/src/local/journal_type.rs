@@ -7,6 +7,9 @@ struct Journal {
     /// Which snapshot the journal follows: the one naming this epoch.
     epoch: u64,
     operations: u64,
+    // Snapshot I/O owns the sealed prefix, never the next mutation's file.
+    compacting: bool,
+    recovered_archive: bool,
     bytes: u64,
     limits: LocalStreamLimits,
     /// How many frames were ever written, across every epoch: the sequence of

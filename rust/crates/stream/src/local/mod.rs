@@ -58,6 +58,11 @@ const SNAPSHOT_HEADER_BYTES: usize = SNAPSHOT_MAGIC.len() + LIMITS_BYTES + 8;
 const FRAME_TIME_BYTES: usize = 8;
 const LOCK_FILE: &str = "stream.lock";
 const JOURNAL_FILE: &str = "stream.journal";
+// A sealed prefix survives until its immutable snapshot becomes durable.
+const JOURNAL_PREVIOUS: &str = "stream.journal.previous";
+// One prefix flush; archive-name, next-header and next-name flushes; snapshot
+// data and name flushes; then archive retirement. Unused reservations refund.
+const DURABILITY_OPERATIONS_PER_FRAME: u64 = 7;
 const SNAPSHOT_FILE: &str = "stream.snapshot";
 const SNAPSHOT_TEMPORARY: &str = "stream.snapshot.tmp";
 const INCARNATION_MAGIC: &[u8] = b"ACYCLIC-STREAM-INCARNATION-V1\0";
@@ -148,6 +153,7 @@ include!("pinned_commit_clock.rs");
 include!("recovered.rs");
 
 include!("local_stream.rs");
+include!("compaction.rs");
 
 include!("persistence_cut.rs");
 
