@@ -40,6 +40,7 @@ acyclic-observability = { version = "=0.2.0", path = "../observability" }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 async-trait.workspace = true
+bytes.workspace = true
 futures.workspace = true
 hex.workspace = true
 prost.workspace = true

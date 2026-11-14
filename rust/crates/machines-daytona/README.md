@@ -9,6 +9,10 @@ The v0 toolbox supplies whole-file download and multipart upload-v2. Native
 range reads, range writes and selected-volume attachment are Unsupported. The
 shared Machines file seam composes whole-file transfer for callers with exclusive
 file ownership. It does not claim native errno or positional-write atomicity.
+Downloads remain lazy HTTP byte streams under the original file deadline. The
+shared range reader discards prefix chunks with bounded memory and cancels the
+unread suffix as soon as its byte credit is filled. A whole-file-only provider
+still transfers the prefix; it does not acquire a native seek guarantee.
 
 Create uses an acyclic-{key} name and versioned request/contract labels. Lost
 replies retain uncertainty; explicit recover uses the original key label. There

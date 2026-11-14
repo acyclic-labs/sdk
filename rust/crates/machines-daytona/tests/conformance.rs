@@ -4,10 +4,14 @@ use acyclic_harness_providers::ReqwestTransport;
 use acyclic_machines::{conformance, *};
 use acyclic_machines_daytona::{DaytonaConfig, DaytonaProvider};
 use acyclic_stream::BoxProviderFuture;
+use futures::StreamExt as _;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -28,6 +32,7 @@ struct State {
     fail_upload: bool,
     lose_exec: bool,
     exec_output: String,
+    truncated_download: Option<String>,
     posts: usize,
 }
 
@@ -108,7 +113,7 @@ impl Server {
                         if std::mem::take(&mut state.lose_create) {
                             None
                         } else {
-                            Some((status, body))
+                            Some((status, body, false))
                         }
                     } else {
                         if url.path() == format!("/api/sandbox/{MACHINE}") {
@@ -173,13 +178,18 @@ impl Server {
                         } else {
                             panic!("unadmitted fake Daytona route: {method} {}", url.path());
                         }
-                        Some((status, body))
+                        let truncated = url.path() == format!("/toolbox/{MACHINE}/files/download")
+                            && url.query_pairs().any(|(key, value)| {
+                                key == "path"
+                                    && state.truncated_download.as_deref() == Some(value.as_ref())
+                            });
+                        Some((status, body, truncated))
                     }
                 };
-                if let Some((status, body)) = response {
+                if let Some((status, body, truncated)) = response {
                     let header = format!(
                         "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                        body.len()
+                        body.len() + usize::from(truncated)
                     );
                     stream.write_all(header.as_bytes()).await.unwrap();
                     stream.write_all(&body).await.unwrap();
@@ -193,6 +203,9 @@ impl Server {
         }
     }
     fn provider(&self) -> DaytonaProvider {
+        self.provider_with_transport(Arc::new(ReqwestTransport::new().unwrap()))
+    }
+    fn provider_with_transport(&self, transport: Arc<dyn HttpTransport>) -> DaytonaProvider {
         let config = DaytonaConfig {
             base_url: "https://app.daytona.io/api".into(),
             secret_reference: acyclic_auth::secrets::SecretRef::new(
@@ -212,12 +225,7 @@ impl Server {
             block_all_network_policy: [19; 32],
         };
         assert!(!format!("{config:?}").contains(HOST_VALUE));
-        DaytonaProvider::new(
-            config,
-            Arc::new(Binding(self.address.clone())),
-            Arc::new(ReqwestTransport::new().unwrap()),
-        )
-        .unwrap()
+        DaytonaProvider::new(config, Arc::new(Binding(self.address.clone())), transport).unwrap()
     }
     fn all_authorized(&self) {
         let state = self.state.lock().unwrap();
@@ -226,6 +234,134 @@ impl Server {
             state.requests.iter().all(|(_, authorized)| *authorized),
             "a request bypassed the protected host binding"
         );
+    }
+}
+
+#[tokio::test]
+async fn range_credit_finishes_before_an_unread_http_suffix_error() {
+    let server = Server::start("https://app.daytona.io/toolbox", false).await;
+    let provider = server.provider();
+    provider.create(request()).await.unwrap();
+    let file = access(4_102_444_800_000);
+    {
+        let mut state = server.state.lock().unwrap();
+        state
+            .files
+            .insert(file.path().into(), vec![0, 255, 128, 1, 2, 3, 4, 5]);
+        // The real HTTP body ends one byte short. A requested range that is
+        // already present must not consume or be failed by that unread suffix.
+        state.truncated_download = Some(file.path().into());
+    }
+    let range = FileAccess::new(file.path().into(), 2, file.deadline_unix_ms()).unwrap();
+    assert_eq!(
+        read_file_at(&provider, machine(), range, 3).await.unwrap(),
+        FileRead::Data(vec![128, 1, 2])
+    );
+    // The same truncation is still an error if it lies inside the requested
+    // range; bounded reading never turns partial bytes into successful EOF.
+    assert!(matches!(
+        read_file_at(&provider, machine(), file, 9).await,
+        Err(ProviderError::Unavailable)
+    ));
+    let state = server.state.lock().unwrap();
+    assert_eq!(
+        state
+            .requests
+            .iter()
+            .filter(|(target, _)| target.contains("/files/download?"))
+            .count(),
+        2
+    );
+    drop(state);
+    server.all_authorized();
+}
+
+// Real HTTP responses are buffered here to make bytes/EOF deterministically
+// ready alongside the original alarm. No wall-clock wait or synthetic reply.
+struct BufferedAlarmTransport {
+    http: ReqwestTransport,
+    wall: AtomicU64,
+    alarm: Mutex<Option<tokio::sync::oneshot::Receiver<Result<()>>>>,
+}
+impl HttpTransport for BufferedAlarmTransport {
+    fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
+        Box::pin(async move {
+            let mut response = self.http.send(request).await?;
+            let chunks = response.body.collect::<Vec<_>>().await;
+            response.body = Box::pin(futures::stream::iter(chunks));
+            Ok(response)
+        })
+    }
+    fn delay(&self, duration: Duration) -> BoxProviderFuture<'static, Result<()>> {
+        assert_eq!(duration, Duration::from_millis(1));
+        let alarm = self.alarm.lock().unwrap().take().expect("original alarm");
+        Box::pin(async move {
+            alarm
+                .await
+                .map_err(|_| Error::Conflict("alarm owner dropped".into()))?
+        })
+    }
+    fn unix_ms(&self) -> Result<u64> {
+        Ok(self.wall.load(Ordering::SeqCst))
+    }
+    fn now(&self) -> Duration {
+        Duration::from_millis(self.wall.load(Ordering::SeqCst))
+    }
+}
+
+#[tokio::test]
+async fn original_file_alarm_precedes_buffered_bytes_and_eof() {
+    const DEADLINE: u64 = 4_102_444_800_000;
+    for failed in [false, true] {
+        for bytes in [vec![0, 255, 128], vec![]] {
+            let server = Server::start("https://app.daytona.io/toolbox", false).await;
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            let transport = Arc::new(BufferedAlarmTransport {
+                http: ReqwestTransport::new().unwrap(),
+                wall: AtomicU64::new(DEADLINE - 1),
+                alarm: Mutex::new(Some(receiver)),
+            });
+            let provider = server.provider_with_transport(transport.clone());
+            provider.create(request()).await.unwrap();
+            server
+                .state
+                .lock()
+                .unwrap()
+                .files
+                .insert(access(DEADLINE).path().into(), bytes);
+            let FileDownload::Data(mut body) = provider
+                .download_file(machine(), access(DEADLINE))
+                .await
+                .unwrap()
+            else {
+                panic!("expected original download");
+            };
+            transport.wall.store(DEADLINE + 1, Ordering::SeqCst);
+            sender
+                .send(if failed {
+                    Err(Error::Invalid("original alarm failure".into()))
+                } else {
+                    Ok(())
+                })
+                .unwrap();
+            let error = body
+                .next()
+                .await
+                .expect("original alarm outcome")
+                .unwrap_err();
+            if failed {
+                let ProviderError::DeadlineSourceLost { cause, .. } = error else {
+                    panic!("alarm failure became expiry")
+                };
+                assert!(
+                    matches!(cause.0.get_ref().and_then(|source| source.downcast_ref::<Error>()), Some(Error::Invalid(message)) if message == "original alarm failure")
+                );
+            } else {
+                assert!(matches!(error, ProviderError::FileIndeterminate(id) if id == machine()));
+            }
+            assert!(body.next().await.is_none());
+            server.all_authorized();
+        }
     }
 }
 
@@ -433,6 +569,9 @@ async fn lost_create_reply_is_recovered_without_redispatch_and_expired_files_nev
     assert_eq!(
         provider
             .download_file(machine(), access(4_102_444_800_000))
+            .await
+            .unwrap()
+            .collect()
             .await
             .unwrap(),
         FileRead::Data(vec![9])

@@ -193,6 +193,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Copy<A, O> {
                 )
                 .await
                 .map_err(Error::Machines)?
+                .collect()
+                .await
+                .map_err(Error::Machines)?
             {
                 FileRead::Data(bytes) => Ok(bytes),
                 _ => Err(invalid("archive read failed")),

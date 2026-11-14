@@ -27,8 +27,10 @@ pub async fn write_file_at(
         Vec::new()
     } else {
         match provider.download_file(machine, whole.clone()).await {
-            Ok(FileRead::Data(bytes)) => bytes,
-            Ok(FileRead::Errno(errno)) => return Ok(FileWrite::Errno(errno)),
+            Ok(download) => match download.collect().await? {
+                FileRead::Data(bytes) => bytes,
+                FileRead::Errno(errno) => return Ok(FileWrite::Errno(errno)),
+            },
             Err(ProviderError::NotFound(_)) => Vec::new(),
             Err(error) => return Err(error),
         }
@@ -54,8 +56,9 @@ pub async fn write_file_at(
     Ok(FileWrite::Written(written))
 }
 
-/// Shared range-read seam. Whole-file transfer preserves bytes but does not
-/// claim a provider-native positional read or native errno guarantee.
+/// Shared range-read seam. Whole-file streams discard the prefix with bounded
+/// memory and cancel the unread suffix once credit is filled. They do not
+/// claim a provider-native seek or native errno guarantee.
 pub async fn read_file_at(
     provider: &dyn MachinesProvider,
     machine: MachineId,
@@ -72,19 +75,27 @@ pub async fn read_file_at(
     if provider.capability(ProviderCapability::WholeFile) != Support::Supported {
         return unsupported("guest file reads");
     }
-    let offset = usize::try_from(access.offset())
-        .map_err(|_| ProviderError::Invalid("guest offset exceeds address space".into()))?;
+    let mut offset = access.offset();
     let whole = FileAccess::new(access.path().into(), 0, access.deadline_unix_ms())?;
     match provider.download_file(machine, whole).await? {
-        FileRead::Data(bytes) => Ok(FileRead::Data(
-            bytes
-                .get(offset..)
-                .unwrap_or_default()
-                .iter()
-                .take(limit as usize)
-                .copied()
-                .collect(),
-        )),
-        error => Ok(error),
+        FileDownload::Data(mut stream) => {
+            let mut bytes = Vec::with_capacity(limit as usize);
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk?;
+                if offset >= chunk.len() as u64 {
+                    offset -= chunk.len() as u64;
+                    continue;
+                }
+                let start = offset as usize;
+                offset = 0;
+                let count = (limit as usize - bytes.len()).min(chunk.len() - start);
+                bytes.extend_from_slice(&chunk[start..start + count]);
+                if bytes.len() == limit as usize {
+                    break;
+                }
+            }
+            Ok(FileRead::Data(bytes))
+        }
+        FileDownload::Errno(errno) => Ok(FileRead::Errno(errno)),
     }
 }

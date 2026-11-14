@@ -236,7 +236,7 @@ macro_rules! forward {
 }
 
 forward! {
-        download_file(machine: MachineId, access: FileAccess) -> FileRead;
+        download_file(machine: MachineId, access: FileAccess) -> acyclic_machines::FileDownload;
         upload_file(machine: MachineId, access: FileAccess, data: Vec<u8>) -> ();
         exec_request(machine: MachineId, command: ExecCommand) -> acyclic_machines::TextExecResult;
         read_file(machine: MachineId, access: FileAccess, limit: u32) -> FileRead;

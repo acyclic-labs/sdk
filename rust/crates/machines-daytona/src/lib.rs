@@ -4,12 +4,25 @@ use acyclic_harness_core::http::{
     AuthorizationScheme, CredentialResolver, CredentialSource, HttpRequest, HttpTransport,
 };
 use acyclic_machines::*;
+use acyclic_stream::BoxProviderFuture;
 use bytes::Bytes;
 use futures::StreamExt as _;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 use url::Url;
+
+type FileAlarm = BoxProviderFuture<'static, acyclic_harness_core::Result<()>>;
+
+fn file_stop(machine: MachineId, elapsed: acyclic_harness_core::Result<()>) -> ProviderError {
+    match elapsed {
+        Ok(()) => ProviderError::FileIndeterminate(machine),
+        Err(cause) => ProviderError::DeadlineSourceLost {
+            machine: Some(machine),
+            cause: DeadlineSourceLost(Arc::new(std::io::Error::other(cause))),
+        },
+    }
+}
 
 /// Protected provider configuration; no credential value or environment fallback.
 #[derive(Clone, Debug)]
@@ -112,13 +125,13 @@ impl DaytonaProvider {
             .map_err(|_| invalid("Daytona origin is outside the protected binding's allowed set"))
     }
 
-    async fn exchange(
+    async fn exchange_stream(
         &self,
         method: http::Method,
         url: String,
         body: Bytes,
         content_type: &str,
-    ) -> Result<Bytes, ProviderError> {
+    ) -> Result<FileStream, ProviderError> {
         let transport = self.bound(&url)?;
         let response = transport
             .send(HttpRequest {
@@ -137,10 +150,24 @@ impl DaytonaProvider {
             500..=599 => return Err(ProviderError::Unavailable),
             _ => return Err(invalid("Daytona exchange refused")),
         }
-        let mut stream = response.body;
+        Ok(Box::pin(response.body.map(|chunk| {
+            chunk.map_err(|_| ProviderError::Unavailable)
+        })))
+    }
+
+    async fn exchange(
+        &self,
+        method: http::Method,
+        url: String,
+        body: Bytes,
+        content_type: &str,
+    ) -> Result<Bytes, ProviderError> {
+        let mut stream = self
+            .exchange_stream(method, url, body, content_type)
+            .await?;
         let mut bytes = Vec::new();
         while let Some(chunk) = stream.next().await {
-            bytes.extend_from_slice(&chunk.map_err(|_| ProviderError::Unavailable)?);
+            bytes.extend_from_slice(&chunk?);
         }
         Ok(bytes.into())
     }
@@ -242,7 +269,7 @@ impl DaytonaProvider {
         machine: MachineId,
         access: &FileAccess,
         future: impl std::future::Future<Output = Result<T, ProviderError>>,
-    ) -> Result<T, ProviderError> {
+    ) -> Result<(T, FileAlarm), ProviderError> {
         let now = self
             .transport
             .unix_ms()
@@ -255,17 +282,9 @@ impl DaytonaProvider {
         let timer = self
             .transport
             .delay(std::time::Duration::from_millis(remaining));
-        match futures::future::select(Box::pin(future), timer).await {
-            futures::future::Either::Left((result, _)) => result,
-            futures::future::Either::Right((Err(_), _)) => Err(ProviderError::DeadlineSourceLost {
-                machine: Some(machine),
-                cause: DeadlineSourceLost(Arc::new(std::io::Error::other(
-                    "HTTP alarm producer lost",
-                ))),
-            }),
-            futures::future::Either::Right((Ok(()), _)) => {
-                Err(ProviderError::FileIndeterminate(machine))
-            }
+        match futures::future::select(timer, Box::pin(future)).await {
+            futures::future::Either::Left((elapsed, _)) => Err(file_stop(machine, elapsed)),
+            futures::future::Either::Right((result, timer)) => result.map(|value| (value, timer)),
         }
     }
 
@@ -313,22 +332,40 @@ impl MachinesProvider for DaytonaProvider {
         &self,
         machine: MachineId,
         access: FileAccess,
-    ) -> Result<FileRead, ProviderError> {
+    ) -> Result<FileDownload, ProviderError> {
         if access.offset() != 0 {
             return Err(invalid("whole-file download requires offset zero"));
         }
-        self.file_until(machine, &access, async {
-            let url = self.toolbox(machine, "files/download", &access).await?;
-            self.exchange(
-                http::Method::GET,
-                url,
-                Bytes::new(),
-                "application/octet-stream",
-            )
-            .await
-            .map(|bytes| FileRead::Data(bytes.to_vec()))
-        })
-        .await
+        let (body, timer) = self
+            .file_until(machine, &access, async {
+                let url = self.toolbox(machine, "files/download", &access).await?;
+                self.exchange_stream(
+                    http::Method::GET,
+                    url,
+                    Bytes::new(),
+                    "application/octet-stream",
+                )
+                .await
+            })
+            .await?;
+        // Move the original alarm into the transfer; headers do not renew the
+        // deadline. Terminal error/EOF drops both producers, as does range credit.
+        let stream = futures::stream::unfold(Some((body, timer)), move |state| async move {
+            let (mut body, timer) = state?;
+            // A ready original alarm wins over buffered bytes and EOF, even
+            // after the consumer has left this transfer unpolled.
+            match futures::future::select(timer, body.next()).await {
+                futures::future::Either::Right((Some(chunk), timer)) => {
+                    let next = chunk.is_ok().then_some((body, timer));
+                    Some((chunk, next))
+                }
+                futures::future::Either::Right((None, _)) => None,
+                futures::future::Either::Left((elapsed, _)) => {
+                    Some((Err(file_stop(machine, elapsed)), None))
+                }
+            }
+        });
+        Ok(FileDownload::Data(Box::pin(stream)))
     }
     async fn upload_file(
         &self,
@@ -349,7 +386,7 @@ impl MachinesProvider for DaytonaProvider {
         body.extend(data);
         body.extend(format!("\r\n--{boundary}--\r\n").as_bytes());
         self.exchange(http::Method::POST, url, body.into(), &format!("multipart/form-data; boundary={boundary}")).await.map(|_| ()).map_err(|error| match error { ProviderError::Unavailable => ProviderError::FileIndeterminate(machine), error => error })
-        }).await
+        }).await.map(|(result, _)| result)
     }
     async fn exec(
         &self,
