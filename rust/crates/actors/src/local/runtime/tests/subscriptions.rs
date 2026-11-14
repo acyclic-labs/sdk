@@ -536,7 +536,9 @@ async fn source_failure_and_fanout_remain_bounded_and_recover_without_stopping_o
         let mut subscriptions = runtime.subscriptions.lock().unwrap();
         let source = subscriptions
             .paths
-            .get_mut(&observed)
+            .iter_mut()
+            .find(|(source, _)| source.path == observed)
+            .map(|(_, watch)| watch)
             .ok_or("source missing")?;
         source.next = Some(Box::pin(async { Err(StreamError::Unavailable) }));
         source.waker.wake_by_ref();
@@ -785,7 +787,8 @@ async fn pause_retains_input<P: StreamProvider + 'static>(
             .lock()
             .unwrap()
             .paths
-            .contains_key(&source)
+            .keys()
+            .any(|selection| selection.path == source)
     );
     let child = actor("paused-child")?;
     let mut subscriptions = state.subscriptions().clone();

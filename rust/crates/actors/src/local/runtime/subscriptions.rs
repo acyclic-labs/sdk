@@ -47,7 +47,7 @@ pub(super) struct Watch {
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct Source {
-    path: StreamPath,
+    pub(super) path: StreamPath,
     filter: Option<[u8; 32]>,
 }
 
