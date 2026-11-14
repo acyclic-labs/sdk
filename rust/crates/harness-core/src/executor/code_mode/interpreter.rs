@@ -349,10 +349,11 @@ mod tests {
             try { await write('file.txt', 'wrong', 'absent'); throw new Error('create replaced a file'); }
             catch (error) { if (!(error instanceof ConflictError)) throw error; }
             const absent = await read('missing.txt');
-            await write('denied.txt', 'preserved', 'any');
-            try { await remove('denied.txt', 'any'); throw new Error('write grant authorized deletion'); }
+            // Authored names do not confer journal identity or deletion authority.
+            await write('.system/denied.txt', 'preserved', 'any');
+            try { await remove('.system/denied.txt', 'any'); throw new Error('write grant authorized deletion'); }
             catch (error) { if (!(error instanceof DeniedError)) throw error; }
-            if ((await read('denied.txt')).text() !== 'preserved') throw new Error('denied removal changed content');
+            if ((await read('.system/denied.txt')).text() !== 'preserved') throw new Error('denied removal changed content');
             const removeVersion = await write('remove.txt', 'old', 'any');
             const retained = await read('remove.txt');
             await write('remove.txt', 'new', 'any');
@@ -374,8 +375,6 @@ mod tests {
             await write('recovery.txt', 'original', 'any');
             await remove('recovery.txt', 'any');
             if ((await read('recovery.txt')).text() !== 'later') throw new Error('removal recovery deleted a later publication');
-            try { await remove('.system/private', 'any'); throw new Error('private removal succeeded'); }
-            catch (error) { if (!(error instanceof DeniedError)) throw error; }
             try { await remove('remove.txt', 'absent'); throw new Error('invalid condition succeeded'); }
             catch (error) { if (!(error instanceof TypeError)) throw error; }
             // These are own JSON data properties, never an object literal's
@@ -409,10 +408,10 @@ mod tests {
             let directory;
             for await (const entry of list('.')) if (entry.name === 'dir') directory = entry;
             if (directory?.kind !== 'dir' || directory.path !== 'dir') throw new Error('root directory missing');
-            try {
-                for await (const entry of list('.system')) throw new Error('private storage yielded');
-                throw new Error('private storage succeeded');
-            } catch (error) { if (!(error instanceof DeniedError)) throw error; }
+            const authored = [];
+            for await (const entry of list('.system')) authored.push(entry.name);
+            if (authored.length !== 1 || authored[0] !== 'denied.txt')
+                throw new Error('authored name was mistaken for a protected journal');
             let missingError;
             try {
                 for await (const entry of list('missing-directory')) throw new Error('missing directory yielded');
@@ -471,7 +470,8 @@ mod tests {
                     let bounded_removal = namespace_removal
                         || (name == "remove"
                             && invocation.arguments["path"] == "content-remove.txt");
-                    let acting = if name == "remove" && invocation.arguments["path"] == "denied.txt"
+                    let acting = if name == "remove"
+                        && invocation.arguments["path"] == ".system/denied.txt"
                     {
                         Arc::new(
                             task.scoped(
@@ -644,13 +644,13 @@ mod tests {
         // Ten original operations, two notebook operations and one large write.
         // Only the source pages add calls; lines() has no host round trip.
         assert!(large_pages > 1);
-        // One initial page, two resumed pages, one root page and three refusals.
+        // One initial page, two resumed pages, two authored directories and two refusals.
         // Breaking after the first entry does not prefetch the next page.
         assert_eq!(directory_pages, 7);
         // Each advertised single-input example performs its one real read.
         assert_eq!(
             calls,
-            13 + 22 + 18 + large_pages + directory_pages + examples.len()
+            13 + 21 + 18 + large_pages + directory_pages + examples.len()
         );
         Ok(())
     }
