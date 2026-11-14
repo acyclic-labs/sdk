@@ -151,31 +151,41 @@ impl HttpStream {
         }
     }
 
-    async fn request(&self, route: &'static str, bytes: Vec<u8>) -> Result<Value, StreamError> {
-        self.request_json(route, move || http_codec::encode(route, &bytes))
+    async fn request<T>(
+        &self,
+        route: &'static str,
+        bytes: Vec<u8>,
+        decode: impl FnOnce(Value) -> Result<T, StreamError> + Send,
+    ) -> Result<T, StreamError> {
+        self.request_json(route, move || http_codec::encode(route, &bytes), decode)
             .await
     }
 
-    async fn request_json(
+    async fn request_json<T>(
         &self,
         route: &'static str,
         encode: impl FnOnce() -> Result<String, &'static str> + Send,
-    ) -> Result<Value, StreamError> {
+        decode: impl FnOnce(Value) -> Result<T, StreamError> + Send,
+    ) -> Result<T, StreamError> {
         let body = encode().map_err(contract_error)?;
-        // Bytes count the original decoded HTTP body, excluding headers and framing.
         let url = self
             .endpoint
             .join(&format!("v1/stream/{route}"))
             .map_err(|error| StreamError::Unavailable.with_source(error))?;
         let (authorization, lease) = self.authorization().await?;
-        let work = self.request_inner(route, url, body, authorization, lease);
+        let work = async {
+            let (value, bytes) = self
+                .request_inner(route, url, body, authorization, lease)
+                .await?;
+            decode(value).map(|result| (result, bytes))
+        };
         #[cfg(feature = "serde")]
         let result = crate::trace::observe(
             crate::trace::Request {
                 name: "stream.http.request",
                 mechanism: crate::trace::Mechanism::RoundTrip,
                 parent: None,
-                guarantee: Some("authenticated_bounded_json_response_at_original_route"),
+                guarantee: Some("authenticated_bounded_json_reply_validated_for_original_call"),
             },
             work,
             |(_, bytes)| u64::try_from(*bytes).ok(),
@@ -185,7 +195,6 @@ impl HttpStream {
         let result = work.await;
         result.map(|(value, _)| value)
     }
-
     async fn request_inner(
         &self,
         route: &'static str,
@@ -262,6 +271,44 @@ impl HttpStream {
                 .map_err(|error| StreamError::AccessDenied.with_source(error))?;
         }
         Ok((value, body.len()))
+    }
+    fn idempotency_response(
+        &self,
+        key: IdempotencyKey,
+        value: Value,
+    ) -> Result<Option<IdempotencyObservation>, StreamError> {
+        if value.is_null() {
+            return Ok(None);
+        }
+        let observed = IdempotencyKey::new(parse_bytes(field(&value, "idempotencyKey")?)?)?;
+        if observed != key {
+            return Err(StreamError::Unavailable);
+        }
+        let request_digest = parse_bytes(field(&value, "requestDigest")?)?
+            .as_ref()
+            .try_into()
+            .map_err(|error| StreamError::Unavailable.with_source(error))?;
+        let outcome = field(&value, "outcome")?;
+        let outcome = match parse_string(&outcome["type"])? {
+            "append" => IdempotencyOutcome::Append(parse_append(&outcome["outcome"])?),
+            "fork" => IdempotencyOutcome::Fork(parse_fork(&outcome["receipt"])?),
+            "commit" => IdempotencyOutcome::Commit(parse_envelope(&outcome["outcome"])?),
+            _ => return Err(StreamError::Unavailable),
+        };
+        let revision = match value.get("revision") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(revision) => Some(parse_revision(revision)?),
+        };
+        // A recovered write floors later reads exactly like its lost reply would have.
+        if let Some(revision) = &revision {
+            self.revisions()?.observe(revision);
+        }
+        Ok(Some(IdempotencyObservation {
+            idempotency_key: observed,
+            request_digest,
+            outcome,
+            revision,
+        }))
     }
     fn commit_response(value: &Value) -> Result<CommitOutcome, StreamError> {
         if value["ok"] == true {
@@ -356,47 +403,15 @@ impl StreamProvider for HttpStream {
         &self,
         key: IdempotencyKey,
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
-        let value = self
-            .request(
-                "idempotency/inspect",
-                wire::InspectIdempotencyRequest {
-                    idempotency_key: bytes::Bytes::copy_from_slice(key.as_bytes()),
-                }
-                .encode_to_vec(),
-            )
-            .await?;
-        if value.is_null() {
-            return Ok(None);
-        }
-        let observed = IdempotencyKey::new(parse_bytes(field(&value, "idempotencyKey")?)?)?;
-        if observed != key {
-            return Err(StreamError::Unavailable);
-        }
-        let request_digest = parse_bytes(field(&value, "requestDigest")?)?
-            .as_ref()
-            .try_into()
-            .map_err(|error| StreamError::Unavailable.with_source(error))?;
-        let outcome = field(&value, "outcome")?;
-        let outcome = match parse_string(&outcome["type"])? {
-            "append" => IdempotencyOutcome::Append(parse_append(&outcome["outcome"])?),
-            "fork" => IdempotencyOutcome::Fork(parse_fork(&outcome["receipt"])?),
-            "commit" => IdempotencyOutcome::Commit(parse_envelope(&outcome["outcome"])?),
-            _ => return Err(StreamError::Unavailable),
-        };
-        let revision = match value.get("revision") {
-            None | Some(serde_json::Value::Null) => None,
-            Some(revision) => Some(parse_revision(revision)?),
-        };
-        // A recovered write floors later reads exactly like its lost reply would have.
-        if let Some(revision) = &revision {
-            self.revisions()?.observe(revision);
-        }
-        Ok(Some(IdempotencyObservation {
-            idempotency_key: observed,
-            request_digest,
-            outcome,
-            revision,
-        }))
+        self.request(
+            "idempotency/inspect",
+            wire::InspectIdempotencyRequest {
+                idempotency_key: bytes::Bytes::copy_from_slice(key.as_bytes()),
+            }
+            .encode_to_vec(),
+            |value| self.idempotency_response(key, value),
+        )
+        .await
     }
     async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
         self.session_client()?.heads(request).await
@@ -410,15 +425,18 @@ impl StreamProvider for HttpStream {
         match request {
             crate::WriteRequest::Append(request) => Box::pin(futures::TryFutureExt::map_ok(
                 async move {
-                    let outcome = parse_append(
-                        &self
-                            .request_json("append", move || http_codec::encode_append(&request))
-                            .await?,
-                    )?;
-                    if let AppendOutcome::Committed(receipt) = &outcome {
-                        self.revisions()?.observe(&receipt.revision);
-                    }
-                    Ok(outcome)
+                    self.request_json(
+                        "append",
+                        move || http_codec::encode_append(&request),
+                        |value| {
+                            let outcome = parse_append(&value)?;
+                            if let AppendOutcome::Committed(receipt) = &outcome {
+                                self.revisions()?.observe(&receipt.revision);
+                            }
+                            Ok(outcome)
+                        },
+                    )
+                    .await
                 },
                 crate::WriteOutcome::Append,
             )),
@@ -435,12 +453,15 @@ impl StreamProvider for HttpStream {
                             request.idempotency_key.as_bytes(),
                         ),
                     };
-                    let result = parse_fork(&self.request("fork", wire.encode_to_vec()).await?)?;
-                    if result.source != source || result.destination != destination {
-                        return Err(StreamError::Unavailable);
-                    }
-                    self.revisions()?.observe(&result.revision);
-                    Ok(result)
+                    self.request("fork", wire.encode_to_vec(), |value| {
+                        let result = parse_fork(&value)?;
+                        if result.source != source || result.destination != destination {
+                            return Err(StreamError::Unavailable);
+                        }
+                        self.revisions()?.observe(&result.revision);
+                        Ok(result)
+                    })
+                    .await
                 },
                 crate::WriteOutcome::Fork,
             )),
@@ -450,12 +471,14 @@ impl StreamProvider for HttpStream {
             crate::WriteRequest::Commit(request) => Box::pin(futures::TryFutureExt::map_ok(
                 async move {
                     let wire = wire_codec::commit_to_wire(&request);
-                    let response = self.request("commit", wire.encode_to_vec()).await?;
-                    let outcome = Self::commit_response(&response)?;
-                    if let CommitOutcome::Committed(receipt) = &outcome {
-                        self.revisions()?.observe(&receipt.revision);
-                    }
-                    Ok(outcome)
+                    self.request("commit", wire.encode_to_vec(), |response| {
+                        let outcome = Self::commit_response(&response)?;
+                        if let CommitOutcome::Committed(receipt) = &outcome {
+                            self.revisions()?.observe(&receipt.revision);
+                        }
+                        Ok(outcome)
+                    })
+                    .await
                 },
                 crate::WriteOutcome::Commit,
             )),
@@ -475,20 +498,21 @@ impl StreamProvider for HttpStream {
     }
 
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
-        let value = self
-            .request(
-                "commits/read",
-                wire::ReadCommitRequest {
-                    commit_id: bytes::Bytes::copy_from_slice(id.as_bytes()),
+        self.request(
+            "commits/read",
+            wire::ReadCommitRequest {
+                commit_id: bytes::Bytes::copy_from_slice(id.as_bytes()),
+            }
+            .encode_to_vec(),
+            |value| {
+                let envelope = parse_envelope(&value)?;
+                if envelope.commit_id != id {
+                    return Err(StreamError::Unavailable);
                 }
-                .encode_to_vec(),
-            )
-            .await?;
-        let envelope = parse_envelope(&value)?;
-        if envelope.commit_id != id {
-            return Err(StreamError::Unavailable);
-        }
-        Ok(envelope)
+                Ok(envelope)
+            },
+        )
+        .await
     }
 }
 
@@ -555,6 +579,7 @@ mod tests {
                                 ..Default::default()
                             }
                             .encode_to_vec(),
+                            Ok,
                         ),
                     );
                     let error = result
