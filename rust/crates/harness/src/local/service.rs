@@ -548,7 +548,7 @@ mod tests {
                     crate::agent::initial_peer_membership(&**hosted.agents().provider(), &agent,)
                         .await
                         .map_err(storage)?
-                        .enabled,
+                        .enabled(),
                     expected_peer
                 );
                 let toggle = AgentCommand::SetPeerMembership {

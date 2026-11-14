@@ -756,7 +756,7 @@ where
                             let original_peer =
                                 crate::agent::initial_peer_membership(&**agents.provider(), &path)
                                     .await?;
-                            if !same || original_peer.enabled != *peer {
+                            if !same || original_peer.enabled() != *peer {
                                 return Err(Error::Record(
                                     "session intent already names another creation",
                                 ));
@@ -1572,7 +1572,7 @@ where
                                         crate::agent::PeerMembership::decode(&record.value)
                                     })
                                     .transpose()?
-                                    .is_some_and(|member| member.enabled)
+                                    .is_some_and(|member| member.enabled())
                                     && &item.agent != requester,
                             );
                         }
@@ -1582,7 +1582,7 @@ where
                         if !member
                             .map(|record| crate::agent::PeerMembership::decode(&record.value))
                             .transpose()?
-                            .is_some_and(|member| member.enabled)
+                            .is_some_and(|member| member.enabled())
                         {
                             return Err(Error::Record("peer discovery requires an enabled root"));
                         }

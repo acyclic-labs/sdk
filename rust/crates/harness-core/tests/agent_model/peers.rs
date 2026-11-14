@@ -4,6 +4,141 @@ use acyclic_harness_core::Capabilities;
 use proptest::prelude::*;
 
 #[tokio::test]
+async fn membership_epochs_close_atomically_and_cannot_be_revived() -> Result {
+    let provider = MemoryStream::default();
+    let sender = create(&provider, id(90)).await?;
+    let recipient = create(&provider, id(91)).await?;
+    let member_path = recipient.peer_membership()?;
+    let first = provider
+        .head(member_path.clone())
+        .await?
+        .last
+        .ok_or("membership missing")?;
+    let original = PeerMembership::decode(&first.value)?;
+    let epoch = original.epoch.ok_or("initial grant missing")?;
+    let created = provider
+        .head(recipient.peer_epoch(&epoch)?)
+        .await?
+        .last
+        .ok_or("grant missing")?;
+    assert_eq!(
+        created.commit_id, first.commit_id,
+        "grant was detached from root creation"
+    );
+    let guarded = |member: PeerMembership, name: &str| -> Result<CommitRequest> {
+        let from = Sender::Agent {
+            path: sender.clone(),
+        };
+        let mut request = send(
+            &recipient,
+            &from,
+            &InboxRecord::Message(Message {
+                from: from.clone(),
+                id: intent(name),
+                re: None,
+                body: Box::new(super::driver::file("body.txt")?),
+                attachments: None,
+            }),
+        )?;
+        request.effects[0]
+            .conditions
+            .extend(member.conditions(&recipient)?);
+        request.effects[0].soft = true;
+        Ok(request)
+    };
+    let held = guarded(original, "held")?;
+    submit(
+        &provider,
+        set_peer_membership(&provider, &recipient, &user(), &intent("same-on"), true).await?,
+    )
+    .await?;
+    let same = provider
+        .head(member_path.clone())
+        .await?
+        .last
+        .ok_or("membership missing")?;
+    assert_eq!(PeerMembership::decode(&same.value)?.epoch, Some(epoch));
+    assert_eq!(provider.tail(recipient.peer_epoch(&epoch)?).await?, 1);
+
+    submit(
+        &provider,
+        set_peer_membership(&provider, &recipient, &user(), &intent("off"), false).await?,
+    )
+    .await?;
+    let off = provider
+        .head(member_path.clone())
+        .await?
+        .last
+        .ok_or("membership missing")?;
+    let closed = provider
+        .head(recipient.peer_epoch_closed(&epoch)?)
+        .await?
+        .last
+        .ok_or("revocation missing")?;
+    assert!(!PeerMembership::decode(&off.value)?.enabled());
+    assert_eq!(
+        off.commit_id, closed.commit_id,
+        "opt-out did not revoke atomically"
+    );
+    let refused = provider.commit(held.clone()).await?;
+    assert!(matches!(&refused, CommitOutcome::Committed(receipt) if receipt.skipped == [0]));
+    assert_eq!(provider.tail(recipient.inbox()?).await?, 1);
+
+    submit(
+        &provider,
+        set_peer_membership(&provider, &recipient, &user(), &intent("rejoin"), true).await?,
+    )
+    .await?;
+    let on = provider
+        .head(member_path)
+        .await?
+        .last
+        .ok_or("membership missing")?;
+    let renewed = PeerMembership::decode(&on.value)?;
+    assert_ne!(renewed.epoch, Some(epoch));
+    let new_epoch = renewed.epoch.ok_or("renewed grant missing")?;
+    assert_eq!(
+        provider
+            .head(recipient.peer_epoch(&new_epoch)?)
+            .await?
+            .last
+            .ok_or("grant missing")?
+            .commit_id,
+        on.commit_id
+    );
+    assert_eq!(
+        provider.commit(held).await?,
+        refused,
+        "rejoin changed an original refusal"
+    );
+    assert!(
+        matches!(provider.commit(guarded(original, "stale-epoch")?).await?,
+        CommitOutcome::Committed(receipt) if receipt.skipped == [0])
+    );
+    assert!(
+        matches!(provider.commit(guarded(renewed, "current-epoch")?).await?,
+        CommitOutcome::Committed(receipt) if receipt.skipped.is_empty())
+    );
+    assert_eq!(provider.tail(recipient.inbox()?).await?, 2);
+
+    // Negative control: deleting only revocation admits the stale epoch.
+    let mut bypass = guarded(original, "without-revocation")?;
+    let revocation = recipient.peer_epoch_closed(&epoch)?;
+    bypass.effects[0]
+        .conditions
+        .retain(|condition| condition.path() != &revocation);
+    assert!(matches!(provider.commit(bypass).await?,
+        CommitOutcome::Committed(receipt) if receipt.skipped.is_empty()));
+    assert_eq!(provider.tail(recipient.inbox()?).await?, 3);
+    submit(&provider, archive(&recipient, &user(), &intent("archive"))?).await?;
+    assert!(
+        matches!(provider.commit(guarded(renewed, "after-archive")?).await?,
+        CommitOutcome::Committed(receipt) if receipt.skipped == [0])
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn absent_recipient_refusal_and_notice_share_the_original_commit() -> Result {
     use acyclic_actors::{
         addressing::ActorReference,
@@ -2058,7 +2193,7 @@ async fn either_opt_out_fences_prepared_peer_delivery_and_replay() -> Result {
             let changed = if opt_out_sender { &sender } else { &recipient };
             submit(
                 &provider,
-                set_peer_membership(changed, &user(), &intent("off"), false)?,
+                set_peer_membership(&provider, changed, &user(), &intent("off"), false).await?,
             )
             .await?;
             assert!(matches!(
@@ -2081,7 +2216,7 @@ async fn either_opt_out_fences_prepared_peer_delivery_and_replay() -> Result {
             );
             submit(
                 &provider,
-                set_peer_membership(changed, &user(), &intent("on"), true)?,
+                set_peer_membership(&provider, changed, &user(), &intent("on"), true).await?,
             )
             .await?;
             submit(&provider, request).await?;
@@ -2127,9 +2262,9 @@ proptest! {
             let recipient = if self_send { sender.clone() } else { recipient };
             for (root, enabled) in [(&sender, sender_member), (&recipient, recipient_member)] {
                 if !enabled {
-                    assert!(matches!(submit(&provider, set_peer_membership(
+                    assert!(matches!(submit(&provider, set_peer_membership(&provider,
                         root, &user(), &intent("opt-out"), false,
-                    )?).await?, Submitted::Committed(_)));
+                    ).await?).await?, Submitted::Committed(_)));
                 }
             }
             let sender = if sender_child { sender.child(&id(22))? } else { sender };
@@ -2177,9 +2312,13 @@ async fn peer_opt_out_is_symmetric_user_only_and_archive_fences_rejoin() -> Resu
             host: "model".into(),
         },
     ] {
-        assert!(set_peer_membership(&a, &by, &intent("forbidden"), false).is_err());
+        assert!(
+            set_peer_membership(&provider, &a, &by, &intent("forbidden"), false)
+                .await
+                .is_err()
+        );
     }
-    let off = set_peer_membership(&a, &user(), &intent("off"), false)?;
+    let off = set_peer_membership(&provider, &a, &user(), &intent("off"), false).await?;
     submit(&provider, off.clone()).await?;
     submit(&provider, off).await?;
     assert_eq!(provider.tail(a.peer_membership()?).await?, 2);
@@ -2187,11 +2326,11 @@ async fn peer_opt_out_is_symmetric_user_only_and_archive_fences_rejoin() -> Resu
     assert!(!session_peer_allowed(&provider, &grants, &b, &a).await?);
     submit(
         &provider,
-        set_peer_membership(&a, &user(), &intent("on"), true)?,
+        set_peer_membership(&provider, &a, &user(), &intent("on"), true).await?,
     )
     .await?;
     assert!(session_peer_allowed(&provider, &grants, &a, &b).await?);
-    let rejoin = set_peer_membership(&a, &user(), &intent("stale-on"), true)?;
+    let rejoin = set_peer_membership(&provider, &a, &user(), &intent("stale-on"), true).await?;
     submit(&provider, archive(&a, &user(), &intent("archive"))?).await?;
     assert!(!session_peer_allowed(&provider, &grants, &a, &b).await?);
     assert!(!session_peer_allowed(&provider, &grants, &b, &a).await?);

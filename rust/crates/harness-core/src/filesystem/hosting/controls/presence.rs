@@ -108,7 +108,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
         if member.origin != membership || member.sequence.checked_add(1) != Some(member_head.tail) {
             return Err(Error::Record("membership head provenance differs"));
         }
-        let enabled = PeerMembership::decode(&member.value)?.enabled;
+        let enabled = PeerMembership::decode(&member.value)?.enabled();
         // Membership is a current boolean projection. Skip already superseded
         // decisions at this same cut, rather than replaying their file reads.
         subscriptions.push(SubscriptionChange::Add {

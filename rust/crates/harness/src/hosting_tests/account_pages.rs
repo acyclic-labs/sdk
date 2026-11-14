@@ -237,9 +237,11 @@ async fn account_peer_command_preserves_qualified_identity_credit_and_authority(
         vec![acyclic_stream::CommitMutation::Append {
             path: root.peer_membership()?,
             records: vec![
-                crate::agent::PeerMembership { enabled: true }
-                    .encode()?
-                    .into(),
+                crate::agent::PeerMembership {
+                    epoch: (true).then_some([7; 32]),
+                }
+                .encode()?
+                .into(),
             ],
         }],
     )];
@@ -276,7 +278,7 @@ async fn account_peer_command_preserves_qualified_identity_credit_and_authority(
                     path: agent.peer_membership()?,
                     records: vec![
                         crate::agent::PeerMembership {
-                            enabled: index == 4,
+                            epoch: (index == 4).then_some([7; 32]),
                         }
                         .encode()?
                         .into(),

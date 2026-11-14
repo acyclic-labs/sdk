@@ -818,7 +818,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         let head = stream.head(root.peer_membership()?).await?;
         let record = head.last.ok_or("membership record missing")?;
         assert_eq!(
-            crate::agent::PeerMembership::decode(&record.value)?.enabled,
+            crate::agent::PeerMembership::decode(&record.value)?.enabled(),
             enabled
         );
     }

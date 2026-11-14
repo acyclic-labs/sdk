@@ -12,7 +12,11 @@ mod tests;
 impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     /// Retain the command's original semantic record, rather than preparing
     /// another row revision after an uncertain or repeated user operation.
-    async fn retained_control(&self, base: &CommitRequest) -> Result<Option<Record>, Error> {
+    async fn retained_control(
+        &self,
+        root: &AgentPath,
+        base: &CommitRequest,
+    ) -> Result<Option<Record>, Error> {
         let Some(observed) = self
             .provider
             .inspect_idempotency(base.idempotency_key.clone())
@@ -44,7 +48,16 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
                 let [record] = append.records.as_slice() else {
                     return Err(Error::Stream(StreamError::IdempotencyMismatch));
                 };
-                if record.value != expected.value || record.headers != expected.headers {
+                let same = if path == &root.peer_membership()? {
+                    use crate::agent::AgentRecord as _;
+                    // Epoch selection is host-owned preparation. Replaying the
+                    // user's same boolean must retain its original interval.
+                    crate::agent::PeerMembership::decode(&record.value)?.enabled()
+                        == crate::agent::PeerMembership::decode(&expected.value)?.enabled()
+                } else {
+                    record.value == expected.value
+                };
+                if !same || record.headers != expected.headers {
                     return Err(Error::Stream(StreamError::IdempotencyMismatch));
                 }
                 return Ok(Some(record.clone()));
@@ -67,11 +80,14 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         F: AsyncFnOnce(CommitRequest) -> Result<T, Error>,
         R: FnOnce(Record) -> Result<T, Error>,
     {
-        if root.depth() != 0 || self.agents.routing.is_none() {
+        if root.depth() != 0 {
             return publish(base).await;
         }
-        if let Some(record) = self.retained_control(&base).await? {
+        if let Some(record) = self.retained_control(root, &base).await? {
             return original(record);
+        }
+        if self.agents.routing.is_none() {
+            return publish(base).await;
         }
         let request = self.presence_control(root, base.clone(), enabled).await?;
         match publish(request).await {
@@ -79,7 +95,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
                 // The original may have committed after the first observation.
                 // Reconcile that terminal result once; never resubmit a rewrite.
                 let record = self
-                    .retained_control(&base)
+                    .retained_control(root, &base)
                     .await?
                     .ok_or(Error::Stream(error))?;
                 original(record)

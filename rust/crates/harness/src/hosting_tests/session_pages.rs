@@ -75,7 +75,7 @@ async fn session_and_peer_pages_keep_discovery_at_two_bounded_head_views() -> Re
                     path: agent.peer_membership()?,
                     records: vec![
                         crate::agent::PeerMembership {
-                            enabled: index >= 16,
+                            epoch: (index >= 16).then_some([7; 32]),
                         }
                         .encode()?
                         .into(),

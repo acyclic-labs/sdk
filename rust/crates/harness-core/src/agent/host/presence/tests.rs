@@ -37,11 +37,13 @@ async fn unchanged_membership_fences_a_concurrent_opposite_decision()
             principal: "owner".into(),
         };
         let base = crate::agent::set_peer_membership(
+            provider.as_ref(),
             &root,
             &user,
             &IntentId::try_from("unchanged-decision")?,
             initial,
-        )?;
+        )
+        .await?;
         let mut stale = host.presence_control(&root, base, initial).await?;
         host.set_peer_membership(
             &root,
@@ -69,15 +71,16 @@ async fn unchanged_membership_fences_a_concurrent_opposite_decision()
             .await?
             .last
             .ok_or("membership missing")?;
-        assert_eq!(PeerMembership::decode(&member.value)?.enabled, !initial);
+        assert_eq!(PeerMembership::decode(&member.value)?.enabled(), !initial);
         assert_eq!(row.profile.is_some(), !initial);
 
-        // Negative control: removing only the row guard accepts the stale
-        // command and reproduces membership/directory divergence on this store.
+        // Negative control: removing the captured row and membership fences
+        // accepts the stale command and reproduces directory divergence.
+        let membership = root.peer_membership()?;
         for effect in &mut stale.effects {
             effect
                 .conditions
-                .retain(|condition| condition.path() != &path);
+                .retain(|condition| condition.path() != &path && condition.path() != &membership);
         }
         assert!(matches!(
             provider.commit(stale).await?,
@@ -89,7 +92,7 @@ async fn unchanged_membership_fences_a_concurrent_opposite_decision()
             .last
             .ok_or("membership missing")?;
         assert_ne!(
-            PeerMembership::decode(&member.value)?.enabled,
+            PeerMembership::decode(&member.value)?.enabled(),
             row.profile.is_some()
         );
     }
@@ -178,13 +181,13 @@ async fn rejoining_requires_original_display_metadata() -> Result<(), Box<dyn st
         if inherited {
             assert!(result.is_err());
             assert_eq!(head.tail, 2);
-            assert!(!PeerMembership::decode(&member.value)?.enabled);
+            assert!(!PeerMembership::decode(&member.value)?.enabled());
         } else {
             result?;
             assert_eq!(head.tail, 3);
             let current = SessionRow::decode(&head.last.ok_or("rejoined row missing")?.value)?;
             assert_eq!(current.profile, Some(profile));
-            assert!(PeerMembership::decode(&member.value)?.enabled);
+            assert!(PeerMembership::decode(&member.value)?.enabled());
         }
     }
     Ok(())

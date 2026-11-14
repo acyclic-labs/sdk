@@ -348,6 +348,20 @@ impl AgentPath {
         stream(&format!("harness/peer-membership/{}", self.id_text()))
     }
 
+    /// One append-message grant interval, never inherited by children.
+    pub fn peer_epoch(&self, epoch: &[u8; 32]) -> Result<StreamPath, Error> {
+        stream(&format!(
+            "{}/epochs/{}",
+            self.peer_membership()?,
+            blake3::Hash::from_bytes(*epoch).to_hex()
+        ))
+    }
+
+    /// Permanent revocation fence for one membership interval.
+    pub fn peer_epoch_closed(&self, epoch: &[u8; 32]) -> Result<StreamPath, Error> {
+        stream(&format!("{}/closed", self.peer_epoch(epoch)?))
+    }
+
     /// Original sent-message receipt index, outside inherited subtrees.
     pub fn sent_message(&self, id: &super::IntentId) -> Result<StreamPath, Error> {
         stream(&format!(

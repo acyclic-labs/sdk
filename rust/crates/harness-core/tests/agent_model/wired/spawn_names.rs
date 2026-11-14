@@ -449,7 +449,14 @@ async fn automatic_self_send_is_refused_without_stopping_the_actor() -> Result {
             if name == "send" && value.get("error").is_some())));
     submit(
         &*stream,
-        set_peer_membership(&root, &super::super::user(), &intent("off"), false)?,
+        set_peer_membership(
+            &*stream,
+            &root,
+            &super::super::user(),
+            &intent("off"),
+            false,
+        )
+        .await?,
     )
     .await?;
     model.extend([ScriptedTurn::Text("still hosted".into())]);
@@ -1149,11 +1156,13 @@ async fn sent_wait_wakes_on_the_original_reply_without_reading_peer_content() ->
         submit(
             &*stream,
             set_peer_membership(
+                &*stream,
                 &peer,
                 &super::super::user(),
                 &intent("disable-future-peer-sends"),
                 false,
-            )?,
+            )
+            .await?,
         )
         .await?;
         let answer = ScriptedTurn::Text("recipient-only answer content".into());

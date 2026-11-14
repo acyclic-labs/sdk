@@ -802,7 +802,8 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         id: &IntentId,
         enabled: bool,
     ) -> Result<(), Error> {
-        let request = super::set_peer_membership(root, by, id, enabled)?;
+        let request =
+            super::set_peer_membership(self.provider.as_ref(), root, by, id, enabled).await?;
         self.publish_presence_control(
             root,
             request,

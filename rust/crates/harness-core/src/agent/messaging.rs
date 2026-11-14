@@ -11,11 +11,51 @@ pub const SEND_PEER: &str = "agent.send-peer";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PeerMembership {
-    /// Whether this root may see, send to, and receive from peer sessions.
-    pub enabled: bool,
+    /// Active interval of the root's append-message grant, or user opt-out.
+    /// This public identity is not a credential or authority by itself.
+    pub epoch: Option<[u8; 32]>,
 }
 
 impl super::AgentRecord for PeerMembership {}
+
+impl PeerMembership {
+    /// Whether the user's current participation grant is active.
+    pub fn enabled(&self) -> bool {
+        self.epoch.is_some()
+    }
+
+    /// Stable admission conditions for this interval. Metadata changes and
+    /// duplicate opt-in do not rewrite a prepared request; opt-out permanently
+    /// closes the interval, so a later rejoin cannot revive a refused intent.
+    pub fn conditions(
+        &self,
+        root: &AgentPath,
+    ) -> Result<[acyclic_stream::CommitCondition; 2], super::Error> {
+        let epoch = self
+            .epoch
+            .ok_or(super::Error::Record("peer membership is disabled"))?;
+        Ok([
+            acyclic_stream::CommitCondition::Present {
+                path: root.peer_epoch(&epoch)?,
+            },
+            acyclic_stream::CommitCondition::Absent {
+                path: root.peer_epoch_closed(&epoch)?,
+            },
+        ])
+    }
+
+    pub(crate) fn for_intent(
+        intent: &acyclic_stream::IdempotencyKey,
+    ) -> Result<Self, super::Error> {
+        // Agent intent keys already bind the root, operation and caller. Keep
+        // their digest directly rather than hashing that identity again.
+        let digest = blake3::Hash::from_hex(intent.as_bytes())
+            .map_err(|_| super::Error::Record("peer membership intent is not canonical"))?;
+        Ok(Self {
+            epoch: Some(*digest.as_bytes()),
+        })
+    }
+}
 
 /// The two enabled membership versions admitted for an automatic peer send.
 /// Publication must still match both versions, so a later opt-out fences it.
@@ -125,7 +165,7 @@ impl PeerMembershipHead {
         };
         if record.origin != path
             || record.commit_id.as_bytes() != &self.commit
-            || !PeerMembership::decode(&record.value)?.enabled
+            || !PeerMembership::decode(&record.value)?.enabled()
         {
             return Err(super::Error::Record("peer membership was not enabled"));
         }
@@ -223,7 +263,7 @@ pub async fn session_peer_admission<P: crate::store::JournalProvider + ?Sized>(
                 "peer membership head provenance differs",
             ));
         }
-        if !PeerMembership::decode(&record.value)?.enabled {
+        if !PeerMembership::decode(&record.value)?.enabled() {
             return Ok(None);
         }
         admitted.push(PeerMembershipHead {
@@ -354,7 +394,9 @@ mod provenance_tests {
             } else {
                 &sender
             };
-            let enabled = PeerMembership { enabled: true };
+            let enabled = PeerMembership {
+                epoch: (true).then_some([7; 32]),
+            };
             let publish = async |effect| {
                 let outcome = provider
                     .commit(CommitRequest {
