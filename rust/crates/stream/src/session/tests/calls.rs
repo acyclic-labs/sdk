@@ -728,6 +728,22 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
         Some(lifetime),
     );
     client.register_credential(0, credential.into())?;
+    for (invalid, maximum) in [(Bytes::new(), None), (invocation.clone(), Some(0))] {
+        let error = client
+            .actor_call(&invalid, 0, maximum)
+            .await
+            .expect_err("invalid original invocation dispatched");
+        assert_eq!(error.category(), StreamError::InvalidArgument);
+        assert!(
+            std::error::Error::source(&error).is_some(),
+            "original invocation evidence lost"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "rejected invocation called provider"
+        );
+    }
     #[cfg(feature = "serde")]
     let (trace, root, parent) = {
         let trace = crate::Stream::new(Arc::new(MemoryStream::default()), "owner/trace")?;

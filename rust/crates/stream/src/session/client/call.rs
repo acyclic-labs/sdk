@@ -4,6 +4,14 @@ use super::*;
 /// Original reply progress and, on source failure, its original typed cause.
 #[derive(Debug, thiserror::Error)]
 enum ReplyFailure {
+    #[error(
+        "invalid invocation length {bytes}, command limit {command_limit}, reply bound {reply_bound:?}"
+    )]
+    Invocation {
+        bytes: usize,
+        command_limit: usize,
+        reply_bound: Option<usize>,
+    },
     #[error("reply ended after {received} bytes; expected {expected:?}")]
     Ended {
         expected: Option<usize>,
@@ -358,7 +366,13 @@ fn validate_call(
         || invocation.len() > crate::MAX_COMMAND_BYTES
         || maximum_reply_bytes == Some(0)
     {
-        return Err(StreamError::InvalidArgument);
+        return Err(
+            StreamError::InvalidArgument.with_source(ReplyFailure::Invocation {
+                bytes: invocation.len(),
+                command_limit: crate::MAX_COMMAND_BYTES,
+                reply_bound: maximum_reply_bytes,
+            }),
+        );
     }
     Ok(())
 }
