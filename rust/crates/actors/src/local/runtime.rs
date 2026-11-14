@@ -181,8 +181,8 @@ struct Inner {
     pending: Option<(Arc<Snapshot>, PreparedPublish, Option<String>)>,
     /// Conflicts of the last composed-guard refusal since a publication.
     refused: Option<Vec<acyclic_stream::CommitConflict>>,
-    /// The last undecided handler failure since a publication.
-    undecided: Option<crate::guest::GuestError>,
+    /// The input whose handler failure was last undecided, since a publication.
+    undecided: Option<Trigger>,
     /// This resident actor's interest marker is durable (or not needed).
     interests_marked: bool,
 }
@@ -206,14 +206,27 @@ impl Inner {
 
     /// An undecided handler failure retains its input, and nothing else owes
     /// the actor a wake: its own failure is the event that redelivers it, at
-    /// once. A redelivery that is undecided again, with no publication
-    /// between, settles through the handler's failure path instead of idling
-    /// with the input or retrying without bound.
-    fn undecided(&mut self, failure: crate::guest::GuestError) -> Result<(), Error> {
-        if self.undecided.take().is_some() {
+    /// once. The same input undecided again, with no publication between,
+    /// settles through the handler's failure path instead of idling with the
+    /// input or retrying without bound. The mark names its input (an alarm by
+    /// generation, not by clock reading), so a work-budget yield keeps it and
+    /// a different input selected in between gets its own retry.
+    fn undecided(
+        &mut self,
+        trigger: &Trigger,
+        failure: crate::guest::GuestError,
+    ) -> Result<(), Error> {
+        let input = match trigger {
+            Trigger::Alarm { generation, .. } => Trigger::Alarm {
+                generation: *generation,
+                now_unix_ms: 0,
+            },
+            other => other.clone(),
+        };
+        if self.undecided.take().is_some_and(|last| last == input) {
             return Err(Error::UndecidedUnchanged(failure));
         }
-        self.undecided = Some(failure);
+        self.undecided = Some(input);
         Ok(())
     }
 }
@@ -1635,8 +1648,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         if inner.released {
             return Ok(true);
         }
-        // Each delivery redelivers its own undecided failure once.
-        inner.undecided = None;
         let mut steps = 0;
         loop {
             // A pending follow may own asynchronous provider I/O or a fair
@@ -1901,7 +1912,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 Err(Error::Handler(failure @ crate::guest::GuestError::Pending(_)))
                     if !cancellation.is_cancelled() =>
                 {
-                    inner.undecided(failure).map(|()| true)
+                    inner.undecided(&trigger, failure).map(|()| true)
                 }
                 Err(error) => Err(error),
             };

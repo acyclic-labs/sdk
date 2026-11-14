@@ -52,11 +52,13 @@ async fn handler_failure_never_idles_with_its_input() -> TestResult {
         .with_context("handler delivery");
     let decided =
         GuestError::Handler("definitive handler failure".into()).with_context("handler delivery");
-    // (error, refusals, attempts, failure transitions)
-    for (error, refusals, attempts, failures) in [
-        (decided, usize::MAX, 1, 1),
-        (pending.clone(), 1, 2, 0),
-        (pending, usize::MAX, 2, 1),
+    // (error, refusals, attempts, failure transitions, work steps per batch);
+    // a one-step work budget yields between the attempt and its redelivery.
+    for (error, refusals, attempts, failures, work) in [
+        (decided, usize::MAX, 1, 1, 64),
+        (pending.clone(), 1, 2, 0, 64),
+        (pending.clone(), usize::MAX, 2, 1, 64),
+        (pending, usize::MAX, 2, 1, 1),
     ] {
         let provider = Arc::new(MemoryStream::default());
         let store = Store::new(Arc::clone(&provider), root()?);
@@ -73,7 +75,8 @@ async fn handler_failure_never_idles_with_its_input() -> TestResult {
             store,
             handler.clone(),
             Arc::new(SystemClock),
-        );
+        )
+        .with_limits(RuntimeLimits::new(1, work)?);
         runtime.track(address.clone())?;
         let mut unavailable = runtime.unavailable(&address)?;
         runtime.drain_actor(&address).await?;
