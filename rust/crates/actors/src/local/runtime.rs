@@ -1751,11 +1751,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     .release(actor);
                 return Ok(true);
             }
+            let selections = subscriptions::Subscriptions::selected(self.handler.as_ref(), state)?;
             let unwatched = self
                 .subscriptions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .unwatched(self.handler.manifest(), state);
+                .unwatched(&selections);
             let mut tails = BTreeMap::new();
             for path in unwatched {
                 // Read before this delivery looks for input: it owns every
@@ -1770,13 +1771,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             self.subscriptions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .bind(
-                    self.store.provider(),
-                    self.handler.manifest(),
-                    actor,
-                    state,
-                    &tails,
-                )?;
+                .bind(self.store.provider(), actor, selections, &tails)?;
             let now = self.clock.now_unix_ms();
             let due = slot.registration.observe_delivery(state.alarm(), now)?;
             let (trigger, record, subscription) = match state.alarm().pending() {
