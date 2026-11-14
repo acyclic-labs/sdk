@@ -97,6 +97,12 @@ for (const id of members) {
     if (ownerOf(file) !== dir(packages.get(id))) fileLabel(file);
   }
 }
+// Starlark rendering.
+const list = items => (items.length ? `[\n${items.map(i => `        ${q(i)},\n`).join("")}    ]` : "[]");
+const glob = (include, exclude) => `glob(${q(include)}${exclude.length ? `, exclude = ${q(exclude)}` : ""}, allow_empty = True)`;
+const plus = (...parts) => parts.filter(p => p !== undefined && p !== "[]").join(" + ") || "[]";
+const rule = (kind, attrs) => `${kind}(\n${attrs.filter(([, v]) => v !== undefined && v !== "[]").map(([k, v]) => `    ${k} = ${v},\n`).join("")})\n`;
+
 // Files of third-party build dependencies that a build script reads, per platform, from
 // [package.metadata.bazel.build-script-env.<os>-<cpu>]: VARIABLE = "package/path". Each file is
 // exported from the package's crate universe repository and named to the script by its execution
@@ -147,10 +153,6 @@ function perTriple(values, render) {
   if (rendered.every(r => r === rendered[0])) return rendered[0];
   return `select({\n${TRIPLES.map((t, i) => `        "@rules_rust//rust/platform:${t}": ${rendered[i]},\n`).join("")}    })`;
 }
-const list = items => (items.length ? `[\n${items.map(i => `        ${q(i)},\n`).join("")}    ]` : "[]");
-const glob = (include, exclude) => `glob(${q(include)}${exclude.length ? `, exclude = ${q(exclude)}` : ""}, allow_empty = True)`;
-const plus = (...parts) => parts.filter(p => p !== undefined && p !== "[]").join(" + ") || "[]";
-const rule = (kind, attrs) => `${kind}(\n${attrs.filter(([, v]) => v !== undefined && v !== "[]").map(([k, v]) => `    ${k} = ${v},\n`).join("")})\n`;
 
 // First-party edges of one member for the selected dependency kinds, per triple.
 function edges(p, kinds) {
@@ -236,7 +238,7 @@ function buildFile(p) {
     rules.push([proc ? "rust_proc_macro" : "rust_library", [
       ["name", q(crateName(lib))],
       ["crate_root", q(local(lib.src_path))],
-      ["srcs", glob(["**/*.rs"], ["build.rs", ...NOT_LIB])],
+      ["srcs", plus(glob(["**/*.rs"], ["build.rs", ...NOT_LIB]), list(local(lib.src_path).startsWith("//") ? [local(lib.src_path)] : []))],
       ["compile_data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), libEmbeds)],
       ...common(lib),
       ...deps([null], { deps: "normal = True", procMacros: "proc_macro = True", aliases: "" }, ownDeps),
@@ -252,7 +254,7 @@ function buildFile(p) {
     rules.push(["rust_binary", [
       ["name", q(bin.name)],
       ["crate_root", q(local(bin.src_path))],
-      ["srcs", glob(["**/*.rs"], ["build.rs", ...NOT_LIB])],
+      ["srcs", plus(glob(["**/*.rs"], ["build.rs", ...NOT_LIB]), list(local(bin.src_path).startsWith("//") ? [local(bin.src_path)] : []))],
       ["compile_data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), libEmbeds)],
       ...common(bin),
       ...deps([null], { deps: "normal = True", procMacros: "proc_macro = True", aliases: "" }, [...ownLib, ...ownDeps], ownMacro),
@@ -262,7 +264,7 @@ function buildFile(p) {
     const binCrate = bin.name.replaceAll("-", "_");
     if (bin.test) test(lib && binCrate === crateName(lib) ? `${binCrate}_bin_test` : `${binCrate}_test`, [
       ["crate_root", q(local(bin.src_path))],
-      ["srcs", glob(["**/*.rs"], ["build.rs", ...NOT_LIB])],
+      ["srcs", plus(glob(["**/*.rs"], ["build.rs", ...NOT_LIB]), list(local(bin.src_path).startsWith("//") ? [local(bin.src_path)] : []))],
       ["compile_data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), libEmbeds)],
       ...common(bin),
       ...deps([null, "dev"], { deps: "normal = True, normal_dev = True", procMacros: "proc_macro = True, proc_macro_dev = True", aliases: "normal = True, normal_dev = True, proc_macro = True, proc_macro_dev = True" },
@@ -274,7 +276,7 @@ function buildFile(p) {
     const root = local(target.src_path), testDir = root.startsWith("//") ? "." : path.posix.dirname(root);
     test(lib && target.name === crateName(lib) ? `${target.name}_integration` : target.name, [
       ["crate_root", q(root)],
-      ["srcs", glob([testDir === "." ? "**/*.rs" : `${testDir}/**/*.rs`], [])],
+      ["srcs", plus(glob([testDir === "." ? "**/*.rs" : `${testDir}/**/*.rs`], []), list(root.startsWith("//") ? [root] : []))],
       ["compile_data", plus(glob([testDir === "." ? "**" : `${testDir}/**`], ["**/*.rs", "BUILD.bazel"]), testEmbeds(testDir))],
       ...common(target),
       ...deps([null, "dev"], { deps: "normal = True, normal_dev = True", procMacros: "proc_macro = True, proc_macro_dev = True", aliases: "normal = True, normal_dev = True, proc_macro = True, proc_macro_dev = True" },
@@ -318,7 +320,7 @@ function moduleFile() {
     ...base.resolve.nodes.filter(node => !members.has(node.id)).flatMap(node => {
       const own = node.deps.filter(dep => members.has(dep.pkg)).map(dep => packages.get(dep.pkg)).filter(libOf);
       if (!own.length) return [];
-      const target = p => `${label(p)}:${crateName(libOf(p))}`;
+      const target = p => `@@${label(p)}:${crateName(libOf(p))}`;
       const { name, version } = packages.get(node.id);
       return [`${rule("crate.annotation", [
         ["crate", q(name)],
