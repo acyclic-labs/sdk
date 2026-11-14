@@ -19,8 +19,9 @@ use acyclic_harness::{
 use serde_json::Value;
 use std::sync::Arc;
 
-/// Each harness future is boxed: their nested layouts otherwise exceed the
-/// compiler's query depth when composed into this driver's one future.
+/// Each harness future is boxed here and in the verifiers: their nested
+/// layouts otherwise exceed the compiler's query depth when composed into
+/// this driver's one future.
 pub(super) async fn run(case: LocalCase) -> TestResult {
     case.validate()?;
     let steps = case.turns.len();
@@ -402,14 +403,15 @@ async fn verify_prompt(
     let TurnInput::Message { body, .. } = &entry.input else {
         return Err("local scenario turn did not start from its prompt".into());
     };
-    let conversation =
-        acyclic_harness::local::agent_conversation::Conversation::open(harness.connect().await?);
+    let conversation = acyclic_harness::local::agent_conversation::Conversation::open(
+        Box::pin(harness.connect()).await?,
+    );
     // This case sends one prompt. Its exact committed record supplies the
     // authority for its immutable input, independently of task-file grants.
-    if conversation.settled().await? != 1 {
+    if Box::pin(conversation.settled()).await? != 1 {
         return Err("local scenario did not retain its single prompt record".into());
     }
-    let staged = conversation.turn(0, &entry).await?.prompt;
+    let staged = Box::pin(conversation.turn(0, &entry)).await?.prompt;
     let dispatched = first
         .messages
         .iter()
