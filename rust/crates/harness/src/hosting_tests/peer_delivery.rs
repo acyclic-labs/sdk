@@ -224,6 +224,15 @@ async fn authenticated_peer_delivery_pins_attribution_opt_out_and_exact_retry() 
         }
     );
     assert!(message.attachments.is_none());
+    assert_eq!(
+        message.body.volume(),
+        &crate::conversation::journal_volume(provider()?, &sender.id())?,
+        "composition must use the sender's journal, not recipient bindings"
+    );
+    assert_ne!(
+        message.body.volume(),
+        &crate::conversation::journal_volume(provider()?, &recipient.id())?,
+    );
     drop(records);
     // Opt-out fences a new intent prepared before it, but an acknowledged
     // message still recovers its original receipt without a second append.

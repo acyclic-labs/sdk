@@ -1160,7 +1160,9 @@ where
                 };
                 // Peer text is content, never an invocation of user commands,
                 // project skills, attachment expansion, or approval controls.
-                let body = self.bound.stage_prompt(agent, &sender, id, body).await?;
+                // The sender owns composition, including while the recipient
+                // is remote or offline. Recipient authority is append-only.
+                let body = self.bound.stage_prompt(source, &sender, id, body).await?;
                 let message = Message {
                     from: sender.clone(),
                     id: id.clone(),
