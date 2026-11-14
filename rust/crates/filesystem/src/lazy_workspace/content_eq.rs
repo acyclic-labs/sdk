@@ -55,6 +55,8 @@ impl<
     /// source, observation overlay and identity shadows to be unchanged too.
     /// `None` means those components lack complete alias coverage; it is not
     /// evidence of either progress or unchanged content.
+    /// Equal bytes at an introduced or replaced authored identity do not
+    /// cover that identity's unenumerated source aliases.
     pub async fn content_changed_at_snapshots(
         &self,
         before: &LazySnapshotRef,
@@ -97,6 +99,7 @@ impl<
                 ctx,
             )?;
             let result: Result<Option<bool>, LazyWorkspaceError> = async {
+                let mut complete = true;
                 while let Some(row) = cursor
                     .next(self.workspace.volume.fs.objects(), roots, ctx, cancel)
                     .await?
@@ -130,10 +133,18 @@ impl<
                                 Err(error) => return Err(error.into()),
                             };
                         let bytes = path.capacity() as u64;
+                        let same_identity = row.value.before.map(|record| record.file_id)
+                            == row.value.after.map(|record| record.file_id);
                         let changed = self
                             .matches_optional_content_at_snapshots(before, after, &path, ctx)
                             .await
-                            .map(|equal| Some(!equal));
+                            .map(|equal| {
+                                if equal {
+                                    same_identity.then_some(false)
+                                } else {
+                                    Some(true)
+                                }
+                            });
                         drop(path);
                         crate::kernel::retire_allocation(allocation, bytes, ctx)?;
                         changed
@@ -142,11 +153,13 @@ impl<
                     row.retire(ctx)?;
                     match changed? {
                         Some(false) => {}
-                        changed => return Ok(changed),
+                        Some(true) => return Ok(Some(true)),
+                        None => complete = false,
                     }
                 }
                 Ok(Some(false).filter(|_| {
-                    before.source == after.source
+                    complete
+                        && before.source == after.source
                         && before.overlay == after.overlay
                         && before.shadows == after.shadows
                 }))
