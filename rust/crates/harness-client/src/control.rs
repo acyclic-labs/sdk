@@ -83,7 +83,7 @@ impl AgentCall {
         if matches!(
             command,
             AgentCommand::Stage { .. } | AgentCommand::Staged { .. }
-        ) || command.agent() != self.command.agent()
+        ) || command.authority_agent() != self.command.authority_agent()
             || command.kind() != kind
         {
             return Err(CommandError::Invalid);
@@ -769,9 +769,22 @@ mod tests {
         let agent = crate::AgentPath::try_from(
             "harness/agents/00000000000000000000000000000001".to_owned(),
         )?;
+        let recipient = crate::AgentPath::try_from(
+            "harness/agents/00000000000000000000000000000002".to_owned(),
+        )?;
         let command = PreparedCommand::new(&AgentCommand::Prompt {
-            peer: None,
-            agent,
+            peer: Some((
+                agent.clone(),
+                Some(acyclic_harness_core::agent::PeerAdmission {
+                    sender: acyclic_harness_core::agent::PeerMembership {
+                        epoch: Some([7; 32]),
+                    },
+                    recipient: acyclic_harness_core::agent::PeerMembership {
+                        epoch: Some([8; 32]),
+                    },
+                }),
+            )),
+            agent: recipient.clone(),
             id: IntentId::try_from("prompt-1")?,
             body: ModelContent::Text("x".repeat(2 * crate::MAX_AGENT_COMMAND_BYTES)),
         })?;
@@ -789,12 +802,20 @@ mod tests {
             })
         ));
         let (head, parts) = sent.split_last().ok_or("nothing sent")?;
-        assert!(matches!(head, AgentCommand::Staged { .. }));
+        assert!(matches!(head, AgentCommand::Staged { agent: owner, .. } if owner == &agent));
         assert_eq!(parts.len(), held.invocations().len() - 1);
+        assert!(parts.iter().all(
+            |part| matches!(part, AgentCommand::Stage { agent: owner, .. } if owner == &agent)
+        ));
+        let original_head = held.invocations().last().ok_or("no head")?;
+        let mut forged = AgentCall::decode(original_head)?;
+        let AgentCommand::Staged { agent: owner, .. } = &mut forged.command else {
+            return Err("expected a staged head".into());
+        };
+        *owner = recipient;
         assert!(
-            parts
-                .iter()
-                .all(|part| matches!(part, AgentCommand::Stage { .. }))
+            forged.assembled(command.command()).is_err(),
+            "a recipient-owned head must not authorize sender-owned fragments"
         );
         // Negative control: the head alone, without its parts, is refused.
         let (mut staged, mut sent) = (Vec::new(), Vec::new());

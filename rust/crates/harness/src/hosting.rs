@@ -467,16 +467,6 @@ where
     }
 
     fn command_resource(&self, command: &AgentCommand) -> String {
-        // Append-message authority belongs to the sending session. Naming a
-        // peer as recipient never acquires control over its session directory.
-        let authority_agent = match command {
-            AgentCommand::PreparePeer { sender, .. }
-            | AgentCommand::Prompt {
-                peer: Some((sender, _)),
-                ..
-            } => Some(sender),
-            _ => command.agent(),
-        };
         if matches!(
             command,
             AgentCommand::Sessions {
@@ -496,7 +486,9 @@ where
                 | AgentCommand::SelectSession { .. }
                 | AgentCommand::LatestSession {}
         ) || matches!(command, AgentCommand::MergeSession { agent, .. } if agent.parent().is_none())
-            || authority_agent.is_some_and(|agent| !self.root.contains(agent))
+            || command
+                .authority_agent()
+                .is_some_and(|agent| !self.root.contains(agent))
         {
             self.session_resource()
         } else {

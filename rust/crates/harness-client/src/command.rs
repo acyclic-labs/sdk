@@ -858,6 +858,20 @@ impl AgentCommand {
 }
 
 impl AgentCommand {
+    /// Session whose authority and staging journal own this command. Peer
+    /// recipients remain append-only targets, never staging or control owners.
+    #[must_use]
+    pub const fn authority_agent(&self) -> Option<&AgentPath> {
+        match self {
+            Self::PreparePeer { sender, .. }
+            | Self::Prompt {
+                peer: Some((sender, _)),
+                ..
+            } => Some(sender),
+            _ => self.agent(),
+        }
+    }
+
     /// The agent this command acts on; discovery names none.
     #[must_use]
     pub const fn agent(&self) -> Option<&AgentPath> {
@@ -1042,7 +1056,10 @@ impl PreparedCommand {
             AgentCommand::Stage { .. } | AgentCommand::Staged { .. } => {
                 return Err(CommandError::Invalid);
             }
-            command => command.agent().ok_or(CommandError::Invalid)?.clone(),
+            command => command
+                .authority_agent()
+                .ok_or(CommandError::Invalid)?
+                .clone(),
         };
         let text = std::str::from_utf8(&bytes).map_err(|_| CommandError::Invalid)?;
         let digest = blake3::hash(&bytes).to_hex().to_string();
