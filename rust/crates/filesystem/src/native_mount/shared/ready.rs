@@ -33,6 +33,11 @@ impl<V> Default for ReadyViews<V> {
 }
 
 impl<V> ReadyViews<V> {
+    /// Updates work in its existing birth record without admitting a new one.
+    pub(crate) fn get_mut(&mut self, serial: u64) -> Option<&mut V> {
+        self.views.get_mut(&serial).map(|view| &mut view.value)
+    }
+
     /// Reserves the view's only queue record before publishing its wake hook.
     pub(crate) fn insert(&mut self, serial: u64, value: V) {
         let previous = self.views.insert(serial, View { value, ready: None });

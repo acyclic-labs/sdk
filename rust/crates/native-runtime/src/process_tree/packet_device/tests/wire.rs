@@ -17,6 +17,12 @@ fn request(opcode: u32, unique: u64, uid: u32, body: &[u8]) -> Vec<u8> {
 }
 
 fn host() -> io::Result<(UnixStream, PacketDeviceRetirement, UnixStream)> {
+    let (source, custody, kernel, writer) = host_with_writer()?;
+    drop(writer);
+    Ok((source, custody, kernel))
+}
+
+fn host_with_writer() -> io::Result<(UnixStream, PacketDeviceRetirement, UnixStream, File)> {
     let mut pair = [-1; 2];
     // SAFETY: pair owns writable descriptor slots; success transfers both.
     if unsafe {
@@ -46,7 +52,6 @@ fn host() -> io::Result<(UnixStream, PacketDeviceRetirement, UnixStream)> {
     runner::send_message(&helper, &[device.as_raw_fd()], &[1])?;
     admitted.wait_mounted()?;
     drop(helper);
-    drop(device);
     let (source, mut custody) = admitted.into_parts();
     let source = UnixStream::from(OwnedFd::from(source));
     source.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
@@ -66,7 +71,193 @@ fn host() -> io::Result<(UnixStream, PacketDeviceRetirement, UnixStream)> {
     let mut initialized = [0; 80];
     kernel.read_exact(&mut initialized)?;
     assert_eq!(&initialized[4..8], &0_i32.to_ne_bytes());
-    Ok((source, custody, kernel))
+    Ok((source, custody, kernel, File::from(device)))
+}
+
+#[test]
+fn full_request_window_keeps_unadmitted_packets_in_the_kernel()
+-> Result<(), Box<dyn std::error::Error>> {
+    if crate::private_file::with_isolated_user_runtime(
+        "process_tree::packet_device::tests::wire::full_request_window_keeps_unadmitted_packets_in_the_kernel",
+    )? {
+        return Ok(());
+    }
+    let (mut source, custody, mut kernel, device) = host_with_writer()?;
+    for unique in 2..66 {
+        let original = request(1, unique, unsafe { libc::geteuid() }, b"child\0");
+        kernel.write_all(&original)?;
+        let mut delivered = vec![0; original.len()];
+        source.read_exact(&mut delivered)?;
+        assert_eq!(delivered, original);
+    }
+    let parked = request(1, 66, unsafe { libc::geteuid() }, b"parked\0");
+    kernel.write_all(&parked)?;
+    let mut notification = [0; 40];
+    notification[..4].copy_from_slice(&40_u32.to_ne_bytes());
+    notification[4..8].copy_from_slice(&2_i32.to_ne_bytes());
+    notification[16..24].copy_from_slice(&1_u64.to_ne_bytes());
+    source.write_all(&notification)?;
+    let mut published = [0; 40];
+    kernel.read_exact(&mut published)?;
+    assert_eq!(published, notification);
+    assert_eq!(
+        custody.publication(true)?,
+        PacketDevicePublication::Published
+    );
+    // Notification completion is an event barrier after the host's progress
+    // pass. An uncredited packet must still belong to the physical endpoint,
+    // where closing the device can refuse it even if the backend dies.
+    let mut pending: libc::c_int = 0;
+    // SAFETY: pending is live writable storage for FIONREAD's integer result.
+    if unsafe { libc::ioctl(device.as_raw_fd(), libc::FIONREAD, &raw mut pending) } < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    assert_eq!(usize::try_from(pending)?, parked.len());
+    let mut reply = [0; OUTPUT_HEADER];
+    fuse_protocol::reply_header(&mut reply, OUTPUT_HEADER, 2, None)
+        .map_err(io::Error::from_raw_os_error)?;
+    source.write_all(&reply)?;
+    let mut published_reply = [0; OUTPUT_HEADER];
+    kernel.read_exact(&mut published_reply)?;
+    assert_eq!(published_reply, reply);
+    assert_eq!(
+        custody.publication(false)?,
+        PacketDevicePublication::Published
+    );
+    let mut delivered = vec![0; parked.len()];
+    source.read_exact(&mut delivered)?;
+    assert_eq!(delivered, parked);
+    Ok(())
+}
+
+#[test]
+fn notification_backpressure_does_not_stop_kernel_request_delivery()
+-> Result<(), Box<dyn std::error::Error>> {
+    if crate::private_file::with_isolated_user_runtime(
+        "process_tree::packet_device::tests::wire::notification_backpressure_does_not_stop_kernel_request_delivery",
+    )? {
+        return Ok(());
+    }
+    let (mut source, mut custody, mut kernel, mut writer) = host_with_writer()?;
+    struct Disconnect(UnixStream);
+    impl Drop for Disconnect {
+        fn drop(&mut self) {
+            let _ = self.0.shutdown(std::net::Shutdown::Both);
+        }
+    }
+    // Failed controls must wake the actual blocked physical writer before
+    // the original custody's destructor joins device retirement.
+    let _disconnect = Disconnect(kernel.try_clone()?);
+    rustix::fs::fcntl_setfl(
+        &writer,
+        rustix::fs::fcntl_getfl(&writer)? | rustix::fs::OFlags::NONBLOCK,
+    )?;
+    let filler = [0xa5; OUTPUT_HEADER];
+    let mut queued = 0;
+    loop {
+        match writer.write(&filler) {
+            Ok(length) => {
+                assert_eq!(length, filler.len());
+                queued += 1;
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    assert!(
+        queued > 0,
+        "the original physical endpoint must exhaust actual kernel credit"
+    );
+    drop(writer);
+    let mut notification = [0; 40];
+    notification[..4].copy_from_slice(&40_u32.to_ne_bytes());
+    notification[4..8].copy_from_slice(&2_i32.to_ne_bytes());
+    notification[16..24].copy_from_slice(&1_u64.to_ne_bytes());
+    source.write_all(&notification)?;
+    // The first progress pass may have read only the frame header. A second
+    // original kernel request must still be delivered after its full body
+    // makes publication wait for the physical endpoint's missing credit.
+    for unique in [2, 3] {
+        let original = request(1, unique, unsafe { libc::geteuid() }, b"child\0");
+        kernel.write_all(&original)?;
+        let mut delivered = vec![0; original.len()];
+        source.read_exact(&mut delivered)?;
+        assert_eq!(delivered, original);
+    }
+    // The second request is delivered only after notification admission. Stop
+    // while the original physical endpoint still has no write credit. Its
+    // borrowed descriptor and packet must survive until physical completion.
+    custody.request_stop()?;
+    for _ in 0..queued {
+        let mut physical = [0; OUTPUT_HEADER];
+        kernel.read_exact(&mut physical)?;
+        assert_eq!(physical, filler);
+    }
+    let mut notified = false;
+    loop {
+        let mut physical = [0; 40];
+        let length = kernel.read(&mut physical)?;
+        match length {
+            0 => break,
+            40 => {
+                assert!(!notified);
+                assert_eq!(physical, notification);
+                notified = true;
+            }
+            OUTPUT_HEADER => {
+                assert_eq!(&physical[4..8], &(-libc::EIO).to_ne_bytes());
+                assert!(matches!(
+                    u64::from_ne_bytes(physical[8..16].try_into()?),
+                    2 | 3
+                ));
+            }
+            _ => return Err("physical packet was split during retirement".into()),
+        }
+    }
+    assert!(
+        notified,
+        "retirement closed a device still borrowed by the notifier"
+    );
+    custody.retire()?;
+    Ok(())
+}
+
+#[test]
+fn reply_and_notification_receipts_keep_their_original_publication_class()
+-> Result<(), Box<dyn std::error::Error>> {
+    if crate::private_file::with_isolated_user_runtime(
+        "process_tree::packet_device::tests::wire::reply_and_notification_receipts_keep_their_original_publication_class",
+    )? {
+        return Ok(());
+    }
+    let (mut source, custody, mut kernel) = host()?;
+    let mut reply = [0; OUTPUT_HEADER];
+    fuse_protocol::reply_header(&mut reply, OUTPUT_HEADER, 2, None)
+        .map_err(io::Error::from_raw_os_error)?;
+    let mut notification = [0; 40];
+    notification[..4].copy_from_slice(&40_u32.to_ne_bytes());
+    notification[4..8].copy_from_slice(&2_i32.to_ne_bytes());
+    notification[16..24].copy_from_slice(&1_u64.to_ne_bytes());
+    source.write_all(&reply)?;
+    source.write_all(&notification)?;
+    let mut physical_reply = [0; OUTPUT_HEADER];
+    let mut physical_notification = [0; 40];
+    kernel.read_exact(&mut physical_reply)?;
+    kernel.read_exact(&mut physical_notification)?;
+    assert_eq!(physical_reply, reply);
+    assert_eq!(physical_notification, notification);
+    // The notification waiter consumes a reply receipt first, retaining it
+    // for its original producer rather than claiming socket acceptance.
+    assert_eq!(
+        custody.publication(true)?,
+        PacketDevicePublication::Published
+    );
+    assert_eq!(
+        custody.publication(false)?,
+        PacketDevicePublication::Published
+    );
+    Ok(())
 }
 
 #[test]
@@ -112,7 +303,10 @@ fn foreign_flush_uses_handle_authority_while_foreign_lookup_is_refused()
         .map_err(io::Error::from_raw_os_error)?;
     source.write_all(&reply)?;
     kernel.read_exact(&mut reply)?;
-    assert_eq!(custody.publication()?, PacketDevicePublication::Published);
+    assert_eq!(
+        custody.publication(false)?,
+        PacketDevicePublication::Published
+    );
     kernel.write_all(&request(1, 3, foreign, b"untrusted\0"))?;
     kernel.read_exact(&mut reply)?;
     assert_eq!(&reply[4..8], &(-libc::EACCES).to_ne_bytes());

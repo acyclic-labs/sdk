@@ -41,6 +41,25 @@ pub(super) struct PacketReply<'a> {
 }
 
 impl PacketReply<'_> {
+    pub(super) fn completion(&self) -> &PacketCompletion {
+        &self.completion
+    }
+
+    pub(super) fn core(&self) -> Option<&Arc<ProjectionCore>> {
+        self.completion.view_core().or(self.session.single_core())
+    }
+
+    /// Transfers only an ordinary operation; negotiation remains synchronous.
+    pub(super) fn take_completion(&mut self) -> Result<PacketCompletion, NativeMountError> {
+        if self.next_phase.is_some() {
+            return Err(libc::EPROTO.into());
+        }
+        self.pending = false;
+        Ok(std::mem::replace(
+            &mut self.completion,
+            PacketCompletion::no_reply(),
+        ))
+    }
     pub(super) fn length(&self) -> Option<usize> {
         self.completion.length
     }

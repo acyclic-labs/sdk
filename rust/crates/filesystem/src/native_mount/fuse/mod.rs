@@ -110,6 +110,7 @@ mod packet_buffers;
 mod packet_cache;
 mod packet_cancellation;
 use packet_cache::{ProjectionCache, ProjectionConfig};
+mod deferred_reply;
 mod packet_dispatch;
 mod packet_publication;
 mod packet_response;

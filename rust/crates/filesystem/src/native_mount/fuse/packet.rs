@@ -95,6 +95,7 @@ pub(super) struct PacketOutput<'a> {
     pub(super) payload: Option<FuseOwned<crate::kernel::OwnedSourceChunk>>,
     pub(super) complete: bool,
     pub(super) plus: bool,
+    pub(super) attributes_before_reply: bool,
 }
 
 impl<'a> PacketOutput<'a> {
@@ -116,6 +117,7 @@ impl<'a> PacketOutput<'a> {
             payload: None,
             complete: false,
             plus: false,
+            attributes_before_reply: false,
         })
     }
     pub(super) fn remaining(&self) -> usize {

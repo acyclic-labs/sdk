@@ -139,6 +139,7 @@ impl From<NativeMountError> for PacketFailure {
 /// Retains a shared view through the transport's physical reply publication.
 pub(super) struct PacketCompletion {
     pub(super) length: Option<usize>,
+    pub(super) attributes_before_reply: bool,
     pub(super) payload: Option<FuseOwned<crate::kernel::OwnedSourceChunk>>,
     _view: Option<crate::native_mount::shared::view_table::ViewLease<FuseProjection>>,
     _work: Option<crate::NativeMaterializationWork>,
@@ -162,6 +163,10 @@ impl Drop for PacketView {
 }
 
 impl PacketCompletion {
+    pub(super) fn work(&self) -> Option<&crate::NativeMaterializationWork> {
+        self._work.as_ref()
+    }
+
     pub(super) fn view_core(&self) -> Option<&Arc<ProjectionCore>> {
         self._view.as_ref().map(|view| &view.core)
     }
@@ -234,6 +239,7 @@ impl PacketCompletion {
     pub(super) fn reply(length: usize) -> Self {
         Self {
             length: Some(length),
+            attributes_before_reply: false,
             payload: None,
             _view: None,
             _work: None,
@@ -243,6 +249,7 @@ impl PacketCompletion {
     pub(super) fn no_reply() -> Self {
         Self {
             length: None,
+            attributes_before_reply: false,
             payload: None,
             _view: None,
             _work: None,
@@ -258,6 +265,7 @@ impl PacketCompletion {
     }
 
     fn retaining_payload(mut self, output: &mut PacketOutput<'_>) -> Self {
+        self.attributes_before_reply = output.attributes_before_reply;
         self.payload = output.payload.take();
         self
     }
@@ -581,12 +589,13 @@ impl FuseProjection {
                 if open_flags != 0 {
                     return Err(libc::EOPNOTSUPP.into());
                 }
-                let (handle, flags) = if request.opcode == 27 {
-                    (0, self.open_directory(inode, work)?)
+                let (handle, flags, attributes_before_reply) = if request.opcode == 27 {
+                    (0, self.open_directory(inode, work)?, false)
                 } else {
                     let _names = self.core.names()?;
                     self.open_node(inode, flags as i32, work)?
                 };
+                output.attributes_before_reply = attributes_before_reply;
                 output.opened(handle, flags)?;
             }
             18 | 25 | 29 => {

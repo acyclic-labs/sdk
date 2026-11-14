@@ -9,6 +9,107 @@ loom::thread_local! {
     static OMIT_TERMINAL_NOTIFY: Cell<bool> = Cell::new(false);
     static INVALIDATOR_WAIT: RefCell<Option<(mpsc::Sender<()>, u8)>> = RefCell::new(None);
     static WAITER_WAIT: RefCell<Option<mpsc::Sender<()>>> = RefCell::new(None);
+    static AFTER_GUARD_DROP: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+}
+
+pub(in crate::native_mount::fuse) fn after_guard_drop() {
+    AFTER_GUARD_DROP.with(|hook| {
+        let hook = hook.borrow_mut().take();
+        if let Some(hook) = hook {
+            hook();
+        }
+    });
+}
+
+#[test]
+fn a_request_replies_while_reverse_invalidation_waits_for_its_kernel_lock() {
+    crate::initialize_test_native_io();
+    let exercise = |inline, attributes| {
+        loom::model(move || {
+            let (core, work) = super::super::tests::model_checking::fixture();
+            let keeper = ManuallyDrop::new((Arc::clone(&core), work.clone()));
+            let (replied, reply) = mpsc::channel();
+            let reply = Arc::new(crate::sync::Mutex::new(reply));
+            let delivered = Arc::new(crate::sync::atomic::AtomicBool::new(false));
+            struct KernelLock {
+                reply: Arc<crate::sync::Mutex<mpsc::Receiver<()>>>,
+                delivered: Arc<crate::sync::atomic::AtomicBool>,
+                core: Arc<ProjectionCore>,
+            }
+            impl KernelLock {
+                fn invalidate(&self) -> std::io::Result<()> {
+                    // The kernel releases its inode lock only after the
+                    // original userspace request has published its reply.
+                    self.reply.lock().unwrap().recv().unwrap();
+                    self.delivered.store(true, Ordering::Release);
+                    self.core.stop();
+                    Ok(())
+                }
+            }
+            impl KernelCacheNotifier for KernelLock {
+                fn inval_attributes(&self, inode: u64) -> std::io::Result<()> {
+                    assert_eq!(inode, 10);
+                    self.invalidate()
+                }
+                fn inval_inode(&self, _: u64) -> std::io::Result<()> {
+                    unreachable!("this request never invalidates inode data")
+                }
+                fn inval_entry(&self, parent: u64, name: &[u8]) -> std::io::Result<()> {
+                    assert_eq!(parent, ROOT_INODE);
+                    assert_eq!(name, b"child");
+                    self.invalidate()
+                }
+            }
+            let notifier = loom::thread::spawn({
+                let core = Arc::clone(&core);
+                let delivered = Arc::clone(&delivered);
+                let reply = Arc::clone(&reply);
+                move || {
+                    run_invalidator(
+                        &core,
+                        &KernelLock {
+                            reply,
+                            delivered,
+                            core: Arc::clone(&core),
+                        },
+                    )
+                }
+            });
+            let mut state = core.state().unwrap();
+            if attributes {
+                state.invalidate_attributes(10, &work).unwrap();
+            } else {
+                state.reserve_invalidations(1, &work).unwrap();
+                state.invalidation.deferred.push(KernelCacheItem::Entry {
+                    parent: ROOT_INODE,
+                    name: fuse_copy_bytes(b"child", &work).unwrap(),
+                });
+            }
+            if inline {
+                // Negative control restores the former synchronous device
+                // wait at the actual production request-guard drop boundary.
+                AFTER_GUARD_DROP.with(|hook| {
+                    *hook.borrow_mut() = Some(Box::new(move || {
+                        reply.lock().unwrap().recv().unwrap();
+                    }))
+                });
+            }
+            drop(state);
+            replied.send(()).unwrap();
+            notifier.join().unwrap();
+            assert!(delivered.load(Ordering::Acquire));
+            drop(ManuallyDrop::into_inner(keeper));
+        });
+    };
+    for attributes in [false, true] {
+        exercise(false, attributes);
+        let error = catch_unwind(AssertUnwindSafe(|| exercise(true, attributes)))
+            .expect_err("inline invalidation must deadlock behind the request's kernel lock");
+        let message = error
+            .downcast_ref::<String>()
+            .expect("Loom deadlock message");
+        assert!(message.contains("deadlock"), "{message}");
+    }
 }
 
 pub(in crate::native_mount::fuse) fn omit_guard_notification() -> bool {
@@ -87,6 +188,9 @@ fn callback_failure_wakes_the_original_invalidation_waiter() {
 }
 
 impl KernelCacheNotifier for RefusesFirst {
+    fn inval_attributes(&self, inode: u64) -> std::io::Result<()> {
+        self.inval_inode(inode)
+    }
     fn inval_inode(&self, inode: u64) -> std::io::Result<()> {
         let refused = self.sent.borrow().is_empty();
         self.sent.borrow_mut().push((inode, !refused));
@@ -188,6 +292,9 @@ fn a_waiter_finishes_before_notifications_admitted_after_its_cut() {
                     work: &'a Work,
                 }
                 impl KernelCacheNotifier for AddsLater<'_> {
+                    fn inval_attributes(&self, inode: u64) -> std::io::Result<()> {
+                        self.inval_inode(inode)
+                    }
                     fn inval_inode(&self, inode: u64) -> std::io::Result<()> {
                         assert_eq!(inode, 10);
                         let mut state = self.core.state_to_finish();

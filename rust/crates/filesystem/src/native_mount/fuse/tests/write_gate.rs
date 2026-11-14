@@ -108,7 +108,7 @@ fn write_pauses_follow_their_projection_and_end_on_producer_loss()
             .attr
             .ino
             .0;
-        let (handle, _) = projection.open_node(inode, libc::O_RDWR, &work)?;
+        let (handle, _, _) = projection.open_node(inode, libc::O_RDWR, &work)?;
         projections.push((projection, inode, handle));
     }
     std::thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {

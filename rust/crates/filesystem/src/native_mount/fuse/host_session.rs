@@ -173,7 +173,7 @@ impl HostSession {
         };
         let packet = input.get(..length).ok_or(libc::EPROTO)?;
         let request = PacketRequest::parse(packet)?;
-        let mut pending = PendingReply::new(&self.io, self.io.connection.get(), &request);
+        let pending = PendingReply::new(&self.io, &request);
         #[cfg(test)]
         let sequence = self.capture.as_ref().map(|capture| capture.begin());
         let publish = |reply: PacketResponse<'_>| {
@@ -202,10 +202,21 @@ impl HostSession {
                 .map(|()| true);
         }
         let output = PacketBuffers::output_for(&mut buffers.output, &request, capacity)?;
-        match self
-            .protocol
-            .publish_with_outcome(&request, output, publish)
-        {
+        match self.protocol.publish_or_defer_with_outcome(
+            &request,
+            output,
+            publish,
+            |reply, response| {
+                super::deferred_reply::DeferredReply::enqueue(
+                    reply,
+                    packet,
+                    response,
+                    pending.transfer(),
+                    #[cfg(test)]
+                    self.capture.as_ref().cloned().zip(sequence),
+                )
+            },
+        ) {
             // The negative reply physically completed. Its actual typed cause
             // remains in the original core. Continue serving refusals while
             // the existing retirement owner unmounts this kernel connection;
@@ -234,7 +245,7 @@ impl Drop for HostSession {
         self.io.stop();
         self.protocol.close();
         // Every reader has exited: `run` joins them before the session drops.
-        if let Some(connection) = self.io.connection.get()
+        if let Some(connection) = self.io.as_ref().connection.get()
             && let Err(error) = connection.abort()
         {
             tracing::error!(%error, "aborting an unserved FUSE connection failed");
@@ -256,34 +267,31 @@ impl Drop for HandshakeStop<'_> {
 /// Own the kernel's reply obligation before buffer preparation or dispatch.
 /// PacketReply only exists after dispatch; protocol closure alone cannot finish
 /// a received request while another worker or notifier retains the device.
-struct PendingReply<'a> {
-    io: &'a HostIo,
-    connection: Option<&'a Connection>,
-    unique: Option<u64>,
+pub(super) struct PendingReply<I: AsRef<HostIo>> {
+    io: I,
+    unique: std::cell::Cell<Option<u64>>,
 }
 
-impl<'a> PendingReply<'a> {
-    fn new(
-        io: &'a HostIo,
-        connection: Option<&'a Connection>,
-        request: &PacketRequest<'_>,
-    ) -> Self {
+impl<I: AsRef<HostIo>> PendingReply<I> {
+    fn new(io: I, request: &PacketRequest<'_>) -> Self {
         Self {
             io,
-            connection,
-            unique: (!matches!(request.opcode, 2 | 42)).then_some(request.unique),
+            unique: std::cell::Cell::new(
+                (!matches!(request.opcode, 2 | 42)).then_some(request.unique),
+            ),
         }
     }
 
-    fn publish(
-        &mut self,
+    pub(super) fn publish(
+        &self,
         slices: &[std::io::IoSlice<'_>],
     ) -> std::io::Result<acyclic_native_runtime::PacketDevicePublication> {
         // ENOENT confirms that this request is already gone (for example,
         // interrupted). It completes this obligation without disconnecting
         // unrelated requests. Other failures do not certify request retirement.
-        self.unique = None;
+        self.unique.set(None);
         self.io
+            .as_ref()
             .publish_packet(slices)
             .and_then(|outcome| match outcome {
                 acyclic_native_runtime::PacketDevicePublication::Published
@@ -297,8 +305,12 @@ impl<'a> PendingReply<'a> {
             .inspect_err(|_| self.abort())
     }
 
+    pub(super) fn owes_reply(&self) -> bool {
+        self.unique.get().is_some()
+    }
+
     fn abort(&self) {
-        if let Some(connection) = self.connection
+        if let Some(connection) = self.io.as_ref().connection.get()
             && let Err(error) = connection.abort()
         {
             tracing::error!(%error, "aborting a failed FUSE reply failed");
@@ -306,7 +318,15 @@ impl<'a> PendingReply<'a> {
     }
 }
 
-impl Drop for PendingReply<'_> {
+impl PendingReply<&Arc<HostIo>> {
+    fn transfer(&self) -> PendingReply<Arc<HostIo>> {
+        PendingReply {
+            io: Arc::clone(self.io),
+            unique: std::cell::Cell::new(self.unique.take()),
+        }
+    }
+}
+impl<I: AsRef<HostIo>> Drop for PendingReply<I> {
     fn drop(&mut self) {
         if let Some(unique) = self.unique.take() {
             let mut error = [0; super::packet::OUTPUT_HEADER];
@@ -321,13 +341,13 @@ impl Drop for PendingReply<'_> {
 /// Exercise the real pending-reply publisher with a kernel-expired identity.
 #[cfg(test)]
 pub(super) fn publish_expired_packet_for_test(
-    io: &HostIo,
+    io: &Arc<HostIo>,
     protocol: &PacketSession,
     request: &PacketRequest<'_>,
     response: &mut [u8],
     old_delivery: bool,
 ) -> Result<(), NativeMountError> {
-    let mut pending = PendingReply::new(io, io.connection.get(), request);
+    let pending = PendingReply::new(io, request);
     protocol
         .publish_with_outcome(request, response, |reply| {
             let slices = reply.slices().ok_or(libc::EPROTO)?;
@@ -349,7 +369,10 @@ pub(super) fn publish_expired_packet_for_test(
 
 /// Exercise the real pending-reply publisher with a kernel-expired identity.
 #[cfg(test)]
-pub(super) fn publish_expired_reply_for_test(io: &HostIo, old_abort: bool) -> std::io::Result<()> {
+pub(super) fn publish_expired_reply_for_test(
+    io: &Arc<HostIo>,
+    old_abort: bool,
+) -> std::io::Result<()> {
     let mut input = [0; acyclic_native_runtime::fuse_protocol::INPUT_HEADER];
     let length = u32::try_from(input.len()).map_err(std::io::Error::other)?;
     input[..4].copy_from_slice(&length.to_ne_bytes());
@@ -357,7 +380,7 @@ pub(super) fn publish_expired_reply_for_test(io: &HostIo, old_abort: bool) -> st
     input[8..16].copy_from_slice(&u64::MAX.to_ne_bytes());
     input[16..24].copy_from_slice(&ROOT_INODE.to_ne_bytes());
     let request = PacketRequest::parse(&input).map_err(std::io::Error::from_raw_os_error)?;
-    let mut pending = PendingReply::new(io, io.connection.get(), &request);
+    let pending = PendingReply::new(io, &request);
     let mut reply = [0; super::packet::OUTPUT_HEADER];
     acyclic_native_runtime::fuse_protocol::reply_header(
         &mut reply,
@@ -370,7 +393,7 @@ pub(super) fn publish_expired_reply_for_test(io: &HostIo, old_abort: bool) -> st
     if old_abort {
         // Exact former policy: a confirmed device rejection is flattened to
         // an I/O error, aborts the connection, and escapes to worker teardown.
-        pending.unique = None;
+        pending.unique.set(None);
         io.publish(&slices).inspect_err(|_| pending.abort())
     } else {
         pending.publish(&slices).map(|_| ())
@@ -391,7 +414,7 @@ fn owner_allowed(owner_uid: u32, request: &PacketRequest<'_>) -> bool {
 
 fn source_protocol(
     router: PacketRouter,
-    io: &HostIo,
+    io: &Arc<HostIo>,
     maximum_write: u32,
     page_size: std::num::NonZeroU32,
     _buffers: &PacketBufferPool<PacketBuffers>,

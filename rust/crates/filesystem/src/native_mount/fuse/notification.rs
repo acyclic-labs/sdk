@@ -31,6 +31,9 @@ impl CacheNotifier {
 }
 
 impl KernelCacheNotifier for CacheNotifier {
+    fn inval_attributes(&self, inode: u64) -> io::Result<()> {
+        self.inode(inode, -1)
+    }
     fn inval_inode(&self, inode: u64) -> io::Result<()> {
         self.inode(inode, 0)
     }

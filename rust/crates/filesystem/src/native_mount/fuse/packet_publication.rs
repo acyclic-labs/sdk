@@ -29,8 +29,24 @@ impl PacketSession {
         response: &mut [u8],
         publish: impl FnOnce(PacketResponse<'_>) -> Result<PacketDevicePublication, NativeMountError>,
     ) -> Result<bool, PacketFailure> {
+        self.publish_or_defer_with_outcome(request, response, publish, |_, _| Ok(false))
+    }
+
+    pub(super) fn publish_or_defer_with_outcome(
+        &self,
+        request: &PacketRequest<'_>,
+        response: &mut [u8],
+        publish: impl FnOnce(PacketResponse<'_>) -> Result<PacketDevicePublication, NativeMountError>,
+        defer: impl FnOnce(
+            &mut super::packet_session::PacketReply<'_>,
+            &[u8],
+        ) -> Result<bool, NativeMountError>,
+    ) -> Result<bool, PacketFailure> {
         match self.dispatch(request, response) {
-            Ok(reply) => {
+            Ok(mut reply) => {
+                if reply.completion().attributes_before_reply && defer(&mut reply, response)? {
+                    return Ok(true);
+                }
                 // On failure the pending reply closes the session before its
                 // original work and projection leases can be released.
                 let outcome = publish(PacketResponse::new(

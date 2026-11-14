@@ -4,6 +4,10 @@
 
 use core::ffi::{CStr, c_char};
 
+#[path = "sys/thread.rs"]
+mod thread;
+pub(crate) use thread::{Thread, exit_thread};
+
 pub type Fd = i32;
 pub type Pid = i32;
 
@@ -15,6 +19,7 @@ pub struct Errno(pub i32);
 pub const EPERM: i32 = 1;
 pub const ENOENT: i32 = 2;
 pub const EINTR: i32 = 4;
+pub const EIO: i32 = 5;
 pub const ENOMEM: i32 = 12;
 pub const EACCES: i32 = 13;
 pub const ENODEV: i32 = 19;

@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
 #[cfg(test)]
 thread_local! {
     static SOCKET_COMPLETION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static BEFORE_RECEIPT: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+    pub(super) static BEFORE_RECEIPT: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -84,6 +84,8 @@ pub(super) struct HostIo {
     custody: RwLock<Option<(PacketDeviceRetirement, crate::NativeAllocation)>>,
     pub(super) maximum_write: u32,
     publication: Mutex<()>,
+    reply_publication: Mutex<()>,
+    notification_publication: Mutex<()>,
     pub(super) framed: bool,
     wake: ProcessWake,
     // Readiness is advisory. One owner keeps this queue's claim through the
@@ -159,6 +161,8 @@ impl HostIo {
             custody: RwLock::new(custody),
             maximum_write,
             publication: Mutex::new(()),
+            reply_publication: Mutex::new(()),
+            notification_publication: Mutex::new(()),
             wake,
             receiver: Mutex::new(Some(receiver)),
             #[cfg(test)]
@@ -254,7 +258,7 @@ impl HostIo {
             })
     }
 
-    fn publication(&self) -> io::Result<PacketDevicePublication> {
+    fn publication(&self, notification: bool) -> io::Result<PacketDevicePublication> {
         #[cfg(test)]
         if SOCKET_COMPLETION.get() {
             return Ok(PacketDevicePublication::Published);
@@ -265,7 +269,7 @@ impl HostIo {
             if let Some(probe) = BEFORE_RECEIPT.with_borrow_mut(Option::take) {
                 probe();
             }
-            custody.publication()
+            custody.publication(notification)
         } else if self.framed {
             Err(io::Error::from_raw_os_error(libc::ENODEV))
         } else {
@@ -366,17 +370,35 @@ impl HostIo {
         &self,
         packet: &[IoSlice<'_>],
     ) -> io::Result<PacketDevicePublication> {
-        // Stream writes may split a frame; retain its one publication claim
-        // until every slice is sent, without interleaving another response.
-        let _publication = self
-            .publication
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
         let total = packet.iter().try_fold(0_usize, |length, part| {
             length
                 .checked_add(part.len())
                 .ok_or_else(|| io::Error::from_raw_os_error(libc::EOVERFLOW))
         })?;
+        let notification = total >= 16
+            && packet
+                .iter()
+                .flat_map(|part| part.iter())
+                .skip(8)
+                .take(8)
+                .all(|byte| *byte == 0);
+        // A reply must not wait behind a notification's physical receipt: the
+        // notification may itself await the kernel inode lock held by that
+        // reply's caller. Keep each class's original physical receipt claim.
+        let _completion = if notification {
+            &self.notification_publication
+        } else {
+            &self.reply_publication
+        }
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+        // Only frame bytes share a serialization claim. Release it before
+        // joining physical publication so the other class can send its frame.
+        let mut publication = self.framed.then(|| {
+            self.publication
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+        });
         let mut sent = 0;
         loop {
             if self.wake.is_stopped() {
@@ -406,7 +428,10 @@ impl HostIo {
                 }
             };
             match result {
-                Ok(length) if sent + length == total => return self.publication(),
+                Ok(length) if sent + length == total => {
+                    drop(publication.take());
+                    return self.publication(notification);
+                }
                 Ok(length) if self.framed && length > 0 => {
                     sent += length;
                 }
@@ -452,7 +477,8 @@ impl std::task::Wake for HostIo {
 }
 
 /// Fund the external packet owner before handing it a physical device.
-/// One additional buffer pair participates in the same negotiation as the
+/// The host's request/reply pair and independent notification storage
+/// participate in the same negotiation as the
 /// callback workers; it cannot silently exceed the caller's original budget.
 pub(super) struct FundedDevice {
     pub(super) capacity: u32,
@@ -464,7 +490,7 @@ pub(super) fn fund_device(
     work: &crate::NativeMaterializationWork,
 ) -> Result<FundedDevice, super::NativeMountError> {
     let workers =
-        std::num::NonZeroU32::new(crate::native_mount::CALLBACK_THREADS + 1).ok_or(libc::EINVAL)?;
+        std::num::NonZeroU32::new(crate::native_mount::CALLBACK_THREADS + 2).ok_or(libc::EINVAL)?;
     // SAFETY: sysconf takes no pointer arguments.
     let page =
         u32::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).map_err(|_| libc::EOVERFLOW)?;
@@ -472,7 +498,7 @@ pub(super) fn fund_device(
     let maximum_write = super::packet_buffers::maximum_write(work, workers, page)?;
     let capacity = maximum_write.checked_add(4096).ok_or(libc::EOVERFLOW)?;
     let bytes = acyclic_native_runtime::PacketDevice::storage_bytes(capacity)?;
-    let allocation = work.claim(bytes, 3, crate::WorkCounters::UNCHARGED)?;
+    let allocation = work.claim(bytes, 4, crate::WorkCounters::UNCHARGED)?;
     Ok(FundedDevice {
         capacity,
         maximum_write,
