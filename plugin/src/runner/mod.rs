@@ -211,8 +211,18 @@ async fn execute(
                 )
             })?;
             if output.available() {
-                headless::terminal_error(output, operation, &error.to_string(), step, &recovery)
-                    .await?;
+                let code = error
+                    .downcast_ref::<acyclic_harness::Error>()
+                    .map(acyclic_harness::Error::kind);
+                headless::terminal_error(
+                    output,
+                    operation,
+                    &error.to_string(),
+                    code,
+                    step,
+                    &recovery,
+                )
+                .await?;
             }
         }
         result
