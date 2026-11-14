@@ -188,6 +188,52 @@ async fn exact_capture_inherits_nested_ignore_rules_with_local_negation() {
 }
 
 #[tokio::test]
+async fn empty_and_directory_only_diffs_do_not_load_tracking() {
+    let workspace = memory_workspace("diff-without-policy-read").await;
+    let before = unbounded!(workspace, head()).expect("baseline");
+    let mut transaction = begin_fixture(&workspace, IdempotencyKey::new()).await;
+    unbounded!(transaction, create_dir_all("/empty/nested")).expect("directories");
+    publish_fixture(transaction).await;
+    let directories = unbounded!(workspace, head()).expect("directory generation");
+    let policy = GitIgnorePolicy::default();
+    let cancellation = CancellationToken::new();
+    for after in [&before, &directories] {
+        let diff = git_compatible_diff_with_tracking(
+            &before,
+            after,
+            &policy,
+            || std::future::ready(Err::<BTreeSet<String>, _>(GitCaptureError::Conflict)),
+            None,
+            &cancellation,
+        )
+        .await
+        .expect("no file endpoint needs tracking metadata");
+        assert_eq!(diff, GitDiff::default());
+    }
+    let mut transaction = begin_fixture(&workspace, IdempotencyKey::new()).await;
+    transaction
+        .write_text("/empty/nested/file.txt", "content")
+        .await
+        .expect("file endpoint");
+    publish_fixture(transaction).await;
+    let changed = unbounded!(workspace, head()).expect("file generation");
+    // A nonempty file frontier must preserve the original loader refusal,
+    // rather than treating unavailable tracking policy as an empty set.
+    assert!(matches!(
+        git_compatible_diff_with_tracking(
+            &before,
+            &changed,
+            &policy,
+            || std::future::ready(Err::<BTreeSet<String>, _>(GitCaptureError::Conflict)),
+            None,
+            &cancellation,
+        )
+        .await,
+        Err(GitCaptureError::Conflict)
+    ));
+}
+
+#[tokio::test]
 async fn diff_uses_nested_ignores_without_creating_a_capture_workspace() {
     let workspace = memory_workspace("git-diff-policy").await;
     let before = unbounded!(workspace, head()).expect("baseline");

@@ -10,8 +10,8 @@ use acyclic_fs::{
     OperationWindowCoordinator, OperationWindowLease, PublicationPermit, TransactionCommit,
     WorkBudget, Workspace as FsWorkspace, WorkspaceError, WorkspaceGraph, WorkspacePathApply,
     apply_git_patch, blame_git_generations, capture_git_compatible_generation,
-    capture_git_compatible_generation_incremental, git_compatible_diff, git_restore_paths,
-    grep_git_generation, walk_git_tree,
+    capture_git_compatible_generation_incremental, git_compatible_diff,
+    git_compatible_diff_with_tracking, git_restore_paths, grep_git_generation, walk_git_tree,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_fs::{LazyWorkspace, LocalAuthorityBackend, LocalCoreStateStore, LocalObjectBackend};

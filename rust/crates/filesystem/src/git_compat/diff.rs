@@ -81,24 +81,68 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    git_compatible_diff_with_tracking(
+        from,
+        to,
+        repository,
+        || std::future::ready(Ok(already_tracked)),
+        maximum_changes,
+        cancellation,
+    )
+    .await
+}
+
+/// Compares exact generations, loading tracked-path policy only when their
+/// changed frontier contains a file endpoint. Empty and directory-only changes
+/// need neither the repository's tracked-path set nor its ignore policies.
+/// The loader can retain its original provider error and return borrowed data.
+pub async fn git_compatible_diff_with_tracking<A, O, F, Fut, T, E>(
+    from: &Generation<A, O>,
+    to: &Generation<A, O>,
+    repository: &GitIgnorePolicy,
+    tracking: F,
+    maximum_changes: impl Into<Option<u32>>,
+    cancellation: &CancellationToken,
+) -> Result<GitDiff, E>
+where
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+    T: std::borrow::Borrow<BTreeSet<String>>,
+    E: From<GitCaptureError>,
+{
     let maximum_changes = maximum_changes.into();
     let diff = from
         .diff_to(to, maximum_changes, WorkBudget::UNBOUNDED, cancellation)
         .await
         .map(|receipt| receipt.value.0)
-        .map_err(|failure| failure.error)?;
+        .map_err(|failure| GitCaptureError::from(failure.error))?;
     let paths = diff
         .changed_paths(maximum_changes, WorkBudget::UNBOUNDED, cancellation)
         .await
         .map(|receipt| receipt.value.0)
-        .map_err(|failure| failure.error)?;
+        .map_err(|failure| GitCaptureError::from(failure.error))?;
+    if !paths.iter().any(|change| {
+        [change.before, change.after]
+            .into_iter()
+            .flatten()
+            .any(|record| record.kind != FileKind::Directory)
+    }) {
+        return Ok(GitDiff::default());
+    }
+    let tracked = tracking().await?;
+    let already_tracked = std::borrow::Borrow::<BTreeSet<String>>::borrow(&tracked);
     let mut before = (BTreeMap::new(), None);
     let mut after = (BTreeMap::new(), None);
     let mut files = BTreeSet::new();
     let mut bindings = 0_usize;
     let mut changed_paths = Vec::new();
     for change in paths {
-        cancellation.check().map_err(WorkspaceError::from)?;
+        cancellation
+            .check()
+            .map_err(WorkspaceError::from)
+            .map_err(GitCaptureError::from)?;
         let path = portable_changed_path(&change.path)?;
         // Git tracks file endpoints, not directory identities. A kind change
         // therefore adds or deletes a file rather than modifying a directory.

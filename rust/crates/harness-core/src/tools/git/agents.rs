@@ -28,13 +28,18 @@ where
                 },
             )
             .await?;
-        let tracked_paths = GitCompatRepository::new(self.repository_id, self.store.clone())
-            .tracked_paths()
-            .await
-            .map_err(super::errors::compat_error::<S>)?
-            .union(&target.tracked_paths)
-            .cloned()
-            .collect();
+        // Both comparisons share the one owned policy set, but an empty
+        // changed frontier must never load the repository-wide path catalog.
+        let tracked_paths = tokio::sync::OnceCell::new();
+        let tracking = || {
+            tracked_paths.get_or_try_init(|| async {
+                let paths = GitCompatRepository::new(self.repository_id, self.store.clone())
+                    .tracked_paths()
+                    .await
+                    .map_err(super::errors::compat_error::<S>)?;
+                Ok::<BTreeSet<String>, Error>(paths.union(&target.tracked_paths).cloned().collect())
+            })
+        };
         let child = self.generation(target_tree).await?;
         let parent = self.generation(parent_tree).await?;
         let cancellation = CancellationToken::new();
@@ -78,11 +83,11 @@ where
             }
         }
         self.validate_lease().await?;
-        let diff = git_compatible_diff(
+        let diff = git_compatible_diff_with_tracking(
             &base,
             &child,
             &self.repository,
-            &tracked_paths,
+            &tracking,
             None,
             &cancellation,
         )
@@ -95,11 +100,11 @@ where
             "bindingChanges": diff.counts.binding_changes,
         });
         if !stat {
-            let parent_diff = git_compatible_diff(
+            let parent_diff = git_compatible_diff_with_tracking(
                 &base,
                 &parent,
                 &self.repository,
-                &tracked_paths,
+                &tracking,
                 None,
                 &cancellation,
             )
