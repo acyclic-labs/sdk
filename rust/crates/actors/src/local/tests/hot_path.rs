@@ -322,7 +322,7 @@ async fn publication_and_reopen() -> TestResult {
                     records: vec![Bytes::from_static(b"forged").into()],
                 }]
             )),
-            Err(Error::Invalid("effect changes the host's actor journal"))
+            Err(Error::Invalid("effect changes the host's control records"))
         ));
         let snapshot = store
             .submit_retained(prepared)
