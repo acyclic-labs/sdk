@@ -18,6 +18,34 @@ where
     P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
+    pub(super) async fn view_host(
+        &self,
+        agent: &AgentPath,
+        volume: &crate::conversation::VolumeRef,
+    ) -> Result<Arc<Host<P, O>>, Error> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if volume.class() == crate::conversation::VolumeClass::AgentPrivate
+            && volume.owner()
+                == &crate::conversation::VolumeOwner::Agent(crate::AgentId::from_bytes(
+                    agent.id_bytes(),
+                ))
+        {
+            return self
+                .volumes
+                .for_agent_views(
+                    self.agents.provider().clone(),
+                    agent,
+                    volume,
+                    self.input_content(agent, self.maximum_bytes).await?.reader,
+                )
+                .await
+                .map_err(turn);
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = (agent, volume);
+        Ok(Arc::clone(&self.volumes))
+    }
+
     async fn directory_binding(
         &self,
         agent: &AgentPath,
@@ -88,8 +116,8 @@ where
         range: acyclic_fs::ByteRange,
     ) -> Result<(acyclic_stream::OwnedBytes, u64), Error> {
         let binding = self.directory_binding(agent, target, path).await?;
-        let (bytes, _selected, length) = self
-            .volumes
+        let host = self.view_host(agent, &binding.volume).await?;
+        let (bytes, _selected, length) = host
             .read_private_range(
                 &binding.volume,
                 &binding.grant,
@@ -137,8 +165,8 @@ where
             maximum_entries: query.maximum_entries,
             ceiling: Some(binding.scope.capabilities()),
         };
-        let page = self
-            .volumes
+        let host = self.view_host(agent, &binding.volume).await?;
+        let page = host
             .list_private_directory_with_credit(
                 &binding.volume,
                 &binding.grant,

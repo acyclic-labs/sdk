@@ -100,10 +100,30 @@ pub(in crate::filesystem) async fn binding_with(
 }
 
 #[tokio::test]
-async fn admitted_readers_bind_evaluation_directories_and_reopen_original_private_cuts()
--> TestResult {
+async fn admitted_readers_share_computed_views_and_reopen_original_private_cuts() -> TestResult {
     use crate::{client_files::ClientFileChange, conversation::ContentAccess};
     let (bound, root) = binding().await?;
+    let publish_status = |path: &str| -> TestResult<Vec<u8>> {
+        Ok(crate::agent::StatusRecord {
+            cancelled_input: None,
+            phase: Phase::WaitingUser { path: path.into() },
+            cursor: 0,
+            conversation: 0,
+            child_settlement: None,
+            child_wakes: None,
+        }
+        .encode()?)
+    };
+    bound
+        .agents()
+        .provider()
+        .append(acyclic_stream::AppendRequest {
+            path: root.status()?,
+            records: vec![publish_status("original.md")?.into()],
+            if_tail: None,
+            idempotency_key: acyclic_stream::IdempotencyKey::unique(),
+        })
+        .await?;
     bound
         .publish_agent_files(
             &root,
@@ -118,7 +138,7 @@ async fn admitted_readers_bind_evaluation_directories_and_reopen_original_privat
     let state = bound.agents().state(&root).await?;
     let volume = state.volumes[0].volume()?;
     let reader = bound.content_reader(&root).await?;
-    let (cut, page) = reader
+    let page = reader
         .list_private_directory(
             volume,
             "",
@@ -132,9 +152,20 @@ async fn admitted_readers_bind_evaluation_directories_and_reopen_original_privat
         )
         .await?
         .ok_or("production evaluation route is absent")?;
+    let cut = page.generation.clone();
     assert_eq!(cut.as_resource().version(), Some("lazy-v1"));
     assert!(page.entries.is_empty(), "an unsettled agent has no cases");
     assert!(page.next.is_none());
+    bound
+        .agents()
+        .provider()
+        .append(acyclic_stream::AppendRequest {
+            path: root.status()?,
+            records: vec![publish_status("later.md")?.into()],
+            if_tail: None,
+            idempotency_key: acyclic_stream::IdempotencyKey::unique(),
+        })
+        .await?;
     bound
         .publish_agent_files(
             &root,
@@ -161,6 +192,57 @@ async fn admitted_readers_bind_evaluation_directories_and_reopen_original_privat
         )?
         .await?;
     assert_eq!(bytes.as_ref(), b"original authored title");
+    let range = acyclic_fs::ByteRange {
+        offset: 0,
+        length: 4096,
+    };
+    let (_, frozen, _) = reopened
+        .read_private_range(
+            volume,
+            "",
+            "ui/status.md",
+            Some(&cut),
+            range,
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert!(std::str::from_utf8(frozen.as_ref())?.contains("original.md"));
+    let (_, live, _) = reopened
+        .read_private_range(
+            volume,
+            "",
+            "ui/status.md",
+            None,
+            range,
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert!(std::str::from_utf8(live.as_ref())?.contains("later.md"));
+    let (same, _) = bound
+        .read_path(
+            &root,
+            crate::conversation::DirectoryTarget::Private {},
+            "ui/status.md",
+            &cut,
+            range,
+        )
+        .await?;
+    assert_eq!(same.as_ref(), frozen.as_ref());
+    let names = bound
+        .directory_page(
+            &root,
+            crate::conversation::DirectoryQuery {
+                target: crate::conversation::DirectoryTarget::Private {},
+                path: "ui",
+                generation: Some(&cut),
+                after_generation: None,
+                after: None,
+                maximum_entries: 32,
+            },
+            None,
+        )
+        .await?;
+    assert!(names.entries.iter().any(|entry| entry.name == "status.md"));
     Ok(())
 }
 

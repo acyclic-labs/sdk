@@ -1363,7 +1363,12 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         let reader_host = self
             .host
-            .for_evaluations(Arc::clone(&self.stream), agent_path, private.volume()?)
+            .for_agent_views(
+                Arc::clone(&self.stream),
+                agent_path,
+                private.volume()?,
+                Arc::clone(&storage.reader),
+            )
             .await?;
         #[cfg(target_arch = "wasm32")]
         let reader_host = Arc::clone(&self.host);

@@ -120,15 +120,112 @@ where
     }
 }
 
+// Keep construction independent of source cuts. The existing lazy workspace
+// captures and validates them only inside an original caller-funded demand.
+struct DeferredView<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource> {
+    workspace: Workspace<A, O>,
+    source: Arc<D>,
+    store: acyclic_fs::MemoryLazyWorkspaceStore,
+}
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static> DeferredView<A, O, D> {
+    async fn bind(
+        &self,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<LazyWorkspace<A, O, D, acyclic_fs::MemoryLazyWorkspaceStore>> {
+        LazyWorkspace::bind(
+            self.workspace.clone(),
+            Arc::clone(&self.source),
+            self.store.clone(),
+            ctx,
+        )
+        .await
+        .map_err(Into::into)
+    }
+}
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static> PrivateView
+    for DeferredView<A, O, D>
+{
+    fn workspace_id(&self) -> acyclic_fs::WorkspaceId {
+        self.workspace.id()
+    }
+    fn validate<'a>(
+        &'a self,
+        cut: &'a LazySnapshotRef,
+        ctx: &'a mut KernelAccounting<'_>,
+        io: &'a PreparationIo,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(Some(io), || async move {
+            self.bind(ctx)
+                .await?
+                .validate_snapshot(cut, ctx)
+                .await
+                .map_err(Into::into)
+        })
+    }
+    fn snapshot<'a>(
+        &'a self,
+        ctx: &'a mut KernelAccounting<'_>,
+        io: &'a PreparationIo,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, LazySnapshotRef>> {
+        crate::conversation::BoundedContentFuture::new(Some(io), || async move {
+            self.bind(ctx)
+                .await?
+                .snapshot(ctx)
+                .await
+                .map_err(Into::into)
+        })
+    }
+    fn read<'a>(
+        &'a self,
+        cut: &'a LazySnapshotRef,
+        path: &'a str,
+        range: acyclic_fs::ByteRange,
+        ctx: &'a mut KernelAccounting<'_>,
+        io: &'a PreparationIo,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, (acyclic_stream::OwnedBytes, u64)>>
+    {
+        crate::conversation::BoundedContentFuture::new(Some(io), || async move {
+            let view = self.bind(ctx).await?;
+            PrivateView::read(&view, cut, path, range, ctx, io)?.await
+        })
+    }
+    fn directory<'a>(
+        &'a self,
+        cut: &'a LazySnapshotRef,
+        path: &'a str,
+        after: Option<&'a [u8]>,
+        maximum: u32,
+        ctx: &'a mut KernelAccounting<'_>,
+        io: &'a PreparationIo,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            (
+                acyclic_fs::LazyDirectoryListing,
+                acyclic_fs::kernel::KernelOwnedAllocation,
+            ),
+        >,
+    > {
+        crate::conversation::BoundedContentFuture::new(Some(io), || async move {
+            self.bind(ctx)
+                .await?
+                .list_directory_listing_at_snapshot(cut, path, after, maximum, ctx)
+                .await
+                .map_err(Into::into)
+        })
+    }
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
-    /// Binds the selected agent's read-only evaluation route over its existing
-    /// private workspace. Cases remain demands on the original stream owner;
-    /// the companion contains only the empty authored/source merge roots.
-    pub(in crate::filesystem) async fn for_evaluations<P>(
+    /// Binds the shared UI and evaluation views over the existing private volume.
+    /// Original streams and content authority supply only demanded inputs;
+    /// authored files remain in the volume and shadow these computed defaults.
+    pub(in crate::filesystem) async fn for_agent_views<P>(
         self: &Arc<Self>,
         streams: Arc<P>,
         agent: &crate::agent::AgentPath,
         volume: &VolumeRef,
+        files: Arc<dyn crate::conversation::ContentResidencyVerifier>,
     ) -> Result<Arc<Self>>
     where
         P: acyclic_stream::NativeStreamProvider + ?Sized + 'static,
@@ -143,25 +240,43 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let _reference_hold = io.guard_owned(reference.logical_owned_bytes()?)?;
         let workspace = self.open(&reference, Some(&io)).await?;
         let config = workspace.volume_config();
-        let source = Arc::new(Routed::new(
+        let ui = crate::ui::StreamUiProvider::new(
+            Arc::clone(&streams),
+            files,
+            agent.clone(),
+            crate::ui::View::new(64).map_err(|_| io.invalid("invalid UI page size"))?,
+            *b"agent-ui-path-v1",
+            |child: &acyclic_stream::StreamPath, ctx: &mut KernelAccounting<'_>| {
+                use std::io::Write as _;
+                acyclic_fs::kernel::OwnedSourceChunk::produce(ctx, |sink| {
+                    write!(sink, "/{child}/ui").map_err(acyclic_fs::demand::DemandError::from)
+                })
+            },
+        )
+        .into_source();
+        let ui = Routed::new(
             Empty,
+            LogicalName::new(NameEncoding::Utf8, b"ui".to_vec())
+                .map_err(|_| io.invalid("UI route name is invalid"))?,
+            ui,
+            config.limits,
+        );
+        let source = Arc::new(Routed::new(
+            ui,
             LogicalName::new(NameEncoding::Utf8, b"evals".to_vec())
                 .map_err(|_| io.invalid("evaluation route name is invalid"))?,
             crate::evals::StreamProvider::new(streams, agent)?.into_source(),
             config.limits,
         ));
-        let mut ctx = KernelAccounting::NativeOriginal {
-            work: &work,
-            cancellation: &cancel,
-        };
-        let view = LazyWorkspace::bind(
+        let mut host = self.for_workspace(volume, workspace.clone())?;
+        Arc::get_mut(&mut host)
+            .ok_or_else(|| io.invalid("bind private sources before sharing their host"))?
+            .private_view = Some(Arc::new(DeferredView {
             workspace,
             source,
-            acyclic_fs::MemoryLazyWorkspaceStore::default(),
-            &mut ctx,
-        )
-        .await?;
-        self.for_private_view(volume, view.share(&mut ctx)?)
+            store: acyclic_fs::MemoryLazyWorkspaceStore::default(),
+        }));
+        Ok(host)
     }
 
     /// Binds an existing private lazy workspace to the same authorized range reader.
@@ -319,3 +434,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         result
     }
 }
+
+#[cfg(test)]
+mod tests;

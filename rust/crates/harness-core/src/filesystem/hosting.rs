@@ -997,10 +997,7 @@ where
                 .find(|binding| binding.role == crate::agent::WorkspaceRole::Private)
                 .ok_or(Error::Record("agent has no private volume"))?
                 .volume()?;
-            self.volumes
-                .for_evaluations(self.agents.provider().clone(), agent, volume)
-                .await
-                .map_err(turn)?
+            self.view_host(agent, volume).await?
         };
         #[cfg(target_arch = "wasm32")]
         let host = Arc::clone(&self.volumes);
