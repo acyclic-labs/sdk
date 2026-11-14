@@ -152,6 +152,40 @@ impl<A: 'static, O: 'static> Clone for Source<A, O> {
     }
 }
 
+mod operation;
+pub use operation::BoundSource;
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
+    async fn operation(&self) -> BoundSource<'_, A, O> {
+        BoundSource {
+            session: self.inner.lock().await,
+        }
+    }
+
+    /// Bind one serialized source operation to freshly admitted storage.
+    /// The trusted host must select the same account and backing authority.
+    /// The watcher, captured edits, and durable retry identities are retained;
+    /// subsequent IO uses the supplied workspace's original request guards.
+    pub async fn bind_workspace(
+        &self,
+        mut workspace: Workspace<A, O>,
+    ) -> Result<BoundSource<'_, A, O>, SourceError> {
+        let mut session = self.inner.lock().await;
+        if workspace.id() != session.workspace.id()
+            || workspace.name() != session.workspace.name()
+            || workspace.volume_config() != session.workspace.volume_config()
+        {
+            return Err(SourceError::BindingMismatch);
+        }
+        session.checkout.bind_workspace(&workspace)?;
+        // The session owns the source; retaining its public workspace's source
+        // handle here would form a reference cycle.
+        workspace.source = None;
+        session.workspace = workspace;
+        Ok(BoundSource { session })
+    }
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
     /// Returns the current fail-closed semantic state.
     pub async fn state(&self) -> SourceState {
@@ -198,58 +232,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
         &self,
         key: IdempotencyKey,
     ) -> Result<ReconcileOutcome<A, O>, SourceError> {
-        let mut session = self.inner.lock().await;
-        if let Some(outcome) =
-            replay_reconcile_operation(&mut session, key, SourceOperation::Reconcile).await?
-        {
-            return Ok(outcome);
-        }
-        if session.state == SourceState::Conflict {
-            return Ok(ReconcileOutcome::Conflict);
-        }
-        if session.mode == SourceMode::Pinned {
-            return Err(SourceError::Pinned);
-        }
-        begin_source_operation(&mut session, key, SourceOperation::Reconcile).await?;
-        let maximum_paths = session.capture.maximum_paths.unwrap_or(1024);
-        let batch = session
-            .watcher
-            .poll(
-                maximum_paths,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .map_err(engine)?
-            .value;
-        if let WatchBatch::RescanRequired { reason, .. } = batch {
-            let fact = persist_source_operation(
-                &mut session,
-                SourceState::NeedsRescan(reason),
-                key,
-                SourceOperation::Reconcile,
-            )
-            .await?;
-            return reconcile_outcome_from_fact(&session, fact);
-        }
-        let capture = session.capture.clone();
-        let policy = session.capture_policy.clone();
-        crate::capture_watch_batch(
-            &mut session.checkout,
-            batch,
-            &capture,
-            &policy,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map_err(engine)?;
-        publish_session(
-            &mut session,
-            key,
-            SourceOperation::Reconcile,
-            SourceState::Clean,
-        )
-        .await
+        self.operation().await.reconcile_with_key(key).await
     }
 
     /// Waits for a native hint or invalidation without holding the session
@@ -278,23 +261,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
         &self,
         key: IdempotencyKey,
     ) -> Result<ReconcileOutcome<A, O>, SourceError> {
-        let mut session = self.inner.lock().await;
-        if let Some(outcome) =
-            replay_reconcile_operation(&mut session, key, SourceOperation::Rescan).await?
-        {
-            return Ok(outcome);
-        }
-        if session.state == SourceState::Conflict {
-            return Ok(ReconcileOutcome::Conflict);
-        }
-        begin_source_operation(&mut session, key, SourceOperation::Rescan).await?;
-        rescan_session(
-            &mut session,
-            key,
-            SourceOperation::Rescan,
-            SourceState::Clean,
-        )
-        .await
+        self.operation().await.rescan_with_key(key).await
     }
 
     /// Produces an immutable generation whose bytes no longer depend on the attached directory.
@@ -307,31 +274,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
         &self,
         key: IdempotencyKey,
     ) -> Result<Generation<A, O>, SourceError> {
-        let mut session = self.inner.lock().await;
-        if let Some(generation) = replay_seal_operation(&mut session, key).await? {
-            return Ok(generation);
-        }
-        if session.state == SourceState::Conflict {
-            return Err(SourceError::Conflict);
-        }
-        begin_source_operation(&mut session, key, SourceOperation::Seal).await?;
-        let generation = match rescan_session(
-            &mut session,
-            key,
-            SourceOperation::Seal,
-            SourceState::Sealed,
-        )
-        .await?
-        {
-            ReconcileOutcome::Clean(generation) => generation,
-            ReconcileOutcome::Conflict => return Err(SourceError::Conflict),
-            ReconcileOutcome::NeedsRescan(_) => {
-                return Err(SourceError::Engine(
-                    "source could not reach a clean sealed state".to_owned(),
-                ));
-            }
-        };
-        Ok(generation)
+        self.operation().await.seal_with_key(key).await
     }
 }
 
@@ -1439,6 +1382,69 @@ mod tests {
     use super::*;
     use bytes::Bytes;
     use std::sync::atomic::{AtomicU8, Ordering};
+
+    #[tokio::test]
+    async fn source_rebinding_preserves_pending_watch_changes_and_rejects_another_workspace()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let streams = Arc::new(acyclic_stream::MemoryStream::default());
+        let objects = Arc::new(acyclic_objects::MemoryObjects::memory());
+        let original = Fs::from_memory_providers(streams.clone(), objects.clone());
+        let root = tempfile::tempdir()?;
+        std::fs::write(root.path().join("value"), b"before")?;
+        let workspace = Box::pin(original.attach_directory(
+            "retained-source",
+            root.path(),
+            SourceOptions::default(),
+        ))
+        .await?;
+        let source = workspace.source().ok_or("source missing")?.clone();
+        let fresh = Fs::from_memory_providers(streams, objects);
+        let admitted = fresh
+            .open_workspace(
+                "retained-source",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
+        let other_root = tempfile::tempdir()?;
+        let other = Box::pin(fresh.attach_directory(
+            "other-source",
+            other_root.path(),
+            SourceOptions::default(),
+        ))
+        .await?;
+        assert!(matches!(
+            source.bind_workspace(other).await,
+            Err(SourceError::BindingMismatch)
+        ));
+
+        std::fs::write(root.path().join("value"), b"after")?;
+        let cancellation = CancellationToken::new();
+        let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        source.changed_with_native_work(&work).await?;
+        let mut bound = source.bind_workspace(admitted).await?;
+        let key = IdempotencyKey::new();
+        let ReconcileOutcome::Clean(generation) = bound.reconcile_with_key(key).await? else {
+            return Err("retained watcher interval was not reconciled".into());
+        };
+        assert_eq!(
+            generation
+                .read("/value", 5, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .map_err(|failure| failure.error)?
+                .value,
+            acyclic_stream::OwnedBytes::from_static(b"after")
+        );
+        let ReconcileOutcome::Clean(replayed) = bound.reconcile_with_key(key).await? else {
+            return Err("source retry lost its original outcome".into());
+        };
+        assert_eq!(generation.id(), replayed.id());
+        assert_eq!(bound.state(), SourceState::Clean);
+        Ok(())
+    }
 
     #[tokio::test]
     async fn cancelled_observer_settles_while_the_source_session_is_locked()
