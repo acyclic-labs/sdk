@@ -81,7 +81,7 @@ impl SettingsAdmissions {
             io.encode(admission, maximum_bytes, false)?;
         }
         let key = key(path, cut, version, Some(io))?;
-        let _key_hold = io.guard_owned(key.len() as u64)?;
+        let _key_hold = io.reserve_decode(key.len() as u64)?;
         io.allocation_attempt(key.len() as u64)?;
         let key = key.to_vec();
         let bytes = io.encode(
@@ -109,7 +109,9 @@ impl SettingsAdmissions {
         let bytes = if bytes.len().saturating_add(headers.payload_bytes())
             > acyclic_stream::MAX_RECORD_BYTES
         {
+            let before = io.owned_bytes()?;
             let path = Self::payload_path(agent, &digest, Some(io))?;
+            let _path_hold = io.guard_owned(io.owned_since(before)?)?;
             crate::store::operations::stage_chunks(
                 &self.provider,
                 &path,
@@ -203,7 +205,9 @@ impl SettingsAdmissions {
                     "settings decisions require format v1".into(),
                 ));
             }
+            let before = io.owned_bytes()?;
             let path = Self::payload_path(agent, &digest, Some(&io))?;
+            let _path_hold = io.guard_owned(io.owned_since(before)?)?;
             let (body, _hold) =
                 crate::store::operations::read_chunks(&self.provider, &path, bytes, &digest, &io)
                     .await?;
@@ -244,15 +248,18 @@ impl SettingsAdmissions {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<StreamPath> {
         crate::executor::with_history_io(io, |work| {
-            crate::executor::preparation_format(
+            let path = crate::executor::preparation_format(
                 format_args!(
                     "harness/settings-admissions/v1/{agent}/values/{}",
                     blake3::Hash::from_bytes(*digest)
                 ),
                 work,
-            )
+            )?;
+            let _hold = io
+                .map(|io| io.guard_owned(path.capacity() as u64))
+                .transpose()?;
+            crate::distributed::stream_path(&path, work)
         })
-        .and_then(|path| StreamPath::new(path).map_err(invalid))
     }
 }
 
