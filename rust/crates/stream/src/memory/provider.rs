@@ -244,15 +244,13 @@ impl MemoryStream {
         view.applied = applied;
         let deferred = durability == HeadDurability::Deferred
             && request.projection != crate::HeadProjection::Tail;
-        let remaining = crate::MAX_COMMAND_BYTES.saturating_sub(
-            crate::wire_codec::requests::heads_len_with_durability(view, deferred),
-        );
+        let budget = crate::pages::ChildrenBudget::for_heads(view, deferred);
         view.children = if let Some(children) = &request.children {
             let limit = children
                 .limit
                 .min(request.limit - request.selection_count()?);
             Some(children_at(
-                paths, hierarchy, children, limit, remaining, _work, allocation,
+                paths, hierarchy, children, limit, budget, _work, allocation,
             )?)
         } else {
             None
@@ -515,7 +513,7 @@ fn children_at(
     hierarchy_version: CommitId,
     request: &ChildrenPageRequest,
     limit: u32,
-    remaining: usize,
+    mut budget: crate::pages::ChildrenBudget,
     work: CaptureWork<'_>,
     _allocation: &mut Allocation,
 ) -> Result<ChildrenPage, StreamError> {
@@ -559,7 +557,6 @@ fn children_at(
     };
     #[cfg(target_arch = "wasm32")]
     let mut rows = child_buffer(page.length)?;
-    let mut page_bytes = 0usize;
     let mut has_more = page.has_more;
     page.visit(&mut examine, &mut |name| {
         let path = capture_child_path(request.parent.as_ref(), name, work)?;
@@ -571,31 +568,11 @@ fn children_at(
             tail_record,
             origin,
         };
-        #[cfg(all(loom, not(target_arch = "wasm32")))]
-        let size =
-            if crate::verification::fault_is(crate::verification::Fault::IgnorePageRecordBytes) {
-                child.path.as_str().len()
-            } else {
-                crate::wire_codec::requests::child_len(&child)
-            };
-        #[cfg(not(all(loom, not(target_arch = "wasm32"))))]
-        let size = crate::wire_codec::requests::child_len(&child);
-        let candidate_bytes =
-            page_bytes.saturating_add(crate::wire_codec::requests::block_len(size));
         let continuation = (page.has_more || rows.len() + 1 < page.length).then_some(&child.path);
-        if crate::wire_codec::requests::block_len(crate::wire_codec::requests::children_page_len(
-            candidate_bytes,
-            continuation,
-            (rows.len() + 1) as u32,
-        )) > remaining
-        {
-            if rows.is_empty() {
-                return Err(StreamError::LimitExceeded);
-            }
+        if !budget.admit(&child, continuation)? {
             has_more = true;
             return Ok(false);
         }
-        page_bytes = candidate_bytes;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = work {
             work.record(
@@ -618,14 +595,7 @@ fn children_at(
     } else {
         None
     };
-    if crate::wire_codec::requests::block_len(crate::wire_codec::requests::children_page_len(
-        page_bytes,
-        next_after.as_ref(),
-        rows.len() as u32,
-    )) > remaining
-    {
-        return Err(StreamError::LimitExceeded);
-    }
+    budget.finish(next_after.as_ref())?;
     Ok(ChildrenPage {
         scanned: rows.len() as u32,
         hierarchy_version,

@@ -165,6 +165,77 @@ impl<S: PageSource> PinnedCursor<S> {
     }
 }
 
+/// The command-frame budget a Heads reply leaves for its children page.
+/// Every provider cuts its page with this one sizer, so a page never exceeds
+/// the frame and a full page continues from its last row instead of refusing.
+#[derive(Clone, Copy, Debug)]
+pub struct ChildrenBudget {
+    remaining: usize,
+    bytes: usize,
+    rows: u32,
+}
+
+impl ChildrenBudget {
+    /// The room one command frame leaves after `view`'s heads and revisions.
+    /// `deferred` reserves durable watermarks that a later capture may raise.
+    pub fn for_heads(view: &crate::Heads, deferred: bool) -> Self {
+        Self {
+            remaining: crate::MAX_COMMAND_BYTES.saturating_sub(
+                crate::wire_codec::requests::heads_len_with_durability(view, deferred),
+            ),
+            bytes: 0,
+            rows: 0,
+        }
+    }
+
+    /// Admits `child` when the page, ended by `continuation`, still fits.
+    /// `Ok(false)` means the page is full and continues before `child`; only
+    /// a first child that no frame can hold is refused.
+    pub fn admit(
+        &mut self,
+        child: &crate::Child,
+        continuation: Option<&crate::StreamPath>,
+    ) -> Result<bool, StreamError> {
+        let bytes = self
+            .bytes
+            .saturating_add(crate::wire_codec::requests::block_len(child_size(child)));
+        if self.exceeds(bytes, continuation, self.rows + 1) {
+            return if self.rows == 0 {
+                Err(StreamError::LimitExceeded)
+            } else {
+                Ok(false)
+            };
+        }
+        self.bytes = bytes;
+        self.rows += 1;
+        Ok(true)
+    }
+
+    /// Checks the admitted rows against the page's final continuation.
+    pub fn finish(&self, next_after: Option<&crate::StreamPath>) -> Result<(), StreamError> {
+        if self.exceeds(self.bytes, next_after, self.rows) {
+            return Err(StreamError::LimitExceeded);
+        }
+        Ok(())
+    }
+
+    fn exceeds(&self, bytes: usize, continuation: Option<&crate::StreamPath>, rows: u32) -> bool {
+        crate::wire_codec::requests::block_len(crate::wire_codec::requests::children_page_len(
+            bytes,
+            continuation,
+            rows,
+        )) > self.remaining
+    }
+}
+
+fn child_size(child: &crate::Child) -> usize {
+    #[cfg(all(loom, not(target_arch = "wasm32")))]
+    if crate::verification::fault_is(crate::verification::Fault::IgnorePageRecordBytes) {
+        return child.path.as_str().len();
+    }
+    crate::wire_codec::requests::child_len(child)
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "pages_tests.rs"]
 mod tests;
