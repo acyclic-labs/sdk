@@ -362,6 +362,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         .await;
         drop(ctx);
+        drop(native_io);
         io.account(|ctx| owner.restore(ctx))?;
         result.map(Some)
     }
@@ -417,6 +418,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         let result = async { view.stat(cut, path, &mut ctx, &native_io)?.await }.await;
         drop(ctx);
+        drop(native_io);
         io.account(|ctx| owner.restore(ctx))?;
         result
     }
@@ -441,6 +443,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         let result = async { view.read(cut, path, range, &mut ctx, &native_io)?.await }.await;
         drop(ctx);
+        drop(native_io);
         io.account(|ctx| owner.restore(ctx))?;
         result
     }
@@ -462,6 +465,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         let result = async { view.validate(cut, &mut ctx, &native_io)?.await }.await;
         drop(ctx);
+        drop(native_io);
         io.account(|ctx| owner.restore(ctx))?;
         result
     }
