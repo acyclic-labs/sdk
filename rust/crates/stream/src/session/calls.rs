@@ -155,7 +155,8 @@ pub struct CallInputCredit {
 /// One original admitted call's input. Data retains its original receive
 /// credit; EOF is successful only after the explicit input terminal. Losing
 /// the session or its producer returns the original typed cause, or
-/// `Unavailable` when the producer disappeared without a terminal.
+/// `Unavailable` retaining the receive error when the producer disappeared
+/// without a terminal.
 pub struct CallInput {
     data: tokio::sync::mpsc::Receiver<crate::body::BodyChunk<CallInputCredit>>,
     terminal: Option<oneshot::Receiver<Result<wire::SessionInputEnd, StreamError>>>,
@@ -200,7 +201,8 @@ impl CallInput {
             && let Poll::Ready(result) = Pin::new(terminal).poll(cx)
         {
             self.terminal = None;
-            match result.unwrap_or(Err(StreamError::Unavailable)) {
+            match result.unwrap_or_else(|source| Err(StreamError::Unavailable.with_source(source)))
+            {
                 Ok(end) => self.end = Some(end),
                 Err(error) => {
                     self.failed = true;

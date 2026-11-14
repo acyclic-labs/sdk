@@ -900,3 +900,38 @@ fn assert_reply_failure<T>(result: Option<Result<T, StreamError>>, expected: Str
     }
     panic!("reply failure lost its original stream error");
 }
+
+#[tokio::test]
+async fn input_producer_loss_retains_original_terminal_receive_error() -> TestResult {
+    let released = Arc::new(signal::Signal::new());
+    let (producer, mut input) = super::super::calls::InputProducer::new(
+        wire::SessionChannel {
+            channel_id: 1,
+            generation: 1,
+        },
+        released,
+    );
+    let error = {
+        let mut waiting = core::pin::pin!(input.next_chunk());
+        assert!(futures::poll!(waiting.as_mut()).is_pending());
+        drop(producer);
+        match waiting.await {
+            Err(error) => error,
+            Ok(_) => return Err("lost terminal producer returned a successful EOF".into()),
+        }
+    };
+    assert_eq!(error.category(), StreamError::Unavailable);
+    let mut source = std::error::Error::source(&error);
+    let mut retained = false;
+    while let Some(cause) = source {
+        retained |= cause.is::<oneshot::error::RecvError>();
+        source = cause.source();
+    }
+    assert!(
+        retained,
+        "input producer loss discarded the original receive error"
+    );
+    assert!(input.next_chunk().await?.is_none());
+    assert!(input.trailers().is_none());
+    Ok(())
+}
