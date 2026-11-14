@@ -10,11 +10,11 @@ impl LocalHarness {
         &self,
         agent: &crate::agent::AgentPath,
         operation: OperationId,
+        merge: acyclic_stream::BoxProviderFuture<'_, Result<Option<String>>>,
     ) -> Result<Option<String>> {
-        let workspace = self
-            .workspace
-            .as_ref()
-            .ok_or_else(|| Error::Unsupported("session integration requires a checkout".into()))?;
+        let Some(workspace) = self.workspace.as_ref() else {
+            return merge.await;
+        };
         let hosted = self
             .agents
             .get()
@@ -34,7 +34,6 @@ impl LocalHarness {
         let source = workspace.spawned_project_view(project.volume()?).await?;
         let branch = format!("agents/{}", agent.id());
         if let Some(parent) = agent.parent().filter(|parent| parent != hosted.root()) {
-            use super::workspace::owner::ViewOwner as _;
             let parent_state = hosted.agents().state(&parent).await.map_err(storage)?;
             let project = crate::agent::WorkspaceTable::primary_in(&parent_state.volumes)
                 .filter(|binding| binding.role == crate::agent::WorkspaceRole::User)
@@ -45,10 +44,6 @@ impl LocalHarness {
                 .volume_scope(&parent)
                 .await
                 .map_err(storage)?;
-            let authority = crate::filesystem::NativeMountAuthority::admitted(
-                verifier.clone(),
-                signed.copy(&mut None)?,
-            );
             let view = workspace.spawned_project_view(project.volume()?).await?;
             if workspace.has_physical_task_source(&view)? {
                 let bound = self
@@ -69,63 +64,11 @@ impl LocalHarness {
                     )
                     .await;
             }
-            // A volume join needs no OS projection. Keep the same selected
-            // checkout and original authority without minting a native grant.
-            let logical = workspace.context_task_view(
-                view,
-                project.volume()?,
-                &parent_state.volumes,
-                &authority,
-            )?;
-            let (selected, pending) = logical.selected_view().await?;
-            if pending.is_some() {
-                return Err(Error::Conflict(
-                    "parent checkout reconciliation is pending".into(),
-                ));
-            }
-            let destination = selected.as_ref().unwrap_or_else(|| logical.view());
-            let repository = logical.view().workspace().id();
-            let access = crate::filesystem::WorkspaceAccess::new(
-                &verifier,
-                &signed,
-                signed.capabilities(),
-                Some(project.volume()?),
-            )?;
-            access.require(destination.workspace()).await?;
-            acyclic_fs::GitCompatRepository::new(repository, workspace.store.clone())
-                .register_branch_workspace(branch.clone(), source.workspace().id(), None, false)
-                .await
-                .map_err(storage)?;
-            let arguments = ["merge".to_owned(), branch];
-            let owner = super::workspace::owner::AgentOwner;
-            let command: acyclic_stream::BoxProviderFuture<'_, _> =
-                Box::pin(crate::tools::git::run_with_guard(
-                    crate::tools::git::Workspace {
-                        access: &access,
-                        filesystem: &workspace.filesystem,
-                        store: &workspace.store,
-                        view: destination.into(),
-                        root: &workspace.path,
-                        repository,
-                        lease: None,
-                        checkout: None,
-                        author: "LocalHarness",
-                        authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
-                            .unwrap_or(i64::MAX),
-                        request: Some(acyclic_fs::GitRequest {
-                            merge_source: None,
-                            operation: acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
-                            unanswered: Arc::new(|_| true),
-                        }),
-                    },
-                    &arguments,
-                    || owner.verify(),
-                ));
-            let output = command
-                .await?
-                .command
-                .ok_or_else(|| Error::Conflict("merge has no committed result".into()))?;
-            return merge_commit(output);
+            return hosted
+                .server()
+                .bound()
+                .merge_session_with_store(agent, &parent, operation, workspace.store.clone())
+                .await;
         }
         let signed = self.signed.copy(&mut None)?;
         self.merge_checkout(
