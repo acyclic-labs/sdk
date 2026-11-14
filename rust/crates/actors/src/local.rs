@@ -72,7 +72,7 @@ pub enum Error {
     CompletionStopped,
     /// A delivery failed before the host could establish its completion cut.
     #[error("actor runtime completion failed: {0}")]
-    CompletionFailed(Arc<Error>),
+    CompletionFailed(#[source] Arc<Error>),
     /// The original per-agent spend balance refused the candidate.
     #[error(transparent)]
     Escrow(#[from] crate::escrow::Error),
