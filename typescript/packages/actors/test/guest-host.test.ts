@@ -224,7 +224,10 @@ test("definitionHandler serves a namespace of one public ActorDefinition through
 });
 
 test("the SDK backend passes the ActorDefinition conformance; a host without the wrapper fails it", async () => {
-  await verifyDefinitionHost(({ actor }, deployment) => definitionHandler(actor, deployment, {}));
+  await verifyDefinitionHost(({ actor }, deployment) => ({ code: deployment.code, ...definitionHandler(actor, deployment, {}) }));
+  // A manifest naming another code digest is not the deployment's manifest.
+  await expect(verifyDefinitionHost(({ actor }, deployment) => ({ code: new Uint8Array(32),
+    ...definitionHandler(actor, deployment, {}) }))).rejects.toThrow("strict-wire manifest");
   // Negative control (#9432's shape): a host that runs the raw module as the Handler ABI.
   await expect(verifyDefinitionHost(module => module as never)).rejects.toThrow("does not expose the Handler ABI");
   const { actor } = recordingActor({ name: "counter", version: "1" });

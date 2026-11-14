@@ -2,6 +2,8 @@ import { GUEST_ABI_VERSION, type ActorDefinition } from "./generated/guest.js";
 
 /** The Handler ABI a backend's host core runs: the namespace manifest and one delivery. */
 export interface DefinitionHost {
+  /** The code SHA-256 this backend admitted for the deployment. */
+  readonly code: Uint8Array;
   manifest(): Promise<Uint8Array>;
   onRecord(bytes: Uint8Array, signal?: AbortSignal): Promise<Uint8Array>;
 }
@@ -36,6 +38,29 @@ export function conformanceDefinition(): { actor: ActorDefinition<{ bytes: Uint8
   };
 }
 
+const field = (tag: number, bytes: Uint8Array) => [tag, bytes.length, ...bytes];
+const text = (value: string) => new TextEncoder().encode(value);
+
+/** The strict-wire manifest (`guest::wire`, version 1) of exactly the admitted code,
+ * the definition's codec, the "inbox" subscription, no bindings or interrupts, and
+ * one limits message: the only field a host chooses. */
+function strictManifest(manifest: Uint8Array, code: Uint8Array): boolean {
+  if (code.length !== 32) return false;
+  const prefix = [0xff, 0x41, 0x4d, 0x4e, 0x46, 0x01, ...field(0x0a, code), ...field(0x12, text(counter.name)),
+    ...field(0x1a, text(counter.version)), ...field(0x22, text("inbox"))];
+  if (manifest.length < prefix.length + 2 || prefix.some((byte, index) => manifest[index] !== byte)) return false;
+  let offset = prefix.length;
+  if (manifest[offset++] !== 0x32) return false;
+  let length = 0;
+  for (let shift = 0; ; shift += 7) {
+    if (offset >= manifest.length || shift > 28) return false;
+    const byte = manifest[offset++]!;
+    length |= (byte & 0x7f) << shift;
+    if ((byte & 0x80) === 0) break;
+  }
+  return offset + length === manifest.length;
+}
+
 /** Every backend's conformance: `deploy` is the backend's real path from a deployed
  * JavaScript module to the Handler ABI its core runs. A public ActorDefinition must
  * answer the canonical delivery with the canonical transition, and its manifest
@@ -46,10 +71,8 @@ export async function verifyDefinitionHost(
   const host = await deploy(conformanceDefinition(), { code: CODE, subscriptions: ["inbox"] });
   if (typeof host?.manifest !== "function" || typeof host?.onRecord !== "function")
     throw new Error("ActorDefinition deployment does not expose the Handler ABI");
-  const manifest = await host.manifest();
-  const text = new TextDecoder("latin1").decode(manifest);
-  const has = (needle: string) => text.includes(needle);
-  if (!has("counter") || !has("inbox")) throw new Error("ActorDefinition manifest lacks its codec or subscription");
+  if (!strictManifest(await host.manifest(), host.code))
+    throw new Error("ActorDefinition manifest is not the deployment's strict-wire manifest");
   for (let attempt = 0; attempt < 2; attempt++) {
     const transition = await host.onRecord(DELIVERY.slice());
     if (transition.length !== TRANSITION.length || transition.some((byte, index) => byte !== TRANSITION[index]))

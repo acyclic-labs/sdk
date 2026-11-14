@@ -143,24 +143,6 @@ fn object(entries: &[(&str, JsValue)]) -> JsValue {
 #[wasm_bindgen(js_name = decodeDelivery)]
 pub fn decode_delivery(bytes: &[u8]) -> Result<JsValue, JsValue> {
     let (delivery, checkpoint) = guest::wire::decode_delivery(bytes).map_err(guest_error)?;
-    let invocation = match invoke_request(&delivery).map_err(guest_error)? {
-        None => JsValue::NULL,
-        Some(request) => {
-            let headers = js_sys::Array::new();
-            for header in request.headers {
-                headers.push(&js_sys::Array::of2(
-                    &header.name.into(),
-                    &header.value.into(),
-                ));
-            }
-            object(&[
-                ("method", request.method.into()),
-                ("url", request.url.into()),
-                ("headers", headers.into()),
-                ("body", Uint8Array::from(request.body.as_slice()).into()),
-            ])
-        }
-    };
     let u64 = |value: u64| JsValue::from(BigInt::from(value));
     let bytes = |value: &[u8]| JsValue::from(Uint8Array::from(value));
     let trigger = match (delivery.trigger, &delivery.record) {
@@ -189,7 +171,6 @@ pub fn decode_delivery(bytes: &[u8]) -> Result<JsValue, JsValue> {
                     ("origin", record.origin.as_str().into()),
                 ]),
             ),
-            ("invocation", invocation),
         ]),
         (
             guest::Trigger::Alarm {
@@ -230,21 +211,38 @@ pub fn decode_delivery(bytes: &[u8]) -> Result<JsValue, JsValue> {
     ]))
 }
 
-/// The canonical HTTP request of an `InvokeActor` invocation record: its
-/// committed request bytes are the `InvokeActorRequest` the front door admitted.
-/// Ordinary records and alarms carry none.
-fn invoke_request(
-    delivery: &guest::Delivery,
-) -> Result<Option<acyclic_actors::wire::InvokeActorRequest>, guest::GuestError> {
+/// The HTTP request of one `InvokeActor` delivery, for a host whose every
+/// invocation is a front-door `InvokeActorRequest`: method, URL, ordered header
+/// pairs and body. Ordinary records and alarms yield null. Only such a host
+/// calls this; elsewhere invocation payloads are application-defined bytes
+/// that stay on the guest's event path.
+#[wasm_bindgen(js_name = decodeInvokeRequest)]
+pub fn decode_invoke_request(bytes: &[u8]) -> Result<JsValue, JsValue> {
     use prost::Message as _;
-    let Some(invocation) = delivery.invocation()? else {
-        return Ok(None);
+    let (delivery, _) = guest::wire::decode_delivery(bytes).map_err(guest_error)?;
+    let Some(invocation) = delivery.invocation().map_err(guest_error)? else {
+        return Ok(JsValue::NULL);
     };
-    acyclic_actors::wire::InvokeActorRequest::decode(invocation.request().as_ref())
-        .map(Some)
+    let request = acyclic_actors::wire::InvokeActorRequest::decode(invocation.request().as_ref())
         .map_err(|_| {
-            guest::GuestError::Decode("invocation request is not InvokeActorRequest".into())
-        })
+        js_error(
+            "invalid_argument",
+            "invocation request is not InvokeActorRequest",
+        )
+    })?;
+    let headers = js_sys::Array::new();
+    for header in request.headers {
+        headers.push(&js_sys::Array::of2(
+            &header.name.into(),
+            &header.value.into(),
+        ));
+    }
+    Ok(object(&[
+        ("method", request.method.into()),
+        ("url", request.url.into()),
+        ("headers", headers.into()),
+        ("body", Uint8Array::from(request.body.as_slice()).into()),
+    ]))
 }
 
 /// The canonical `InvokeActorResponse` reply of one invocation: an HTTP status,

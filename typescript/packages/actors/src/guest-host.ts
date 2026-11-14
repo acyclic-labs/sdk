@@ -53,6 +53,7 @@ function checkpointCopy(value: Checkpoint): Checkpoint {
 
 type GuestWasm = Awaited<ReturnType<typeof loadWasmModule>>;
 type GuestDelivery = ReturnType<GuestWasm["decodeDelivery"]>;
+type GuestInvokeRequest = NonNullable<ReturnType<GuestWasm["decodeInvokeRequest"]>>;
 
 /** Read one complete fetch response into its canonical InvokeActorResponse. A
  * reply is one committed value, so a response with trailers is refused rather
@@ -132,10 +133,12 @@ export class GuestActivation<State, Bindings> {
    */
   async onRecord(bytes: Uint8Array, signal?: AbortSignal): Promise<Uint8Array> {
     const wasm = await loadWasmModule();
-    return this.deliver(wasm, wasm.decodeDelivery(bytes), signal);
+    return this.deliver(wasm, wasm.decodeDelivery(bytes), null, signal);
   }
-  /** {@link onRecord} over a delivery the caller already decoded with `wasm`. */
-  async deliver(wasm: GuestWasm, delivery: GuestDelivery, signal?: AbortSignal): Promise<Uint8Array> {
+  /** {@link onRecord} over a delivery the caller already decoded with `wasm`. A
+   * non-null `invocation` is its front-door HTTP request, served by `fetch`. */
+  async deliver(wasm: GuestWasm, delivery: GuestDelivery, invocation: GuestInvokeRequest | null,
+    signal?: AbortSignal): Promise<Uint8Array> {
     const { actor, trigger, nowUnixMs, checkpoint } = delivery;
     if (this.#reference === null || !this.#reference.equals(ActorReference.decode(actor)))
       throw new Error("delivery actor differs from activation");
@@ -158,10 +161,10 @@ export class GuestActivation<State, Bindings> {
         retryKey: effect => retryKey(deliveryId, effect),
       };
       let reply: Uint8Array | null;
-      if (trigger.type === "record" && trigger.invocation !== null) {
+      if (invocation !== null) {
         // An InvokeActor input is the definition's fetch; its reply is the
         // canonical InvokeActorResponse the front door returns to the caller.
-        const { method, url, headers, body } = trigger.invocation;
+        const { method, url, headers, body } = invocation;
         const request = new Request(url, { method, headers: headers.map(([name, value]) => [name, value]),
           body: method === "GET" || method === "HEAD" ? undefined : body, signal });
         reply = await invokeResponse(wasm, await this.fetch(request, context), signal);
@@ -193,6 +196,10 @@ export interface DefinitionDeployment {
   readonly code: Uint8Array;
   /** Declared subscription ids; each actor binds its own path when created. */
   readonly subscriptions: readonly string[];
+  /** "fetch" when every invocation is a front-door `InvokeActorRequest` served
+   * by the definition's fetch; otherwise invocations are application-defined
+   * bytes delivered to its event hook. */
+  readonly invocations?: "fetch" | "event";
   readonly limits?: { readonly handlerTimeoutMillis?: bigint; readonly memoryBytes?: bigint; readonly checkpointBytes?: bigint };
 }
 
@@ -225,7 +232,8 @@ export function definitionHandler<State, Bindings>(definition: ActorDefinition<S
           namespace: decoder.decode(actor.namespace), class: null },
         retryKey() { throw Object.assign(new Error("missing delivery identity"), { type: "missingIdentity" as const }); },
       };
-      return new GuestActivation(definition, delivery.checkpoint, context).deliver(wasm, delivery, signal);
+      const invocation = deployment.invocations === "fetch" ? wasm.decodeInvokeRequest(bytes) : null;
+      return new GuestActivation(definition, delivery.checkpoint, context).deliver(wasm, delivery, invocation, signal);
     },
   };
 }

@@ -335,10 +335,7 @@ interface GuestDelivery {
   readonly trigger:
     | { readonly type: "record"; readonly subscription: string; readonly sequence: bigint; readonly record: {
       readonly sequence: bigint; readonly value: Uint8Array; readonly commitId: Uint8Array;
-      readonly committedAtMicros: bigint; readonly origin: string; };
-      /** The admitted `InvokeActor` request of an invocation record; null for an ordinary record. */
-      readonly invocation: { readonly method: string; readonly url: string;
-        readonly headers: readonly (readonly [string, string])[]; readonly body: Uint8Array } | null; }
+      readonly committedAtMicros: bigint; readonly origin: string; } }
     | { readonly type: "alarm"; readonly generation: bigint; readonly nowUnixMs: bigint };
   readonly checkpoint: { readonly codec: { readonly name: string; readonly version: string }; readonly bytes: Uint8Array } | null;
 }
@@ -346,6 +343,8 @@ interface GuestDelivery {
 interface WasmActorsModule extends ActorsNominalBinding {
   readonly decodeDelivery: (bytes: Uint8Array) => GuestDelivery;
   readonly encodeTransition: (codecName: string, codecVersion: string, checkpoint: Uint8Array, response: Uint8Array | null) => Uint8Array;
+  readonly decodeInvokeRequest: (bytes: Uint8Array) => { readonly method: string; readonly url: string;
+    readonly headers: readonly (readonly [string, string])[]; readonly body: Uint8Array } | null;
   readonly encodeInvokeResponse: (status: number, names: string[], values: string[], body: Uint8Array) => Uint8Array;
   readonly encodeManifest: (code: Uint8Array, codecName: string, codecVersion: string, subscriptions: string[],
     handlerTimeoutMillis?: bigint, memoryBytes?: bigint, checkpointBytes?: bigint) => Uint8Array;
