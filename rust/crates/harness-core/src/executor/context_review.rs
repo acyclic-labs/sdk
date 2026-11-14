@@ -70,7 +70,11 @@ impl<'a> Background<'a> {
     pub(super) fn shared(io: Option<&PreparationIo>) -> Result<Arc<Self>> {
         let storage = io.map(PreparationIo::scoped).transpose()?;
         let bytes = acyclic_fs::shared_allocation_bytes::<Self>().map_err(|_| {
-            stock_boundary(io, crate::wire::ErrorCode::Invalid, "context review storage overflows")
+            stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "context review storage overflows",
+            )
         })?;
         crate::executor::with_history_io(storage.as_ref(), |work| -> Result<()> {
             if let Some(work) = work.as_deref_mut() {
@@ -79,8 +83,14 @@ impl<'a> Background<'a> {
             }
             Ok(())
         })?;
-        let custody = storage.as_ref().map(PreparationIo::take_all_owned_custody).transpose()?;
-        Ok(Arc::new(Self { _custody: custody, ..Self::default() }))
+        let custody = storage
+            .as_ref()
+            .map(PreparationIo::take_all_owned_custody)
+            .transpose()?;
+        Ok(Arc::new(Self {
+            _custody: custody,
+            ..Self::default()
+        }))
     }
 }
 #[derive(Default)]
@@ -146,9 +156,8 @@ impl<'a> StockExecution<'a> {
         }
         let usage = ModelTokenUsage::reported(metadata);
         let Some(input_tokens) = self
-            .stock
-            .provider
-            .reported_input_tokens(&self.stock.model, metadata)?
+            .selected_provider()
+            .reported_input_tokens(self.selected_model(), metadata)?
         else {
             return Ok(());
         };
@@ -269,7 +278,14 @@ impl<'a> StockExecution<'a> {
             drop(state);
             let mut phase = DispatchPhase::new();
             let ready = self
-                .evaluate_context_review(journal, input, (job.source, job.selected), step, observation, &mut phase)
+                .evaluate_context_review(
+                    journal,
+                    input,
+                    (job.source, job.selected),
+                    step,
+                    observation,
+                    &mut phase,
+                )
                 .await;
             drop(job._hold);
             self.review.state.lock().await.ready = Some(ready);

@@ -667,8 +667,7 @@ impl StockExecution<'_> {
                             sampling,
                             tokens: super::model_usage::ModelTokenUsage::reported(metadata),
                             complete_input_tokens: self
-                                .stock
-                                .provider
+                                .selected_provider()
                                 .reported_input_tokens(model, metadata)?,
                             started_at: clock.started_at(),
                             completed_at,

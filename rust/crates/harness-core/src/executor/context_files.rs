@@ -326,7 +326,7 @@ mod tests {
                             path,
                             bytes,
                             media,
-                            path,
+                            path.rsplit('/').next().unwrap(),
                             ContentAccess::default(),
                         )?
                         .await?;
