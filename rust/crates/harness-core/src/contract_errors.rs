@@ -1705,7 +1705,7 @@ impl From<crate::agent::Error> for Error {
 /// A Stream failure below the harness is a durable-storage failure.
 impl From<acyclic_stream::StreamError> for Error {
     fn from(error: acyclic_stream::StreamError) -> Self {
-        Self::Storage(error.to_string())
+        Self::from(crate::agent::Error::Stream(error))
     }
 }
 
@@ -1715,6 +1715,46 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[cfg(test)]
 mod cleanup_tests {
     use super::*;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn stream_conversion_retains_original_io_cause_and_uncertainty()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use std::error::Error as _;
+        let directory = tempfile::tempdir()?;
+        for category in acyclic_stream::StreamError::ALL {
+            let original = std::fs::read(directory.path().join("missing")).unwrap_err();
+            let stream = category.clone().with_source(original);
+            let retained = stream.clone();
+            let uncertain = stream.uncertain();
+            let error = Error::from(stream);
+            assert_eq!(error.code(), ErrorCode::Storage);
+            assert_eq!(error.uncertain(), uncertain);
+            assert_eq!(error.leaves_outcome_uncertain(), uncertain);
+            assert_eq!(error.leaves_effect_uncertain(), uncertain);
+            let original = retained
+                .source()
+                .unwrap()
+                .downcast_ref::<std::io::Error>()
+                .unwrap();
+            let mut source = error.source();
+            let mut shared = false;
+            while let Some(cause) = source {
+                if let Some(cause) = cause.downcast_ref::<std::io::Error>() {
+                    assert!(
+                        std::ptr::eq(cause, original),
+                        "adapter reconstructed the original cause"
+                    );
+                    assert_eq!(cause.kind(), std::io::ErrorKind::NotFound);
+                    shared = true;
+                    break;
+                }
+                source = cause.source();
+            }
+            assert!(shared, "adapter discarded the original cause");
+        }
+        Ok(())
+    }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
