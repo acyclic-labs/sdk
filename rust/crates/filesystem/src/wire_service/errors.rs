@@ -240,7 +240,6 @@ fn stream_code(error: &acyclic_stream::StreamError) -> Code {
         E::AccessDenied => Code::PermissionDenied,
         E::Unavailable => Code::Unavailable,
         E::Refused(_) => stream_code(&error.category()),
-        E::Caused(source) => stream_code(source.classification()),
         E::DeadlineElapsed => Code::DeadlineExceeded,
         E::Unsupported => Code::Unimplemented,
         E::InvalidResponse => Code::DataLoss,
