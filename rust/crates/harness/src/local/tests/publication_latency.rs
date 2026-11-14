@@ -1,6 +1,5 @@
 //! Timings include inbox admission, execution, result publication and follow delivery.
 use super::*;
-use crate::conversation::FileRef;
 use crate::model::{ModelContentPart, ModelEvent, ToolCall, ToolResultContent};
 use crate::test_support::ScriptedEvent;
 use acyclic_fs::{CancellationToken, IdempotencyKey, PublicationPermit, WorkBudget};
@@ -107,10 +106,13 @@ async fn concurrent_model_writes_settle_project_and_home_payloads() -> Result<()
         // Initial capture and executor preparation are outside write timings.
         let warm = observed.send("prepare", "prepare this workspace").await?;
         assert_eq!(warm.outcome, crate::agent::TurnOutcome::Completed);
-        let selected = returned_file(&provider, "prepare-project")?
-            .volume()
-            .clone();
-        let home = returned_file(&provider, "prepare-home")?.volume().clone();
+        assert_eq!(returned_path(&provider, "prepare-project")?, "prepared.txt");
+        assert_eq!(
+            returned_path(&provider, "prepare-home")?,
+            "volume:///home/prepared.txt"
+        );
+        let selected = harness.project.clone();
+        let home = harness.scratch.clone();
         assert_ne!(selected, home);
         assert!(
             !projects.contains(&selected),
@@ -178,19 +180,18 @@ async fn concurrent_model_writes_settle_project_and_home_payloads() -> Result<()
             for (index, (writer, (_, call, content))) in
                 writers[..count].iter().zip(results).enumerate()
             {
-                let file = returned_file(&writer.provider, &call)?;
                 assert_eq!(
-                    file.volume(),
-                    if prefix.is_empty() {
-                        &projects[index]
-                    } else {
-                        &homes[index]
-                    }
+                    returned_path(&writer.provider, &call)?,
+                    format!("{prefix}settled-{count}-{index}.txt")
                 );
-                assert_eq!(file.path(), format!("settled-{count}-{index}.txt"));
+                let volume = if prefix.is_empty() {
+                    &projects[index]
+                } else {
+                    &homes[index]
+                };
                 let workspace = filesystem
                     .open_workspace(
-                        file.volume().storage_name(&mut None)?,
+                        volume.storage_name(&mut None)?,
                         WorkBudget::UNBOUNDED,
                         &cancellation,
                     )
@@ -204,7 +205,7 @@ async fn concurrent_model_writes_settle_project_and_home_payloads() -> Result<()
                     .value;
                 let bytes = head
                     .read(
-                        &format!("/{}", file.path()),
+                        &format!("/settled-{count}-{index}.txt"),
                         64,
                         WorkBudget::UNBOUNDED,
                         &cancellation,
@@ -229,7 +230,7 @@ async fn concurrent_model_writes_settle_project_and_home_payloads() -> Result<()
     Ok(())
 }
 
-fn returned_file(provider: &ScriptedModelProvider, call: &str) -> Result<FileRef> {
+fn returned_path(provider: &ScriptedModelProvider, call: &str) -> Result<String> {
     let request = provider
         .last_request()
         .ok_or_else(|| Error::Conflict("missing result delivery".into()))?;
@@ -244,8 +245,16 @@ fn returned_file(provider: &ScriptedModelProvider, call: &str) -> Result<FileRef
             && call_id == call
         {
             return match content {
-                ToolResultContent::Json { value } => serde_json::from_value(value["file"].clone())
-                    .map_err(|error| Error::Invalid(format!("write result: {error}"))),
+                ToolResultContent::Json { value } => {
+                    let path = value["path"].as_str();
+                    let version = value["version"].as_str();
+                    match (path, version) {
+                        (Some(path), Some(version)) if !version.is_empty() => Ok(path.into()),
+                        _ => Err(Error::Invalid(
+                            "write omitted its public path or version".into(),
+                        )),
+                    }
+                }
                 _ => Err(Error::Invalid(format!(
                     "write did not return a file: {content:?}"
                 ))),
