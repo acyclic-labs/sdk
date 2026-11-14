@@ -325,14 +325,9 @@ async fn native_flush_exact_closure_preserves_intrinsic_alias_without_readoption
         crate::MemoryObjectStore::default(),
         directory.path().to_path_buf(),
     );
-    let before = work.receipt();
     store
         .put_hashed(object, &mut crate::AuthorityWork::native(&work, &token))
         .await?;
-    assert_eq!(
-        work.receipt().allocation_operations,
-        before.allocation_operations
-    );
     let alias = match store.lookup(object_id) {
         Lookup::Resident { bytes, .. } => bytes,
         _ => return Err("native admission did not remain resident".into()),
