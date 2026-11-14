@@ -138,6 +138,18 @@ fn measured_shared_admission_charges_its_claim_check() -> Result<(), Box<dyn std
     measured_admission_reads(&root);
     // The lock, and the claim check's read of an empty record.
     let free = measured_admission_reads(&root);
+    let cancellation = crate::CancellationToken::new();
+    let budget = crate::WorkBudget {
+        backend_read_operations: free,
+        ..native::finite_budget()
+    };
+    {
+        let work = crate::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, _)| cause)?;
+        let store = LocalCoreStateStore::new(&root).materialization(work.clone());
+        drop(store.namespace()?);
+        work.receipt().verify(budget)?;
+    }
 
     // A dead owner's record stays behind, so each check also probes it.
     let mut child = acyclic_native_runtime::ProcessTree::spawn(
@@ -158,11 +170,6 @@ fn measured_shared_admission_charges_its_claim_check() -> Result<(), Box<dyn std
     );
     // The allowance that admitted an empty record cannot hide the additional
     // physical work needed to validate and probe a dead owner's record.
-    let cancellation = crate::CancellationToken::new();
-    let budget = crate::WorkBudget {
-        backend_read_operations: free,
-        ..native::finite_budget()
-    };
     let work =
         crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(cause, _)| cause)?;
     let refused = LocalCoreStateStore::new(&root)
