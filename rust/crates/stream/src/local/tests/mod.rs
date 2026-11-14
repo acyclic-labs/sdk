@@ -19,4 +19,5 @@ mod revisions;
 mod watermarks;
 
 mod replicated;
+mod simulation;
 mod write_cut;
