@@ -45,6 +45,73 @@ fn watcher_with_sink(root: &Path, sink: Arc<dyn HostChangeSink>) -> io::Result<N
         .map_err(crate::native_host::ordinary_error)
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn asynchronous_fence_yields_and_abandoned_acquisition_keeps_delivery_live()
+-> Result<(), Box<dyn std::error::Error>> {
+    struct Observed(Arc<AtomicBool>);
+    impl HostChangeSink for Observed {
+        fn logical_owned_bytes(&self) -> u64 {
+            0
+        }
+        fn host_changed(
+            &self,
+            changes: &[HostChange],
+            work: &mut DemandWork,
+        ) -> Result<(), DemandError> {
+            work.check()?;
+            if changes.iter().any(|change| {
+                matches!(change,
+                    HostChange::Rebound(path) | HostChange::Altered(path) | HostChange::Departed(path)
+                        if path == Path::new("pending"))
+            }) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+            Ok(())
+        }
+    }
+    let directory = tempfile::tempdir()?;
+    let observed = Arc::new(AtomicBool::new(false));
+    let watch = watcher_with_sink(directory.path(), Arc::new(Observed(observed.clone())))?;
+    let mut work = crate::native_host::ordinary_work();
+    watch.admit_with_work(Path::new(""), &mut work)?;
+    let reading = watch.shared.reading();
+    std::fs::write(directory.path().join("pending"), b"original event")?;
+
+    // The existing native bridge's hook rejects its first attempted OS wait.
+    // Restoring the synchronous fence therefore fails, rather than hanging.
+    crate::cancellation::custody::BEFORE_WAIT.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(|| panic!("fence parked the executor thread")));
+    });
+    let mut abandoned = Box::pin(watch.fence_async_with_work(&mut work));
+    assert!(futures::poll!(abandoned.as_mut()).is_pending());
+    drop(abandoned);
+    assert!(
+        !watch.is_stopped(),
+        "dropping acquisition must retain its producer"
+    );
+
+    let mut fence = Box::pin(watch.fence_async_with_work(&mut work));
+    assert!(futures::poll!(fence.as_mut()).is_pending());
+    crate::cancellation::custody::BEFORE_WAIT.with(|hook| {
+        assert!(
+            hook.borrow_mut().take().is_some(),
+            "synchronous wait was entered"
+        );
+    });
+    // We reached another executor action while the real delivery cursor was
+    // held, after abandoning one queued observer. No worker or timer releases it.
+    drop(reading);
+    assert!(fence.await?);
+    assert!(
+        observed.load(Ordering::SeqCst),
+        "kernel change was not delivered"
+    );
+    assert!(!watch.is_stopped());
+    watch.stop_with_work(&mut work)?;
+    assert!(watch.shared.physically_cleared());
+    Ok(())
+}
+
 std::thread_local! {
     static BEFORE_SUBSCRIBE_LOCK: std::cell::RefCell<Option<Box<dyn FnOnce() -> io::Result<()>>>> =
         const { std::cell::RefCell::new(None) };

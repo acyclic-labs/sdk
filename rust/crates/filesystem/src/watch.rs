@@ -3472,40 +3472,54 @@ impl NativeWatch {
         self.fence_with_work(&mut source)
     }
 
+    /// Fences Linux source delivery without parking on a held delivery cursor.
+    /// The future borrows this original watch; dropping it abandons acquisition,
+    /// never its physical producer or retained delivery work.
+    ///
+    /// Returns [`NativeWatchError::BoundedObservationUnavailable`] for an adapter
+    /// without a read-only delivery fence, as does [`Self::fence_with_native_work`].
+    #[cfg(target_os = "linux")]
+    pub async fn fence_async(&mut self) -> Result<(), NativeWatchError> {
+        if let Some(mut work) = self.original_work.clone() {
+            return self.fence_async_with_work(&mut work).await;
+        }
+        let mut work =
+            crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
+        self.fence_async_with_work(&mut work).await
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn fence_async_with_work<W: crate::demand::SourceDemandReadWork>(
+        &mut self,
+        work: &mut W,
+    ) -> Result<(), NativeWatchError> {
+        let _delivery = self.shared.delivery();
+        if !self.prepare_fence(work)? {
+            return Ok(());
+        }
+        let delivered = match &self.watcher {
+            NativeWatchDriver::Source(watcher) => watcher
+                .fence_async_with_work(work)
+                .await
+                .map_err(demand_watch_error)?,
+            NativeWatchDriver::StartupFailure(owner) => {
+                return Err(demand_watch_error(
+                    crate::demand::DemandError::SourceWatchStartup(Arc::clone(owner)),
+                ));
+            }
+            NativeWatchDriver::Adapter(_) => {
+                return Err(NativeWatchError::BoundedObservationUnavailable);
+            }
+        };
+        self.finish_fence(delivered, work)
+    }
+
     fn fence_with_work<W: crate::demand::SourceDemandReadWork>(
         &mut self,
         work: &mut W,
     ) -> Result<(), NativeWatchError> {
         let _delivery = self.shared.delivery();
-        work.check().map_err(demand_watch_error)?;
-        // The serial producer cannot wait for its own next callback.
-        #[cfg(target_os = "macos")]
-        if crate::fsevents::on_queue() {
-            return self.invalidate();
-        }
-        if let NativeWatchDriver::StartupFailure(owner) = &self.watcher {
-            let error = demand_watch_error(crate::demand::DemandError::SourceWatchStartup(
-                Arc::clone(owner),
-            ));
-            self.shared
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .invalidation
-                .get_or_insert(WatchInvalidationReason::NativeRescanRequired);
-            self.fenced.notify_all();
-            return Err(error);
-        }
-        if !self
-            .root_unchanged_with_work(work)
-            .map_err(demand_watch_error)?
-        {
-            self.shared
-                .state
-                .lock()
-                .map_err(|_| NativeWatchError::StatePoisoned)?
-                .invalidation = Some(WatchInvalidationReason::RootChanged);
-            self.fenced.notify_all();
+        if !self.prepare_fence(work)? {
             return Ok(());
         }
         let delivered = match &self.watcher {
@@ -3532,6 +3546,53 @@ impl NativeWatch {
                 }
             }
         };
+        self.finish_fence(delivered, work)
+    }
+
+    fn prepare_fence<W: crate::demand::SourceDemandReadWork>(
+        &mut self,
+        work: &mut W,
+    ) -> Result<bool, NativeWatchError> {
+        work.check().map_err(demand_watch_error)?;
+        // The serial producer cannot wait for its own next callback.
+        #[cfg(target_os = "macos")]
+        if crate::fsevents::on_queue() {
+            self.invalidate()?;
+            return Ok(false);
+        }
+        if let NativeWatchDriver::StartupFailure(owner) = &self.watcher {
+            let error = demand_watch_error(crate::demand::DemandError::SourceWatchStartup(
+                Arc::clone(owner),
+            ));
+            self.shared
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .invalidation
+                .get_or_insert(WatchInvalidationReason::NativeRescanRequired);
+            self.fenced.notify_all();
+            return Err(error);
+        }
+        if !self
+            .root_unchanged_with_work(work)
+            .map_err(demand_watch_error)?
+        {
+            self.shared
+                .state
+                .lock()
+                .map_err(|_| NativeWatchError::StatePoisoned)?
+                .invalidation = Some(WatchInvalidationReason::RootChanged);
+            self.fenced.notify_all();
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    fn finish_fence<W: crate::demand::SourceDemandReadWork>(
+        &mut self,
+        delivered: bool,
+        work: &mut W,
+    ) -> Result<(), NativeWatchError> {
         let unchanged = self
             .root_unchanged_with_work(work)
             .map_err(demand_watch_error)?;

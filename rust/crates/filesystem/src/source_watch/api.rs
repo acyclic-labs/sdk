@@ -136,6 +136,16 @@ impl NativeSourceWatch {
     }
 
     #[cfg(target_os = "linux")]
+    pub(crate) async fn fence_async_with_work<W: SourceDemandReadWork>(
+        &self,
+        work: &mut W,
+    ) -> Result<bool, DemandError> {
+        work.check()?;
+        self.delivery().take_failure(work)?;
+        self.fence_events_async_with_work(work).await
+    }
+
+    #[cfg(target_os = "linux")]
     pub(crate) fn fence_with_work<W: SourceDemandReadWork>(
         &self,
         work: &mut W,

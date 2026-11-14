@@ -1,0 +1,12 @@
+diff --git a/rust/crates/filesystem/src/source_watch/api.rs b/rust/crates/filesystem/src/source_watch/api.rs
+--- a/rust/crates/filesystem/src/source_watch/api.rs
++++ b/rust/crates/filesystem/src/source_watch/api.rs
+@@ -143,7 +143,7 @@ impl NativeSourceWatch {
+     ) -> Result<bool, DemandError> {
+         work.check()?;
+         self.delivery().take_failure(work)?;
+-        self.fence_events_async_with_work(work).await
++        self.fence_with_work(work)
+     }
+ 
+     #[cfg(target_os = "linux")]
