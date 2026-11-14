@@ -25,6 +25,7 @@ struct Observation {
 struct Job<'a> {
     step: u32,
     source: crate::context::Context,
+    selected: Option<Arc<StepBinding>>,
     observation: Observation,
     _hold: Option<crate::conversation::ContentHold<'a>>,
 }
@@ -44,6 +45,44 @@ struct State<'a> {
     ready: Option<Result<Option<Receipt<'a>>>>,
 }
 
+pub(in crate::executor) enum Review<'a> {
+    Local(Background<'a>),
+    Shared(Arc<Background<'a>>),
+}
+
+impl Default for Review<'_> {
+    fn default() -> Self {
+        Self::Local(Background::default())
+    }
+}
+
+impl<'a> std::ops::Deref for Review<'a> {
+    type Target = Background<'a>;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Local(background) => background,
+            Self::Shared(background) => background,
+        }
+    }
+}
+
+impl<'a> Background<'a> {
+    pub(super) fn shared(io: Option<&PreparationIo>) -> Result<Arc<Self>> {
+        let storage = io.map(PreparationIo::scoped).transpose()?;
+        let bytes = acyclic_fs::shared_allocation_bytes::<Self>().map_err(|_| {
+            stock_boundary(io, crate::wire::ErrorCode::Invalid, "context review storage overflows")
+        })?;
+        crate::executor::with_history_io(storage.as_ref(), |work| -> Result<()> {
+            if let Some(work) = work.as_deref_mut() {
+                work.retain_owned(bytes)?;
+                work.allocation_attempt(bytes)?;
+            }
+            Ok(())
+        })?;
+        let custody = storage.as_ref().map(PreparationIo::take_all_owned_custody).transpose()?;
+        Ok(Arc::new(Self { _custody: custody, ..Self::default() }))
+    }
+}
 #[derive(Default)]
 pub(in crate::executor) struct Background<'a> {
     enabled: AtomicBool,
@@ -53,6 +92,7 @@ pub(in crate::executor) struct Background<'a> {
     pub(super) requested: Notify,
     pub(super) completed: Notify,
     stop: Notify,
+    _custody: Option<crate::filesystem::PreparationCustody>,
 }
 
 impl<'a> StockExecution<'a> {
@@ -221,6 +261,7 @@ impl<'a> StockExecution<'a> {
         let job = Job {
             step,
             source,
+            selected: self.selected.clone(),
             observation,
             _hold: hold,
         };
@@ -228,7 +269,7 @@ impl<'a> StockExecution<'a> {
             drop(state);
             let mut phase = DispatchPhase::new();
             let ready = self
-                .evaluate_context_review(journal, input, job.source, step, observation, &mut phase)
+                .evaluate_context_review(journal, input, (job.source, job.selected), step, observation, &mut phase)
                 .await;
             drop(job._hold);
             self.review.state.lock().await.ready = Some(ready);
@@ -347,12 +388,12 @@ impl<'a> StockExecution<'a> {
         &self,
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
-        source: crate::context::Context,
+        source: (crate::context::Context, Option<Arc<StepBinding>>),
         step: u32,
         observation: Observation,
         phase: &mut DispatchPhase,
     ) -> Result<Option<Receipt<'a>>> {
-        let capacity = self.model_capacity()?;
+        let (source, selected) = source;
         let files = self.rewrite_files(journal, (input, step)).await?;
         let files_hold = files
             .as_ref()
@@ -360,12 +401,15 @@ impl<'a> StockExecution<'a> {
             .map(|(file, io)| io.guard_owned(file.logical_owned_bytes()?))
             .transpose()?;
         let scope = crate::filesystem::PreparationScope::new(self.io)?;
-        let session = self.preparing(scope.io());
+        let mut session = self.preparing(scope.io());
+        session.selected = selected;
+        session.configuration = None;
+        let capacity = session.model_capacity()?;
         let instruction = with_history_io(session.io, |work| {
             preparation_format(
                 format_args!(
                     "{INSTRUCTION}\nSelected model: {}\nCapacity: {}\nComplete reported input tokens: {}\nOriginal billing counters: {:?}\nOriginal call latency_ns: {:?}\nPrices not supplied are unknown; do not invent prices.",
-                    self.stock.model.name,
+                    session.selected_model().name,
                     capacity.context_tokens,
                     observation.input_tokens,
                     observation.tokens,
@@ -503,7 +547,7 @@ impl<'a> StockExecution<'a> {
             let review = self.evaluate_context_review(
                 journal,
                 input,
-                job.source,
+                (job.source, job.selected),
                 step,
                 job.observation,
                 &mut phase,
@@ -645,6 +689,7 @@ mod tests {
             state.queued = Some(Job {
                 step: 0,
                 source: crate::context::Context::default(),
+                selected: None,
                 observation: Observation {
                     tokens: ModelTokenUsage::default(),
                     input_tokens: 4096,
