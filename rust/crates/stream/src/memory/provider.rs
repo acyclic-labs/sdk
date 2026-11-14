@@ -58,10 +58,7 @@ impl MemoryStream {
     ) -> Result<crate::Heads, StreamError> {
         request.validate()?;
         self.revisions.wait(&request.at_least).await?;
-        let captured = self
-            .capture_heads(&request, HeadDurability::Volatile)
-            .await?;
-        Ok(captured.view)
+        self.capture_heads(&request, HeadDurability::Volatile).await
     }
 
     pub(crate) async fn inspect_idempotency_inner(
@@ -130,6 +127,15 @@ impl MemoryStream {
     /// Durable providers confirm the captured state. Deferred providers reserve
     /// later watermark fields without claiming durability during capture.
     pub(crate) async fn capture_heads(
+        &self,
+        request: &crate::HeadsRequest,
+        durability: HeadDurability,
+    ) -> Result<crate::Heads, StreamError> {
+        Ok(self.capture_owned_heads(request, durability).await?.view)
+    }
+
+    /// Deferred durability needs the ownership from the original observation.
+    pub(crate) async fn capture_owned_heads(
         &self,
         request: &crate::HeadsRequest,
         durability: HeadDurability,

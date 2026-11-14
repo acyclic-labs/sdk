@@ -150,7 +150,7 @@ impl StreamProvider for LocalStream {
                         let captured = self
                             .inner
                             .provider
-                            .capture_heads(&request, crate::memory::HeadDurability::Deferred)
+                            .capture_owned_heads(&request, crate::memory::HeadDurability::Deferred)
                             .await?;
                         let revision = *self.inner.revision.borrow();
                         Ok::<_, StreamError>((captured, revision))

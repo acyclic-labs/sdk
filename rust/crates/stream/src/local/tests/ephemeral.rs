@@ -103,7 +103,7 @@ async fn releasing_a_lease_cannot_make_captured_heads_durable() -> Result {
                     let heads = provider
                         .inner
                         .provider
-                        .capture_heads(&request, crate::memory::HeadDurability::Deferred)
+                        .capture_owned_heads(&request, crate::memory::HeadDurability::Deferred)
                         .await?;
                     Ok::<_, StreamError>((heads, *provider.inner.revision.borrow()))
                 })
