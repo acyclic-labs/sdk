@@ -70,10 +70,10 @@ through the shared sweep capture on every replay. The failure includes its
 one-minimal action list and the standard `DST_SEED` replay command. Lazy overlay
 payloads also come from that explicit list, so shrinking does not redraw them.
 
-Historical target: commit `2aef6627c360ea70fe544800d656a1af2fcf90ea`
-fixed incremental join ancestry that could overwrite a parent's resolution of
-an earlier child change. The simulator's incremental join operation exercises
-that class. A pre-fix seed result is required before claiming historical proof.
-
-Execution and timing evidence, including the historical negative/positive
-comparison, must be recorded before treating these obligations as proved.
+Historical proof: commit `2aef6627c360ea70fe544800d656a1af2fcf90ea` fixed
+incremental join ancestry that could overwrite a parent's resolution of an
+earlier child change. With that fix reverted, `seeded_volume_history` fails at
+seed 0 (`DST_SEED=0`): after the parent resolves an imported child file, the
+next incremental join is no longer `Applied`. Minimization shrinks the failing
+history to that single fork-and-join action. With the fix in place, the same
+seed passes in about 0.13 s.
