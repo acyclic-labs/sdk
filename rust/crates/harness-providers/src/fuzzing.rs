@@ -693,8 +693,12 @@ fn unanswered_reasoning(items: &[serde_json::Value]) -> usize {
 /// # Panics
 /// If validation or repair disagrees with the independent turn reference.
 pub fn assert_turns(input: &[u8]) {
+    assert_eq!(turns(input).map_err(|error| format!("{error:?}")), Ok(()));
+}
+
+fn turns(input: &[u8]) -> ProofResult {
     let Some((&selector, input)) = input.split_first() else {
-        return;
+        return Ok(());
     };
     let adapter = if selector.is_multiple_of(2) {
         Adapter::Anthropic
@@ -702,7 +706,7 @@ pub fn assert_turns(input: &[u8]) {
         Adapter::Gemini
     };
     let Ok(serde_json::Value::Array(messages)) = crate::json(input) else {
-        return;
+        return Ok(());
     };
     let errors = crate::validate_input(adapter, &turn_body(adapter, &messages));
     let opens = user_turn(messages.first());
@@ -722,18 +726,19 @@ pub fn assert_turns(input: &[u8]) {
         );
     }
     let replay = crate::projection::wire::replay_turns;
-    let Some(output) = replay(adapter, &messages) else {
-        return;
+    let Some(output) = replay(adapter, &messages)? else {
+        return Ok(());
     };
     assert_eq!(turn_repair_violation(adapter, &messages, &output), None);
     if errors.is_empty() && canonical_turns(adapter, &messages) {
         assert_eq!(output, messages, "valid canonical turns were changed");
     }
     assert_eq!(
-        replay(adapter, &output).as_ref(),
+        replay(adapter, &output)?.as_ref(),
         Some(&output),
         "turn repair is not idempotent"
     );
+    Ok(())
 }
 
 /// Turns repair must leave unchanged: envelopes holding only the role and

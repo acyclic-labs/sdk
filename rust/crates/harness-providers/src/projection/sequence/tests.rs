@@ -83,13 +83,18 @@ fn checked_in_byte_corpus() {
 
 mod turns {
     use super::super::super::wire::Item;
-    use super::super::super::wire::replay_turns_with;
+    use super::super::super::wire::replay_turns_with as checked_replay_turns;
     use super::super::{RULES, Rules};
     use crate::Adapter;
     use crate::fuzzing::{assert_turns, canonical_turns, turn_repair_violation};
     use proptest::prelude::*;
     use serde_json::{Value, json};
 
+    fn replay_turns_with(adapter: Adapter, messages: &[Value], rules: Rules) -> Option<Vec<Value>> {
+        let result = checked_replay_turns(adapter, messages, rules);
+        assert!(result.is_ok(), "replay failed: {result:?}");
+        result.ok().flatten()
+    }
     fn part(adapter: Adapter, kind: u8, key: u8) -> Value {
         let (name, id) = (format!("f{}", key % 2), format!("c{key}"));
         match (adapter, kind % 4) {
