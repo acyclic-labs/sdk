@@ -139,7 +139,7 @@ async fn dependent_resources_keep_original_call_grants_and_live_trust() -> TestR
         ),
         Err(StreamError::AccessDenied)
     );
-    crate::session::authority_tests::assert_verifier_denial(dependency.authorize(
+    crate::session::authority::tests::assert_verifier_denial(dependency.authorize(
         "fs:/volume/visible/file",
         &[],
         &attributes,
@@ -211,7 +211,7 @@ async fn dependent_resources_keep_original_call_grants_and_live_trust() -> TestR
         },
         "fs/list",
     )?;
-    crate::session::authority_tests::assert_verifier_denial(listed.authorize(
+    crate::session::authority::tests::assert_verifier_denial(listed.authorize(
         "fs:/volume/visible",
         &[],
         &attributes,
@@ -261,7 +261,7 @@ async fn dependent_resources_keep_original_call_grants_and_live_trust() -> TestR
     let mut revoked = core::pin::pin!(revoked);
     let (_authorization, _producer) = calls.recv().await.ok_or("third call did not dispatch")?;
     state.publish(acyclic_auth::testing::Snapshot::default(), u64::MAX);
-    crate::session::authority_tests::assert_verifier_denial(dependency.authorize(
+    crate::session::authority::tests::assert_verifier_denial(dependency.authorize(
         "fs:/volume/visible/file",
         &[],
         &attributes,
