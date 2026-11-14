@@ -5,6 +5,8 @@ use crate::{
     hooks::HookRun,
     tool::ToolDefinition,
 };
+mod files;
+pub use files::ProgramFiles;
 
 /// A manifest and entry bytes selected from one caller-pinned effective tree.
 /// The revision includes imported manifest modules and both native entries.

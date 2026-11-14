@@ -4,9 +4,10 @@
 //! as an Admission in the original owner Streams.
 
 use super::*;
+use crate::config::Tree as _;
 use crate::config::{self, AdmissionStatus, AgentConfig, Sampling};
-use crate::conversation::{ContentAccess, ContentGrant};
-use crate::layers::{Layer, is_off};
+use crate::conversation::{ContentAccess, ContentGrant, ContentResidencyVerifier};
+use crate::layers::Layer;
 use crate::model::ResolvedModel;
 
 /// The settings admitted from one original source cut.
@@ -37,6 +38,7 @@ pub(super) struct Volumes<'a> {
 /// Every settings entry point borrows this tree and its original read grant.
 pub(super) struct Tree<'a> {
     volumes: &'a Volumes<'a>,
+    reader: Arc<dyn ContentResidencyVerifier>,
     read: ContentGrant,
     generation: crate::resources::GenerationRef,
     configuration: std::borrow::Cow<'a, [Option<crate::layers::PinnedLayer>; 4]>,
@@ -199,19 +201,15 @@ impl config::Tree for Tree<'_> {
         path: &'a str,
     ) -> futures::future::BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
         Box::pin(async move {
-            let seed = || crate::seed::file(path).map(acyclic_stream::OwnedBytes::from_static);
-            if !crate::layers::layered(path) {
-                return Ok(seed());
+            crate::layers::ContentTree {
+                reader: self.reader.as_ref(),
+                home: (self.volumes.home, &self.generation),
+                configuration: self.configuration.as_ref(),
+                maximum_bytes: self.volumes.maximum_bytes,
+                io: self.io,
             }
-            if let Some((_, bytes)) = self.home(path).await? {
-                return Ok((!is_off(&bytes)).then_some(bytes));
-            }
-            for layer in self.configuration.iter().rev().flatten() {
-                if let Some((_, bytes)) = self.source(layer, path).await? {
-                    return Ok((!is_off(&bytes)).then_some(bytes));
-                }
-            }
-            Ok(seed())
+            .read(path)
+            .await
         })
     }
 }
@@ -274,6 +272,13 @@ impl<'a> Tree<'a> {
             .transpose()?;
         Ok(Self {
             volumes,
+            reader: crate::filesystem::FilesystemContentVerifier::new(
+                volumes.files.clone(),
+                volumes.verifier,
+                volumes.signed,
+                volumes.maximum_bytes,
+                io,
+            )?,
             read,
             generation,
             configuration: std::borrow::Cow::Borrowed(volumes.configuration),
@@ -308,6 +313,13 @@ impl<'a> Tree<'a> {
             .transpose()?;
         Ok(Self {
             volumes,
+            reader: crate::filesystem::FilesystemContentVerifier::new(
+                volumes.files.clone(),
+                volumes.verifier,
+                volumes.signed,
+                volumes.maximum_bytes,
+                io,
+            )?,
             read,
             generation,
             configuration: std::borrow::Cow::Borrowed(volumes.configuration),
@@ -740,21 +752,24 @@ mod tests {
             .err()
             .ok_or_else(|| Error::Invalid("private settings selection was authorized".into()))?;
         assert_eq!(refused.code(), crate::wire::ErrorCode::Unauthorized);
-        let source = super::super::programs::Programs {
-            local: Arc::downgrade(&harness),
-            home: harness.scratch.clone(),
-            verifier: harness.verifier.clone(),
-            scope: harness.signed.copy(&mut None)?,
-            shell: Arc::new(harness.tools.get("shell", None, None)?.unwrap().clone()),
-            catalog: crate::tool::ToolRegistry::default(),
-        };
+        let shell = Arc::new(harness.tools.get("shell", None, None)?.unwrap().clone());
+        let source = crate::plugins::ProgramFiles::new(
+            crate::filesystem::FilesystemContentVerifier::new(
+                harness.files.clone(),
+                &harness.verifier,
+                &harness.signed,
+                None,
+                None,
+            )?,
+            harness.scratch.clone(),
+            (*harness.harness.issuer_configuration()).clone(),
+            shell.clone(),
+            None,
+        );
         let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
         let control = crate::executor::PreparationIo::from_budget(budget, &cancellation)?;
         let loaded = source.load("budget", Some(&control))?.await?.unwrap();
-        assert!(Arc::ptr_eq(
-            loaded.executor.capability().unwrap(),
-            &source.shell,
-        ));
+        assert!(Arc::ptr_eq(loaded.executor.capability().unwrap(), &shell,));
         drop(loaded);
         let mut allowance = budget;
         allowance.output_bytes = control

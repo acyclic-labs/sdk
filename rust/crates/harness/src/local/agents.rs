@@ -325,14 +325,21 @@ impl TurnContext for LocalContext {
                 .await?;
             #[cfg(not(target_arch = "wasm32"))]
             let executor = match executor.tool_binding(crate::tools::shell::PLATFORM.name)? {
-                Some(shell) => executor.with_tool_source(Arc::new(super::programs::Programs {
-                    local: Arc::downgrade(&local),
-                    home: bindings.context.scratch.clone(),
-                    verifier: bindings.context.verifier.clone(),
-                    scope: bindings.context.scope.copy(&mut None)?,
-                    shell,
-                    catalog: crate::tool::ToolRegistry::default(),
-                })),
+                Some(shell) => {
+                    executor.with_tool_source(Arc::new(crate::plugins::ProgramFiles::new(
+                        crate::filesystem::FilesystemContentVerifier::new(
+                            local.files.clone(),
+                            &bindings.context.verifier,
+                            &bindings.context.scope,
+                            local.limits.file_bytes,
+                            None,
+                        )?,
+                        bindings.context.scratch.clone(),
+                        (*local.harness.issuer_configuration()).clone(),
+                        shell,
+                        local.limits.file_bytes,
+                    )))
+                }
                 None => executor,
             };
             // Before the turn's first request: the step-0 boundary appends
