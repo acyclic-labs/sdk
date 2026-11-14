@@ -863,10 +863,13 @@ async fn projection_lock_order_ignores_alias_order_and_duplicate_bindings() -> R
             0,
         )?;
         assert_eq!(prepared.cwd, std::fs::canonicalize(&view).map_err(storage)?);
+        let discovery: std::collections::BTreeMap<String, String> =
+            serde_json::from_str(&prepared.environment["ACYCLIC_WORKSPACES"]).map_err(storage)?;
         assert_eq!(
-            prepared.environment.get("ACYCLIC_VOLUME_HOME"),
+            discovery.get("home"),
             Some(&view.to_string_lossy().into_owned())
         );
+        assert_eq!(discovery.get("project"), discovery.get("home"));
         Ok(((), claims))
     })
     .await?;
