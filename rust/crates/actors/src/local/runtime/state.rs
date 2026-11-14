@@ -44,7 +44,12 @@ impl<P: StreamProvider + ?Sized> StateOwner<P> {
                     let binding = self
                         .store
                         .bind_state((*self.snapshot).clone(), self.epoch)?;
-                    match binding.read_journal(from, limit).await {
+                    let records = tokio::select! {
+                        biased;
+                        () = stopped.cancelled() => return Ok(()),
+                        records = binding.read_journal(from, limit) => records,
+                    };
+                    match records {
                         Ok(records) => {
                             let _ = reply.send(Ok(records
                                 .into_iter()
@@ -105,6 +110,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         invoke: impl FnOnce(Delivery) -> crate::guest::GuestFuture<'f, T>,
     ) -> Result<T, Error> {
         let request = self.requests.open(actor, epoch);
+        let stopped = crate::guest::CancellationToken::new();
         let mut owner = self
             .handler
             .manifest()
@@ -113,8 +119,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .any(crate::domain::Binding::is_actor_state)
             .then(|| {
                 let (commands, receiver) = tokio::sync::mpsc::channel(1);
-                self.requests
-                    .bind_state(request.id(), crate::guest::ActorStateHost { commands });
+                self.requests.bind_state(
+                    request.id(),
+                    crate::guest::ActorStateHost {
+                        commands,
+                        stopped: stopped.clone(),
+                    },
+                );
                 StateOwner {
                     store: self.store.clone(),
                     snapshot: Arc::clone(cut),
@@ -123,7 +134,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     conditions: self.handler.publication_conditions(actor),
                 }
             });
-        let stopped = crate::guest::CancellationToken::new();
         let delivery = delivery(request.id());
         let mut request = Some(request);
         let execution = async {
@@ -175,6 +185,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 }
                 futures::future::Either::Right((result, _)) => {
                     drop(request.take());
+                    stopped.cancel();
                     result.and(Err(Error::Invalid("actor state producer stopped")))
                 }
             }

@@ -263,73 +263,121 @@ async fn unknown_state_flush_retains_its_publication_without_reentering_the_hand
 }
 
 #[tokio::test(start_paused = true)]
-async fn handler_deadline_revokes_state_calls_but_retains_the_dispatched_flush() -> TestResult {
-    let provider = Arc::new(super::pause::Provider::default());
-    let store = Store::new(provider.clone(), root()?);
-    let requests = Requests::default();
-    let mut manifest = crate::guest::wire::decode_manifest(&crate::guest::wire::encode_manifest(
-        Package::new()?.manifest(),
-    ))?;
-    manifest
-        .bindings
-        .push(crate::domain::Binding::actor_state("STATE".into())?);
-    manifest.limits = crate::domain::ActorLimits::new(Some(10), None, None)?;
-    let (entered, observing) = tokio::sync::oneshot::channel();
-    let gate = Arc::new(tokio::sync::Semaphore::new(0));
-    let handler = Arc::new(Flushes {
-        manifest,
-        requests: requests.clone(),
-        calls: AtomicU64::new(0),
-        retained: std::sync::Mutex::new(None),
-        entered: std::sync::Mutex::new(Some(entered)),
-        gate: Some(gate.clone()),
-    });
-    let runtime = Runtime::new(
-        requests.clone(),
-        store.clone(),
-        handler.clone(),
-        Arc::new(SystemClock),
-    );
-    let address = spawn_with(&store, "deadline-state", &[b"emit"]).await?;
-    runtime.place(address.clone(), 1).await?;
-    let mut delivery = Box::pin(runtime.drain_event(&address));
-    let request = match futures::future::select(delivery.as_mut(), observing).await {
-        futures::future::Either::Right((request, _)) => request?,
-        futures::future::Either::Left((result, _)) => {
-            return Err(format!("delivery ended before handler admission: {result:?}").into());
+async fn handler_deadline_cancels_reads_and_revokes_calls_but_retains_publication() -> TestResult {
+    for journal_read in [false, true] {
+        let provider = Arc::new(super::pause::Provider::default());
+        let store = Store::new(provider.clone(), root()?);
+        let requests = Requests::default();
+        let mut manifest = crate::guest::wire::decode_manifest(
+            &crate::guest::wire::encode_manifest(Package::new()?.manifest()),
+        )?;
+        manifest
+            .bindings
+            .push(crate::domain::Binding::actor_state("STATE".into())?);
+        manifest.limits = crate::domain::ActorLimits::new(Some(10), None, None)?;
+        let (entered, observing) = tokio::sync::oneshot::channel();
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let handler = Arc::new(Flushes {
+            manifest,
+            requests: requests.clone(),
+            calls: AtomicU64::new(0),
+            retained: std::sync::Mutex::new(None),
+            entered: std::sync::Mutex::new(Some(entered)),
+            gate: Some(gate.clone()),
+        });
+        let runtime = Runtime::new(
+            requests.clone(),
+            store.clone(),
+            handler.clone(),
+            Arc::new(SystemClock),
+        );
+        let address = spawn_with(&store, "deadline-state", &[b"emit"]).await?;
+        runtime.place(address.clone(), 1).await?;
+        let mut delivery = Box::pin(runtime.drain_event(&address));
+        let request = match futures::future::select(delivery.as_mut(), observing).await {
+            futures::future::Either::Right((request, _)) => request?,
+            futures::future::Either::Left((result, _)) => {
+                return Err(format!("delivery ended before handler admission: {result:?}").into());
+            }
+        };
+        let (entered, release) = if journal_read {
+            provider.hold_journal()
+        } else {
+            provider.arm(super::pause::Fault::Commit)
+        };
+        gate.add_permits(1);
+        match futures::future::select(delivery.as_mut(), entered).await {
+            futures::future::Either::Right((entered, _)) => entered?,
+            futures::future::Either::Left((result, _)) => {
+                return Err(format!("delivery ended before native publication: {result:?}").into());
+            }
         }
-    };
-    let (entered, release) = provider.arm(super::pause::Fault::Commit);
-    gate.add_permits(1);
-    match futures::future::select(delivery.as_mut(), entered).await {
-        futures::future::Either::Right((entered, _)) => entered?,
-        futures::future::Either::Left((result, _)) => {
-            return Err(format!("delivery ended before native publication: {result:?}").into());
+        let retained = handler
+            .retained
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or("missing state capability")?;
+        let mut queued = Box::pin(retained.seed());
+        assert!(futures::poll!(queued.as_mut()).is_pending());
+        let mut backpressured = Box::pin(retained.read_journal(0, 1));
+        assert!(futures::poll!(backpressured.as_mut()).is_pending());
+        tokio::time::advance(std::time::Duration::from_millis(10)).await;
+        // Drive the original timeout event once. The publication remains physically
+        // held at its provider, while the request must already be revoked.
+        let expired = futures::poll!(delivery.as_mut());
+        if journal_read {
+            assert!(matches!(
+                expired,
+                std::task::Poll::Ready(Err(Error::Invalid(
+                    "handler exceeded its manifest timeout"
+                )))
+            ));
+            assert!(
+                release.is_canceled(),
+                "deadline retained a read with no publication"
+            );
+        } else {
+            assert!(
+                expired.is_pending(),
+                "deadline dropped an original publication"
+            );
         }
+        assert!(matches!(
+            requests.admit(request),
+            Err(crate::guest::GuestError::Revoked)
+        ));
+        assert!(matches!(
+            futures::poll!(queued.as_mut()),
+            std::task::Poll::Ready(Err(crate::guest::GuestError::Revoked))
+        ));
+        assert!(matches!(
+            futures::poll!(backpressured.as_mut()),
+            std::task::Poll::Ready(Err(crate::guest::GuestError::Revoked))
+        ));
+        let mut late = Box::pin(retained.seed());
+        assert!(matches!(
+            futures::poll!(late.as_mut()),
+            std::task::Poll::Ready(Err(crate::guest::GuestError::Revoked))
+        ));
+        if !journal_read {
+            release
+                .send(())
+                .map_err(|_| "state publication owner was dropped at its caller deadline")?;
+            assert!(matches!(
+                delivery.await,
+                Err(Error::Invalid("handler exceeded its manifest timeout"))
+            ));
+        }
+        let cut = store.load(&address).await?;
+        let state = cut.state().ok_or("missing committed state")?;
+        assert_eq!(state.cursor("inbox"), Some(0));
+        assert_eq!(state.journal_tail, 1);
+        assert_eq!(
+            state.metadata.get("value"),
+            Some(&Bytes::from_static(b"first"))
+        );
+        assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
     }
-    tokio::time::advance(std::time::Duration::from_millis(10)).await;
-    // Drive the original timeout event once. The publication remains physically
-    // held at its provider, while the request must already be revoked.
-    assert!(futures::poll!(delivery.as_mut()).is_pending());
-    assert!(matches!(
-        requests.admit(request),
-        Err(crate::guest::GuestError::Revoked)
-    ));
-    release
-        .send(())
-        .map_err(|_| "state publication owner was dropped at its caller deadline")?;
-    assert!(matches!(
-        delivery.await,
-        Err(Error::Invalid("handler exceeded its manifest timeout"))
-    ));
-    let cut = store.load(&address).await?;
-    let state = cut.state().ok_or("missing committed state")?;
-    assert_eq!(state.cursor("inbox"), Some(0));
-    assert_eq!(state.journal_tail, 1);
-    assert_eq!(
-        state.metadata.get("value"),
-        Some(&Bytes::from_static(b"first"))
-    );
-    assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
     Ok(())
 }

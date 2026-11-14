@@ -60,6 +60,7 @@ pub struct ActorStateCommit {
 #[derive(Clone, Debug)]
 pub struct ActorStateHost {
     pub(crate) commands: tokio::sync::mpsc::Sender<StateCommand>,
+    pub(crate) stopped: super::CancellationToken,
 }
 
 #[derive(Debug)]
@@ -82,11 +83,16 @@ impl ActorStateHost {
         command: impl FnOnce(tokio::sync::oneshot::Sender<Result<T, super::GuestError>>) -> StateCommand,
     ) -> Result<T, super::GuestError> {
         let (reply, receive) = tokio::sync::oneshot::channel();
-        self.commands
-            .send(command(reply))
-            .await
-            .map_err(|_| super::GuestError::Revoked)?;
-        receive.await.map_err(|_| super::GuestError::Revoked)?
+        tokio::select! {
+            biased;
+            () = self.stopped.cancelled() => return Err(super::GuestError::Revoked),
+            sent = self.commands.send(command(reply)) => sent.map_err(|_| super::GuestError::Revoked)?,
+        }
+        tokio::select! {
+            biased;
+            () = self.stopped.cancelled() => Err(super::GuestError::Revoked),
+            reply = receive => reply.map_err(|_| super::GuestError::Revoked)?,
+        }
     }
 
     /// Metadata and journal tail from the original admitted cut, with no read.
