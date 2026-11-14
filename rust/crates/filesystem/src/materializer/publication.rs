@@ -344,7 +344,7 @@ impl JournaledMaterializer<crate::LocalCoreStateStore, Arc<NativeTreeMaterializa
     ) -> Result<(crate::NativeRootIdentity, MaterializationJournal), NativeWorkspacePublicationError>
     {
         let completion = self.store.prepare_action(journal).await?;
-        let identity = self.backend.reset_target_directory("").await?;
+        let (identity, completion) = self.backend.reset_target_directory("", completion).await?;
         Ok((identity, completion.await?))
     }
 }
