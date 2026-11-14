@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import ignore from "ignore";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -38,6 +38,7 @@ export async function generateFiles(destination, render, prune = [], check = fal
       projectGenerated(join(destination, name), readFileSync(source), check);
     }
     for (const directory of prune.map(name => join(destination, name))) {
+      if (!check) recordGeneration("P", directory);
       if (!existsSync(directory)) continue;
       for (const entry of readdirSync(directory, { recursive: true, withFileTypes: true })) {
         const path = join(entry.parentPath, entry.name);
@@ -50,7 +51,14 @@ export async function generateFiles(destination, render, prune = [], check = fal
   } finally { rmSync(temporary, { recursive: true, force: true }); }
 }
 
+// A memoized generation (generation-cache.mjs) names its journal here; every process it runs appends what it projects
+// (W) and every directory it prunes to exactly its projections (P).
+export const recordGeneration = (kind, path) => {
+  if (process.env.SDK_GENERATION_JOURNAL) appendFileSync(process.env.SDK_GENERATION_JOURNAL, `${kind}\t${path}\n`);
+};
+
 export const writeChanged = (path, content) => {
+  recordGeneration("W", path);
   const bytes = typeof content === "string" ? Buffer.from(content) : content;
   if (!existsSync(path) || !readFileSync(path).equals(bytes)) {
     mkdirSync(dirname(path), { recursive: true });

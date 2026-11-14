@@ -177,3 +177,47 @@ test("a selected generation emits actors N-API declarations only for a native bu
   // Stream's TypeScript imports its declarations as types, so every selection keeps them.
   assert.equal(keepsGenerator(stream, ["stream"], false), true);
 });
+
+test("a memoized generation restores exactly what its run projected and pruned, and only for what it covered", async () => {
+  const { memoizedGeneration } = await import("./generation-cache.mjs");
+  const { recordGeneration, writeChanged } = await import("./generated-bindings.mjs");
+  const root = mkdtempSync(join(tmpdir(), "sdk-memo-root-"));
+  const store = mkdtempSync(join(tmpdir(), "sdk-memo-store-"));
+  const previous = process.env.SDK_GENERATION_CACHE;
+  process.env.SDK_GENERATION_CACHE = store;
+  try {
+    const runs = [];
+    const generate = async () => {
+      runs.push("run");
+      writeChanged(join(root, "a.txt"), "a");
+      writeChanged(join(root, "out/x.txt"), "x");
+      writeChanged(join(root, "out/dropped.txt"), "dropped");
+      recordGeneration("P", join(root, "out"));
+      rmSync(join(root, "out/dropped.txt"));
+    };
+    const actors = { name: "actors", packages: ["core", "auth", "actors"], native: false };
+    await memoizedGeneration(root, actors, generate, { key: "k" });
+    assert.deepEqual(runs, ["run"]);
+    rmSync(join(root, "a.txt"));
+    writeFileSync(join(root, "out/x.txt"), "edited");
+    writeFileSync(join(root, "out/stale.txt"), "stale");
+    // A narrower selection is covered; the hit restores projections and prunes what the run pruned.
+    await memoizedGeneration(root, { name: "auth", packages: ["core", "auth"], native: false }, generate, { key: "k" });
+    assert.deepEqual(runs, ["run"]);
+    assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "a");
+    assert.equal(readFileSync(join(root, "out/x.txt"), "utf8"), "x");
+    assert.throws(() => readFileSync(join(root, "out/stale.txt")), { code: "ENOENT" });
+    assert.throws(() => readFileSync(join(root, "out/dropped.txt")), { code: "ENOENT" });
+    // Native outputs and other inputs are not covered.
+    await memoizedGeneration(root, { ...actors, name: "actors+native", native: true }, generate, { key: "k" });
+    await memoizedGeneration(root, actors, generate, { key: "other" });
+    assert.deepEqual(runs, ["run", "run", "run"]);
+    // A damaged entry is an error, never a hit.
+    writeFileSync(join(store, "other", "actors", "files", "a.txt"), "tampered");
+    await assert.rejects(memoizedGeneration(root, actors, generate, { key: "other" }), /damaged entry/);
+  } finally {
+    if (previous === undefined) delete process.env.SDK_GENERATION_CACHE; else process.env.SDK_GENERATION_CACHE = previous;
+    rmSync(root, { recursive: true, force: true });
+    rmSync(store, { recursive: true, force: true });
+  }
+});
