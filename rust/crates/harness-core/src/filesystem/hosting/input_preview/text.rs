@@ -47,82 +47,7 @@ impl Text {
     pub fn feed(&mut self, source: &str) -> Result<String, Error> {
         let mut output = String::new();
         for character in source.chars() {
-            if let Some(quoted) = &mut self.quoted {
-                if let Some(raw) = &mut quoted.raw {
-                    raw.push(character);
-                    // A JSON spelling of the four ASCII characters "text"
-                    // needs at most 24 bytes, plus its two quotes. Longer keys
-                    // cannot select text, however long the original key is.
-                    if matches!(quoted.role, Role::Key) && raw.len() > 26 {
-                        quoted.raw = None;
-                    }
-                }
-                if quoted.digits != 0 {
-                    let digit = character
-                        .to_digit(16)
-                        .ok_or(Error::Record("invalid input JSON escape"))?;
-                    quoted.unit = (quoted.unit << 4) | digit as u16;
-                    quoted.digits -= 1;
-                    if quoted.digits == 0 {
-                        if quoted.high {
-                            if !(0xdc00..=0xdfff).contains(&quoted.unit) {
-                                return Err(Error::Record("invalid input JSON surrogate"));
-                            }
-                            quoted.high = false;
-                        } else if (0xd800..=0xdbff).contains(&quoted.unit) {
-                            quoted.high = true;
-                        } else if (0xdc00..=0xdfff).contains(&quoted.unit) {
-                            return Err(Error::Record("invalid input JSON surrogate"));
-                        }
-                    }
-                } else if quoted.escape {
-                    quoted.escape = false;
-                    if character == 'u' {
-                        quoted.digits = 4;
-                        quoted.unit = 0;
-                    } else if quoted.high
-                        || !matches!(character, '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't')
-                    {
-                        return Err(Error::Record("invalid input JSON escape"));
-                    }
-                } else if character == '\\' {
-                    quoted.escape = true;
-                } else if quoted.high {
-                    return Err(Error::Record("invalid input JSON surrogate"));
-                } else if character == '"' {
-                    let quoted = self.quoted.take().expect("open JSON string");
-                    match quoted.role {
-                        Role::Key => {
-                            if let Some(raw) = quoted.raw {
-                                let key: String = serde_json::from_str(&raw)
-                                    .map_err(|_| Error::Record("invalid input JSON key"))?;
-                                self.frames.last_mut().expect("key object").text = key == "text";
-                            }
-                        }
-                        Role::Text => output.push_str(&decode(quoted.raw.expect("text chunk"))?),
-                        Role::Other => {}
-                    }
-                    if self.frames.is_empty() {
-                        self.ended = true;
-                    }
-                    continue;
-                } else if character < ' ' {
-                    return Err(Error::Record("invalid input JSON string"));
-                }
-                if matches!(quoted.role, Role::Text)
-                    && !quoted.escape
-                    && quoted.digits == 0
-                    && !quoted.high
-                    && quoted
-                        .raw
-                        .as_ref()
-                        .is_some_and(|raw| raw.len() >= self.chunk)
-                {
-                    let mut raw = quoted.raw.take().expect("text chunk");
-                    raw.push('"');
-                    output.push_str(&decode(raw)?);
-                    quoted.raw = Some("\"".into());
-                }
+            if self.feed_quoted(character, &mut output)? {
                 continue;
             }
             if character.is_ascii_whitespace() {
@@ -135,7 +60,8 @@ impl Text {
                 '{' | '[' => {
                     let part = character == '{'
                         && (self.frames.is_empty()
-                            || (self.frames.len() == 1 && !self.frames[0].object));
+                            || (self.frames.len() == 1
+                                && self.frames.first().is_some_and(|frame| !frame.object)));
                     self.frames.push(Frame {
                         object: character == '{',
                         part,
@@ -195,6 +121,107 @@ impl Text {
             }
         }
         Ok(output)
+    }
+
+    fn feed_quoted(&mut self, character: char, output: &mut String) -> Result<bool, Error> {
+        let Some(quoted) = &mut self.quoted else {
+            return Ok(false);
+        };
+        if let Some(raw) = &mut quoted.raw {
+            raw.push(character);
+            // A JSON spelling of the four ASCII characters "text"
+            // needs at most 24 bytes, plus its two quotes. Longer keys
+            // cannot select text, however long the original key is.
+            if matches!(quoted.role, Role::Key) && raw.len() > 26 {
+                quoted.raw = None;
+            }
+        }
+        if quoted.digits != 0 {
+            let digit = character
+                .to_digit(16)
+                .ok_or(Error::Record("invalid input JSON escape"))?;
+            quoted.unit = (quoted.unit << 4)
+                | u16::try_from(digit).map_err(|_| Error::Record("invalid input JSON escape"))?;
+            quoted.digits -= 1;
+            if quoted.digits == 0 {
+                if quoted.high {
+                    if !(0xdc00..=0xdfff).contains(&quoted.unit) {
+                        return Err(Error::Record("invalid input JSON surrogate"));
+                    }
+                    quoted.high = false;
+                } else if (0xd800..=0xdbff).contains(&quoted.unit) {
+                    quoted.high = true;
+                } else if (0xdc00..=0xdfff).contains(&quoted.unit) {
+                    return Err(Error::Record("invalid input JSON surrogate"));
+                }
+            }
+        } else if quoted.escape {
+            quoted.escape = false;
+            if character == 'u' {
+                quoted.digits = 4;
+                quoted.unit = 0;
+            } else if quoted.high
+                || !matches!(character, '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't')
+            {
+                return Err(Error::Record("invalid input JSON escape"));
+            }
+        } else if character == '\\' {
+            quoted.escape = true;
+        } else if quoted.high {
+            return Err(Error::Record("invalid input JSON surrogate"));
+        } else if character == '"' {
+            self.finish_quoted(output)?;
+            return Ok(true);
+        } else if character < ' ' {
+            return Err(Error::Record("invalid input JSON string"));
+        }
+        if matches!(quoted.role, Role::Text)
+            && !quoted.escape
+            && quoted.digits == 0
+            && !quoted.high
+            && quoted
+                .raw
+                .as_ref()
+                .is_some_and(|raw| raw.len() >= self.chunk)
+        {
+            let mut raw = quoted
+                .raw
+                .take()
+                .ok_or(Error::Record("input JSON has no text chunk"))?;
+            raw.push('"');
+            output.push_str(&decode(raw)?);
+            quoted.raw = Some("\"".into());
+        }
+        Ok(true)
+    }
+
+    fn finish_quoted(&mut self, output: &mut String) -> Result<(), Error> {
+        let quoted = self
+            .quoted
+            .take()
+            .ok_or(Error::Record("input JSON has no open string"))?;
+        match quoted.role {
+            Role::Key => {
+                if let Some(raw) = quoted.raw {
+                    let key: String = serde_json::from_str(&raw)
+                        .map_err(|_| Error::Record("invalid input JSON key"))?;
+                    self.frames
+                        .last_mut()
+                        .ok_or(Error::Record("input JSON key has no object"))?
+                        .text = key == "text";
+                }
+            }
+            Role::Text => output.push_str(&decode(
+                quoted
+                    .raw
+                    .ok_or(Error::Record("input JSON has no text chunk"))?,
+            )?),
+            Role::Other => {}
+        }
+        if self.frames.is_empty() {
+            self.ended = true;
+        }
+        Ok(())
     }
 
     pub fn finish(self) -> Result<(), Error> {
