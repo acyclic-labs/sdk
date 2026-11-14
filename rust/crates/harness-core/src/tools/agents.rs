@@ -513,7 +513,9 @@ impl AgentTool {
         };
         let recorded = match turn.effects.record(&key, &effect).await {
             Ok(recorded) => recorded,
-            Err(error @ Error::Conflict(_)) => return Ok(super::rejected_input(error)),
+            Err(error @ (Error::Conflict(_) | Error::MergeConflict { .. })) => {
+                return Ok(super::rejected_input(error));
+            }
             Err(error) => return Err(error),
         };
         self.result(recorded)
@@ -1210,7 +1212,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
 
-    struct Effects(std::sync::atomic::AtomicUsize);
+    struct Effects(std::sync::atomic::AtomicUsize, bool);
 
     impl TurnEffects for Effects {
         fn sent<'a>(
@@ -1233,6 +1235,11 @@ mod tests {
         ) -> BoxProviderFuture<'a, Result<TurnEffect>> {
             Box::pin(async move {
                 self.0.fetch_add(1, Ordering::SeqCst);
+                if self.1 {
+                    return Err(Error::MergeConflict {
+                        paths: vec!["work/output.txt".into()],
+                    });
+                }
                 Ok(effect.clone())
             })
         }
@@ -1245,7 +1252,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn archive_keeps_a_persistent_child_index_failure_out_of_model_feedback() -> Result<()> {
+    async fn archive_preserves_index_faults_and_repairable_effect_refusals() -> Result<()> {
         use crate::agent::AgentId;
         let parent = AgentPath::root(&AgentId::from_bytes([71; 16]));
         let child = parent.child(&AgentId::from_bytes([72; 16]))?;
@@ -1255,14 +1262,17 @@ mod tests {
         children.insert(&child).await?;
         let checkpoint = serde_json::to_vec(&children).unwrap();
 
-        for missing_source in [false, true] {
+        for (missing_source, merge_conflict) in [(false, false), (true, false), (false, true)] {
             let mut children: crate::agent::Children = serde_json::from_slice(&checkpoint).unwrap();
             children.bind(if missing_source {
                 Arc::new(acyclic_stream::MemoryStream::default())
             } else {
                 stream.clone()
             });
-            let effects = Arc::new(Effects(std::sync::atomic::AtomicUsize::new(0)));
+            let effects = Arc::new(Effects(
+                std::sync::atomic::AtomicUsize::new(0),
+                merge_conflict,
+            ));
             let tool = AgentTool {
                 name: "archive",
                 turn: Arc::new(Turn {
@@ -1297,9 +1307,14 @@ mod tests {
                 assert!(matches!(error, Error::Agent(_)));
                 assert_eq!(effects.0.load(Ordering::SeqCst), 0);
             } else {
-                let result = result?;
-                assert_eq!(result.value["archived"], child.as_str());
-                assert_eq!(result.value["branch"], child.as_str());
+                let result = result.expect("repairable effect refusal must be model feedback");
+                if merge_conflict {
+                    assert_eq!(result.value["kind"], "merge conflict");
+                    assert_eq!(result.value["paths"], json!(["work/output.txt"]));
+                } else {
+                    assert_eq!(result.value["archived"], child.as_str());
+                    assert_eq!(result.value["branch"], child.as_str());
+                }
                 assert_eq!(effects.0.load(Ordering::SeqCst), 1);
             }
             // A genuine bad reference is still ordinary feedback, even when

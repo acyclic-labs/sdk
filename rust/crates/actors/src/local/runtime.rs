@@ -113,6 +113,7 @@ struct Settlement<'a> {
     flight: Option<Flight<ActorReference>>,
     work: Option<Work<ActorReference>>,
     failed: bool,
+    attempted: bool,
     cause: Option<DeliveryFailure>,
 }
 impl Drop for Settlement<'_> {
@@ -121,21 +122,23 @@ impl Drop for Settlement<'_> {
             return;
         };
         if self.failed {
-            let cause = Arc::new(self.cause.take().unwrap_or_else(|| DeliveryFailure {
-                message: format!(
-                    "actor {:?}: delivery producer disappeared before reporting an outcome",
-                    self.actor
-                ),
-            }));
-            self.slot
-                .failure
-                .get_or_init(|| self.failures.signal(self.actor))
-                .failed(self.actor, Arc::clone(&cause));
-            if let Some(owner) = self.slot.failure_owner.get() {
+            if self.attempted {
+                let cause = Arc::new(self.cause.take().unwrap_or_else(|| DeliveryFailure {
+                    message: format!(
+                        "actor {:?}: delivery producer disappeared before reporting an outcome",
+                        self.actor
+                    ),
+                }));
                 self.slot
-                    .owner_failure
-                    .get_or_init(|| self.failures.signal(owner))
-                    .failed(self.actor, cause);
+                    .failure
+                    .get_or_init(|| self.failures.signal(self.actor))
+                    .failed(self.actor, Arc::clone(&cause));
+                if let Some(owner) = self.slot.failure_owner.get() {
+                    self.slot
+                        .owner_failure
+                        .get_or_init(|| self.failures.signal(owner))
+                        .failed(self.actor, cause);
+                }
             }
             self.slot.refresh.store(true, Ordering::Release);
             self.slot.registration.suspend_alarm();
@@ -1504,6 +1507,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     ),
                     work,
                     failed: true,
+                    // Release may win before this delivery acquires the lock.
+                    // Retain its scheduling handoff without inventing an error.
+                    attempted: !inner.released,
                     cause: None,
                 };
                 let result = match &self.admission[self.handler.admission_class(actor).index()] {
