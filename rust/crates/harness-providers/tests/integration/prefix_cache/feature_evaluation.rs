@@ -611,6 +611,27 @@ async fn compaction(adapter: Adapter, path: &'static str, enabled: bool) -> Test
         workers[1].cached.read > 0,
         "compaction lost the cached header"
     );
+    let mut changed: Value = serde_json::from_slice(&workers[1].body)?;
+    match adapter {
+        Adapter::Chat => changed["messages"][0]["content"] = json!("rewritten policy"),
+        Adapter::Responses => changed["instructions"] = json!("rewritten policy"),
+        Adapter::Anthropic => {
+            changed["system"] = json!([{"type":"text","text":"rewritten policy"}])
+        }
+        Adapter::Gemini => {
+            changed["systemInstruction"] = json!({"parts":[{"text":"rewritten policy"}]})
+        }
+    }
+    assert_ne!(
+        header(path, &workers[0].body)?,
+        header(path, &serde_json::to_vec(&changed)?)?
+    );
+    let mut cache = harness_mock_model::PromptCache::default().with_implicit_chat();
+    cache.observe(path, &serde_json::from_slice(&workers[0].body)?, 1);
+    assert!(
+        cache.observe(path, &changed, 1).read < workers[1].cached.read,
+        "compaction guard accepted a rewritten system prefix"
+    );
     if enabled {
         assert!(
             holds(&workers[1].body, b"Retained: the task is to return 42."),
