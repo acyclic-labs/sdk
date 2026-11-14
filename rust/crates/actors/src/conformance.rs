@@ -134,10 +134,17 @@ struct Ledger {
     answer: Option<String>,
 }
 
+#[derive(Serialize, Deserialize)]
+struct RouteCommand {
+    root: StreamPath,
+    envelope: Vec<u8>,
+}
+
 /// Reference package. Inbox commands: `emit` appends `r<seq>`; `set <ms>`
 /// arms the alarm `ms` after the delivery; `clear` clears it; `watch <path>`
 /// binds the `mirror` subscription to `path` at its head; `unwatch` unbinds
-/// it. Mirror records run the same commands. A fired alarm
+/// it. `route <json>` joins an encoded delivery's node outbox publication to
+/// the sender's transition. Mirror records run the same commands. A fired alarm
 /// appends `a<generation>`. Every outbox append carries a Tail condition, so a
 /// duplicate or lost publication is observable.
 pub struct Package {
@@ -221,6 +228,7 @@ impl Handler for Package {
                 });
             }
             let mut subscriptions = Vec::new();
+            let mut effects = Vec::new();
             let (alarm, output) = match (&delivery.trigger, &delivery.record) {
                 (Trigger::Alarm { generation, .. }, _) => (
                     match ledger.answer.as_deref() {
@@ -250,6 +258,21 @@ impl Handler for Package {
                     .map_err(guest)?;
                     match command.split_once(' ') {
                         None if command == "emit" => {
+                            (AlarmChange::Keep, Some(format!("r{sequence}")))
+                        }
+                        Some(("route", command)) => {
+                            let command: RouteCommand =
+                                serde_json::from_str(command).map_err(guest)?;
+                            let envelope =
+                                crate::route::Envelope::decode(command.envelope).map_err(guest)?;
+                            if envelope.sender != delivery.actor {
+                                return Err(guest("route sender differs from executing actor"));
+                            }
+                            effects.push(
+                                envelope
+                                    .outbox_effect(&crate::route::Paths::new(command.root))
+                                    .map_err(guest)?,
+                            );
                             (AlarmChange::Keep, Some(format!("r{sequence}")))
                         }
                         None if command == "clear" => (AlarmChange::Clear, None),
@@ -295,7 +318,6 @@ impl Handler for Package {
                     return Err(guest("record trigger without record"));
                 }
             };
-            let mut effects = Vec::new();
             if let Some(output) = output {
                 let condition = if ledger.published == 0 {
                     CommitCondition::Absent {

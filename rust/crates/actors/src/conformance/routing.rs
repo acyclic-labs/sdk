@@ -1,5 +1,5 @@
 //! Routing transaction invariants use the original backend, not a mock router.
-use super::{Backend, Error, Failure, Fixture};
+use super::{Backend, Error, Failure, Fixture, RouteCommand};
 use crate::{
     addressing::ActorReference,
     route::{Envelope, NodeId, Paths, Placement, Rejection, Routed},
@@ -23,13 +23,12 @@ pub async fn replayed_delivery<T: Backend + ?Sized>(target: &T, run: &str) -> Re
     let paths = Paths::new(root.clone());
     let source = NodeId::new(b"source").map_err(violation)?;
     let destination = NodeId::new(b"destination").map_err(violation)?;
-    let sender =
-        ActorReference::new(b"conformance", b"actors", b"routing-sender").map_err(violation)?;
+    let mut sender = Fixture::create(target, run, "routing-source").await?;
     let mut messages = Vec::new();
     for index in 0..2 {
         let message = Envelope {
             source: source.clone(),
-            sender: sender.clone(),
+            sender: sender.actor.clone(),
             to: receiver.actor.clone(),
             request: CommitRequest {
                 deadline_unix_millis: None,
@@ -43,13 +42,52 @@ pub async fn replayed_delivery<T: Backend + ?Sized>(target: &T, run: &str) -> Re
                 )],
             },
         };
-        message
-            .publish_relay(provider.as_ref(), &paths, &destination, Vec::new())
-            .await
-            .map_err(violation)?;
+        let command = serde_json::to_string(&RouteCommand {
+            root: root.clone(),
+            envelope: message.encode().to_vec(),
+        })
+        .map_err(|_| Error::Invalid("route command cannot encode"))?;
+        sender.send(&format!("route {command}")).await?;
         messages.push(message);
     }
+    sender.expect(&["r0", "r1"]).await?;
+    for sequence in 0..2 {
+        let publication = provider
+            .record_at(paths.outbox(&source).map_err(Error::from)?, sequence)
+            .await
+            .map_err(Error::from)?
+            .ok_or_else(|| violation("source publication missing"))?;
+        let output = sender.input(sequence).await?;
+        let journal_output = provider
+            .record_at(sender.outbox.clone(), sequence)
+            .await
+            .map_err(Error::from)?
+            .ok_or_else(|| violation("sender output missing"))?;
+        require(
+            publication.commit_id == journal_output.commit_id
+                && publication.commit_id != output.commit_id,
+            "route outbox was detached from the sender transition",
+        )?;
+    }
     receiver.expect(&["r0"]).await?;
+    let forward = crate::route::forward(
+        provider.as_ref(),
+        &paths,
+        &source,
+        async |_| Err(crate::route::Error::InvalidRecord),
+        async |message| {
+            message
+                .publish_relay(provider.as_ref(), &paths, &destination, Vec::new())
+                .await
+        },
+    );
+    until_ack(
+        provider.as_ref(),
+        paths.outbox_cursor(&source).map_err(Error::from)?,
+        1,
+        forward,
+    )
+    .await?;
     let interrupted =
         crate::route::drain(provider.as_ref(), &paths, &destination, async |record| {
             if record.envelope != messages[0] {
