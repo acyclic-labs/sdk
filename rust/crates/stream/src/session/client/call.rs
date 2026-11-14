@@ -1,6 +1,36 @@
 //! Finite one-shot replies on the existing authenticated, credited session pool.
 use super::*;
 
+/// Original reply progress and, on source failure, its original typed cause.
+#[derive(Debug, thiserror::Error)]
+enum ReplyFailure {
+    #[error("reply ended after {received} bytes; expected {expected:?}")]
+    Ended {
+        expected: Option<usize>,
+        received: usize,
+    },
+    #[error("reply failed after {received} bytes; expected {expected:?}: {source}")]
+    Source {
+        expected: Option<usize>,
+        received: usize,
+        #[source]
+        source: StreamError,
+    },
+}
+
+impl ReplyFailure {
+    fn ended(expected: Option<usize>, received: usize) -> StreamError {
+        StreamError::Unavailable.with_source(Self::Ended { expected, received })
+    }
+    fn source(source: StreamError, expected: Option<usize>, received: usize) -> StreamError {
+        source.clone().with_source(Self::Source {
+            expected,
+            received,
+            source,
+        })
+    }
+}
+
 impl Client {
     /// Invokes one canonical encoded Actors request on the shared session.
     ///
@@ -188,7 +218,7 @@ impl Client {
                     return Ok(reply.into());
                 }
             }
-            Err(StreamError::Unavailable)
+            Err(ReplyFailure::ended(None, reply.len()))
         };
         #[cfg(feature = "serde")]
         {
@@ -242,8 +272,9 @@ impl Client {
                 }
                 let (data, credit) = cursor
                     .receive_data()
-                    .await?
-                    .ok_or(StreamError::Unavailable)?;
+                    .await
+                    .map_err(|source| ReplyFailure::source(source, total, received))?
+                    .ok_or_else(|| ReplyFailure::ended(total, received))?;
                 let length = wire_codec::session::actor_call_total(&data)?;
                 if maximum_reply_bytes.is_some_and(|maximum| length > maximum)
                     || total.is_some_and(|old| old != length)
