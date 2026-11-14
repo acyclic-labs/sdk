@@ -709,7 +709,7 @@ async fn duplicate_close_persists_expiry_of_the_remaining_lease() {
 mod streams;
 
 #[tokio::test]
-async fn lease_admission_waits_through_contention_without_a_retry_ceiling() {
+async fn lease_admission_preserves_a_competing_window_and_returns_its_first_lost_revision() {
     struct ContendedStore {
         inner: MemoryOperationWindowStore,
         remaining: AtomicU64,
@@ -737,25 +737,60 @@ async fn lease_admission_waits_through_contention_without_a_retry_ceiling() {
                 })
                 .is_ok()
             {
-                return Ok(false);
+                let mut winner = replacement.clone();
+                let OperationWindowPhase::Active { leases, .. } = &mut winner.phase else {
+                    panic!("competing admission must publish an active window");
+                };
+                leases.clear();
+                let lease_id = OperationLeaseId::from_bytes([98; 16]);
+                leases.insert(
+                    lease_id,
+                    OperationLease {
+                        id: lease_id,
+                        owner: "competing-owner".into(),
+                        expires_at_millis: 1000,
+                    },
+                );
+                assert!(self.inner.compare_and_swap(id, expected, winner).await?);
             }
             self.inner.compare_and_swap(id, expected, replacement).await
         }
     }
     let coordinator = OperationWindowCoordinator::new(ContendedStore {
         inner: MemoryOperationWindowStore::new(),
-        remaining: AtomicU64::new(100),
+        remaining: AtomicU64::new(1),
     });
     let id = WorkspaceId::from_bytes([97; 16]);
-    let lease = coordinator
-        .begin(id, generation(3), "contended", 1, 1000)
-        .await
-        .expect("eventually admitted");
-    assert_eq!(lease.workspace_id, id);
+    assert!(matches!(
+        coordinator.begin(id, generation(3), "contended", 1, 1000).await,
+        Err(OperationWindowError::Contended)
+    ));
     assert_eq!(coordinator.store().remaining.load(Ordering::SeqCst), 0);
     let snapshot = coordinator.snapshot(id).await.expect("published lease");
     let OperationWindowPhase::Active { leases, .. } = snapshot.phase else {
         panic!("active lease");
     };
+    assert_eq!(leases.len(), 1);
+    assert_eq!(
+        leases[&OperationLeaseId::from_bytes([98; 16])].owner,
+        "competing-owner"
+    );
+    // A distinct caller-directed admission uses the surviving window; the
+    // losing request above must not have silently replanned against it.
+    let lease = coordinator
+        .begin(id, generation(4), "later-owner", 1, 1000)
+        .await
+        .expect("fresh admission");
+    assert_eq!(lease.workspace_id, id);
+    assert_eq!(lease.pinned_parent, generation(3));
+    let snapshot = coordinator.snapshot(id).await.expect("surviving window");
+    let OperationWindowPhase::Active { leases, .. } = snapshot.phase else {
+        panic!("active lease");
+    };
+    assert_eq!(leases.len(), 2);
     assert!(leases.contains_key(&lease.lease_id));
+    assert_eq!(
+        leases[&OperationLeaseId::from_bytes([98; 16])].owner,
+        "competing-owner"
+    );
 }
