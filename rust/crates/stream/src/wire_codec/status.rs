@@ -6,7 +6,7 @@ use tonic::{Code, Status, metadata::MetadataMap};
 #[must_use]
 pub fn status(error: &Status) -> StreamError {
     let category = category(error);
-    Refusal::capture(
+    let result = Refusal::capture(
         error.code() as i32,
         error.message(),
         error.details(),
@@ -17,7 +17,12 @@ pub fn status(error: &Status) -> StreamError {
     .map_or_else(
         || category.clone(),
         |refusal| category.clone().with_refusal(refusal),
-    )
+    );
+    if std::error::Error::source(error).is_some() {
+        result.with_source(error.clone())
+    } else {
+        result
+    }
 }
 
 /// Admits a platform callback's owned envelope through the same category mapping.

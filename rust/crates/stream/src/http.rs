@@ -10,7 +10,7 @@ use reqwest::{
 };
 use serde_json::Value;
 use std::sync::Arc;
-use tracing::{Span, field::Empty};
+
 mod session;
 mod shared;
 
@@ -132,12 +132,10 @@ impl HttpStream {
         StreamError,
     > {
         if let Some(provider) = &self.credential {
-            let token = provider
-                .resolve()
+            let token = crate::transport_credential::resolve(provider)
                 .await
                 .map_err(|error| StreamError::AccessDenied.with_source(error))?;
-            token
-                .check()
+            crate::transport_credential::check(&token)
                 .await
                 .map_err(|error| StreamError::AccessDenied.with_source(error))?;
             Ok((
@@ -153,49 +151,58 @@ impl HttpStream {
         }
     }
 
-    async fn request(&self, route: &'static str, bytes: Vec<u8>) -> Result<Value, StreamError> {
-        self.request_json(route, move || http_codec::encode(route, &bytes))
+    async fn request<T>(
+        &self,
+        route: &'static str,
+        bytes: Vec<u8>,
+        decode: impl FnOnce(Value) -> Result<T, StreamError> + Send,
+    ) -> Result<T, StreamError> {
+        self.request_json(route, move || http_codec::encode(route, &bytes), decode)
             .await
     }
 
-    async fn request_json(
+    async fn request_json<T>(
         &self,
         route: &'static str,
         encode: impl FnOnce() -> Result<String, &'static str> + Send,
-    ) -> Result<Value, StreamError> {
-        let mut observation = HttpObservation {
-            span: obs::OperationSpan::new(tracing::info_span!(
-                "acyclic.stream.http.call",
-                route,
-                http.status = Empty,
-                bytes = Empty,
-                outcome = Empty,
-                error.kind = Empty
-            )),
-            finished: false,
-        };
-        let result = observation
-            .span
-            .scope(async {
-                let body = encode().map_err(contract_error)?;
-                self.request_inner(route, body, &observation.span).await
-            })
-            .await;
-        observation.finished = true;
-        obs::finish(&observation.span, result)
-    }
-
-    async fn request_inner(
-        &self,
-        route: &'static str,
-        body: String,
-        span: &Span,
-    ) -> Result<Value, StreamError> {
+        decode: impl FnOnce(Value) -> Result<T, StreamError> + Send,
+    ) -> Result<T, StreamError> {
+        let body = encode().map_err(contract_error)?;
         let url = self
             .endpoint
             .join(&format!("v1/stream/{route}"))
             .map_err(|error| StreamError::Unavailable.with_source(error))?;
         let (authorization, lease) = self.authorization().await?;
+        let work = async {
+            let (value, bytes) = self
+                .request_inner(route, url, body, authorization, lease)
+                .await?;
+            decode(value).map(|result| (result, bytes))
+        };
+        #[cfg(feature = "serde")]
+        let result = crate::trace::observe(
+            crate::trace::Request {
+                name: "stream.http.request",
+                mechanism: crate::trace::Mechanism::RoundTrip,
+                parent: None,
+                guarantee: Some("authenticated_bounded_json_reply_validated_for_original_call"),
+            },
+            work,
+            |(_, bytes)| u64::try_from(*bytes).ok(),
+        )
+        .await;
+        #[cfg(not(feature = "serde"))]
+        let result = work.await;
+        result.map(|(value, _)| value)
+    }
+    async fn request_inner(
+        &self,
+        route: &'static str,
+        url: Url,
+        body: String,
+        authorization: HeaderValue,
+        lease: Option<acyclic_auth::credential::ResolvedCredential>,
+    ) -> Result<(Value, usize), StreamError> {
         let mut response = self
             .client
             .post(url)
@@ -207,14 +214,13 @@ impl HttpStream {
             .map_err(|error| StreamError::Unavailable.with_source(error))?;
         if response.status().as_u16() == 401 {
             if let Some(lease) = &lease {
-                lease
-                    .reject()
+                crate::transport_credential::reject(lease)
                     .await
                     .map_err(|error| StreamError::AccessDenied.with_source(error))?;
             }
         }
         let success = response.status().is_success();
-        span.record("http.status", response.status().as_u16());
+
         if response
             .content_length()
             .is_some_and(|length| length > self.maximum as u64)
@@ -232,10 +238,9 @@ impl HttpStream {
             }
             body.extend_from_slice(&chunk);
         }
-        span.record("bytes", body.len());
+
         if success && let Some(lease) = &lease {
-            lease
-                .check()
+            crate::transport_credential::check(lease)
                 .await
                 .map_err(|error| StreamError::AccessDenied.with_source(error))?;
         }
@@ -261,12 +266,49 @@ impl HttpStream {
             ))
         })?;
         if let Some(lease) = &lease {
-            lease
-                .check()
+            crate::transport_credential::check(lease)
                 .await
                 .map_err(|error| StreamError::AccessDenied.with_source(error))?;
         }
-        Ok(value)
+        Ok((value, body.len()))
+    }
+    fn idempotency_response(
+        &self,
+        key: IdempotencyKey,
+        value: Value,
+    ) -> Result<Option<IdempotencyObservation>, StreamError> {
+        if value.is_null() {
+            return Ok(None);
+        }
+        let observed = IdempotencyKey::new(parse_bytes(field(&value, "idempotencyKey")?)?)?;
+        if observed != key {
+            return Err(StreamError::Unavailable);
+        }
+        let request_digest = parse_bytes(field(&value, "requestDigest")?)?
+            .as_ref()
+            .try_into()
+            .map_err(|error| StreamError::Unavailable.with_source(error))?;
+        let outcome = field(&value, "outcome")?;
+        let outcome = match parse_string(&outcome["type"])? {
+            "append" => IdempotencyOutcome::Append(parse_append(&outcome["outcome"])?),
+            "fork" => IdempotencyOutcome::Fork(parse_fork(&outcome["receipt"])?),
+            "commit" => IdempotencyOutcome::Commit(parse_envelope(&outcome["outcome"])?),
+            _ => return Err(StreamError::Unavailable),
+        };
+        let revision = match value.get("revision") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(revision) => Some(parse_revision(revision)?),
+        };
+        // A recovered write floors later reads exactly like its lost reply would have.
+        if let Some(revision) = &revision {
+            self.revisions()?.observe(revision);
+        }
+        Ok(Some(IdempotencyObservation {
+            idempotency_key: observed,
+            request_digest,
+            outcome,
+            revision,
+        }))
     }
     fn commit_response(value: &Value) -> Result<CommitOutcome, StreamError> {
         if value["ok"] == true {
@@ -361,47 +403,15 @@ impl StreamProvider for HttpStream {
         &self,
         key: IdempotencyKey,
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
-        let value = self
-            .request(
-                "idempotency/inspect",
-                wire::InspectIdempotencyRequest {
-                    idempotency_key: bytes::Bytes::copy_from_slice(key.as_bytes()),
-                }
-                .encode_to_vec(),
-            )
-            .await?;
-        if value.is_null() {
-            return Ok(None);
-        }
-        let observed = IdempotencyKey::new(parse_bytes(field(&value, "idempotencyKey")?)?)?;
-        if observed != key {
-            return Err(StreamError::Unavailable);
-        }
-        let request_digest = parse_bytes(field(&value, "requestDigest")?)?
-            .as_ref()
-            .try_into()
-            .map_err(|error| StreamError::Unavailable.with_source(error))?;
-        let outcome = field(&value, "outcome")?;
-        let outcome = match parse_string(&outcome["type"])? {
-            "append" => IdempotencyOutcome::Append(parse_append(&outcome["outcome"])?),
-            "fork" => IdempotencyOutcome::Fork(parse_fork(&outcome["receipt"])?),
-            "commit" => IdempotencyOutcome::Commit(parse_envelope(&outcome["outcome"])?),
-            _ => return Err(StreamError::Unavailable),
-        };
-        let revision = match value.get("revision") {
-            None | Some(serde_json::Value::Null) => None,
-            Some(revision) => Some(parse_revision(revision)?),
-        };
-        // A recovered write floors later reads exactly like its lost reply would have.
-        if let Some(revision) = &revision {
-            self.revisions()?.observe(revision);
-        }
-        Ok(Some(IdempotencyObservation {
-            idempotency_key: observed,
-            request_digest,
-            outcome,
-            revision,
-        }))
+        self.request(
+            "idempotency/inspect",
+            wire::InspectIdempotencyRequest {
+                idempotency_key: bytes::Bytes::copy_from_slice(key.as_bytes()),
+            }
+            .encode_to_vec(),
+            |value| self.idempotency_response(key, value),
+        )
+        .await
     }
     async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
         self.session_client()?.heads(request).await
@@ -415,15 +425,18 @@ impl StreamProvider for HttpStream {
         match request {
             crate::WriteRequest::Append(request) => Box::pin(futures::TryFutureExt::map_ok(
                 async move {
-                    let outcome = parse_append(
-                        &self
-                            .request_json("append", move || http_codec::encode_append(&request))
-                            .await?,
-                    )?;
-                    if let AppendOutcome::Committed(receipt) = &outcome {
-                        self.revisions()?.observe(&receipt.revision);
-                    }
-                    Ok(outcome)
+                    self.request_json(
+                        "append",
+                        move || http_codec::encode_append(&request),
+                        |value| {
+                            let outcome = parse_append(&value)?;
+                            if let AppendOutcome::Committed(receipt) = &outcome {
+                                self.revisions()?.observe(&receipt.revision);
+                            }
+                            Ok(outcome)
+                        },
+                    )
+                    .await
                 },
                 crate::WriteOutcome::Append,
             )),
@@ -440,12 +453,15 @@ impl StreamProvider for HttpStream {
                             request.idempotency_key.as_bytes(),
                         ),
                     };
-                    let result = parse_fork(&self.request("fork", wire.encode_to_vec()).await?)?;
-                    if result.source != source || result.destination != destination {
-                        return Err(StreamError::Unavailable);
-                    }
-                    self.revisions()?.observe(&result.revision);
-                    Ok(result)
+                    self.request("fork", wire.encode_to_vec(), |value| {
+                        let result = parse_fork(&value)?;
+                        if result.source != source || result.destination != destination {
+                            return Err(StreamError::Unavailable);
+                        }
+                        self.revisions()?.observe(&result.revision);
+                        Ok(result)
+                    })
+                    .await
                 },
                 crate::WriteOutcome::Fork,
             )),
@@ -455,12 +471,14 @@ impl StreamProvider for HttpStream {
             crate::WriteRequest::Commit(request) => Box::pin(futures::TryFutureExt::map_ok(
                 async move {
                     let wire = wire_codec::commit_to_wire(&request);
-                    let response = self.request("commit", wire.encode_to_vec()).await?;
-                    let outcome = Self::commit_response(&response)?;
-                    if let CommitOutcome::Committed(receipt) = &outcome {
-                        self.revisions()?.observe(&receipt.revision);
-                    }
-                    Ok(outcome)
+                    self.request("commit", wire.encode_to_vec(), |response| {
+                        let outcome = Self::commit_response(&response)?;
+                        if let CommitOutcome::Committed(receipt) = &outcome {
+                            self.revisions()?.observe(&receipt.revision);
+                        }
+                        Ok(outcome)
+                    })
+                    .await
                 },
                 crate::WriteOutcome::Commit,
             )),
@@ -480,20 +498,21 @@ impl StreamProvider for HttpStream {
     }
 
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
-        let value = self
-            .request(
-                "commits/read",
-                wire::ReadCommitRequest {
-                    commit_id: bytes::Bytes::copy_from_slice(id.as_bytes()),
+        self.request(
+            "commits/read",
+            wire::ReadCommitRequest {
+                commit_id: bytes::Bytes::copy_from_slice(id.as_bytes()),
+            }
+            .encode_to_vec(),
+            |value| {
+                let envelope = parse_envelope(&value)?;
+                if envelope.commit_id != id {
+                    return Err(StreamError::Unavailable);
                 }
-                .encode_to_vec(),
-            )
-            .await?;
-        let envelope = parse_envelope(&value)?;
-        if envelope.commit_id != id {
-            return Err(StreamError::Unavailable);
-        }
-        Ok(envelope)
+                Ok(envelope)
+            },
+        )
+        .await
     }
 }
 
@@ -509,20 +528,6 @@ fn credential_header(token: &str) -> Result<HeaderValue, ConnectError> {
     })
 }
 
-// Dropping a pending physical HTTP request cancels that request, independently
-struct HttpObservation {
-    span: obs::OperationSpan,
-    finished: bool,
-}
-impl Drop for HttpObservation {
-    fn drop(&mut self) {
-        if !self.finished {
-            obs::failed(&self.span, "cancelled");
-        }
-    }
-}
-
-// The observation lives with the cursor, including an in-flight read or idle
 include!("http/follow.rs");
 
 #[cfg(test)]
@@ -574,6 +579,7 @@ mod tests {
                                 ..Default::default()
                             }
                             .encode_to_vec(),
+                            Ok,
                         ),
                     );
                     let error = result
@@ -650,82 +656,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn filtered_http_failure_does_not_record_on_its_parent()
+    async fn closed_http_request_retains_original_transport_source()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::{StreamError, StreamPath, StreamProviderExt as _};
-        use tracing::{Instrument, instrument::WithSubscriber};
-        use tracing_subscriber::{Layer, layer::Context, prelude::*};
-
-        struct ParentMustNotBeRecorded;
-        impl<S> Layer<S> for ParentMustNotBeRecorded
-        where
-            S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
-        {
-            fn on_record(
-                &self,
-                id: &tracing::span::Id,
-                _: &tracing::span::Record<'_>,
-                context: Context<'_, S>,
-            ) {
-                if let Some(span) = context.span(id) {
-                    assert_ne!(
-                        span.metadata().name(),
-                        "test.parent",
-                        "filtered HTTP completion mutated its caller"
-                    );
-                }
-            }
-        }
-        let subscriber = tracing_subscriber::registry().with(ParentMustNotBeRecorded.with_filter(
-            tracing_subscriber::filter::filter_fn(|metadata| metadata.name() == "test.parent"),
-        ));
-        async {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-            let provider = HttpStream::new(
-                &format!("http://{}", listener.local_addr()?),
-                "fixture-token",
-                1024,
-            )?;
-            let server = tokio::spawn(async move {
-                let connection = listener.accept().await;
-                assert!(
-                    connection.is_ok(),
-                    "loopback fixture could not accept the request"
-                );
-                // Closing before a response forces the request completion error path.
-            });
-            let parent = tracing::info_span!(
-                "test.parent",
-                outcome = "sentinel",
-                error.kind = "sentinel",
-                bytes = 777_u64,
-                http.status = 777_u64
-            );
-            let result = provider
-                .append(crate::AppendRequest {
-                    path: StreamPath::new("filtered/test")?,
-                    records: vec![crate::OwnedBytes::from_static(b"original-request").into()],
-                    if_tail: None,
-                    idempotency_key: crate::IdempotencyKey::unique(),
-                })
-                .instrument(parent)
-                .await;
-            server.await?;
-            let error = result.expect_err("the closed connection cannot return an append receipt");
-            assert_eq!(error.code(), StreamError::Unavailable.code());
-            assert!(error.uncertain());
-            drop(provider);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let provider = HttpStream::new(
+            &format!("http://{}", listener.local_addr()?),
+            "fixture-token",
+            1024,
+        )?;
+        let server = tokio::spawn(async move {
+            let connection = listener.accept().await;
             assert!(
-                std::iter::successors(std::error::Error::source(&error), |source| source.source())
-                    .any(|source| source.is::<reqwest::Error>())
+                connection.is_ok(),
+                "loopback fixture could not accept the request"
             );
-            Ok(())
-        }
-        .with_subscriber(subscriber)
-        .await
+        });
+        let result = provider
+            .append(crate::AppendRequest {
+                path: StreamPath::new("filtered/test")?,
+                records: vec![crate::OwnedBytes::from_static(b"original-request").into()],
+                if_tail: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
+            })
+            .await;
+        server.await?;
+        let error = result.expect_err("the closed connection cannot return an append receipt");
+        assert_eq!(error.code(), StreamError::Unavailable.code());
+        assert!(error.uncertain());
+        drop(provider);
+        assert!(
+            std::iter::successors(std::error::Error::source(&error), |source| source.source())
+                .any(|source| source.is::<reqwest::Error>())
+        );
+        Ok(())
     }
 }
-
 #[cfg(test)]
 mod http_follow_tests;
 #[cfg(test)]

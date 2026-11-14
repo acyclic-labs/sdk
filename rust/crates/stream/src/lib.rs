@@ -56,6 +56,8 @@ pub mod trace;
 // The WASM adapter consumes this module on browser builds; native builds keep
 #[cfg(not(target_arch = "wasm32"))]
 pub mod http;
+#[cfg(not(target_arch = "wasm32"))]
+mod transport_credential;
 // Request projection is shared by the native HTTP client and the browser adapter.
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod browser;

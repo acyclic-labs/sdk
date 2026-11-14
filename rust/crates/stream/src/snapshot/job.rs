@@ -35,7 +35,7 @@ pub(super) fn new<S: Snapshot>(
     state: S,
 ) -> (
     Job<S>,
-    impl Future<Output = (S, Result<S::Output, crate::StreamError>)> + Send,
+    impl Future<Output = (S, Result<S::Output, crate::StreamError>)> + crate::ProviderTask,
 ) {
     let completed = Arc::new(SyncMutex::new(Completion {
         value: None,

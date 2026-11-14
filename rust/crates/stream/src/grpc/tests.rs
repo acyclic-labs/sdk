@@ -376,17 +376,79 @@ async fn assert_unary_retry(error: Status, retry: bool) -> TestResult {
     let body = Bytes::from_static(b"stable-key-and-body");
     let mut attempts = Vec::new();
     let mut first = Some(error);
-    let result = client
-        .unary(body.clone(), |_, request| {
-            attempts.push(request.into_inner());
-            let result = first.take().map_or_else(|| Ok(Response::new(())), Err);
-            Box::pin(async move { result })
-        })
+    #[cfg(feature = "serde")]
+    let trace = crate::Stream::new(Arc::new(MemoryStream::default()), "agents/grpc-retry/trace")?;
+    #[cfg(feature = "serde")]
+    let recorder = Arc::new(crate::trace::Recorder::new(trace.clone(), [98; 16]));
+    #[cfg(feature = "serde")]
+    let root = recorder
+        .start(
+            "owner",
+            crate::trace::Mechanism::ToolCall,
+            None,
+            Some("original_request"),
+        )
+        .await?
+        .into_owned();
+    #[cfg(feature = "serde")]
+    let parent = root.id();
+    let request = client.unary(body.clone(), |_, request| {
+        attempts.push(request.into_inner());
+        let result = first.take().map_or_else(|| Ok(Response::new(())), Err);
+        Box::pin(async move { result })
+    });
+    #[cfg(feature = "serde")]
+    let request = root.within(request);
+    let result = request
         .await
         .and_then(|response| decode_response(response, Ok));
     assert_eq!(result.is_ok(), retry);
     let expected = if retry { 2 } else { 1 };
     assert_eq!(attempts, vec![body; expected]);
+    #[cfg(feature = "serde")]
+    {
+        use crate::trace::{Mechanism, Observation, Outcome, TraceQuery};
+        let _completion = root.finish_submitted(None, Outcome::Succeeded)?;
+        let mut query = TraceQuery::new(
+            trace.follow(0, Default::default()).await?,
+            Default::default(),
+        );
+        let mut completed = 0;
+        let mut rpc = 0;
+        let mut waits = 0;
+        let mut unsettled = 0;
+        while completed < if retry { 4 } else { 2 } {
+            if let Some(Observation::Completed {
+                id, start, result, ..
+            }) = query.next().await?
+            {
+                completed += 1;
+                if id == parent {
+                    continue;
+                }
+                assert_eq!(start.parent, Some(parent));
+                if start.mechanism == Mechanism::Wait {
+                    waits += 1;
+                    assert_eq!(
+                        start.guarantee.as_deref(),
+                        Some("backpressure_after_observed_transient_transport_failure")
+                    );
+                    assert_eq!(result, Outcome::Succeeded);
+                } else {
+                    rpc += 1;
+                    assert_eq!(start.mechanism, Mechanism::RoundTrip);
+                    if result == Outcome::Unsettled {
+                        unsettled += 1;
+                    } else {
+                        assert_eq!(result, Outcome::Succeeded);
+                    }
+                }
+            }
+        }
+        assert_eq!(rpc, expected);
+        assert_eq!(waits, usize::from(retry));
+        assert_eq!(unsettled, 1);
+    }
     Ok(())
 }
 
@@ -485,8 +547,28 @@ async fn application_errors_cross_transport_without_retry_and_preserve_a_caller_
             if_tail: Some(0),
             idempotency_key: IdempotencyKey::unique(),
         };
+        #[cfg(feature = "serde")]
+        let trace =
+            crate::Stream::new(Arc::new(MemoryStream::default()), "agents/grpc-wire/trace")?;
+        #[cfg(feature = "serde")]
+        let recorder = Arc::new(crate::trace::Recorder::new(trace.clone(), [97; 16]));
+        #[cfg(feature = "serde")]
+        let root = recorder
+            .start(
+                "owner",
+                crate::trace::Mechanism::ToolCall,
+                None,
+                Some("original_request"),
+            )
+            .await?
+            .into_owned();
+        #[cfg(feature = "serde")]
+        let parent = root.id();
+        let append = client.append(request.clone());
+        #[cfg(feature = "serde")]
+        let append = root.within(append);
         assert_eq!(
-            client.append(request.clone()).await,
+            append.await,
             Err(error.clone()),
             "public transport changed application error {error:?}"
         );
@@ -499,8 +581,57 @@ async fn application_errors_cross_transport_without_retry_and_preserve_a_caller_
         );
         // The same live server accepts the caller's next request. An automatic
         // readiness retry would consume this response before returning the error.
-        let outcome = client.append(request.clone()).await?;
+        let append = client.append(request.clone());
+        #[cfg(feature = "serde")]
+        let append = root.within(append);
+        let outcome = append.await?;
         assert!(matches!(outcome, AppendOutcome::Committed(_)));
+        #[cfg(feature = "serde")]
+        {
+            use crate::trace::{Mechanism, Observation, Outcome, TraceQuery};
+            let _completion = root.finish_submitted(None, Outcome::Succeeded)?;
+            let mut query = TraceQuery::new(
+                trace.follow(0, Default::default()).await?,
+                Default::default(),
+            );
+            let mut completed = 0;
+            let mut succeeded = 0;
+            let mut unsettled = 0;
+            while completed < 3 {
+                if let Some(Observation::Completed {
+                    id,
+                    start,
+                    bytes,
+                    result,
+                    ..
+                }) = query.next().await?
+                {
+                    completed += 1;
+                    if id == parent {
+                        assert_eq!(result, Outcome::Succeeded);
+                        continue;
+                    }
+                    assert_eq!(start.parent, Some(parent));
+                    assert_eq!(start.mechanism, Mechanism::RoundTrip);
+                    assert_eq!(start.name, "stream.grpc.request");
+                    assert_eq!(
+                        start.guarantee.as_deref(),
+                        Some("authenticated_rpc_reply_validated_at_original_call")
+                    );
+                    assert_eq!(bytes, None);
+                    match result {
+                        Outcome::Succeeded => succeeded += 1,
+                        Outcome::Unsettled => unsettled += 1,
+                        _ => {
+                            return Err(
+                                "original RPC result was replaced with an invented outcome".into(),
+                            );
+                        }
+                    }
+                }
+            }
+            assert_eq!((succeeded, unsettled), (1, 1));
+        }
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
         let observation = provider
             .inspect_idempotency(request.idempotency_key.clone())
@@ -544,51 +675,6 @@ async fn caller_cancellation_drops_an_in_flight_request() -> TestResult {
         completed.await.is_err(),
         "cancellation must drop the request"
     );
-    Ok(())
-}
-
-#[tokio::test]
-async fn retry_attempts_record_independent_spans() -> TestResult {
-    if retry_capture::isolate("retry_attempts_record_independent_spans")? {
-        return Ok(());
-    }
-    use tracing::instrument::WithSubscriber as _;
-    let captured = acyclic_grpc_observability::tests::Capture::default();
-    let subscriber = retry_capture::dispatch(captured.clone());
-    let transport_error = closed_transport().await?;
-    let retry_code = (transport_error.code() as u64).to_string();
-    async {
-        let client = unconnected()?;
-        let mut first = true;
-        let response = client
-            .unary((), |_, _| {
-                let result = if std::mem::take(&mut first) {
-                    Err(transport_error.clone())
-                } else {
-                    Ok(Response::new(()))
-                };
-                Box::pin(async move { result })
-            })
-            .await?;
-        decode_response(response, Ok)?;
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
-    }
-    .with_subscriber(subscriber)
-    .await?;
-    let attempts = captured.all("acyclic.stream.grpc.call");
-    assert_eq!(attempts.len(), 2);
-    for (attempt, (number, outcome, code)) in attempts
-        .iter()
-        .zip([("1", "err", retry_code.as_str()), ("2", "ok", "0")])
-    {
-        for (field, expected) in [
-            ("attempt", number),
-            ("outcome", outcome),
-            ("rpc.code", code),
-        ] {
-            assert_eq!(attempt.get(field).map(String::as_str), Some(expected));
-        }
-    }
     Ok(())
 }
 
@@ -679,53 +765,6 @@ async fn source_eof_never_discards_records_queued_before_terminal_close() -> Tes
         );
     }
     assert_eq!(result.last(), Some(&Err(StreamError::Unavailable)));
-    Ok(())
-}
-
-#[tokio::test]
-async fn concurrent_retry_captures_keep_their_own_dispatcher() -> TestResult {
-    if retry_capture::isolate("concurrent_retry_captures_keep_their_own_dispatcher")? {
-        return Ok(());
-    }
-    use tracing::instrument::WithSubscriber as _;
-    let first = acyclic_grpc_observability::tests::Capture::default();
-    let second = acyclic_grpc_observability::tests::Capture::default();
-    let capture = |captured: acyclic_grpc_observability::tests::Capture| async move {
-        let subscriber = retry_capture::dispatch(captured);
-        let transport_error = closed_transport().await?;
-        async {
-            let client = unconnected()?;
-            let mut first = true;
-            let response = client
-                .unary((), |_, _| {
-                    let result = if std::mem::take(&mut first) {
-                        Err(transport_error.clone())
-                    } else {
-                        Ok(Response::new(()))
-                    };
-                    Box::pin(async move {
-                        tokio::task::yield_now().await;
-                        result
-                    })
-                })
-                .await?;
-            decode_response(response, Ok)?;
-            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
-        }
-        .with_subscriber(subscriber)
-        .await
-    };
-    let (one, two) = tokio::join!(capture(first.clone()), capture(second.clone()));
-    one?;
-    two?;
-    for capture in [first, second] {
-        let attempts = capture.all("acyclic.stream.grpc.call");
-        let [first, second] = attempts.as_slice() else {
-            panic!("expected two attempts, found {}", attempts.len());
-        };
-        assert_eq!(first.get("attempt").map(String::as_str), Some("1"));
-        assert_eq!(second.get("attempt").map(String::as_str), Some("2"));
-    }
     Ok(())
 }
 
@@ -851,6 +890,38 @@ fn attributed_unavailability_survives_transport_round_trips() {
         self::original(&Status::from(decoded)),
         self::original(&encoded)
     );
+    for body in [
+        br#"{ "reason":"poisoned", "component":"stream.lock", "requestId":"" }"#.as_slice(),
+        br#"{"component":"stream.lock","reason":"poisoned","requestId":"","extra":true}"#
+            .as_slice(),
+    ] {
+        let mut attributed = encoded.clone();
+        attributed.metadata_mut().insert_bin(
+            "acyclic-cause-v1-bin",
+            tonic::metadata::MetadataValue::from_bytes(body),
+        );
+        let decoded = status(&attributed);
+        assert!(decoded.member_refusal().unwrap().original().is_some());
+        assert_eq!(
+            self::original(&Status::from(decoded)),
+            self::original(&attributed)
+        );
+    }
+    let mut duplicated = encoded.clone();
+    let value = duplicated
+        .metadata()
+        .get_bin("acyclic-cause-v1-bin")
+        .unwrap()
+        .clone();
+    duplicated
+        .metadata_mut()
+        .append_bin("acyclic-cause-v1-bin", value);
+    let decoded = status(&duplicated);
+    assert!(decoded.member_refusal().unwrap().original().is_some());
+    assert_eq!(
+        self::original(&Status::from(decoded)),
+        self::original(&duplicated)
+    );
 }
 
 proptest::proptest! {
@@ -883,4 +954,165 @@ proptest::proptest! {
             proptest::prop_assert_eq!(status(&encoded), decoded.clone());
         }
     }
+}
+
+#[cfg(feature = "serde")]
+#[tokio::test]
+async fn server_read_custody_settles_only_at_original_body_eof() -> TestResult {
+    use crate::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
+    use futures::TryStreamExt as _;
+    let provider = Arc::new(MemoryStream::default());
+    let path = StreamPath::new("server-custody/original")?;
+    provider
+        .append(AppendRequest {
+            path: path.clone(),
+            records: vec![
+                OwnedBytes::from_static(b"first").into(),
+                OwnedBytes::from_static(b"second").into(),
+            ],
+            if_tail: None,
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
+    let service = Service::new(provider);
+    let read = |from| {
+        Request::new(wire::ReadRequest {
+            path: path.to_string(),
+            from,
+            limit: 2,
+            ..Default::default()
+        })
+    };
+    let original = service
+        .read(read(0))
+        .await?
+        .into_inner()
+        .try_collect::<Vec<_>>()
+        .await?;
+    let trace = crate::Stream::new(
+        Arc::new(MemoryStream::default()),
+        "agents/grpc-server/trace",
+    )?;
+    assert!(matches!(trace.tail().await, Err(StreamError::NotFound)));
+    let recorder = Arc::new(Recorder::new(trace.clone(), [99; 16]));
+    let root = recorder
+        .start("owner", Mechanism::ToolCall, None, Some("original_request"))
+        .await?
+        .into_owned();
+    let parent = root.id();
+    let mut cancelled = root.within(service.read(read(0))).await?.into_inner();
+    let mut query = TraceQuery::new(
+        trace.follow(0, Default::default()).await?,
+        Default::default(),
+    );
+    loop {
+        if let Observation::Started { id, .. } =
+            query.next().await?.ok_or("missing retained read start")?
+        {
+            if id != parent {
+                let active = query
+                    .active()
+                    .find_map(|(key, span)| (*key == id).then_some(span))
+                    .ok_or("read settled at headers")?;
+                assert_eq!(active.name, "stream.grpc.serve.read");
+                assert_eq!(active.parent, Some(parent));
+                break;
+            }
+        }
+    }
+    let before = trace.tail().await?;
+    assert_eq!(
+        cancelled.next().await.transpose()?.as_ref(),
+        original.first()
+    );
+    assert_eq!(
+        trace.tail().await?,
+        before,
+        "headers or one frame falsely settled the body"
+    );
+    drop(cancelled);
+    let completed = root
+        .within(service.read(read(0)))
+        .await?
+        .into_inner()
+        .try_collect::<Vec<_>>()
+        .await?;
+    assert_eq!(
+        completed, original,
+        "observation changed original revision or record frames"
+    );
+    let empty = root
+        .within(service.read(read(2)))
+        .await?
+        .into_inner()
+        .try_collect::<Vec<_>>()
+        .await?;
+    assert_eq!(empty.len(), 1);
+    assert!(
+        empty
+            .first()
+            .is_some_and(|frame| frame.records.is_empty() && frame.applied.is_some())
+    );
+    assert!(
+        root.within(service.read(Request::new(wire::ReadRequest {
+            path: "server-custody/missing".into(),
+            limit: 2,
+            ..Default::default()
+        })))
+        .await
+        .is_err()
+    );
+    let tail = root
+        .within(service.tail(Request::new(wire::TailRequest {
+            path: path.to_string(),
+            ..Default::default()
+        })))
+        .await?
+        .into_inner();
+    assert_eq!(tail.tail, 2);
+    let _completion = root.finish_submitted(None, Outcome::Succeeded)?;
+    let mut terminals = 0;
+    let mut complete_reads = 0;
+    let mut incomplete_reads = 0;
+    let mut unary = 0;
+    while terminals < 6 {
+        if let Some(Observation::Completed {
+            id,
+            start,
+            bytes,
+            result,
+            ..
+        }) = query.next().await?
+        {
+            terminals += 1;
+            if id == parent {
+                assert_eq!(result, Outcome::Succeeded);
+                continue;
+            }
+            assert_eq!(start.parent, Some(parent));
+            assert_eq!(start.mechanism, Mechanism::ProviderCall);
+            assert_eq!(bytes, None);
+            if start.name == "stream.grpc.serve.read" {
+                assert_eq!(
+                    start.guarantee.as_deref(),
+                    Some("original_finite_read_cut_delivered_through_body_eof")
+                );
+                match result {
+                    Outcome::Succeeded => complete_reads += 1,
+                    Outcome::Unsettled => incomplete_reads += 1,
+                    _ => return Err("original read has an invented terminal cause".into()),
+                }
+            } else {
+                assert_eq!(start.name, "stream.grpc.serve.tail");
+                assert_eq!(
+                    start.guarantee.as_deref(),
+                    Some("original_provider_result_encoded_for_rpc")
+                );
+                assert_eq!(result, Outcome::Succeeded);
+                unary += 1;
+            }
+        }
+    }
+    assert_eq!((complete_reads, incomplete_reads, unary), (2, 2, 1));
+    Ok(())
 }

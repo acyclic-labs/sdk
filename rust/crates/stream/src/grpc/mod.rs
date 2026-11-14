@@ -1,6 +1,6 @@
 //! Authenticated gRPC adapter for the canonical Stream provider contract.
 
-use std::{future::Future, pin::Pin, sync::Arc, task::Poll, time::Duration};
+use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
 pub use acyclic_auth::credential::{CredentialError, CredentialProvider};
 use async_trait::async_trait;
@@ -13,10 +13,8 @@ use tonic::{
     metadata::{Ascii, MetadataKey, MetadataMap, MetadataValue},
     transport::{Channel, Endpoint},
 };
-use tracing::field::Empty;
 
 use crate::StreamProviderExt as _;
-use crate::obs;
 use crate::wire_codec::{
     append_from_wire, append_outcome_from_wire, append_outcome_to_wire, commit_from_wire,
     commit_id, commit_to_wire, envelope_from_wire, envelope_to_wire, fork_receipt_to_wire,
@@ -371,7 +369,11 @@ impl Client {
 
     /// Retries observed transient transport failures with the same request.
     /// The caller owns cancellation and any request deadline.
-    async fn unary<T, U, F>(&self, body: T, mut call: F) -> Result<(U, Completion), StreamError>
+    async fn unary<T, U, F>(
+        &self,
+        body: T,
+        mut call: F,
+    ) -> Result<(U, ClientCompletion), StreamError>
     where
         T: Clone,
         F: FnMut(
@@ -381,73 +383,89 @@ impl Client {
             Request<T>,
         ) -> Pin<Box<dyn Future<Output = Result<Response<U>, Status>> + Send>>,
     {
-        let mut attempt = 0_u64;
         let mut backoff = None;
         loop {
-            attempt = attempt.saturating_add(1);
-            // One span describes one physical RPC attempt.
-            let mut completion = Completion::new(tracing::info_span!(
-                "acyclic.stream.grpc.call",
-                rpc = std::any::type_name::<T>().rsplit("::").next(),
-                attempt,
-                rpc.code = Empty,
-                outcome = Empty,
-                error.kind = Empty
-            ));
-            let result = completion
-                .span
-                .scope(async {
-                    let request = self.request(body.clone()).await?;
-                    let lease = request
-                        .extensions()
-                        .get::<acyclic_auth::credential::ResolvedCredential>()
-                        .cloned();
-                    let result = call(self.service(), request).await;
-                    if result.as_ref().is_err_and(|error| {
-                        error.code() == Code::Unauthenticated
-                            && std::error::Error::source(error).is_none()
-                    }) {
-                        if let Some(lease) = &lease {
-                            lease.reject().await.map_err(|_| {
-                                Status::unauthenticated("credential source unavailable")
+            let request = self
+                .request(body.clone())
+                .await
+                .map_err(|error| status(&error))?;
+            let work = async {
+                let lease = request
+                    .extensions()
+                    .get::<acyclic_auth::credential::ResolvedCredential>()
+                    .cloned();
+                let result = call(self.service(), request).await;
+                if result.as_ref().is_err_and(|error| {
+                    error.code() == Code::Unauthenticated
+                        && std::error::Error::source(error).is_none()
+                }) {
+                    if let Some(lease) = &lease {
+                        crate::transport_credential::reject(lease)
+                            .await
+                            .map_err(|error| {
+                                credential_failure("credential source unavailable", error)
                             })?;
-                        }
                     }
-                    if result.is_ok() {
-                        if let Some(lease) = &lease {
-                            lease.check().await.map_err(|error| {
-                                let mut status = Status::unauthenticated(
-                                    "credential source unavailable or changed",
-                                );
-                                status.set_source(Arc::new(error));
-                                status
-                            })?;
-                        }
-                    }
-                    result
-                })
-                .await;
-            let error = match result {
-                Ok(response) => {
-                    if attempt > 1 {
-                        tracing::info!(attempt, "stream rpc recovered");
-                    }
-                    return Ok((response.into_inner(), completion));
                 }
+                if result.is_ok() {
+                    if let Some(lease) = &lease {
+                        crate::transport_credential::check(lease)
+                            .await
+                            .map_err(|error| {
+                                credential_failure(
+                                    "credential source unavailable or changed",
+                                    error,
+                                )
+                            })?;
+                    }
+                }
+                result
+            };
+            #[cfg(feature = "serde")]
+            let (result, recording) = crate::trace::accompany(
+                crate::trace::Request {
+                    name: "stream.grpc.request",
+                    mechanism: crate::trace::Mechanism::RoundTrip,
+                    parent: None,
+                    guarantee: Some("authenticated_rpc_reply_validated_at_original_call"),
+                },
+                work,
+            )
+            .await;
+            #[cfg(not(feature = "serde"))]
+            let result = work.await;
+            let completion = ClientCompletion {
+                #[cfg(feature = "serde")]
+                recording,
+            };
+            let error = match result {
+                Ok(response) => return Ok((response.into_inner(), completion)),
                 Err(error) => error,
             };
-            completion.status(&error);
+            // Original unfinished attempts remain Unsettled, including cancellation.
+            drop(completion);
             if !retryable(&error) {
                 return Err(status(&error));
-            }
-            if attempt == 1 {
-                tracing::warn!(rpc.code = error.code() as u64, "stream rpc recovering");
             }
             // Backoff follows retryable's captured transient HTTP/2 or I/O failure.
             let backoff = backoff.get_or_insert_with(|| {
                 acyclic_auth::operation::Backoff::new(10, 1_000, uuid::Uuid::new_v4().as_fields().0)
             });
-            tokio::time::sleep(Duration::from_millis(u64::from(backoff.delay_ms()))).await;
+            let wait = tokio::time::sleep(Duration::from_millis(u64::from(backoff.delay_ms())));
+            #[cfg(feature = "serde")]
+            crate::trace::observe_value(
+                crate::trace::Request {
+                    name: "stream.grpc.retry_backoff",
+                    mechanism: crate::trace::Mechanism::Wait,
+                    parent: None,
+                    guarantee: Some("backpressure_after_observed_transient_transport_failure"),
+                },
+                wait,
+                |_| Some((None, crate::trace::Outcome::Succeeded)),
+            )
+            .await;
+            #[cfg(not(feature = "serde"))]
+            wait.await;
         }
     }
 }
@@ -513,14 +531,12 @@ pub(crate) async fn request_authorization(
         return Ok((None, None));
     }
     if let Some(provider) = credential {
-        let token = provider
-            .resolve()
+        let token = crate::transport_credential::resolve(provider)
             .await
-            .map_err(|_| Status::unauthenticated("credential provider failed"))?;
-        token
-            .check()
+            .map_err(|error| credential_failure("credential provider failed", error))?;
+        crate::transport_credential::check(&token)
             .await
-            .map_err(|_| Status::unauthenticated("credential expired or changed"))?;
+            .map_err(|error| credential_failure("credential expired or changed", error))?;
         Ok((
             Some(authorization(&token).map_err(|_| Status::unauthenticated("invalid credential"))?),
             Some(token),
@@ -598,70 +614,35 @@ fn io_interruption(error: &(dyn std::error::Error + 'static)) -> Option<bool> {
 
 pub(crate) use crate::wire_codec::status;
 
-/// Records one operation's terminal result exactly once; dropping it unfinished records `cancelled`.
-struct Completion {
-    span: obs::OperationSpan,
-    finished: bool,
+/// Custody of the shared recording through semantic decoding. Dropping an
+/// undecoded response preserves its original Unsettled terminal.
+struct ClientCompletion {
+    #[cfg(feature = "serde")]
+    recording: Option<crate::trace::OwnedRecording>,
 }
 
-impl Completion {
-    fn new(span: tracing::Span) -> Self {
-        Self {
-            span: obs::OperationSpan::new(span),
-            finished: false,
-        }
-    }
-
-    fn finish(&mut self, kind: Option<&'static str>, code: Option<Code>) {
-        if std::mem::replace(&mut self.finished, true) {
-            return;
-        }
-        match kind {
-            Some(kind) => obs::failed(&self.span, kind),
-            None => {
-                self.span.record("outcome", "ok");
-            }
-        }
-        if let Some(code) = code {
-            self.span.record("rpc.code", code as u64);
-        }
-    }
-
-    fn ok(&mut self) {
-        self.finish(None, Some(Code::Ok));
-    }
-
-    fn status(&mut self, error: &Status) {
-        let kind = if error.code() == Code::Cancelled {
-            "cancelled"
-        } else {
-            crate::wire_codec::status::category(error).code()
-        };
-        self.finish(Some(kind), Some(error.code()));
-    }
-
-    /// A local semantic rejection, not an observed gRPC status.
-    fn invalid_response(&mut self) {
-        self.finish(Some("invalid_response"), None);
-    }
-}
-
-impl Drop for Completion {
-    fn drop(&mut self) {
-        self.finish(Some("cancelled"), None);
-    }
-}
-
-/// Decodes a unary body; tonic already observed its successful trailers.
+/// Tonic's successful trailers are necessary but not sufficient for acceptance.
 fn decode_response<T, U>(
-    (body, mut completion): (T, Completion),
+    (body, completion): (T, ClientCompletion),
     decode: impl FnOnce(T) -> Result<U, StreamError>,
 ) -> Result<U, StreamError> {
-    completion.span.record("rpc.code", Code::Ok as u64);
-    let result = decode(body);
-    match &result {
-        Ok(_) => completion.ok(),
-        Err(_) => completion.invalid_response(),
+    #[cfg(feature = "serde")]
+    if let Some(recording) = completion.recording {
+        let result = recording.within_sync(|| decode(body));
+        if result.is_ok() {
+            let _completion = recording.finish_submitted(None, crate::trace::Outcome::Succeeded);
+        }
+        return result;
     }
-    result
+    #[cfg(not(feature = "serde"))]
+    let _ = completion;
+    decode(body)
+}
+fn credential_failure(
+    message: &'static str,
+    error: acyclic_auth::credential::CredentialError,
+) -> Status {
+    let mut status = Status::unauthenticated(message);
+    status.set_source(Arc::new(error));
+    status
 }

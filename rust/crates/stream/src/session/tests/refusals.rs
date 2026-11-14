@@ -71,7 +71,12 @@ async fn local_socket_refusals_retain_the_original_error_after_prior_data() -> T
     let refused = tokio::net::TcpStream::connect(address).await.unwrap_err();
     let status = tonic::Status::from_error(Box::new(refused));
     let original = crate::grpc::status(&status);
-    assert!(matches!(original, StreamError::Refused(_)));
+    assert!(original.member_refusal().is_some());
+    assert!(
+        std::iter::successors(std::error::Error::source(&original), |source| source
+            .source())
+        .any(|source| source.is::<std::io::Error>())
+    );
     let local = StreamError::Unavailable.with_source(status);
     for original in [original, local] {
         for phase in [Phase::Prepare, Phase::Open, Phase::Output, Phase::Input] {
