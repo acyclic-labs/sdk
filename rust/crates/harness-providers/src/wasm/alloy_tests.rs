@@ -36,6 +36,7 @@ fn parity(
                     capacity: ModelContextCapacity {
                         context_tokens: capacity,
                         output_tokens: Some(capacity / 4),
+                        output_shares_context: false,
                     },
                     features: ModelFeatures {
                         tools: true,

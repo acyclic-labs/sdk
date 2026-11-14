@@ -245,7 +245,11 @@ impl StockExecution<'_> {
         else {
             return Ok((through, maximum));
         };
-        if policy.needs_compaction(capacity, mandatory_count)? {
+        if policy.needs_compaction(
+            capacity,
+            mandatory_count,
+            mandatory_accounting.count.response_tokens(),
+        )? {
             return Err(stock_boundary(
                 self.io,
                 crate::wire::ErrorCode::Invalid,
@@ -331,7 +335,11 @@ impl StockExecution<'_> {
             .await?;
         match accounting.count.input_tokens(request, self.io) {
             Ok(Some(final_count)) => {
-                if policy.needs_compaction(capacity, final_count)? {
+                if policy.needs_compaction(
+                    capacity,
+                    final_count,
+                    accounting.count.response_tokens(),
+                )? {
                     return Ok(false);
                 }
                 request.retain_context_window(crate::context::ContextWindow {

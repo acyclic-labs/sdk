@@ -53,6 +53,7 @@ async fn accounting_callbacks_bind_exact_selection_bytes_and_request() -> Result
         ModelContextCapacity {
             context_tokens: 32,
             output_tokens: Some(8),
+            output_shares_context: false,
         }
     );
     provider.count_tokens = Some(Function::new_with_args(

@@ -81,7 +81,7 @@ fn dense_first_request_after_resume_requires_compaction_before_dispatch() -> Res
         let count = futures::executor::block_on(provider.counted(&prepared, 0))?.input_tokens;
         let capacity = provider.context_capacity(&provider.model)?;
         let policy = CapacityCompaction {};
-        assert!(policy.needs_compaction(capacity, count)?);
+        assert!(policy.needs_compaction(capacity, count, 0)?);
         // No generation has started. A fresh process uses the verified count;
         // previous usage and a sparse calibration cannot weaken admission.
         assert!(script.sent.lock().expect("fixture requests").is_empty());
@@ -523,6 +523,7 @@ async fn context_window_stop_compacts_before_continuing_without_a_count_endpoint
     provider.capacity = ModelContextCapacity {
         context_tokens: 65536,
         output_tokens: Some(50000),
+        output_shares_context: false,
     };
     let history = Context {
         messages: vec![

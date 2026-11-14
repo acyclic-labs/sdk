@@ -44,8 +44,8 @@ proptest! {
         let a = a.map(|n| n.min(context_a));
         let b = b.map(|n| n.min(context_b));
         let capacity = alloy_capacity(
-            ModelContextCapacity { context_tokens: context_a, output_tokens: a },
-            ModelContextCapacity { context_tokens: context_b, output_tokens: b },
+            ModelContextCapacity { context_tokens: context_a, output_tokens: a, output_shares_context: false },
+            ModelContextCapacity { context_tokens: context_b, output_tokens: b, output_shares_context: false },
         );
         prop_assert_eq!(capacity.context_tokens, context_a.min(context_b));
         let output = capacity.output_tokens;
@@ -69,6 +69,7 @@ fn catalog_default_and_provider_overrides_commit_together() -> Result<()> {
     spec.models.get_mut("gpt-5").unwrap().capacity = ModelContextCapacity {
         context_tokens: 1234,
         output_tokens: Some(100),
+        output_shares_context: false,
     };
     let file = tempfile::NamedTempFile::new().map_err(|_| invalid("fixture catalog"))?;
     let mut document = json!({"default_model":"openai/missing", "openai":spec});
@@ -121,17 +122,20 @@ fn alloy_unknown_member_context_can_be_below_the_known_output_ceiling() {
         ModelContextCapacity {
             context_tokens: 65_536,
             output_tokens: Some(65_536),
+            output_shares_context: false,
         },
         ModelContextCapacity {
             context_tokens: 1,
             output_tokens: None,
+            output_shares_context: false,
         },
     );
     assert_eq!(
         capacity,
         ModelContextCapacity {
             context_tokens: 1,
-            output_tokens: Some(1)
+            output_tokens: Some(1),
+            output_shares_context: false
         }
     );
 }

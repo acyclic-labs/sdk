@@ -272,6 +272,7 @@ mod tests {
                     capacity: ModelContextCapacity {
                         context_tokens: 65_536,
                         output_tokens: None,
+                        output_shares_context: false,
                     },
                     count,
                 });

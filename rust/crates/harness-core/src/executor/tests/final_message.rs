@@ -900,6 +900,7 @@ async fn sampling_returns_the_completed_message_instead_of_streamed_prefixes() -
             .with_context_capacity(crate::context::ModelContextCapacity {
                 context_tokens: 65_536,
                 output_tokens: Some(128),
+                output_shares_context: false,
             }),
         );
         let callbacks = McpRuntimeCallbacks::new(

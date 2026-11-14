@@ -248,6 +248,7 @@ async fn reported_usage_preserves_compaction_pressure_without_a_count_endpoint()
         provider.capacity = acyclic_harness_core::context::ModelContextCapacity {
             context_tokens: 4096,
             output_tokens: Some(4096),
+            output_shares_context: false,
         };
         let (prepared, _) = request(&provider)?;
         let mut long = prepared.request().clone();
@@ -267,8 +268,11 @@ async fn reported_usage_preserves_compaction_pressure_without_a_count_endpoint()
         let count = provider.counted(&prepared, 4096).await?;
         assert_eq!(count.input_tokens, 4097);
         assert!(
-            acyclic_harness_core::context::CapacityCompaction {}
-                .needs_compaction(provider.capacity, count.input_tokens)?
+            acyclic_harness_core::context::CapacityCompaction {}.needs_compaction(
+                provider.capacity,
+                count.input_tokens,
+                0
+            )?
         );
         assert!(script.sent.lock().unwrap().is_empty());
     }

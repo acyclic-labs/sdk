@@ -51,6 +51,7 @@ async fn open(root: &Path, state: &Path) -> Result<crate::LocalHarness> {
             crate::context::ModelContextCapacity {
                 context_tokens: 32_768,
                 output_tokens: Some(4096),
+                output_shares_context: false,
             },
         ),
     );

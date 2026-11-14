@@ -394,6 +394,7 @@ pub(super) fn provider_with(
         capacity: ModelContextCapacity {
             context_tokens: 8192,
             output_tokens: Some(1024),
+            output_shares_context: false,
         },
         key: Some("scripted-key".into()),
         transport: crate::deadline::Bounded::new(transport, crate::TimeoutSpec::DEFAULT),
@@ -803,6 +804,7 @@ fn registry_rejects_unsafe_urls_and_preserves_model_slashes() -> Result<()> {
                 capacity: ModelContextCapacity {
                     context_tokens: 8192,
                     output_tokens: Some(1024),
+                    output_shares_context: false,
                 },
                 features: ModelFeatures::default(),
             },

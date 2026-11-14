@@ -166,7 +166,7 @@ async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixe
                 ScriptedEvent::Event(ModelEvent::Completed { metadata: json!({"usage":{"prompt_tokens":6_000,"completion_tokens":1}}) }),
             ]),
         ])
-        .with_context_capacity(crate::context::ModelContextCapacity { context_tokens: 65_536, output_tokens: Some(4096) })
+        .with_context_capacity(crate::context::ModelContextCapacity { context_tokens: 65_536, output_tokens: Some(4096), output_shares_context: false })
         .with_token_counter(move |request| if tokenized { fixture_token_count(request) } else { Err(Error::ModelTokenCountUnavailable) })
         .with_dispatch_observer(move |_| {
             let (seen, gate) = (seen.clone(), gate.clone());
@@ -397,6 +397,7 @@ async fn reviews_bound_complete_groups_without_stopping_a_fitting_worker() -> Re
                 .with_context_capacity(crate::context::ModelContextCapacity {
                     context_tokens: 4096,
                     output_tokens: Some(128),
+                    output_shares_context: false,
                 })
                 .with_token_counter(move |request| {
                     if request.bytes().len() > 4096 - 128 {
@@ -533,6 +534,7 @@ async fn replay_preserves_review_boundaries_skipped_during_active_work() -> Resu
         .with_context_capacity(crate::context::ModelContextCapacity {
             context_tokens: 65_536,
             output_tokens: Some(4096),
+            output_shares_context: false,
         })
         .with_token_counter(fixture_token_count)
         .with_dispatch_observer(move |_| {
@@ -662,6 +664,7 @@ async fn invalid_context_decisions_preserve_history_and_original_admissions() ->
             .with_context_capacity(crate::context::ModelContextCapacity {
                 context_tokens: 8192,
                 output_tokens: Some(512),
+                output_shares_context: false,
             })
             .with_token_counter(fixture_token_count)
             .with_dispatch_observer(move |_| {

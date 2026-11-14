@@ -142,6 +142,7 @@ async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> 
                 capacity: ModelContextCapacity {
                     context_tokens: 8192,
                     output_tokens: Some(1024),
+                    output_shares_context: false,
                 },
                 features: ModelFeatures::default(),
             },
@@ -210,6 +211,7 @@ fn serialized_catalogs_own_capacities_without_name_based_fallbacks() -> Result<(
             capacity: ModelContextCapacity {
                 context_tokens: 32768,
                 output_tokens: Some(2048),
+                output_shares_context: false,
             },
             features: ModelFeatures::default(),
         },
@@ -386,7 +388,7 @@ proptest! {
         tools in any::<bool>(), images in any::<bool>(), ordinal in any::<u64>(),
     ) {
         let (registry, transport) = stock_registry();
-        let mut expected = ModelContextCapacity { context_tokens: u32::MAX, output_tokens: None};
+        let mut expected = ModelContextCapacity { context_tokens: u32::MAX, output_tokens: None, output_shares_context: true };
         let mut supported = true;
         for selection in &models {
             let (provider, name) = selection.split_once('/').unwrap();
@@ -394,6 +396,7 @@ proptest! {
             supported &= (!tools || entry.features.tools) && (!images || entry.features.images);
             expected.context_tokens = expected.context_tokens.min(entry.capacity.context_tokens);
             expected.output_tokens = expected.output_tokens.into_iter().chain(entry.capacity.output_tokens).min();
+            expected.output_shares_context &= entry.capacity.output_shares_context;
         }
         let resolved = registry.resolve_alloy(AlloySpec {
             models: models.clone(), select: AlloySelection::RoundRobin,

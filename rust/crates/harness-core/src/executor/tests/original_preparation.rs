@@ -300,7 +300,11 @@ impl StockExecution<'_> {
                 {
                     return Ok(retained);
                 }
-                let token_pressure = policy.needs_compaction(accounting.capacity, input_tokens)?;
+                let token_pressure = policy.needs_compaction(
+                    accounting.capacity,
+                    input_tokens,
+                    accounting.count.response_tokens(),
+                )?;
                 let possible_message_pressure = projection.canonical.is_some()
                     && self
                         .compaction_message_limit(true, 0)

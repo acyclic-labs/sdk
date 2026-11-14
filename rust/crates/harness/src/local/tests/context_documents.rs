@@ -124,6 +124,7 @@ async fn managed_context_preserves_success_and_reduces_total_input_across_follow
                 .with_context_capacity(crate::context::ModelContextCapacity {
                     context_tokens: 100_000,
                     output_tokens: Some(50_000),
+                    output_shares_context: false,
                 })
                 .with_token_counter(input_cost)
                 .reading_content(),

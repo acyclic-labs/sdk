@@ -27,7 +27,7 @@ impl StockExecution<'_> {
                 self.stock.limits,
                 self.io,
             )?;
-            let ceiling = policy.input_ceiling(accounting.capacity)?;
+            let ceiling = policy.input_ceiling(accounting.capacity, 0)?;
             let count = match stock_count_tokens(
                 self.selected_provider().as_ref(),
                 &request,
@@ -50,8 +50,9 @@ impl StockExecution<'_> {
                 }
                 Err(error) => return Err(error),
             };
+            let response_tokens = count.response_tokens();
             let tokens = with_history_io(self.io, |work| count.validate(&request, work))?;
-            if policy.needs_compaction(accounting.capacity, tokens)? {
+            if policy.needs_compaction(accounting.capacity, tokens, response_tokens)? {
                 return Ok(CompactionSource::Base { context: base });
             }
         }

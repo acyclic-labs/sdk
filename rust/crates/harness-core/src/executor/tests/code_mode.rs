@@ -229,6 +229,7 @@ async fn large_tool_tables_split_without_losing_schemas_or_changing_the_prefix()
         .with_context_capacity(crate::context::ModelContextCapacity {
             context_tokens: 1_048_576,
             output_tokens: Some(16_384),
+            output_shares_context: false,
         })
         .with_token_counter(fixture_token_count),
     );

@@ -316,7 +316,11 @@ impl StockExecution<'_> {
             }
             let mut request = request;
             if let Some(input_tokens) = final_accounting.count.input_tokens(&request, self.io)? {
-                if policy.needs_compaction(final_accounting.capacity, input_tokens)? {
+                if policy.needs_compaction(
+                    final_accounting.capacity,
+                    input_tokens,
+                    final_accounting.count.response_tokens(),
+                )? {
                     return Err(stock_boundary(
                         self.io,
                         crate::wire::ErrorCode::Storage,
@@ -430,7 +434,11 @@ impl StockExecution<'_> {
                 .unwrap_or(prepared));
         }
         let token_pressure = match input_tokens {
-            Some(tokens) => policy.needs_compaction(accounting.capacity, tokens)?,
+            Some(tokens) => policy.needs_compaction(
+                accounting.capacity,
+                tokens,
+                accounting.count.response_tokens(),
+            )?,
             None => true,
         };
         if let Some(request) = self

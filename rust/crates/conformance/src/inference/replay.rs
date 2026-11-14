@@ -423,6 +423,7 @@ impl Backend for Local {
                 capacity: ModelContextCapacity {
                     context_tokens: 2048,
                     output_tokens: Some(128),
+                    output_shares_context: false,
                 },
                 features: ModelFeatures {
                     tools: true,

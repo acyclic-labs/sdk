@@ -671,6 +671,7 @@ mod tests {
                 crate::context::ModelContextCapacity {
                     context_tokens: 8192,
                     output_tokens: Some(512),
+                    output_shares_context: false,
                 },
             ),
         );
@@ -737,6 +738,7 @@ mod tests {
                 crate::context::ModelContextCapacity {
                     context_tokens: 8192,
                     output_tokens: Some(512),
+                    output_shares_context: false,
                 },
                 true,
             );

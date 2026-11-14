@@ -58,6 +58,7 @@ fn executor() -> Result<(StockExecutor, Arc<ScriptedModelProvider>)> {
             .with_context_capacity(ModelContextCapacity {
                 context_tokens: u32::MAX,
                 output_tokens: Some(64),
+                output_shares_context: false,
             })
             .with_token_counter(|request| {
                 Ok(ModelTokenCount::from_upper_bounds(

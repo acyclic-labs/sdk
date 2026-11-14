@@ -33,6 +33,7 @@ async fn a_step_rebinds_the_complete_provider_configuration_without_restarting_t
                 capacity: crate::context::ModelContextCapacity {
                     context_tokens: 131_072,
                     output_tokens: Some(4096),
+                    output_shares_context: false,
                 },
                 overlay_effort: None,
             }))
@@ -321,6 +322,7 @@ async fn a_step_rebinds_the_complete_provider_configuration_without_restarting_t
             .with_context_capacity(crate::context::ModelContextCapacity {
                 context_tokens: 1,
                 output_tokens: None,
+                output_shares_context: false,
             })
             .with_token_counter(fixture_token_count),
     );

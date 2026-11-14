@@ -14,6 +14,13 @@ pub struct ModelContextCapacity {
     /// Verified maximum generated tokens; absent when the provider has no known bound.
     #[serde(default)]
     pub output_tokens: Option<u32>,
+    /// Generated output draws on whatever `context_tokens` the input leaves,
+    /// instead of a budget the provider sets aside ahead of input. A shared
+    /// window may publish `output_tokens` equal to the whole window, so that
+    /// maximum is never reserved; see [`crate::context::CapacityCompaction::input_ceiling`].
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    #[cfg_attr(feature = "wasm", tsify(optional))]
+    pub output_shares_context: bool,
 }
 
 impl ModelContextCapacity {

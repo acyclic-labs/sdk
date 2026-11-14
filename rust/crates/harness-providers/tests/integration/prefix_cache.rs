@@ -316,6 +316,7 @@ fn registry(
                     capacity: ModelContextCapacity {
                         context_tokens: CONTEXT_TOKENS,
                         output_tokens: Some(1024),
+                        output_shares_context: false,
                     },
                     features: ModelFeatures {
                         tools: true,

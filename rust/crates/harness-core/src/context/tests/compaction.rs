@@ -33,11 +33,12 @@ fn every_cut_of_the_only_protected_exchange_retains_all_input() -> Result<()> {
     let capacity = ModelContextCapacity {
         context_tokens: 32_768,
         output_tokens: Some(4_096),
+        output_shares_context: false,
     };
     let input_bytes = source.messages.iter().try_fold(100_u64, |total, message| {
         Ok::<_, crate::Error>(total + crate::contract::canonical_json_bytes(message)?.len() as u64)
     })?;
-    assert!(policy.needs_compaction(capacity, input_bytes)?);
+    assert!(policy.needs_compaction(capacity, input_bytes, 0)?);
     // Exhaust all prefix cuts through the production selector: the current
     // input and latest result pin the entire connected call/result exchange.
     for covered in 0..=source.messages.len() {

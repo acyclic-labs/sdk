@@ -19,6 +19,7 @@ fn model(turns: impl IntoIterator<Item = ScriptedTurn>) -> Arc<ScriptedModelProv
         ScriptedModelProvider::new(turns).with_context_capacity(ModelContextCapacity {
             context_tokens: 32_768,
             output_tokens: Some(4096),
+            output_shares_context: false,
         }),
     )
 }

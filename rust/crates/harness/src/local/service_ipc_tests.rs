@@ -53,6 +53,7 @@ async fn external_process_delivers_attributed_peer_input_to_a_running_session() 
         .with_context_capacity(crate::context::ModelContextCapacity {
             context_tokens: 32_768,
             output_tokens: Some(4096),
+            output_shares_context: false,
         })
         .with_dispatch_observer(move |_| {
             if let Some(entered) = entered.lock().unwrap().take() {
