@@ -189,6 +189,7 @@ impl Error {
             Self::CallSettled { .. }
             | Self::Unknown { .. }
             | Self::InvocationDurabilityUnknown { .. }
+            | Self::PublicationDurabilityUnknown { .. }
             | Self::Conflict
             | Self::PreconditionChanged(_)
             | Self::Paused
