@@ -33,7 +33,7 @@ async fn physical_private_state_needs_no_global_mount_registry() {
         .arg("physical")
         .arg("--catalog")
         .arg(&model.catalog)
-        .args(["--model", "graphcoder-qual/tiny", "exec", "answer"]);
+        .args(["--model", "fixture/tiny", "exec", "answer"]);
     let output = capture(command, "").await;
     assert!(
         output.status.success(),
@@ -384,7 +384,7 @@ async fn chat_settings_defaults_yield_to_explicit_model_and_compaction_choices()
             };
         std::fs::write(
             fixture.settings.join(".codex/config.toml"),
-            format!("model = '{default_model}'\nmodel_provider = 'graphcoder-qual'\n{compaction}"),
+            format!("model = '{default_model}'\nmodel_provider = 'fixture'\n{compaction}"),
         )
         .unwrap();
         let mut command = graphcoder_command(&fixture);
@@ -409,7 +409,7 @@ async fn chat_settings_defaults_yield_to_explicit_model_and_compaction_choices()
             let selected = acyclic_harness::templates::root()
                 .unwrap()
                 .model
-                .unwrap_or_else(|| "graphcoder-qual/tiny".into());
+                .unwrap_or_else(|| "fixture/tiny".into());
             command.arg("--model").arg(selected);
         }
         let output = capture(command, "").await;
@@ -430,7 +430,7 @@ async fn chat_settings_defaults_yield_to_explicit_model_and_compaction_choices()
             let selected = acyclic_harness::templates::root()
                 .unwrap()
                 .model
-                .unwrap_or_else(|| "graphcoder-qual/tiny".into());
+                .unwrap_or_else(|| "fixture/tiny".into());
             let wire_model = selected.split_once('/').unwrap().1;
             assert_eq!(
                 model.requests.lock().unwrap()[0]["model"],
