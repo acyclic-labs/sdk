@@ -5,6 +5,11 @@ pub(crate) enum HeadDurability {
     Deferred,
 }
 
+pub(crate) struct HeadCapture {
+    pub(crate) view: crate::Heads,
+    pub(crate) ephemeral: Vec<bool>,
+}
+
 impl MemoryStream {
     pub(crate) async fn follow_inner(
         &self,
@@ -53,10 +58,10 @@ impl MemoryStream {
     ) -> Result<crate::Heads, StreamError> {
         request.validate()?;
         self.revisions.wait(&request.at_least).await?;
-        let view = self
+        let captured = self
             .capture_heads(&request, HeadDurability::Volatile)
             .await?;
-        Ok(view)
+        Ok(captured.view)
     }
 
     pub(crate) async fn inspect_idempotency_inner(
@@ -128,15 +133,32 @@ impl MemoryStream {
         &self,
         request: &crate::HeadsRequest,
         durability: HeadDurability,
-    ) -> Result<crate::Heads, StreamError> {
+    ) -> Result<HeadCapture, StreamError> {
         let mut allocation = None;
         let mut view = self.empty_heads(request);
         view.heads
             .try_reserve_exact(request.paths.len())
             .map_err(|_| StreamError::Capacity)?;
-        self.capture_heads_into(request, durability, &mut view, None, &mut allocation)
-            .await?;
-        Ok(view)
+        let mut ephemeral = Vec::new();
+        let needs_ownership = durability == HeadDurability::Deferred
+            && (request.projection != crate::HeadProjection::Tail
+                || request.durable_through.is_some());
+        if needs_ownership {
+            ephemeral
+                .try_reserve_exact(request.paths.len())
+                .map_err(|_| StreamError::Capacity)?;
+        }
+        let ownership = needs_ownership.then_some(&mut ephemeral);
+        self.capture_heads_into(
+            request,
+            durability,
+            &mut view,
+            ownership,
+            None,
+            &mut allocation,
+        )
+        .await?;
+        Ok(HeadCapture { view, ephemeral })
     }
 
     fn empty_heads(&self, request: &crate::HeadsRequest) -> crate::Heads {
@@ -156,6 +178,7 @@ impl MemoryStream {
         request: &crate::HeadsRequest,
         durability: HeadDurability,
         view: &mut crate::Heads,
+        mut ownership: Option<&mut Vec<bool>>,
         _work: CaptureWork<'_>,
         allocation: &mut Allocation,
     ) -> Result<(), StreamError> {
@@ -232,14 +255,17 @@ impl MemoryStream {
                 )
             };
             #[cfg(not(target_arch = "wasm32"))]
-            let head = if let Some(work) = _work {
+            let (head, ephemeral) = if let Some(work) = _work {
                 work.record(inspect(&work.meter, capture))??
             } else {
                 capture()?
             };
             #[cfg(target_arch = "wasm32")]
-            let head = capture()?;
+            let (head, ephemeral) = capture()?;
             view.heads.push(head);
+            if let Some(ownership) = ownership.as_mut() {
+                ownership.push(ephemeral);
+            }
         }
         view.snapshot = self.revisions.at(index);
         view.applied = applied;
@@ -274,12 +300,12 @@ fn head_at(
     durable: bool,
     private: &Ephemeral,
     _work: CaptureWork<'_>,
-) -> Result<Option<crate::PathHead>, StreamError> {
+) -> Result<(Option<crate::PathHead>, bool), StreamError> {
     // A private view has no durable prefix, including at a captured revision.
     let leased = private.root_of(path.as_str()).is_some();
     let durable = durable && !leased;
     let through = through.filter(|_| !leased);
-    paths
+    let head = paths
         .observation_with(path, || {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = _work {
@@ -289,7 +315,7 @@ fn head_at(
         })?
         .map(|observation| {
             let stream = &observation.node.data;
-            Ok(crate::PathHead {
+            Ok::<_, StreamError>(crate::PathHead {
                 changed_at: observation.changed_at(),
                 retained_through: through.filter(|through| *through <= stream.tail),
                 tail: stream.tail,
@@ -317,7 +343,8 @@ fn head_at(
                 },
             })
         })
-        .transpose()
+        .transpose()?;
+    Ok((head, leased))
 }
 
 fn capture_origin(
@@ -1164,6 +1191,7 @@ impl MemoryStream {
             request,
             HeadDurability::Volatile,
             &mut output.value,
+            None,
             Some(work),
             &mut children_allocation,
         )

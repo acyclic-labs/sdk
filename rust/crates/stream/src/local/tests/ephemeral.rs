@@ -65,6 +65,82 @@ fn frames(provider: &LocalStream) -> Result<(u64, u64)> {
     Ok((journal.operations, journal.bytes))
 }
 
+/// The captured ownership, rather than the lease's later lifetime, determines
+/// whether a captured record can acquire journal durability.
+#[tokio::test]
+async fn releasing_a_lease_cannot_make_captured_heads_durable() -> Result {
+    let directory = tempfile::tempdir()?;
+    let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+    let public = StreamPath::new("kept/base")?;
+    let private = StreamPath::new("scratch/temporary")?;
+    provider.append(append(&public, 0)?).await?;
+    provider.durability_barrier().await?;
+    let lease = provider
+        .lease_ephemeral(StreamPath::new("scratch")?)
+        .await?;
+    let before = frames(&provider)?;
+    provider.append(append(&private, 0)?).await?;
+    let mut captures = Vec::new();
+    for projection in [
+        crate::HeadProjection::History,
+        crate::HeadProjection::Watermarks,
+    ] {
+        for durable_through in [None, Some(1)] {
+            let request = crate::HeadsRequest {
+                at: None,
+                retained: Default::default(),
+                durable_through,
+                projection,
+                paths: [private.clone(), public.clone()].into_iter().collect(),
+                children: None,
+                limit: 2,
+                at_least: Default::default(),
+            };
+            // Stop between the two production phases, without a scheduler race
+            // or a substitute provider. Both paths share this actual capture.
+            let captured = provider
+                .accepted(|| async {
+                    let heads = provider
+                        .inner
+                        .provider
+                        .capture_heads(&request, crate::memory::HeadDurability::Deferred)
+                        .await?;
+                    Ok::<_, StreamError>((heads, *provider.inner.revision.borrow()))
+                })
+                .await??;
+            captures.push((request, captured));
+        }
+    }
+    lease.settle().await?;
+    assert_eq!(provider.tail(private).await, Err(StreamError::NotFound));
+    for (request, (capture, revision)) in captures {
+        let view = provider
+            .complete_head_capture(request.clone(), capture, revision)
+            .await?;
+        view.validate_for(&request)?;
+        let temporary = view.heads[0].as_ref().ok_or("private head missing")?;
+        assert_eq!(
+            temporary.tail, 1,
+            "capture keeps the original accepted fact"
+        );
+        assert_eq!(
+            temporary.durable, 0,
+            "temporary records were never journalled"
+        );
+        assert_eq!(temporary.retained_through, None);
+        // Negative control: the public record from the same capture is durable.
+        let durable = view.heads[1].as_ref().ok_or("public head missing")?;
+        assert_eq!(durable.durable, 1);
+        assert_eq!(durable.retained_through, request.durable_through);
+    }
+    assert_eq!(
+        frames(&provider)?,
+        before,
+        "private writes and release emit no frame"
+    );
+    Ok(())
+}
+
 /// An ephemeral fork, the path it adopts and their appends write no journal
 /// frame. A compaction while the lease is held snapshots none of them, and a
 /// reopen without any release finds nothing, while a durable fork and the
