@@ -1242,7 +1242,43 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     );
     // Trace demand is held by this same authenticated file wait, including
     // before the original trace stream has its first publication.
-    let journal = bound.turns().query_journal(&state).await?;
+    let (journal_volume, authority) = bound.turns().journal_authority(&state).await?;
+    let (private_scope, private_verifier) = bound.volume_scope(&agent).await?;
+    let private = state.volumes[0].volume()?;
+    let files = Arc::new(crate::filesystem::agent_internal::AgentInternalFiles::new(
+        Arc::clone(bound.volumes()),
+        journal_volume.clone(),
+        crate::conversation::ContentGrant::verify(
+            &authority.verifier,
+            &authority.scope,
+            &journal_volume,
+            crate::conversation::VolumeOperation::Write,
+            &mut None,
+        )?,
+        private.clone(),
+        crate::conversation::ContentGrant::verify(
+            &private_verifier,
+            &private_scope,
+            private,
+            crate::conversation::VolumeOperation::Write,
+            &mut None,
+        )?,
+    ));
+    let policy = crate::approvals::AgentApprovalPolicy::new(
+        agent.id(),
+        crate::approvals::ApprovalPolicy::accept_all("trace-reviewer"),
+        None,
+        Default::default(),
+        Default::default(),
+    )?;
+    let journal = bound
+        .turns()
+        .query_journal(&state)
+        .await?
+        .with_agent_approvals(Arc::new(crate::approvals::AgentApprovals::new(
+            files,
+            Arc::new(policy),
+        )));
     let operation = OperationId::from_bytes([74; 16]);
     let event = ExecutionEvent::Started {
         request_digest: [75; 32],
