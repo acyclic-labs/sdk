@@ -14,9 +14,9 @@ pub(super) fn visit_metadata() {
     METADATA_VISITS.set(METADATA_VISITS.get() + 1);
 }
 
-fn view(path: &StreamPath, bytes: usize) -> StreamView {
+fn view(path: &StreamPath) -> StreamView {
     StreamView::new(
-        StreamViewPolicy::new(1, bytes).unwrap(),
+        StreamViewPolicy::new(1).unwrap(),
         0,
         0,
         false,
@@ -26,7 +26,7 @@ fn view(path: &StreamPath, bytes: usize) -> StreamView {
 }
 
 #[tokio::test]
-async fn metadata_retention_counts_one_pass_and_refuses_uncharged_backing()
+async fn metadata_retention_counts_one_pass_and_detaches_excess_backing()
 -> Result<(), Box<dyn std::error::Error>> {
     let memory = MemoryStream::default();
     let huge = OwnedBytes::from(vec![b'z'; 64 * 1024]);
@@ -78,7 +78,7 @@ async fn metadata_retention_counts_one_pass_and_refuses_uncharged_backing()
             "finite producer did not end"
         );
         let mut record = wire_codec::record_wire(original.clone(), Some(&path));
-        let (native, _) = retain_metadata(&record, Some(&original), 64 * 1024)?;
+        let (native, _) = retain_metadata(&record, Some(&original));
         for (index, key) in native.keys.iter().enumerate() {
             assert_eq!(
                 key.as_ptr() == record.keys[index].as_ptr(),
@@ -120,7 +120,7 @@ async fn metadata_retention_counts_one_pass_and_refuses_uncharged_backing()
                 .collect(),
         )?;
         let exact_wire = wire_codec::record_wire(exact_owner.clone(), Some(&path));
-        let (shared, _) = retain_metadata(&exact_wire, Some(&exact_owner), 64 * 1024)?;
+        let (shared, _) = retain_metadata(&exact_wire, Some(&exact_owner));
         for (index, key) in shared.keys.iter().enumerate() {
             assert_eq!(
                 key.as_ptr(),
@@ -160,7 +160,7 @@ async fn metadata_retention_counts_one_pass_and_refuses_uncharged_backing()
         let Some(wire::session_data::Item::Record(record)) = &data.item else {
             unreachable!()
         };
-        let mut retained = view(&path, 64 * 1024);
+        let mut retained = view(&path);
         METADATA_VISITS.set(0);
         retained.apply(&frame, 1)?;
         assert_eq!(
@@ -194,38 +194,6 @@ async fn metadata_retention_counts_one_pass_and_refuses_uncharged_backing()
                 "unknown key backing was retained"
             );
         }
-        let mut exact = view(&path, expected);
-        exact.apply(&frame, 1)?;
-        // A caller may authorize more display credit than the selected data
-        // needs. Admission must not reserve that unused credit or change the
-        // original row's charge; retention remains lazy under both budgets.
-        let mut wide = StreamView::new(
-            StreamViewPolicy::new(usize::MAX, usize::MAX)?,
-            0,
-            0,
-            false,
-            Some(path.clone()),
-            BackingPool::default(),
-        );
-        METADATA_VISITS.set(0);
-        wide.apply(&frame, 1)?;
-        assert_eq!(wide.record(0), exact.record(0));
-        assert_eq!(wide.retained_bytes(), expected);
-        assert_eq!(wide.records.capacity(), exact.records.capacity());
-        assert_eq!(METADATA_VISITS.get(), count * 2);
-        let mut short = view(&path, expected - 1);
-        assert!(matches!(
-            short.apply(&frame, 1),
-            Err(StreamError::LimitExceeded)
-        ));
-        assert_eq!(
-            (
-                short.next_sequence(),
-                short.retained_bytes(),
-                short.records().len()
-            ),
-            (0, 0, 0)
-        );
         let mut corrupt = frame.into_wire();
         let Some(wire::session_frame::Body::Data(data)) = &mut corrupt.body else {
             unreachable!()
@@ -234,7 +202,7 @@ async fn metadata_retention_counts_one_pass_and_refuses_uncharged_backing()
             unreachable!()
         };
         record.commit_id = Bytes::from_static(&[0; 31]);
-        let mut refused = view(&path, expected);
+        let mut refused = view(&path);
         assert!(
             refused.apply(&corrupt.into(), 1).is_err(),
             "malicious external frame bypassed canonical validation"
