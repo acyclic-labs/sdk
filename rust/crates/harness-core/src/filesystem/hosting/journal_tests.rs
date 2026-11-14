@@ -215,7 +215,7 @@ async fn waking_notices_steer_without_granting_their_journal_files() -> TestResu
     let file = file.as_ref().clone();
     let external = [file.clone()];
     let guest = AdmittedAgent::verify(bound.issuer(), bound.admission(), &root, &state.volumes)?
-        .authority(&external)
+        .authority(&external, Some(operation))
         .await?;
     let guest_reader = FilesystemContentVerifier::new(
         Arc::clone(bound.volumes()),

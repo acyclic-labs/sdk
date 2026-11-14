@@ -1,0 +1,21 @@
+diff --git a/rust/crates/actors/src/local.rs b/rust/crates/actors/src/local.rs
+--- a/rust/crates/actors/src/local.rs
++++ b/rust/crates/actors/src/local.rs
+@@ -195,7 +195,8 @@
+             | Self::PreconditionChanged(_)
+             | Self::Paused
+-            | Self::AlarmNotDue { .. } => true,
++            | Self::AlarmNotDue { .. }
++            | Self::AdmissionClosed(_) => true,
+             Self::Call(_)
+             | Self::InvocationTerminated { .. }
+             | Self::Clock(_)
+             | Self::CompletionStopped
+@@ -207,7 +208,6 @@
+             | Self::PreconditionUnchanged
+             | Self::InvocationFailed { .. }
+             | Self::Deleted
+-            | Self::AdmissionClosed(_)
+             | Self::Invalid(_) => false,
+         }
+     }
