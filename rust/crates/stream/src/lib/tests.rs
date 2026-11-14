@@ -822,6 +822,9 @@ mod indexed_trace_tests {
                 )
                 .await?;
         }
+        let visibility_cut = RevisionCut::of(provider.wait_applied(&Default::default()).await?);
+        let applied = root.within(provider.wait_applied(&visibility_cut)).await?;
+        assert!(visibility_cut.proven_by(Some(&applied)));
         let original_children = provider.children_page(child_request.clone()).await?;
         assert_eq!(original_children.children.len(), 1);
         let mut continuation = child_request.clone();
@@ -907,10 +910,11 @@ mod indexed_trace_tests {
         );
         let mut completed = 0;
         let mut fence = false;
+        let mut applied_wait = false;
         let mut request = false;
         let mut indexed_bytes = Vec::new();
         let mut projections = std::collections::BTreeMap::new();
-        while completed < 10 {
+        while completed < 11 {
             let Some(observation) = query.next().await? else {
                 return Err("trace ended before original request hops settled".into());
             };
@@ -930,6 +934,17 @@ mod indexed_trace_tests {
                     continue;
                 }
                 assert_eq!(start.parent, Some(parent));
+                if start.name == "stream.wait_applied" {
+                    assert!(!applied_wait);
+                    applied_wait = true;
+                    assert_eq!(start.mechanism, Mechanism::Wait);
+                    assert_eq!(
+                        start.guarantee.as_deref(),
+                        Some("original_revision_cut_visible_before_return")
+                    );
+                    assert_eq!(bytes, None);
+                    continue;
+                }
                 assert_eq!(start.mechanism, Mechanism::ProviderCall);
                 match start.name.as_str() {
                     "stream.latest_fence" => {
@@ -966,7 +981,7 @@ mod indexed_trace_tests {
                 }
             }
         }
-        assert!(fence && request);
+        assert!(fence && request && applied_wait);
         indexed_bytes.sort();
         assert_eq!(indexed_bytes, [Some(0), Some(8)]);
         assert_eq!(projections["stream.children_page"], 2);
@@ -975,7 +990,7 @@ mod indexed_trace_tests {
         assert_eq!(projections["stream.watermarks"], 1);
         assert_eq!(
             trace.tail().await?,
-            20,
+            22,
             "zero cuts and diagnostic reads must not emit provider work"
         );
         assert_eq!(
@@ -990,7 +1005,7 @@ mod indexed_trace_tests {
         );
         assert_eq!(
             trace.tail().await?,
-            20,
+            22,
             "the request owner must not leak into unrelated work"
         );
         Ok(())

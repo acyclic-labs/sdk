@@ -553,7 +553,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
         &self,
         at_least: &RevisionCut,
     ) -> impl std::future::Future<Output = Result<Revision, StreamError>> + ProviderTask {
-        async move {
+        let work = async move {
             let view = self
                 .heads(HeadsRequest {
                     at: None,
@@ -574,6 +574,22 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
                 return Err(StreamError::InvalidResponse);
             }
             Ok(view.snapshot)
+        };
+        async move {
+            #[cfg(feature = "serde")]
+            return crate::trace::observe(
+                crate::trace::Request {
+                    name: "stream.wait_applied",
+                    mechanism: crate::trace::Mechanism::Wait,
+                    parent: None,
+                    guarantee: Some("original_revision_cut_visible_before_return"),
+                },
+                work,
+                |_| None,
+            )
+            .await;
+            #[cfg(not(feature = "serde"))]
+            work.await
         }
     }
 }
