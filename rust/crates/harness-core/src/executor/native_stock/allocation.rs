@@ -25,7 +25,7 @@ pub(crate) fn stock_retire_text(text: String, io: Option<&PreparationIo>) -> Res
     stock_retire(text, bytes, io)
 }
 
-fn stock_retire<T>(value: T, bytes: u64, io: Option<&PreparationIo>) -> Result<()> {
+pub(crate) fn stock_retire<T>(value: T, bytes: u64, io: Option<&PreparationIo>) -> Result<()> {
     let custody = io
         .filter(|_| bytes != 0)
         .map(|io| io.guard_owned(bytes))

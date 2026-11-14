@@ -105,7 +105,7 @@ impl FileCursor {
         })?;
         let cursor = Self::new_using(root, path, kind, pattern, Some(&io))?;
         let custody = io.take_native_custody(io.owned_bytes()?)?;
-        Ok(acyclic_fs::kernel::RetainedAllocation::from(custody).into_value(cursor))
+        Ok(acyclic_fs::kernel::RetainedAllocation::native(custody).into_value(cursor))
     }
 
     /// Pages the same search with the original native reader, work and
@@ -123,7 +123,7 @@ impl FileCursor {
             let io = PreparationIo::from_native_work(work)?;
             let page = self.page_using(reader, ceiling, budget, Some(&io)).await?;
             let custody = io.take_native_custody(io.owned_bytes()?)?;
-            Ok(acyclic_fs::kernel::RetainedAllocation::from(custody).into_value(page))
+            Ok(acyclic_fs::kernel::RetainedAllocation::native(custody).into_value(page))
         })
     }
 }

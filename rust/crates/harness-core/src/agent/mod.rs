@@ -128,6 +128,7 @@ pub use machine::{
     TurnFuture, TurnInput, TurnStep, Until, Wait, WaitReason, WaitResume, Wake, requested_child,
     step,
 };
+pub(crate) use records::decode_record_accounted;
 pub use records::{
     AgentOutcome, AgentRecord, Approval, ApprovalRequested, Cancellation, ChildDone, ChildSettled,
     ChildSettlement, ChildWake, ChildWakes, Closed, ContextAction, ContextRequest, Control,

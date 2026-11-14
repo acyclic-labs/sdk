@@ -28,6 +28,13 @@ macro_rules! typed_reference {
                 &self.0
             }
 
+            pub(crate) fn clone_in_quota(
+                &self,
+                quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+            ) -> Result<Self> {
+                self.0.clone_in_quota(quota).map(Self)
+            }
+
             /// Validates an untrusted serialized reference and its semantic kind.
             pub fn validate(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
                 self.0.validate(work)?;

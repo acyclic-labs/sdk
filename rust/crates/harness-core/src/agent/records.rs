@@ -164,6 +164,33 @@ pub fn decode_record<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, Er
     decode_payload(record_payload(bytes)?).map_err(record_decode_error)
 }
 
+/// Uses the same versioned, whole-input decoder on the original allocation ledger.
+pub(crate) fn decode_record_accounted<T: for<'de> Deserialize<'de>>(
+    bytes: &[u8],
+    accounting: &mut acyclic_fs::kernel::KernelAccounting<'_>,
+) -> Result<acyclic_fs::kernel::Retained<T>, acyclic_fs::kernel::MetadataDecodeError<Error>> {
+    use acyclic_fs::kernel::MetadataDecodeError;
+    accounting.charge(acyclic_fs::WorkCounters {
+        items_examined: 1,
+        ..acyclic_fs::WorkCounters::UNCHARGED
+    })?;
+    let payload = record_payload(bytes).map_err(MetadataDecodeError::Codec)?;
+    decode_payload_with(
+        payload,
+        |decoder| {
+            accounting
+                .deserialize::<T, _>(decoder)
+                .map_err(|error| match error {
+                    MetadataDecodeError::Work(error) => MetadataDecodeError::Work(error),
+                    MetadataDecodeError::Codec(_) => {
+                        MetadataDecodeError::Codec(Error::Record("record is malformed"))
+                    }
+                })
+        },
+        || MetadataDecodeError::Codec(Error::Record("record is malformed")),
+    )
+}
+
 fn record_payload(bytes: &[u8]) -> Result<&[u8], Error> {
     if bytes.len() > MAX_RECORD_BYTES {
         return Err(Error::Record("record exceeds MAX_RECORD_BYTES"));
@@ -896,25 +923,7 @@ pub trait AgentRecord: Serialize + for<'de> Deserialize<'de> {
     ) -> Result<acyclic_fs::kernel::Retained<Self>, acyclic_fs::kernel::MetadataDecodeError<Error>>
     {
         use acyclic_fs::kernel::MetadataDecodeError;
-        accounting.charge(acyclic_fs::WorkCounters {
-            items_examined: 1,
-            ..acyclic_fs::WorkCounters::UNCHARGED
-        })?;
-        let payload = record_payload(bytes).map_err(MetadataDecodeError::Codec)?;
-        let value = decode_payload_with(
-            payload,
-            |decoder| {
-                accounting
-                    .deserialize::<Self, _>(decoder)
-                    .map_err(|error| match error {
-                        MetadataDecodeError::Work(error) => MetadataDecodeError::Work(error),
-                        MetadataDecodeError::Codec(_) => {
-                            MetadataDecodeError::Codec(Error::Record("record is malformed"))
-                        }
-                    })
-            },
-            || MetadataDecodeError::Codec(Error::Record("record is malformed")),
-        )?;
+        let value = decode_record_accounted::<Self>(bytes, accounting)?;
         value.check().map_err(MetadataDecodeError::Codec)?;
         Ok(value)
     }
