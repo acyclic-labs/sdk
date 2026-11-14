@@ -417,12 +417,32 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
         request: AppendRequest,
     ) -> impl std::future::Future<Output = Result<AppendOutcome, StreamError>> + ProviderTask {
         async move {
-            match self.write(WriteRequest::Append(request)).await? {
-                WriteOutcome::Append(outcome) => Ok(outcome),
-                _ => Err(StreamError::InvalidResponse),
+            #[cfg(feature = "serde")]
+            let diagnostic = crate::trace::is_source(&request.path);
+            let work = async move {
+                match self.write(WriteRequest::Append(request)).await? {
+                    WriteOutcome::Append(outcome) => Ok(outcome),
+                    _ => Err(StreamError::InvalidResponse),
+                }
+            };
+            #[cfg(feature = "serde")]
+            if !diagnostic {
+                return crate::trace::observe(
+                    crate::trace::Request {
+                        name: "stream.append",
+                        mechanism: crate::trace::Mechanism::Commit,
+                        parent: None,
+                        guarantee: Some("atomic_contiguous_append_decision"),
+                    },
+                    work,
+                    |_| None,
+                )
+                .await;
             }
+            work.await
         }
     }
+
     fn fork(
         &self,
         request: ForkRequest,

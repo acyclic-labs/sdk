@@ -822,6 +822,25 @@ mod indexed_trace_tests {
                 )
                 .await?;
         }
+        let child = Stream::new(provider.clone(), "agents/worker/data/a")?;
+        let direct_append = root
+            .within(provider.append(AppendRequest {
+                path: child.path().clone(),
+                records: vec![AppendRecord::new(OwnedBytes::from_static(b"direct"))?],
+                if_tail: Some(1),
+                idempotency_key: IdempotencyKey::unique(),
+            }))
+            .await?;
+        assert!(matches!(direct_append, AppendOutcome::Committed(_)));
+        let handle_append = root
+            .within(child.append_at(
+                AppendRecord::new(OwnedBytes::from_static(b"handle"))?,
+                2,
+                IdempotencyKey::unique(),
+            ))
+            .await?;
+        assert!(matches!(handle_append, AppendOutcome::Committed(_)));
+        assert_eq!(child.tail().await?, 3);
         let receipt = provider.durable_receipt(data.path().clone(), 1).await?;
         assert!(receipt.is_some());
         assert_eq!(
@@ -925,11 +944,12 @@ mod indexed_trace_tests {
         let mut completed = 0;
         let mut fence = false;
         let mut applied_wait = false;
+        let mut appends = 0;
         let mut receipt_outcomes = Vec::new();
         let mut request = false;
         let mut indexed_bytes = Vec::new();
         let mut projections = std::collections::BTreeMap::new();
-        while completed < 13 {
+        while completed < 15 {
             let Some(observation) = query.next().await? else {
                 return Err("trace ended before original request hops settled".into());
             };
@@ -971,6 +991,16 @@ mod indexed_trace_tests {
                     assert_eq!(bytes, None);
                     continue;
                 }
+                if start.name == "stream.append" {
+                    appends += 1;
+                    assert_eq!(start.mechanism, Mechanism::Commit);
+                    assert_eq!(
+                        start.guarantee.as_deref(),
+                        Some("atomic_contiguous_append_decision")
+                    );
+                    assert_eq!(bytes, None);
+                    continue;
+                }
                 assert_eq!(start.mechanism, Mechanism::ProviderCall);
                 match start.name.as_str() {
                     "stream.latest_fence" => {
@@ -1008,6 +1038,7 @@ mod indexed_trace_tests {
             }
         }
         assert!(fence && request && applied_wait);
+        assert_eq!(appends, 2);
         assert_eq!(receipt_outcomes.len(), 2);
         assert_eq!(
             receipt_outcomes
@@ -1031,7 +1062,7 @@ mod indexed_trace_tests {
         assert_eq!(projections["stream.watermarks"], 1);
         assert_eq!(
             trace.tail().await?,
-            26,
+            30,
             "zero cuts and diagnostic reads must not emit provider work"
         );
         assert_eq!(
@@ -1046,7 +1077,7 @@ mod indexed_trace_tests {
         );
         assert_eq!(
             trace.tail().await?,
-            26,
+            30,
             "the request owner must not leak into unrelated work"
         );
         Ok(())
