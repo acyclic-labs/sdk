@@ -26,9 +26,26 @@ where
     P: StreamProvider,
     I: tonic::service::Interceptor + Clone + Send + Sync + 'static,
 {
+    let client = Client::from_channel(
+        served_channel(provider, interceptor),
+        authorization("fixture")?,
+    );
+    client
+        .session_client()?
+        .register_credential(0, crate::session::testing::credential())?;
+    Ok(client)
+}
+
+/// A lazily connecting channel to `provider`'s gRPC services over in-memory
+/// duplex streams, each request passing through `interceptor` first.
+fn served_channel<P, I>(provider: P, interceptor: I) -> Channel
+where
+    P: StreamProvider,
+    I: tonic::service::Interceptor + Clone + Send + Sync + 'static,
+{
     let provider = Arc::new(provider);
-    let channel = Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(
-        tower::service_fn(move |_| {
+    Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(tower::service_fn(
+        move |_| {
             let provider = Arc::clone(&provider);
             let interceptor = interceptor.clone();
             async move {
@@ -55,13 +72,8 @@ where
                 });
                 Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(client))
             }
-        }),
-    );
-    let client = Client::from_channel(channel, authorization("fixture")?);
-    client
-        .session_client()?
-        .register_credential(0, crate::session::testing::credential())?;
-    Ok(client)
+        },
+    ))
 }
 
 fn unconnected() -> Result<Client, ConnectError> {
@@ -187,8 +199,9 @@ async fn grpc_minimum_cut_refuses_both_incarnations_without_losing_connection_pr
         incarnation: current.incarnation ^ 1,
         ..current.clone()
     };
-    let mut transport =
-        wire::stream_service_client::StreamServiceClient::new(client(provider)?.channel);
+    let mut transport = wire::stream_service_client::StreamServiceClient::new(
+        client(provider)?.channel.current().channel,
+    );
     let tail = |revisions: &[crate::Revision]| wire::TailRequest {
         path: path.to_string(),
         at_least: revisions.iter().map(wire_codec::revision_to_wire).collect(),
@@ -883,4 +896,118 @@ proptest::proptest! {
             proptest::prop_assert_eq!(status(&encoded), decoded.clone());
         }
     }
+}
+
+/// A member's refusal before dispatch replays the same request through the
+/// member the route selects next: the unchanged append lands in the second
+/// member's provider only. A route that declines returns the refusal after
+/// one attempt, and nothing lands anywhere.
+#[tokio::test]
+async fn a_routed_refusal_replays_the_same_request_on_the_next_member() -> TestResult {
+    struct Members {
+        channels: [Channel; 2],
+        current: AtomicUsize,
+        replay: bool,
+        refused: std::sync::Mutex<Vec<usize>>,
+        served: std::sync::Mutex<Vec<usize>>,
+    }
+    impl HomeRoute for Members {
+        fn current(&self) -> RoutedChannel {
+            let member = self.current.load(Ordering::SeqCst);
+            RoutedChannel {
+                member,
+                channel: self.channels[member].clone(),
+            }
+        }
+        fn refused<'a>(
+            &'a self,
+            member: usize,
+            _: &'a Status,
+        ) -> futures::future::BoxFuture<'a, bool> {
+            self.refused
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(member);
+            if self.replay {
+                self.current.store(member + 1, Ordering::SeqCst);
+            }
+            Box::pin(std::future::ready(self.replay))
+        }
+        fn served(&self, member: usize) {
+            self.served
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(member);
+        }
+    }
+    for replay in [true, false] {
+        let (follower, leader) = (MemoryStream::default(), MemoryStream::default());
+        let calls = [Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0))];
+        let refusing = Arc::clone(&calls[0]);
+        let serving = Arc::clone(&calls[1]);
+        let route = Arc::new(Members {
+            channels: [
+                served_channel(follower.clone(), move |_: Request<()>| {
+                    refusing.fetch_add(1, Ordering::SeqCst);
+                    Err::<Request<()>, _>(Status::unavailable("not the leader"))
+                }),
+                served_channel(leader.clone(), move |request: Request<()>| {
+                    serving.fetch_add(1, Ordering::SeqCst);
+                    Ok(request)
+                }),
+            ],
+            current: AtomicUsize::new(0),
+            replay,
+            refused: std::sync::Mutex::new(Vec::new()),
+            served: std::sync::Mutex::new(Vec::new()),
+        });
+        let connect: ChannelConnector =
+            Arc::new(|_| Box::pin(async { Err(StreamError::Unavailable.into()) }));
+        let mut client = Client::from_routed_channel(
+            route.clone(),
+            CredentialProvider::transport_identity(),
+            connect,
+        );
+        client.authorization = Some(authorization("fixture")?);
+        let request = AppendRequest {
+            path: StreamPath::new("routed/original")?,
+            records: vec![OwnedBytes::from_static(b"original caller body").into()],
+            if_tail: Some(0),
+            idempotency_key: IdempotencyKey::unique(),
+        };
+        let result = client.append(request.clone()).await;
+        assert_eq!(result.is_ok(), replay, "{result:?}");
+        let hits = calls.each_ref().map(|calls| calls.load(Ordering::SeqCst));
+        assert_eq!(hits, [1, usize::from(replay)]);
+        assert_eq!(
+            follower
+                .inspect_idempotency(request.idempotency_key.clone())
+                .await?,
+            None
+        );
+        assert_eq!(
+            leader
+                .inspect_idempotency(request.idempotency_key.clone())
+                .await?
+                .is_some(),
+            replay,
+            "the unchanged request lands only on the member that served it"
+        );
+        assert_eq!(
+            *route
+                .refused
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![0]
+        );
+        let served = if replay { vec![1] } else { vec![] };
+        assert_eq!(
+            *route
+                .served
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            served
+        );
+    }
+    Ok(())
 }

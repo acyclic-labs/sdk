@@ -86,7 +86,7 @@ impl From<ConnectError> for crate::session::transport::Failure {
 pub struct Client {
     metadata: RequestMetadata,
     operation_claims: Arc<crate::OperationClaims>,
-    channel: Channel,
+    channel: Home,
     authorization: Option<MetadataValue<Ascii>>,
     credential: Option<CredentialProvider>,
     acknowledge_deliveries: bool,
@@ -137,6 +137,55 @@ pub type ChannelConnector = Arc<
         > + Send
         + Sync,
 >;
+
+/// One member's channel, as a [`HomeRoute`] selected it for an attempt.
+#[derive(Clone)]
+pub struct RoutedChannel {
+    /// The route's own name for the member; passed back on refusal.
+    pub member: usize,
+    /// The member's authenticated channel.
+    pub channel: Channel,
+}
+
+/// Caller-owned routing of the home channel across a replicated service's
+/// members. A member that refuses a request before dispatch (for example
+/// because it is not the leader) is reported back, and the same request runs
+/// again on the member the route then selects, within the caller's deadline.
+pub trait HomeRoute: Send + Sync {
+    /// The member the next attempt uses.
+    fn current(&self) -> RoutedChannel;
+    /// `member` refused `status` before dispatch. Resolves to whether the
+    /// same request may run again on [`Self::current`]; any pacing between
+    /// members is the route's. `false` returns the refusal to the caller.
+    fn refused<'a>(
+        &'a self,
+        member: usize,
+        status: &'a Status,
+    ) -> futures::future::BoxFuture<'a, bool>;
+    /// `member` served an attempt: a refusal sweep ends there.
+    fn served(&self, member: usize) {
+        let _ = member;
+    }
+}
+
+/// The home channel: one fixed endpoint, or a caller's member route.
+#[derive(Clone)]
+enum Home {
+    Fixed(Channel),
+    Routed(Arc<dyn HomeRoute>),
+}
+
+impl Home {
+    fn current(&self) -> RoutedChannel {
+        match self {
+            Self::Fixed(channel) => RoutedChannel {
+                member: 0,
+                channel: channel.clone(),
+            },
+            Self::Routed(route) => route.current(),
+        }
+    }
+}
 
 /// Thin server adapter from the canonical wire service to one provider.
 pub struct Service<P> {
@@ -198,6 +247,21 @@ impl Client {
         connect: ChannelConnector,
     ) -> Self {
         let mut client = Self::from_channel_with_credential(channel, credential);
+        client.session_connector = Some(connect);
+        client
+    }
+
+    /// [`Self::from_authenticated_channel`] over a member route: every unary
+    /// attempt uses the route's current member, and a refusal before
+    /// dispatch is replayed on the member the route selects next. Sessions
+    /// open on the member current at first use and follow `connect`.
+    pub fn from_routed_channel(
+        route: Arc<dyn HomeRoute>,
+        credential: CredentialProvider,
+        connect: ChannelConnector,
+    ) -> Self {
+        let mut client = Self::from_channel_with_credential(route.current().channel, credential);
+        client.channel = Home::Routed(route);
         client.session_connector = Some(connect);
         client
     }
@@ -309,7 +373,7 @@ impl Client {
     pub(crate) fn from_channel(channel: Channel, authorization: MetadataValue<Ascii>) -> Self {
         Self {
             metadata: RequestMetadata::default(),
-            channel,
+            channel: Home::Fixed(channel),
             authorization: Some(authorization),
             credential: None,
             acknowledge_deliveries: true,
@@ -328,7 +392,7 @@ impl Client {
     pub fn from_channel_with_credential(channel: Channel, credential: CredentialProvider) -> Self {
         Self {
             metadata: RequestMetadata::default(),
-            channel,
+            channel: Home::Fixed(channel),
             authorization: None,
             credential: Some(credential),
             acknowledge_deliveries: true,
@@ -355,12 +419,10 @@ impl Client {
     }
 
     fn service(
-        &self,
+        channel: Channel,
     ) -> wire::stream_service_client::StreamServiceClient<acyclic_auth::channel::CredentialChannel>
     {
-        wire::stream_service_client::StreamServiceClient::new(acyclic_auth::channel::guard(
-            self.channel.clone(),
-        ))
+        wire::stream_service_client::StreamServiceClient::new(acyclic_auth::channel::guard(channel))
     }
 
     async fn request<T>(&self, body: T) -> Result<Request<T>, Status> {
@@ -385,6 +447,7 @@ impl Client {
         let mut backoff = None;
         loop {
             attempt = attempt.saturating_add(1);
+            let home = self.channel.current();
             // One span describes one physical RPC attempt.
             let mut completion = Completion::new(tracing::info_span!(
                 "acyclic.stream.grpc.call",
@@ -402,7 +465,7 @@ impl Client {
                         .extensions()
                         .get::<acyclic_auth::credential::ResolvedCredential>()
                         .cloned();
-                    let result = call(self.service(), request).await;
+                    let result = call(Self::service(home.channel.clone()), request).await;
                     if result.as_ref().is_err_and(|error| {
                         error.code() == Code::Unauthenticated
                             && std::error::Error::source(error).is_none()
@@ -429,6 +492,9 @@ impl Client {
                 .await;
             let error = match result {
                 Ok(response) => {
+                    if let Home::Routed(route) = &self.channel {
+                        route.served(home.member);
+                    }
                     if attempt > 1 {
                         tracing::info!(attempt, "stream rpc recovered");
                     }
@@ -437,6 +503,11 @@ impl Client {
                 Err(error) => error,
             };
             completion.status(&error);
+            if let Home::Routed(route) = &self.channel
+                && route.refused(home.member, &error).await
+            {
+                continue;
+            }
             if !retryable(&error) {
                 return Err(status(&error));
             }
