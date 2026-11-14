@@ -88,6 +88,7 @@ async fn delivery(latest: bool) -> Result<(), Box<dyn std::error::Error>> {
             let original = match data.item.ok_or("missing delivered value")? {
                 wire::session_data::Item::Record(record) => record.value,
                 wire::session_data::Item::LatestValue(value) => value.value,
+                _ => return Err("unexpected stream delivery".into()),
             };
             assert_eq!(original.as_ref(), huge.as_slice());
         }
