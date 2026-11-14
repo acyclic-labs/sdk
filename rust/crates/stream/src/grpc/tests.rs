@@ -187,8 +187,9 @@ async fn grpc_minimum_cut_refuses_both_incarnations_without_losing_connection_pr
         incarnation: current.incarnation ^ 1,
         ..current.clone()
     };
-    let mut transport =
-        wire::stream_service_client::StreamServiceClient::new(client(provider)?.channel);
+    let mut transport = wire::stream_service_client::StreamServiceClient::new(
+        client(provider)?.channel.current().channel,
+    );
     let tail = |revisions: &[crate::Revision]| wire::TailRequest {
         path: path.to_string(),
         at_least: revisions.iter().map(wire_codec::revision_to_wire).collect(),
