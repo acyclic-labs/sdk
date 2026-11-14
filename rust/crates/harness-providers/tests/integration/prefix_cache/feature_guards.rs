@@ -35,8 +35,8 @@ fn selected(messages: Vec<ModelMessage>) -> SelectedModelContext {
     SelectedModelContext {
         selection: ModelContextSelection {
             conversation_revision: messages.len() as u64,
-            message_ids: (1..=messages.len())
-                .map(|id| uuid::Uuid::from_u128(id as u128))
+            message_ids: (1..=messages.len() as u128)
+                .map(uuid::Uuid::from_u128)
                 .collect(),
             checkpoint: None,
         },
@@ -234,11 +234,8 @@ async fn guarded_run(
             let body = &sent.2[turn].body;
             let visible = enabled && !matches!(feature, Feature::Source(_));
             assert_eq!(holds(body, b"feature-v1"), visible, "{label}");
-            assert_eq!(
-                holds(body, b"BODY_1:"),
-                enabled && matches!(feature, Feature::Instructions | Feature::SelectedSkills),
-                "{label}"
-            );
+            let selected_body = matches!(feature, Feature::Instructions | Feature::SelectedSkills);
+            assert_eq!(holds(body, b"BODY_1:"), enabled && selected_body, "{label}");
             assert_eq!(holds(body, b"feature-v2"), announced, "{label}");
             for notice in &history[before..history.len() - 1] {
                 let ModelContent::Text(text) = &notice.content else {
@@ -340,10 +337,8 @@ async fn compaction_summaries_preserve_prefix() -> TestResult {
             message(ModelRole::Assistant, "older-1:".repeat(6_000)),
         ];
         for turn in 0..2_u8 {
-            history.push(message(
-                ModelRole::User,
-                format!("Return 19 + 23. {}", "y".repeat(20_000)),
-            ));
+            let task = format!("Return 19 + 23. {}", "y".repeat(20_000));
+            history.push(message(ModelRole::User, task));
             let op = OperationId::from_bytes([turn + 1; 16]);
             let selected = selected(history.clone());
             storage = storage.with_bound_selection(selected.clone())?;
@@ -358,18 +353,13 @@ async fn compaction_summaries_preserve_prefix() -> TestResult {
             let count = transport.state.lock().unwrap().2.len();
             let replay = executor.execute(input, journal.as_ref()).await?;
             assert_eq!(replay.text, output.text);
-            assert_eq!(
-                transport.state.lock().unwrap().2.len(),
-                count,
-                "replay redispatched a model"
-            );
+            let replayed = transport.state.lock().unwrap().2.len();
+            assert_eq!(replayed, count, "replay redispatched a model");
             let records = journal.replay(op, 0, u32::MAX, None)?.await?;
-            assert_eq!(
-                records
-                    .iter()
-                    .any(|record| matches!(record.event, ExecutionEvent::ContextCompacted { .. })),
-                turn == 1
-            );
+            let compacted = records
+                .iter()
+                .any(|record| matches!(record.event, ExecutionEvent::ContextCompacted { .. }));
+            assert_eq!(compacted, turn == 1);
             history.push(message(ModelRole::Assistant, output.text));
         }
         let sent = transport.state.lock().unwrap();

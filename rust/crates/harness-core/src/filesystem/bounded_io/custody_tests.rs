@@ -2,6 +2,47 @@
 use super::*;
 use crate::store::history::{HistoryIo, HistoryWork};
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn returned_native_output_transfers_paid_custody_and_retires_after_cancellation() -> Result<()> {
+    for cancelled in [false, true] {
+        let cancellation = CancellationToken::new();
+        let io = PreparationIo::from_budget(
+            acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+            &cancellation,
+        )?;
+        io.retain_owned(13)?;
+        let owner = io.account(acyclic_fs::kernel::NativeAccounting::take)?;
+        let allocation = owner.work.claim(337, 1, WorkCounters::UNCHARGED)?;
+        let allocation = owner.return_allocation(allocation, 337)?;
+        io.account(|ctx| owner.restore(ctx))?;
+        let charged = io.receipt();
+        let remaining = io.remaining()?;
+        let held = io.adopt_native_output(allocation, 337)?;
+        assert_eq!(io.owned_bytes()?, 350);
+        assert_eq!(
+            io.receipt(),
+            charged,
+            "transfer charged the allocation twice"
+        );
+        assert_eq!(io.remaining()?, remaining);
+        assert!(
+            io.adopt_native_output(KernelOwnedAllocation::Standalone, 1)
+                .is_err()
+        );
+        assert_eq!(io.owned_bytes()?, 350, "refusal changed paid ownership");
+        let live = || io.account(|ctx| Ok(ctx.standalone_parts().unwrap().0.live_bytes()));
+        let before = live()?;
+        if cancelled {
+            cancellation.cancel();
+        }
+        drop(held);
+        assert_eq!(io.owned_bytes()?, 13);
+        assert_eq!(live()?, before - 337);
+    }
+    Ok(())
+}
+
 #[test]
 fn output_custody_outlives_preparation_observer() -> Result<()> {
     for measured in [false, true] {
