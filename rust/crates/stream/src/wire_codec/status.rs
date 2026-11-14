@@ -31,6 +31,7 @@ pub(crate) fn category(error: &Status) -> StreamError {
 
 fn canonical(error: &StreamError) -> Canonical<'static> {
     let (code, message) = match error {
+        StreamError::Caused(failure) => return canonical(failure.classification()),
         StreamError::InvalidResponse => (Code::DataLoss, "invalid_response"),
         StreamError::InvalidPath => (Code::InvalidArgument, "invalid_path"),
         StreamError::InvalidArgument => (Code::InvalidArgument, "invalid_argument"),
@@ -43,7 +44,7 @@ fn canonical(error: &StreamError) -> Canonical<'static> {
         StreamError::Capacity => (Code::ResourceExhausted, "stream capacity exhausted"),
         StreamError::IdempotencyMismatch => (Code::FailedPrecondition, "idempotency_mismatch"),
         StreamError::PrefixNotRetained => (Code::FailedPrecondition, "prefix_not_retained"),
-        StreamError::Unavailable | StreamError::Refused(_) => {
+        StreamError::Unavailable | StreamError::Refused(_) | StreamError::ProducerDropped(_) => {
             (Code::Unavailable, "stream unavailable")
         }
         StreamError::DeadlineElapsed => (Code::FailedPrecondition, "deadline_elapsed"),
@@ -55,6 +56,7 @@ fn canonical(error: &StreamError) -> Canonical<'static> {
         message,
         details: b"",
         owned: &[],
+        cause_is_embedded: false,
     }
 }
 
@@ -79,11 +81,21 @@ impl From<StreamError> for Status {
 /// Encodes a Stream failure, reproducing its retained member diagnostics.
 #[must_use]
 fn error_status(error: &StreamError) -> Status {
+    if let StreamError::Caused(failure) = error {
+        return error_status(failure.classification());
+    }
     let refusal = match error {
         StreamError::Refused(refusal) => Some(refusal),
         _ => None,
     };
-    let parts = Refusal::encode(refusal, canonical(error));
+    let parts = match Refusal::encode(refusal, canonical(error)) {
+        Ok(parts) => parts,
+        Err(error) => {
+            let mut status = Status::internal("refusal attribution encoding failed");
+            status.set_source(std::sync::Arc::new(error));
+            return status;
+        }
+    };
     Status::with_details_and_metadata(
         Code::from_i32(parts.code),
         parts.message,

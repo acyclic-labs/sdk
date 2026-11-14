@@ -84,6 +84,7 @@ pub struct Client {
     pool: PoolHandle,
     /// Requirements owned by this operation, independently of the transport.
     revisions: Arc<crate::RevisionTracker>,
+    credential: u32,
 }
 
 /// The shared transport owners, without an operation's causal requirements.
@@ -112,6 +113,7 @@ impl PoolHandle {
             credential_owner: None,
             pool: self,
             revisions,
+            credential: 0,
         }
     }
 
@@ -343,6 +345,21 @@ impl Drop for Link {
     }
 }
 impl Client {
+    /// Credential slot used by this view's ordinary reads and follows.
+    #[must_use]
+    pub const fn credential(&self) -> u32 {
+        self.credential
+    }
+
+    /// Select an already registered slot without another registration or
+    /// transport. The server continues to verify its original capability.
+    #[must_use]
+    pub fn select_credential(&self, credential: u32) -> Self {
+        let mut selected = self.clone();
+        selected.credential = credential;
+        selected
+    }
+
     /// Selects one implicit authority while sharing this pool, credentials,
     /// channels and observations. Explicit minima are retained unchanged.
     #[must_use]
@@ -538,7 +555,7 @@ impl Client {
                 acknowledge,
                 false,
                 Some(crate::FollowFilter::default().transport_filter()?),
-                0,
+                self.credential,
             )
             .await?;
         let (snapshot, selection, has_bootstrap) = wire_codec::selection_from_opened(
@@ -590,7 +607,7 @@ impl Client {
                 acknowledge,
                 progress,
                 filter,
-                0,
+                self.credential,
             )
             .await?;
         let (snapshot, mut selection, has_bootstrap) = wire_codec::selection_from_opened(
@@ -680,7 +697,7 @@ impl Client {
             acknowledge,
             false,
             filter,
-            0,
+            self.credential,
         )
         .await
     }
@@ -788,9 +805,7 @@ impl Client {
         let input = matches!(&kind, Kind::ActorCall(call) if call.input)
             .then(|| Arc::new(input::State::new(self.pool.clone(), id, progress.clone())));
         cursor.input = input.clone();
-        if !matches!(&kind, Kind::Follow(_)) {
-            cursor.primitive = "session-reply";
-        }
+
         let operation = cursor.observation.operation.clone();
         let registration = async {
             self.pool
@@ -812,17 +827,32 @@ impl Client {
                 })))
                 .await
                 .map_err(|_| StreamError::Unavailable)?;
-            let (opened_id, receipt) = opened.await.map_err(|_| StreamError::Unavailable)??;
+            let (opened_id, receipt) = opened
+                .await
+                .map_err(|source| StreamError::Unavailable.with_source(source))??;
             if opened_id != id {
-                return Err(StreamError::Unavailable);
+                return Err(StreamError::InvalidResponse.with_source(AdmissionMismatch {
+                    expected: id,
+                    received: opened_id,
+                }));
             }
             cursor.opened = receipt;
             Ok(())
         };
-        let registered = operation
-            .clone()
-            .scope(super::runtime::waiting("session-open", id, registration))
-            .await;
+        #[cfg(feature = "serde")]
+        let registered = crate::trace::observe(
+            crate::trace::Request {
+                name: "stream.session_admission",
+                mechanism: crate::trace::Mechanism::Wait,
+                parent: None,
+                guarantee: Some("admission_acknowledges_original_session_interest"),
+            },
+            operation.clone().scope(registration),
+            |_| Some(0),
+        )
+        .await;
+        #[cfg(not(feature = "serde"))]
+        let registered = operation.clone().scope(registration).await;
         if let Err(error) = registered {
             cursor.observation.finish(Some(&error));
             return Err(error);
@@ -850,7 +880,6 @@ impl Client {
         }
         Ok(Cursor {
             observation: Observation::channel(id),
-            primitive: "session-follow",
             id,
             client: self.clone(),
             progress,
@@ -867,7 +896,6 @@ struct Cursor {
     pending: Option<Delivery>,
     observation: Observation,
     /// Names this cursor's deliveries in wait reports.
-    primitive: &'static str,
     id: u64,
     client: Client,
     progress: Arc<Progress>,
@@ -879,7 +907,32 @@ impl Cursor {
     async fn next(&mut self) -> Option<Result<Delivery, StreamError>> {
         match self.receiver.try_recv() {
             Ok(received) => Some(received),
-            Err(_) => super::runtime::waiting(self.primitive, self.id, self.receiver.recv()).await,
+            Err(_) => {
+                let work = self.receiver.recv();
+                #[cfg(feature = "serde")]
+                {
+                    let progress = &self.progress;
+                    crate::trace::observe_value(
+                        crate::trace::Request {
+                            name: "stream.session_delivery_wait",
+                            mechanism: crate::trace::Mechanism::Wait,
+                            parent: None,
+                            guarantee: Some("queued_delivery_or_confirmed_session_end"),
+                        },
+                        work,
+                        |result| match result {
+                            Some(Ok(_)) => Some((Some(0), crate::trace::Outcome::Succeeded)),
+                            None if progress.ended() => {
+                                Some((Some(0), crate::trace::Outcome::Succeeded))
+                            }
+                            _ => None,
+                        },
+                    )
+                    .await
+                }
+                #[cfg(not(feature = "serde"))]
+                work.await
+            }
         }
     }
     async fn receive(&mut self) -> Result<Option<Delivery>, StreamError> {
@@ -1057,4 +1110,11 @@ fn subscription_parts(
         _ => return Err(StreamError::Unsupported),
     }
     Ok((kind, resume, subscription.filter, subscription.credential))
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("session admission acknowledged interest {received}, expected {expected}")]
+struct AdmissionMismatch {
+    expected: u64,
+    received: u64,
 }

@@ -13,119 +13,137 @@ async fn atomic_cut_confirms_context_and_epoch_contributions_at_original_positio
     let pages = journal.index_path(operation, "pages", None)?;
     let context = StreamPath::new("contributed/context")?;
     let epoch = StreamPath::new("contributed/epoch")?;
+    let lifecycle = StreamPath::new("contributed/activity")?;
     let observation = OwnedBytes::from_static(b"observation");
     let checkpoint = OwnedBytes::from_static(b"checkpoint");
     let records = [OwnedBytes::from_static(b"index page")];
     let envelope = OwnedBytes::from_static(b"original context envelope");
     let snapshot = OwnedBytes::from_static(b"original epoch checkpoint");
     for unconditional in [false, true] {
-        for omitted in [None, Some(0), Some(1), Some(2), Some(3), Some(4)] {
-            let provider = Arc::new(acyclic_stream::MemoryStream::default());
-            let seed = provider
-                .append(acyclic_stream::AppendRequest {
-                    path: context.clone(),
-                    records: vec![OwnedBytes::from_static(b"prior context").into()],
-                    if_tail: None,
-                    idempotency_key: acyclic_stream::IdempotencyKey::unique(),
-                })
-                .await?;
-            let acyclic_stream::AppendOutcome::Committed(seed) = seed else {
-                unreachable!("unconditional initial append refused")
-            };
-            let contributions = if unconditional {
-                [
-                    Contribution::Append {
-                        path: &context,
-                        record: &envelope,
-                    },
-                    Contribution::Append {
-                        path: &epoch,
-                        record: &snapshot,
-                    },
-                ]
-            } else {
-                [
-                    Contribution::Conditioned {
-                        condition: CommitCondition::Head {
-                            path: context.clone(),
-                            expected: 1,
-                            commit_id: seed.commit_id,
-                        },
-                        record: &envelope,
-                    },
-                    Contribution::Conditioned {
-                        condition: CommitCondition::Absent {
-                            path: epoch.clone(),
-                        },
-                        record: &snapshot,
-                    },
-                ]
-            };
-            let cut = Cut {
-                operation,
-                execution: &execution,
-                head: &head,
-                pages: &pages,
-                execution_condition: CommitCondition::Absent {
-                    path: execution.clone(),
-                },
-                head_condition: CommitCondition::Absent { path: head.clone() },
-                execution_tail: 0,
-                head_tail: 0,
-                base: 0,
-                digest: [11; 32],
-                contributions: &contributions,
-            };
-            let mut work = None;
-            let mut request = cut.request(
-                CommitCondition::Absent {
-                    path: pages.clone(),
-                },
-                &records,
-                Some((&observation, &checkpoint)),
-                &mut work,
-            )?;
-            assert_eq!(
-                request.0.effects[0].conditions.len(),
-                if unconditional { 3 } else { 5 }
-            );
-            assert_eq!(request.0.effects[0].mutations.len(), 5);
-            if let Some(index) = omitted {
-                request.0.effects[0].mutations.remove(index);
-            }
-            let original = request.0.clone();
-            let outcome = provider.commit(request.0).await?;
-            let confirmed = cut.confirm(&outcome, 0, &records, &observation, &checkpoint);
-            if omitted.is_some() {
-                assert!(
-                    matches!(confirmed, Err(Error::Indeterminate(operation)) if operation == cut.operation)
-                );
-            } else {
-                assert!(confirmed?.is_some());
-                let CommitOutcome::Committed(mut receipt) = outcome else {
-                    unreachable!()
+        for projected in [false, true] {
+            for omitted in (0..5 + usize::from(projected))
+                .map(Some)
+                .chain(std::iter::once(None))
+            {
+                let provider = Arc::new(acyclic_stream::MemoryStream::default());
+                let seed = provider
+                    .append(acyclic_stream::AppendRequest {
+                        path: context.clone(),
+                        records: vec![OwnedBytes::from_static(b"prior context").into()],
+                        if_tail: None,
+                        idempotency_key: acyclic_stream::IdempotencyKey::unique(),
+                    })
+                    .await?;
+                let acyclic_stream::AppendOutcome::Committed(seed) = seed else {
+                    unreachable!("unconditional initial append refused")
                 };
-                receipt.appends.swap(3, 4);
-                assert!(matches!(
-                    cut.confirm(
-                        &CommitOutcome::Committed(receipt),
-                        0,
-                        &records,
-                        &observation,
-                        &checkpoint
-                    ),
-                    Err(Error::Indeterminate(_))
-                ));
-                let mut racing = original;
-                racing.idempotency_key = acyclic_stream::IdempotencyKey::unique();
-                let refused = provider.commit(racing).await?;
-                assert!(matches!(refused, CommitOutcome::Conflict(_)));
-                assert!(
-                    cut.confirm(&refused, 0, &records, &observation, &checkpoint)?
-                        .is_none()
+                let contributions = if unconditional {
+                    [
+                        Contribution::Append {
+                            path: &context,
+                            record: &envelope,
+                        },
+                        Contribution::Append {
+                            path: &epoch,
+                            record: &snapshot,
+                        },
+                    ]
+                } else {
+                    [
+                        Contribution::Conditioned {
+                            condition: CommitCondition::Head {
+                                path: context.clone(),
+                                expected: 1,
+                                commit_id: seed.commit_id,
+                            },
+                            record: &envelope,
+                        },
+                        Contribution::Conditioned {
+                            condition: CommitCondition::Absent {
+                                path: epoch.clone(),
+                            },
+                            record: &snapshot,
+                        },
+                    ]
+                };
+                let derived = acyclic_stream::CommitEffect::hard(
+                    Vec::new(),
+                    vec![CommitMutation::Append {
+                        path: lifecycle.clone(),
+                        records: vec![envelope.clone().into()],
+                    }],
                 );
+                let cut = Cut {
+                    operation,
+                    execution: &execution,
+                    head: &head,
+                    pages: &pages,
+                    execution_condition: CommitCondition::Absent {
+                        path: execution.clone(),
+                    },
+                    head_condition: CommitCondition::Absent { path: head.clone() },
+                    execution_tail: 0,
+                    head_tail: 0,
+                    base: 0,
+                    digest: [11; 32],
+                    contributions: &contributions,
+                    derived: projected.then_some(&derived),
+                    source_key: None,
+                };
+                let mut work = None;
+                let mut request = cut.request(
+                    CommitCondition::Absent {
+                        path: pages.clone(),
+                    },
+                    &records,
+                    Some((&observation, &checkpoint)),
+                    &mut work,
+                )?;
+                assert_eq!(
+                    request.0.effects[0].conditions.len(),
+                    if unconditional { 3 } else { 5 }
+                );
+                assert_eq!(
+                    request.0.effects[0].mutations.len(),
+                    5 + usize::from(projected)
+                );
+                if let Some(index) = omitted {
+                    request.0.effects[0].mutations.remove(index);
+                }
+                let original = request.0.clone();
+                let outcome = provider.commit(request.0).await?;
+                let confirmed = cut.confirm(&outcome, 0, &records, &observation, &checkpoint);
+                if omitted.is_some() {
+                    assert!(
+                        matches!(confirmed, Err(Error::Indeterminate(operation)) if operation == cut.operation)
+                    );
+                } else {
+                    assert!(confirmed?.is_some());
+                    let CommitOutcome::Committed(mut receipt) = outcome else {
+                        unreachable!()
+                    };
+                    receipt.appends.swap(3, 4);
+                    assert!(matches!(
+                        cut.confirm(
+                            &CommitOutcome::Committed(receipt),
+                            0,
+                            &records,
+                            &observation,
+                            &checkpoint
+                        ),
+                        Err(Error::Indeterminate(_))
+                    ));
+                    let mut racing = original;
+                    racing.idempotency_key = acyclic_stream::IdempotencyKey::unique();
+                    let refused = provider.commit(racing).await?;
+                    assert!(matches!(refused, CommitOutcome::Conflict(_)));
+                    assert!(
+                        cut.confirm(&refused, 0, &records, &observation, &checkpoint)?
+                            .is_none()
+                    );
+                }
+                drop(request.1);
             }
-            drop(request.1);
         }
     }
     Ok(())
@@ -152,6 +170,8 @@ async fn composed_cut_retains_original_native_construction() -> Result<()> {
         base: 0,
         digest: [13; 32],
         contributions: &[],
+        derived: None,
+        source_key: None,
     };
     let observation = OwnedBytes::from_static(b"observation");
     let checkpoint = OwnedBytes::from_static(b"checkpoint");
@@ -308,6 +328,8 @@ async fn composed_cut_keeps_caller_members_and_original_request() -> Result<()> 
         base: 0,
         digest: [12; 32],
         contributions: &contributions,
+        derived: None,
+        source_key: None,
     };
     let key = acyclic_stream::IdempotencyKey::unique();
     let mut work = None;
@@ -462,6 +484,8 @@ async fn atomic_cut_rejects_missing_members_and_preserves_conditional_refusal() 
         base: 0,
         digest: [9; 32],
         contributions: &[],
+        derived: None,
+        source_key: None,
     };
     // Each control submits the original request through the real provider.
     // Omitting one member still produces a valid Stream commit, but cannot
@@ -568,6 +592,8 @@ async fn check_publication(_native: bool, large: bool) -> Result<()> {
         base: 0,
         digest: [7; 32],
         contributions: &[],
+        derived: None,
+        source_key: None,
     };
     let mut old_work = None;
     let old = cut.request(
@@ -697,6 +723,7 @@ impl acyclic_stream::StreamProvider for RefusedAcknowledgment {
                 message: "stream unavailable",
                 details: b"",
                 owned: &[],
+                cause_is_embedded: false,
             };
             let refusal = acyclic_auth::refusal::Refusal::capture(
                 14,
@@ -756,6 +783,8 @@ async fn a_refused_acknowledgment_recovers_the_publication_by_its_key() -> Resul
         base: 0,
         digest: [9; 32],
         contributions: &[],
+        derived: None,
+        source_key: None,
     };
     let records = [OwnedBytes::from_static(b"page")];
     let observation = OwnedBytes::from_static(b"observation");

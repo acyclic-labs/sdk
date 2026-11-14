@@ -15,7 +15,7 @@ wasm = ["acyclic-stream/wasm", "acyclic-harness-core/wasm", "dep:tsify", "dep:wa
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
-acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
 base64 = { version = "=0.22.1" }
 blake3 = { workspace = true }
 bytes.workspace = true

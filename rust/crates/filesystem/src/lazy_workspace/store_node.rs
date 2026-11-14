@@ -44,7 +44,16 @@ impl MemoryLazyNode for LazyShadow {
     fn owned_bytes(&self) -> u64 {
         match self {
             Self::Empty => 0,
-            Self::Node { record, .. } => record.capacity() as u64,
+            Self::Node {
+                authored, observed, ..
+            } => {
+                authored
+                    .as_ref()
+                    .map_or(0, |record| record.record.capacity() as u64)
+                    + observed
+                        .as_ref()
+                        .map_or(0, |record| record.content.record.capacity() as u64)
+            }
         }
     }
 }

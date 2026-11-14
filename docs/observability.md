@@ -1,5 +1,250 @@
 # Observability
 
+## Trace window files
+
+`live/agents/self/trace/<from>/<count>.json` projects a caller-selected window
+of the selected agent's typed trace stream through the ordinary authenticated
+private-file query. `from` is an inclusive record cursor; `count` is a positive
+32-bit page size. The file host reads only that window, clipped to its captured
+source cut. Its existing file subscription follows the original trace stream,
+including creation of a previously absent stream. No background collector or
+additional publication is created by installing this view. Authored overrides
+use the ordinary file rules.
+
+The shared projection reports the covered cursor interval, observed tail,
+per-mechanism inclusive time and bytes, unfinished waits, unsettled outcomes,
+and missing guarantees. Outlier classification remains unknown without an
+explicit mechanism policy. A finish whose start is outside the selected window
+is unpaired; it contributes no invented duration. Catching the captured tail
+does not prove settlement. Missing streams and empty windows yield no file.
+Malformed records fail with their original publication and decoder cause.
+Children start with their own trace subtree rather than inheriting their
+parent's trace history. The incremental Reader adapter applies the same query
+to bounded pages and live deliveries while retaining active joins across pages.
+
+An outstanding authenticated file wait admits trace interest for its selected
+agent. Overlapping waits share one producer clock and identity sequence. The
+last wait's completion or cancellation retires admission; already-admitted
+spans may still publish their own terminal. Snapshot reads do not admit a
+follower. The host selects a recorder through the primitive's existing interest
+registry using a borrowed agent identity. No per-agent entry exists without a
+follower; with no trace followers, selection is one atomic check with no clock,
+allocation, registry lock or IO. Interest is ephemeral subscription custody,
+not stored trace history or authorization.
+
+The shared filesystem turn host binds each admitted journal to this same
+registry and original agent. Ordinary execution replay pages emit
+`harness.execution_replay_page` spans, buying `authenticated_execution_prefix`.
+The same decoder and native-work custody serve both observed and unobserved
+reads. Byte counts remain unknown because decoded events do not establish wire
+or copy bytes. Diagnostic failures preserve the original request result;
+failed reads stay unfinished until their original cause is retained. The old
+separate replay tracing span is removed. Complete request-path instrumentation,
+content correlation and deterministic crash replay remain separate requirements.
+
+Private journal staging and immutable content loading use the same demand
+boundary as replay. Their guarantees are `authenticated_private_publication`
+and `authenticated_immutable_content`; byte counts describe supplied/returned
+payloads, not device or wire traffic. Canonical model-request admission emits
+`attested_request_prefix`. The original native work and cancellation stay in
+the admitted operation future. Separate journal stage/load tracing wrappers
+are removed. Nested observed futures inherit the original span as their parent
+on each poll; suspension restores the preceding context, so unrelated work on
+the same worker cannot acquire that parent. Disabled observation installs no
+context and allocates no propagation task or boxed future.
+
+Journal appends, including the native accounted path, share this boundary:
+`harness.journal_append` buys `idempotent_journal_publication`, while
+`harness.journal_append_if_tail` buys `atomic_journal_precondition_result`.
+A successful conditional request means its precondition result was returned;
+it does not imply acceptance. Private range reads report only returned payload
+bytes under `authenticated_immutable_range`. The separate append tracing
+wrappers are removed; physical publication, retry identity and projection
+results stay owned by the original journal operation.
+
+Dispatch-claim publication uses `Recorder::handoff`: it admits the span before
+the original work and performs no diagnostic await after that work returns.
+A trace finish cannot strand an accepted model dispatch claim before delivery
+to its executor. Successful journal claims transfer their terminal append to
+`Recording::finish_submitted`, using the shared SDK owned-publication completion.
+It retains the original append bytes, path, retry family and idempotency key;
+dropping every observer cannot withdraw publication. There is no diagnostic
+suspension after the accepted claim. Failures without retained cause evidence
+remain unfinished rather than fabricating a terminal result.
+Ordinary journal publication identity, summary provenance and selected-context
+authentication emit `AuthCheck` spans through the same demand-selected recorder.
+The checks preserve their original decision and cause; byte counts remain unknown
+because these boundaries do not own a complete physical-read accounting result.
+Tool approval verification, prior-effect barriers and terminal-settlement lookup
+use the same journal demand boundary. A held effect barrier or absent terminal
+returns its original value and records `Unsettled`; an authenticated terminal
+records completion of the lookup, whose result retains the tool outcome. The
+shared owned append publishes these terminals without suspending effect delivery.
+No retained failure cause is fabricated for an unsuccessful lookup.
+The executor's original tool invocation uses the journal's object-safe
+`trace_request` admission. Unfollowed admission returns `None` without a future
+allocation; followed admission transfers the same SDK recording through
+`OwnedRecording`, which delegates to the original terminal producer and per-poll
+parent scope. No provider or tool bytes are serialized for tracing. A successful
+tool receipt records success, interruption records cancellation, and pending,
+controlled or receipt-less results remain explicitly unsettled. An error without
+retained cause evidence abandons the owned observation as `Unsettled`. Physical subprocess
+and filesystem hops still require their own observations beneath this boundary.
+Fresh model dispatch and provider reconciliation also use the original journal
+admission and owned recording. `harness.provider_call` encloses the original claim,
+provider generation or continuation and event settlement, propagating its parent
+to journal writes. Its start is admitted before a fresh claim; no trace wait is
+inserted between an accepted claim and provider delivery. Completion is submitted
+without awaiting diagnostics, and only an authenticated model completion records
+success. Forced model interventions do not fabricate provider-call spans.
+Provider-event suspension uses `harness.provider_event_wait` with the public
+`provider_event_delivery` guarantee. A delivered original event settles that
+wait; stream exhaustion without delivery records `Unsettled`. Original errors
+without retained cause evidence abandon their owned wait as `Unsettled`. The terminal append is submitted
+without delaying delivery to the original model loop. These shared spans replace
+the separate native-only `provider-event` wait observations.
+Followed tool failures publish `harness.tool_failure` with a typed failed outcome
+referencing the original committed `ToolFailed` observation. The optional journal
+receipt capability uses the same conditional append and returns its original
+commit, path and zero-based sequence; exact retries authenticate that original
+record instead of deriving identity from the current tail. Conditional refusal
+returns no record. Unfollowed failures keep ordinary append and incur no receipt
+lookup. Original receipt confirmation is the extra read that buys durable cause
+identity on an exact retry; there is no second journal or repeated error payload.
+The per-poll causal context retains the admitted producer as well as its parent.
+SDK mechanisms use shared `trace::observe` to inherit the owning agent stream
+without another subscription or registry lookup. With no active owner it checks
+only local context and invokes the original work. The atomic `Stream::head`
+boundary now emits `stream.head` / `atomic_history_durability_origin` through this
+path, preserving the original head and unknown byte count. Diagnostic publication
+suppresses this context for every poll, including owned terminal appends, so a
+backend's own SDK metadata reads cannot recursively trace diagnostics. Scope exit
+restores the caller's original owner; unrelated futures never inherit that owner.
+Bounded `Stream::read` and keyed `seek` share cursor admission and inherit the
+same active owner through `trace::observe`. `stream.read_open` names the bounded
+ordered-record cursor guarantee; `stream.seek_open` names bounded header-key
+selection. Their successful terminals describe opening the original cursor,
+without consuming records or estimating delivered bytes. Replay-page spans remain
+the separate delivery boundary and parent these admission spans. Inherited starts
+now submit their original append before polling work and expose their causal
+identity immediately. A terminal captures the return timestamp before waiting
+for that start in its owned append continuation, so ready work and ready records
+return without diagnostic IO while their original start and terminal remain
+owned. A failed start cannot publish a detached terminal. `Recording::start`
+awaits the actual retained receipt rather than inventing publication identity.
+`Stream::fork` and bounded `children` inherit this same producer. The commit span
+names the immutable selected prefix and its origin; the child-page I/O span names
+the bounded direct-child page at its namespace cut. Both return the original
+receipt or page unchanged, report unknown bytes, and add no diagnostic wait after
+the original result. Requests without an active owner use the original futures.
+Single, conditional and batch SDK appends share `stream.append` at their original
+batch boundary. Its guarantee is the atomic contiguous append decision: both an
+original committed receipt and a linearizable tail conflict complete that
+request, without confusing a refused write with an applied effect. Bytes remain
+unknown, and the original retry key and outcome pass through unchanged.
+SDK `follow` admits the original ordered history-and-live cursor through
+`stream.follow_open`, then reuses the same demand-driven record delivery wrapper
+as finite reads. Snapshot and selection stay attached to the original cursor;
+there is no collector, prefetched trace queue or new wait per idle child. Following
+the active diagnostic source bypasses both wrappers, as reading that source does.
+A delivery wait returning EOF on an original live selection has not observed
+settlement and records `Unsettled`. A finite selection can complete successfully.
+This classification uses the cursor's original selected end, without another
+head read, and leaves its snapshot, delivered records and EOF unchanged.
+The stock executor's owned and borrowed journal writers share one lock entrance.
+`harness.journal_writer_lock` names the serialization of each read-tail/commit
+transition and observes the original mutex acquisition; it returns the original
+guard without extending it through a diagnostic wait. The SDK value observation
+helper shares the same admission and terminal implementation as result observation,
+so infallible mechanisms need no invented error or parallel recorder.
+Application-owned Session delivery observes its original decision fence as
+`stream.application_decision_wait`. Its existing completion channel retains the
+original accepted decision boolean: a reconnect-fenced `false` is `Unsettled`,
+not a successful replay advance. Abandoned delivery carries a typed original
+cause, and a lost completion producer retains its actual receive error. Cancelled
+waits leave the receiver and application checkpoint intact; the trace never
+substitutes receive credit for a consumer decision.
+Submitted diagnostic publications share recorder credit (64 concurrent spans by
+default, configurable with `with_publication_credit`). Each admitted span holds
+one credit from before its start submission through its terminal append's
+completion, including failure. Starts and terminals cannot accumulate tasks
+without first owning that credit. A saturated producer skips observation and
+increments `suppressed_spans`; a nonzero value explicitly means incomplete
+coverage. Original business work remains ready and is never queued behind trace
+IO. These are publication credits, not a history or agent-count limit. The
+producer's cumulative suppression counter is also sampled into subsequent submitted
+terminal batches as a Coverage record. The shared finite/live file query reports
+`largestReportedSuppression`, the largest count observed from any one producer.
+Repeated reports are not summed, and this lower bound does not retain an index
+of past producer incarnations. Zero does not prove complete coverage: a crash or
+absence of a subsequent terminal can leave omissions unreported.
+A registry-bound producer also carries its own admitted lease count. The final
+lease retires new inherited child observations even when the original request
+still retains its recorder or another agent remains followed. This is an inline
+atomic check without a registry lock, allocation or scan; overlapping leases keep
+the same producer active. Already-admitted spans retain their terminal custody.
+Standalone explicitly constructed recorders remain explicit producer capabilities.
+Admitted read cursors retain that original owner for lazy record delivery after
+opening. `stream.record_delivery` waits on the original next result, reports the
+actual delivered value bytes (zero at normal finite exhaustion), and submits its
+terminal without another suspension. The original snapshot/selection and cursor
+are preserved through `Opened::map_cursor`; an unfollowed open adds no wrapper.
+Each next operation checks the original owner's demand, so a retained cursor adds
+no new spans after final unsubscribe. Reading the active trace source bypasses
+self-observation to prevent diagnostic-query feedback. Owned observations abandoned without retained
+cause evidence submit `Unsettled`; incomplete admission or publication remains explicit coverage.
+`OwnedRecording` retains one private terminal guard. Explicit finish consumes it;
+dropping an admitted handle without settlement submits `Unsettled` through the
+same original append producer. It never invents a failed cause or physical
+cancellation. Native recorders retain the original runtime handle so terminal
+work can be submitted after leaving that runtime's scope. With no available
+executor or unsuccessful publication, the retained start still identifies missing
+coverage. Raw caller-owned `Recording` values continue to require explicit finish.
+The shared Actors Store invoke entrance, input publication and terminal wait also
+inherit the active SDK producer. Their spans name journaled actor results, stable
+input identity and original terminal receipts; known bytes come from the original
+input record or response. `trace::observe_outcome` classifies the original typed
+result only when observed. A committed guest failure references the original call
+journal terminal's commit/path/sequence, cancellation uses its committed outcome,
+and other uncertainty remains unsettled. The original handler, ticket, receipt and
+reconciliation paths are unchanged. These spans replace the three corresponding
+Actors ad-hoc operation wrappers.
+The shipping local-harness DST recovery regressions now persist a version-one
+`replay-seed.json` before execution and retain its original checkout/state world
+through crash, recovery, failure and unwind. The controller reads that file for
+scheduler seeds, semantic crash point, prompts and provider response. The emitted
+`DST_REPLAY_SEED` path can drive the existing regression through
+`SDK_DST_REPLAY_SEED`; this recreates the same recovery case rather than treating
+a receipt reference as executable input. The retained world is not automatically
+deleted. Production-wide capture of arbitrary failed runs and their external
+nondeterministic inputs remains outstanding.
+
+For example, set `SDK_DST_REPLAY_SEED` to the emitted file, then run
+`cargo test --locked -p acyclic-harness --features test-support --test main dst::recovery::live_f3_killed_head_accepts_a_new_prompt -- --exact`.
+The seed selects either supported crash phase; no second test runner is required.
+Harness Stream failures use one source-owning `StreamFailure` on ordinary,
+native and WebAssembly paths. Request-boundary classification remains explicit;
+native provenance and admitted allocation custody remain attached. Journal
+reads no longer replace the original provider cause with its formatted text.
+General Stream-to-harness conversion retains the original agent classification,
+including its source-based retry and effect decisions. This closes the cause gap;
+the remaining bare error constructors elsewhere still require migration.
+
+Typed `Compared` deltas carry a request, output or cache-prefix comparison in
+an explicit identity domain: the preceding original publication and its
+canonical integrity digest, plus the current original digest. They contain no
+payloads or credentials. The shared query computes `repeatedCalls`,
+`repeatedOutputs` and `cachePrefixBreaks` by comparing those original digests.
+Each domain reports both equal and differing observations and retains the last
+original publication of each. Absence of comparisons establishes no correlation
+coverage; zero observed repeats does not prove there were no repeats. The
+preceding publication can lie outside the selected file window or producer
+clock domain. Equality needs no retained completed-call index or earlier-history
+scan. A comparison neither starts nor settles its owning span. Producers may
+publish one comparison per domain per span using the original idempotency key.
+Automatic correlation at every provider/tool boundary remains to be wired to
+their original canonical descriptors; names and durations never imply identity.
+
 ## Original model recovery observations
 
 Generation recovery emits `ModelEvent::Wait` through the original model stream.
@@ -401,3 +646,85 @@ Pass divan options after `--`, for example `-- --sample-count 10 put_small`.
 Name the bench with `--bench`: the library's test harness rejects those options.
 The `bench-fs` and `bench-objects` examples in their owning crates measure whole
 workloads (see its README).
+
+Local publication workers inherit the original optional trace owner at submission
+and restore it on each poll. Diagnostic publication carries disabled ownership,
+so writing a trace through a local provider cannot recursively trace its flush.
+Ordinary, guarded and prepared writes share the physical acquisition entrances:
+
+| Span | Mechanism | Public guarantee |
+| --- | --- | --- |
+| `stream.visibility_lock` | Lock | `serialized_mutation_snapshot_and_compaction_cut`: a mutation's journal/snapshot cut excludes other mutations and compaction. |
+| `stream.publication_lock` | Lock | `accepted_reads_exclude_incomplete_journal_frames`: accepted readers cannot observe a frame before its publication writer releases it. |
+| `stream.publication_read_lock` | Lock | `accepted_snapshot_excludes_incomplete_journal_frames`: a snapshot reads only after its original publication writer releases the frame. |
+| `stream.visibility_read_lock` | Lock | `prepared_commit_reads_one_mutation_snapshot_cut`: preparation reads a cut excluded from concurrent mutation and compaction. |
+| `stream.journal_cut_wait` | Wait | `requested_journal_cut_device_flushed` or `requested_journal_cut_writes_ordered`: the caller's requested cut is confirmed at its selected durability strength. |
+| `stream.journal_flush` | Fsync | `journal_cut_device_flushed` or `journal_cut_writes_ordered`: the original group flush confirms its cut at that strength. |
+
+Lock spans measure acquisition, returning the original guard without extending
+its lifetime through diagnostic IO. Wait success requires the original cut check;
+a watch wake alone is insufficient. Flush time includes native submission and
+acknowledgement. Physical byte counts remain unknown because journal file length
+is not the number of bytes flushed. Acquisition and settlement waits report zero
+bytes. Errors without retained failure evidence remain explicitly unsettled.
+These observations do not yet account separately for every blocking-thread lock,
+native syscall, copy, authority check or transport hop.
+
+A pending snapshot keeps its original owner when it moves from its inline probe
+to the existing cancellable snapshot worker. The cancelled probe and the worker's
+actual acquisition are distinct attempts: an abandoned acquisition is unsettled,
+and only the attempt receiving the original read guard succeeds. Retiring a
+consumer still removes the original lock reservation before the held writer is
+released; tracing neither keeps that reservation nor replaces the cursor.
+
+The group flush producer returns an explicit result: only publishing the actual
+device completion returns success. Its original I/O error is attached to the
+caller error while the incarnation's first-failure watch still wakes all other
+waiters. A native metered operation keeps custody of its separately recorded
+physical error until its original completion is observed. A failed flush no
+longer returns an optional success acknowledgement and relies on a later cut
+check to discover the failure. Failure spans still need a retained journal
+record before they can claim a Failed outcome; otherwise they remain unsettled.
+
+The deterministic group-flush regression arms the native runtime at the original
+flush boundary with Failed, DiskFull and lost acknowledgement (After). It uses
+the real local provider and original file lease, verifies the injected typed
+source through the caller error chain against the original operation journal,
+and requires both flush and cut-wait observations to remain unsettled without
+advancing the certified device-flushed cut. This is simulation coverage of the
+original mechanism, not proof that the test has run or universal crash capture.
+
+Successful nonempty append retries automatically emit `stream.append_replay`
+with guarantee `same_request_reuses_original_append_receipt`. The shared
+mutation core already verified the canonical request digest against its retained
+idempotency entry; the observation reuses that digest and the original append's
+commit/path/start record. It does not hash or serialize the request again. Empty
+appends and outcomes without an original record emit no comparison reference.
+This covers accepted same-key append retries, not all equal calls across unrelated
+keys, repeated outputs or model prefix reuse.
+The synchronous SDK observer uses the same owned recording, per-poll causal
+context, publication credit and terminal custody as asynchronous observations.
+One optional comparison joins its original terminal in the same append batch,
+so it adds no task, publication round trip or completed-call index. The original
+receipt is returned immediately; an unfollowed replay constructs no evidence.
+
+Session authority admission and per-entry resource authorization use the same
+synchronous SDK observer. `stream.session_authorize` accounts for the original
+current-trust credential/resource admission check. `stream.resource_authorize`
+accounts for each original capability evaluation against current trust, entry
+facts and owner policy, including the separate admitted-call grant check for a
+dependent resource. They retain the original decisions and arguments; no
+credential, resource name, audience, holder, key or attribute enters a span.
+Successful checks report zero payload bytes. Rejections currently remain
+`Unsettled` because these paths do not yet retain an original cause record;
+this is an explicit remaining cause-custody gap, not a successful authorization
+or a fabricated failure reference.
+stream.credential_snapshot accounts for acquiring the original current-credential
+lock, cloning its existing shared capability and releasing the guard. Its
+guarantee is an atomic snapshot against renewal, with zero payload bytes and
+no copy of the credential. `stream.credential_renewal` accounts for the original
+writer lock through its account/principal/grant checks and conditional update;
+its guarantee is atomic renewal preserving the admitted authority ceiling.
+Rejected renewal leaves the original credential untouched and remains unsettled
+until the path retains original cause evidence. Scope/account guards preceding
+per-entry checks still need their own physical observations.

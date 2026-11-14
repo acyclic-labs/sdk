@@ -337,7 +337,7 @@ pub fn children_page_from_wire(
         after: value.after.map(path).transpose()?,
         hierarchy_version: value
             .hierarchy_version
-            .map(|bytes| {
+            .map(|bytes| -> Result<_, StreamError> {
                 let array: [u8; 32] = bytes
                     .as_ref()
                     .try_into()

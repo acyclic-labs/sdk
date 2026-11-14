@@ -154,9 +154,12 @@ pub(in crate::local) async fn capture(
     let (physical, _) = selected;
     if let Some(mount) = &physical.mounted {
         mount
-            .sync_with_permit(permit, &mount.native_work()?, |_| async {
-                Ok::<(), Error>(())
-            })
+            .sync_with_permit(
+                permit,
+                &mount.native_work()?,
+                Some(capture_operation(operation.0, operation.1)),
+                |_| async { Ok::<(), Error>(()) },
+            )
             .await
             .map_err(|failure| failure.cause)?;
         return Ok(());
@@ -433,7 +436,10 @@ pub(in crate::local) fn baseline_operation(
     acyclic_fs::OperationId::from_bytes(bytes)
 }
 
-pub(super) fn capture_operation(operation: OperationId, phase: u8) -> acyclic_fs::OperationId {
+pub(in crate::local) fn capture_operation(
+    operation: OperationId,
+    phase: u8,
+) -> acyclic_fs::OperationId {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"acyclic.local.checkout-capture/v1\0");
     hasher.update(&operation.into_bytes());

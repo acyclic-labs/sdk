@@ -9,9 +9,57 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    /// Host-only demand custody, bound to the original admitted agent. It is
+    /// independent of lifecycle event publication and grants no authority.
+    pub(in crate::filesystem) fn with_trace_interest(
+        mut self,
+        traces: acyclic_stream::trace::Registry<P>,
+        owner: crate::agent::AgentPath,
+    ) -> Self {
+        self.traces = Some((traces, owner));
+        self
+    }
+
     fn invalidate_execution_caches(&mut self) {
         self.cache_identity = Default::default();
         *self.verified.get_mut() = SummaryCache::default();
+    }
+
+    /// Use the original host alarm clock for tool quiet deadlines.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn acyclic_actors::local::Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    pub(crate) fn with_run_admission(
+        mut self,
+        source: Option<crate::supervision::RunAdmissionSource>,
+    ) -> Self {
+        self.run_admission = source;
+        self.invalidate_execution_caches();
+        self
+    }
+
+    /// Publish lifecycle observations at the original journal commit. `start`
+    /// selects only the first segment of the run, excluding resumed segments
+    /// and self-continuations. Replays use the journal's original identity.
+    pub fn with_agent_events(
+        mut self,
+        agent: crate::agent::AgentPath,
+        run: OperationId,
+        input: u64,
+        start: bool,
+    ) -> Self {
+        self.agent_events = Some((agent, run, input, start));
+        self.invalidate_execution_caches();
+        self
+    }
+
+    pub(crate) fn with_actor_admission(mut self, path: Option<acyclic_stream::StreamPath>) -> Self {
+        self.actor_admission = path;
+        self.invalidate_execution_caches();
+        self
     }
 
     /// Binds passive replay to an original turn without granting a task lease.
@@ -134,6 +182,7 @@ where
         Ok(Self {
             cache_identity: Default::default(),
             stream,
+            traces: None,
             host,
             volume,
             verifier,
@@ -145,6 +194,10 @@ where
             boundary: None,
             agent_approvals: None,
             execution: None,
+            agent_events: None,
+            clock: Arc::new(acyclic_actors::local::SystemClock),
+            actor_admission: None,
+            run_admission: None,
             verified: tokio::sync::Mutex::new(SummaryCache::default()),
             history_read_limits: None,
             #[cfg(not(target_arch = "wasm32"))]

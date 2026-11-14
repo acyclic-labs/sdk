@@ -4,6 +4,7 @@ use serde::Deserialize;
 struct ModelSettings {
     model: Option<String>,
     model_provider: Option<String>,
+    compaction: Option<crate::context::CompactionPolicy>,
 }
 
 struct Selection<'a> {
@@ -35,8 +36,32 @@ fn normalize(settings: &ModelSettings) -> Result<Option<Selection<'_>>, String> 
     Ok(Some(Selection { provider, name }))
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn parse(bytes: &[u8]) -> Result<Option<String>, String> {
+    parse_preferences(bytes, true, false).map(|preferences| preferences.model)
+}
+
+pub(super) fn parse_preferences(
+    bytes: &[u8],
+    model: bool,
+    compaction: bool,
+) -> Result<super::ModelPreferences, String> {
     let text = std::str::from_utf8(bytes).map_err(|error| error.to_string())?;
-    let settings: ModelSettings = toml::from_str(text).map_err(|error| error.to_string())?;
-    Ok(normalize(&settings)?.map(|selection| format!("{}/{}", selection.provider, selection.name)))
+    let mut values: toml::Table = toml::from_str(text).map_err(|error| error.to_string())?;
+    if !model {
+        values.remove("model");
+        values.remove("model_provider");
+    }
+    if !compaction {
+        values.remove("compaction");
+    }
+    let settings: ModelSettings = toml::Value::Table(values)
+        .try_into()
+        .map_err(|error| error.to_string())?;
+    let model =
+        normalize(&settings)?.map(|selection| format!("{}/{}", selection.provider, selection.name));
+    Ok(super::ModelPreferences {
+        model,
+        compaction: settings.compaction,
+    })
 }

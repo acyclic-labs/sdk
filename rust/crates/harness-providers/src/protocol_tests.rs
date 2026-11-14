@@ -304,10 +304,9 @@ async fn rate_limit_backpressure_preserves_the_turn_until_admission() -> Result<
 }
 
 #[tokio::test]
-async fn http_status_classes_are_distinct_and_refusals_carry_only_a_bounded_excerpt() -> Result<()>
-{
+async fn http_status_classes_are_distinct_and_refusals_never_disclose_remote_text() -> Result<()> {
     for (adapter, _) in fixtures() {
-        for status in [401, 403, 400, 404] {
+        for status in [401, 403, 400, 413, 404] {
             let (provider, script) = provider(adapter, status);
             let (prepared, dispatch) = request(&provider)?;
             let error = provider
@@ -346,14 +345,8 @@ async fn http_status_classes_are_distinct_and_refusals_carry_only_a_bounded_exce
                         panic!("{adapter:?}: {error}");
                     };
                     assert_eq!(sent, 1);
-                    // A non-context 400 keeps only its bounded excerpt; 404 reads no body.
-                    if status == 400 {
-                        assert!(message.starts_with("model HTTP status 400: "), "{message}");
-                        assert!(message.len() <= crate::EXCERPT_BYTES);
-                        assert!(!message.chars().any(char::is_control));
-                    } else {
-                        assert!(!message.contains("usage"));
-                    }
+                    assert_eq!(message, &format!("model HTTP status {status}"));
+                    assert!(!message.contains("usage"));
                 }
             }
         }

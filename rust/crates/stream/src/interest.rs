@@ -8,6 +8,10 @@ use crate::change::{
 use crate::query_sync::{Arc, SyncMutex as Mutex};
 use std::collections::{BTreeMap, btree_map::Entry};
 
+#[derive(Debug, thiserror::Error)]
+#[error("stream subscription count exceeds its representation")]
+struct SubscriptionOverflow;
+
 struct Registration<V> {
     value: V,
     count: usize,
@@ -44,7 +48,7 @@ impl<K: Ord + Clone, V: Clone> Interests<K, V> {
         create: impl FnOnce() -> V,
     ) -> Result<Interest<K, V>, StreamError> {
         let value = {
-            let mut entries = self.entries.lock().map_err(|_| StreamError::Unavailable)?;
+            let mut entries = self.entries.lock()?;
             let entry = match entries.entry(key.clone()) {
                 Entry::Vacant(entry) => entry.insert(Registration {
                     value: create(),
@@ -54,7 +58,10 @@ impl<K: Ord + Clone, V: Clone> Interests<K, V> {
                 }),
                 Entry::Occupied(entry) => entry.into_mut(),
             };
-            entry.count = entry.count.checked_add(1).ok_or(StreamError::Capacity)?;
+            entry.count = entry
+                .count
+                .checked_add(1)
+                .ok_or_else(|| StreamError::Capacity.with_source(SubscriptionOverflow))?;
             entry.value.clone()
         };
         let interest = Interest {
@@ -69,10 +76,14 @@ impl<K: Ord + Clone, V: Clone> Interests<K, V> {
             let mut interest = interest;
             let changed = self
                 .entries
-                .lock()
-                .map_err(|_| StreamError::Unavailable)?
+                .lock()?
                 .get(&interest.key)
-                .ok_or(StreamError::Unavailable)?
+                .ok_or_else(|| {
+                    StreamError::unavailable(acyclic_auth::refusal::Cause::new(
+                        "stream.interests",
+                        "registration_missing",
+                    ))
+                })?
                 .changed
                 .clone();
             interest.changed = Some(changed.subscribe()?);
@@ -80,11 +91,13 @@ impl<K: Ord + Clone, V: Clone> Interests<K, V> {
         };
         Ok(interest)
     }
-    pub(crate) fn get(&self, key: &K) -> Result<Option<V>, StreamError> {
+    pub(crate) fn get<Q: Ord + ?Sized>(&self, key: &Q) -> Result<Option<V>, StreamError>
+    where
+        K: std::borrow::Borrow<Q>,
+    {
         Ok(self
             .entries
-            .lock()
-            .map_err(|_| StreamError::Unavailable)?
+            .lock()?
             .get(key)
             .map(|entry| entry.value.clone()))
     }
@@ -98,8 +111,7 @@ impl<K: Ord + Clone, V: Clone> Interests<K, V> {
     {
         Ok(self
             .entries
-            .lock()
-            .map_err(|_| StreamError::Unavailable)?
+            .lock()?
             .range::<Q, _>(range)
             .map(|(key, _)| key.clone())
             .collect())
@@ -108,8 +120,7 @@ impl<K: Ord + Clone, V: Clone> Interests<K, V> {
     pub(crate) fn notify(&self, key: &K) -> Result<(), StreamError> {
         let changed = self
             .entries
-            .lock()
-            .map_err(|_| StreamError::Unavailable)?
+            .lock()?
             .get(key)
             .map(|entry| entry.changed.clone());
         if let Some(changed) = changed {
@@ -121,8 +132,7 @@ impl<K: Ord + Clone, V: Clone> Interests<K, V> {
     pub(crate) fn notify_all(&self) -> Result<(), StreamError> {
         let changed = self
             .entries
-            .lock()
-            .map_err(|_| StreamError::Unavailable)?
+            .lock()?
             .values()
             .map(|entry| entry.changed.clone())
             .collect::<Vec<_>>();
@@ -149,7 +159,12 @@ impl<K: Ord + Clone, V: Clone> Interest<K, V> {
     ) -> Result<T, StreamError> {
         self.changed
             .as_mut()
-            .ok_or(StreamError::Unavailable)?
+            .ok_or_else(|| {
+                StreamError::unavailable(acyclic_auth::refusal::Cause::new(
+                    "stream.interests",
+                    "subscription_missing",
+                ))
+            })?
             .next(snapshot)
             .await
     }
@@ -196,7 +211,7 @@ impl Refresh {
         }
     }
     pub(crate) fn request(&self, force: bool) -> Result<bool, StreamError> {
-        let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+        let mut state = self.state.lock()?;
         state.dirty = true;
         state.force |= force;
         let start = !state.running;
@@ -204,7 +219,7 @@ impl Refresh {
         Ok(start)
     }
     pub(crate) fn take(&self) -> Result<Option<bool>, StreamError> {
-        let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+        let mut state = self.state.lock()?;
         if !state.dirty {
             state.running = false;
             return Ok(None);
@@ -218,3 +233,44 @@ impl Refresh {
 #[cfg(loom)]
 #[path = "../publication-models/interest.rs"]
 mod models;
+
+#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    use std::error::Error as _;
+
+    #[test]
+    fn failed_registration_preserves_poison_attribution_for_every_reader() {
+        let registry = Interests::<u8>::new();
+        assert!(registry.get(&1).unwrap().is_none());
+        // Run the original value constructor under the production registry lock.
+        // Its unwind poisons that lock; no injected replacement error is involved.
+        assert!(
+            std::panic::catch_unwind(|| {
+                let _ = registry.subscribe_with(1, || panic!("registration construction failed"));
+            })
+            .is_err()
+        );
+        let errors = [
+            registry
+                .subscribe_with(2, || ())
+                .err()
+                .expect("poisoned registration"),
+            registry.get(&1).unwrap_err(),
+            registry.keys_in::<u8, _>(..).unwrap_err(),
+        ];
+        for error in errors {
+            assert_eq!(error.category(), StreamError::Unavailable);
+            assert!(error.uncertain());
+            let cause = error
+                .source()
+                .unwrap()
+                .source()
+                .unwrap()
+                .downcast_ref::<acyclic_auth::refusal::Cause>()
+                .unwrap();
+            assert_eq!(cause.component, "stream.lock");
+            assert_eq!(cause.reason, "poisoned");
+        }
+    }
+}

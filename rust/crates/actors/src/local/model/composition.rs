@@ -21,6 +21,7 @@ struct Participant {
     counts: Arc<Counts>,
     remove_actor_fence: bool,
     fork_reply_parent: bool,
+    activation_edit: u8,
 }
 
 impl Drop for Participant {
@@ -60,6 +61,31 @@ impl Composition for Participant {
                     at_tail: 0,
                     records: Vec::new(),
                 });
+            }
+            if self.activation_edit != 0 {
+                let root = path("participant/actors")
+                    .map_err(|error| GuestError::Handler(error.to_string()))?;
+                let records = request
+                    .effects
+                    .iter_mut()
+                    .filter(|effect| !effect.soft)
+                    .flat_map(|effect| &mut effect.mutations)
+                    .find_map(|mutation| match mutation {
+                        CommitMutation::Append { path, records }
+                            if (self.activation_edit == 5
+                                && path.as_str().starts_with("participant/actors/"))
+                                || (self.activation_edit != 5 && path == &root) =>
+                        {
+                            Some(records)
+                        }
+                        _ => None,
+                    })
+                    .ok_or_else(|| GuestError::Handler("original append missing".into()))?;
+                if self.activation_edit == 4 {
+                    records[0] = Bytes::from_static(b"rewritten original").into();
+                } else {
+                    records.push(records[0].clone());
+                }
             }
             Ok(request)
         })
@@ -320,6 +346,12 @@ impl Composer for Participants {
             counts: self.0.clone(),
             remove_actor_fence: participant.plan.as_ref() == [1],
             fork_reply_parent: participant.plan.as_ref() == [2],
+            activation_edit: participant
+                .plan
+                .first()
+                .copied()
+                .filter(|mode| *mode >= 3)
+                .unwrap_or(0),
         }))
     }
 }
@@ -666,6 +698,7 @@ async fn composer_cannot_fork_over_the_original_invocation_reply() -> Result<(),
 
 fn transition(remove_actor_fence: bool) -> Result<Transition, StreamError> {
     Ok(Transition {
+        pause: false,
         response: None,
         checkpoint: checkpoint(1),
         alarm: AlarmChange::Keep,
@@ -856,6 +889,67 @@ async fn participant_cannot_remove_the_actor_fence_before_submission() -> Result
         Some(0)
     );
     assert_eq!(counts.dropped.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn composition_extends_activation_prefix_but_cannot_rewrite_it_or_grow_actor_state()
+-> Result<(), Failure> {
+    for mode in [3, 4, 5] {
+        let provider = Arc::new(Faulty {
+            inner: MemoryStream::default(),
+            plan: Vec::new(),
+            calls: AtomicUsize::new(0),
+        });
+        let counts = Arc::new(Counts::default());
+        let (store, actor) = placed(provider.clone(), counts.clone()).await?;
+        let before = store.load(&actor).await?;
+        let mut transition = transition(false)?;
+        transition.effects.push(store.activation(&actor)?);
+        transition
+            .participant
+            .as_mut()
+            .ok_or("missing participant")?
+            .plan = Bytes::from(vec![mode]);
+        let calls = provider.calls.load(Ordering::SeqCst);
+        let result = store
+            .publish(
+                &before,
+                1,
+                &Trigger::Record {
+                    subscription: "inbox".into(),
+                    sequence: 0,
+                },
+                None,
+                transition,
+                key("activation-extension")?,
+            )
+            .await;
+        if mode == 3 {
+            result?;
+            assert_eq!(provider.tail(store.root().clone()).await?, 3);
+            assert_eq!(
+                store
+                    .load(&actor)
+                    .await?
+                    .state()
+                    .and_then(|state| state.cursor("inbox")),
+                Some(1)
+            );
+        } else {
+            assert!(matches!(
+                result,
+                Err(Error::Invalid("composition changed the actor publication"))
+            ));
+            assert_eq!(
+                provider.calls.load(Ordering::SeqCst),
+                calls,
+                "tampering reached the provider"
+            );
+            assert_eq!(provider.tail(store.root().clone()).await?, 1);
+            assert_eq!(store.load(&actor).await?.tail, before.tail);
+        }
+    }
     Ok(())
 }
 
@@ -1166,6 +1260,7 @@ enum Via {
     Binding,
     Flush,
     Delete,
+    Export,
 }
 
 /// One owner publishes `kinds` (bit set: composed) `via` one path, reloading
@@ -1214,6 +1309,13 @@ async fn one_owner(failing: usize, kinds: usize, via: Via, forget: bool) -> Resu
                 cut.unsettled = false;
             }
             let outcome = async {
+                if via == Via::Export && step == STEPS {
+                    let publication =
+                        store.prepare_publish(&cut, 1, &trigger, None, transition, publish)?;
+                    let request = store.export_prepared(publication).await?;
+                    PreparedPublish::settle(&store.provider().commit(request).await?)?;
+                    return Ok(None);
+                }
                 if via == Via::Delete && step == STEPS {
                     // A raw commit is refused while custody is unsettled;
                     // the deletion then goes through the one settling path.
@@ -1229,7 +1331,7 @@ async fn one_owner(failing: usize, kinds: usize, via: Via, forget: bool) -> Resu
                     };
                 }
                 let publication = match via {
-                    Via::Direct | Via::Delete => {
+                    Via::Direct | Via::Delete | Via::Export => {
                         store.prepare_publish(&cut, 1, &trigger, None, transition, publish)?
                     }
                     Via::Binding | Via::Flush => {
@@ -1272,6 +1374,22 @@ async fn one_owner(failing: usize, kinds: usize, via: Via, forget: bool) -> Resu
 }
 
 const STEPS: usize = 3;
+
+#[tokio::test]
+async fn exporting_a_plain_publication_first_settles_prior_committed_custody() -> Result<(), Failure>
+{
+    let mut caught = 0;
+    for failing in 0..1 << STEPS {
+        let kinds = 1 << (STEPS - 1);
+        assert!(one_owner(failing, kinds, Via::Export, false).await?);
+        caught += usize::from(!one_owner(failing, kinds, Via::Export, true).await?);
+    }
+    assert!(
+        caught > 0,
+        "the control must detect forgotten custody before export"
+    );
+    Ok(())
+}
 
 /// Exhaustive over which settlement attempts fail, which publications
 /// compose, and the publication path (direct, through a state binding, or a

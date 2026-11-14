@@ -353,15 +353,7 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
         if !self.dirty {
             return Ok(());
         }
-        self.fenced = true;
-        let effects = self.effects(AlarmChange::Keep, None)?;
-        let state = self.snapshot.state.take().ok_or(Error::Conflict)?;
-        let mut prepared = self
-            .store
-            .prepare(&self.snapshot, state, Vec::new(), key, false)?;
-        for effect in effects {
-            prepared.join_host(effect)?;
-        }
+        let prepared = self.prepare_flush_inner(key)?;
         self.snapshot = self
             .store
             .submit_retained(prepared)
@@ -373,6 +365,37 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
         self.dirty = false;
         self.fenced = false;
         Ok(())
+    }
+
+    /// Prepare this binding's metadata, journal and alarm without consuming an
+    /// actor input. The original source producer may join its record through
+    /// [`super::PreparedPublish::join`] and submit the single conditional
+    /// publication. Thus activity and an alarm rearm become visible together;
+    /// losing the actor fence publishes neither. No I/O occurs here, and an
+    /// uncertain outcome retains the returned publication for exact recovery.
+    pub fn prepare_flush(mut self, key: IdempotencyKey) -> Result<super::PreparedPublish, Error> {
+        self.prepare_flush_inner(key)
+    }
+
+    fn prepare_flush_inner(
+        &mut self,
+        key: IdempotencyKey,
+    ) -> Result<super::PreparedPublish, Error> {
+        if self.fenced {
+            return Err(Error::Conflict);
+        }
+        self.fenced = true;
+        let journal = self.journal_path()?;
+        let effects = self.effects(AlarmChange::Keep, Some(&journal))?;
+        let state = self.snapshot.state.take().ok_or(Error::Conflict)?;
+        let mut prepared = self
+            .store
+            .prepare(&self.snapshot, state, Vec::new(), key, false)?;
+        for effect in effects {
+            prepared.join_host(effect)?;
+        }
+        prepared.journal = Some(journal);
+        Ok(prepared)
     }
 
     /// Join staged metadata, journal and alarm with the delivery's checkpoint,

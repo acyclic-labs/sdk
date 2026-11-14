@@ -135,18 +135,43 @@ async fn dropped_consumers_leave_no_queued_publication_reservation()
                 .map(|item| item.map(|_| ()))
                 .boxed()
         };
+        #[cfg(feature = "serde")]
+        let trace = crate::Stream::new(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("owner/trace")?,
+        )?;
+        #[cfg(feature = "serde")]
+        let recorder = Arc::new(crate::trace::Recorder::new(trace.clone(), [33; 16]));
+        #[cfg(feature = "serde")]
+        let recording = recorder
+            .start(
+                "snapshot_owner",
+                crate::trace::Mechanism::Io,
+                None,
+                Some("original_cursor_delivery"),
+            )
+            .await?;
+        #[cfg(feature = "serde")]
+        let parent = recording.id();
+        #[cfg(feature = "serde")]
+        let recording = recording.into_owned();
         let held = provider.inner.publication.write().await;
         let cut = if keep {
             crate::snapshot::Cut::Pending
         } else {
             crate::snapshot::Cut::Retired
         };
-        let (pending, settled) = crate::snapshot::observe(cut, || {
-            follow
-                .as_mut()
-                .poll_next(&mut Context::from_waker(Waker::noop()))
-                .is_pending()
-        });
+        let observe = async {
+            crate::snapshot::observe(cut, || {
+                follow
+                    .as_mut()
+                    .poll_next(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            })
+        };
+        #[cfg(feature = "serde")]
+        let observe = recording.within(observe);
+        let (pending, settled) = observe.await;
         assert!(pending);
         let kept = keep.then_some(follow);
         settled.await?;
@@ -160,6 +185,42 @@ async fn dropped_consumers_leave_no_queued_publication_reservation()
             assert!(matches!(follow.next().await, Some(Ok(()))));
             drop(follow);
             assert!(provider.inner.publication.try_write().is_ok());
+        }
+        #[cfg(feature = "serde")]
+        {
+            use crate::trace::{Mechanism, Observation, Outcome, TraceQuery};
+            let mut query = TraceQuery::new(
+                trace.follow(0, Default::default()).await?,
+                Default::default(),
+            );
+            let mut unsettled = 0;
+            let mut succeeded = 0;
+            while unsettled == 0 || (keep && succeeded == 0) {
+                if let Some(Observation::Completed {
+                    start,
+                    result,
+                    bytes,
+                    ..
+                }) = query.next().await?
+                {
+                    assert_eq!(start.name, "stream.publication_read_lock");
+                    assert_eq!(start.parent, Some(parent));
+                    assert_eq!(start.mechanism, Mechanism::Lock);
+                    assert_eq!(
+                        start.guarantee.as_deref(),
+                        Some("accepted_snapshot_excludes_incomplete_journal_frames")
+                    );
+                    match result {
+                        Outcome::Unsettled => unsettled += 1,
+                        Outcome::Succeeded => {
+                            assert_eq!(bytes, Some(0));
+                            succeeded += 1;
+                        }
+                        _ => return Err("unexpected read acquisition outcome".into()),
+                    }
+                }
+            }
+            assert_eq!(succeeded, u32::from(keep));
         }
     }
     Ok(())

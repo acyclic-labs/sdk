@@ -112,7 +112,7 @@ async fn disabled_compaction_dispatches_fresh_and_saved_requests_without_account
                 selected_context: None,
             };
             if saved {
-                save_unaccounted_request(&executor, &journal, &input, false, "acyclic.stock.v10")
+                save_unaccounted_request(&executor, &journal, &input, false, "acyclic.stock.v11")
                     .await?;
             }
             let result = executor.execute(input.clone(), &journal).await?;
@@ -164,7 +164,7 @@ async fn saved_started_request_reconciles_and_replays_without_fresh_admission() 
         selected_context: None,
     };
     let prepared =
-        save_unaccounted_request(&executor, &journal, &input, false, "acyclic.stock.v10").await?;
+        save_unaccounted_request(&executor, &journal, &input, false, "acyclic.stock.v11").await?;
     let reference = transcript::stage_request(
         &journal,
         input.operation_id,
@@ -227,7 +227,7 @@ async fn saved_single_inference_keeps_its_capacity_binding() -> Result<()> {
         input: ModelContent::Text("input".into()),
         selected_context: None,
     };
-    save_unaccounted_request(&executor, &journal, &input, true, "acyclic.stock.v10").await?;
+    save_unaccounted_request(&executor, &journal, &input, true, "acyclic.stock.v11").await?;
     for _ in 0..2 {
         assert_eq!(
             executor.infer(&journal, &input, None).await?.text(),
@@ -245,7 +245,7 @@ async fn saved_single_inference_keeps_its_capacity_binding() -> Result<()> {
 
 #[tokio::test]
 async fn obsolete_request_encoding_is_refused_before_dispatch() -> Result<()> {
-    for binding in ["acyclic.stock.v8", "acyclic.stock.v9"] {
+    for binding in ["acyclic.stock.v8", "acyclic.stock.v9", "acyclic.stock.v10"] {
         let journal = Journal::default();
         let provider = Arc::new(ScriptedModelProvider::new([done_turn()]));
         let executor = uncompacted_executor(

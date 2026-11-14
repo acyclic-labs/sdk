@@ -206,6 +206,7 @@ pub(super) async fn matches_content<
     path: &str,
     exact_payload: bool,
     allow_absent: bool,
+    prefix: Option<u64>,
     work: W,
     cancellation: &CancellationToken,
 ) -> W::Output<bool, WorkspaceError> {
@@ -248,15 +249,28 @@ pub(super) async fn matches_content<
                         && record.payload == expected.payload
                 }
                 (Some(record), Some(expected)) => {
-                    crate::kernel::records_match_content(
-                        workspace.volume.fs.objects(),
-                        record,
-                        expected,
-                        crate::kernel::DecodeLimits::for_volume(workspace.volume_config()),
-                        &mut scope,
-                        cancellation,
-                    )
-                    .await?
+                    if let Some(bytes) = prefix {
+                        crate::kernel::records_match_prefix(
+                            workspace.volume.fs.objects(),
+                            record,
+                            expected,
+                            bytes,
+                            crate::kernel::DecodeLimits::for_volume(workspace.volume_config()),
+                            &mut scope,
+                            cancellation,
+                        )
+                        .await?
+                    } else {
+                        crate::kernel::records_match_content(
+                            workspace.volume.fs.objects(),
+                            record,
+                            expected,
+                            crate::kernel::DecodeLimits::for_volume(workspace.volume_config()),
+                            &mut scope,
+                            cancellation,
+                        )
+                        .await?
+                    }
                 }
                 (None, None) => allow_absent,
                 _ => false,

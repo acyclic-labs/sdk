@@ -21,7 +21,7 @@ use crate::{
         IntentId, Sender, Spawn, WorkspaceEntry,
     },
     approvals::ApprovalResponder,
-    conversation::{ContentAccess, ContentPublisher, FileRef},
+    conversation::{ContentAccess, ContentPublisher, FileRef, VolumeRef},
     core::{Authority, AuthorityRoot, RuntimeAuthority, Scope},
     interaction::{ApprovalBinding, Interaction},
     resources::ProviderRef,
@@ -49,8 +49,11 @@ mod generation;
 pub type Turner<P, O> = FilesystemTurnHost<P, StreamAuthorityStore<P>, O>;
 
 mod client_files;
+mod controls;
 mod input_preview;
 mod journal;
+mod quiet;
+mod run_admission;
 mod sessions;
 
 #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
@@ -257,7 +260,10 @@ pub struct Bound<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     spawns: Arc<FilesystemSpawnVolumes<P, O>>,
     clock: Arc<dyn Clock>,
     handler: Arc<dyn acyclic_actors::guest::Handler>,
+    controls: Arc<dyn crate::agent::Companions>,
     composer: Arc<crate::agent::AgentComposer<P>>,
+    file_views: Vec<Arc<dyn crate::client_files::FileView<P>>>,
+    traces: acyclic_stream::trace::Registry<P>,
 }
 
 impl<P: AuthorityProvider + ?Sized + 'static, O> Clone for Bound<P, O> {
@@ -273,7 +279,10 @@ impl<P: AuthorityProvider + ?Sized + 'static, O> Clone for Bound<P, O> {
             spawns: self.spawns.clone(),
             clock: self.clock.clone(),
             handler: self.handler.clone(),
+            controls: self.controls.clone(),
             composer: self.composer.clone(),
+            file_views: self.file_views.clone(),
+            traces: self.traces.clone(),
         }
     }
 }
@@ -438,6 +447,7 @@ where
         configure: impl FnOnce(Turner<P, O>) -> Turner<P, O>,
     ) -> Result<Self, Error> {
         let stream = volumes.filesystem.stream_provider();
+        let traces = acyclic_stream::trace::Registry::new(stream.clone());
         let maximum_bytes = turns.limits.maximum_bytes;
         let model = turns.executors.model_selection();
         // The preset's policy binds before any agent runs under it.
@@ -452,13 +462,24 @@ where
             turns.limits,
             turns.approval_policy,
         )
+        .with_trace_interest(traces.clone())
+        .with_clock(turns.clock.clone())
+        .with_actor_store(crate::agent::actor_store(&stream)?.root().clone())
         .with_filesystem_tools();
         let turner = Arc::new(configure(turner));
         let templates = turner.templates();
         let driver = ExecutorDriver::new(Arc::clone(&turner));
+        let controls = Arc::new(controls::Controls::new(
+            issuer.clone(),
+            admission.clone(),
+            volumes.clone(),
+            maximum_bytes,
+            turns.actors,
+        )?);
         // A host keeping state beside its volumes (a lazy checkout) chooses
         // each spawn's fork cut, so a child's project is a related fork.
-        let spawns = FilesystemSpawnVolumes::new(Arc::clone(&volumes));
+        let spawns =
+            FilesystemSpawnVolumes::new(Arc::clone(&volumes)).with_companions(controls.clone());
         let spawns = Arc::new(match cuts {
             Some(cuts) => spawns.with_volume_resources(cuts),
             None => spawns,
@@ -467,6 +488,7 @@ where
             AgentHandler::new(crate::agent::actor_store(&stream)?, driver, turns.actors)
                 .map_err(|_| Error::Record("agent handler manifest"))?
                 .with_spawn_volumes(spawns.clone())
+                .with_companions(controls.clone())
                 .with_close(),
         );
         let composer = Arc::new(crate::agent::AgentComposer::new(
@@ -474,6 +496,8 @@ where
             Some(spawns.clone()),
             None,
         ));
+        let control_composer: Arc<dyn acyclic_actors::guest::Composer> = composer.clone();
+        controls.bind_composer(Arc::downgrade(&control_composer))?;
         let agents = AgentHost::hosting(
             stream,
             within.clone(),
@@ -481,12 +505,16 @@ where
             turns.clock.clone(),
             Some(composer.clone()),
         )?
+        .with_companions(controls.clone())
         .with_model(model);
         // The host pins roots to the same creation reader these turns use.
         let agents = Arc::new(match templates {
             Some(templates) => agents.with_templates(templates),
             None => agents,
         });
+        let directory_file = sessions::DirectoryFile {
+            path: sessions::directory_path(&within)?,
+        };
         Ok(Self {
             issuer,
             admission,
@@ -498,8 +526,23 @@ where
             spawns,
             clock: turns.clock,
             handler,
+            controls,
             composer,
+            file_views: vec![
+                Arc::new(crate::supervision::files::SignalFiles),
+                Arc::new(directory_file),
+                Arc::new(crate::client_files::trace::TraceFiles::new(traces.clone())),
+            ],
+            traces,
         })
+    }
+
+    /// Adds a demand-only file view to the same authenticated file path used
+    /// locally and remotely. Authored files override view defaults. Ambiguous
+    /// view ownership is refused; no background work is started here.
+    pub fn with_file_view(mut self, view: Arc<dyn crate::client_files::FileView<P>>) -> Self {
+        self.file_views.push(view);
+        self
     }
 
     /// Runs deliveries through the host-injected guest boundary. Admission,
@@ -509,6 +552,12 @@ where
         mut self,
         handler: Arc<dyn acyclic_actors::guest::Handler>,
     ) -> Result<Self, Error> {
+        let controls = self.controls.clone();
+        let handler = Arc::new(acyclic_actors::guest::HostedHandler::new(
+            self.handler.clone(),
+            handler,
+            move |actor: &ActorReference| controls.handles(actor),
+        ));
         // The guest composes the same spawns as this binding's own handler,
         // and roots keep the creation reader its turns use.
         self.agents = Arc::new(self.agents.rehosted(
@@ -641,6 +690,7 @@ where
         } else {
             &invocations[..1]
         };
+        let directory_source = directory.map(|_| self.session_directory()).transpose()?;
         self.volumes
             .client_observation(
                 (&authority, self.observation_parent(&authority.scope)),
@@ -648,7 +698,7 @@ where
                 &journal,
                 clock,
                 calls,
-                directory,
+                directory.zip(directory_source.as_ref()),
             )
             .await
             .map_err(turn)
@@ -1230,111 +1280,28 @@ where
     ) -> Result<Option<FileRef>, Error> {
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
-        let directory = match &input {
-            StagedInput::Notice(_) => "inputs/notices",
-            StagedInput::Text { .. } | StagedInput::Content(_) => "inputs",
-        };
-        let encoded;
-        let (source, payload, extension) = match input {
-            StagedInput::Notice(notice) => {
-                encoded = crate::contract::canonical_json_bytes(notice)
-                    .map_err(|error| turn(crate::Error::Invalid(error.to_string())))?;
-                (
-                    encoded.as_slice(),
-                    Some((encoded.as_slice(), crate::agent::NOTICE_MEDIA_TYPE)),
-                    "json",
-                )
-            }
-            StagedInput::Text { source, text } => (
-                source.as_bytes(),
-                text.map(|text| (text.as_bytes(), "text/plain")),
-                "txt",
-            ),
-            StagedInput::Content(content) => {
-                let authority =
-                    agent_authority(&self.issuer, &self.admission, agent, &state.volumes, &[])
-                        .await
-                        .map_err(turn)?;
-                encoded = crate::agent::encode_user_input(content).map_err(turn)?;
-                for file in content.file_refs() {
-                    crate::conversation::ContentGrant::verify_read(
-                        &authority.verifier,
-                        &authority.scope,
-                        file,
-                    )
-                    .map_err(turn)?;
-                }
-                (
-                    encoded.as_slice(),
-                    Some((encoded.as_slice(), crate::agent::USER_INPUT_MEDIA_TYPE)),
-                    "json",
-                )
-            }
-        };
-        let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.hosting.input.v1");
-        // Like the inbox's intent key, the staged input is the sender's own:
-        // two senders' same intent never share an operation.
-        let sender = crate::agent::sender_text(by);
-        for part in [agent.as_str(), kind, sender.as_str(), intent.as_str()] {
-            hasher.update(&(part.len() as u64).to_le_bytes());
-            hasher.update(part.as_bytes());
-        }
-        let mut operation = [0; 16];
-        operation.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-        let operation = OperationId::from_bytes(operation);
-        // The existing publication owns both the submitted source identity
-        // and expanded bytes; no separate replay record is needed.
-        let leaf = format!("{operation}-{}.{extension}", blake3::hash(source));
         let (journal, authority) = self.turns.journal_authority(&state).await.map_err(turn)?;
-        let publisher = FilesystemContentPublisher::new(
-            Arc::clone(&self.volumes),
-            &journal,
-            &authority.verifier,
-            &authority.scope,
-            self.maximum_bytes,
-            None,
-        )
-        .map_err(turn)?;
-        let (prior, _) = publisher
-            .observe_staged_once(
-                operation,
-                None,
-                self.maximum_bytes,
-                ContentAccess::default(),
-            )
-            .map_err(turn)?
-            .await
-            .map_err(turn)?;
-        if prior
-            .as_ref()
-            .is_some_and(|file| file.path().rsplit('/').next() != Some(leaf.as_str()))
+        let input_authority = if matches!(&input, StagedInput::Content(content)
+            if content.file_refs().next().is_some())
         {
-            return Err(Error::Conflict("input identity reused with changed source"));
-        }
-        let Some((bytes, media_type)) = payload else {
-            return Ok(prior);
-        };
-        // Placement is selected only for a new operation. Replays retain the
-        // original publication and still verify its bytes and metadata below.
-        let path = prior.as_ref().map_or_else(
-            || format!("{directory}/{leaf}"),
-            |file| file.path().to_owned(),
-        );
-        let staged = publisher
-            .stage_once(
-                operation,
-                &path,
-                bytes,
-                media_type,
-                kind,
-                ContentAccess::default(),
+            Some(
+                agent_authority(&self.issuer, &self.admission, agent, &state.volumes, &[])
+                    .await
+                    .map_err(turn)?,
             )
-            .map_err(turn)?
-            .await
-            .map_err(turn)?;
-        Ok(Some(staged.0))
+        } else {
+            None
+        };
+        InputStager {
+            volumes: &self.volumes,
+            authority: &authority,
+            input_authority: input_authority.as_ref(),
+            volume: &journal,
+            maximum_bytes: self.maximum_bytes,
+        }
+        .stage(agent, kind, by, intent, input)
+        .await
     }
-
     /// Verifies original scope identity, audience, lifetime and attenuation
     /// before observing an agent's committed bindings. Performs no IO.
     pub fn admit_path(&self, agent: &AgentPath) -> Result<(), Error> {
@@ -1536,4 +1503,121 @@ impl acyclic_stream::UnixMillisClock for ObservationClock {
 
 fn turn(error: crate::Error) -> Error {
     Error::Turn(Box::new(error))
+}
+
+/// One staging implementation for clients and host-owned file controls.
+struct InputStager<'a, P: AuthorityProvider + ?Sized + 'static, O: 'static> {
+    volumes: &'a Arc<Host<P, O>>,
+    authority: &'a super::AgentAuthority<'a>,
+    input_authority: Option<&'a super::AgentAuthority<'a>>,
+    volume: &'a VolumeRef,
+    maximum_bytes: Option<u64>,
+}
+
+impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> InputStager<'_, P, O> {
+    async fn stage(
+        &self,
+        agent: &AgentPath,
+        kind: &str,
+        by: &Sender,
+        intent: &IntentId,
+        input: StagedInput<'_>,
+    ) -> Result<Option<FileRef>, Error> {
+        let authority = self.authority;
+        let encoded;
+        let (source, payload, extension) = match input {
+            StagedInput::Notice(notice) => {
+                encoded = crate::contract::canonical_json_bytes(notice)
+                    .map_err(|error| turn(crate::Error::Invalid(error.to_string())))?;
+                (
+                    encoded.as_slice(),
+                    Some((encoded.as_slice(), crate::agent::NOTICE_MEDIA_TYPE)),
+                    "json",
+                )
+            }
+            StagedInput::Text { source, text } => (
+                source.as_bytes(),
+                text.map(|text| (text.as_bytes(), "text/plain")),
+                "txt",
+            ),
+            StagedInput::Content(content) => {
+                encoded = crate::agent::encode_user_input(content).map_err(turn)?;
+                let reference_authority = self.input_authority.unwrap_or(authority);
+                for file in content.file_refs() {
+                    crate::conversation::ContentGrant::verify_read(
+                        &reference_authority.verifier,
+                        &reference_authority.scope,
+                        file,
+                    )
+                    .map_err(turn)?;
+                }
+                (
+                    encoded.as_slice(),
+                    Some((encoded.as_slice(), crate::agent::USER_INPUT_MEDIA_TYPE)),
+                    "json",
+                )
+            }
+        };
+        if payload.is_some_and(|(bytes, _)| {
+            self.maximum_bytes
+                .is_some_and(|maximum| bytes.len() as u64 > maximum)
+        }) {
+            return Err(turn(crate::Error::tool_rejected(
+                "submitted input exceeds the selected message capacity",
+            )));
+        }
+        let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.hosting.input.v1");
+        // Like the inbox's intent key, the staged input is the sender's own:
+        // two senders' same intent never share an operation.
+        let sender = crate::agent::sender_text(by);
+        for part in [agent.as_str(), kind, sender.as_str(), intent.as_str()] {
+            hasher.update(&(part.len() as u64).to_le_bytes());
+            hasher.update(part.as_bytes());
+        }
+        let mut operation = [0; 16];
+        operation.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
+        let operation = OperationId::from_bytes(operation);
+        // The existing publication owns both the submitted source identity
+        // and expanded bytes; no separate replay record is needed.
+        let path = || format!("inputs/{operation}-{}.{extension}", blake3::hash(source));
+        let publisher = FilesystemContentPublisher::new(
+            Arc::clone(self.volumes),
+            self.volume,
+            &authority.verifier,
+            &authority.scope,
+            self.maximum_bytes,
+            None,
+        )
+        .map_err(turn)?;
+        let Some((bytes, media_type)) = payload else {
+            let (staged, _) = publisher
+                .observe_staged_once(
+                    operation,
+                    None,
+                    self.maximum_bytes,
+                    ContentAccess::default(),
+                )
+                .map_err(turn)?
+                .await
+                .map_err(turn)?;
+            if staged.as_ref().is_some_and(|file| file.path() != path()) {
+                return Err(Error::Conflict("input identity reused with changed source"));
+            }
+            return Ok(staged);
+        };
+        let path = path();
+        let staged = publisher
+            .stage_once(
+                operation,
+                &path,
+                bytes,
+                media_type,
+                kind,
+                ContentAccess::default(),
+            )
+            .map_err(turn)?
+            .await
+            .map_err(turn)?;
+        Ok(Some(staged.0))
+    }
 }

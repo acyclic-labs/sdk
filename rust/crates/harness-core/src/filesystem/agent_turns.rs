@@ -648,7 +648,10 @@ pub struct TurnLimits {
 /// private volume, under a conversation authority named by the agent's id.
 pub struct FilesystemTurnHost<P: ?Sized, A: 'static, O: 'static> {
     stream: Arc<P>,
+    traces: Option<acyclic_stream::trace::Registry<P>>,
     within: acyclic_actors::addressing::ActorReference,
+    actor_root: Option<acyclic_stream::StreamPath>,
+    clock: Arc<dyn acyclic_actors::local::Clock>,
     host: Arc<FilesystemHost<A, O>>,
     issuer: RuntimeAuthority,
     admission: TurnAdmission,
@@ -743,7 +746,10 @@ where
         ));
         Self {
             stream,
+            traces: None,
             within,
+            actor_root: None,
+            clock: Arc::new(acyclic_actors::local::SystemClock),
             host,
             issuer,
             templates,
@@ -757,6 +763,21 @@ where
             #[cfg(feature = "test-support")]
             binding_fault: None,
         }
+    }
+
+    pub(in crate::filesystem) fn with_trace_interest(
+        mut self,
+        traces: acyclic_stream::trace::Registry<P>,
+    ) -> Self {
+        self.traces = Some(traces);
+        self
+    }
+
+    /// Share the scheduler's original clock with journal deadline admission.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn acyclic_actors::local::Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Injects a deterministic failure before a turn binds or reads content.
@@ -796,6 +817,14 @@ where
     #[must_use]
     pub const fn with_goals(mut self, goals: Option<crate::goal::GoalContinuationPolicy>) -> Self {
         self.goals = goals;
+        self
+    }
+
+    /// Bind hosted dispatches to this actor store's original admission state.
+    /// Standalone executor compositions have no actor admission to observe.
+    #[must_use]
+    pub fn with_actor_store(mut self, root: acyclic_stream::StreamPath) -> Self {
+        self.actor_root = Some(root);
         self
     }
 
@@ -935,8 +964,14 @@ where
         Bindings<A, O>,
         Arc<AgentInternalFiles<A, O>>,
     )> {
-        self.journal(self.admit(agent)?, agent.policy.as_slice(), &[], None, None)
-            .await
+        self.journal(
+            (self.admit(agent)?, &agent.path),
+            agent.policy.as_slice(),
+            &[],
+            None,
+            None,
+        )
+        .await
     }
 
     /// Opens journal queries through this agent's original journal grant.
@@ -945,7 +980,7 @@ where
         agent: &AgentState,
     ) -> Result<FilesystemExecutionJournal<P, A, O>> {
         let (journal, _, _) = self
-            .journal(self.admit(agent)?, &[], &[], None, None)
+            .journal((self.admit(agent)?, &agent.path), &[], &[], None, None)
             .await?;
         Ok(journal)
     }
@@ -1077,7 +1112,7 @@ where
     /// version.
     async fn journal(
         &self,
-        admitted: AdmittedAgent<'_>,
+        (admitted, trace_owner): (AdmittedAgent<'_>, &AgentPath),
         external: &[FileRef],
         retained: &[FileRef],
         context: Option<&mut TurnContext<'_>>,
@@ -1159,7 +1194,7 @@ where
             crate::conversation::MAX_EXACT_JS_INTEGER,
             None,
         )?;
-        let journal = FilesystemExecutionJournal::new(
+        let mut journal = FilesystemExecutionJournal::new(
             Arc::clone(&self.stream),
             Arc::clone(&self.host),
             FilesystemJournalBinding {
@@ -1169,7 +1204,11 @@ where
                 io: None,
             },
         )?
-        .with_input_verifier(reader.clone());
+        .with_input_verifier(reader.clone())
+        .with_clock(self.clock.clone());
+        if let Some(traces) = &self.traces {
+            journal = journal.with_trace_interest(traces.clone(), trace_owner.clone());
+        }
         let internal = self.internal_files(
             &storage.volume,
             private.volume()?,
@@ -2094,12 +2133,16 @@ where
     fn open<'a>(
         &'a self,
         agent: &'a AgentState,
-        turn: OperationId,
-        inbox: u64,
-        cursor: u64,
+        identity: crate::agent::TurnIdentity,
         input: &'a ModelContent,
         stop: acyclic_actors::guest::CancellationToken,
     ) -> BoxFuture<'a, Result<OpenTurn>> {
+        let crate::agent::TurnIdentity {
+            turn,
+            run,
+            inbox,
+            cursor: _,
+        } = identity;
         Box::pin(crate::core::until_turn_stopped(
             Some(stop.clone()),
             async move {
@@ -2190,13 +2233,34 @@ where
                     .collect();
                 let (journal, bindings, files) = self
                     .journal(
-                        admitted,
+                        (admitted, &agent.path),
                         &external,
                         &retained,
                         Some(&mut context),
                         Some(stop.clone()),
                     )
                     .await?;
+                let run_admission = match (
+                    agent.run_admission,
+                    agent
+                        .volumes
+                        .iter()
+                        .find(|binding| binding.role == crate::agent::WorkspaceRole::Home),
+                ) {
+                    (Some(operation), Some(home)) => {
+                        self.host
+                            .original_run_admission(
+                                home.volume()?,
+                                &bindings.scope,
+                                &bindings.issuer.verifier(&mut None)?,
+                                operation,
+                                self.limits.maximum_bytes,
+                            )
+                            .await?
+                    }
+                    _ => None,
+                };
+                let journal = journal.with_run_admission(run_admission);
                 let input =
                     std::mem::replace(&mut context.input, ModelContent::Text(String::new()));
                 let input = &input;
@@ -2316,14 +2380,17 @@ where
                     ui: Arc::clone(&files),
                     journal: Arc::clone(&bindings.journal.files),
                 });
+                // One source head buys first-request steering for committed
+                // input the paused actor could not ingest. Capture it once;
+                // later arrivals and exact replay retain their own boundaries.
+                let initial_through = self.stream.tail(agent.path.inbox()?).await?;
                 let boundary = super::agent_steering::FilesystemBoundary::new(
                     Arc::clone(&self.stream),
                     Arc::clone(&self.host),
                     self.issuer.clone(),
                     self.admission.clone(),
                     agent.clone(),
-                    turn,
-                    inbox,
+                    (turn, inbox, initial_through),
                     Arc::clone(&bindings.journal.files),
                     Arc::clone(bindings.content.writer.as_ref().ok_or_else(|| {
                         Error::Invalid("agent turn has no private writer".into())
@@ -2337,6 +2404,25 @@ where
                     AgentApprovals::new(files, Arc::new(policy)).yielding(Arc::clone(&effects)),
                 );
                 let journal = journal
+                    .with_agent_events(agent.path.clone(), run, inbox, segment == 0 && run == turn)
+                    .with_actor_admission(
+                        self.actor_root
+                            .as_ref()
+                            .map(|root| {
+                                let store = acyclic_actors::local::Store::new(
+                                    self.stream.clone(),
+                                    root.clone(),
+                                );
+                                crate::agent::Agents::<P>::actor(&self.within, &agent.path.id())
+                                    .and_then(|actor| {
+                                        store.path(&actor).map_err(|error| {
+                                            crate::agent::Error::Actor(Box::new(error))
+                                        })
+                                    })
+                            })
+                            .transpose()
+                            .map_err(|error| Error::Invalid(error.to_string()))?,
+                    )
                     .with_model_boundary(Arc::new(boundary))
                     .with_stop(stop)
                     .with_agent_approvals(Arc::clone(&approvals));

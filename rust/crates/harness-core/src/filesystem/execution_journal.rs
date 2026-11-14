@@ -2,7 +2,6 @@
 
 use super::bounded_io::{PreparationIo, PreparationRecord};
 use super::{FilesystemHost, InternalContentClass};
-use crate::obs::{obs_span, traced};
 use crate::{
     Error, IdempotencyKey, InteractionId, OperationId, Result,
     conversation::{
@@ -67,6 +66,7 @@ mod indexed_publication;
 #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
 mod inline_tests;
 mod interactions;
+mod model_calls;
 mod observations;
 mod publication_authorization;
 #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
@@ -91,11 +91,13 @@ mod summary;
 mod summary_authorization;
 mod summary_cache;
 mod summary_map;
+mod supervision;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
 mod tests;
 mod tool_settlement;
+mod trace;
 mod traits;
 use summary::*;
 use summary_cache::SummaryCache;
@@ -116,6 +118,7 @@ pub(crate) const MAXIMUM_PAYLOAD_BYTES: u64 = crate::conversation::MAX_EXACT_JS_
 pub struct FilesystemExecutionJournal<P: ?Sized, A: 'static, O: 'static> {
     cache_identity: crate::executor::ExecutionJournalCacheId,
     stream: Arc<P>,
+    traces: Option<(acyclic_stream::trace::Registry<P>, crate::agent::AgentPath)>,
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
     verifier: AuthorityVerifier,
@@ -132,6 +135,11 @@ pub struct FilesystemExecutionJournal<P: ?Sized, A: 'static, O: 'static> {
     /// A native agent's approval files; its interactions never touch the ledger.
     agent_approvals: Option<Arc<crate::approvals::AgentApprovals>>,
     execution: Option<(OperationId, OperationId)>,
+    /// Owning agent/run; bound once by the shared turn host, never by a model.
+    agent_events: Option<(crate::agent::AgentPath, OperationId, u64, bool)>,
+    clock: Arc<dyn acyclic_actors::local::Clock>,
+    actor_admission: Option<acyclic_stream::StreamPath>,
+    run_admission: Option<crate::supervision::RunAdmissionSource>,
     verified: tokio::sync::Mutex<SummaryCache>,
     history_read_limits: Option<crate::store::HistoryReadLimits>,
     #[cfg(not(target_arch = "wasm32"))]

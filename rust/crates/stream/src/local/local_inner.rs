@@ -32,6 +32,70 @@ struct LocalInner {
 }
 
 impl LocalInner {
+    async fn publication_read(&self) -> impl std::ops::Deref<Target = ()> + '_ {
+        let acquire = self.publication.read();
+        #[cfg(feature = "serde")]
+        let acquire = crate::trace::observe_value(
+            crate::trace::Request {
+                name: "stream.publication_read_lock",
+                mechanism: crate::trace::Mechanism::Lock,
+                parent: None,
+                guarantee: Some("accepted_snapshot_excludes_incomplete_journal_frames"),
+            },
+            acquire,
+            |_| Some((Some(0), crate::trace::Outcome::Succeeded)),
+        );
+        acquire.await
+    }
+
+    async fn visibility_read(&self) -> impl std::ops::Deref<Target = ()> + '_ {
+        let acquire = self.visibility.read();
+        #[cfg(feature = "serde")]
+        let acquire = crate::trace::observe_value(
+            crate::trace::Request {
+                name: "stream.visibility_read_lock",
+                mechanism: crate::trace::Mechanism::Lock,
+                parent: None,
+                guarantee: Some("prepared_commit_reads_one_mutation_snapshot_cut"),
+            },
+            acquire,
+            |_| Some((Some(0), crate::trace::Outcome::Succeeded)),
+        );
+        acquire.await
+    }
+
+    async fn visibility_write(&self) -> impl std::ops::DerefMut<Target = ()> + '_ {
+        let acquire = self.visibility.write();
+        #[cfg(feature = "serde")]
+        let acquire = crate::trace::observe_value(
+            crate::trace::Request {
+                name: "stream.visibility_lock",
+                mechanism: crate::trace::Mechanism::Lock,
+                parent: None,
+                guarantee: Some("serialized_mutation_snapshot_and_compaction_cut"),
+            },
+            acquire,
+            |_| Some((Some(0), crate::trace::Outcome::Succeeded)),
+        );
+        acquire.await
+    }
+
+    async fn publication_write(&self) -> impl std::ops::DerefMut<Target = ()> + '_ {
+        let acquire = self.publication.write();
+        #[cfg(feature = "serde")]
+        let acquire = crate::trace::observe_value(
+            crate::trace::Request {
+                name: "stream.publication_lock",
+                mechanism: crate::trace::Mechanism::Lock,
+                parent: None,
+                guarantee: Some("accepted_reads_exclude_incomplete_journal_frames"),
+            },
+            acquire,
+            |_| Some((Some(0), crate::trace::Outcome::Succeeded)),
+        );
+        acquire.await
+    }
+
     fn required(&self) -> Result<u64, StreamError> {
         Ok(self
             .journal
@@ -129,7 +193,7 @@ impl LocalInner {
         file: &acyclic_native_runtime::FileLease,
         durability: LocalDurability,
         work: Option<&crate::native::Work>,
-    ) -> Option<(u64, u64, u64)> {
+    ) -> Result<(), StreamError> {
         #[cfg(test)]
         {
             let journal_identity = Arc::as_ptr(&self.journal) as usize;
@@ -144,12 +208,11 @@ impl LocalInner {
                 let _ = release.recv();
             }
         }
-        let (target, synced_before, journal_bytes) = {
+        let target = {
             let Ok(journal) = self.journal.lock() else {
-                self.poison();
-                return None;
+                return Err(self.poison());
             };
-            (journal.appended, journal.synced, journal.bytes)
+            journal.appended
         };
         let flushed = match &work {
             Some(work) => file.flush(|file| work.sync(|| sync_file_data(file, durability))),
@@ -177,20 +240,23 @@ impl LocalInner {
             }
         }
         let Ok(mut journal) = self.journal.lock() else {
-            self.poison();
-            return None;
+            return Err(self.poison());
         };
         journal.syncing = false;
         match flushed {
-            Ok(completion) => self.publish_synced(&mut journal, target, completion),
+            Ok(completion) => {
+                self.publish_synced(&mut journal, target, completion);
+                Ok(())
+            }
             Err(error) => {
                 drop(journal);
-                self.fail(
-                    work.and_then(|work| work.failure("flush"))
-                        .unwrap_or_else(|| LocalStreamFailure::io("flush", &error)),
-                );
+                Err(self
+                    .fail(
+                        work.and_then(|work| work.failure("flush"))
+                            .unwrap_or_else(|| LocalStreamFailure::io("flush", &error)),
+                    )
+                    .with_source(error))
             }
         }
-        Some((target, synced_before, journal_bytes))
     }
 }

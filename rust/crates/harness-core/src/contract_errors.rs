@@ -88,7 +88,7 @@ impl HeadlessOutcome {
         if let Error::Cleanup(failure) = error {
             return failure.classification.outcome;
         }
-        if matches!(error, Error::GoalBlocked(_)) {
+        if matches!(error, Error::GoalBlocked(_) | Error::ExecutionControlled(_)) {
             return Self::Blocked;
         }
         match error.code() {
@@ -126,6 +126,10 @@ impl HeadlessOutcome {
 /// Errors shared by harness surfaces.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// An original owner decision closed admission before dispatch. Executors
+    /// yield this control with their checkpoint rather than report a failure.
+    #[error("execution controlled by {:?}", .0.action)]
+    ExecutionControlled(crate::supervision::Control),
     /// An agent primitive failure with its original cause and uncertain request.
     #[error("{0}")]
     Agent(#[source] Box<crate::agent::Error>),
@@ -372,16 +376,18 @@ pub enum Error {
         /// Allowance admitted before validation, released after the cause.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
-    /// An actual Stream failure in a native operation.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// An original Stream failure with its request-boundary classification.
     #[error("{source}")]
-    NativeStream {
+    StreamFailure {
         /// Preserved contract classification for the original provider failure.
         code: ErrorCode,
         /// The original provider error, moved without string conversion.
         #[source]
         source: acyclic_stream::StreamError,
+        /// Whether this failure came from the original native work path.
+        native: bool,
         /// Existing SDK payload custody, not opaque provider allocator metadata.
+        #[cfg(not(target_arch = "wasm32"))]
         custody: Option<acyclic_fs::NativeAllocation>,
     },
     /// An actual native supervisor failure.
@@ -744,7 +750,10 @@ impl Error {
             Self::OutputOmitted(_) => ErrorCode::Invalid,
             Self::Cleanup(failure) => failure.classification.code,
             Self::NotFound(_) => ErrorCode::NotFound,
-            Self::Conflict(_) | Self::Refused(_) | Self::ExactEdit(_) => ErrorCode::Conflict,
+            Self::Conflict(_)
+            | Self::Refused(_)
+            | Self::ExactEdit(_)
+            | Self::ExecutionControlled(_) => ErrorCode::Conflict,
             Self::FilesystemAccessConfiguration(_)
             | Self::Unsupported(_)
             | Self::ModelTokenCountUnavailable
@@ -788,13 +797,13 @@ impl Error {
             Self::MachinesIndeterminate { .. } => ErrorCode::Indeterminate,
             Self::MachineOwnership(_) => ErrorCode::Storage,
             Self::ModelDiagnostic { code, .. } => *code,
+            Self::StreamFailure { code, .. } => *code,
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeBoundary { code, .. }
             | Self::NativeJsonAdmission { code, .. }
             | Self::NativeDiagnostic { code, .. }
             | Self::NativeJson { code, .. }
             | Self::NativeProstDecode { code, .. }
-            | Self::NativeStream { code, .. }
             | Self::NativeSchema { code, .. }
             | Self::NativeReservation { code, .. } => *code,
             #[cfg(not(target_arch = "wasm32"))]
@@ -843,6 +852,14 @@ impl Error {
 
     /// An accepted effect that ended this way may have happened: reconcile it, never reject it.
     pub(crate) fn leaves_effect_uncertain(&self) -> bool {
+        if let Self::StreamFailure {
+            code,
+            native: false,
+            ..
+        } = self
+        {
+            return *code == ErrorCode::Storage;
+        }
         if let Self::Agent(source) = self {
             return source.uncertain();
         }
@@ -996,7 +1013,7 @@ impl Error {
         }
     }
 
-    /// Native failures must propagate before additional provider or deadline work. The match is
+    /// Native failures and owner controls propagate before additional provider or deadline work. The match is
     /// exhaustive so every new variant is classified on purpose: a semantic failure the task or
     /// model can settle must never default to an accounting failure that strands the turn.
     #[doc(hidden)]
@@ -1007,7 +1024,7 @@ impl Error {
                 _ => false,
             },
             Self::Command(failure) => failure.classification.native_failure,
-            Self::OutputOmitted(_) => true,
+            Self::OutputOmitted(_) | Self::ExecutionControlled(_) => true,
             Self::Cleanup(_) => true,
             Self::ModelContextOverflow
             | Self::ModelTokenCountUnavailable
@@ -1054,8 +1071,7 @@ impl Error {
             Self::NativeProstDecode { .. } => true,
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeSchema { .. } => true,
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeStream { .. } => true,
+            Self::StreamFailure { native, .. } => *native,
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeSupervisor { .. } => true,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1446,7 +1462,7 @@ impl From<crate::agent::Error> for Error {
 /// A Stream failure below the harness is a durable-storage failure.
 impl From<acyclic_stream::StreamError> for Error {
     fn from(error: acyclic_stream::StreamError) -> Self {
-        Self::Storage(error.to_string())
+        Self::from(crate::agent::Error::Stream(error))
     }
 }
 

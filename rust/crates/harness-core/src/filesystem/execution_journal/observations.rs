@@ -10,10 +10,11 @@ struct BorrowedObservation<'a> {
 }
 
 pub(super) fn decode_observation(bytes: &[u8], io: Option<&PreparationIo>) -> Result<Observation> {
-    acyclic_auth::format::header(
+    acyclic_auth::format::decimal_header(
         bytes,
         b"{\"version\":",
-        b"5,",
+        OBSERVATION_VERSION,
+        b',',
         || {
             canonical_boundary(
                 io,
@@ -98,16 +99,27 @@ pub(super) mod codec_fuzz {
             let restored = decode_observation(&encoded, None).expect("writer output decodes");
             assert_eq!(encode(&restored).unwrap(), encoded);
             let version = b"{\"version\":".len();
-            for unsupported in [b'0', b'1', b'2', b'3', b'4', u8::MAX] {
-                let mut header = encoded[..version + 2].to_vec();
-                header[version] = unsupported;
+            let header_end = version
+                + encoded[version..]
+                    .iter()
+                    .position(|byte| *byte == b',')
+                    .unwrap()
+                + 1;
+            for unsupported in [
+                0,
+                OBSERVATION_VERSION - 1,
+                OBSERVATION_VERSION + 1,
+                u32::MAX,
+            ] {
+                let mut header = format!("{{\"version\":{unsupported},").into_bytes();
+                header.extend_from_slice(&encoded[header_end..]);
                 assert_eq!(
                     decode_observation(&header, None).err().unwrap().code(),
                     crate::wire::ErrorCode::Unsupported
                 );
             }
             assert_ne!(
-                decode_observation(&encoded[..version + 2], None)
+                decode_observation(&encoded[..header_end], None)
                     .err()
                     .unwrap()
                     .code(),
@@ -135,7 +147,22 @@ pub(super) mod codec_fuzz {
         };
         let bytes = encode_observation(&value, None)?;
         decode_observation(&bytes, None)?;
-        Ok(vec![("execution-observation", bytes.to_vec())])
+        let output = ExecutionEvent::ModelOutput {
+            step: 0,
+            digest: Some([9; 32]),
+        };
+        let output = encode_observation(
+            &BorrowedObservation {
+                event: &output,
+                ..value
+            },
+            None,
+        )?;
+        decode_observation(&output, None)?;
+        Ok(vec![
+            ("execution-observation", bytes.to_vec()),
+            ("execution-model-output", output.to_vec()),
+        ])
     }
 }
 
@@ -291,45 +318,54 @@ where
         io: Option<&'a PreparationIo>,
         project: impl FnOnce(AppendObservation) -> Result<T> + acyclic_stream::ProviderTask + 'a,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, T>> {
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-                let local = PreparationIo::from_native_work(work)?;
-                let result = self
-                    .append_contributed(
+        crate::conversation::BoundedContentFuture::new(io, || {
+            self.observe_claim(
+                acyclic_stream::trace::Request {
+                    name: if expected_tail.is_some() {
+                        "harness.journal_append_if_tail"
+                    } else {
+                        "harness.journal_append"
+                    },
+                    mechanism: acyclic_stream::trace::Mechanism::Commit,
+                    parent: None,
+                    guarantee: Some(if expected_tail.is_some() {
+                        "atomic_journal_precondition_result"
+                    } else {
+                        "idempotent_journal_publication"
+                    }),
+                },
+                async move {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+                        let local = PreparationIo::from_native_work(work)?;
+                        let result = self
+                            .append_contributed(
+                                operation,
+                                expected_tail,
+                                key,
+                                event,
+                                contributions,
+                                confirmation,
+                                Some(&local),
+                            )
+                            .await;
+                        let retained = local.owned_bytes()?;
+                        drop(local.into_native_custody(retained)?);
+                        return result.and_then(project);
+                    }
+                    self.append_contributed(
                         operation,
                         expected_tail,
                         key,
                         event,
                         contributions,
                         confirmation,
-                        Some(&local),
+                        io,
                     )
-                    .await;
-                let retained = local.owned_bytes()?;
-                drop(local.into_native_custody(retained)?);
-                return result.and_then(project);
-            }
-            let span = match expected_tail {
-                Some(rev) => {
-                    crate::obs::obs_span!("acyclic.harness.journal.append_if_tail", rev = rev)
-                }
-                None => crate::obs::obs_span!("acyclic.harness.journal.append"),
-            };
-            crate::obs::traced_future(
-                span,
-                self.append_contributed(
-                    operation,
-                    expected_tail,
-                    key,
-                    event,
-                    contributions,
-                    confirmation,
-                    io,
-                ),
+                    .await
+                    .and_then(project)
+                },
             )
-            .await
-            .and_then(project)
         })
     }
 
@@ -344,6 +380,7 @@ where
             crate::distributed::execution_path(operation, work)
         })?;
         let path_hold = io
+            .filter(|io| io.original_native_work().is_none())
             .map(|io| io.guard_owned(path.as_str().len() as u64))
             .transpose()?;
         let mut history = io.map(PreparationIo::history_io);
@@ -415,11 +452,14 @@ where
         } else if matches!(event, ExecutionEvent::ModelWait { .. }) {
             self.authorize_model_observation(VolumeOperation::Write, io)?;
         }
-        let model = self
+        let (model, usd_nanos) = self
             .verify_event_refs_with_io(operation_id, event, io)
             .await?;
         let limits = Limits::default();
         self.verify_canonical_publication_with_io(event, limits, io)
+            .await?;
+        let supervision = self
+            .supervision_inputs(operation_id, event, (model.as_ref(), usd_nanos), io)
             .await?;
         let digest = super::content::operation_digest(operation_id, claim_id, io)?;
         let retry_hold = io.map(|io| io.reserve_decode(64)).transpose()?;
@@ -501,7 +541,6 @@ where
                 }
                 return Ok(AppendObservation {
                     accepted,
-                    #[cfg(feature = "research")]
                     sequence: accepted.then_some(*sequence),
                 });
             }
@@ -534,6 +573,7 @@ where
                     summary,
                     retry_key,
                     event,
+                    (model.as_ref(), supervision.as_ref()),
                     &bytes,
                     contributions,
                     retained_io,
@@ -556,7 +596,6 @@ where
                 drop(retry_hold);
                 return Ok(AppendObservation {
                     accepted: true,
-                    #[cfg(feature = "research")]
                     sequence: Some(sequence),
                 });
             }
@@ -574,7 +613,6 @@ use crate::executor::stock_boundary;
 
 pub(super) struct AppendObservation {
     pub(super) accepted: bool,
-    #[cfg(feature = "research")]
     pub(super) sequence: Option<u64>,
 }
 
@@ -582,7 +620,6 @@ impl AppendObservation {
     fn refused() -> Self {
         Self {
             accepted: false,
-            #[cfg(feature = "research")]
             sequence: None,
         }
     }

@@ -1,6 +1,36 @@
 //! Finite one-shot replies on the existing authenticated, credited session pool.
 use super::*;
 
+/// Original reply progress and, on source failure, its original typed cause.
+#[derive(Debug, thiserror::Error)]
+enum ReplyFailure {
+    #[error("reply ended after {received} bytes; expected {expected:?}")]
+    Ended {
+        expected: Option<usize>,
+        received: usize,
+    },
+    #[error("reply failed after {received} bytes; expected {expected:?}: {source}")]
+    Source {
+        expected: Option<usize>,
+        received: usize,
+        #[source]
+        source: StreamError,
+    },
+}
+
+impl ReplyFailure {
+    fn ended(expected: Option<usize>, received: usize) -> StreamError {
+        StreamError::Unavailable.with_source(Self::Ended { expected, received })
+    }
+    fn source(source: StreamError, expected: Option<usize>, received: usize) -> StreamError {
+        source.clone().with_source(Self::Source {
+            expected,
+            received,
+            source,
+        })
+    }
+}
+
 impl Client {
     /// Invokes one canonical encoded Actors request on the shared session.
     ///
@@ -152,26 +182,62 @@ impl Client {
         credential: u32,
         maximum_reply_bytes: usize,
     ) -> Result<Bytes, StreamError> {
-        let source = self
-            .reply_chunks(kind, credential, maximum_reply_bytes)
-            .await?;
-        let mut source = core::pin::pin!(source);
-        let mut reply = Vec::new();
-        let mut total = None;
-        while let Some(item) = source.next().await {
-            let (length, chunk) = item?;
-            if total.is_none() {
-                reply
-                    .try_reserve_exact(length)
-                    .map_err(|_| StreamError::Capacity)?;
-                total = Some(length);
+        let work = async {
+            let source = self
+                .reply_chunks(kind, credential, maximum_reply_bytes)
+                .await?;
+            let mut source = core::pin::pin!(source);
+            let mut reply = Vec::new();
+            let mut total = None;
+            while let Some(item) = source.next().await {
+                let (length, chunk) = item?;
+                if total.is_none() {
+                    reply
+                        .try_reserve_exact(length)
+                        .map_err(|_| StreamError::Capacity)?;
+                    total = Some(length);
+                }
+                #[cfg(feature = "serde")]
+                crate::trace::observe_sync(
+                    crate::trace::Request {
+                        name: "stream.reply_copy",
+                        mechanism: crate::trace::Mechanism::Copy,
+                        parent: None,
+                        guarantee: Some("contiguous_complete_reply_ownership"),
+                    },
+                    || reply.extend_from_slice(chunk.as_ref()),
+                    |_| {
+                        Some((
+                            u64::try_from(chunk.as_ref().len()).ok(),
+                            crate::trace::Outcome::Succeeded,
+                            None,
+                        ))
+                    },
+                );
+                #[cfg(not(feature = "serde"))]
+                reply.extend_from_slice(chunk.as_ref());
+                if reply.len() == length {
+                    return Ok(reply.into());
+                }
             }
-            reply.extend_from_slice(chunk.as_ref());
-            if reply.len() == length {
-                return Ok(reply.into());
-            }
+            Err(ReplyFailure::ended(total, reply.len()))
+        };
+        #[cfg(feature = "serde")]
+        {
+            crate::trace::observe(
+                crate::trace::Request {
+                    name: "stream.finite_reply",
+                    mechanism: crate::trace::Mechanism::RoundTrip,
+                    parent: None,
+                    guarantee: Some("complete_bounded_reply_on_original_session"),
+                },
+                work,
+                |reply: &Bytes| u64::try_from(reply.len()).ok(),
+            )
+            .await
         }
-        Err(StreamError::Unavailable)
+        #[cfg(not(feature = "serde"))]
+        work.await
     }
 
     async fn reply_chunks(
@@ -208,8 +274,9 @@ impl Client {
                 }
                 let (data, credit) = cursor
                     .receive_data()
-                    .await?
-                    .ok_or(StreamError::Unavailable)?;
+                    .await
+                    .map_err(|source| ReplyFailure::source(source, total, received))?
+                    .ok_or_else(|| ReplyFailure::ended(total, received))?;
                 let length = wire_codec::session::actor_call_total(&data)?;
                 if length > maximum_reply_bytes || total.is_some_and(|old| old != length) {
                     return Err(StreamError::InvalidResponse);

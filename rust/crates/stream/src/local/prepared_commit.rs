@@ -27,7 +27,7 @@ impl LocalStream {
                         let result = LocalInner::observe(
                             &mut failed,
                             async {
-                                let _visibility = stream.inner.visibility.read().await;
+                                let _visibility = stream.inner.visibility_read().await;
                                 stream.check_available()?;
                                 let copied = work.record(request.try_clone_native(&work.meter))?;
                                 let (command, command_claim) = copied.into_parts();
@@ -136,7 +136,7 @@ impl LocalStream {
         StreamError,
     > {
         let body = ingress.receive().await?;
-        let visibility = self.inner.visibility.write().await;
+        let visibility = self.inner.visibility_write().await;
         self.check_available()?;
         let WriteRequest::Commit(request) = &mut command else {
             unreachable!()
@@ -148,7 +148,7 @@ impl LocalStream {
             unreachable!()
         };
         *records.first_mut().ok_or(StreamError::InvalidArgument)? = body.clone();
-        let publication = self.inner.publication.write().await;
+        let publication = self.inner.publication_write().await;
         self.check_available()?;
         let cursor = self
             .inner

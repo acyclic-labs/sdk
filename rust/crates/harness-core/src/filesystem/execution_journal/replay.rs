@@ -21,29 +21,42 @@ where
     }
 
     pub(super) fn journal_read_stream_error(
-        _native_io: Option<&PreparationIo>,
+        io: Option<&PreparationIo>,
         code: crate::wire::ErrorCode,
         source: StreamError,
     ) -> Error {
-        #[cfg(not(target_arch = "wasm32"))]
-        if _native_io
-            .and_then(PreparationIo::original_native_work)
-            .is_some()
-        {
-            return Error::NativeStream {
-                code,
-                source,
-                custody: None,
-            };
-        }
-        if code == crate::wire::ErrorCode::Invalid {
-            Error::Invalid(source.to_string())
-        } else {
-            Error::Storage(source.to_string())
+        Error::StreamFailure {
+            code,
+            source,
+            native: io.is_some_and(|io| io.original_native_work().is_some()),
+            #[cfg(not(target_arch = "wasm32"))]
+            custody: None,
         }
     }
 
     pub(in crate::filesystem) async fn replay_page(
+        &self,
+        operation_id: OperationId,
+        after: u64,
+        maximum: u32,
+        retain_models: bool,
+        io: Option<&PreparationIo>,
+    ) -> Result<Vec<(ExecutionRecord, Option<ModelEvent>)>> {
+        self.observe_request(
+            acyclic_stream::trace::Request {
+                name: "harness.execution_replay_page",
+                mechanism: acyclic_stream::trace::Mechanism::Io,
+                parent: None,
+                guarantee: Some("authenticated_execution_prefix"),
+            },
+            self.replay_page_inner(operation_id, after, maximum, retain_models, io),
+            // Decoded values cannot establish original wire/copy bytes.
+            |_| None,
+        )
+        .await
+    }
+
+    async fn replay_page_inner(
         &self,
         operation_id: OperationId,
         after: u64,
@@ -260,6 +273,7 @@ where
                     } else {
                         self.verify_event_refs_with_io(operation_id, &observation.event, io)
                             .await?
+                            .0
                     };
                     let _model_hold = if retain_models {
                         None

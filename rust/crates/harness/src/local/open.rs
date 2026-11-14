@@ -317,6 +317,10 @@ impl Opening {
             acyclic_fs::initialize_native_mount_services_async()
                 .await
                 .map_err(storage)?;
+        } else {
+            acyclic_fs::initialize_native_source_services_async()
+                .await
+                .map_err(storage)?;
         }
         let (directory, checkout) = self.checkout()?;
         #[cfg(test)]

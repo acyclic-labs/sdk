@@ -154,8 +154,8 @@ impl Authority {
             holder,
         })
     }
-    pub(super) fn snapshot(&self) -> Result<TrustSnapshot, Rejection> {
-        self.state.snapshot().map_err(Into::into)
+    pub(super) fn snapshot(&self) -> Result<TrustSnapshot, VerifyError> {
+        self.state.snapshot()
     }
     /// The one place a session credential is verified: `bytes` as a signed
     /// capability envelope under the current trust, registered in `slot`
@@ -170,7 +170,8 @@ impl Authority {
         bytes: &[u8],
         maximum: usize,
     ) -> Result<(), StreamError> {
-        if usize::try_from(slot).map_err(|_| StreamError::Capacity)? >= maximum {
+        if !bytes.is_empty() && !slots.entries.contains_key(&slot) && slots.entries.len() >= maximum
+        {
             return Err(StreamError::Capacity);
         }
         let credential_bytes = slots.credential_bytes(slot, bytes.len())?;
@@ -179,11 +180,14 @@ impl Authority {
             slots.credential_bytes = credential_bytes;
             return Ok(());
         }
-        let credential: Credential = self.snapshot().and_then(|snapshot| {
-            verify::verify(bytes, snapshot.trust.as_ref(), snapshot.now_unix_seconds)
-                .map(Arc::new)
-                .map_err(Into::into)
-        });
+        let credential: Credential =
+            self.snapshot()
+                .map_err(Rejection::from)
+                .and_then(|snapshot| {
+                    verify::verify(bytes, snapshot.trust.as_ref(), snapshot.now_unix_seconds)
+                        .map(Arc::new)
+                        .map_err(Into::into)
+                });
         let revision = slots
             .next_revision
             .checked_add(1)
@@ -278,38 +282,59 @@ impl Authority {
         scope: Scope,
         channels: usize,
     ) -> Result<(), Rejection> {
-        let snapshot = self.snapshot()?;
-        let attributes = acyclic_auth::contract::RecordAttributes::try_new(vec![])
-            .map_err(|_| Rejection::Forbidden)?;
-        let usage = acyclic_auth::contract::Limits {
-            rps: None,
-            burst: None,
-            bytes_per_s: None,
-            channels: Some(channels as u64),
-            concurrency: None,
-            bytes: None,
-            spend_micros: None,
-            tokens: None,
+        let work = || {
+            let snapshot = self.snapshot().map_err(Rejection::from)?;
+            let attributes = acyclic_auth::contract::RecordAttributes::try_new(vec![])
+                .map_err(|_| Rejection::Forbidden)?;
+            let usage = acyclic_auth::contract::Limits {
+                rps: None,
+                burst: None,
+                bytes_per_s: None,
+                channels: Some(channels as u64),
+                concurrency: None,
+                bytes: None,
+                spend_micros: None,
+                tokens: None,
+            };
+            let request = Request {
+                target,
+                audience: &self.audience,
+                holder: self.holder.as_deref(),
+                now_unix_seconds: snapshot.now_unix_seconds,
+                keys: &[],
+                attributes: &attributes,
+                usage: &usage,
+                cpu_millis: 0,
+                memory_bytes: 0,
+            };
+            capability
+                .authorize(
+                    snapshot.trust.as_ref(),
+                    &request,
+                    PolicyDecision::Allow,
+                    scope,
+                )
+                .map_err(Rejection::from)
         };
-        let request = Request {
-            target,
-            audience: &self.audience,
-            holder: self.holder.as_deref(),
-            now_unix_seconds: snapshot.now_unix_seconds,
-            keys: &[],
-            attributes: &attributes,
-            usage: &usage,
-            cpu_millis: 0,
-            memory_bytes: 0,
-        };
-        capability
-            .authorize(
-                snapshot.trust.as_ref(),
-                &request,
-                PolicyDecision::Allow,
-                scope,
+        #[cfg(feature = "serde")]
+        {
+            crate::trace::observe_sync(
+                crate::trace::Request {
+                    name: "stream.session_authorize",
+                    mechanism: crate::trace::Mechanism::AuthCheck,
+                    parent: None,
+                    guarantee: Some("current_trust_credential_and_resource_admission"),
+                },
+                work,
+                |result| {
+                    result
+                        .is_ok()
+                        .then_some((Some(0), crate::trace::Outcome::Succeeded, None))
+                },
             )
-            .map_err(Rejection::from)
+        }
+        #[cfg(not(feature = "serde"))]
+        work()
     }
     fn filter(
         &self,
@@ -720,7 +745,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         let now = self
             .authority
             .snapshot()
-            .map_err(|_| StreamError::AccessDenied)?
+            .map_err(|source| StreamError::AccessDenied.with_source(source))?
             .now_unix_seconds;
         if now >= deadline {
             self.revalidate(None)?;

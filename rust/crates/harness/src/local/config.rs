@@ -184,6 +184,19 @@ impl LocalHarnessConfig {
         settings: Option<&crate::native_settings::SettingsConfig>,
         injected: bool,
     ) -> Result<Self> {
+        let model_default = self
+            .models
+            .as_ref()
+            .is_some_and(|(_, selection)| selection.is_none());
+        let preferences = settings
+            .map(|settings| {
+                settings.configured_model_preferences(model_default, self.compaction.is_none())
+            })
+            .transpose()?
+            .unwrap_or_default();
+        if self.compaction.is_none() {
+            self.compaction = preferences.compaction;
+        }
         let Some((models, selection)) = self.models.take() else {
             if let Some((model, _)) = &self.model {
                 let role = crate::templates::root()?.model;
@@ -198,10 +211,8 @@ impl LocalHarnessConfig {
         };
         let selection = match selection {
             Some(selection) => selection,
-            None => settings
-                .map(crate::native_settings::SettingsConfig::configured_model)
-                .transpose()?
-                .flatten()
+            None => preferences
+                .model
                 .unwrap_or_else(|| models.default_model().to_owned()),
         };
         let role = crate::templates::root()?.model;
@@ -930,6 +941,15 @@ mod fixed_role_binding_tests {
 
     #[tokio::test]
     async fn fixed_bindings_obey_the_configured_role_selection() -> Result<()> {
+        let settings_root = tempfile::tempdir().map_err(storage)?;
+        std::fs::write(
+            settings_root.path().join("config.toml"),
+            "model = ''\n[compaction]\nkind = 'disabled'\n",
+        )
+        .map_err(storage)?;
+        let settings =
+            crate::native_settings::SettingsConfig::new(settings_root.path(), settings_root.path())
+                .codex_home(settings_root.path());
         let role = crate::templates::root()?.model;
         let selected =
             crate::templates::resolve_model(role.as_deref(), None).unwrap_or("test/fixed");
@@ -943,7 +963,7 @@ mod fixed_role_binding_tests {
             let allowed = crate::templates::resolve_model(role.as_deref(), Some(&selection))
                 == Some(selection.as_str());
             let result = LocalHarnessConfig::new(".", (model.clone(), provider))
-                .resolve(None, true)
+                .resolve(Some(&settings), true)
                 .await;
             if allowed {
                 assert_eq!(result?.model.map(|binding| binding.0), Some(model));

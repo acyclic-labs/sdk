@@ -6,7 +6,7 @@ pub fn heads_from_wire(value: wire::HeadsRequest) -> Result<crate::HeadsRequest,
         retained: value
             .retained
             .into_iter()
-            .map(|selected| {
+            .map(|selected| -> Result<_, StreamError> {
                 Ok(crate::RetainedRecord {
                     commit_id: commit_id(&selected.commit_id)?,
                     path: StreamPath::new(selected.path)?,
@@ -93,7 +93,7 @@ pub fn heads_from_response(value: wire::HeadsResponse) -> Result<crate::Heads, S
         retained: value
             .retained
             .into_iter()
-            .map(|selected| {
+            .map(|selected| -> Result<_, StreamError> {
                 let path =
                     StreamPath::new(selected.path).map_err(|_| StreamError::InvalidResponse)?;
                 Ok(crate::RetainedRecordObservation {

@@ -283,53 +283,69 @@ async fn pause_suspends_and_the_next_exec_wakes() -> Result {
 
 #[tokio::test]
 async fn archive_destroys_the_agents_machines_before_it_closes() -> Result {
-    let stream = Arc::new(MemoryStream::default());
-    let machines = machines(&stream, SimulatedMachines::default())?;
-    let host = host(&stream, Some(machines.clone()))?;
-    let root = host.create(&intent("root"), adopted(id(1))).await?;
-    let other = host.create(&intent("other"), adopted(id(2))).await?;
-    assert!(host.runtime().drain().await.is_empty());
-    // The root's first turn (its first input after adoption) spawns `c`.
-    let child = root.child(&AgentId::derive(&root.id(), "c"))?;
-    let input = InboxRecord::ApprovalRequested(ApprovalRequested {
-        child: child.clone(),
-        id: intent("input"),
-    });
-    host.send(&root, &user(), &input).await?;
-    assert!(host.runtime().drain().await.is_empty());
-    assert!(
-        host.state(&child).await.is_ok(),
-        "the root spawned its child"
-    );
+    for stopped_by_executor in [false, true] {
+        let stream = Arc::new(MemoryStream::default());
+        let machines = machines(&stream, SimulatedMachines::default())?;
+        let host = host(&stream, Some(machines.clone()))?;
+        let root = host.create(&intent("root"), adopted(id(1))).await?;
+        let other = host.create(&intent("other"), adopted(id(2))).await?;
+        assert!(host.runtime().drain().await.is_empty());
+        // The root's first turn (its first input after adoption) spawns `c`.
+        let child = root.child(&AgentId::derive(&root.id(), "c"))?;
+        let input = InboxRecord::ApprovalRequested(ApprovalRequested {
+            child: child.clone(),
+            id: intent("input"),
+        });
+        host.send(&root, &user(), &input).await?;
+        assert!(host.runtime().drain().await.is_empty());
+        assert!(
+            host.state(&child).await.is_ok(),
+            "the root spawned its child"
+        );
 
-    // The child forks the root's Machine, so the provider keeps the root's
-    // until the fork is gone: the cascade must release both.
-    machines.machine(&root, CLOUD).await?;
-    machines.machine(&child, CLOUD).await?;
-    machines.machine(&other, CLOUD).await?;
-    let forked = machines.binding(&child, CLOUD).await?.ok_or("no binding")?;
-    assert!(forked.forked_from.is_some());
+        // The child forks the root's Machine, so the provider keeps the root's
+        // until the fork is gone: the cascade must release both.
+        machines.machine(&root, CLOUD).await?;
+        machines.machine(&child, CLOUD).await?;
+        machines.machine(&other, CLOUD).await?;
+        let forked = machines.binding(&child, CLOUD).await?.ok_or("no binding")?;
+        assert!(forked.forked_from.is_some());
 
-    assert!(matches!(
-        host.archive(&root, &user(), &intent("archive")).await?,
-        Delivered::Committed { .. }
-    ));
-    assert!(host.runtime().drain().await.is_empty());
-    assert!(host.state(&root).await?.closed);
-    // The parent closed first and the provider keeps its source for the fork.
-    assert_eq!(state(&machines, &root).await?, MachineState::Running);
-    // The cascade's archive reaches the child (a running host discovers it
-    // through its activation follow; this deterministic host names it).
-    host.host(&child)?;
-    assert!(host.runtime().drain().await.is_empty());
-    assert!(host.state(&child).await?.closed);
-    assert_eq!(state(&machines, &root).await?, MachineState::Destroyed);
-    assert_eq!(state(&machines, &child).await?, MachineState::Destroyed);
-    // Negative control: an agent outside the archived tree keeps its Machine.
-    assert_eq!(state(&machines, &other).await?, MachineState::Running);
-    // A retried release replays the original destruction.
-    machines.destroy(&root).await?;
-    machines.destroy(&child).await?;
+        let delivered = if stopped_by_executor {
+            host.send(
+                &root,
+                &user(),
+                &InboxRecord::ApprovalRequested(ApprovalRequested {
+                    child: child.clone(),
+                    id: intent("stop"),
+                }),
+            )
+            .await?
+        } else {
+            host.archive(&root, &user(), &intent("archive")).await?
+        };
+        assert!(matches!(delivered, Delivered::Committed { .. }));
+        assert!(host.runtime().drain().await.is_empty());
+        assert!(host.state(&root).await?.closed);
+        // The parent closed first and the provider keeps its source for the fork.
+        assert_eq!(state(&machines, &root).await?, MachineState::Running);
+        // The cascade's archive reaches the child (a running host discovers it
+        // through its activation follow; this deterministic host names it).
+        host.host(&child)?;
+        assert!(host.runtime().drain().await.is_empty());
+        assert!(host.state(&child).await?.closed);
+        assert_eq!(
+            state(&machines, &root).await?,
+            MachineState::Destroyed,
+            "executor stop: {stopped_by_executor}"
+        );
+        assert_eq!(state(&machines, &child).await?, MachineState::Destroyed);
+        // Negative control: an agent outside the archived tree keeps its Machine.
+        assert_eq!(state(&machines, &other).await?, MachineState::Running);
+        // A retried release replays the original destruction.
+        machines.destroy(&root).await?;
+        machines.destroy(&child).await?;
+    }
     Ok(())
 }
 
@@ -361,11 +377,12 @@ impl TurnDriver for Spawner {
         &'a self,
         agent: &'a AgentState,
         _cursor: u64,
-        _input: Option<Queued>,
+        input: Option<Queued>,
         _cancellation: acyclic_actors::guest::CancellationToken,
     ) -> TurnFuture<'a> {
         let first =
             agent.path == AgentPath::root(&id(1)) && self.0.fetch_add(1, Ordering::SeqCst) == 0;
+        let stop = matches!(input, Some(Queued { input: TurnInput::ApprovalRequested { id, .. }, .. }) if id.as_str() == "stop");
         Box::pin(async move {
             Ok(TurnStep {
                 checkpoint: None,
@@ -380,7 +397,11 @@ impl TurnDriver for Spawner {
                 } else {
                     Vec::new()
                 },
-                wait: Wait::Input,
+                wait: if stop {
+                    Wait::Done(AgentOutcome::Archived)
+                } else {
+                    Wait::Input
+                },
                 drops: None,
             })
         })

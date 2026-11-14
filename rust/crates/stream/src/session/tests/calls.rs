@@ -115,37 +115,45 @@ async fn dependent_resources_keep_original_call_grants_and_live_trust() -> TestR
     )?;
     for resource in ["fs:/volume/visible-neighbor", "fs:/volume/hidden/file"] {
         assert_eq!(
-            dependency.authorize(resource, &[], &attributes, PolicyDecision::Allow),
+            dependency
+                .authorize(resource, &[], &attributes, PolicyDecision::Allow)
+                .map_err(|error| error.category()),
             Err(StreamError::AccessDenied),
             "dependent scope escaped its original declared boundary"
         );
     }
     assert_eq!(
-        original.authorize(
-            "fs:/volume/visible/file",
-            &[],
-            &attributes,
-            PolicyDecision::Allow,
-        ),
+        original
+            .authorize(
+                "fs:/volume/visible/file",
+                &[],
+                &attributes,
+                PolicyDecision::Allow,
+            )
+            .map_err(|error| error.category()),
         Err(StreamError::AccessDenied)
     );
     assert_eq!(
-        dependency.authorize_in_account(
-            b"other account",
-            "fs:/volume/visible/file",
-            &[],
-            &attributes,
-            PolicyDecision::Allow,
-        ),
+        dependency
+            .authorize_in_account(
+                b"other account",
+                "fs:/volume/visible/file",
+                &[],
+                &attributes,
+                PolicyDecision::Allow,
+            )
+            .map_err(|error| error.category()),
         Err(StreamError::AccessDenied)
     );
     assert_eq!(
-        dependency.authorize(
-            "fs:/volume/visible/file",
-            &[],
-            &attributes,
-            PolicyDecision::Deny,
-        ),
+        dependency
+            .authorize(
+                "fs:/volume/visible/file",
+                &[],
+                &attributes,
+                PolicyDecision::Deny,
+            )
+            .map_err(|error| error.category()),
         Err(StreamError::AccessDenied),
         "dependent disclosure ignored the owner's current policy"
     );
@@ -216,12 +224,14 @@ async fn dependent_resources_keep_original_call_grants_and_live_trust() -> TestR
         "fs/list",
     )?;
     assert_eq!(
-        listed.authorize(
-            "fs:/volume/visible",
-            &[],
-            &attributes,
-            PolicyDecision::Allow
-        ),
+        listed
+            .authorize(
+                "fs:/volume/visible",
+                &[],
+                &attributes,
+                PolicyDecision::Allow
+            )
+            .map_err(|error| error.category()),
         Err(StreamError::AccessDenied),
         "dependent action was replaced by the host's broader authority"
     );
@@ -263,29 +273,25 @@ async fn dependent_resources_keep_original_call_grants_and_live_trust() -> TestR
     let mut lost = core::pin::pin!(lost);
     let (_, producer) = calls.recv().await.ok_or("second call did not dispatch")?;
     drop(producer);
-    assert!(matches!(
-        lost.next().await,
-        Some(Err(StreamError::Unavailable))
-    ));
+    assert_reply_failure(lost.next().await, StreamError::Unavailable);
 
     let revoked = client.actor_call_chunks(&invocation, 0, 128).await?;
     let mut revoked = core::pin::pin!(revoked);
     let (_authorization, _producer) = calls.recv().await.ok_or("third call did not dispatch")?;
     state.publish(acyclic_auth::testing::Snapshot::default(), u64::MAX);
     assert_eq!(
-        dependency.authorize(
-            "fs:/volume/visible/file",
-            &[],
-            &attributes,
-            PolicyDecision::Allow,
-        ),
+        dependency
+            .authorize(
+                "fs:/volume/visible/file",
+                &[],
+                &attributes,
+                PolicyDecision::Allow,
+            )
+            .map_err(|error| error.category()),
         Err(StreamError::AccessDenied),
         "dependent disclosure used a stale trust snapshot"
     );
-    assert!(matches!(
-        revoked.next().await,
-        Some(Err(StreamError::AccessDenied))
-    ));
+    assert_reply_failure(revoked.next().await, StreamError::AccessDenied);
     Ok(())
 }
 
@@ -539,7 +545,10 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
     // Authorization is the original call admission, before body or handler
     // disclosure. No separate socket authority or buffered fallback is used.
     assert!(matches!(
-        client.actor_call_input(&invocation, 1, 128).await,
+        client
+            .actor_call_input(&invocation, 1, 128)
+            .await
+            .map_err(|error| error.category()),
         Err(StreamError::AccessDenied)
     ));
     assert!(dispatches.try_recv().is_err());
@@ -559,10 +568,7 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
         "consumer loss must wake without escaped credit returning"
     );
     let mut abandoned_reply = core::pin::pin!(abandoned_reply);
-    assert!(matches!(
-        abandoned_reply.next().await,
-        Some(Err(StreamError::Unavailable))
-    ));
+    assert_reply_failure(abandoned_reply.next().await, StreamError::Unavailable);
     assert_eq!(escaped.as_ref().as_ptr(), original.as_ptr());
     assert_eq!(escaped_second.as_ref().as_ptr(), second_original.as_ptr());
 
@@ -589,10 +595,7 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
     drop(host);
     assert_eq!(finish.await, Err(StreamError::Unavailable));
     let mut lost = core::pin::pin!(lost);
-    assert!(matches!(
-        lost.next().await,
-        Some(Err(StreamError::Unavailable))
-    ));
+    assert_reply_failure(lost.next().await, StreamError::Unavailable);
     // The held EOF followed the queued data on the same ordered transport.
     // Once source loss is observed, a data-first adapter would disclose that
     // data instead of the original failure. Return the cause exactly once.
@@ -674,7 +677,8 @@ async fn follow_authority_cannot_dispatch_calls_or_stop_healthy_follows() -> Tes
                 0,
                 crate::MAX_RECORD_BYTES + 7
             )
-            .await,
+            .await
+            .map_err(|error| error.category()),
         Err(StreamError::AccessDenied)
     );
     assert_eq!(
@@ -734,9 +738,99 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
         Some(lifetime),
     );
     client.register_credential(0, credential.into())?;
+    #[cfg(feature = "serde")]
+    let (trace, root, parent) = {
+        let trace = crate::Stream::new(Arc::new(MemoryStream::default()), "owner/trace")?;
+        let recorder = Arc::new(crate::trace::Recorder::new(trace.clone(), [41; 16]));
+        let root = recorder
+            .start(
+                "reply_owner",
+                crate::trace::Mechanism::ActorDelivery,
+                None,
+                Some("original_call_request"),
+            )
+            .await?;
+        let parent = root.id();
+        (trace, root.into_owned(), parent)
+    };
+    #[cfg(feature = "serde")]
+    let response = root
+        .within(client.actor_call(&Bytes::from_static(b"invocation"), 0, body.len()))
+        .await?;
+    #[cfg(not(feature = "serde"))]
     let response = client
         .actor_call(&Bytes::from_static(b"invocation"), 0, body.len())
         .await?;
+    #[cfg(feature = "serde")]
+    {
+        use crate::trace::{Mechanism, Observation, Outcome, TraceQuery};
+        let mut query = TraceQuery::new(
+            trace.follow(0, Default::default()).await?,
+            Default::default(),
+        );
+        let mut round_trip = None;
+        let mut admission = None;
+        let mut copies = Vec::new();
+        let fragments = body.chunks(crate::MAX_RECORD_BYTES).count();
+        while round_trip.is_none() || admission.is_none() || copies.len() != fragments {
+            let Some(event) = query.next().await? else {
+                return Err("diagnostic source ended".into());
+            };
+            if let Observation::Completed {
+                id,
+                start,
+                bytes,
+                result,
+                ..
+            } = event
+            {
+                match start.name.as_str() {
+                    "stream.finite_reply" => {
+                        assert_eq!(start.parent, Some(parent));
+                        assert_eq!(start.mechanism, Mechanism::RoundTrip);
+                        assert_eq!(
+                            start.guarantee.as_deref(),
+                            Some("complete_bounded_reply_on_original_session")
+                        );
+                        assert_eq!(result, Outcome::Succeeded);
+                        assert_eq!(bytes, Some(body.len() as u64));
+                        round_trip = Some(id);
+                    }
+                    "stream.session_admission" => {
+                        assert_eq!(start.mechanism, Mechanism::Wait);
+                        assert_eq!(
+                            start.guarantee.as_deref(),
+                            Some("admission_acknowledges_original_session_interest")
+                        );
+                        assert_eq!(result, Outcome::Succeeded);
+                        assert_eq!(bytes, Some(0));
+                        admission = Some(start.parent);
+                    }
+                    "stream.reply_copy" => {
+                        assert_eq!(start.mechanism, Mechanism::Copy);
+                        assert_eq!(
+                            start.guarantee.as_deref(),
+                            Some("contiguous_complete_reply_ownership")
+                        );
+                        assert_eq!(result, Outcome::Succeeded);
+                        copies.push((start.parent, bytes.ok_or("copy size absent")?));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(admission, Some(round_trip));
+        assert!(copies.iter().all(|(parent, _)| *parent == round_trip));
+        assert_eq!(
+            copies.iter().map(|(_, bytes)| bytes).sum::<u64>(),
+            body.len() as u64
+        );
+        assert_eq!(
+            query.totals()[&Mechanism::Copy].known_bytes,
+            body.len() as u128
+        );
+        root.finish_submitted(None, Outcome::Succeeded)?;
+    }
     assert_eq!(response.as_ref(), body.as_ref());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
@@ -784,14 +878,41 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
     // Both original channel credits remain held. Losing the real host still
     // closes the incomplete reply without waiting for either fragment to drop.
     drop(host);
-    assert!(matches!(
-        stopped.next().await,
-        Some(Err(StreamError::Unavailable))
-    ));
+    let error = match stopped.next().await {
+        Some(Err(error)) => error,
+        _ => return Err("lost host completed an incomplete reply".into()),
+    };
+    assert_eq!(error.category(), StreamError::Unavailable);
+    use std::error::Error as _;
+    assert!(
+        std::iter::successors(error.source(), |source| source.source()).any(|source| source
+            .downcast_ref::<StreamError>()
+            .is_some_and(|source| source.category() == StreamError::Unavailable)),
+        "reply failure discarded the original session source"
+    );
     assert_eq!(first.1.as_ref(), &body[..crate::MAX_RECORD_BYTES]);
     assert_eq!(
         second.1.as_ref(),
         &body[crate::MAX_RECORD_BYTES..2 * crate::MAX_RECORD_BYTES]
     );
     Ok(())
+}
+
+fn assert_reply_failure<T>(result: Option<Result<T, StreamError>>, expected: StreamError) {
+    let error = match result {
+        Some(Err(error)) => error,
+        _ => panic!("reply ended without its original failure"),
+    };
+    assert_eq!(error.category(), expected);
+    let mut cause = std::error::Error::source(&error);
+    while let Some(source) = cause {
+        if source
+            .downcast_ref::<StreamError>()
+            .is_some_and(|original| original.category() == expected)
+        {
+            return;
+        }
+        cause = source.source();
+    }
+    panic!("reply failure lost its original stream error");
 }

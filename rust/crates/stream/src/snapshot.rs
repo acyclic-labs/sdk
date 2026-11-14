@@ -61,6 +61,8 @@ async fn read_owned<S: Snapshot>(
     }
     let (job, completed) = job::new(state);
     let worker = job.run();
+    #[cfg(feature = "serde")]
+    let worker = crate::trace::inherit(worker);
     #[cfg(loom)]
     model::spawn(worker);
     #[cfg(all(not(loom), not(target_arch = "wasm32")))]

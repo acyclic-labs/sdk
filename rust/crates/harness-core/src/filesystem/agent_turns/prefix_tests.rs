@@ -62,8 +62,14 @@ async fn state(
 }
 
 fn executor() -> Result<StockExecutor> {
+    executor_with_provider(ScriptedModelProvider::new([ScriptedTurn::Text(
+        "answer".into(),
+    )]))
+}
+
+fn executor_with_provider(scripted: ScriptedModelProvider) -> Result<StockExecutor> {
     let model = Model::new("fixture".into(), "prefix".into(), "1".into())?;
-    let scripted = ScriptedModelProvider::new([ScriptedTurn::Text("answer".into())])
+    let scripted = scripted
         .with_context_capacity(ModelContextCapacity {
             context_tokens: 65_536,
             output_tokens: Some(64),
@@ -165,8 +171,16 @@ async fn seed(
     host: &Host,
     agent: &AgentState,
 ) -> Result<(PreparedModelRequest, serde_json::Value)> {
+    seed_with_executor(host, agent, executor()?).await
+}
+
+async fn seed_with_executor(
+    host: &Host,
+    agent: &AgentState,
+    executor: StockExecutor,
+) -> Result<(PreparedModelRequest, serde_json::Value)> {
     let (journal, bindings, _files) = host
-        .journal(host.admit(agent)?, &[], &[], None, None)
+        .journal((host.admit(agent)?, &agent.path), &[], &[], None, None)
         .await?;
     let (body, _hold) = bindings
         .content
@@ -186,7 +200,7 @@ async fn seed(
         brief: Box::new(body),
     };
     let turn = crate::agent::turn_id(agent, &input).map_err(Error::from)?;
-    let output = executor()?
+    let output = executor
         .execute(
             crate::executor::TurnInput {
                 max_steps: None,
@@ -273,9 +287,7 @@ async fn opening_followup_reuses_own_request_and_inherited_child_reads_no_execut
     let open = host
         .open(
             &root,
-            OperationId::new(),
-            1,
-            2,
+            crate::agent::TurnIdentity::new(OperationId::new(), 1, 2),
             &ModelContent::Text("next".into()),
             acyclic_actors::guest::CancellationToken::new(),
         )
@@ -300,9 +312,7 @@ async fn opening_followup_reuses_own_request_and_inherited_child_reads_no_execut
     let open = host
         .open(
             &child,
-            OperationId::new(),
-            1,
-            2,
+            crate::agent::TurnIdentity::new(OperationId::new(), 1, 2),
             &ModelContent::Text("child input".into()),
             acyclic_actors::guest::CancellationToken::new(),
         )
@@ -313,5 +323,104 @@ async fn opening_followup_reuses_own_request_and_inherited_child_reads_no_execut
         "inherited history must not trigger a lookup in the child's execution index"
     );
     assert!(parent(&*open.journal, &continued).await?.is_null());
+    Ok(())
+}
+
+#[tokio::test]
+async fn provider_attempt_uses_original_agent_trace_and_parented_journal() -> Result<()> {
+    use acyclic_stream::trace::{Mechanism, Observation, Outcome, Registry, TraceQuery};
+    let (host, agent) = fixture().await?;
+    let registry = Registry::new(host.stream.clone());
+    let source = crate::client_files::trace::source(&agent.path)?;
+    let _interest = registry.subscribe(
+        acyclic_stream::StreamPath::new(agent.path.as_str())?,
+        source.clone(),
+    )?;
+    let host = host.with_trace_interest(registry);
+    // Run the original stock executor, private filesystem publisher and durable
+    // journal; only the external model responses are deterministic fixture data.
+    let (release, resumed) = futures::channel::oneshot::channel::<()>();
+    let (entered, observed) = futures::channel::oneshot::channel::<()>();
+    let resumed = Arc::new(std::sync::Mutex::new(Some((resumed, entered))));
+    let model = ScriptedModelProvider::new([ScriptedTurn::Text("answer".into())])
+        .with_dispatch_observer(move |_| {
+            let (resumed, entered) = resumed.lock().unwrap().take().unwrap();
+            Box::pin(async move {
+                assert!(entered.send(()).is_ok());
+                resumed.await.map_err(|cause| {
+                    Error::exchange(crate::ExchangeStep::Step("provider event gate"), cause)
+                })
+            })
+        });
+    let run = Box::pin(seed_with_executor(
+        &host,
+        &agent,
+        executor_with_provider(model)?,
+    ));
+    match futures::future::select(observed, run).await {
+        futures::future::Either::Left((entered, run)) => {
+            entered.map_err(|cause| {
+                Error::exchange(crate::ExchangeStep::Step("provider entry"), cause)
+            })?;
+            assert!(release.send(()).is_ok());
+            run.await?;
+        }
+        futures::future::Either::Right((result, _)) => {
+            result?;
+            return Err(Error::Invalid("provider bypassed its event gate".into()));
+        }
+    }
+    let traces = acyclic_stream::Stream::new(host.stream.clone(), source.as_str())?;
+    let mut query = TraceQuery::new(
+        traces.follow(0, Default::default()).await?,
+        Default::default(),
+    );
+    let mut provider = None;
+    let mut children = 0;
+    let mut delivered_waits = 0;
+    loop {
+        match query.next().await? {
+            Some(Observation::Started { id, .. }) => {
+                let (_, start) = query
+                    .active()
+                    .find(|(candidate, _)| **candidate == id)
+                    .ok_or_else(|| Error::Invalid("admitted trace start missing".into()))?;
+                if start.name == "harness.provider_call" {
+                    assert_eq!(start.mechanism, Mechanism::ProviderCall);
+                    assert_eq!(
+                        start.guarantee.as_deref(),
+                        Some("journaled_model_attempt_settlement")
+                    );
+                    provider = Some(id);
+                } else if provider.is_some() && start.parent == provider {
+                    children += 1;
+                }
+            }
+            Some(Observation::Completed { start, result, .. })
+                if start.name == "harness.provider_event_wait" =>
+            {
+                assert_eq!(start.parent, provider);
+                assert_eq!(start.mechanism, Mechanism::Wait);
+                assert_eq!(start.guarantee.as_deref(), Some("provider_event_delivery"));
+                assert_eq!(result, Outcome::Succeeded);
+                delivered_waits += 1;
+            }
+            Some(Observation::Completed { id, result, .. }) if Some(id) == provider => {
+                assert_eq!(result, Outcome::Succeeded);
+                assert_eq!(delivered_waits, 1);
+                assert!(
+                    children > 0,
+                    "provider work lost its original journal parent"
+                );
+                break;
+            }
+            None => {
+                return Err(Error::Invalid(
+                    "provider trace ended before settlement".into(),
+                ));
+            }
+            _ => {}
+        }
+    }
     Ok(())
 }

@@ -150,6 +150,7 @@ impl HostWorkspace {
                 .sync_with_permit(
                     acyclic_fs::PublicationPermit::Unrestricted,
                     &mount.native_work()?,
+                    Some(capture::capture_operation(operation, 1)),
                     move |_| {
                         let owner = Arc::clone(&owner);
                         let root = Arc::clone(&root);

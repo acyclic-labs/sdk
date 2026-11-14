@@ -42,11 +42,7 @@ impl Change {
         }
     }
     pub(crate) fn subscribe(&self) -> Result<Subscription, StreamError> {
-        let mut state = self
-            .state
-            .inner
-            .lock()
-            .map_err(|_| StreamError::Unavailable)?;
+        let mut state = self.state.inner.lock().map_err(StreamError::from)?;
         let id = state.next_id;
         let next_id = id.checked_add(1).ok_or(StreamError::Capacity)?;
         let seen = state.revision.ok_or(StreamError::Capacity)?;
@@ -59,11 +55,7 @@ impl Change {
     }
     pub(crate) fn notify(&self) -> Result<(), StreamError> {
         let (revision, waiters) = {
-            let mut state = self
-                .state
-                .inner
-                .lock()
-                .map_err(|_| StreamError::Unavailable)?;
+            let mut state = self.state.inner.lock().map_err(StreamError::from)?;
             state.revision = state.revision.and_then(|revision| revision.checked_add(1));
             (state.revision, std::mem::take(&mut state.waiters))
         };
@@ -107,13 +99,12 @@ fn dispatch(waiters: BTreeMap<u64, Waker>) {
 impl Subscription {
     fn mark(&mut self) -> Result<(), StreamError> {
         let previous = {
-            let mut state = self
-                .state
-                .inner
-                .lock()
-                .map_err(|_| StreamError::Unavailable)?;
+            let mut state = self.state.inner.lock().map_err(StreamError::from)?;
             if self.state.producers.load(Ordering::Acquire) == 0 {
-                return Err(StreamError::Unavailable);
+                return Err(StreamError::unavailable(acyclic_auth::refusal::Cause::new(
+                    "stream.change",
+                    "producer_retired",
+                )));
             }
             self.seen = state.revision.ok_or(StreamError::Capacity)?;
             state.waiters.remove(&self.id)
@@ -124,11 +115,14 @@ impl Subscription {
     fn poll_changed(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
         let wake = cx.waker().clone();
         let (previous, result) = {
-            let Ok(mut state) = self.state.inner.lock() else {
-                return Poll::Ready(Err(StreamError::Unavailable));
+            let mut state = match self.state.inner.lock() {
+                Ok(state) => state,
+                Err(error) => return Poll::Ready(Err(error.into())),
             };
             if self.state.producers.load(Ordering::Acquire) == 0 {
-                return Poll::Ready(Err(StreamError::Unavailable));
+                return Poll::Ready(Err(StreamError::unavailable(
+                    acyclic_auth::refusal::Cause::new("stream.change", "producer_retired"),
+                )));
             }
             let Some(revision) = state.revision else {
                 return Poll::Ready(Err(StreamError::Capacity));

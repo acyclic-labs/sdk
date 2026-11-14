@@ -50,7 +50,7 @@ async fn context_classification_uses_protocol_budget_and_preserves_status_classe
             ..
         }
     ));
-    for status in [401, 403, 404, 409, 422] {
+    for status in [401, 403, 404, 408, 409, 422, 429, 500, 503] {
         let response = HttpResponse {
             status,
             request_id: None,
@@ -93,10 +93,7 @@ async fn shared_refusal_admission_retains_only_the_original_error() -> crate::Re
         {
             if matches!(status, 400 | 413) {
                 assert!(message.contains(&status.to_string()), "{message}");
-                assert!(
-                    message.contains("Function call is missing a thought_signature"),
-                    "{message}"
-                );
+                assert_eq!(message, &format!("model HTTP status {status}"));
                 assert!(message.len() <= crate::EXCERPT_BYTES);
                 assert!(message.chars().all(|character| !character.is_control()));
             }
@@ -105,7 +102,10 @@ async fn shared_refusal_admission_retains_only_the_original_error() -> crate::Re
             assert_eq!(hold.bytes(), message.capacity() as u64);
             assert_eq!(work.live_allocation_bytes(), baseline + hold.bytes());
         } else {
-            assert!(matches!(native, Error::ModelContextOverflow));
+            assert!(matches!(
+                native,
+                Error::ModelContextOverflow | Error::ModelUnavailable { .. }
+            ));
         }
         drop(native);
         assert_eq!(work.live_allocation_bytes(), baseline);
@@ -113,7 +113,7 @@ async fn shared_refusal_admission_retains_only_the_original_error() -> crate::Re
     for drop_consumer in [false, true] {
         let (producer, terminal) = futures::channel::oneshot::channel::<()>();
         let response = HttpResponse {
-            status: 503,
+            status: 400,
             request_id: None,
             retry_after: None,
             body: Box::pin(futures::stream::once(async move {
@@ -149,7 +149,7 @@ async fn shared_refusal_admission_retains_only_the_original_error() -> crate::Re
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let response = HttpResponse {
-        status: 503,
+        status: 400,
         request_id: None,
         retry_after: None,
         body: Box::pin(futures::stream::poll_fn(|_| {

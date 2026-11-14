@@ -14,7 +14,8 @@ pub(crate) fn stream_error_with_work(
         } else {
             Storage
         };
-        return Error::NativeStream {
+        return Error::StreamFailure {
+            native: true,
             code,
             source,
             custody: None,
@@ -53,6 +54,75 @@ impl std::ops::Deref for ObservedRecord {
     fn deref(&self) -> &Record {
         &self.record
     }
+}
+
+/// One original metadata snapshot, retaining native ownership of its records.
+pub(crate) struct ObservedHeads {
+    page: acyclic_stream::Heads,
+    #[cfg(not(target_arch = "wasm32"))]
+    _allocation: Option<acyclic_native_runtime::ReadAllocation>,
+}
+impl std::ops::Deref for ObservedHeads {
+    type Target = acyclic_stream::Heads;
+    fn deref(&self) -> &Self::Target {
+        &self.page
+    }
+}
+
+pub(crate) async fn heads_with_work<P: crate::store::JournalProvider + ?Sized>(
+    client: &Arc<P>,
+    request: &acyclic_stream::HeadsRequest,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<ObservedHeads> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(original) = work.as_deref().and_then(|io| io.original_native_work()) {
+        let result = client
+            .native_heads(request.clone(), original.runtime_meter())
+            .await;
+        let output = crate::distributed::native_call_result(original, result)?
+            .map_err(|source| stream_error_with_work(source, work))?;
+        let (heads, allocation) = original_sdk_metadata_output(original, output)?.into_parts();
+        let output = ObservedHeads {
+            page: heads,
+            _allocation: Some(allocation),
+        };
+        output
+            .validate_for(request)
+            .map_err(|source| stream_error_with_work(source, work))?;
+        return Ok(output);
+    }
+    if let Some(observer) = work.as_deref_mut() {
+        observer.begin_call()?;
+    }
+    let heads = client
+        .heads(request.clone())
+        .await
+        .map_err(|source| stream_error_with_work(source, work))?;
+    heads
+        .validate_for(request)
+        .map_err(|source| stream_error_with_work(source, work))?;
+    if let Some(observer) = work.as_deref_mut() {
+        for record in heads
+            .heads
+            .iter()
+            .flatten()
+            .filter_map(|head| head.last.as_ref())
+            .chain(
+                heads
+                    .retained
+                    .iter()
+                    .filter_map(|entry| entry.record.as_ref()),
+            )
+        {
+            observer.receive_record(record.value.len() as u64)?;
+            observer.allocation_attempt(record.value.len() as u64)?;
+        }
+    }
+    Ok(ObservedHeads {
+        page: heads,
+        #[cfg(not(target_arch = "wasm32"))]
+        _allocation: None,
+    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -147,6 +217,15 @@ pub(crate) async fn read_records<P: crate::store::JournalProvider + ?Sized>(
         limit: count,
         at_least: Default::default(),
     };
+    read_selection(client, request, work).await
+}
+
+/// Positional and indexed reads share the original ledger and SDK entrance.
+pub(crate) async fn read_selection<P: crate::store::JournalProvider + ?Sized>(
+    client: &Arc<P>,
+    request: ReadRequest,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<std::result::Result<ObservedRecords, StreamError>> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = work.as_deref().and_then(|io| io.original_native_work()) {
         let result = client.native_read(request, original.runtime_meter()).await;
@@ -206,8 +285,38 @@ pub(crate) async fn one_record<P: crate::store::JournalProvider + ?Sized>(
     from: u64,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Option<ObservedRecord>> {
+    one_selected_record(
+        client,
+        ReadRequest {
+            key: None,
+            path: path.clone(),
+            from,
+            limit: 1,
+            at_least: Default::default(),
+        },
+        work,
+    )
+    .await
+}
+
+/// A keyed selection keeps its inclusive lower bound; an unkeyed selection
+/// must return the exact cursor. Both reject a producer exceeding one record.
+pub(crate) async fn one_selected_record<P: crate::store::JournalProvider + ?Sized>(
+    client: &Arc<P>,
+    request: ReadRequest,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<Option<ObservedRecord>> {
+    if request.limit != 1 {
+        return Err(boundary(
+            work,
+            Storage,
+            "single-record selection requires one output slot",
+        ));
+    }
+    let from = request.from;
+    let keyed = request.key.is_some();
     let mut quota = CodecQuota::new(work, 0)?;
-    let mut records = match read_records(client, path, from, 1, quota.work()).await? {
+    let mut records = match read_selection(client, request, quota.work()).await? {
         Ok(records) => records,
         Err(error) if error.category() == StreamError::NotFound => {
             return Ok(None);
@@ -228,7 +337,8 @@ pub(crate) async fn one_record<P: crate::store::JournalProvider + ?Sized>(
             let held = sdk_record_retained_bytes(&record, quota.work());
             quota.adopt(held)?;
             if position != 0
-                || record.sequence != from
+                || record.sequence < from
+                || (!keyed && record.sequence != from)
                 || record.value.len() > acyclic_stream::MAX_RECORD_BYTES
             {
                 return Err(boundary(
