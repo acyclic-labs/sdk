@@ -368,14 +368,14 @@ mod tests {
         #[cfg(not(windows))]
         let name = b"observed".to_vec();
         let path = acyclic_fs::native_mount::MountPath::root().child(name);
-        assert_eq!(observer.read_range(&path, 0, 32)?.as_ref(), b"before");
+        assert_eq!(observer.read_range(&path, 0, 6)?.as_ref(), b"before");
         workspace.write_text("/observed", "after").await?;
         observer
             .sync_async(acyclic_fs::PublicationPermit::Unrestricted)
             .await?;
         observer.advance_to_head_async().await?;
         observer.advance_to_head_async().await?;
-        assert_eq!(observer.read_range(&path, 0, 32)?.as_ref(), b"after");
+        assert_eq!(observer.read_range(&path, 0, 5)?.as_ref(), b"after");
         assert!(matches!(
             observer.write_range(&path, 0, bytes::Bytes::from_static(b"denied")),
             Err(acyclic_fs::MountSourceError::ReadOnly)
@@ -399,7 +399,7 @@ mod tests {
             work.receipt().backend_write_operations,
             before.backend_write_operations
         );
-        assert!(observer.read_range(&path, 0, 32).is_err());
+        assert!(observer.read_range(&path, 0, 5).is_err());
         observer.cancel();
         // Negative control: bootstrap custody is explicitly retained by the host,
         // while admitted above only retains the authenticated narrow workload.
