@@ -59,8 +59,9 @@ impl ReadRecord {
         let mut magic = [0_u8; MAGIC.len()];
         let prefix = usize::try_from(length.min(MAGIC.len() as u64))
             .map_err(|_| io::ErrorKind::InvalidData)?;
-        read_exact(file, &mut magic[..prefix], meter)?;
-        if magic[..prefix] != MAGIC[..prefix] {
+        let magic = magic.get_mut(..prefix).ok_or(io::ErrorKind::InvalidData)?;
+        read_exact(file, magic, meter)?;
+        if !MAGIC.starts_with(magic) {
             result.status = Some(Status::Malformed);
             return Ok(result);
         }
@@ -110,11 +111,12 @@ impl ReadRecord {
         while remaining != 0 {
             let count = usize::try_from(remaining.min(scratch.len() as u64))
                 .map_err(|_| io::ErrorKind::InvalidData)?;
-            read_exact(file, &mut scratch[..count], meter)?;
+            let chunk = scratch.get_mut(..count).ok_or(io::ErrorKind::InvalidData)?;
+            read_exact(file, chunk, meter)?;
             if let Some(meter) = meter {
                 meter.admit_codec(0, 0, count as u64)?;
             }
-            hash = checksum_chunk(hash, &scratch[..count]);
+            hash = checksum_chunk(hash, chunk);
             if let Some(meter) = meter {
                 meter.record_codec(0, 0, count as u64)?;
             }
@@ -145,13 +147,16 @@ impl ReadRecord {
         read_exact(file, &mut result.bytes, meter)?;
         // Revalidate the owned snapshot too, even if an external writer ignores
         // the protocol lock. Contents then borrows only this verified buffer.
-        let body = result.bytes.len() - CHECKSUM_BYTES;
+        let (body, sum) = result
+            .bytes
+            .split_last_chunk::<CHECKSUM_BYTES>()
+            .ok_or(io::ErrorKind::InvalidData)?;
         if let Some(meter) = meter {
-            meter.admit_codec(0, 0, body as u64)?;
+            meter.admit_codec(0, 0, body.len() as u64)?;
         }
-        let valid = checksum(&result.bytes[..body]) == result.bytes[body..];
+        let valid = checksum(body) == *sum;
         if let Some(meter) = meter {
-            meter.record_codec(0, 0, body as u64)?;
+            meter.record_codec(0, 0, body.len() as u64)?;
         }
         result.status = Some(if valid {
             Status::Verified
@@ -191,7 +196,12 @@ fn read_exact(
         }
         match result {
             Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
-            Ok(count) => bytes = &mut bytes[count..],
+            // A reader reporting more than it was given breaks Read's contract.
+            Ok(count) => {
+                bytes = std::mem::take(&mut bytes)
+                    .get_mut(count..)
+                    .ok_or(io::ErrorKind::InvalidData)?;
+            }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(error) => return Err(error),
         }

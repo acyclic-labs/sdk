@@ -10,12 +10,19 @@ use zeroize::Zeroizing;
 
 type Secrets = BTreeMap<String, Zeroizing<Vec<u8>>>;
 
+/// A process-local signing store with its own fresh identity; its secrets are
+/// zeroized on removal and never leave memory.
 pub struct MemorySigningStore {
     identity: [u8; 32],
     secrets: Arc<Mutex<Secrets>>,
 }
 
 impl MemorySigningStore {
+    /// An empty store under a fresh random identity.
+    ///
+    /// # Errors
+    ///
+    /// The platform entropy source failed.
     pub fn new() -> io::Result<Self> {
         Ok(Self {
             identity: crate::owner_record::new_key()?,
@@ -23,9 +30,13 @@ impl MemorySigningStore {
         })
     }
 
+    /// The number of secrets held.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.secrets.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
+    /// Whether no secret is held.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

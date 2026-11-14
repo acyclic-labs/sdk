@@ -56,8 +56,13 @@ fn host_with_writer() -> io::Result<(UnixStream, PacketDeviceRetirement, UnixStr
     let source = UnixStream::from(OwnedFd::from(source));
     source.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
     let mut init = [0; 16];
-    for (field, value) in init.chunks_exact_mut(4).zip([7, 31, page, 1 << 22]) {
-        field.copy_from_slice(&value.to_ne_bytes());
+    for (field, value) in init
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip([7, 31, page, 1 << 22])
+    {
+        *field = value.to_ne_bytes();
     }
     kernel.write_all(&request(26, 1, 0, &init))?;
     custody.start_fuse(
@@ -84,13 +89,13 @@ fn full_request_window_keeps_unadmitted_packets_in_the_kernel()
     }
     let (mut source, custody, mut kernel, device) = host_with_writer()?;
     for unique in 2..66 {
-        let original = request(1, unique, unsafe { libc::geteuid() }, b"child\0");
+        let original = request(1, unique, crate::private_file::effective_user(), b"child\0");
         kernel.write_all(&original)?;
         let mut delivered = vec![0; original.len()];
         source.read_exact(&mut delivered)?;
         assert_eq!(delivered, original);
     }
-    let parked = request(1, 66, unsafe { libc::geteuid() }, b"parked\0");
+    let parked = request(1, 66, crate::private_file::effective_user(), b"parked\0");
     kernel.write_all(&parked)?;
     let mut notification = [0; 40];
     notification[..4].copy_from_slice(&40_u32.to_ne_bytes());
@@ -179,7 +184,7 @@ fn notification_backpressure_does_not_stop_kernel_request_delivery()
     // original kernel request must still be delivered after its full body
     // makes publication wait for the physical endpoint's missing credit.
     for unique in [2, 3] {
-        let original = request(1, unique, unsafe { libc::geteuid() }, b"child\0");
+        let original = request(1, unique, crate::private_file::effective_user(), b"child\0");
         kernel.write_all(&original)?;
         let mut delivered = vec![0; original.len()];
         source.read_exact(&mut delivered)?;
@@ -271,8 +276,7 @@ fn foreign_flush_uses_handle_authority_while_foreign_lookup_is_refused()
     let (mut source, custody, mut kernel) = host()?;
     // This is a real host/kernel-wire conformance case: no callback or policy
     // function is mocked. The negative lookup must never reach the backend.
-    // SAFETY: geteuid has no arguments or ownership effects.
-    let foreign = unsafe { libc::geteuid() } ^ 1;
+    let foreign = crate::private_file::effective_user() ^ 1;
     let flush = request(25, 2, foreign, &[0; 24]);
     kernel.write_all(&flush)?;
     let mut ready = [

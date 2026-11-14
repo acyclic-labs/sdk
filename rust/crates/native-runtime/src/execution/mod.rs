@@ -53,10 +53,8 @@ pub enum ExecutionNetwork {
 impl ExecutionNetwork {
     fn permits(&self, requested: &Self) -> bool {
         match (self, requested) {
-            (Self::On, _) | (_, Self::Off) => true,
-            (Self::Isolated, Self::Isolated) => true,
-            (Self::Isolated, Self::TcpPorts(ports)) => ports.is_empty(),
-            (Self::Off, Self::TcpPorts(ports)) => ports.is_empty(),
+            (Self::On, _) | (_, Self::Off) | (Self::Isolated, Self::Isolated) => true,
+            (Self::Isolated | Self::Off, Self::TcpPorts(ports)) => ports.is_empty(),
             (Self::TcpPorts(ceiling), Self::TcpPorts(ports)) => ports.is_subset(ceiling),
             _ => false,
         }

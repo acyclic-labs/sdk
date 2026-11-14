@@ -21,8 +21,9 @@ fn exit_event(id: u32) -> io::Result<OwnedFd> {
     if descriptor < 0 {
         return Err(io::Error::last_os_error());
     }
+    let descriptor = i32::try_from(descriptor).map_err(io::Error::other)?;
     // SAFETY: pidfd_open returned this fresh descriptor.
-    Ok(unsafe { OwnedFd::from_raw_fd(descriptor as i32) })
+    Ok(unsafe { OwnedFd::from_raw_fd(descriptor) })
 }
 
 fn exited(event: &OwnedFd, timeout: i32) -> io::Result<bool> {
@@ -32,6 +33,7 @@ fn exited(event: &OwnedFd, timeout: i32) -> io::Result<bool> {
         revents: 0,
     };
     // One OS event wait. A deadline only fails the proof, never establishes it.
+    // SAFETY: interest is one live, exclusively borrowed pollfd.
     let count = unsafe { libc::poll(&raw mut interest, 1, timeout) };
     if count < 0 {
         return Err(io::Error::last_os_error());
@@ -108,25 +110,21 @@ fn concurrent_admission_survives_startup_and_last_owner_retirement()
     // bind it without entering the owner's private directory. Keep it bound
     // but not listening, so any regression fails instead of awaiting a peer.
     let reserved = socket()?;
+    // SAFETY: all-zero is valid address storage, including the abstract NUL.
     let mut legacy: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    legacy.sun_family = libc::AF_UNIX as _;
+    legacy.sun_family = libc::sa_family_t::try_from(libc::AF_UNIX)?;
     let name = format!(
         "acyclic-packet-device-v1-{}-{}",
         crate::private_file::effective_user(),
         namespace("mnt")?
     );
     for (slot, byte) in legacy.sun_path[1..].iter_mut().zip(name.bytes()) {
-        *slot = byte as _;
+        *slot = libc::c_char::from_ne_bytes([byte]);
     }
     let length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + 1 + name.len();
-    if unsafe {
-        libc::bind(
-            reserved.as_raw_fd(),
-            (&raw const legacy).cast(),
-            length as _,
-        )
-    } < 0
-    {
+    let length = libc::socklen_t::try_from(length)?;
+    // SAFETY: legacy is live, initialized address storage of at least length bytes.
+    if unsafe { libc::bind(reserved.as_raw_fd(), (&raw const legacy).cast(), length) } < 0 {
         return Err(io::Error::last_os_error().into());
     }
 
@@ -255,6 +253,7 @@ fn runtime_appearance_and_read_only_home() -> Result<(), Box<dyn std::error::Err
     let flags = libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC;
     // This test already owns fresh user/mount/network namespaces. Supply an
     // account home without accessing or changing the original account files.
+    // SAFETY: every argument is a live NUL-terminated string or null.
     if unsafe {
         libc::mount(
             c"tmpfs".as_ptr(),
@@ -282,6 +281,7 @@ fn runtime_appearance_and_read_only_home() -> Result<(), Box<dyn std::error::Err
     // Clone the view first: even a bind remount refuses read-only mode while
     // that same mount owns the host's writable descriptor. The clone has no
     // writers, retains exactly the original inodes, and supplies the RO view.
+    // SAFETY: every argument is a live NUL-terminated string or null.
     if unsafe {
         libc::mount(
             target.as_ptr(),
@@ -294,6 +294,7 @@ fn runtime_appearance_and_read_only_home() -> Result<(), Box<dyn std::error::Err
     {
         return Err(format!("clone original home view: {}", io::Error::last_os_error()).into());
     }
+    // SAFETY: every argument is a live NUL-terminated string or null.
     if unsafe {
         libc::mount(
             std::ptr::null(),

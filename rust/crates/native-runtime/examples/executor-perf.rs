@@ -16,7 +16,10 @@ where
         times.push(start.elapsed().as_nanos());
     }
     times.sort_unstable();
-    Ok(times[samples / 2])
+    times
+        .get(samples / 2)
+        .copied()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no samples"))
 }
 
 async fn operation(kind: &str) {
@@ -25,8 +28,8 @@ async fn operation(kind: &str) {
         "yield" => tokio::task::yield_now().await,
         "oneshot" => {
             let (send, receive) = tokio::sync::oneshot::channel();
-            send.send(7).unwrap();
-            assert_eq!(receive.await.unwrap(), 7);
+            assert!(send.send(7).is_ok());
+            assert_eq!(receive.await, Ok(7));
         }
         "notify" => {
             let notify = tokio::sync::Notify::new();
@@ -76,9 +79,12 @@ fn main() -> io::Result<()> {
                 acyclic_native_runtime::spawn(operation(kind)).await
             })
             .await?;
+            // Exact integer thousandths: nanosecond medians need no float.
+            let ratio = local * 1000 / floor.max(1);
             println!(
-                "op={kind} floor_p50_ns={floor} local_p50_ns={local} ratio={:.3}",
-                local as f64 / floor as f64
+                "op={kind} floor_p50_ns={floor} local_p50_ns={local} ratio={}.{:03}",
+                ratio / 1000,
+                ratio % 1000
             );
         }
         Ok::<_, io::Error>(())

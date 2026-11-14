@@ -263,8 +263,8 @@ fn outside_attributes(path: &Path, confined: bool, seed: bool) {
     let name = c"user.acyclic-private";
     let secret = b"host attribute";
     if seed {
-        // SAFETY: valid terminated names and a borrowed buffer of this length.
         assert_eq!(
+            // SAFETY: valid terminated names and a borrowed buffer of this length.
             unsafe {
                 libc::setxattr(
                     path.as_ptr(),
@@ -296,7 +296,7 @@ fn outside_attributes(path: &Path, confined: bool, seed: bool) {
                 Some(libc::EOPNOTSUPP)
             );
         } else {
-            assert_eq!(result, secret.len() as libc::c_long);
+            assert_eq!(Ok(result), libc::c_long::try_from(secret.len()));
         }
     }
     for call in [libc::SYS_listxattr, libc::SYS_llistxattr] {
@@ -442,6 +442,7 @@ fn sandbox_denies_outside_write() {
     // SAFETY: this exclusively owned fixture descriptor remains open for the
     // test. Clearing CLOEXEC makes the negative control a real ambient leak.
     assert_ne!(
+        // SAFETY: inherited is an open descriptor this test owns.
         unsafe { libc::fcntl(inherited.as_raw_fd(), libc::F_SETFD, 0) },
         -1
     );
@@ -745,7 +746,7 @@ fn scoped_native_reads_pin_the_original_parent_and_refuse_escape() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0)).unwrap();
+        std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0o000)).unwrap();
         let admitted = compose(&child);
         std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0o700)).unwrap();
         admitted.unwrap();

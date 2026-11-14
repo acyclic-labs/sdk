@@ -19,15 +19,16 @@ macro_rules! cargo_binary {
     ($name:literal, $selected:expr) => {{
         let selected = ($selected)
             .or_else(|| ::std::env::var_os(concat!("CARGO_BIN_EXE_", $name)))
-            .or_else(|| ::std::env::var_os(concat!("NEXTEST_BIN_EXE_", $name).replace('-', "_")));
-        let path = selected.map_or_else(
-            || {
-                ::std::path::PathBuf::from(option_env!(concat!("CARGO_BIN_EXE_", $name)).expect(
-                    concat!("test binary was not supplied by Cargo or nextest: ", $name),
-                ))
-            },
-            ::std::path::PathBuf::from,
-        );
+            .or_else(|| ::std::env::var_os(concat!("NEXTEST_BIN_EXE_", $name).replace('-', "_")))
+            .or_else(|| {
+                option_env!(concat!("CARGO_BIN_EXE_", $name)).map(::std::ffi::OsString::from)
+            });
+        let Some(path) = selected.map(::std::path::PathBuf::from) else {
+            panic!(concat!(
+                "test binary was not supplied by Cargo or nextest: ",
+                $name
+            ));
+        };
         assert!(
             path.is_absolute(),
             "test binary path must be absolute: {}",

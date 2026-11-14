@@ -6,10 +6,12 @@ pub fn check(bytes: &[u8]) {
     let Ok(reference) = serde_json::from_slice::<SigningKeyReference>(bytes) else {
         return;
     };
-    let encoded = serde_json::to_vec(&reference).unwrap();
+    let encoded = serde_json::to_vec(&reference);
+    assert!(encoded.is_ok(), "a decoded reference must encode");
+    let encoded = encoded.unwrap_or_default();
     assert_eq!(
-        serde_json::from_slice::<SigningKeyReference>(&encoded).unwrap(),
-        reference
+        serde_json::from_slice::<SigningKeyReference>(&encoded).ok(),
+        Some(reference)
     );
     let root = Path::new(if cfg!(windows) {
         r"C:\reference-oracle"
@@ -22,11 +24,15 @@ pub fn check(bytes: &[u8]) {
         !(first.is_ok() && second.is_ok()),
         "one signing reference admitted different custody stores"
     );
-    let mut unknown: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
-    unknown["unrecognized"] = true.into();
-    assert!(serde_json::from_value::<SigningKeyReference>(unknown).is_err());
-    let mut future: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
-    let value = future.as_object_mut().unwrap().remove("v2").unwrap();
-    future["v3"] = value;
-    assert!(serde_json::from_value::<SigningKeyReference>(future).is_err());
+    let fields: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_slice(&encoded).unwrap_or_default();
+    assert_eq!(fields.keys().collect::<Vec<_>>(), ["v2"]);
+    let mut unknown = fields.clone();
+    unknown.insert("unrecognized".into(), true.into());
+    assert!(serde_json::from_value::<SigningKeyReference>(unknown.into()).is_err());
+    let mut future = fields;
+    if let Some(value) = future.remove("v2") {
+        future.insert("v3".into(), value);
+    }
+    assert!(serde_json::from_value::<SigningKeyReference>(future.into()).is_err());
 }

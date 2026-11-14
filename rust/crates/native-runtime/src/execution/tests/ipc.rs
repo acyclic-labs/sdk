@@ -231,8 +231,8 @@ fn local_probe() {
             );
         }
         "setpgid" => {
-            // SAFETY: zero selects the calling process and its own new group.
             assert_eq!(
+                // SAFETY: zero selects the calling process and its own new group.
                 unsafe { libc::setpgid(0, 0) },
                 0,
                 "{}",
