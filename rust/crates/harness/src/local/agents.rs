@@ -788,7 +788,9 @@ impl LocalHarness {
             #[cfg(any(test, not(target_arch = "wasm32")))]
             let context = if let Some(workspace) = &self.workspace {
                 let view = if project == &self.project {
-                    workspace.view().clone()
+                    workspace
+                        .project_view(&project.storage_name(&mut None)?)
+                        .await?
                 } else {
                     workspace.spawned_project_view(project).await?
                 };
