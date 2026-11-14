@@ -107,10 +107,10 @@ pub use commit::{
     set_peer_membership, spawn, submit,
 };
 pub use driver::{
-    COMPACT_INSTRUCTION, ConversationEntry, ExecutorDriver, NOTICE_MEDIA_TYPE, OpenControl,
-    OpenTriage, OpenTurn, TurnHost, TurnIdentity, TurnOutcome, TurnOutputs, USER_INPUT_MEDIA_TYPE,
-    approval_intent, encode_user_input, expand_attachments, model_input, model_input_at,
-    turn_announcements, turn_id, turn_notices, turn_segment,
+    COMPACT_INSTRUCTION, ConversationEntry, ConversationRecord, ExecutorDriver, NOTICE_MEDIA_TYPE,
+    OpenControl, OpenTriage, OpenTurn, TurnHost, TurnIdentity, TurnOutcome, TurnOutputs,
+    USER_INPUT_MEDIA_TYPE, approval_intent, encode_user_input, expand_attachments, model_input,
+    model_input_at, turn_announcements, turn_id, turn_notices, turn_segment,
 };
 pub use handler::{AgentHandler, Companions, INBOX};
 pub(crate) use handler::{Agents, observe_state};

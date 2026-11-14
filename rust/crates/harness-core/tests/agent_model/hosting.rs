@@ -2686,7 +2686,7 @@ async fn conversation_creation_wait_retains_member_absence_diagnostics() -> Resu
         provider.clone(),
         super::script(vec![TurnStep {
             checkpoint: None,
-            outs: vec![Out::Conversation(b"answer".to_vec())],
+            outs: vec![super::entry("answer")],
             wait: Wait::Input,
             drops: None,
         }]),
@@ -2721,14 +2721,13 @@ async fn conversation_creation_wait_retains_member_absence_diagnostics() -> Resu
     .await?;
     assert!(host.runtime().drain().await.is_empty());
     let mut conversation = waiting.await?;
-    assert_eq!(
-        conversation
-            .try_next()
-            .await?
-            .ok_or("missing conversation")?
-            .value
-            .as_ref(),
-        b"answer"
-    );
+    let record = conversation
+        .try_next()
+        .await?
+        .ok_or("missing conversation")?;
+    assert!(super::names(
+        &[record.value.as_ref().to_vec()],
+        &["answer"]
+    )?);
     Ok(())
 }

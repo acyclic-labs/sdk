@@ -2,7 +2,7 @@
 use super::{agents::settled, scripted, volume, volume_config};
 use crate::{
     Error, Result,
-    agent::{AgentPath, HistoryCheckpoint, SpawnVolumes},
+    agent::{AgentPath, AgentRecord as _, ConversationEntry, HistoryCheckpoint, SpawnVolumes},
 };
 use acyclic_actors::guest::Composer;
 use acyclic_fs::{CancellationToken, FilesystemCommit, WorkBudget};
@@ -135,7 +135,11 @@ async fn a_refused_history_preparation_can_select_a_new_project_generation() -> 
     let participant = composer
         .bind(
             &parent,
-            &mut [crate::agent::Out::Conversation(entry.clone())],
+            &mut [crate::agent::Out::Conversation(
+                ConversationEntry::decode(entry)
+                    .and_then(|entry| entry.record())
+                    .map_err(storage)?,
+            )],
         )
         .map_err(storage)?
         .ok_or_else(|| Error::Invalid("conversation has no volume participant".into()))?;

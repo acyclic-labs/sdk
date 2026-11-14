@@ -108,7 +108,7 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
         let super::Out::Conversation(record) = out else {
             continue;
         };
-        let entry = super::ConversationEntry::decode(record)?;
+        let entry = super::ConversationEntry::decode(record.as_bytes())?;
         completed.insert(entry.inbox);
         let Some(cut) = entry.steering else { continue };
         // Settlement carries its complete admitted interval. A parked turn's

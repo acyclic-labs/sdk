@@ -363,7 +363,7 @@ fn spawning(mut state: AgentState, name: &str) -> Step {
     state.status_tail += 1;
     Step {
         outs: vec![
-            Out::Conversation(b"c3".to_vec()),
+            entry("c3"),
             Out::Spawn {
                 profile: None,
                 history: None,
@@ -510,14 +510,70 @@ struct Scripted(Mutex<VecDeque<TurnStep>>);
 impl TurnDriver for Scripted {
     fn step<'a>(
         &'a self,
-        _agent: &'a AgentState,
+        agent: &'a AgentState,
         _cursor: u64,
-        _input: Option<Queued>,
+        input: Option<Queued>,
         _cancellation: acyclic_actors::guest::CancellationToken,
     ) -> TurnFuture<'a> {
         let next = self.0.lock().expect("script lock").pop_front();
-        Box::pin(async move { next.ok_or(Error::Record("script exhausted")) })
+        Box::pin(async move {
+            let mut next = next.ok_or(Error::Record("script exhausted"))?;
+            // A scripted entry settles the input its turn actually admitted.
+            if let Some(queued) = &input {
+                for out in &mut next.outs {
+                    if let Out::Conversation(record) = out {
+                        let mut entry = ConversationEntry::decode(record.as_bytes())?;
+                        entry.inbox = queued.inbox;
+                        entry.input = queued.input.clone();
+                        *record = entry.with_observed_prefix(agent.steered_through).record()?;
+                    }
+                }
+            }
+            Ok(next)
+        })
     }
+}
+
+/// A completed entry whose output names `text`, settling `queued` when given.
+/// `Scripted` binds its entries to the input each turn admits.
+fn entry_for(queued: Option<&Queued>, text: &str) -> Out {
+    let (inbox, input) = queued.map_or_else(
+        || (0, TurnInput::Approval { id: intent(text) }),
+        |queued| (queued.inbox, queued.input.clone()),
+    );
+    Out::Conversation(
+        ConversationEntry {
+            observed_through: inbox + 1,
+            inbox,
+            input,
+            output: driver::file(text).expect("fixture output"),
+            outcome: TurnOutcome::Completed,
+            goal: None,
+            announcements: Vec::new(),
+            tool_results: None,
+            steering: None,
+            notices: None,
+        }
+        .record()
+        .expect("fixture entry"),
+    )
+}
+
+fn entry(text: &str) -> Out {
+    entry_for(None, text)
+}
+
+/// Whether each conversation record is a fixture entry naming `texts` in order.
+fn names(records: &[Vec<u8>], texts: &[&str]) -> Result<bool> {
+    let outputs = records
+        .iter()
+        .map(|record| Ok(ConversationEntry::decode(record)?.output))
+        .collect::<Result<Vec<_>>>()?;
+    let expected = texts
+        .iter()
+        .map(|text| driver::file(text))
+        .collect::<acyclic_harness_core::Result<Vec<_>>>()?;
+    Ok(outputs == expected)
 }
 
 fn script(steps: Vec<TurnStep>) -> Scripted {
@@ -538,7 +594,6 @@ async fn a_checkpoint_is_indexed_with_its_append_and_inherited_at_a_spawn() -> R
         let parent = AgentPath::root(&id(1));
         let (path, mut state) = child_of(&parent, 2)?;
         state.conversation_tail = initial_tail;
-        let entry = |text: &str| Out::Conversation(text.as_bytes().to_vec());
         let driver = script(vec![
             TurnStep {
                 checkpoint: None,
@@ -603,7 +658,7 @@ async fn done_reports_to_the_parent_exactly_once() -> Result {
     let (path, state) = child_of(&parent, 2)?;
     let driver = script(vec![TurnStep {
         checkpoint: None,
-        outs: vec![Out::Conversation(b"answer".to_vec())],
+        outs: vec![entry("answer")],
         wait: Wait::Done(AgentOutcome::Succeeded { result: None }),
         drops: None,
     }]);
@@ -654,7 +709,7 @@ async fn a_logical_step_retains_its_driver_state_before_host_checkpoint_admissio
     state.awaited = true;
     let driver = script(vec![TurnStep {
         checkpoint: Some(vec![7; 2 * acyclic_stream::MAX_RECORD_BYTES]),
-        outs: vec![Out::Conversation(b"partial".to_vec()), Out::Checkpoint],
+        outs: vec![entry("partial"), Out::Checkpoint],
         wait: Wait::Continue,
         drops: None,
     }]);
@@ -712,11 +767,12 @@ async fn a_logical_step_retains_its_driver_state_before_host_checkpoint_admissio
             ..
         }
     )));
-    assert!(
-        stepped
-            .outs
-            .contains(&Out::Conversation(b"partial".to_vec()))
-    );
+    assert!(stepped.outs.iter().any(|out| matches!(
+        out,
+        Out::Conversation(record)
+            if ConversationEntry::decode(record.as_bytes())
+                .is_ok_and(|entry| driver::file("partial").is_ok_and(|file| file == entry.output))
+    )));
     Ok(())
 }
 
@@ -1207,12 +1263,19 @@ async fn a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it() -> R
 async fn a_driver_effect_no_record_can_carry_fails_the_turn_instead_of_wedging_it() -> Result {
     let parent = AgentPath::root(&id(1));
     let (path, state) = child_of(&parent, 2)?;
-    let oversized = vec![b'x'; acyclic_stream::MAX_RECORD_BYTES + 1];
+    // An archive is never an inbox send; a conversation record is
+    // always carried (`ConversationRecord` is a bounded entry by construction).
     let driver = script(vec![TurnStep {
         checkpoint: None,
         outs: vec![
-            Out::Conversation(oversized),
-            Out::Conversation(b"fits".to_vec()),
+            Out::Send {
+                to: parent.clone(),
+                record: InboxRecord::Archive(Control {
+                    by: Sender::Agent { path: path.clone() },
+                    id: intent("forged"),
+                }),
+            },
+            entry("fits"),
         ],
         wait: Wait::Input,
         drops: None,

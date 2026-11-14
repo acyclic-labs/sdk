@@ -467,7 +467,7 @@ impl HostDriver {
             notices: None,
         }
         .with_observed_prefix(agent.steered_through);
-        outs.push(Out::Conversation(entry.encode().map_err(storage)?));
+        outs.push(Out::Conversation(entry.record().map_err(storage)?));
         Ok(TurnStep {
             drops,
             ..idle(outs)

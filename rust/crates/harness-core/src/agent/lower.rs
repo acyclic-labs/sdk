@@ -228,7 +228,7 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                 );
             }
             Out::Conversation(record) => {
-                builder.append(conversation.clone(), record.clone());
+                builder.append(conversation.clone(), record.as_bytes().to_vec());
                 sequence = sequence
                     .checked_add(1)
                     .ok_or(Error::Record("agent conversation tail overflow"))?;

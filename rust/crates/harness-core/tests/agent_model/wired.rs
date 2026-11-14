@@ -448,7 +448,7 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
             .outs
             .iter()
             .filter_map(|out| match out {
-                Out::Conversation(bytes) => Some(ConversationEntry::decode(bytes)),
+                Out::Conversation(bytes) => Some(ConversationEntry::decode(bytes.as_bytes())),
                 _ => None,
             })
             .collect::<std::result::Result<_, _>>()?;
@@ -2014,7 +2014,7 @@ async fn admitted_root_after_its_child(
             return Err(format!("child did not settle: {:?}", settled.state.phase).into());
         }
         let Some(result) = settled.outs.iter().find_map(|out| match out {
-            Out::Conversation(bytes) => ConversationEntry::decode(bytes)
+            Out::Conversation(bytes) => ConversationEntry::decode(bytes.as_bytes())
                 .ok()
                 .map(|entry| Box::new(entry.output)),
             _ => None,

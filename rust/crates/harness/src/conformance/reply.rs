@@ -103,7 +103,7 @@ fn settle(inbox: u64, input: TurnInput) -> std::result::Result<TurnStep, Error> 
     .with_observed_prefix(0);
     Ok(TurnStep {
         checkpoint: None,
-        outs: vec![Out::Conversation(entry.encode()?)],
+        outs: vec![Out::Conversation(entry.record()?)],
         wait: Wait::Input,
         drops: None,
     })

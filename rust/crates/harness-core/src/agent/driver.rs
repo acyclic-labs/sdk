@@ -497,7 +497,25 @@ pub struct ConversationEntry {
     pub notices: Option<super::NoticeSelection>,
 }
 
+/// An encoded [`ConversationEntry`], the only record a conversation holds.
+/// Only [`ConversationEntry::record`] builds one, so every conversation
+/// append decodes as an entry and fits the agent record bound.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConversationRecord(Vec<u8>);
+
+impl ConversationRecord {
+    /// The canonical encoded entry.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
 impl ConversationEntry {
+    /// This entry as the record its conversation append carries.
+    pub fn record(&self) -> Result<ConversationRecord, Error> {
+        self.encode().map(ConversationRecord)
+    }
+
     /// Whether this immutable turn admitted an ordinary steering message.
     /// Reserved follow-ups inside the cursor retain their independent turns.
     pub(crate) fn admits_steering_message(&self, inbox: u64) -> bool {
@@ -994,7 +1012,7 @@ async fn settle_selection(
 fn appended(agent: &AgentState, entry: &ConversationEntry) -> Result<Vec<Out>, Error> {
     let turn = turn_id(agent, &entry.input)?;
     let mut outs = vec![
-        Out::Conversation(entry.encode()?),
+        Out::Conversation(entry.record()?),
         Out::TurnDone {
             turn,
             run: entry.goal.unwrap_or(turn),
@@ -1158,7 +1176,7 @@ async fn settle_effects(
             _ => None,
         })
     {
-        let entry = ConversationEntry::decode(bytes)?;
+        let entry = ConversationEntry::decode(bytes.as_bytes())?;
         // Continuing goals publish their completion only with the final turn.
         if (entry.goal.is_none()
             || step

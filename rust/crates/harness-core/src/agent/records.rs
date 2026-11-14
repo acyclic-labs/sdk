@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 /// maxima, texts by their own limits), so every record a step builds is
 /// within this; `checkpoint`'s bound test checks each kind at its worst.
 pub const MAX_RECORD_BYTES: usize = 56 * 1024;
+const _: () = assert!(MAX_RECORD_BYTES <= acyclic_stream::MAX_RECORD_BYTES);
 /// Largest external intent identity or spawn-name base. Generated spawn intents
 /// append a separator and a canonical nonzero `u64` generation.
 pub const MAX_INTENT_BYTES: usize = 128;

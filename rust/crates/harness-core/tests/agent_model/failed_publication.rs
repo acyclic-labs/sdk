@@ -282,7 +282,7 @@ impl TurnDriver for Parent {
         &'a self,
         agent: &'a AgentState,
         _: u64,
-        _: Option<Queued>,
+        input: Option<Queued>,
         _: CancellationToken,
     ) -> TurnFuture<'a> {
         Box::pin(async move {
@@ -290,7 +290,7 @@ impl TurnDriver for Parent {
                 .path
                 .child(&AgentId::derive(&agent.path.id(), "child"))?;
             let (outs, wait) = if agent.parent.is_some() {
-                (vec![Out::Conversation(b"refused".to_vec())], Wait::Input)
+                (vec![entry_for(input.as_ref(), "refused")], Wait::Input)
             } else if agent.turn.is_none() {
                 (
                     vec![Out::Spawn {
