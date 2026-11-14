@@ -291,18 +291,6 @@ impl<'io> StockExecution<'io> {
         );
         let result = match execution {
             Ok(Some(result)) => result,
-            Err(error @ Error::InteractionRejected(crate::InteractionRejection::Cancelled)) => {
-                self.reject_tool_call(
-                    journal,
-                    operation_id,
-                    step,
-                    &invocation.call_id,
-                    ToolFailureKind::Interrupted,
-                    error,
-                )
-                .await?;
-                return Ok(ToolInvocationOutcome::Interrupted);
-            }
             // Unknown completion retains the original invocation for later
             // reconciliation; it does not establish a terminal tool failure.
             Ok(None) | Err(Error::Indeterminate(_)) => {

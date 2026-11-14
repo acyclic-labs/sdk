@@ -215,6 +215,8 @@ async fn tool_refusals_and_failures_settle_and_only_harness_faults_end_the_turn(
         || Error::Unauthorized("file tool requires original source read grant".into());
     let missing: fn() -> Error = || Error::NotFound("src/lib.rs".into());
     let invalid: fn() -> Error = || Error::Invalid("tool arguments are malformed".into());
+    let cancelled: fn() -> Error =
+        || Error::InteractionRejected(crate::InteractionRejection::Cancelled);
     let process: fn() -> Error = || {
         Error::Process(crate::ProcessError::NotFound {
             exit_code: None,
@@ -262,6 +264,10 @@ async fn tool_refusals_and_failures_settle_and_only_harness_faults_end_the_turn(
             (
                 invalid,
                 Some("tool execution failed: invalid request: tool arguments are malformed"),
+            ),
+            (
+                cancelled,
+                Some("tool execution failed: interaction cancelled"),
             ),
             (
                 refused,

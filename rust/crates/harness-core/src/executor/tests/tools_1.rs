@@ -1268,6 +1268,10 @@ async fn cancelled_tool_effects_are_reconciled_and_definitive_failures_are_not()
     let rejected = rejected?;
     assert_eq!(rejected, replay?);
     assert_eq!((calls, reconciles), (1, 0));
+    let (rejected, replay, calls, reconciles) =
+        outcome(|| Error::InteractionRejected(crate::InteractionRejection::Cancelled)).await?;
+    assert_eq!(rejected?, replay?);
+    assert_eq!((calls, reconciles), (1, 0));
     let (rejected, replay, calls, reconciles) = outcome(|| Error::ToolRejected {
         code: crate::wire::ErrorCode::Conflict,
         reason: "exact edit text is ambiguous",
