@@ -290,7 +290,7 @@ pub fn encode_socket_request(command: JsValue, body: Vec<u8>) -> Result<Vec<u8>,
 pub fn decode_socket_reply(bytes: &[u8]) -> Result<JsValue, JsValue> {
     let (reply, body) = guest::decode_socket_reply(bytes).map_err(guest_error)?;
     let reply = reply
-        .serialize(&serde_wasm_bindgen::Serializer::new().serialize_missing_as_null(true))
+        .serialize(&serde_wasm_bindgen::Serializer::new())
         .map_err(|_| js_error("invalid_argument", "socket result does not encode"))?;
     Ok(object(&[
         ("reply", reply),
