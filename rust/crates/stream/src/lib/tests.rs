@@ -793,7 +793,6 @@ mod indexed_trace_tests {
                 Default::default(),
             )
             .await?;
-        let original_head = provider.head(data.path().clone()).await?;
         let child_request = ChildrenPageRequest {
             offset: 0,
             tail_stream: None,
@@ -873,6 +872,7 @@ mod indexed_trace_tests {
                 )
                 .await?;
         }
+        let original_head = provider.head(data.path().clone()).await?;
         let child = Stream::new(provider.clone(), "agents/worker/data/a")?;
         let direct_append = root
             .within(provider.append(AppendRequest {
