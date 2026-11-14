@@ -364,6 +364,65 @@ async fn socket_host_packets_keep_actor_ownership_binary_and_hibernation_state()
 }
 
 #[tokio::test]
+async fn independent_hosts_keep_same_actor_socket_ids_and_attachments_distinct() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let actor = ActorReference::new(b"account", b"sockets", b"shared-owner-ids")?;
+    let inbox = StreamPath::new("close/shared-owner-ids")?;
+    let mut connections = BTreeSet::new();
+    let mut hosts: Vec<(Sockets<MemoryStream>, WebSocketId)> = Vec::new();
+    let mut peers = Vec::new();
+    // Every fresh owner starts at incarnation 1, counter 0. More owners than
+    // shard choices deterministically exposes IDs that contain only the shard.
+    for owner in 0..=OWNER_SHARDS {
+        let sockets = Sockets::open(
+            Store::new(provider.clone(), root()?),
+            StreamPath::new(format!("hosts/{owner}/sockets/v1"))?,
+            Arc::new(PlatformExecutor),
+            Arc::new(SystemClock),
+        )
+        .await?;
+        let (connection, _, last, frames) =
+            admitted_close_fixture(&sockets, "shared-owner-ids").await?;
+        assert!(
+            connections.insert(connection.clone()),
+            "independent hosts reused an actor-visible socket ID: {connection}"
+        );
+        let socket = WebSocketId(connection);
+        let attachment = Bytes::from(owner.to_be_bytes().to_vec());
+        sockets.serialize_attachment(&actor, &socket, attachment.clone())?;
+        assert_eq!(sockets.get_web_sockets(&actor, None)?, vec![socket.clone()]);
+        assert_eq!(
+            sockets.deserialize_attachment(&actor, &socket)?,
+            Some(attachment)
+        );
+        for (other, other_socket) in &hosts {
+            assert!(
+                sockets
+                    .deserialize_attachment(&actor, other_socket)
+                    .is_err()
+            );
+            assert!(other.deserialize_attachment(&actor, &socket).is_err());
+        }
+        peers.push((last, frames));
+        hosts.push((sockets, socket));
+    }
+    let first = &hosts[0].0;
+    assert_eq!(
+        records(&first.shared.store, &inbox).await?.len(),
+        hosts.len()
+    );
+    for (sockets, _) in &hosts {
+        sockets.drain().await.map_err(|error| error.to_string())?;
+    }
+    assert_eq!(
+        records(&first.shared.store, &inbox).await?.len(),
+        hosts.len() * 2,
+        "every independent Open has exactly one Close"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn recovery_fences_only_the_selected_hosts_socket_ledger() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let first_root = StreamPath::new("hosts/first/sockets/v1")?;
