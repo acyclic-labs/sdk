@@ -414,6 +414,23 @@ impl StockExecutor {
 }
 
 impl Executor for StockExecutor {
+    fn settle_invocation<'a, 'io: 'a>(
+        &'io self,
+        journal: &'a dyn ExecutionJournal,
+        parent: (OperationId, u32),
+        call: (ToolInvocation, Arc<crate::tool::Tool>),
+        metadata: &'a Value,
+        hook_context: &'a mut Vec<ModelMessage>,
+        io: Option<&'io PreparationIo>,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            ExecutionProgress<Option<ToolCallSettlement<'io>>>,
+        >,
+    > {
+        StockExecutor::settle_invocation(self, journal, parent, call, metadata, hook_context, io)
+    }
+
     fn execute<'a>(
         &'a self,
         input: TurnInput,
