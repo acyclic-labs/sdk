@@ -310,10 +310,6 @@ codegen-units = 64
 # test-binary digests never split on it. Panic messages keep their file:line.
 debug = false
 
-# Keep workspace test builds at Cargo's default optimization level.
-[profile.test]
-opt-level = 0
-
 [profile.dev.package.acyclic-fs-wire]
 opt-level = 0
 
