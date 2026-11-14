@@ -84,7 +84,7 @@ impl MemoryStream {
         let path = state
             .paths
             .get(&request.path)
-            .ok_or(StreamError::NotFound)?;
+            .ok_or_else(|| { eprintln!("C7NF {}:{} {}", file!(), line!(), std::backtrace::Backtrace::force_capture()); StreamError::NotFound })?;
         if request.from > path.tail {
             return Err(StreamError::OutOfRange);
         }
@@ -115,7 +115,7 @@ impl MemoryStream {
                 Ok::<_, StreamError>(())
             })?
             .cloned()
-            .ok_or(StreamError::NotFound)
+            .ok_or_else(|| { eprintln!("C7NF {}:{} {}", file!(), line!(), std::backtrace::Backtrace::force_capture()); StreamError::NotFound })
     }
 }
 
@@ -982,7 +982,7 @@ impl MemoryStream {
         let state = self.state.read().await;
         let path = inspect(&meter, || state.paths.get(&request.path))?;
         let Some(path) = path else {
-            return Ok(Err(StreamError::NotFound));
+            return Ok(Err({ eprintln!("C7NF {}:{} {}", file!(), line!(), std::backtrace::Backtrace::force_capture()); StreamError::NotFound }));
         };
         if request.from > path.tail {
             return Ok(Err(StreamError::OutOfRange));
@@ -1052,7 +1052,7 @@ impl MemoryStream {
         let state = self.state.read().await;
         let value = inspect(&meter, || state.tail(&path))?;
         Ok(value
-            .ok_or(StreamError::NotFound)
+            .ok_or_else(|| { eprintln!("C7NF {}:{} {}", file!(), line!(), std::backtrace::Backtrace::force_capture()); StreamError::NotFound })
             .map(|value| crate::NativeStreamOutput::new(value, ReadAllocation::empty(&meter))))
     }
     pub(crate) async fn native_inspect_idempotency_inner(

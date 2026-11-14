@@ -224,7 +224,7 @@ impl MemoryStream {
                 .paths
                 .contains_key(crate::CommitCondition::path(condition))
             {
-                return Err(StreamError::NotFound);
+                return Err({ eprintln!("C7NF {}:{} {}", file!(), line!(), std::backtrace::Backtrace::force_capture()); StreamError::NotFound });
             }
             if self.condition_conflict(state, condition)?.is_some() {
                 return Err(StreamError::OutOfRange);

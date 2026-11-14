@@ -28,7 +28,7 @@ impl HistoryCursor {
                 cursor.awaiting_creation = true;
                 Ok(cursor)
             }
-            None => Err(StreamError::NotFound),
+            None => Err({ eprintln!("C7NF {}:{} {}", file!(), line!(), std::backtrace::Backtrace::force_capture()); StreamError::NotFound }),
         }
     }
     async fn observe_creation(

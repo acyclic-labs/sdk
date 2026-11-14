@@ -9,7 +9,7 @@ fn follow_selection(
         return Err(StreamError::InvalidArgument);
     }
     if until.is_some() && snapshot.is_none() {
-        return Err(StreamError::NotFound);
+        return Err({ eprintln!("C7NF {}:{} {}", file!(), line!(), std::backtrace::Backtrace::force_capture()); StreamError::NotFound });
     }
     // A bounded follow is a read, which cannot start beyond the tail. Only a
     // live follow waits there for record `from`.
@@ -91,6 +91,7 @@ impl MemoryStream {
             let path = path.ok_or(if anchor.is_some() {
                 StreamError::PrefixNotRetained
             } else {
+                eprintln!("C7NF {}:{} {}", file!(), line!(), std::backtrace::Backtrace::force_capture());
                 StreamError::NotFound
             })?;
             if let Some(anchor) = anchor {

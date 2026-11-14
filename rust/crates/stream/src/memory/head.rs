@@ -19,12 +19,12 @@ impl Namespace {
         let mut parts = path.as_str().split('/');
         let first = parts.next().ok_or(StreamError::InvalidPath)?;
         examine()?;
-        let mut node = lookup(&self.roots, first).ok_or(StreamError::NotFound)?;
+        let mut node = lookup(&self.roots, first).ok_or_else(|| { eprintln!("C7NF {}:{} {}", file!(), line!(), std::backtrace::Backtrace::force_capture()); StreamError::NotFound })?;
         let mut end = first.len();
         let mut selected = node.origin.as_ref().map(|origin| (origin, end));
         for part in parts {
             examine()?;
-            node = lookup(&node.children, part).ok_or(StreamError::NotFound)?;
+            node = lookup(&node.children, part).ok_or_else(|| { eprintln!("C7NF {}:{} {}", file!(), line!(), std::backtrace::Backtrace::force_capture()); StreamError::NotFound })?;
             end += 1 + part.len();
             if let Some(origin) = &node.origin
                 && selected.is_none_or(|(previous, _)| origin.decision >= previous.decision)

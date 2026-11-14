@@ -240,7 +240,7 @@ impl MemoryStream {
                 let source = state
                     .paths
                     .get(&fork.source)
-                    .ok_or(StreamError::NotFound)?
+                    .ok_or_else(|| { eprintln!("C7NF {}:{} {}", file!(), line!(), std::backtrace::Backtrace::force_capture()); StreamError::NotFound })?
                     .history
                     .clone();
                 Some(Arc::new(History::Prefix {
@@ -847,7 +847,7 @@ fn stage_namespace(
                 let subtree = state
                     .paths
                     .node(&fork.source)
-                    .ok_or(StreamError::NotFound)?
+                    .ok_or_else(|| { eprintln!("C7NF {}:{} {}", file!(), line!(), std::backtrace::Backtrace::force_capture()); StreamError::NotFound })?
                     .clone();
                 #[cfg(all(loom, not(target_arch = "wasm32")))]
                 let subtree =

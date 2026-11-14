@@ -59,6 +59,7 @@ impl MemoryStream {
             let path = path.ok_or(if anchor.is_some() {
                 StreamError::PrefixNotRetained
             } else {
+                eprintln!("C7NF {}:{} {}", file!(), line!(), std::backtrace::Backtrace::force_capture());
                 StreamError::NotFound
             })?;
             if let Some(anchor) = anchor {
