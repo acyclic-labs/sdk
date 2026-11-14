@@ -282,6 +282,10 @@ pub fn check(bytes: &[u8]) -> bool {
         Some(Err(StreamError::LimitExceeded)) => {}
         Some(Err(_)) | None => return false,
     }
+    retained_facts(bytes)
+}
+
+fn retained_facts(bytes: &[u8]) -> bool {
     let observation = persistence::decode_observation(bytes, usize::MAX);
     if !truncated_header_is_invalid(bytes, persistence::OBSERVATION_DOMAIN, &observation) {
         return false;
