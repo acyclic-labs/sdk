@@ -156,24 +156,32 @@ async fn append_work_is_bounded_per_invocation_across_history() -> Result<()> {
             budget.bytes_encoded,
             "append inherited prior invocation work at step {step}"
         );
-        assert!(
-            journal
-                .append_if_tail(
-                    operation,
-                    u64::from(step) + 1,
-                    &format!("failed:{step}"),
-                    &event,
-                    Some(&io)
-                )?
-                .await
-                .inspect_err(|error| {
-                    eprintln!(
-                        "append step={step} live={} local={} error={error:?}",
-                        work.live_allocation_bytes(),
-                        io.owned_bytes().unwrap_or_default()
-                    );
-                })?
-        );
+        let appended = journal
+            .append_if_tail(
+                operation,
+                u64::from(step) + 1,
+                &format!("failed:{step}"),
+                &event,
+                Some(&io),
+            )?
+            .await;
+        let accepted = match appended {
+            Ok(accepted) => accepted,
+            Err(error) => {
+                let live = work.live_allocation_bytes();
+                // Distinguish retained journal caches from backend custody.
+                // Always return the original error; eviction cannot retry or
+                // turn an exhausted invocation into a successful append.
+                *journal.verified.lock().await = SummaryCache::default();
+                eprintln!(
+                    "append step={step} live={live} after_cache_drop={} local={} error={error:?}",
+                    work.live_allocation_bytes(),
+                    io.owned_bytes().unwrap_or_default()
+                );
+                return Err(error);
+            }
+        };
+        assert!(accepted);
         let after = io.receipt();
         // A bounded cache may read cold index pages, never a journal
         // prefix. Retry and tool-state preloads plus their two updates
