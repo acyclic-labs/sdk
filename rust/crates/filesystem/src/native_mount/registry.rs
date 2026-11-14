@@ -96,18 +96,24 @@ fn reap(directory: &Path) {
         {
             continue;
         }
-        // A live owner's lock can refuse this read; it is not reaped.
-        let Some(destination) = std::fs::read(entry.path())
-            .ok()
-            .and_then(|record| fence_destination(&record))
-        else {
-            continue;
-        };
-        match super::detach_native_mount_destination_after_crash(&destination) {
+        let result = (|| {
+            let Some((destination, guard)) = locked_destination(&entry.path())? else {
+                return Ok(());
+            };
+            let original = crate::NativeMaterializationWork::new(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            ).map_err(|(error, _)| NativeMountError::from(error))?;
+            let mut owner = NativeMountRecoveryOwner::from_locked_existing(
+                &destination, guard, &original,
+            )?;
+            #[cfg(target_os = "macos")]
+            acyclic_native_runtime::initialize_native_io_services()?;
+            owner.detach(&original).map(|_| ())
+        })();
+        match result {
             Ok(()) | Err(NativeMountError::DestinationBusy) => {}
-            Err(error) => {
-                tracing::warn!(%error, destination = %destination.display(), "dead native mount was not reaped");
-            }
+            Err(error) => tracing::warn!(%error, fence = %entry.path().display(), "dead native mount was not reaped"),
         }
     }
 }
@@ -414,3 +420,65 @@ fn profile_base() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests;
+
+// The lock precedes the read and is transferred, never reacquired by name.
+// An interrupted write cannot authorize another destination's fence.
+fn locked_destination(
+    path: &Path,
+) -> Result<Option<(PathBuf, MountDestinationGuard)>, NativeMountError> {
+    use std::io::Read as _;
+    let file = super::fence::acquire_existing_mount_lock(path)?;
+    let mut record = Vec::new();
+    (&*file).read_to_end(&mut record)?;
+    let Some(destination) = fence_destination(&record) else {
+        return Ok(None);
+    };
+    if !destination.is_absolute() || destination.parent().is_none() {
+        return Ok(None);
+    }
+    let (expected, _) = MountDestinationGuard::paths_for_canonical(&destination)?;
+    if expected != path {
+        return Ok(None);
+    }
+    Ok(Some((destination, MountDestinationGuard::from_locked_existing(file, expected))))
+}
+
+#[cfg(test)]
+mod recovery_record_tests {
+    use super::*;
+
+    #[test]
+    fn recovery_requires_original_locked_fence_and_complete_destination()
+        -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = tempfile::tempdir()?;
+        let destination = root.path().join("complete-destination");
+        std::fs::create_dir(&destination)?;
+        let canonical = destination.canonicalize()?;
+        let mut held = MountDestinationGuard::acquire_canonical(&canonical)?;
+        let path = held.lock_path.clone();
+        #[cfg(unix)]
+        let record = fence_record(&canonical);
+        #[cfg(windows)]
+        let record = {
+            use std::os::windows::ffi::OsStrExt as _;
+            fence_record(&canonical.as_os_str().encode_wide().collect::<Vec<_>>())
+        };
+        write_fence_record(held.file.as_ref().unwrap(), &record)?;
+        assert!(matches!(locked_destination(&path), Err(NativeMountError::DestinationBusy)));
+        drop(held.file.take());
+        // A syntactically valid prefix still cannot name this original fence.
+        std::fs::write(&path, &record[..record.len() - if cfg!(windows) { 2 } else { 1 }])?;
+        assert!(locked_destination(&path)?.is_none());
+        std::fs::write(&path, &record)?;
+        let (selected, guard) = locked_destination(&path)?.expect("complete record is recoverable");
+        assert_eq!(selected, canonical);
+        assert!(matches!(locked_destination(&path), Err(NativeMountError::DestinationBusy)));
+        drop(guard);
+        drop(held);
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+}
