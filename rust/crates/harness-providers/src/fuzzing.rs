@@ -40,7 +40,7 @@ fn parse_at(
         .map_err(|error| error.to_string())
 }
 
-fn assert_chat_usage(input: &[u8], events: &[ModelEvent]) {
+fn assert_chat_usage(input: &[u8], events: &[ModelEvent]) -> ProofResult {
     // Reuse the shipped framer, then compare original wire values with the
     // adapter output. Counter consensus over output alone cannot detect loss.
     let body = Box::pin(futures::stream::once(std::future::ready(Ok(
@@ -50,11 +50,10 @@ fn assert_chat_usage(input: &[u8], events: &[ModelEvent]) {
         crate::sse::decode(body, 4096)
             .try_take_while(|data| std::future::ready(Ok(data != "[DONE]")))
             .try_collect(),
-    )
-    .expect("accepted Chat stream has valid original frames");
+    )?;
     let mut expected = None;
     for frame in frames {
-        let value = crate::json(frame.as_bytes()).expect("accepted Chat frame is JSON");
+        let value = crate::json(frame.as_bytes())?;
         if let Some(usage) = value.get("usage").and_then(serde_json::Value::as_object) {
             expected
                 .get_or_insert_with(serde_json::Map::new)
@@ -62,13 +61,14 @@ fn assert_chat_usage(input: &[u8], events: &[ModelEvent]) {
         }
     }
     let Some(ModelEvent::Completed { metadata }) = events.last() else {
-        panic!("accepted Chat stream has no completion")
+        return Err(crate::invalid("accepted Chat stream has no completion").into());
     };
     assert_eq!(
         metadata.get("usage"),
         expected.map(serde_json::Value::Object).as_ref(),
         "Chat completion lost original wire usage"
     );
+    Ok(())
 }
 
 /// Chunking cannot change acceptance, errors or the decoded events. Accepted
@@ -286,7 +286,7 @@ fn stream_round_trip(adapter: Adapter, input: &[u8]) -> ProofResult {
             crate::projection::gemini::assert_visible_replay(&events);
         }
         if adapter == Adapter::Chat {
-            assert_chat_usage(input, &events);
+            assert_chat_usage(input, &events)?;
         }
         // Identical provider bytes in a different turn must never reuse canonical
         // IDs. Bindings remain byte-for-byte equal, independently of chunking.
@@ -689,6 +689,9 @@ fn unanswered_reasoning(items: &[serde_json::Value]) -> usize {
 /// Anthropic, an odd one Gemini, and the rest is the wire message array.
 /// Validation agrees with an independent reference for turn boundaries and
 /// Gemini call/response pairing, and the production sequence fold repairs both.
+///
+/// # Panics
+/// If validation or repair disagrees with the independent turn reference.
 pub fn assert_turns(input: &[u8]) {
     let Some((&selector, input)) = input.split_first() else {
         return;
@@ -878,7 +881,7 @@ fn interrupted_results(message: &serde_json::Value) -> bool {
     parts
         .iter()
         .position(|part| !result(part))
-        .is_some_and(|first| parts[first..].iter().any(result))
+        .is_some_and(|first| parts.iter().skip(first).any(result))
 }
 
 type Key<'a> = (Option<&'a str>, Option<&'a str>);
@@ -929,7 +932,7 @@ fn unordered(model: &serde_json::Value, user: &serde_json::Value) -> bool {
     let distinct = calls
         .iter()
         .enumerate()
-        .all(|(index, call)| !calls[..index].contains(call));
+        .all(|(index, call)| !calls.iter().take(index).any(|prior| prior == call));
     let complete = calls.iter().all(|call| {
         responses
             .iter()
@@ -941,9 +944,19 @@ fn unordered(model: &serde_json::Value, user: &serde_json::Value) -> bool {
 }
 
 /// Accepted provider catalogs preserve capacities/defaults through the production parser.
+///
+/// # Panics
+/// If decoding or canonical replay changes an accepted provider catalog.
 pub fn assert_catalog_invariants(input: &[u8]) {
+    assert_eq!(
+        catalog_invariants(input).map_err(|error| format!("{error:?}")),
+        Ok(())
+    );
+}
+
+fn catalog_invariants(input: &[u8]) -> ProofResult {
     if let Ok(document) = crate::catalog_document::parse(input) {
-        let original: serde_json::Value = serde_json::from_slice(input).unwrap();
+        let original: serde_json::Value = serde_json::from_slice(input)?;
         for (name, provider) in &document.providers {
             assert_eq!(
                 original[name]
@@ -953,12 +966,13 @@ pub fn assert_catalog_invariants(input: &[u8]) {
                 "catalog HTTP host grant changed at decode"
             );
         }
-        let encoded = serde_json::to_vec(&document).unwrap();
-        let replay = crate::catalog_document::parse(&encoded).unwrap();
+        let encoded = serde_json::to_vec(&document)?;
+        let replay = crate::catalog_document::parse(&encoded)?;
         assert_eq!(document.default_model, replay.default_model);
         assert_eq!(
-            serde_json::to_value(document.providers).unwrap(),
-            serde_json::to_value(replay.providers).unwrap()
+            serde_json::to_value(document.providers)?,
+            serde_json::to_value(replay.providers)?
         );
     }
+    Ok(())
 }
