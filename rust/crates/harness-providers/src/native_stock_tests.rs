@@ -56,7 +56,7 @@ async fn every_adapter_runs_a_stock_turn_on_the_native_agent_host() -> Result<()
                     "fixture-api-key".into(),
                 )])),
                 transport.clone(),
-            );
+            )?;
             let catalog = tempfile::NamedTempFile::new().map_err(|_| invalid("fixture catalog"))?;
             std::fs::write(catalog.path(), include_str!("fixtures/luna-catalog.json"))
                 .map_err(|_| invalid("fixture catalog"))?;

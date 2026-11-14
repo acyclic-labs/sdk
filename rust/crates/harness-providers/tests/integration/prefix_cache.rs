@@ -298,7 +298,7 @@ fn registry(
     prompt_cache: PromptCache,
     transport: Arc<Scripted>,
 ) -> TestResult<Registry> {
-    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport);
+    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport)?;
     registry.register(
         "recorded".into(),
         ProviderSpec {

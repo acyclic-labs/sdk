@@ -81,7 +81,7 @@ proptest! {
     fn diagnostics_are_stable_across_json_round_trip(body in arbitrary_json()) {
         let encoded=serde_json::to_vec(&body).unwrap();
         for adapter in [Adapter::Anthropic,Adapter::Responses,Adapter::Chat,Adapter::Gemini] {
-            prop_assert!(crate::fuzzing::input_round_trip(adapter,&encoded));
+            prop_assert_eq!(crate::fuzzing::input_round_trip(adapter,&encoded).map_err(|error| format!("{error:?}")),Ok(true));
         }
     }
 }

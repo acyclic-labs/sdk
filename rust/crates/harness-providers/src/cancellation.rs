@@ -10,13 +10,18 @@ struct State {
 
 /// One waiter, with cancellation and registration in the same critical section.
 /// Lock order: this is the only lock; release it before polling or waking callers.
+/// Each update leaves the flag and optional waker independently valid. Recover
+/// a poisoned guard so an unrelated unwind cannot prevent cancellation.
 #[derive(Default)]
 pub(crate) struct Cancellation(Mutex<State>);
 
 impl Cancellation {
     pub(crate) fn cancel(&self) {
         let waiter = {
-            let mut state = self.0.lock().expect("cancellation state poisoned");
+            let mut state = self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.cancelled = true;
             state.waiter.take()
         };
@@ -29,7 +34,10 @@ impl Cancellation {
         // RawWaker clone/drop callbacks may reenter the caller, just like wake.
         let mut next = Some(cx.waker().clone());
         let result = {
-            let mut state = self.0.lock().expect("cancellation state poisoned");
+            let mut state = self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if state.cancelled {
                 Poll::Ready(())
             } else {

@@ -17,7 +17,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
     fn native_image_wire_roundtrips_every_format_and_adapter(bytes in prop::collection::vec(any::<u8>(), 0..256)) {
-        crate::projection::image::assert_roundtrip(&bytes);
+        prop_assert_eq!(crate::projection::image::assert_roundtrip(&bytes).map_err(|error| format!("{error:?}")), Ok(()));
     }
 }
 

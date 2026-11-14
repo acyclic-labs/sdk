@@ -24,16 +24,20 @@ pub struct Registry {
 impl Registry {
     /// Standard endpoints; unknown capacities must be registered explicitly.
     pub fn new(credentials: Credentials) -> Result<Self> {
-        Ok(Self::with_transport(credentials, crate::http::platform()?))
+        Self::with_transport(credentials, crate::http::platform()?)
     }
 
     /// Uses the same adapters with a caller-owned transport.
-    pub fn with_transport(credentials: Credentials, transport: Arc<dyn HttpTransport>) -> Self {
-        let providers = crate::catalog::default_catalog()
+    /// Returns the catalog initialization error before constructing a registry.
+    pub fn with_transport(
+        credentials: Credentials,
+        transport: Arc<dyn HttpTransport>,
+    ) -> Result<Self> {
+        let providers = crate::catalog::default_catalog()?
             .into_iter()
             .map(|(id, spec)| (id, Arc::new(spec)))
             .collect();
-        Self {
+        Ok(Self {
             providers,
             default_model: None,
             inputs: Arc::new(CredentialInputs::new(credentials)),
@@ -43,7 +47,7 @@ impl Registry {
             files: crate::files::Files::default(),
             #[cfg(not(target_arch = "wasm32"))]
             codex_login: None,
-        }
+        })
     }
 
     /// Inject the deployment owner's protected credential binder. It receives

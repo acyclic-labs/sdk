@@ -117,7 +117,10 @@ fn assert_ids(input: Vec<String>) {
         Adapter::Gemini,
     ] {
         let (provider, request) = history(&input, adapter);
-        CallIds::assert_round_trip(&request);
+        assert_eq!(
+            CallIds::assert_round_trip(&request).map_err(|error| format!("{error:?}")),
+            Ok(())
+        );
         let table = CallIds::new(&request, adapter).unwrap();
         let expected: Vec<String> = input
             .iter()
@@ -235,7 +238,10 @@ fn native_replay_restores_the_original_binding_for_call_and_result() {
         request.messages[1].content = ModelContent::Part(ModelContentPart::ToolCall(call.clone()));
         let table = CallIds::new(&request, adapter).unwrap();
         assert_eq!(table.wire(&call.call_id).unwrap(), "original_call");
-        CallIds::assert_round_trip(&request);
+        assert_eq!(
+            CallIds::assert_round_trip(&request).map_err(|error| format!("{error:?}")),
+            Ok(())
+        );
     }
 }
 
@@ -312,7 +318,7 @@ proptest! {
             }
             let prepared=PreparedModelRequest::prepare(request,Limits::default(),None).unwrap();
             let restored=PreparedModelRequest::decode(prepared.bytes(),Limits::default(),None).unwrap();
-            CallIds::assert_round_trip(restored.request());
+            assert_eq!(CallIds::assert_round_trip(restored.request()).map_err(|error| format!("{error:?}")), Ok(()));
             let body=projection::body(&provider,restored.request()).unwrap();
             let (projected_calls,results)=projected_ids(&body,target);
             prop_assert_eq!(projected_calls.len(),2);

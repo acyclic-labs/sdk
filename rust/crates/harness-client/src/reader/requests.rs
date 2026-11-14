@@ -47,20 +47,14 @@ impl Requests {
     }
 
     pub(super) fn set_priority(&mut self, key: &OpKey, priority: Priority) -> Option<u64> {
-        if let Some(id) = self.keys.get(key) {
-            let flight = self
-                .by_id
-                .get_mut(id)
-                .expect("live operation owns its request");
-            if flight.priority != priority {
-                self.prefetch -= usize::from(flight.priority == Priority::Prefetch);
-                flight.priority = priority;
-                self.prefetch += usize::from(priority == Priority::Prefetch);
-            }
-            Some(flight.ticket)
-        } else {
-            None
+        let id = self.keys.get(key)?;
+        let flight = self.by_id.get_mut(id)?;
+        if flight.priority != priority {
+            self.prefetch -= usize::from(flight.priority == Priority::Prefetch);
+            flight.priority = priority;
+            self.prefetch += usize::from(priority == Priority::Prefetch);
         }
+        Some(flight.ticket)
     }
 
     pub(super) fn remove(&mut self, id: &u64) -> Option<InFlight> {
@@ -71,7 +65,7 @@ impl Requests {
 
     pub(super) fn withdraw_prefetch(&mut self, key: &OpKey) -> Option<u64> {
         let id = *self.keys.get(key)?;
-        if self.by_id[&id].priority != Priority::Prefetch {
+        if self.by_id.get(&id)?.priority != Priority::Prefetch {
             return None;
         }
         self.remove(&id);

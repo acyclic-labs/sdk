@@ -246,7 +246,10 @@ impl<'a> Request<'a> {
 /// fold, as request projection pushes them. `None` when a message has a role
 /// or content shape projection never emits.
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
-pub(crate) fn replay_turns(adapter: crate::Adapter, messages: &[Value]) -> Option<Vec<Value>> {
+pub(crate) fn replay_turns(
+    adapter: crate::Adapter,
+    messages: &[Value],
+) -> acyclic_harness_core::Result<Option<Vec<Value>>> {
     replay_turns_with(adapter, messages, super::sequence::RULES)
 }
 
@@ -255,17 +258,22 @@ pub(super) fn replay_turns_with(
     adapter: crate::Adapter,
     messages: &[Value],
     rules: super::sequence::Rules,
-) -> Option<Vec<Value>> {
+) -> acyclic_harness_core::Result<Option<Vec<Value>>> {
     use crate::Adapter;
     let (field, roles) = match adapter {
         Adapter::Anthropic => ("content", ["user", "assistant"]),
         Adapter::Gemini => ("parts", ["user", "model"]),
-        Adapter::Responses | Adapter::Chat => return None,
+        Adapter::Responses | Adapter::Chat => return Ok(None),
     };
     let mut projected = Vec::new();
     for message in messages {
-        let role = roles.into_iter().find(|role| message["role"] == *role)?;
-        let parts = message[field].as_array()?.iter().cloned().map(Item::Json);
+        let Some(role) = roles.into_iter().find(|role| message["role"] == *role) else {
+            return Ok(None);
+        };
+        let Some(parts) = message[field].as_array() else {
+            return Ok(None);
+        };
+        let parts = parts.iter().cloned().map(Item::Json);
         let next = if adapter == Adapter::Anthropic {
             Message::Anthropic {
                 role,
@@ -277,11 +285,15 @@ pub(super) fn replay_turns_with(
                 parts: parts.collect(),
             }
         };
-        super::sequence::push(adapter, &mut projected, next).unwrap();
+        super::sequence::push(adapter, &mut projected, next)?;
     }
-    super::sequence::finish_with(adapter, &mut projected, rules, false).ok()?;
-    match crate::json(&serde_json::to_vec(&projected).unwrap()).unwrap() {
-        Value::Array(output) => Some(output),
-        _ => unreachable!("a message list encodes as an array"),
+    super::sequence::finish_with(adapter, &mut projected, rules, false)?;
+    let encoded =
+        serde_json::to_vec(&projected).map_err(|error| crate::invalid(error.to_string()))?;
+    match crate::json(&encoded)? {
+        Value::Array(output) => Ok(Some(output)),
+        _ => Err(crate::invalid(
+            "a replayed message list must encode as an array",
+        )),
     }
 }

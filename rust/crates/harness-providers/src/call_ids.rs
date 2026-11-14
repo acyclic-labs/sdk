@@ -192,7 +192,9 @@ impl<'a> CallIds<'a> {
     }
 
     #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
-    pub(crate) fn assert_round_trip(request: &'a ModelRequest) {
+    pub(crate) fn assert_round_trip(
+        request: &'a ModelRequest,
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
         for adapter in [
             Adapter::Anthropic,
             Adapter::Responses,
@@ -205,15 +207,15 @@ impl<'a> CallIds<'a> {
                     assert_eq!(adapter, Adapter::Gemini);
                     // Fuzzed transcripts can forge colliding native metadata.
                     // Refusal must survive the original durable codec too.
-                    let bytes = serde_json::to_vec(request).unwrap();
-                    let restored = serde_json::from_slice(&bytes).unwrap();
+                    let bytes = serde_json::to_vec(request)?;
+                    let restored = serde_json::from_slice(&bytes)?;
                     assert!(CallIds::new(&restored, adapter).is_err());
                     continue;
                 }
             };
             let mut reverse = std::collections::BTreeMap::new();
             for (&canonical, binding) in &table.0 {
-                let wire = table.wire(canonical).unwrap();
+                let wire = table.wire(canonical)?;
                 if adapter == Adapter::Gemini {
                     assert_eq!(wire, binding.native_gemini.unwrap_or(canonical));
                     continue;
@@ -229,11 +231,12 @@ impl<'a> CallIds<'a> {
                 );
             }
             for (id, _, _, _) in ids(request, adapter) {
-                let wire = table.wire(id).unwrap();
+                let wire = table.wire(id)?;
                 if adapter != Adapter::Gemini {
-                    assert_eq!(reverse[wire.as_ref()], id);
+                    assert_eq!(reverse.get(wire.as_ref()).copied(), Some(id));
                 }
             }
         }
+        Ok(())
     }
 }

@@ -294,7 +294,7 @@ fn provider(
             "conformance-public-test-key".into(),
         )])),
         transport.clone(),
-    );
+    )?;
     let config = manifest.endpoint.clone();
     require(
         config.adapter == manifest.adapter,
@@ -410,7 +410,7 @@ impl Backend for Local {
         } else {
             BTreeMap::from([("local".into(), "conformance-public-test-key".into())])
         };
-        let mut registry = Registry::with_transport(Credentials::explicit(keys), transport);
+        let mut registry = Registry::with_transport(Credentials::explicit(keys), transport)?;
         let url = &self.base_url;
         let mut spec = acyclic_harness_providers::endpoints::local(url)?;
         let manifest = &self.captured.manifest;

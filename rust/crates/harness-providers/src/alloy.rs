@@ -23,7 +23,9 @@ impl Registry {
             output_shares_context: true,
         };
         for selection in &spec.models {
-            let (provider, name) = selection.split_once('/').expect("validated model identity");
+            let (provider, name) = selection
+                .split_once('/')
+                .ok_or_else(|| invalid("alloy members require provider/model"))?;
             let entry = self
                 .catalog()
                 .get(provider)
@@ -69,7 +71,10 @@ impl ResolvedAlloy {
 
     /// Selects without I/O or mutation. Bind this provider and its real model
     /// identity into the turn; preserve the same key for retries/tool follow-ups.
-    pub fn select(&self, turn: AlloyTurn<'_>) -> &Arc<ResolvedModel> {
-        &self.models[self.spec.index(turn)]
+    /// Returns an invalid-input error if the policy cannot select a resolved member.
+    pub fn select(&self, turn: AlloyTurn<'_>) -> Result<&Arc<ResolvedModel>> {
+        self.models
+            .get(self.spec.index(turn)?)
+            .ok_or_else(|| invalid("alloy selection has no resolved model"))
     }
 }

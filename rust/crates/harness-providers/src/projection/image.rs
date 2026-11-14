@@ -49,6 +49,8 @@ pub(crate) fn part(
 mod checks;
 
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
-pub(crate) fn assert_roundtrip(input: &[u8]) {
-    checks::assert_roundtrip(input);
+pub(crate) fn assert_roundtrip(
+    input: &[u8],
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    checks::assert_roundtrip(input)
 }

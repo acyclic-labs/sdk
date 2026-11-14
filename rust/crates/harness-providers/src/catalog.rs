@@ -288,11 +288,13 @@ const MODELS: &[(&str, &str, u32, Output, ModelFeatures, bool)] = &[
 ];
 
 /// Standard endpoint policies, model capacities and capabilities as ordinary data.
-pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
+/// Returns an invalid-input error if the embedded token counter catalog cannot be decoded.
+pub fn default_catalog() -> acyclic_harness_core::Result<BTreeMap<String, ProviderSpec>> {
     let counters: BTreeMap<Adapter, Option<TokenCounterSpec>> =
-        serde_json::from_str(include_str!("token_counters.json"))
-            .expect("embedded native token counters");
-    ENDPOINTS
+        serde_json::from_str(include_str!("token_counters.json")).map_err(|error| {
+            crate::invalid(format!("invalid embedded native token counters: {error}"))
+        })?;
+    Ok(ENDPOINTS
         .iter()
         .map(|(id, adapter, authentication, base_url)| {
             let (id, adapter, base_url) = (*id, *adapter, *base_url);
@@ -355,5 +357,5 @@ pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
                 },
             )
         })
-        .collect()
+        .collect())
 }

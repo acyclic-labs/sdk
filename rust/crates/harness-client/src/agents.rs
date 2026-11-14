@@ -334,10 +334,13 @@ impl AgentClient {
     }
 
     /// Borrow the exact shared display window, including its eviction edge.
-    pub fn conversation(&self) -> &StreamView {
+    ///
+    /// Returns the session's typed `NotRequested` error if the selected view
+    /// is no longer retained.
+    pub fn conversation(&self) -> Result<&StreamView, AgentClientError> {
         self.session
             .view(&self.conversation)
-            .expect("selected conversation owns a view")
+            .ok_or_else(|| WireSessionError::NotRequested.into())
     }
 
     /// Decode only the displayed turn requested by the renderer. Reading a

@@ -122,7 +122,7 @@ fn checked(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
             assert_eq!(retained.as_encoded_bytes(), encoded.as_ref());
         }
     }
-    let protocol = websocket_protocol(request.as_str());
+    let protocol = websocket_protocol(request.as_str())?;
     let protocol_payload = protocol
         .strip_prefix("acyclic.bearer.")
         .ok_or("missing WebSocket credential prefix")?;

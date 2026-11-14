@@ -86,6 +86,12 @@ fn stream_failure(case: &'static str, error: acyclic_stream::StreamError) -> Fai
     }
 }
 
+fn conversation_view(client: &AgentClient) -> Result<&acyclic_harness_client::StreamView, Failure> {
+    client
+        .conversation()
+        .map_err(|error| observation_failure("conversation_view", error))
+}
+
 fn observation_failure(case: &'static str, error: AgentClientError) -> Failure {
     let detail = error.to_string();
     let cause = match error {
@@ -224,14 +230,14 @@ async fn verify_observation(
             }
         }
     }
-    let cursor = client.conversation().next_sequence();
-    let revision = client.conversation().revision();
+    let cursor = conversation_view(&client)?.next_sequence();
+    let revision = conversation_view(&client)?.revision();
     client
         .set_view(selection(), std::iter::empty())
         .map_err(|error| observation_failure("retain_selection", error))?;
-    if client.conversation().next_sequence() != cursor
-        || client.conversation().revision() != revision
-        || client.conversation().records().len() != 1
+    if conversation_view(&client)?.next_sequence() != cursor
+        || conversation_view(&client)?.revision() != revision
+        || conversation_view(&client)?.records().len() != 1
     {
         return Err(failure(
             "retain_selection",
@@ -260,8 +266,8 @@ async fn verify_observation(
             }
         }
         if client.session().revision() != composition
-            || client.conversation().next_sequence() != cursor
-            || client.conversation().revision() != revision
+            || conversation_view(&client)?.next_sequence() != cursor
+            || conversation_view(&client)?.revision() != revision
         {
             return Err(failure(
                 "complete_cursor_refusal",
@@ -273,11 +279,11 @@ async fn verify_observation(
     client
         .set_view(selection(), std::iter::repeat_with(selection).take(257))
         .map_err(|error| failure("retain_repeated_selection", error))?;
-    if client.conversation().next_sequence() != cursor
+    if conversation_view(&client)?.next_sequence() != cursor
         || client.selected_agents().count() != 1
         || client.agent() != &fixture.agent
-        || client.conversation().revision() != revision
-        || client.conversation().records().len() != 1
+        || conversation_view(&client)?.revision() != revision
+        || conversation_view(&client)?.records().len() != 1
     {
         return Err(failure(
             "retain_repeated_selection",
@@ -317,7 +323,8 @@ async fn verify_observation(
             std::iter::empty(),
         )
         .map_err(|error| observation_failure("reselection_cursor", error))?;
-    if client.conversation().next_sequence() != cursor || client.conversation().records().len() != 0
+    if conversation_view(&client)?.next_sequence() != cursor
+        || conversation_view(&client)?.records().len() != 0
     {
         return Err(failure(
             "reselection_cursor",

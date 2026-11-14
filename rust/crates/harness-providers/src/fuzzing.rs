@@ -40,7 +40,7 @@ fn parse_at(
         .map_err(|error| error.to_string())
 }
 
-fn assert_chat_usage(input: &[u8], events: &[ModelEvent]) {
+fn assert_chat_usage(input: &[u8], events: &[ModelEvent]) -> ProofResult {
     // Reuse the shipped framer, then compare original wire values with the
     // adapter output. Counter consensus over output alone cannot detect loss.
     let body = Box::pin(futures::stream::once(std::future::ready(Ok(
@@ -50,11 +50,10 @@ fn assert_chat_usage(input: &[u8], events: &[ModelEvent]) {
         crate::sse::decode(body, 4096)
             .try_take_while(|data| std::future::ready(Ok(data != "[DONE]")))
             .try_collect(),
-    )
-    .expect("accepted Chat stream has valid original frames");
+    )?;
     let mut expected = None;
     for frame in frames {
-        let value = crate::json(frame.as_bytes()).expect("accepted Chat frame is JSON");
+        let value = crate::json(frame.as_bytes())?;
         if let Some(usage) = value.get("usage").and_then(serde_json::Value::as_object) {
             expected
                 .get_or_insert_with(serde_json::Map::new)
@@ -62,204 +61,224 @@ fn assert_chat_usage(input: &[u8], events: &[ModelEvent]) {
         }
     }
     let Some(ModelEvent::Completed { metadata }) = events.last() else {
-        panic!("accepted Chat stream has no completion")
+        return Err(crate::invalid("accepted Chat stream has no completion").into());
     };
     assert_eq!(
         metadata.get("usage"),
         expected.map(serde_json::Value::Object).as_ref(),
         "Chat completion lost original wire usage"
     );
+    Ok(())
 }
 
 /// Chunking cannot change acceptance, errors or the decoded events. Accepted
 /// events must round-trip through the durable model codec without losing data.
+///
+/// # Panics
+/// If chunking, replay, identity binding or a durable codec changes an admitted value.
 pub fn assert_stream_invariants(input: &[u8]) {
+    assert_eq!(
+        stream_invariants(input).map_err(|error| format!("{error:?}")),
+        Ok(())
+    );
+}
+
+type ProofResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+fn adapter_for(kind: u8) -> Adapter {
+    match kind % 4 {
+        0 => Adapter::Anthropic,
+        1 => Adapter::Responses,
+        2 => Adapter::Chat,
+        _ => Adapter::Gemini,
+    }
+}
+
+fn stream_invariants(input: &[u8]) -> ProofResult {
     let Some((&kind, input)) = input.split_first() else {
-        return;
+        return Ok(());
     };
     if kind == b'H' {
-        if let Ok(header) = std::str::from_utf8(input) {
-            let clock = || std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
-            let wait = crate::retry::retry_after_at(header, clock);
-            let digits = header.trim();
-            if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
-                assert!(wait.is_some());
-            }
-            if let Some(wait) = wait {
-                // Normalize either accepted form to delta-seconds without losing its delay.
-                assert_eq!(
-                    crate::retry::retry_after_at(&wait.as_secs().to_string(), clock),
-                    Some(wait)
-                );
-            }
-        }
-        return;
+        retry_after_round_trip(input);
+        return Ok(());
     }
     if kind == b'F' {
-        if let Ok(file) =
-            serde_json::from_slice::<acyclic_harness_core::conversation::FileRef>(input)
-        {
-            let marker = crate::files::FileText::default()
-                .project(
-                    &file,
-                    &acyclic_harness_core::model::FileProjectionPolicy::Reference,
-                )
-                .unwrap();
-            let restored: acyclic_harness_core::conversation::FileRef = serde_json::from_str(
-                marker
-                    .strip_prefix("[file: ")
-                    .unwrap()
-                    .strip_suffix(']')
-                    .unwrap(),
-            )
-            .unwrap();
-            assert_eq!(file, restored);
-        }
-        return;
+        return file_round_trip(input);
     }
     if kind == b'T' {
         if let Ok(fragments) = serde_json::from_slice::<Vec<String>>(input) {
             crate::projection::text::assert_normalization(&fragments);
         }
-        return;
+        return Ok(());
     }
     if kind == b'V' {
         let Some((&kind, input)) = input.split_first() else {
-            return;
+            return Ok(());
         };
-        let adapter = [
-            Adapter::Anthropic,
-            Adapter::Responses,
-            Adapter::Chat,
-            Adapter::Gemini,
-        ][usize::from(kind) % 4];
+        let adapter = adapter_for(kind);
         assert!(
-            input_round_trip(adapter, input) || crate::json(input).is_err(),
+            input_round_trip(adapter, input)? || crate::json(input).is_err(),
             "production-accepted input skipped fuzz validation"
         );
-        return;
+        return Ok(());
     }
     if kind == b'L' {
         assert_alloy_invariants(input);
-        return;
+        return Ok(());
     }
     if kind == b'P' {
         if let Ok(value) = crate::projection::arguments::literal(input) {
             crate::projection::arguments::assert_normalization(&value);
         }
-        return;
+        return Ok(());
     }
     if kind == b'K' {
-        use crate::counting::wire::{TokenCountField, TokenCounterSpec, response};
-        for field in [
-            TokenCountField::InputTokens,
-            TokenCountField::TotalTokens,
-            TokenCountField::Count,
-        ] {
-            let spec = TokenCounterSpec {
-                path: "count".into(),
-                adapter: Adapter::Responses,
-                response_field: field,
-                framing_tokens: 0,
-            };
-            if let Ok(count) = response(input, &spec) {
-                let encoded = match field {
-                    TokenCountField::InputTokens => serde_json::json!({"input_tokens":count}),
-                    TokenCountField::TotalTokens => serde_json::json!({"totalTokens":count}),
-                    TokenCountField::Count => serde_json::json!({"count":count}),
-                };
-                assert_eq!(
-                    response(&serde_json::to_vec(&encoded).unwrap(), &spec).unwrap(),
-                    count
-                );
-            }
-        }
-        return;
+        return count_round_trip(input);
     }
     if kind == b'R' {
-        if let Ok(block) =
-            serde_json::from_slice::<acyclic_harness_core::model::ReasoningBlock>(input)
-        {
-            let encoded = serde_json::to_vec(&block).unwrap();
-            let replay: acyclic_harness_core::model::ReasoningBlock =
-                serde_json::from_slice(&encoded).unwrap();
-            assert_eq!(block, replay);
-            for adapter in [crate::Adapter::Responses, crate::Adapter::Anthropic] {
-                if let Some(raw) =
-                    crate::projection::native_reasoning::validated(adapter, &block.continuity)
-                {
-                    // Independent bounded literal decoder: native admission must
-                    // reject invalid strings, including inside skipped fields.
-                    let bounds = acyclic_harness_core::JsonBounds {
-                        maximum_bytes: Some(block.continuity.len() as u64),
-                        maximum_items: Some(block.continuity.len() as u64),
-                        maximum_depth: 128,
-                    };
-                    assert!(
-                        acyclic_harness_core::json_value_bounded(
-                            raw,
-                            bounds,
-                            None,
-                            &mut |_| Ok(()),
-                        )
-                        .is_ok()
-                    );
-                    assert_eq!(serde_json::to_vec(raw).unwrap(), block.continuity);
-                }
-            }
-            for family in ["anthropic", "responses", "gemini", "chat"] {
-                let mut target = block.origin.clone();
-                target.provider = family.into();
-                assert_eq!(
-                    crate::project_reasoning(&block, &target),
-                    crate::project_reasoning(&replay, &target)
-                );
-            }
-            let event = ModelEvent::ReasoningBlock { block: replay };
-            let encoded = serde_json::to_vec(&event).unwrap();
-            assert_eq!(
-                serde_json::from_slice::<ModelEvent>(&encoded).unwrap(),
-                event
-            );
-        }
-        return;
+        return reasoning_round_trip(input);
     }
     if kind == b'C' {
-        catalog_round_trip(input);
-        return;
+        catalog_round_trip(input)?;
+        return Ok(());
     }
     if kind == b'N' {
-        if let Ok(request) =
-            serde_json::from_slice::<acyclic_harness_core::model::ModelRequest>(input)
-        {
-            crate::tool_names::Names::assert_round_trip(&request);
-            crate::call_ids::CallIds::assert_round_trip(&request);
-            let encoded = serde_json::to_vec(&request).unwrap();
-            let replay = serde_json::from_slice(&encoded).unwrap();
-            crate::tool_names::Names::assert_round_trip(&replay);
-            crate::call_ids::CallIds::assert_round_trip(&replay);
-        }
-        return;
+        return names_round_trip(input);
     }
     if kind == b'A' {
-        if let Ok(auth) = crate::codex::decode_auth(input) {
-            let refresh = crate::codex::needs_refresh(&auth, time::OffsetDateTime::UNIX_EPOCH);
-            let canonical = serde_json::to_vec(&auth).unwrap();
-            let restored = crate::codex::decode_auth(&canonical).unwrap();
-            assert_eq!(
-                crate::codex::needs_refresh(&restored, time::OffsetDateTime::UNIX_EPOCH),
-                refresh
-            );
-            assert_eq!(restored, auth);
-        }
-        return;
+        return auth_round_trip(input);
     }
-    let adapter = [
-        Adapter::Anthropic,
-        Adapter::Responses,
-        Adapter::Chat,
-        Adapter::Gemini,
-    ][usize::from(kind) % 4];
+    stream_round_trip(adapter_for(kind), input)
+}
+
+fn file_round_trip(input: &[u8]) -> ProofResult {
+    if let Ok(file) = serde_json::from_slice::<acyclic_harness_core::conversation::FileRef>(input) {
+        let marker = crate::files::FileText::default().project(
+            &file,
+            &acyclic_harness_core::model::FileProjectionPolicy::Reference,
+        )?;
+        let restored: acyclic_harness_core::conversation::FileRef = serde_json::from_str(
+            marker
+                .strip_prefix("[file: ")
+                .ok_or_else(|| crate::invalid("file marker has no prefix"))?
+                .strip_suffix(']')
+                .ok_or_else(|| crate::invalid("file marker has no suffix"))?,
+        )?;
+        assert_eq!(file, restored);
+    }
+    Ok(())
+}
+
+fn count_round_trip(input: &[u8]) -> ProofResult {
+    use crate::counting::wire::{TokenCountField, TokenCounterSpec, response};
+    for field in [
+        TokenCountField::InputTokens,
+        TokenCountField::TotalTokens,
+        TokenCountField::Count,
+    ] {
+        let spec = TokenCounterSpec {
+            path: "count".into(),
+            adapter: Adapter::Responses,
+            response_field: field,
+            framing_tokens: 0,
+        };
+        if let Ok(count) = response(input, &spec) {
+            let encoded = match field {
+                TokenCountField::InputTokens => serde_json::json!({"input_tokens":count}),
+                TokenCountField::TotalTokens => serde_json::json!({"totalTokens":count}),
+                TokenCountField::Count => serde_json::json!({"count":count}),
+            };
+            assert_eq!(response(&serde_json::to_vec(&encoded)?, &spec)?, count);
+        }
+    }
+    Ok(())
+}
+
+fn reasoning_round_trip(input: &[u8]) -> ProofResult {
+    if let Ok(block) = serde_json::from_slice::<acyclic_harness_core::model::ReasoningBlock>(input)
+    {
+        let encoded = serde_json::to_vec(&block)?;
+        let replay: acyclic_harness_core::model::ReasoningBlock = serde_json::from_slice(&encoded)?;
+        assert_eq!(block, replay);
+        for adapter in [crate::Adapter::Responses, crate::Adapter::Anthropic] {
+            if let Some(raw) =
+                crate::projection::native_reasoning::validated(adapter, &block.continuity)
+            {
+                // Independent bounded literal decoder: native admission must
+                // reject invalid strings, including inside skipped fields.
+                let bounds = acyclic_harness_core::JsonBounds {
+                    maximum_bytes: Some(block.continuity.len() as u64),
+                    maximum_items: Some(block.continuity.len() as u64),
+                    maximum_depth: 128,
+                };
+                assert!(
+                    acyclic_harness_core::json_value_bounded(raw, bounds, None, &mut |_| Ok(()),)
+                        .is_ok()
+                );
+                assert_eq!(serde_json::to_vec(raw)?, block.continuity);
+            }
+        }
+        for family in ["anthropic", "responses", "gemini", "chat"] {
+            let mut target = block.origin.clone();
+            target.provider = family.into();
+            assert_eq!(
+                crate::project_reasoning(&block, &target),
+                crate::project_reasoning(&replay, &target)
+            );
+        }
+        let event = ModelEvent::ReasoningBlock { block: replay };
+        let encoded = serde_json::to_vec(&event)?;
+        assert_eq!(serde_json::from_slice::<ModelEvent>(&encoded)?, event);
+    }
+    Ok(())
+}
+
+fn names_round_trip(input: &[u8]) -> ProofResult {
+    if let Ok(request) = serde_json::from_slice::<acyclic_harness_core::model::ModelRequest>(input)
+    {
+        crate::tool_names::Names::assert_round_trip(&request)?;
+        crate::call_ids::CallIds::assert_round_trip(&request)?;
+        let encoded = serde_json::to_vec(&request)?;
+        let replay = serde_json::from_slice(&encoded)?;
+        crate::tool_names::Names::assert_round_trip(&replay)?;
+        crate::call_ids::CallIds::assert_round_trip(&replay)?;
+    }
+    Ok(())
+}
+
+fn auth_round_trip(input: &[u8]) -> ProofResult {
+    if let Ok(auth) = crate::codex::decode_auth(input) {
+        let refresh = crate::codex::needs_refresh(&auth, time::OffsetDateTime::UNIX_EPOCH);
+        let canonical = serde_json::to_vec(&auth)?;
+        let restored = crate::codex::decode_auth(&canonical)?;
+        assert_eq!(
+            crate::codex::needs_refresh(&restored, time::OffsetDateTime::UNIX_EPOCH),
+            refresh
+        );
+        assert_eq!(restored, auth);
+    }
+    Ok(())
+}
+
+fn retry_after_round_trip(input: &[u8]) {
+    if let Ok(header) = std::str::from_utf8(input) {
+        let clock = || std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let wait = crate::retry::retry_after_at(header, clock);
+        let digits = header.trim();
+        if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            assert!(wait.is_some());
+        }
+        if let Some(wait) = wait {
+            // Normalize either accepted form to delta-seconds without losing its delay.
+            assert_eq!(
+                crate::retry::retry_after_at(&wait.as_secs().to_string(), clock),
+                Some(wait)
+            );
+        }
+    }
+}
+
+fn stream_round_trip(adapter: Adapter, input: &[u8]) -> ProofResult {
     let whole = parse(adapter, input, input.len().max(1));
     assert_eq!(whole, parse(adapter, input, 1));
     if let Ok(events) = whole {
@@ -267,11 +286,12 @@ pub fn assert_stream_invariants(input: &[u8]) {
             crate::projection::gemini::assert_visible_replay(&events);
         }
         if adapter == Adapter::Chat {
-            assert_chat_usage(input, &events);
+            assert_chat_usage(input, &events)?;
         }
         // Identical provider bytes in a different turn must never reuse canonical
         // IDs. Bindings remain byte-for-byte equal, independently of chunking.
-        let other = parse_at(adapter, input, input.len().max(1), [2; 16]).unwrap();
+        let other =
+            parse_at(adapter, input, input.len().max(1), [2; 16]).map_err(crate::invalid)?;
         let first: Vec<_> = events
             .iter()
             .filter_map(|event| match event {
@@ -313,37 +333,38 @@ pub fn assert_stream_invariants(input: &[u8]) {
             if let ModelEvent::Completed { metadata } = &event {
                 acyclic_harness_core::executor::model_usage_codec_fuzz::check_metadata(metadata);
             }
-            let bytes = serde_json::to_vec(&event).unwrap();
-            let restored: ModelEvent = serde_json::from_slice(&bytes).unwrap();
+            let bytes = serde_json::to_vec(&event)?;
+            let restored: ModelEvent = serde_json::from_slice(&bytes)?;
             assert_eq!(restored, event);
         }
     }
+    Ok(())
 }
 
-pub(crate) fn input_round_trip(adapter: Adapter, input: &[u8]) -> bool {
+pub(crate) fn input_round_trip(adapter: Adapter, input: &[u8]) -> ProofResult<bool> {
     let Ok(body) = crate::json(input) else {
-        return false;
+        return Ok(false);
     };
     let before = crate::validate_input(adapter, &body);
-    let encoded = serde_json::to_vec(&body).unwrap();
-    let replay = crate::json(&encoded).unwrap();
+    let encoded = serde_json::to_vec(&body)?;
+    let replay = crate::json(&encoded)?;
     assert_eq!(body, replay, "input JSON round trip changed literal values");
     assert_eq!(before, crate::validate_input(adapter, &replay));
-    true
+    Ok(true)
 }
 
-fn catalog_round_trip(input: &[u8]) -> bool {
+fn catalog_round_trip(input: &[u8]) -> ProofResult<bool> {
     let Ok(spec) = serde_json::from_slice::<crate::ProviderSpec>(input) else {
-        return false;
+        return Ok(false);
     };
-    let canonical = serde_json::to_vec(&spec).unwrap();
-    let restored: crate::ProviderSpec = serde_json::from_slice(&canonical).unwrap();
-    assert_eq!(serde_json::to_vec(&restored).unwrap(), canonical);
+    let canonical = serde_json::to_vec(&spec)?;
+    let restored: crate::ProviderSpec = serde_json::from_slice(&canonical)?;
+    assert_eq!(serde_json::to_vec(&restored)?, canonical);
     assert_eq!(
         crate::registry::validate_spec("fixture", &spec).is_ok(),
         crate::registry::validate_spec("fixture", &restored).is_ok()
     );
-    true
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -363,10 +384,10 @@ mod properties {
 
         #[test]
         fn catalog_codec_has_an_idempotent_canonical_form(endpoint in "[a-z]{0,32}", maximum in 1usize..65536) {
-            for mut spec in crate::default_catalog().into_values() {
+            for mut spec in crate::default_catalog().unwrap().into_values() {
                 spec.base_url = format!("https://example.test/{endpoint}");
                 spec.max_event_bytes = Some(maximum);
-                prop_assert!(catalog_round_trip(&serde_json::to_vec(&spec).unwrap()));
+                prop_assert_eq!(catalog_round_trip(&serde_json::to_vec(&spec).unwrap()).map_err(|error| format!("{error:?}")), Ok(true));
             }
         }
 
@@ -458,9 +479,11 @@ mod properties {
         assert_stream_invariants(include_bytes!(
             "../fuzz/corpus/provider_stream/llamacpp-text-request-literal-extension"
         ));
-        assert!(catalog_round_trip(
-            &include_bytes!("../fuzz/corpus/provider_stream/catalog.json")[1..]
-        ));
+        assert_eq!(
+            catalog_round_trip(&include_bytes!("../fuzz/corpus/provider_stream/catalog.json")[1..])
+                .map_err(|error| format!("{error:?}")),
+            Ok(true)
+        );
         for input in [
             include_bytes!("../fuzz/corpus/provider_stream/llamacpp-text-request").as_slice(),
             include_bytes!("../fuzz/corpus/provider_stream/llamacpp-tool-request").as_slice(),
@@ -481,8 +504,10 @@ mod properties {
                     &format!("{{\"extra\":{extra},"),
                     1,
                 );
-                assert!(
-                    input_round_trip(Adapter::Chat, mutated.as_bytes()),
+                assert_eq!(
+                    input_round_trip(Adapter::Chat, mutated.as_bytes())
+                        .map_err(|error| format!("{error:?}")),
+                    Ok(true),
                     "accepted captured request skipped input validation"
                 );
                 let value = crate::json(mutated.as_bytes()).unwrap();
@@ -545,7 +570,7 @@ mod properties {
 }
 
 /// Typed model/tool JSON must preserve literal maps, including reserved serde keys.
-pub(crate) fn assert_model_json_round_trip(value: &serde_json::Value) {
+pub(crate) fn assert_model_json_round_trip(value: &serde_json::Value) -> ProofResult {
     use acyclic_harness_core::model::{
         Model, ModelContentPart, ModelEvent, ToolCall, ToolResultContent,
     };
@@ -553,35 +578,36 @@ pub(crate) fn assert_model_json_round_trip(value: &serde_json::Value) {
         T: serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + PartialEq,
     >(
         value: T,
-    ) {
-        let encoded = serde_json::to_value(&value).unwrap();
-        let replay: T = serde_json::from_value(encoded).unwrap();
+    ) -> ProofResult {
+        let encoded = serde_json::to_value(&value)?;
+        let replay: T = serde_json::from_value(encoded)?;
         assert_eq!(replay, value);
+        Ok(())
     }
     let call =
         ToolCall::new("call".into(), "echo".into(), value.clone()).with_metadata(value.clone());
-    round_trip(ModelEvent::ToolCall(call.clone()));
-    round_trip(ModelContentPart::ToolCall(call));
+    round_trip(ModelEvent::ToolCall(call.clone()))?;
+    round_trip(ModelContentPart::ToolCall(call))?;
     round_trip(ModelEvent::Completed {
         metadata: value.clone(),
-    });
+    })?;
     round_trip(ToolResultContent::Json {
         value: value.clone(),
-    });
+    })?;
     round_trip(Model {
         provider: "fixture".into(),
         name: "model".into(),
         revision: "1".into(),
-    });
+    })?;
     round_trip(acyclic_harness_core::tool::ToolInvocation {
         operation_id: acyclic_harness_core::OperationId::from_bytes([1; 16]),
         call_id: "call".into(),
         name: "echo".into(),
         arguments: value.clone(),
-    });
+    })?;
     round_trip(acyclic_harness_core::tool::ToolResult {
         value: value.clone(),
-    });
+    })?;
     round_trip(acyclic_harness_core::tool::ToolDefinition {
         name: "echo".into(),
         revision: "1".into(),
@@ -589,21 +615,34 @@ pub(crate) fn assert_model_json_round_trip(value: &serde_json::Value) {
         input_schema: value.clone(),
         output_schema: value.clone(),
         projection_schema: value.clone(),
-    });
+    })?;
+    Ok(())
 }
 
 /// OAR-RSN-02 from raw bytes. Validation agrees with an independent
 /// input-derived reference. Incomplete pairs refuse; complete sequences retain
 /// every original item without inserting, dropping or reordering content.
+///
+/// # Panics
+/// If validation, canonical replay or the independent sequence reference disagree.
 pub fn assert_response_sequence(input: &[u8]) {
+    assert_eq!(
+        response_sequence(input).map_err(|error| format!("{error:?}")),
+        Ok(())
+    );
+}
+
+fn response_sequence(input: &[u8]) -> ProofResult {
     use crate::projection::native_reasoning::replay_responses;
-    let Ok(body) = crate::json(input) else { return };
+    let Ok(body) = crate::json(input) else {
+        return Ok(());
+    };
     let errors = crate::validate_input(Adapter::Responses, &body);
-    let replay = crate::json(&serde_json::to_vec(&body).unwrap()).unwrap();
+    let replay = crate::json(&serde_json::to_vec(&body)?)?;
     assert_eq!(body, replay);
     assert_eq!(errors, crate::validate_input(Adapter::Responses, &replay));
     let Some(items) = body["input"].as_array() else {
-        return;
+        return Ok(());
     };
     assert_eq!(
         errors.contains(&"OAR-RSN-02"),
@@ -611,6 +650,7 @@ pub fn assert_response_sequence(input: &[u8]) {
     );
     let result = replay_responses(items);
     assert_eq!(response_sequence_violation(items, &result), None);
+    Ok(())
 }
 
 /// The structured detector shared by the fuzz oracle and its negative controls.
@@ -629,9 +669,11 @@ pub(crate) fn response_sequence_violation(
 /// Independent reference, deliberately not `ResponseItem`: a reasoning run
 /// ends with a function call or an assistant message, without an interruption.
 fn unanswered_reasoning(items: &[serde_json::Value]) -> usize {
-    (0..items.len())
-        .filter(|&index| {
-            items[index]["type"] == "reasoning"
+    items
+        .iter()
+        .enumerate()
+        .filter(|&(index, item)| {
+            item["type"] == "reasoning"
                 && !items.get(index + 1).is_some_and(|next| {
                     matches!(
                         next["type"].as_str(),
@@ -647,13 +689,24 @@ fn unanswered_reasoning(items: &[serde_json::Value]) -> usize {
 /// Anthropic, an odd one Gemini, and the rest is the wire message array.
 /// Validation agrees with an independent reference for turn boundaries and
 /// Gemini call/response pairing, and the production sequence fold repairs both.
+///
+/// # Panics
+/// If validation or repair disagrees with the independent turn reference.
 pub fn assert_turns(input: &[u8]) {
+    assert_eq!(turns(input).map_err(|error| format!("{error:?}")), Ok(()));
+}
+
+fn turns(input: &[u8]) -> ProofResult {
     let Some((&selector, input)) = input.split_first() else {
-        return;
+        return Ok(());
     };
-    let adapter = [Adapter::Anthropic, Adapter::Gemini][usize::from(selector % 2)];
+    let adapter = if selector.is_multiple_of(2) {
+        Adapter::Anthropic
+    } else {
+        Adapter::Gemini
+    };
     let Ok(serde_json::Value::Array(messages)) = crate::json(input) else {
-        return;
+        return Ok(());
     };
     let errors = crate::validate_input(adapter, &turn_body(adapter, &messages));
     let opens = user_turn(messages.first());
@@ -673,18 +726,19 @@ pub fn assert_turns(input: &[u8]) {
         );
     }
     let replay = crate::projection::wire::replay_turns;
-    let Some(output) = replay(adapter, &messages) else {
-        return;
+    let Some(output) = replay(adapter, &messages)? else {
+        return Ok(());
     };
     assert_eq!(turn_repair_violation(adapter, &messages, &output), None);
     if errors.is_empty() && canonical_turns(adapter, &messages) {
         assert_eq!(output, messages, "valid canonical turns were changed");
     }
     assert_eq!(
-        replay(adapter, &output).as_ref(),
+        replay(adapter, &output)?.as_ref(),
         Some(&output),
         "turn repair is not idempotent"
     );
+    Ok(())
 }
 
 /// Turns repair must leave unchanged: envelopes holding only the role and
@@ -832,7 +886,7 @@ fn interrupted_results(message: &serde_json::Value) -> bool {
     parts
         .iter()
         .position(|part| !result(part))
-        .is_some_and(|first| parts[first..].iter().any(result))
+        .is_some_and(|first| parts.iter().skip(first).any(result))
 }
 
 type Key<'a> = (Option<&'a str>, Option<&'a str>);
@@ -883,7 +937,7 @@ fn unordered(model: &serde_json::Value, user: &serde_json::Value) -> bool {
     let distinct = calls
         .iter()
         .enumerate()
-        .all(|(index, call)| !calls[..index].contains(call));
+        .all(|(index, call)| !calls.iter().take(index).any(|prior| prior == call));
     let complete = calls.iter().all(|call| {
         responses
             .iter()
@@ -895,9 +949,19 @@ fn unordered(model: &serde_json::Value, user: &serde_json::Value) -> bool {
 }
 
 /// Accepted provider catalogs preserve capacities/defaults through the production parser.
+///
+/// # Panics
+/// If decoding or canonical replay changes an accepted provider catalog.
 pub fn assert_catalog_invariants(input: &[u8]) {
+    assert_eq!(
+        catalog_invariants(input).map_err(|error| format!("{error:?}")),
+        Ok(())
+    );
+}
+
+fn catalog_invariants(input: &[u8]) -> ProofResult {
     if let Ok(document) = crate::catalog_document::parse(input) {
-        let original: serde_json::Value = serde_json::from_slice(input).unwrap();
+        let original: serde_json::Value = serde_json::from_slice(input)?;
         for (name, provider) in &document.providers {
             assert_eq!(
                 original[name]
@@ -907,12 +971,13 @@ pub fn assert_catalog_invariants(input: &[u8]) {
                 "catalog HTTP host grant changed at decode"
             );
         }
-        let encoded = serde_json::to_vec(&document).unwrap();
-        let replay = crate::catalog_document::parse(&encoded).unwrap();
+        let encoded = serde_json::to_vec(&document)?;
+        let replay = crate::catalog_document::parse(&encoded)?;
         assert_eq!(document.default_model, replay.default_model);
         assert_eq!(
-            serde_json::to_value(document.providers).unwrap(),
-            serde_json::to_value(replay.providers).unwrap()
+            serde_json::to_value(document.providers)?,
+            serde_json::to_value(replay.providers)?
         );
     }
+    Ok(())
 }

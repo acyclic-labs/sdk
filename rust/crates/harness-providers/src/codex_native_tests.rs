@@ -84,9 +84,10 @@ async fn native_login_funds_credentials_proactive_refresh_and_unauthorized_recov
         work: work.clone(),
         sent: AtomicUsize::new(0),
     });
-    let provider = Registry::with_transport(Credentials::explicit(BTreeMap::new()), server.clone())
-        .with_codex_login(login)
-        .resolve("openai/gpt-5")?;
+    let provider =
+        Registry::with_transport(Credentials::explicit(BTreeMap::new()), server.clone())?
+            .with_codex_login(login)
+            .resolve("openai/gpt-5")?;
     let (request, dispatch) = crate::tests::request(&provider)?;
     {
         let mut stream = provider

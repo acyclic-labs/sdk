@@ -90,7 +90,14 @@ impl Transport for Endpoint {
                 Ok::<_, StreamError>(credential)
             })
             .await??;
-            let token = acyclic_auth::credential::websocket_protocol(credential.as_str());
+            let token = acyclic_auth::credential::websocket_protocol(credential.as_str()).map_err(
+                |error| match error {
+                    acyclic_auth::credential::CredentialError::Invalid => {
+                        StreamError::InvalidArgument
+                    }
+                    _ => StreamError::Unavailable,
+                },
+            )?;
             let url = format!("{}/v1/stream/session", self.url).replacen("http", "ws", 1);
             let protocols = Array::of2(&"acyclic.session.v1".into(), &token.as_str().into());
             let socket = web_sys::WebSocket::new_with_str_sequence(&url, &protocols)

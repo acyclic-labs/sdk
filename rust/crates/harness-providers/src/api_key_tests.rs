@@ -51,7 +51,7 @@ async fn prepared_bodies_keep_the_credential_snapshot_that_selected_native_reaso
         inner,
         requests: Mutex::new(Vec::new()),
     });
-    let registry = Registry::with_transport(credentials, transport.clone());
+    let registry = Registry::with_transport(credentials, transport.clone())?;
     let provider = Arc::new(registry.resolve("openai/gpt-5")?);
     let (request, _) = request(&provider)?;
     let mut request = request.request().clone();
@@ -215,7 +215,7 @@ async fn configured_luna_streams_api_key_reasoning_and_tools_on_ordinary_and_nat
                 "fixture-api-key".into(),
             )])),
             transport.clone(),
-        );
+        )?;
         assert!(
             registry.resolve("openai/unregistered-model").is_err(),
             "unregistered context capacity is never guessed"

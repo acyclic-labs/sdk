@@ -97,7 +97,11 @@ fn next_intent(run: &str, count: &str) -> Result<IntentId, Error> {
     } else {
         let (rest, digit) = prefix.split_at(prefix.len() - 1);
         id.push_str(rest);
-        id.push(char::from(digit.as_bytes()[0] + 1));
+        let digit = digit
+            .as_bytes()
+            .first()
+            .ok_or(Error::Record("goal continuation has no counter digit"))?;
+        id.push(char::from(*digit + 1));
     }
     id.extend(std::iter::repeat_n('0', count.len() - prefix.len()));
     IntentId::try_from(id)
@@ -159,7 +163,9 @@ pub(super) async fn settle(
         return match goal
             .rewrite(
                 &view,
-                &policy.blocked(&view).expect("selected exhausted allowance"),
+                &policy.blocked(&view).ok_or(Error::Record(
+                    "exhausted goal has no continuation allowance",
+                ))?,
                 &format!("goal-block:{turn}"),
             )
             .await

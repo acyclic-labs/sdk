@@ -477,7 +477,7 @@ fn local_admission_does_not_copy_transport_headers() -> Result<()> {
             ("gemini".into(), "supplied-key".into()),
         ])),
         sends.clone(),
-    );
+    )?;
     // An OpenAI-family model served by the configurable Chat endpoint.
     let mut local = registry.catalog()["vllm"].as_ref().clone();
     local.models = registry.catalog()["openai"].models.clone();
