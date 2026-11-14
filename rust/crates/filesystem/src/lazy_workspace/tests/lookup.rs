@@ -93,7 +93,7 @@ async fn observation_and_transient_inspection_pin_their_versions() {
     root.retain_observation(
         "/file.txt",
         &LazyLookup::Source {
-            source: pinned,
+            source: pinned.clone(),
             node,
         },
         accounting!(),
