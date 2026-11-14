@@ -296,6 +296,23 @@ impl ScriptedModelProvider {
     }
 }
 
+/// Borrows messages that contribute provider-visible content. Canonical
+/// requests also retain private validation notices; mixed event batches and
+/// original attachments remain visible, as in the provider projection.
+#[must_use]
+pub fn model_visible_messages(
+    messages: &[crate::model::ModelMessage],
+) -> impl DoubleEndedIterator<Item = &crate::model::ModelMessage> {
+    messages.iter().filter(|message| {
+        message
+            .content
+            .notice_parts()
+            .is_none_or(|(notices, attachments)| {
+                !attachments.is_empty() || notices.iter().any(|notice| notice.model_visible())
+            })
+    })
+}
+
 /// Reads every file part a provider projects as bytes through `reader`, as the
 /// stock providers do; the first unbound or refused read fails. Reference parts
 /// travel as identities and are not read.

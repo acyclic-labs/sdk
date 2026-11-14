@@ -19,7 +19,9 @@ impl ContinuingModel {
                 "stock turn lost its admitted request continuation".into(),
             ));
         }
-        if request.request().messages.len() != 1 + 2 * dispatch.step as usize {
+        if crate::test_support::model_visible_messages(&request.request().messages).count()
+            != 1 + 2 * dispatch.step as usize
+        {
             return Err(Error::Invalid(
                 "stock continuation lost or duplicated messages".into(),
             ));

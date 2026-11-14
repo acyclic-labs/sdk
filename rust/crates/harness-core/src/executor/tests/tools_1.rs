@@ -398,15 +398,17 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
     let first = executor
         .completed_tool_prefix(&journal, &input, 0, Some("call-1"))
         .await?;
-    assert_eq!(first.request().messages.len(), 3);
-    assert_eq!(batch.request().messages.len(), 5);
-    assert_eq!(first.request().messages[0], batch.request().messages[0]);
-    assert_eq!(first.request().messages[1], batch.request().messages[1]);
-    assert_eq!(first.request().messages[2], batch.request().messages[3]);
+    let first_messages =
+        crate::test_support::model_visible_messages(&first.request().messages).collect::<Vec<_>>();
+    let batch_messages =
+        crate::test_support::model_visible_messages(&batch.request().messages).collect::<Vec<_>>();
+    assert_eq!(first_messages.len(), 3);
+    assert_eq!(batch_messages.len(), 5);
+    assert_eq!(first_messages[0], batch_messages[0]);
+    assert_eq!(first_messages[1], batch_messages[1]);
+    assert_eq!(first_messages[2], batch_messages[3]);
     assert_eq!(
-        batch
-            .request()
-            .messages
+        batch_messages
             .iter()
             .map(|message| message.role)
             .collect::<Vec<_>>(),
@@ -745,11 +747,13 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
     assert!(!journal.1.lock().unwrap().is_empty());
     let requests = model.requests();
     assert_eq!(
-        requests.get(1).map(|request| request
-            .messages
-            .iter()
-            .map(|message| message.role)
-            .collect::<Vec<_>>()),
+        requests
+            .get(1)
+            .map(
+                |request| crate::test_support::model_visible_messages(&request.messages)
+                    .map(|message| message.role)
+                    .collect::<Vec<_>>()
+            ),
         Some(vec![ModelRole::User, ModelRole::Assistant, ModelRole::Tool])
     );
     Ok(())
