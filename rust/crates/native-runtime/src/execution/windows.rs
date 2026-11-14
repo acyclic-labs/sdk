@@ -2,7 +2,7 @@
 //! scan, alternate process owner or unconfined fallback is involved.
 #![allow(unsafe_code, reason = "checked Windows PSEC and rooted NT object FFI")]
 
-use super::{BoundPath, ExecutionAccess, ExecutionNetwork, Grant, refused, unavailable};
+use super::{ExecutionAccess, ExecutionNetwork, Grant, refused, unavailable};
 use std::{
     ffi::c_void,
     fs::File,
