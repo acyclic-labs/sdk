@@ -152,6 +152,7 @@ impl Mode {
                 actors: ActorLimits::default(),
                 compaction: Default::default(),
                 tools: Vec::new(),
+                default_tools: Vec::new(),
                 workspace: false,
                 context: None,
                 approvers: Default::default(),
@@ -424,6 +425,7 @@ async fn in_turn_summary_remains_readable(mode: Mode) -> Result<()> {
     let script = Arc::new(
         ScriptedModelProvider::new([
             ScriptedTurn::Text("FIRST".into()),
+            ScriptedTurn::Text("SECOND".into()),
             ScriptedTurn::Text("AFTER".into()),
         ])
         .with_context_capacity(capacity())
@@ -441,13 +443,15 @@ async fn in_turn_summary_remains_readable(mode: Mode) -> Result<()> {
     let pressure = "x".repeat(capacity().context_tokens as usize * 3 / 5);
     let first = client.send("first", &pressure).await?;
     assert!(first.outcome.is_completed(), "{:?}", first.outcome);
+    let recent = client.send("recent", "retain a recent exchange").await?;
+    assert!(recent.outcome.is_completed(), "{:?}", recent.outcome);
     assert_eq!(summaries.load(std::sync::atomic::Ordering::SeqCst), 0);
     let second = client.send("second", &pressure).await?;
     assert!(second.outcome.is_completed(), "{:?}", second.outcome);
     assert!(summaries.load(std::sync::atomic::Ordering::SeqCst) > 0);
-    assert_eq!(script.request_count(), 2);
+    assert_eq!(script.request_count(), 3);
     let request = script
-        .request(1)
+        .request(2)
         .ok_or_else(|| Error::NotFound("compacted response request".into()))?;
     let text = platform.request_text(&request).await?;
     assert!(
