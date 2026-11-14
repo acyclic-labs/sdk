@@ -12,26 +12,58 @@ impl<
         maximum: usize,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Vec<(String, SourceVersion)>, KernelOwnedAllocation), LazyWorkspaceError> {
-        let output = self.source_tombstones_owned(maximum, ctx).await?;
+        let output = self.source_tombstones_owned(maximum, None, ctx).await?;
         Ok((output.value, output.allocation))
     }
 
     pub(super) async fn source_tombstones_owned(
         &self,
         maximum: usize,
+        inherited: Option<LazyOverlayId>,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Owned<Vec<(String, SourceVersion)>>, LazyWorkspaceError> {
         let state = self.state(ctx).await?;
         let mut pending = Owned::allocate(1, ctx)?;
-        pending.value.push(state.overlay);
+        pending.value.push((state.overlay, inherited));
         let mut output = Owned::allocate(0, ctx)?;
         let result = async {
-            while let Some(id) = pending.value.pop() {
+            while let Some((id, original)) = pending.value.pop() {
+                if original == Some(id) {
+                    continue;
+                }
                 let mut node = self
                     .store
                     .load_lazy_overlay(id, ctx)
                     .await?
                     .ok_or(LazyWorkspaceError::NotFound)?;
+                // Persistent subtrees retain their identities across edits and
+                // rotations. Find the same key in the original cut before
+                // descending, so inherited observations cost no subtree walk.
+                let previous = match (&node.0, inherited) {
+                    (LazyOverlay::Node { path, .. }, Some(root)) => {
+                        match self.overlay_entry(root, path, ctx).await {
+                            Ok(previous) => previous,
+                            Err(error) => {
+                                retire_node(node, ctx)?;
+                                return Err(error);
+                            }
+                        }
+                    }
+                    _ => None,
+                };
+                if previous
+                    .as_ref()
+                    .is_some_and(|(original, _, _)| *original == id)
+                {
+                    retire_node(node, ctx)?;
+                    continue;
+                }
+                let changed = match &node.0 {
+                    LazyOverlay::Node { change, .. } => previous
+                        .as_ref()
+                        .is_none_or(|(_, original, _)| original != change),
+                    LazyOverlay::Empty => false,
+                };
                 let prepared = (|| {
                     if let LazyOverlay::Node {
                         left,
@@ -40,11 +72,16 @@ impl<
                         ..
                     } = &node.0
                     {
-                        for id in [*left, *right] {
+                        for (index, id) in [*left, *right].into_iter().enumerate() {
                             pending.ensure_for_push(usize::MAX, ctx)?;
-                            pending.value.push(id);
+                            pending.value.push((
+                                id,
+                                previous.as_ref().map(|(_, _, children)| children[index]),
+                            ));
                         }
-                        if matches!(change, LazyOverlayChange::Tombstone { removed: Some(_) }) {
+                        if changed
+                            && matches!(change, LazyOverlayChange::Tombstone { removed: Some(_) })
+                        {
                             output.ensure_for_push(maximum, ctx)?;
                             output.allocation.absorb(&mut node.1)?;
                         }
@@ -63,7 +100,7 @@ impl<
                                 removed: Some(version),
                             },
                         ..
-                    } => {
+                    } if changed => {
                         output.bytes += path.capacity() as u64;
                         output.value.push((path, version));
                     }

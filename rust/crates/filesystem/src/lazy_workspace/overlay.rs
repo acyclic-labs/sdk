@@ -145,10 +145,22 @@ impl<
 
     pub(super) async fn overlay_fact(
         &self,
-        mut root: LazyOverlayId,
+        root: LazyOverlayId,
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<LazyOverlayChange>, LazyWorkspaceError> {
+        self.overlay_entry(root, path, ctx)
+            .await
+            .map(|entry| entry.map(|(_, change, _)| change))
+    }
+
+    pub(super) async fn overlay_entry(
+        &self,
+        mut root: LazyOverlayId,
+        path: &str,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Option<(LazyOverlayId, LazyOverlayChange, [LazyOverlayId; 2])>, LazyWorkspaceError>
+    {
         loop {
             let Some(node) = self.store.load_lazy_overlay(root, ctx).await? else {
                 return Ok(None);
@@ -162,7 +174,9 @@ impl<
                     right,
                     ..
                 } => match path.cmp(key) {
-                    std::cmp::Ordering::Equal => Some(Some(change.clone())),
+                    std::cmp::Ordering::Equal => {
+                        Some(Some((root, change.clone(), [*left, *right])))
+                    }
                     order => {
                         root = if order.is_lt() { *left } else { *right };
                         None

@@ -2,6 +2,86 @@ use super::*;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
+async fn fork_base_refines_only_deletions_added_after_its_cut() {
+    let directory = tempfile::tempdir().unwrap();
+    for index in 0..256 {
+        std::fs::write(directory.path().join(format!("file-{index:03}")), b"source").unwrap();
+    }
+    let source = native_source(directory.path(), crate::FilesystemProfile::Portable).await;
+    let root = attach(&Fs::memory(), source, MemoryLazyWorkspaceStore::default())
+        .await
+        .unwrap();
+    for index in 0..256 {
+        root.read(&format!("/file-{index:03}"), 16, accounting!())
+            .await
+            .unwrap();
+    }
+    root.remove("/file-000", None, accounting!()).await.unwrap();
+    let (child, cut) = root
+        .fork(
+            "child",
+            IdempotencyKey::new(),
+            crate::PublicationPermit::Unrestricted,
+            accounting!(),
+        )
+        .await
+        .unwrap();
+    child
+        .remove("/file-128", None, accounting!())
+        .await
+        .unwrap();
+    let cancellation = CancellationToken::new();
+    let mut complete = WorkBudget::UNBOUNDED.accounting(&cancellation);
+    let all = child
+        .source_tombstones_owned(usize::MAX, None, &mut complete)
+        .await
+        .unwrap();
+    assert_eq!(
+        all.value
+            .iter()
+            .map(|(path, _)| path.as_str())
+            .collect::<Vec<_>>(),
+        ["/file-000", "/file-128"]
+    );
+    all.retire(&mut complete).unwrap();
+    let mut frontier = WorkBudget::UNBOUNDED.accounting(&cancellation);
+    let added = child
+        .source_tombstones_owned(usize::MAX, Some(cut.overlay), &mut frontier)
+        .await
+        .unwrap();
+    assert_eq!(
+        added
+            .value
+            .iter()
+            .map(|(path, _)| path.as_str())
+            .collect::<Vec<_>>(),
+        ["/file-128"]
+    );
+    added.retire(&mut frontier).unwrap();
+    assert!(frontier.spent().bytes_copied < complete.spent().bytes_copied);
+    let base = root
+        .exactify_observed_base(cut, &[], &child, accounting!())
+        .await
+        .unwrap();
+    assert!(
+        base.stat("/file-000", WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .unwrap_err()
+            .error
+            .is_absent()
+    );
+    assert_eq!(
+        base.read("/file-128", 16, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .unwrap()
+            .value
+            .as_slice(),
+        b"source"
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
 async fn unchanged_fork_base_skips_inherited_observations_but_keeps_source_deletions() {
     let mut costs = Vec::new();
     for entries in [1, 256] {
