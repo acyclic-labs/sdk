@@ -259,8 +259,7 @@ impl Pool {
         let bytes = value.encoded_len();
         let queued = link.sender.push(value, bytes);
         if let Err(error) = &queued {
-            // A full control queue cannot safely retain remote interests after
-            // cancellation. Evict this node's session, never the shared pool.
+            // A closed sender or invalid frame cannot retain remote interests.
             self.fail_link(node, error);
         }
         Ok(queued)
@@ -484,7 +483,7 @@ async fn handshake(
     progress: Arc<Progress>,
 ) -> Result<Ready, transport::Failure> {
     progress.reset_opening();
-    let sender = Arc::new(Outbound::new(crate::MAX_ITEMS, crate::MAX_COMMAND_BYTES));
+    let sender = Arc::new(Outbound::new(crate::MAX_COMMAND_BYTES));
     let credit = wire::SessionWindow {
         bytes: crate::MAX_COMMAND_BYTES as u64,
         frames: u32::try_from(crate::MAX_ITEMS).map_err(|_| StreamError::Capacity)?,

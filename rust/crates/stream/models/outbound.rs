@@ -4,7 +4,7 @@ use std::future::Future as _;
 #[test]
 fn replacing_waiter_retires_previous_outside_lock() {
     loom::model(|| {
-        let queue = Arc::new(Outbound::new(1, 2));
+        let queue = Arc::new(Outbound::new(2));
         let inspected = Arc::clone(&queue);
         super::waiter_replacement(
             |wake| queue.poll(&mut Context::from_waker(wake)),
@@ -16,8 +16,8 @@ fn replacing_waiter_retires_previous_outside_lock() {
 
 fn saturation(broken: bool) {
     loom::model(move || {
-        let stalled = Arc::new(Outbound::new(1, 2));
-        let healthy = Arc::new(Outbound::new(1, 2));
+        let stalled = Arc::new(Outbound::new(2));
+        let healthy = Arc::new(Outbound::new(2));
         stalled.push(1_u8, 2).unwrap();
         let cancelling = Arc::clone(&stalled);
         let cancelling = loom::thread::spawn(move || cancelling.close().unwrap());
@@ -29,7 +29,7 @@ fn saturation(broken: bool) {
             } else {
                 assert!(matches!(
                     stalled.push(2, 1),
-                    Err(StreamError::Capacity | StreamError::Unavailable)
+                    Ok(()) | Err(StreamError::Unavailable)
                 ));
             }
             healthy.push(3, 1).unwrap();
@@ -46,7 +46,7 @@ fn saturation(broken: bool) {
     });
 }
 #[test]
-fn saturated_write_and_cancellation_do_not_park_other_nodes() {
+fn queued_write_and_cancellation_do_not_park_other_nodes() {
     saturation(false);
 }
 #[test]
@@ -57,7 +57,7 @@ fn negative_control_awaits_a_stalled_peer() {
 
 fn registration(close: bool, broken: u8) {
     loom::model(move || {
-        let queue = Arc::new(Outbound::new(1, 2));
+        let queue = Arc::new(Outbound::new(2));
         let inspected = Arc::clone(&queue);
         let (count, wake) = wake_probe(move || {
             assert!(
@@ -122,7 +122,7 @@ fn negative_control_wakes_while_holding_the_outbound_lock() {
 #[test]
 fn closing_a_link_wakes_its_response_reader_without_nesting_locks() {
     loom::model(|| {
-        let queue = Arc::new(Outbound::<u8>::new(1, 2));
+        let queue = Arc::new(Outbound::<u8>::new(2));
         let inspected = Arc::clone(&queue);
         let (count, wake) = wake_probe(move || {
             assert!(
@@ -148,34 +148,32 @@ fn closing_a_link_wakes_its_response_reader_without_nesting_locks() {
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(128))]
     #[test]
-    fn outbound_admission_preserves_fifo_and_exact_byte_bounds(
+    fn outbound_admission_preserves_fifo_and_per_frame_protection(
         operations in proptest::collection::vec((0_u8..3, 0_usize..7), 0..32)
     ) {
         loom::model(move || {
-            let queue = Outbound::new(2, 5);
+            let queue = Outbound::new(5);
             let mut expected = VecDeque::new();
-            let (mut used, mut closed) = (0, false);
+            let mut closed = false;
             let (_, wake) = super::wake_count();
             for (operation, bytes) in &operations {
                 match operation {
                     0 => {
                         let result = queue.push(*bytes, *bytes);
                         if closed { assert_eq!(result, Err(StreamError::Unavailable)); }
-                        else if expected.len() == 2 || bytes > &(5 - used) { assert_eq!(result, Err(StreamError::Capacity)); }
-                        else { assert!(result.is_ok()); expected.push_back(*bytes); used += bytes; }
+                        else if *bytes > 5 { assert_eq!(result, Err(StreamError::LimitExceeded)); }
+                        else { assert!(result.is_ok()); expected.push_back(*bytes); }
                     }
                     1 => {
                         let result = queue.poll(&mut Context::from_waker(&wake));
                         if closed { assert_eq!(result, Poll::Ready(Err(StreamError::Unavailable))); }
-                        else if let Some(value) = expected.pop_front() { used -= value; assert_eq!(result, Poll::Ready(Ok(value))); }
+                        else if let Some(value) = expected.pop_front() { assert_eq!(result, Poll::Ready(Ok(value))); }
                         else { assert!(result.is_pending()); }
                     }
-                    _ => { queue.close().unwrap(); expected.clear(); used = 0; closed = true; }
+                    _ => { queue.close().unwrap(); expected.clear(); closed = true; }
                 }
                 let state = queue.state.lock().unwrap();
                 assert_eq!(state.frames.len(), expected.len());
-                assert_eq!(state.bytes, used);
-                assert!(used <= 5);
             }
         });
     }

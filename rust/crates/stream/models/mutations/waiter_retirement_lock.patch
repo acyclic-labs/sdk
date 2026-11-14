@@ -28,7 +28,7 @@ diff --git a/rust/crates/stream/src/session/client/outbound.rs b/rust/crates/str
 --- a/rust/crates/stream/src/session/client/outbound.rs
 +++ b/rust/crates/stream/src/session/client/outbound.rs
 @@ -66,7 +66,8 @@
-                 state.bytes -= bytes;
+             if let Some(value) = state.frames.pop_front() {
                  return Poll::Ready(Ok(value));
              }
 -            state.reader.replace(wake)

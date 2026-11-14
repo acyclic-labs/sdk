@@ -85,7 +85,7 @@ pub(in crate::session::client) fn fixture(
                     )),
                     None,
                 ),
-                sender: Arc::new(Outbound::new(4, crate::MAX_COMMAND_BYTES)),
+                sender: Arc::new(Outbound::new(crate::MAX_COMMAND_BYTES)),
                 revision: 0,
                 applied_revision: 0,
                 released: wire::SessionWindow::default(),
