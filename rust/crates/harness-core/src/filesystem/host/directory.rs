@@ -374,8 +374,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let (path, after, maximum) = page;
         #[cfg(not(target_arch = "wasm32"))]
         {
-            use acyclic_fs::kernel::{KernelAccounting, KernelOwnedAllocation, NativeAccounting};
-            let owner = io.account(NativeAccounting::take)?;
+            use acyclic_fs::kernel::{KernelAccounting, KernelOwnedAllocation};
+            let owner = io.take_native_accounting()?;
             let native_io = PreparationIo::from_native_work(&owner.work)?;
             let mut ctx = KernelAccounting::NativeOriginal {
                 work: &owner.work,
@@ -409,7 +409,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             });
             drop(ctx);
             drop(native_io);
-            io.account(|ctx| owner.restore(ctx))?;
+            io.restore_native_accounting(owner)?;
             let (page, allocation, bytes) = match produced {
                 Ok(value) => value,
                 Err(Error::NativeSource { source, .. })
