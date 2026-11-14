@@ -66,48 +66,76 @@ pub trait StreamProviderExt: StreamProvider {
         Self: NativeStreamProvider,
     {
         async move {
-            use futures::TryStreamExt as _;
-            meter.check()?;
-            if before == 0 {
-                return Ok(Ok(NativeStreamOutput::new(
-                    None,
-                    acyclic_native_runtime::ReadAllocation::empty(&meter),
-                )));
-            }
-            let key = key
-                .map(|key| key.into_cloneable_native(&meter))
-                .transpose()?;
-            let (mut selection, request) = LatestRead::new(path, key, before, at_least)
-                .expect("nonzero original cut has one predecessor");
-            let mut records = match self.native_read(request, meter.clone()).await? {
-                Ok(records) => records,
-                Err(error) => return Ok(Err(error)),
-            };
-            let record = match records.value_mut().try_next().await? {
-                Some(Ok(record)) => Some(record),
-                Some(Err(error)) => return Ok(Err(error)),
-                None => None,
-            };
-            if let Some(record) = &record
-                && let Err(error) = selection.validate(record.value())
-            {
-                return Ok(Err(error));
-            }
-            if record.is_some() {
-                match records.value_mut().try_next().await? {
-                    Some(Err(error)) => return Ok(Err(error)),
-                    Some(Ok(_)) => return Ok(Err(StreamError::InvalidResponse)),
-                    None => {}
+            #[cfg(feature = "serde")]
+            let diagnostic = before == 0 || crate::trace::is_source(&path);
+            let work = async move {
+                use futures::TryStreamExt as _;
+                meter.check()?;
+                if before == 0 {
+                    return Ok(Ok(NativeStreamOutput::new(
+                        None,
+                        acyclic_native_runtime::ReadAllocation::empty(&meter),
+                    )));
                 }
+                let key = key
+                    .map(|key| key.into_cloneable_native(&meter))
+                    .transpose()?;
+                let (mut selection, request) = LatestRead::new(path, key, before, at_least)
+                    .expect("nonzero original cut has one predecessor");
+                let mut records = match self.native_read(request, meter.clone()).await? {
+                    Ok(records) => records,
+                    Err(error) => return Ok(Err(error)),
+                };
+                let record = match records.value_mut().try_next().await? {
+                    Some(Ok(record)) => Some(record),
+                    Some(Err(error)) => return Ok(Err(error)),
+                    None => None,
+                };
+                if let Some(record) = &record
+                    && let Err(error) = selection.validate(record.value())
+                {
+                    return Ok(Err(error));
+                }
+                if record.is_some() {
+                    match records.value_mut().try_next().await? {
+                        Some(Err(error)) => return Ok(Err(error)),
+                        Some(Ok(_)) => return Ok(Err(StreamError::InvalidResponse)),
+                        None => {}
+                    }
+                }
+                meter.check()?;
+                Ok(Ok(match record {
+                    Some(record) => record.map(Some),
+                    None => NativeStreamOutput::new(
+                        None,
+                        acyclic_native_runtime::ReadAllocation::empty(&meter),
+                    ),
+                }))
+            };
+            #[cfg(feature = "serde")]
+            if !diagnostic {
+                return crate::trace::observe_outcome(
+                    crate::trace::Request {
+                        name: "stream.native_latest_before",
+                        mechanism: crate::trace::Mechanism::ProviderCall,
+                        parent: None,
+                        guarantee: Some("native_indexed_record_strictly_before_original_cut"),
+                    },
+                    work,
+                    |result| match result {
+                        Ok(Ok(output)) => Some((
+                            output
+                                .value()
+                                .as_ref()
+                                .map_or(Some(0), |record| u64::try_from(record.value.len()).ok()),
+                            crate::trace::Outcome::Succeeded,
+                        )),
+                        Ok(Err(_)) | Err(_) => None,
+                    },
+                )
+                .await;
             }
-            meter.check()?;
-            Ok(Ok(match record {
-                Some(record) => record.map(Some),
-                None => NativeStreamOutput::new(
-                    None,
-                    acyclic_native_runtime::ReadAllocation::empty(&meter),
-                ),
-            }))
+            work.await
         }
     }
 

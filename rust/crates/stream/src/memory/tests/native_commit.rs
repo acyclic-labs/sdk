@@ -203,6 +203,41 @@ async fn native_publication_projection_keeps_exact_frame_funding() -> MemoryResu
         assert!(matches!(output.value(), AppendOutcome::TailConflict { .. }));
         drop(output);
         source_meter.assert_refunded();
+        let lookup_meter = Arc::new(Meter::default());
+        let selected = provider
+            .latest_before(path("native/projection")?, None, 1, Default::default())
+            .await?;
+        let output = root
+            .within(provider.native_latest_before(
+                path("native/projection")?,
+                None,
+                1,
+                Default::default(),
+                lookup_meter.original(),
+            ))
+            .await??;
+        assert_eq!(output.value(), &selected);
+        drop(output);
+        lookup_meter.assert_refunded();
+        for (path, before) in [
+            (path("native/projection")?, 0),
+            (trace.path().clone(), u64::MAX),
+        ] {
+            let output = root
+                .within(provider.native_latest_before(
+                    path,
+                    None,
+                    before,
+                    Default::default(),
+                    lookup_meter.original(),
+                ))
+                .await??;
+            if before == 0 {
+                assert!(output.value().is_none());
+            }
+            drop(output);
+        }
+        lookup_meter.assert_refunded();
         let parent = root.id();
         let _completion = root.finish_submitted(None, crate::trace::Outcome::Succeeded)?;
         let mut query = crate::trace::TraceQuery::new(
@@ -211,7 +246,8 @@ async fn native_publication_projection_keeps_exact_frame_funding() -> MemoryResu
         );
         let mut completed = 0;
         let mut appends = 0;
-        while completed < 2 {
+        let mut lookups = 0;
+        while completed < 3 {
             let observation = query
                 .next()
                 .await?
@@ -227,6 +263,17 @@ async fn native_publication_projection_keeps_exact_frame_funding() -> MemoryResu
                 completed += 1;
                 assert_eq!(result, crate::trace::Outcome::Succeeded);
                 if id != parent {
+                    if start.name == "stream.native_latest_before" {
+                        lookups += 1;
+                        assert_eq!(start.parent, Some(parent));
+                        assert_eq!(start.mechanism, crate::trace::Mechanism::ProviderCall);
+                        assert_eq!(
+                            start.guarantee.as_deref(),
+                            Some("native_indexed_record_strictly_before_original_cut")
+                        );
+                        assert_eq!(bytes, Some(6));
+                        continue;
+                    }
                     appends += 1;
                     assert_eq!(start.name, "stream.native_append");
                     assert_eq!(start.parent, Some(parent));
@@ -240,9 +287,10 @@ async fn native_publication_projection_keeps_exact_frame_funding() -> MemoryResu
             }
         }
         assert_eq!(appends, 1);
+        assert_eq!(lookups, 1);
         assert_eq!(
             trace.tail().await?,
-            4,
+            6,
             "diagnostic and unrelated native appends must not record themselves"
         );
     }
