@@ -195,7 +195,7 @@ async fn signed_account_admission_preserves_membership_and_original_outcomes()
     let before = provider.requests();
     for (slot, message) in [(1, &first), (0, &second)] {
         assert!(
-            matches!(route::admit(&client, slot, message, 4096).await, Err(route::Error::Stream(cause)) if cause.category() == StreamError::AccessDenied)
+            matches!(route::admit(&client, slot, message, Some(4096)).await, Err(route::Error::Stream(cause)) if cause.category() == StreamError::AccessDenied)
         );
     }
     let mut control = first.clone();
@@ -204,19 +204,19 @@ async fn signed_account_admission_preserves_membership_and_original_outcomes()
         records: vec![b"control".to_vec().into()],
     };
     assert!(
-        matches!(route::admit(&client, 0, &control, 4096).await, Err(route::Error::Stream(cause)) if cause.category() == StreamError::AccessDenied)
+        matches!(route::admit(&client, 0, &control, Some(4096)).await, Err(route::Error::Stream(cause)) if cause.category() == StreamError::AccessDenied)
     );
     let denied = provider.requests().since(before);
     assert_eq!(denied.control(), 0);
     assert_eq!(denied.data(), 0);
-    let accepted = route::admit(&client, 0, &first, 4096).await?;
+    let accepted = route::admit(&client, 0, &first, Some(4096)).await?;
     assert!(matches!(
         accepted,
         route::Routed::Relayed { relay_seq: 0, .. }
     ));
     assert!(
         matches!(
-            route::admit(&client, 2, &second, 4096).await?,
+            route::admit(&client, 2, &second, Some(4096)).await?,
             route::Routed::Relayed { relay_seq: 1, .. }
         ),
         "one node must serve multiple independently granted roots"
@@ -249,7 +249,7 @@ async fn signed_account_admission_preserves_membership_and_original_outcomes()
         CommitOutcome::Committed(_)
     ));
     assert_eq!(
-        route::admit(&client, 0, &first, 4096).await?,
+        route::admit(&client, 0, &first, Some(4096)).await?,
         accepted,
         "current opt-out must not rewrite an original admission"
     );
@@ -260,7 +260,7 @@ async fn signed_account_admission_preserves_membership_and_original_outcomes()
     );
     let before = provider.requests();
     assert!(
-        matches!(route::admit(&client, 1, &first, 4096).await,
+        matches!(route::admit(&client, 1, &first, Some(4096)).await,
         Err(route::Error::Stream(cause)) if cause.category() == StreamError::AccessDenied),
         "a retained outcome must still require the sender grant"
     );
@@ -279,19 +279,19 @@ async fn signed_account_admission_preserves_membership_and_original_outcomes()
     message.re = Some(IntentId::try_from("different-thread")?);
     records[0].value = input.encode()?.into();
     assert!(
-        matches!(route::admit(&client, 0, &changed, 4096).await,
+        matches!(route::admit(&client, 0, &changed, Some(4096)).await,
         Err(route::Error::Stream(cause)) if cause.category() == StreamError::IdempotencyMismatch),
         "canonical changed bytes must not reuse an accepted intent"
     );
     let fresh = peer_envelope(&roots[0], &roots[2], "after-off", admission.clone())?;
     assert_eq!(
-        route::admit(&client, 0, &fresh, 4096).await?,
+        route::admit(&client, 0, &fresh, Some(4096)).await?,
         route::Routed::Rejected(route::Rejection::Closed)
     );
     assert_eq!(provider.tail(paths.relay(&destination)?).await?, 2);
     let missing = peer_envelope(&roots[0], &roots[3], "missing", admission)?;
     assert_eq!(
-        route::admit(&client, 0, &missing, 4096).await?,
+        route::admit(&client, 0, &missing, Some(4096)).await?,
         route::Routed::Rejected(route::Rejection::NoSuchActor)
     );
     for (sequence, original) in [&fresh, &missing].into_iter().enumerate() {
@@ -337,7 +337,7 @@ async fn signed_account_admission_preserves_membership_and_original_outcomes()
         CommitOutcome::Committed(_)
     ));
     assert_eq!(
-        route::admit(&client, 0, &missing, 4096).await?,
+        route::admit(&client, 0, &missing, Some(4096)).await?,
         route::Routed::Rejected(route::Rejection::NoSuchActor)
     );
     assert_eq!(provider.tail(paths.relay(&first.source)?).await?, 2);
@@ -373,13 +373,13 @@ async fn signed_account_admission_preserves_membership_and_original_outcomes()
     };
     let forged = peer.result(destination.clone(), &unrelated, status.clone())?;
     assert!(
-        route::admit(&client, 3, &forged, 4096).await.is_err(),
+        route::admit(&client, 3, &forged, Some(4096)).await.is_err(),
         "a valid receipt for another send authorized this settlement"
     );
     assert_eq!(provider.tail(debit.clone()).await?, 4);
     let terminal = peer.result(destination.clone(), &receipt, status)?;
     let before = provider.named_head_selections();
-    let outcome = route::admit(&client, 3, &terminal, 4096).await?;
+    let outcome = route::admit(&client, 3, &terminal, Some(4096)).await?;
     assert!(matches!(
         outcome,
         route::Routed::Relayed { relay_seq: 2, .. }
@@ -389,7 +389,10 @@ async fn signed_account_admission_preserves_membership_and_original_outcomes()
         0,
         "terminal admission must not select current membership heads"
     );
-    assert_eq!(route::admit(&client, 3, &terminal, 4096).await?, outcome);
+    assert_eq!(
+        route::admit(&client, 3, &terminal, Some(4096)).await?,
+        outcome
+    );
     assert_eq!(
         provider.tail(debit).await?,
         5,
@@ -414,7 +417,7 @@ async fn signed_account_admission_preserves_membership_and_original_outcomes()
         release.send(()).map_err(|_| "funding pause closed")?;
         Ok::<_, Box<dyn std::error::Error>>(before)
     };
-    let (result, before) = futures::join!(route::admit(&client, 0, &revoked, 4096), revoke);
+    let (result, before) = futures::join!(route::admit(&client, 0, &revoked, Some(4096)), revoke);
     assert!(
         matches!(result, Err(route::Error::Stream(cause)) if cause.category() == StreamError::AccessDenied)
     );

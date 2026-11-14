@@ -182,7 +182,7 @@ impl SessionPublication {
         &self,
         client: &Client,
         credential: u32,
-        maximum_reply_bytes: usize,
+        maximum_reply_bytes: Option<usize>,
     ) -> Result<(), Error> {
         self.call()?
             .publish(client, credential, maximum_reply_bytes)

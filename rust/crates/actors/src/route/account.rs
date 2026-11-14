@@ -316,11 +316,12 @@ impl<P: StreamProvider + ?Sized> CallProvider for AccountService<P> {
 /// Admit on the existing authenticated account session. The caller retains
 /// the original envelope across uncertain completion; no transport retry runs
 /// here. The reply budget is the caller's existing session allocation policy.
+/// `None` admits an unbounded reply, without a fallback limit.
 pub async fn admit(
     client: &Client,
     credential: u32,
     message: &Envelope,
-    maximum_reply_bytes: usize,
+    maximum_reply_bytes: Option<usize>,
 ) -> Result<Routed, Error> {
     let bytes = client
         .actor_call(

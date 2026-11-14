@@ -171,12 +171,13 @@ impl Registration {
 /// Publish one root's original placement on the authenticated account session.
 /// Exact retries recover its original placement, including when the local node
 /// is also the account and creation already committed that same record.
+/// The caller's optional reply budget is preserved, including unbounded `None`.
 pub async fn register(
     client: &Client,
     credential: u32,
     paths: &Paths,
     registration: &Registration,
-    maximum_reply_bytes: usize,
+    maximum_reply_bytes: Option<usize>,
 ) -> Result<(), Error> {
     let reply = client
         .actor_call(
@@ -251,7 +252,7 @@ impl CallPublication {
         &self,
         client: &Client,
         credential: u32,
-        maximum_reply_bytes: usize,
+        maximum_reply_bytes: Option<usize>,
     ) -> Result<(), Error> {
         let reply = client
             .actor_call(&self.invocation, credential, maximum_reply_bytes)
@@ -307,7 +308,7 @@ impl Publication {
         client: &Client,
         credential: u32,
         paths: &Paths,
-        maximum_reply_bytes: usize,
+        maximum_reply_bytes: Option<usize>,
     ) -> Result<(), Error> {
         match self {
             Self::Placement(registration) => {

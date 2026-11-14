@@ -252,13 +252,13 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
             matches!(call(&client, "agents", &AgentCommand::Root {}).await??, AgentReply::Root { agent } if agent == *server.root())
         );
         assert!(
-            matches!(route::admit(&client, 0, &message, 4096).await, Err(route::Error::Stream(error)) if error.category() == StreamError::AccessDenied)
+            matches!(route::admit(&client, 0, &message, Some(4096)).await, Err(route::Error::Stream(error)) if error.category() == StreamError::AccessDenied)
         );
         assert!(
-            matches!(route::admit(&client, 2, &message, 4096).await, Err(route::Error::Stream(error)) if error.category() == StreamError::AccessDenied)
+            matches!(route::admit(&client, 2, &message, Some(4096)).await, Err(route::Error::Stream(error)) if error.category() == StreamError::AccessDenied)
         );
         assert!(
-            matches!(client.actor_call(&invocation("agents", &AgentCommand::Root {})?, 1, 4096).await, Err(error) if error.category() == StreamError::AccessDenied)
+            matches!(client.actor_call(&invocation("agents", &AgentCommand::Root {})?, 1, Some(4096)).await, Err(error) if error.category() == StreamError::AccessDenied)
         );
         assert!(
             matches!(route::open_link(&client, 0, b"account", &source).await, Err(route::Error::Stream(error)) if error.category() == StreamError::AccessDenied)
@@ -273,11 +273,13 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
             relay_seq: 0,
         };
         assert!(
-            route::admit(&client, 1, &message, 4096).await.is_err(),
+            route::admit(&client, 1, &message, Some(4096))
+                .await
+                .is_err(),
             "unregistered sender was admitted"
         );
         assert!(
-            route::register(&client, 1, &paths, &registration, 4096)
+            route::register(&client, 1, &paths, &registration, Some(4096))
                 .await
                 .is_err(),
             "peer append grant registered a root"
@@ -290,7 +292,7 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
             intent: registration.intent.clone(),
         };
         assert!(
-            route::register(&client, 4, &paths, &wrong_node, 4096)
+            route::register(&client, 4, &paths, &wrong_node, Some(4096))
                 .await
                 .is_err()
         );
@@ -305,7 +307,7 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
         else {
             return Err("root did not publish placement".into());
         };
-        route::register(&client, 4, &paths, &root_registration, 4096).await?;
+        route::register(&client, 4, &paths, &root_registration, Some(4096)).await?;
         let publication = crate::agent::SessionPublication {
             actor: root_actor.clone(),
             row: crate::agent::SessionRow::new(
@@ -377,14 +379,14 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
             route::Publication::Placement(_)
         ));
         assert!(
-            publication.publish(&client, 1, 4096).await.is_err(),
+            publication.publish(&client, 1, Some(4096)).await.is_err(),
             "peer append authority published directory metadata"
         );
         assert_eq!(stream.tail(publication.path()?).await?, 1);
         let mut foreign = publication.clone();
         foreign.actor = message.to.clone();
         assert!(
-            foreign.publish(&client, 4, 4096).await.is_err(),
+            foreign.publish(&client, 4, Some(4096)).await.is_err(),
             "own-node credential wrote another node's root row"
         );
         assert!(matches!(
@@ -426,7 +428,7 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
             &paths,
             &source,
             async |publication: route::Publication| {
-                publication.publish(&client, 4, &paths, 4096).await
+                publication.publish(&client, 4, &paths, Some(4096)).await
             },
             async |_| Err(route::Error::InvalidRecord),
         )
@@ -438,9 +440,9 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
             interrupted.tail(paths.outbox_cursor(&source)?).await,
             Err(StreamError::NotFound)
         ));
-        row_call.publish(&client, 4, &paths, 4096).await?;
-        publication.publish(&client, 4, 4096).await?;
-        publication.publish(&client, 4, 4096).await?;
+        row_call.publish(&client, 4, &paths, Some(4096)).await?;
+        publication.publish(&client, 4, Some(4096)).await?;
+        publication.publish(&client, 4, Some(4096)).await?;
         assert_eq!(stream.tail(publication.path()?).await?, 1);
         let mut profile = publication
             .row
@@ -456,8 +458,8 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
                 .ok_or("profile did not change")?,
             intent: IdempotencyKey::new(b"changed-profile-publication".to_vec())?,
         };
-        changed.publish(&client, 4, 4096).await?;
-        changed.publish(&client, 4, 4096).await?;
+        changed.publish(&client, 4, Some(4096)).await?;
+        changed.publish(&client, 4, Some(4096)).await?;
         assert_eq!(stream.tail(changed.path()?).await?, 2);
         let mut altered = changed.clone();
         altered
@@ -467,7 +469,7 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
             .ok_or("changed profile missing")?
             .title = "Substituted".into();
         assert!(
-            altered.publish(&client, 4, 4096).await.is_err(),
+            altered.publish(&client, 4, Some(4096)).await.is_err(),
             "changed bytes reused the original row intent"
         );
         let removed = crate::agent::SessionPublication {
@@ -475,8 +477,8 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
             row: changed.row.changed(None)?.ok_or("row did not leave")?,
             intent: IdempotencyKey::new(b"remove-profile-publication".to_vec())?,
         };
-        removed.publish(&client, 4, 4096).await?;
-        publication.publish(&client, 4, 4096).await?;
+        removed.publish(&client, 4, Some(4096)).await?;
+        publication.publish(&client, 4, Some(4096)).await?;
         let head = stream.head(removed.path()?).await?;
         assert_eq!(head.tail, 3, "retry resurrected a removed row");
         assert_eq!(
@@ -557,7 +559,7 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
             source_binding.agents().as_ref(),
             stream.as_ref(),
             async |publication: route::Publication| {
-                publication.publish(&client, 4, &paths, 4096).await
+                publication.publish(&client, 4, &paths, Some(4096)).await
             },
             async |envelope| {
                 let row = stream
@@ -570,7 +572,10 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
                         .map_err(|_| route::Error::InvalidRecord)?,
                     source_row.row
                 );
-                assert_eq!(route::admit(&client, 1, &envelope, 4096).await?, expected);
+                assert_eq!(
+                    route::admit(&client, 1, &envelope, Some(4096)).await?,
+                    expected
+                );
                 admitted
                     .take()
                     .ok_or(StreamError::InvalidResponse)?
@@ -616,7 +621,7 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
             );
         }
         assert_eq!(stream.tail(source_row.path()?).await?, 1);
-        route::register(&client, 4, &paths, &registration, 4096).await?;
+        route::register(&client, 4, &paths, &registration, Some(4096)).await?;
         assert_eq!(
             RoutePlacement::read(stream.as_ref(), &paths, &message.sender).await?,
             Some(registration.placement.clone())
@@ -626,7 +631,7 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
             ..registration.clone()
         };
         assert!(
-            route::register(&client, 4, &paths, &changed_intent, 4096)
+            route::register(&client, 4, &paths, &changed_intent, Some(4096))
                 .await
                 .is_err()
         );
@@ -661,9 +666,9 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
                 source_binding.agents().as_ref(),
                 stream.as_ref(),
                 async |publication: route::Publication| {
-                    publication.publish(&client, 4, &paths, 4096).await
+                    publication.publish(&client, 4, &paths, Some(4096)).await
                 },
-                async |envelope| route::admit(&client, 1, &envelope, 4096).await,
+                async |envelope| route::admit(&client, 1, &envelope, Some(4096)).await,
             );
             let receiving = route::run_link(
                 receiving,

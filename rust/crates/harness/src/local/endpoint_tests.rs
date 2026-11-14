@@ -167,7 +167,7 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
         // refused this tree credential before parsing the missing message or
         // entering application policy. Agent commands and queries still work.
         assert!(
-            matches!(acyclic_actors::route::admit(&session, CREDENTIAL, &message, 4096).await,
+            matches!(acyclic_actors::route::admit(&session, CREDENTIAL, &message, Some(4096)).await,
             Err(acyclic_actors::route::Error::Stream(error)) if error.category() == StreamError::AccessDenied)
         );
         assert!(

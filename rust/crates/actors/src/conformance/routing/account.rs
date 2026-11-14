@@ -222,7 +222,7 @@ pub async fn credited_delivery<T: Backend + ?Sized>(target: &T, run: &str) -> Re
     };
     for slot in [1, 2, 3] {
         require(
-            matches!(crate::route::admit(&client, slot, &message, 4096).await,
+            matches!(crate::route::admit(&client, slot, &message, Some(4096)).await,
             Err(crate::route::Error::Stream(error)) if error.category() == StreamError::AccessDenied),
             "missing or substituted sender authority admitted a relay",
         )?;
@@ -230,7 +230,7 @@ pub async fn credited_delivery<T: Backend + ?Sized>(target: &T, run: &str) -> Re
     let mut forged_source = message.clone();
     forged_source.source = destination.clone();
     require(
-        matches!(crate::route::admit(&client, 0, &forged_source, 4096).await,
+        matches!(crate::route::admit(&client, 0, &forged_source, Some(4096)).await,
             Err(crate::route::Error::Stream(error)) if error.category() == StreamError::AccessDenied),
         "source credential routed under another node's scope",
     )?;
@@ -240,7 +240,7 @@ pub async fn credited_delivery<T: Backend + ?Sized>(target: &T, run: &str) -> Re
     )?;
     require(
         matches!(
-            crate::route::admit(&client, 0, &message, 4096)
+            crate::route::admit(&client, 0, &message, None)
                 .await
                 .map_err(violation)?,
             Routed::Relayed { relay_seq: 0, .. }
@@ -253,7 +253,7 @@ pub async fn credited_delivery<T: Backend + ?Sized>(target: &T, run: &str) -> Re
         .waiting
         .lock()
         .map_err(|_| violation("reservation lock failed"))? = Some(waiting);
-    let pending = crate::route::admit(&client, 0, &message, 4096);
+    let pending = crate::route::admit(&client, 0, &message, Some(4096));
     futures::pin_mut!(pending, observed);
     let pending = match futures::future::select(pending, observed).await {
         futures::future::Either::Left(_) => return Err(violation("unfunded send did not wait")),

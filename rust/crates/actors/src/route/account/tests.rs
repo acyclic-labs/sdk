@@ -139,7 +139,7 @@ async fn account_admission_stops_unchanged_refusals_but_allows_recomputed_guards
                 )],
             },
         };
-        let result = admit(&client, 0, &message, 4096).await;
+        let result = admit(&client, 0, &message, Some(4096)).await;
         assert_eq!(policy.attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
         if repair {
             assert!(matches!(result?, Routed::Relayed { relay_seq: 0, .. }));
@@ -256,7 +256,7 @@ async fn original_admission_wins_a_concurrent_credit_wait() -> Result {
         if !replay {
             selected.request.idempotency_key = IdempotencyKey::new(b"fresh".to_vec())?;
         }
-        let request = admit(&client, 0, &selected, 4096);
+        let request = admit(&client, 0, &selected, Some(4096));
         tokio::pin!(request);
         tokio::select! {
             observed = wait_observed => observed?,
@@ -265,7 +265,7 @@ async fn original_admission_wins_a_concurrent_credit_wait() -> Result {
         if replay {
             // Another authenticated call commits after the first inspection,
             // before this caller observes the exhausted-credit result.
-            let original = admit(&client, 0, &message, 4096).await?;
+            let original = admit(&client, 0, &message, Some(4096)).await?;
             assert!(matches!(original, Routed::Relayed { relay_seq: 0, .. }));
         }
         resume.send(()).map_err(|_| "preparation ended early")?;
@@ -497,9 +497,9 @@ async fn account_calls_enforce_source_and_message_authority() -> Result {
         domain: crate::route::CALL_PROTOCOL.into(),
     })
     .into();
-    assert!(matches!(client.actor_call(&header, 2, 4096).await,
+    assert!(matches!(client.actor_call(&header, 2, Some(4096)).await,
         Err(error) if error.category() == StreamError::AccessDenied));
-    assert!(matches!(client.actor_call(&header, 0, 4096).await,
+    assert!(matches!(client.actor_call(&header, 0, Some(4096)).await,
         Err(error) if error.category() == StreamError::InvalidArgument));
     let message = Envelope {
         source: source.clone(),
@@ -518,22 +518,22 @@ async fn account_calls_enforce_source_and_message_authority() -> Result {
         },
     };
     assert!(
-        matches!(client.actor_call(&message.encode(), 0, 4096).await,
+        matches!(client.actor_call(&message.encode(), 0, Some(4096)).await,
         Err(error) if error.category() == StreamError::InvalidArgument)
     );
     for slot in [1, 2, 3, 4] {
-        assert!(matches!(admit(&client, slot, &message, 4096).await,
+        assert!(matches!(admit(&client, slot, &message, Some(4096)).await,
             Err(Error::Stream(error)) if error.category() == StreamError::AccessDenied));
     }
     let mut forged = message.clone();
     forged.source = other.clone();
-    assert!(matches!(admit(&client, 2, &forged, 4096).await,
+    assert!(matches!(admit(&client, 2, &forged, Some(4096)).await,
         Err(Error::Stream(error)) if error.category() == StreamError::AccessDenied));
     assert!(matches!(
         provider.tail(paths.relay(&other)?).await,
         Err(StreamError::NotFound)
     ));
-    let original = admit(&client, 0, &message, 4096).await?;
+    let original = admit(&client, 0, &message, Some(4096)).await?;
     assert_eq!(
         original,
         Routed::Relayed {
@@ -544,12 +544,12 @@ async fn account_calls_enforce_source_and_message_authority() -> Result {
     policy
         .preparation_unavailable
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    assert_eq!(admit(&client, 0, &message, 4096).await?, original);
+    assert_eq!(admit(&client, 0, &message, Some(4096)).await?, original);
     // Negative control: a new intent reaches the unavailable preparation path.
     // Only the accepted intent can recover without another storage admission.
     let mut fresh = message.clone();
     fresh.request.idempotency_key = IdempotencyKey::new(b"fresh-message".to_vec())?;
-    assert!(matches!(admit(&client, 0, &fresh, 4096).await,
+    assert!(matches!(admit(&client, 0, &fresh, Some(4096)).await,
         Err(Error::Stream(error)) if error.category() == StreamError::Unavailable));
     let mut changed = message.clone();
     let CommitMutation::Append { records, .. } = &mut changed.request.effects[0].mutations[0]
@@ -557,9 +557,9 @@ async fn account_calls_enforce_source_and_message_authority() -> Result {
         return Err("message has no append".into());
     };
     records[0].value = "changed input".into();
-    assert!(matches!(admit(&client, 0, &changed, 4096).await,
+    assert!(matches!(admit(&client, 0, &changed, Some(4096)).await,
         Err(Error::Stream(error)) if error.category() == StreamError::IdempotencyMismatch));
-    assert!(matches!(admit(&client, 1, &message, 4096).await,
+    assert!(matches!(admit(&client, 1, &message, Some(4096)).await,
         Err(Error::Stream(error)) if error.category() == StreamError::AccessDenied));
     policy
         .preparation_unavailable
@@ -574,16 +574,20 @@ async fn account_calls_enforce_source_and_message_authority() -> Result {
         path: StreamPath::new("registry/other-session")?,
         records: vec!["control".into()],
     };
-    assert!(matches!(admit(&client, 0, &directory_write, 4096).await,
-        Err(Error::Stream(error)) if error.category() == StreamError::AccessDenied));
+    assert!(
+        matches!(admit(&client, 0, &directory_write, Some(4096)).await,
+        Err(Error::Stream(error)) if error.category() == StreamError::AccessDenied)
+    );
     let mut selected_read = message.clone();
     selected_read.request.effects[0]
         .conditions
         .push(CommitCondition::Present {
             path: StreamPath::new("private/unrelated")?,
         });
-    assert!(matches!(admit(&client, 0, &selected_read, 4096).await,
-        Err(Error::Stream(error)) if error.category() == StreamError::AccessDenied));
+    assert!(
+        matches!(admit(&client, 0, &selected_read, Some(4096)).await,
+        Err(Error::Stream(error)) if error.category() == StreamError::AccessDenied)
+    );
     assert_eq!(provider.tail(paths.relay(&other)?).await?, 1);
 
     let mut missing = message.clone();
@@ -594,12 +598,12 @@ async fn account_calls_enforce_source_and_message_authority() -> Result {
         records: vec!["peer input".into()],
     };
     assert_eq!(
-        admit(&client, 0, &missing, 4096).await?,
+        admit(&client, 0, &missing, Some(4096)).await?,
         Routed::Rejected(Rejection::NoSuchActor)
     );
     place(&provider, &paths, &missing.to, &other).await?;
     assert_eq!(
-        admit(&client, 0, &missing, 4096).await?,
+        admit(&client, 0, &missing, Some(4096)).await?,
         Routed::Rejected(Rejection::NoSuchActor)
     );
     assert_eq!(provider.tail(paths.relay(&source)?).await?, 1);
@@ -657,7 +661,7 @@ async fn account_admission_revalidates_a_concurrently_created_recipient() -> Res
             )],
         },
     };
-    let request = admit(&client, 0, &message, 4096);
+    let request = admit(&client, 0, &message, Some(4096));
     let creation = async {
         wait_observed.await?;
         place(&provider, &paths, &recipient, &destination).await?;
