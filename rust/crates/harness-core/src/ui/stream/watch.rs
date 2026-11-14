@@ -15,7 +15,7 @@ impl Drop for Delivery {
 
 pub(super) fn start<P: NativeStreamProvider + ?Sized + 'static>(
     streams: Arc<P>,
-    paths: [StreamPath; 4],
+    paths: [Option<StreamPath>; 4],
     original: NativeMaterializationWork,
     sink: Arc<dyn ViewChangeSink<Affected>>,
     ctx: &mut KernelAccounting<'_>,
@@ -37,9 +37,14 @@ pub(super) fn start<P: NativeStreamProvider + ?Sized + 'static>(
                 // One starting cut avoids replaying history. The existing
                 // multi-path request captures all inputs without a cache.
                 let heads = {
+                    let count = paths.iter().flatten().count();
                     let _paths = RetainedAllocation::claim(
-                        std::mem::size_of_val(&paths) as u64,
-                        1,
+                        if count > 1 {
+                            (count * std::mem::size_of::<StreamPath>()) as u64
+                        } else {
+                            0
+                        },
+                        u64::from(count > 1),
                         &mut ctx,
                     )?;
                     native_result(
@@ -48,12 +53,12 @@ pub(super) fn start<P: NativeStreamProvider + ?Sized + 'static>(
                                 HeadsRequest {
                                     at: None,
                                     at_least: RevisionCut::default(),
-                                    paths: paths.iter().cloned().collect(),
+                                    paths: paths.iter().flatten().cloned().collect(),
                                     retained: HeadSet::new(),
                                     durable_through: None,
                                     projection: HeadProjection::Tail,
                                     children: None,
-                                    limit: paths.len() as u32,
+                                    limit: paths.iter().flatten().count() as u32,
                                 },
                                 original.runtime_meter(),
                             )
@@ -61,6 +66,7 @@ pub(super) fn start<P: NativeStreamProvider + ?Sized + 'static>(
                         &original,
                     )?
                 };
+                let selected = paths.each_ref().map(Option::is_some);
                 let [conversation, status, children, inbox] = paths;
                 let mut conversation = open(&*streams, conversation, &heads, 0, &original).await?;
                 let mut status = open(&*streams, status, &heads, 1, &original).await?;
@@ -68,21 +74,42 @@ pub(super) fn start<P: NativeStreamProvider + ?Sized + 'static>(
                 let mut inbox = open(&*streams, inbox, &heads, 3, &original).await?;
                 drop(heads);
                 // Changes preceding the opening cuts invalidate earlier observations.
-                for input in [
+                for (input, selected) in [
                     Affected::Conversation,
                     Affected::Status,
                     Affected::Children,
                     Affected::Role,
-                ] {
-                    delivery.0.changed(&input, &mut ctx)?;
+                ]
+                .into_iter()
+                .zip(selected)
+                {
+                    if selected {
+                        delivery.0.changed(&input, &mut ctx)?;
+                    }
                 }
                 let mut events = stream::select(
-                    events(conversation.value_mut(), Affected::Conversation, &original),
+                    events(
+                        conversation.as_mut().map(NativeStreamOutput::value_mut),
+                        Affected::Conversation,
+                        &original,
+                    ),
                     stream::select(
-                        events(status.value_mut(), Affected::Status, &original),
+                        events(
+                            status.as_mut().map(NativeStreamOutput::value_mut),
+                            Affected::Status,
+                            &original,
+                        ),
                         stream::select(
-                            events(children.value_mut(), Affected::Children, &original),
-                            events(inbox.value_mut(), Affected::Role, &original),
+                            events(
+                                children.as_mut().map(NativeStreamOutput::value_mut),
+                                Affected::Children,
+                                &original,
+                            ),
+                            events(
+                                inbox.as_mut().map(NativeStreamOutput::value_mut),
+                                Affected::Role,
+                                &original,
+                            ),
                         ),
                     ),
                 );
@@ -101,11 +128,14 @@ pub(super) fn start<P: NativeStreamProvider + ?Sized + 'static>(
 
 async fn open<P: NativeStreamProvider + ?Sized>(
     streams: &P,
-    path: StreamPath,
+    path: Option<StreamPath>,
     heads: &NativeStreamOutput<Heads>,
     index: usize,
     original: &NativeMaterializationWork,
-) -> Result<NativeStreamOutput<NativeRecordStream>, DemandError> {
+) -> Result<Option<NativeStreamOutput<NativeRecordStream>>, DemandError> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
     let from = heads
         .value()
         .heads
@@ -127,14 +157,20 @@ async fn open<P: NativeStreamProvider + ?Sized>(
             .await,
         original,
     )
+    .map(Some)
 }
 
 fn events<'a>(
-    records: &'a mut NativeRecordStream,
+    records: Option<&'a mut NativeRecordStream>,
     affected: Affected,
     original: &'a NativeMaterializationWork,
 ) -> impl futures::Stream<Item = Result<Affected, DemandError>> + Unpin + 'a {
-    records
-        .map(move |record| native_result(record, original).map(|_| affected))
-        .chain(stream::once(future::ready(Err(DemandError::StaleSource))))
+    match records {
+        Some(records) => future::Either::Left(
+            records
+                .map(move |record| native_result(record, original).map(|_| affected))
+                .chain(stream::once(future::ready(Err(DemandError::StaleSource)))),
+        ),
+        None => future::Either::Right(stream::empty()),
+    }
 }

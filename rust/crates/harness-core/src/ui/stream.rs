@@ -1,4 +1,5 @@
 //! Stream-backed inputs to the same UI View used by reader clients.
+mod evaluations;
 mod watch;
 use super::{
     Affected, Children, Cut, Error, FilesystemCut, View,
@@ -35,6 +36,21 @@ pub struct StreamUiProvider<P: ?Sized, F: ?Sized, L> {
     agent: AgentPath,
     view: View,
     links: L,
+    evaluations: bool,
+}
+
+impl<P: ?Sized, F: ?Sized, L: Clone> Clone for StreamUiProvider<P, F, L> {
+    fn clone(&self) -> Self {
+        Self {
+            identity: self.identity,
+            streams: Arc::clone(&self.streams),
+            files: Arc::clone(&self.files),
+            agent: self.agent.clone(),
+            view: self.view,
+            links: self.links.clone(),
+            evaluations: self.evaluations,
+        }
+    }
 }
 
 impl<P: ?Sized, F: ?Sized, L> StreamUiProvider<P, F, L> {
@@ -61,6 +77,7 @@ impl<P: ?Sized, F: ?Sized, L> StreamUiProvider<P, F, L> {
             agent,
             view,
             links,
+            evaluations: false,
         }
     }
 
@@ -93,6 +110,7 @@ pub struct StreamUiCut {
     page_size: u32,
     children: Retained<Vec<StreamPath>>,
     targets: Retained<Vec<OwnedSourceChunk>>,
+    evaluation: Option<evaluations::Prepared>,
 }
 impl StreamUiCut {
     fn empty(
@@ -113,6 +131,7 @@ impl StreamUiCut {
             turns: Retained::allocate(0, ctx)?,
             children: Retained::allocate(0, ctx)?,
             targets: Retained::allocate(0, ctx)?,
+            evaluation: None,
         })
     }
 }
@@ -194,6 +213,7 @@ impl FilesystemCut for StreamUiCut {
 
 enum Inputs<'a> {
     Reference,
+    Evaluations,
     Conversation,
     Status,
     Role,
@@ -228,6 +248,44 @@ where
         })
     }
 
+    async fn read_record(
+        &self,
+        stream: AgentStream,
+        sequence: u64,
+        at: &Revision,
+        original: &NativeMaterializationWork,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<NativeStreamOutput<acyclic_stream::Record>, DemandError> {
+        let _floor = RetainedAllocation::claim(std::mem::size_of::<Revision>() as u64, 1, ctx)?;
+        let mut records = native_result(
+            self.streams
+                .native_read(
+                    ReadRequest {
+                        path: native_path(&self.agent.stream_parts(stream), original)?,
+                        from: sequence,
+                        limit: 1,
+                        key: None,
+                        at_least: RevisionCut::of(at.clone()),
+                    },
+                    original.runtime_meter(),
+                )
+                .await,
+            original,
+        )?;
+        let record = native_result(
+            records
+                .value_mut()
+                .next()
+                .await
+                .ok_or(DemandError::StaleSource)?,
+            original,
+        )?;
+        if record.value().sequence != sequence {
+            return Err(DemandError::StaleSource);
+        }
+        Ok(record)
+    }
+
     async fn heads(
         &self,
         inputs: Inputs<'_>,
@@ -237,7 +295,7 @@ where
     ) -> Result<NativeStreamOutput<Heads>, DemandError> {
         let count = match inputs {
             Inputs::Reference => 4,
-            Inputs::Conversation => 2,
+            Inputs::Conversation | Inputs::Evaluations => 2,
             Inputs::Children { .. } => 0,
             _ => 1,
         };
@@ -276,6 +334,10 @@ where
             Inputs::Conversation => {
                 add(AgentStream::Status)?;
                 add(AgentStream::Conversation)?;
+            }
+            Inputs::Evaluations => {
+                add(AgentStream::Conversation)?;
+                add(AgentStream::History)?;
             }
             Inputs::Status => add(AgentStream::Status)?,
             Inputs::Role => add(AgentStream::Inbox)?,
@@ -330,6 +392,9 @@ where
         original: &NativeMaterializationWork,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<StreamUiCut, DemandError> {
+        if self.evaluations {
+            return self.prepare_evaluation(source, query, original, ctx).await;
+        }
         let at = self.revision(source)?;
         let path = match query {
             ViewQuery::Lookup(path)
@@ -366,36 +431,9 @@ where
             if from >= head.tail {
                 return Ok(cut);
             }
-            let _floor = RetainedAllocation::claim(std::mem::size_of::<Revision>() as u64, 1, ctx)?;
-            let mut records = native_result(
-                self.streams
-                    .native_read(
-                        ReadRequest {
-                            path: native_path(
-                                &self.agent.stream_parts(AgentStream::Inbox),
-                                original,
-                            )?,
-                            from,
-                            limit: 1,
-                            key: None,
-                            at_least: RevisionCut::of(at),
-                        },
-                        original.runtime_meter(),
-                    )
-                    .await,
-                original,
-            )?;
-            let record = native_result(
-                records
-                    .value_mut()
-                    .next()
-                    .await
-                    .ok_or(DemandError::StaleSource)?,
-                original,
-            )?;
-            if record.value().sequence != from {
-                return Err(DemandError::StaleSource);
-            }
+            let record = self
+                .read_record(AgentStream::Inbox, from, &at, original, ctx)
+                .await?;
             cut.adoption = Some(
                 InboxRecord::decode_accounted(&record.value().value, ctx).map_err(record_error)?,
             );
@@ -734,7 +772,16 @@ where
         };
         let result = async {
             let heads = self
-                .heads(Inputs::Reference, None, &owner.work, &mut ctx)
+                .heads(
+                    if self.evaluations {
+                        Inputs::Evaluations
+                    } else {
+                        Inputs::Reference
+                    },
+                    None,
+                    &owner.work,
+                    &mut ctx,
+                )
                 .await?;
             let heads = heads.value();
             let index = heads
@@ -799,13 +846,37 @@ where
         };
         let original = (*work).clone();
         let paths = [
-            native_path(
+            Some(native_path(
                 &self.agent.stream_parts(AgentStream::Conversation),
                 &original,
-            )?,
-            native_path(&self.agent.stream_parts(AgentStream::Status), &original)?,
-            native_path(&self.agent.stream_parts(AgentStream::Membership), &original)?,
-            native_path(&self.agent.stream_parts(AgentStream::Inbox), &original)?,
+            )?),
+            if self.evaluations {
+                Some(native_path(
+                    &self.agent.stream_parts(AgentStream::History),
+                    &original,
+                )?)
+            } else {
+                Some(native_path(
+                    &self.agent.stream_parts(AgentStream::Status),
+                    &original,
+                )?)
+            },
+            if self.evaluations {
+                None
+            } else {
+                Some(native_path(
+                    &self.agent.stream_parts(AgentStream::Membership),
+                    &original,
+                )?)
+            },
+            if self.evaluations {
+                None
+            } else {
+                Some(native_path(
+                    &self.agent.stream_parts(AgentStream::Inbox),
+                    &original,
+                )?)
+            },
         ];
         watch::start(Arc::clone(&self.streams), paths, original, sink, ctx).map(Some)
     }

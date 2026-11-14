@@ -49,6 +49,7 @@ pub mod core;
 pub mod devices;
 pub mod distributed;
 mod effects;
+pub mod evals;
 pub mod executor;
 pub mod experiments;
 #[cfg(not(target_arch = "wasm32"))]
