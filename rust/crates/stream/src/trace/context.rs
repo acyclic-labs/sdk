@@ -83,6 +83,15 @@ pub(super) async fn disabled<F: Future>(future: F) -> F::Output {
     scoped(None, future).await
 }
 
+/// Accompany original work with its admitted recording, retaining custody when
+/// decoding or a streamed body must decide settlement after the future returns.
+/// No active owner means no recording, allocation or diagnostic publication.
+pub async fn accompany<T>(
+    request: Request,
+    work: impl Future<Output = T>,
+) -> (T, Option<OwnedRecording>) {
+    OwnedRecording::accompany(child(request), work).await
+}
 /// Invoke the original work under the active owner's child span. Without an
 /// admitted owner this performs one local context check, with no allocation,
 /// clock, subscription lookup or diagnostic IO. Publication errors never replace

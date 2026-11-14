@@ -96,7 +96,7 @@ fn credential_provider_renews_each_physical_retry_without_changing_the_body() {
                     prop_assert_eq!(sent, tokens.len());
                     prop_assert_eq!(index.load(Ordering::Relaxed), tokens.len());
                     // Exhaustion fails before transport; the static credential cannot be used.
-                    let result: Result<((), Completion), StreamError> = client
+                    let result: Result<((), ClientCompletion), StreamError> = client
                         .unary((), |_, _| {
                             unreachable!("provider failure reached transport")
                         })
@@ -266,9 +266,11 @@ async fn wire_rejection_and_owner_denial_keep_exact_credential_custody() -> test
                 trace.follow(0, Default::default()).await?,
                 Default::default(),
             );
-            let expected = if code == Code::Unauthenticated { 4 } else { 3 };
+            let expected = if code == Code::Unauthenticated { 5 } else { 4 };
             let mut completed = 0;
             let mut names = Vec::new();
+            let mut auth_parents = Vec::new();
+            let mut rpc = None;
             while completed < expected {
                 if let Some(Observation::Completed {
                     id,
@@ -279,9 +281,15 @@ async fn wire_rejection_and_owner_denial_keep_exact_credential_custody() -> test
                 }) = query.next().await?
                 {
                     completed += 1;
+                    if start.mechanism == Mechanism::RoundTrip {
+                        assert_eq!(start.parent, Some(parent));
+                        assert_eq!(result, Outcome::Unsettled);
+                        rpc = Some(id);
+                        continue;
+                    }
                     assert_eq!(result, Outcome::Succeeded);
                     if id != parent {
-                        assert_eq!(start.parent, Some(parent));
+                        auth_parents.push(start.parent);
                         assert_eq!(start.mechanism, Mechanism::AuthCheck);
                         assert!(start.guarantee.is_some());
                         assert_eq!(bytes, None, "credential bytes must not enter diagnostics");
@@ -289,6 +297,8 @@ async fn wire_rejection_and_owner_denial_keep_exact_credential_custody() -> test
                     }
                 }
             }
+            assert!(rpc.is_some());
+            assert!(auth_parents.iter().all(|parent| *parent == rpc));
             names.sort();
             let mut expected_names = vec!["credential.check", "credential.resolve"];
             if code == Code::Unauthenticated {

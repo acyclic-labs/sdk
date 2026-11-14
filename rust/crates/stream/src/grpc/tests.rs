@@ -376,17 +376,79 @@ async fn assert_unary_retry(error: Status, retry: bool) -> TestResult {
     let body = Bytes::from_static(b"stable-key-and-body");
     let mut attempts = Vec::new();
     let mut first = Some(error);
-    let result = client
-        .unary(body.clone(), |_, request| {
-            attempts.push(request.into_inner());
-            let result = first.take().map_or_else(|| Ok(Response::new(())), Err);
-            Box::pin(async move { result })
-        })
+    #[cfg(feature = "serde")]
+    let trace = crate::Stream::new(Arc::new(MemoryStream::default()), "agents/grpc-retry/trace")?;
+    #[cfg(feature = "serde")]
+    let recorder = Arc::new(crate::trace::Recorder::new(trace.clone(), [98; 16]));
+    #[cfg(feature = "serde")]
+    let root = recorder
+        .start(
+            "owner",
+            crate::trace::Mechanism::ToolCall,
+            None,
+            Some("original_request"),
+        )
+        .await?
+        .into_owned();
+    #[cfg(feature = "serde")]
+    let parent = root.id();
+    let request = client.unary(body.clone(), |_, request| {
+        attempts.push(request.into_inner());
+        let result = first.take().map_or_else(|| Ok(Response::new(())), Err);
+        Box::pin(async move { result })
+    });
+    #[cfg(feature = "serde")]
+    let request = root.within(request);
+    let result = request
         .await
         .and_then(|response| decode_response(response, Ok));
     assert_eq!(result.is_ok(), retry);
     let expected = if retry { 2 } else { 1 };
     assert_eq!(attempts, vec![body; expected]);
+    #[cfg(feature = "serde")]
+    {
+        use crate::trace::{Mechanism, Observation, Outcome, TraceQuery};
+        let _completion = root.finish_submitted(None, Outcome::Succeeded)?;
+        let mut query = TraceQuery::new(
+            trace.follow(0, Default::default()).await?,
+            Default::default(),
+        );
+        let mut completed = 0;
+        let mut rpc = 0;
+        let mut waits = 0;
+        let mut unsettled = 0;
+        while completed < if retry { 4 } else { 2 } {
+            if let Some(Observation::Completed {
+                id, start, result, ..
+            }) = query.next().await?
+            {
+                completed += 1;
+                if id == parent {
+                    continue;
+                }
+                assert_eq!(start.parent, Some(parent));
+                if start.mechanism == Mechanism::Wait {
+                    waits += 1;
+                    assert_eq!(
+                        start.guarantee.as_deref(),
+                        Some("backpressure_after_observed_transient_transport_failure")
+                    );
+                    assert_eq!(result, Outcome::Succeeded);
+                } else {
+                    rpc += 1;
+                    assert_eq!(start.mechanism, Mechanism::RoundTrip);
+                    if result == Outcome::Unsettled {
+                        unsettled += 1;
+                    } else {
+                        assert_eq!(result, Outcome::Succeeded);
+                    }
+                }
+            }
+        }
+        assert_eq!(rpc, expected);
+        assert_eq!(waits, usize::from(retry));
+        assert_eq!(unsettled, 1);
+    }
     Ok(())
 }
 
@@ -485,8 +547,28 @@ async fn application_errors_cross_transport_without_retry_and_preserve_a_caller_
             if_tail: Some(0),
             idempotency_key: IdempotencyKey::unique(),
         };
+        #[cfg(feature = "serde")]
+        let trace =
+            crate::Stream::new(Arc::new(MemoryStream::default()), "agents/grpc-wire/trace")?;
+        #[cfg(feature = "serde")]
+        let recorder = Arc::new(crate::trace::Recorder::new(trace.clone(), [97; 16]));
+        #[cfg(feature = "serde")]
+        let root = recorder
+            .start(
+                "owner",
+                crate::trace::Mechanism::ToolCall,
+                None,
+                Some("original_request"),
+            )
+            .await?
+            .into_owned();
+        #[cfg(feature = "serde")]
+        let parent = root.id();
+        let append = client.append(request.clone());
+        #[cfg(feature = "serde")]
+        let append = root.within(append);
         assert_eq!(
-            client.append(request.clone()).await,
+            append.await,
             Err(error.clone()),
             "public transport changed application error {error:?}"
         );
@@ -499,8 +581,57 @@ async fn application_errors_cross_transport_without_retry_and_preserve_a_caller_
         );
         // The same live server accepts the caller's next request. An automatic
         // readiness retry would consume this response before returning the error.
-        let outcome = client.append(request.clone()).await?;
+        let append = client.append(request.clone());
+        #[cfg(feature = "serde")]
+        let append = root.within(append);
+        let outcome = append.await?;
         assert!(matches!(outcome, AppendOutcome::Committed(_)));
+        #[cfg(feature = "serde")]
+        {
+            use crate::trace::{Mechanism, Observation, Outcome, TraceQuery};
+            let _completion = root.finish_submitted(None, Outcome::Succeeded)?;
+            let mut query = TraceQuery::new(
+                trace.follow(0, Default::default()).await?,
+                Default::default(),
+            );
+            let mut completed = 0;
+            let mut succeeded = 0;
+            let mut unsettled = 0;
+            while completed < 3 {
+                if let Some(Observation::Completed {
+                    id,
+                    start,
+                    bytes,
+                    result,
+                    ..
+                }) = query.next().await?
+                {
+                    completed += 1;
+                    if id == parent {
+                        assert_eq!(result, Outcome::Succeeded);
+                        continue;
+                    }
+                    assert_eq!(start.parent, Some(parent));
+                    assert_eq!(start.mechanism, Mechanism::RoundTrip);
+                    assert_eq!(start.name, "stream.grpc.request");
+                    assert_eq!(
+                        start.guarantee.as_deref(),
+                        Some("authenticated_rpc_reply_validated_at_original_call")
+                    );
+                    assert_eq!(bytes, None);
+                    match result {
+                        Outcome::Succeeded => succeeded += 1,
+                        Outcome::Unsettled => unsettled += 1,
+                        _ => {
+                            return Err(
+                                "original RPC result was replaced with an invented outcome".into(),
+                            );
+                        }
+                    }
+                }
+            }
+            assert_eq!((succeeded, unsettled), (1, 1));
+        }
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
         let observation = provider
             .inspect_idempotency(request.idempotency_key.clone())
@@ -544,51 +675,6 @@ async fn caller_cancellation_drops_an_in_flight_request() -> TestResult {
         completed.await.is_err(),
         "cancellation must drop the request"
     );
-    Ok(())
-}
-
-#[tokio::test]
-async fn retry_attempts_record_independent_spans() -> TestResult {
-    if retry_capture::isolate("retry_attempts_record_independent_spans")? {
-        return Ok(());
-    }
-    use tracing::instrument::WithSubscriber as _;
-    let captured = acyclic_grpc_observability::tests::Capture::default();
-    let subscriber = retry_capture::dispatch(captured.clone());
-    let transport_error = closed_transport().await?;
-    let retry_code = (transport_error.code() as u64).to_string();
-    async {
-        let client = unconnected()?;
-        let mut first = true;
-        let response = client
-            .unary((), |_, _| {
-                let result = if std::mem::take(&mut first) {
-                    Err(transport_error.clone())
-                } else {
-                    Ok(Response::new(()))
-                };
-                Box::pin(async move { result })
-            })
-            .await?;
-        decode_response(response, Ok)?;
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
-    }
-    .with_subscriber(subscriber)
-    .await?;
-    let attempts = captured.all("acyclic.stream.grpc.call");
-    assert_eq!(attempts.len(), 2);
-    for (attempt, (number, outcome, code)) in attempts
-        .iter()
-        .zip([("1", "err", retry_code.as_str()), ("2", "ok", "0")])
-    {
-        for (field, expected) in [
-            ("attempt", number),
-            ("outcome", outcome),
-            ("rpc.code", code),
-        ] {
-            assert_eq!(attempt.get(field).map(String::as_str), Some(expected));
-        }
-    }
     Ok(())
 }
 
@@ -679,53 +765,6 @@ async fn source_eof_never_discards_records_queued_before_terminal_close() -> Tes
         );
     }
     assert_eq!(result.last(), Some(&Err(StreamError::Unavailable)));
-    Ok(())
-}
-
-#[tokio::test]
-async fn concurrent_retry_captures_keep_their_own_dispatcher() -> TestResult {
-    if retry_capture::isolate("concurrent_retry_captures_keep_their_own_dispatcher")? {
-        return Ok(());
-    }
-    use tracing::instrument::WithSubscriber as _;
-    let first = acyclic_grpc_observability::tests::Capture::default();
-    let second = acyclic_grpc_observability::tests::Capture::default();
-    let capture = |captured: acyclic_grpc_observability::tests::Capture| async move {
-        let subscriber = retry_capture::dispatch(captured);
-        let transport_error = closed_transport().await?;
-        async {
-            let client = unconnected()?;
-            let mut first = true;
-            let response = client
-                .unary((), |_, _| {
-                    let result = if std::mem::take(&mut first) {
-                        Err(transport_error.clone())
-                    } else {
-                        Ok(Response::new(()))
-                    };
-                    Box::pin(async move {
-                        tokio::task::yield_now().await;
-                        result
-                    })
-                })
-                .await?;
-            decode_response(response, Ok)?;
-            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
-        }
-        .with_subscriber(subscriber)
-        .await
-    };
-    let (one, two) = tokio::join!(capture(first.clone()), capture(second.clone()));
-    one?;
-    two?;
-    for capture in [first, second] {
-        let attempts = capture.all("acyclic.stream.grpc.call");
-        let [first, second] = attempts.as_slice() else {
-            panic!("expected two attempts, found {}", attempts.len());
-        };
-        assert_eq!(first.get("attempt").map(String::as_str), Some("1"));
-        assert_eq!(second.get("attempt").map(String::as_str), Some("2"));
-    }
     Ok(())
 }
 
