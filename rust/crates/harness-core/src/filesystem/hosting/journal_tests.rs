@@ -1135,6 +1135,7 @@ async fn settled_arrivals_and_archive_do_not_end_a_retained_inbox_cut_early() ->
 #[tokio::test]
 async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     use crate::client_files::{ClientFileChange, FileRoot};
+    use crate::executor::{ExecutionEvent, ExecutionJournal};
     use acyclic_stream::StreamProviderExt as _;
     let (bound, agent) = binding().await?;
     let root = FileRoot::Private {};
@@ -1237,6 +1238,16 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     );
     // Trace demand is held by this same authenticated file wait, including
     // before the original trace stream has its first publication.
+    let journal = bound.turns().query_journal(&state).await?;
+    let operation = OperationId::from_bytes([74; 16]);
+    let event = ExecutionEvent::Started {
+        request_digest: [75; 32],
+    };
+    journal.append(operation, "start", &event, None)?.await?;
+    assert_eq!(
+        journal.replay(operation, 0, 1, None)?.await?[0].event,
+        event
+    );
     let requested = "live/agents/self/trace/0/2.json".to_owned();
     let trace_paths = vec![requested.clone()];
     let before = bound.files(&agent, root, &trace_paths, None).await?;
@@ -1244,17 +1255,55 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     assert!(bound.trace_recorder(&agent)?.is_none());
     let mut watching = Box::pin(bound.files(&agent, root, &trace_paths, Some(&before.cut)));
     assert!(futures::poll!(&mut watching).is_pending());
-    let recorder = bound
-        .trace_recorder(&agent)?
-        .ok_or("file wait did not retain demand")?;
-    let span = recorder
-        .start(
-            "original_file_request",
-            acyclic_stream::trace::Mechanism::Io,
-            None,
-            Some("original_authenticated_file_cut"),
-        )
+    assert!(bound.trace_recorder(&agent)?.is_some());
+    let records = journal.replay(operation, 0, 1, None)?.await?;
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].event, event);
+    let staged = journal
+        .stage(operation, "trace-content", b"raw", "text/plain", None)?
         .await?;
+    assert_eq!(journal.load(&staged, None)?.await?.as_ref(), b"raw");
+    journal.verify_input_file(&staged, None)?.await?;
+    let content = journal
+        .output_content(operation)?
+        .ok_or("journal content absent")?;
+    let (publication, _) = content
+        .writer
+        .as_deref()
+        .ok_or("journal writer absent")?
+        .stage_once(
+            operation,
+            &crate::context::ContextEpoch::path(operation),
+            b"publication",
+            "text/plain",
+            "manifest",
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+    assert!(
+        journal
+            .authenticate_publication(operation, &publication, None)?
+            .await?
+    );
+    assert!(
+        !journal
+            .authenticate_publication(OperationId::from_bytes([77; 16]), &publication, None)?
+            .await?
+    );
+    assert_eq!(
+        journal
+            .load_range(
+                &staged,
+                acyclic_fs::ByteRange {
+                    offset: 1,
+                    length: 2
+                },
+                None
+            )?
+            .await?
+            .as_ref(),
+        b"aw"
+    );
     let changed = watching.await?;
     assert!(
         bound.trace_recorder(&agent)?.is_none(),
@@ -1267,20 +1316,73 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
             .text,
     )?;
     assert_eq!(value["coveredFrom"], 0);
-    assert_eq!(value["coveredThrough"], 1);
-    assert_eq!(value["activeSpans"], 1);
-    span.finish(Some(0), acyclic_stream::trace::Outcome::Succeeded)
-        .await?;
-    let completed = bound.files(&agent, root, &trace_paths, None).await?;
+    assert_eq!(value["coveredThrough"], 2);
+    let source = crate::client_files::trace::source(&agent)?;
+    let through = bound.agents.provider().tail(source.clone()).await?;
+    let all_path = format!("live/agents/self/trace/0/{through}.json");
+    let completed = bound.files(&agent, root, &[all_path.clone()], None).await?;
     let value: serde_json::Value = serde_json::from_str(
-        &completed.files[&requested]
+        &completed.files[&all_path]
             .as_ref()
             .ok_or("completed trace absent")?
             .text,
     )?;
-    assert_eq!(value["coveredThrough"], 2);
-    assert_eq!(value["mechanisms"]["io"]["completed"], 1);
-    assert_eq!(value["activeSpans"], 0);
+    assert_eq!(value["coveredThrough"], through);
+    assert!(
+        value["mechanisms"]["commit"]["known_bytes"]
+            .as_u64()
+            .unwrap()
+            >= 3
+    );
+    assert!(value["mechanisms"]["io"]["known_bytes"].as_u64().unwrap() >= 3);
+    let stream = acyclic_stream::Stream::new(bound.agents.provider().clone(), source.as_str())?;
+    let mut query = acyclic_stream::trace::TraceQuery::new(
+        stream.read(0, u32::try_from(through)?).await?,
+        Default::default(),
+    );
+    let mut original = std::collections::BTreeMap::new();
+    let mut membership = 0;
+    while let Some(observation) = query.next().await? {
+        if let acyclic_stream::trace::Observation::Completed {
+            start,
+            bytes,
+            result,
+            ..
+        } = observation
+        {
+            let expected = match start.name.as_str() {
+                "harness.execution_replay_page" => (None, "authenticated_execution_prefix"),
+                "harness.private_stage" => (Some(3), "authenticated_private_publication"),
+                "harness.private_load" => (Some(3), "authenticated_immutable_content"),
+                "harness.private_load_range" => (Some(2), "authenticated_immutable_range"),
+                "harness.verify_input_file" => (None, "authenticated_original_input_file"),
+                "harness.authenticate_publication" => {
+                    (None, "original_publication_membership_decision")
+                }
+                _ => continue,
+            };
+            assert_eq!(start.parent, None);
+            assert_eq!(
+                start.mechanism,
+                match start.name.as_str() {
+                    "harness.private_stage" => acyclic_stream::trace::Mechanism::Commit,
+                    "harness.verify_input_file" | "harness.authenticate_publication" =>
+                        acyclic_stream::trace::Mechanism::AuthCheck,
+                    _ => acyclic_stream::trace::Mechanism::Io,
+                }
+            );
+            assert_eq!(start.guarantee.as_deref(), Some(expected.1));
+            assert_eq!(bytes, expected.0);
+            assert_eq!(result, acyclic_stream::trace::Outcome::Succeeded);
+            if start.name == "harness.authenticate_publication" {
+                membership += 1;
+            } else {
+                assert!(original.insert(start.name, ()).is_none());
+            }
+        }
+    }
+    assert_eq!(original.len(), 5);
+    assert_eq!(membership, 2);
     Ok(())
 }
 

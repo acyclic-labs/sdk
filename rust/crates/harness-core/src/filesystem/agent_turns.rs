@@ -705,6 +705,7 @@ pub struct TurnLimits {
 /// private volume, under a conversation authority named by the agent's id.
 pub struct FilesystemTurnHost<P: ?Sized, A: 'static, O: 'static> {
     stream: Arc<P>,
+    traces: Option<acyclic_stream::trace::Registry<P>>,
     within: acyclic_actors::addressing::ActorReference,
     actor_root: Option<acyclic_stream::StreamPath>,
     clock: Arc<dyn acyclic_actors::local::Clock>,
@@ -804,6 +805,7 @@ where
             stream,
             within,
             actor_root: None,
+            traces: None,
             clock: Arc::new(acyclic_actors::local::SystemClock),
             host,
             issuer,
@@ -818,6 +820,15 @@ where
             #[cfg(feature = "test-support")]
             binding_fault: None,
         }
+    }
+
+    /// Bind original host trace demand without admitting an observer.
+    pub(in crate::filesystem) fn with_trace_interest(
+        mut self,
+        traces: acyclic_stream::trace::Registry<P>,
+    ) -> Self {
+        self.traces = Some(traces);
+        self
     }
 
     /// Share the scheduler's original clock with journal deadline admission.
@@ -1141,8 +1152,14 @@ where
         Bindings<A, O>,
         Arc<AgentInternalFiles<A, O>>,
     )> {
-        self.journal(self.admit(agent)?, agent.policy.as_slice(), &[], None, None)
-            .await
+        self.journal(
+            (self.admit(agent)?, &agent.path),
+            agent.policy.as_slice(),
+            &[],
+            None,
+            None,
+        )
+        .await
     }
 
     /// Opens journal queries through this agent's original journal grant.
@@ -1150,14 +1167,18 @@ where
         &self,
         agent: &AgentState,
     ) -> Result<FilesystemExecutionJournal<P, A, O>> {
-        query_journal(
+        let journal = query_journal(
             &self.stream,
             &self.host,
             &self.issuer,
             &self.admission,
             agent,
         )
-        .await
+        .await?;
+        Ok(match &self.traces {
+            Some(traces) => journal.with_trace_interest(traces.clone(), agent.path.clone()),
+            None => journal,
+        })
     }
 
     pub(super) async fn journal_authority<'a>(
@@ -1287,7 +1308,7 @@ where
     /// version.
     async fn journal(
         &self,
-        admitted: AdmittedAgent<'_>,
+        (admitted, trace_owner): (AdmittedAgent<'_>, &AgentPath),
         external: &[FileRef],
         retained: &[FileRef],
         context: Option<&mut TurnContext<'_>>,
@@ -1369,7 +1390,7 @@ where
             crate::conversation::MAX_EXACT_JS_INTEGER,
             None,
         )?;
-        let journal = FilesystemExecutionJournal::new(
+        let mut journal = FilesystemExecutionJournal::new(
             Arc::clone(&self.stream),
             Arc::clone(&self.host),
             FilesystemJournalBinding {
@@ -1381,6 +1402,9 @@ where
         )?
         .with_input_verifier(reader.clone())
         .with_clock(self.clock.clone());
+        if let Some(traces) = &self.traces {
+            journal = journal.with_trace_interest(traces.clone(), trace_owner.clone());
+        }
         let internal = self.internal_files(
             &storage.volume,
             private.volume()?,
@@ -2435,7 +2459,7 @@ where
                     .collect();
                 let (journal, bindings, files) = self
                     .journal(
-                        admitted,
+                        (admitted, &agent.path),
                         &external,
                         &retained,
                         Some(&mut context),
