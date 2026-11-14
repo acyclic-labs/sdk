@@ -936,16 +936,15 @@ mod adoption_tests {
         );
         let scope = native.view_scope(&state).await?;
         let verifier = native.issuer.verifier(&mut None)?;
-        assert!(
-            crate::conversation::ContentGrant::verify(
-                &verifier,
-                &scope,
-                &journal,
-                VolumeOperation::Read,
-                &mut None,
-            )
-            .is_err()
-        );
+        // The view holds the journal read every agent holds; the journal
+        // policy, not a missing grant, keeps host records sealed from it.
+        let view = FilesystemContentVerifier::new(
+            Arc::clone(&native.files),
+            &verifier,
+            &scope,
+            4096,
+            None,
+        )?;
         assert!(matches!(
             again.submit(&native.files, &native.host).await.map_err(storage)?,
             RootSubmission::Created(created) if created == root
@@ -960,7 +959,10 @@ mod adoption_tests {
             .stage(&state, OperationId::new(), body)
             .await?;
         assert_eq!(file.volume(), &journal);
-        assert!(crate::conversation::ContentGrant::verify_read(&verifier, &scope, &file).is_err());
+        let sealed = async { view.read(&file, 4096, None, None)?.await }
+            .await
+            .expect_err("a view read the host's native record");
+        assert_eq!(sealed.code(), crate::wire::ErrorCode::Unauthorized);
         let published = local.files.resolve(&journal_ref, None).await?.generation;
         let replay = native.prepare_root(&agent).await?;
         assert!(matches!(
