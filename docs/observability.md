@@ -401,3 +401,17 @@ Pass divan options after `--`, for example `-- --sample-count 10 put_small`.
 Name the bench with `--bench`: the library's test harness rejects those options.
 The `bench-fs` and `bench-objects` examples in their owning crates measure whole
 workloads (see its README).
+
+## Retained local recovery seeds
+
+The local-harness DST recovery regressions publish a version-one `replay-seed.json`
+before execution and retain the original checkout/state directory through crash,
+recovery, failure and unwind. Recovery reopens that seed for the scheduler inputs,
+semantic crash point, prompts and provider response. Publication uses the shared
+private-file publisher, including durable no-replace publication.
+
+Set `SDK_DST_REPLAY_SEED` to the emitted `DST_REPLAY_SEED` path, then run
+`cargo test --locked -p acyclic-harness --features test-support --test main dst::recovery::live_f3_killed_head_accepts_a_new_prompt -- --exact`.
+The seed selects either supported crash phase. The retained world is not deleted
+automatically. Production-wide capture of arbitrary failed runs and their external
+nondeterministic inputs remains outstanding.
