@@ -208,6 +208,18 @@ impl futures::Stream for SubscriptionSource {
         self.records.as_mut().poll_next(cx)
     }
 }
+#[derive(Debug, thiserror::Error)]
+#[error("original registration queue closed before request {requested} was accepted")]
+struct RegistrationQueueClosed {
+    requested: u64,
+}
+#[derive(Debug, thiserror::Error)]
+#[error("session open receipt {received} does not match original request {requested}")]
+struct RegistrationMismatch {
+    requested: u64,
+    received: u64,
+}
+
 enum Command {
     AcquireCredential {
         credential: Bytes,
@@ -807,46 +819,78 @@ impl Client {
         let input = matches!(&kind, Kind::ActorCall(call) if call.input)
             .then(|| Arc::new(input::State::new(self.pool.clone(), id, progress.clone())));
         cursor.input = input.clone();
-        if !matches!(&kind, Kind::Follow(_)) {
-            cursor.primitive = "session-reply";
-        }
+
         let operation = cursor.observation.operation.clone();
         let registration = async {
-            self.pool
-                .commands
-                .send(Command::Open(Box::new(OpenCommand {
-                    revisions: Arc::clone(&self.revisions),
-                    id,
-                    attempt_epoch: self.pool.attempt_epoch.load(Ordering::Acquire),
-                    acknowledge,
-                    kind,
-                    filter,
-                    credential,
-                    raw,
-                    progress,
-                    records,
-                    ready,
-                    observation: operation.clone(),
-                    input: input.map(input::Owner),
-                })))
-                .await
-                .map_err(|_| StreamError::Unavailable)?;
-            let (opened_id, receipt) = opened.await.map_err(|_| StreamError::Unavailable)??;
-            if opened_id != id {
-                return Err(StreamError::Unavailable);
-            }
-            cursor.opened = receipt;
-            Ok(())
-        };
-        let registered = operation
-            .clone()
-            .scope(super::runtime::waiting("session-open", id, registration))
+            let sending = self.pool.commands.send(Command::Open(Box::new(OpenCommand {
+                revisions: Arc::clone(&self.revisions),
+                id,
+                attempt_epoch: self.pool.attempt_epoch.load(Ordering::Acquire),
+                acknowledge,
+                kind,
+                filter,
+                credential,
+                raw,
+                progress,
+                records,
+                ready,
+                observation: operation.clone(),
+                input: input.map(input::Owner),
+            })));
+            #[cfg(feature = "serde")]
+            let sent = crate::trace::observe(
+                crate::trace::Request {
+                    name: "stream.session_open_queue",
+                    mechanism: crate::trace::Mechanism::Wait,
+                    parent: None,
+                    guarantee: Some("queued_original_session_open"),
+                },
+                sending,
+                |_| Some(0),
+            )
             .await;
+            #[cfg(not(feature = "serde"))]
+            let sent = sending.await;
+            // Release the unqueued command and its original ownership on failure;
+            // the cause retains the observed closure and original request identity.
+            sent.map_err(|_| {
+                StreamError::Unavailable.with_source(RegistrationQueueClosed { requested: id })
+            })?;
+            let receipt = async {
+                let (opened_id, receipt) = opened
+                    .await
+                    .map_err(|source| StreamError::Unavailable.with_source(source))??;
+                if opened_id != id {
+                    return Err(StreamError::Unavailable.with_source(RegistrationMismatch {
+                        requested: id,
+                        received: opened_id,
+                    }));
+                }
+                cursor.opened = receipt;
+                Ok(())
+            };
+            #[cfg(feature = "serde")]
+            {
+                crate::trace::observe(
+                    crate::trace::Request {
+                        name: "stream.session_registration",
+                        mechanism: crate::trace::Mechanism::Wait,
+                        parent: None,
+                        guarantee: Some("original_session_open_receipt"),
+                    },
+                    receipt,
+                    |_| Some(0),
+                )
+                .await
+            }
+            #[cfg(not(feature = "serde"))]
+            receipt.await
+        };
+        let registered = operation.clone().scope(registration).await;
         if let Err(error) = registered {
             cursor.observation.finish(Some(&error));
             return Err(error);
         }
-        operation.record("registration", "opened");
         Ok(cursor)
     }
     fn cursor(
@@ -869,7 +913,6 @@ impl Client {
         }
         Ok(Cursor {
             observation: Observation::channel(id),
-            primitive: "session-follow",
             id,
             client: self.clone(),
             progress,
@@ -886,7 +929,6 @@ struct Cursor {
     pending: Option<Delivery>,
     observation: Observation,
     /// Names this cursor's deliveries in wait reports.
-    primitive: &'static str,
     id: u64,
     client: Client,
     progress: Arc<Progress>,
@@ -898,7 +940,32 @@ impl Cursor {
     async fn next(&mut self) -> Option<Result<Delivery, StreamError>> {
         match self.receiver.try_recv() {
             Ok(received) => Some(received),
-            Err(_) => super::runtime::waiting(self.primitive, self.id, self.receiver.recv()).await,
+            Err(_) => {
+                let work = self.receiver.recv();
+                #[cfg(feature = "serde")]
+                {
+                    let progress = &self.progress;
+                    crate::trace::observe_value(
+                        crate::trace::Request {
+                            name: "stream.session_delivery_wait",
+                            mechanism: crate::trace::Mechanism::Wait,
+                            parent: None,
+                            guarantee: Some("queued_delivery_or_confirmed_session_end"),
+                        },
+                        work,
+                        |result| match result {
+                            Some(Ok(_)) => Some((Some(0), crate::trace::Outcome::Succeeded)),
+                            None if progress.ended() => {
+                                Some((Some(0), crate::trace::Outcome::Succeeded))
+                            }
+                            _ => None,
+                        },
+                    )
+                    .await
+                }
+                #[cfg(not(feature = "serde"))]
+                work.await
+            }
         }
     }
     async fn receive(&mut self) -> Result<Option<Delivery>, StreamError> {
