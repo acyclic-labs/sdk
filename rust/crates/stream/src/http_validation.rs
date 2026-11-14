@@ -123,6 +123,10 @@ fn validate_children_page(value: &Value) -> Result {
     let item = object(value)?;
     id(field(item, "hierarchyVersion")?)?;
     let children = array(field(item, "children")?)?;
+    let consumed = field(item, "consumed")?
+        .as_u64()
+        .filter(|count| *count <= crate::MAX_ITEMS as u64 && *count >= children.len() as u64)
+        .ok_or("invalid child page span")?;
     let mut previous: Option<&str> = None;
     for child in children {
         let child = object(child)?;
@@ -149,8 +153,9 @@ fn validate_children_page(value: &Value) -> Result {
         previous = Some(current);
     }
     if let Some(next_after) = item.get("nextAfter").filter(|value| !value.is_null()) {
+        path(next_after)?;
         let next_after = string(next_after)?;
-        if previous != Some(next_after) {
+        if consumed == 0 || previous.is_some_and(|last| next_after < last) {
             return Err("child continuation does not match final child");
         }
     }
@@ -543,21 +548,31 @@ mod tests {
     fn hosted_http_validation_checks_children_page_continuations() -> serde_json::Result<()> {
         let commit_id = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
         let valid = format!(
-            r#"{{"hierarchyVersion":"{commit_id}","children":[{{"path":"runs/a"}},{{"path":"runs/b"}}],"nextAfter":"runs/b"}}"#
+            r#"{{"hierarchyVersion":"{commit_id}","consumed":2,"children":[{{"path":"runs/a"}},{{"path":"runs/b"}}],"nextAfter":"runs/b"}}"#
         );
         assert!(super::validate("children/page", &json_fixture(&valid)?).is_ok());
 
         let null_continuation =
-            format!(r#"{{"hierarchyVersion":"{commit_id}","children":[],"nextAfter":null}}"#);
+            format!(r#"{{"hierarchyVersion":"{commit_id}","consumed":0,"children":[],"nextAfter":null}}"#);
         assert!(super::validate("children/page", &json_fixture(&null_continuation)?).is_ok());
 
+        let hidden_continuation = format!(
+            r#"{{"hierarchyVersion":"{commit_id}","consumed":2,"children":[{{"path":"runs/a"}}],"nextAfter":"runs/b"}}"#
+        );
+        assert!(super::validate("children/page", &json_fixture(&hidden_continuation)?).is_ok());
+        let hidden_page = format!(
+            r#"{{"hierarchyVersion":"{commit_id}","consumed":1,"children":[],"nextAfter":"runs/b"}}"#
+        );
+        assert!(super::validate("children/page", &json_fixture(&hidden_page)?).is_ok());
+        let stalled_page = hidden_page.replace("\"consumed\":1", "\"consumed\":0");
+        assert!(super::validate("children/page", &json_fixture(&stalled_page)?).is_err());
         let wrong_continuation = format!(
-            r#"{{"hierarchyVersion":"{commit_id}","children":[{{"path":"runs/a"}}],"nextAfter":"runs/b"}}"#
+            r#"{{"hierarchyVersion":"{commit_id}","consumed":1,"children":[{{"path":"runs/b"}}],"nextAfter":"runs/a"}}"#
         );
         assert!(super::validate("children/page", &json_fixture(&wrong_continuation)?).is_err());
 
         let unordered = format!(
-            r#"{{"hierarchyVersion":"{commit_id}","children":[{{"path":"runs/b"}},{{"path":"runs/a"}}]}}"#
+            r#"{{"hierarchyVersion":"{commit_id}","consumed":2,"children":[{{"path":"runs/b"}},{{"path":"runs/a"}}]}}"#
         );
         assert!(super::validate("children/page", &json_fixture(&unordered)?).is_err());
         Ok(())

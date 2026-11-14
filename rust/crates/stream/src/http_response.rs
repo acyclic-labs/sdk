@@ -198,6 +198,7 @@ fn children_page_value(value: wire::ChildrenPageResponse) -> Result<Value> {
             json!(STANDARD.encode(value.hierarchy_version)),
         ),
         ("children".into(), json!(children)),
+        ("consumed".into(), json!(value.consumed)),
     ]);
     if let Some(next) = value.next_after {
         result.insert("nextAfter".into(), json!(next));

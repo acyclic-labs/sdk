@@ -852,6 +852,80 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
 }
 
 #[tokio::test]
+async fn hidden_children_keep_the_producer_rank_across_indexed_pages() -> TestResult {
+    use acyclic_auth::contract::*;
+    let provider = Arc::new(MemoryStream::default());
+    tree(&provider).await?;
+    append(&provider, "tree/d/status", 1).await?;
+    let client = local(&provider)?;
+    let credential = acyclic_auth::testing::root(|block| {
+        block.certificates.as_mut().unwrap().keys[0].key.grants = GrantSet {
+            grants: ["streams:/tree", "streams:/tree/b"]
+                .into_iter()
+                .map(|name| Grant {
+                    kind: GrantKind::Resource(ResourceGrant {
+                        resource: ResourcePattern {
+                            name: name.into(),
+                            prefix: false,
+                        },
+                        actions: vec!["streams/list".into()],
+                    }),
+                })
+                .collect(),
+        };
+    });
+    client.register_credential(1, credential.into())?;
+    let mut cursor = crate::demand::ListingPage::new(0, 3, None)?;
+    // A smaller original selection makes the first reply entirely invisible,
+    // but the namespace still advances past that child.
+    let first = client.children_page(page("tree", 1)?, 1).await?;
+    assert!(first.children.is_empty());
+    assert_eq!(first.consumed, 1);
+    assert!(first.next_after.is_some());
+    cursor.advance(&first)?;
+    let (offset, limit, version) = cursor.request().ok_or("lost hidden continuation")?;
+    let second = client
+        .children_page(
+            crate::ChildrenPageRequest {
+                offset,
+                hierarchy_version: version,
+                ..page("tree", limit)?
+            },
+            1,
+        )
+        .await?;
+    assert_eq!(second.children.len(), 1);
+    assert_eq!(second.children[0].path.as_str(), "tree/b");
+    assert_eq!(second.consumed, 2);
+    assert_eq!(
+        second.next_after.as_ref().map(StreamPath::as_str),
+        Some("tree/c")
+    );
+    cursor.advance(&second)?;
+    assert!(
+        cursor.request().is_none(),
+        "hidden rows widened the indexed span"
+    );
+    let mut adjacent = crate::demand::ListingPage::new(1, 3, Some(first.hierarchy_version))?;
+    let (offset, limit, version) = adjacent.request().ok_or("missing adjacent page")?;
+    let last = client
+        .children_page(
+            crate::ChildrenPageRequest {
+                offset,
+                hierarchy_version: version,
+                ..page("tree", limit)?
+            },
+            1,
+        )
+        .await?;
+    assert!(last.children.is_empty());
+    assert_eq!(last.consumed, 1);
+    adjacent.advance(&last)?;
+    assert!(adjacent.request().is_none());
+    Ok(())
+}
+
+#[tokio::test]
 async fn historical_heads_keep_the_selected_cut_after_newer_session_progress() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     tree(&provider).await?;

@@ -595,7 +595,10 @@ pub struct ChildrenPage {
     pub hierarchy_version: CommitId,
     /// Ordered direct children, at most the requested limit.
     pub children: Vec<Child>,
-    /// Last returned path if another page exists.
+    /// Indexed positions consumed before authorization projection. Advance an
+    /// indexed page by this span, including rows hidden by authorization.
+    pub consumed: u32,
+    /// Last consumed path if another page exists; authorization may hide it.
     pub next_after: Option<StreamPath>,
 }
 
@@ -608,7 +611,9 @@ impl ChildrenPage {
             path.as_str().rsplit_once('/').map(|(parent, _)| parent)
                 == request.parent.as_ref().map(StreamPath::as_str)
         };
-        if self.children.len() > request.limit as usize
+        if self.consumed > request.limit
+            || self.children.len() > self.consumed as usize
+            || (self.next_after.is_some() && self.consumed == 0)
             || request
                 .hierarchy_version
                 .is_some_and(|version| version != self.hierarchy_version)

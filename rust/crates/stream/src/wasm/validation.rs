@@ -320,6 +320,10 @@ mod http {
         let item = object(value)?;
         id(field(item, "hierarchyVersion")?)?;
         let result = Object::new();
+        let consumed = field(item, "consumed")?
+            .as_f64()
+            .ok_or("invalid child page span")?;
+        set(&result, "consumed", &JsValue::from_f64(consumed))?;
         set(
             &result,
             "hierarchyVersion",

@@ -1,23 +1,59 @@
 //! Explicit, bounded stream dependencies shared by readers and projections.
-use crate::StreamPath;
+use crate::{ChildrenPage, CommitId, StreamError, StreamPath};
 
-/// Protocol-sized requests covering exactly one logical listing page. Offsets
-/// advance by the requested span even when authorization hides returned rows.
-/// No allocation or request is performed until the consumer advances it.
-pub fn listing_chunks(
-    index: u32,
-    limit: u32,
-) -> Result<impl Iterator<Item = (u64, u32)>, crate::StreamError> {
-    if limit == 0 {
-        return Err(crate::StreamError::InvalidArgument);
+/// An indexed logical page, split only by transport capacity. The producer's
+/// consumed rank preserves page identity even when authorization hides rows.
+/// This cursor allocates nothing and performs no requests itself.
+pub struct ListingPage {
+    offset: u64,
+    remaining: u32,
+    version: Option<CommitId>,
+}
+
+impl ListingPage {
+    /// Select one exact indexed span and, optionally, its hierarchy fence.
+    pub fn new(index: u32, limit: u32, version: Option<CommitId>) -> Result<Self, StreamError> {
+        if limit == 0 {
+            return Err(StreamError::InvalidArgument);
+        }
+        Ok(Self {
+            offset: u64::from(index) * u64::from(limit),
+            remaining: limit,
+            version,
+        })
     }
-    let start = u64::from(index) * u64::from(limit);
-    Ok((0..limit).step_by(crate::MAX_ITEMS).map(move |from| {
-        (
-            start + u64::from(from),
-            (limit - from).min(crate::MAX_ITEMS as u32),
-        )
-    }))
+
+    /// The next rank seek, result bound and original hierarchy fence.
+    pub fn request(&self) -> Option<(u64, u32, Option<CommitId>)> {
+        (self.remaining != 0).then_some((
+            self.offset,
+            self.remaining.min(crate::MAX_ITEMS as u32),
+            self.version,
+        ))
+    }
+
+    /// Consume only the producer's actual span, including hidden rows. A short
+    /// byte-limited response never consumes the remainder of its request.
+    pub fn advance(&mut self, page: &ChildrenPage) -> Result<(), StreamError> {
+        let (_, bound, version) = self.request().ok_or(StreamError::InvalidResponse)?;
+        if page.consumed > bound
+            || page.children.len() > page.consumed as usize
+            || (page.next_after.is_some() && page.consumed == 0)
+            || version.is_some_and(|selected| selected != page.hierarchy_version)
+        {
+            return Err(StreamError::InvalidResponse);
+        }
+        self.offset = self
+            .offset
+            .checked_add(u64::from(page.consumed))
+            .ok_or(StreamError::InvalidResponse)?;
+        self.remaining -= page.consumed;
+        self.version = Some(page.hierarchy_version);
+        if page.next_after.is_none() {
+            self.remaining = 0;
+        }
+        Ok(())
+    }
 }
 
 /// One rendering need, stated each frame.

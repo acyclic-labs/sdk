@@ -339,6 +339,9 @@ message ChildrenPageResponse {
   bytes hierarchy_version = 1;
   repeated Child children = 2;
   optional string next_after = 3;
+  // Indexed positions consumed before authorization projection. A byte-limited
+  // page may consume less than the requested limit; hidden rows still count.
+  uint32 consumed = 4;
 }
 
 message TailCondition {

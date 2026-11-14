@@ -197,7 +197,11 @@ enum Inputs<'a> {
     Conversation,
     Status,
     Role,
-    Children { offset: u64, limit: u32 },
+    Children {
+        offset: u64,
+        limit: u32,
+        version: Option<acyclic_stream::CommitId>,
+    },
     Child(&'a str),
 }
 
@@ -286,11 +290,15 @@ where
             Inputs::Children { .. } => {}
         }
         let children = match inputs {
-            Inputs::Children { offset, limit } => Some(ChildrenPageRequest {
+            Inputs::Children {
+                offset,
+                limit,
+                version,
+            } => Some(ChildrenPageRequest {
                 parent: Some(native_path(&[self.agent.as_str(), "/children"], original)?),
                 offset,
                 after: None,
-                hierarchy_version: None,
+                hierarchy_version: version,
                 limit,
                 tail_stream: None,
             }),
@@ -418,12 +426,17 @@ where
         };
         if let Some(page) = child_page {
             cut.page_size = self.view.page_size;
-            for (offset, limit) in acyclic_stream::demand::listing_chunks(page, self.view.page_size)
-                .map_err(stream_error)?
-            {
+            let mut cursor =
+                acyclic_stream::demand::ListingPage::new(page, self.view.page_size, None)
+                    .map_err(stream_error)?;
+            while let Some((offset, limit, version)) = cursor.request() {
                 let heads = self
                     .heads(
-                        Inputs::Children { offset, limit },
+                        Inputs::Children {
+                            offset,
+                            limit,
+                            version,
+                        },
                         Some(at.clone()),
                         original,
                         ctx,
@@ -435,6 +448,7 @@ where
                     .as_ref()
                     .ok_or(DemandError::InvalidRequest)?;
                 let more = listing.next_after.is_some();
+                cursor.advance(listing).map_err(stream_error)?;
                 for child in &listing.children {
                     AgentPath::parse_id(child.path.as_str()).map_err(Error::from)?;
                     cut.targets.push((self.links)(&child.path, ctx)?, ctx)?;
@@ -442,15 +456,7 @@ where
                 }
                 // Each request selects the same exact cut. Only the visible UI
                 // page is assembled; protocol chunking never changes its offset.
-                let received = u32::try_from(listing.children.len())
-                    .map_err(|_| DemandError::InvalidRequest)?;
-                if received > limit {
-                    return Err(DemandError::InvalidRequest);
-                }
                 cut.page = Some((page, more));
-                if !more {
-                    break;
-                }
             }
             return Ok(cut);
         }

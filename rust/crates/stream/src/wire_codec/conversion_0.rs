@@ -372,6 +372,7 @@ pub fn children_page_from_response(
 ) -> Result<crate::ChildrenPage, StreamError> {
     Ok(crate::ChildrenPage {
         hierarchy_version: commit_id(&value.hierarchy_version)?,
+        consumed: value.consumed,
         children: value
             .children
             .into_iter()
@@ -398,6 +399,7 @@ pub fn children_page_from_response(
 pub fn children_page_to_wire(value: crate::ChildrenPage) -> wire::ChildrenPageResponse {
     wire::ChildrenPageResponse {
         hierarchy_version: bytes::Bytes::copy_from_slice(value.hierarchy_version.as_bytes()),
+        consumed: value.consumed,
         children: value
             .children
             .into_iter()
