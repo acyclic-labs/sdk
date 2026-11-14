@@ -79,6 +79,10 @@ mod error_code_tests {
                 }
             }
         }
+        let original = StreamError::Unavailable.with_source("x".parse::<u64>().unwrap_err());
+        assert!(super::retains_original(&original.clone(), &original));
+        let other = StreamError::Unavailable.with_source("x".parse::<u64>().unwrap_err());
+        assert!(other == original && !super::retains_original(&other, &original));
     }
 
     #[test]

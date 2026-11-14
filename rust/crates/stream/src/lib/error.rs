@@ -74,6 +74,21 @@ impl PartialEq for StreamError {
 }
 impl Eq for StreamError {}
 
+/// Test support: `actual` is `expected` itself, not only its classification.
+/// The deepest retained source (an original cause or member diagnostic) is
+/// shared by `Arc` across clones, so identity is compared by address.
+#[cfg(test)]
+pub(crate) fn retains_original(actual: &StreamError, expected: &StreamError) -> bool {
+    fn root(error: &(dyn std::error::Error + 'static)) -> Option<*const ()> {
+        let mut source = error.source()?;
+        while let Some(next) = source.source() {
+            source = next;
+        }
+        Some(std::ptr::from_ref(source).cast())
+    }
+    actual == expected && root(actual) == root(expected)
+}
+
 /// A retained diagnostic paired with the category the protocol declared.
 /// Category is independent of the diagnostic's original status message.
 #[derive(Clone, Debug, Eq, PartialEq)]

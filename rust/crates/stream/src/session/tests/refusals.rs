@@ -106,7 +106,10 @@ async fn local_socket_refusals_retain_the_original_error_after_prior_data() -> T
                     socket.next().await.unwrap_err()
                 }
             };
-            assert_eq!(actual, original, "local socket lost its original refusal");
+            assert!(
+                crate::retains_original(&actual, &original),
+                "local socket lost its original refusal: {actual:?} != {original:?}"
+            );
         }
         // Hold both credits at zero so the terminal must retain the same error
         // while earlier accepted data owns the queue. Drive the actual queue and
