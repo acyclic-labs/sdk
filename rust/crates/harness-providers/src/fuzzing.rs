@@ -232,12 +232,28 @@ pub fn assert_stream_invariants(input: &[u8]) {
         if let Ok(request) =
             serde_json::from_slice::<acyclic_harness_core::model::ModelRequest>(input)
         {
-            crate::tool_names::Names::assert_round_trip(&request);
-            crate::call_ids::CallIds::assert_round_trip(&request);
+            assert_eq!(
+                crate::tool_names::Names::assert_round_trip(&request)
+                    .map_err(|error| format!("{error:?}")),
+                Ok(())
+            );
+            assert_eq!(
+                crate::call_ids::CallIds::assert_round_trip(&request)
+                    .map_err(|error| format!("{error:?}")),
+                Ok(())
+            );
             let encoded = serde_json::to_vec(&request).unwrap();
             let replay = serde_json::from_slice(&encoded).unwrap();
-            crate::tool_names::Names::assert_round_trip(&replay);
-            crate::call_ids::CallIds::assert_round_trip(&replay);
+            assert_eq!(
+                crate::tool_names::Names::assert_round_trip(&replay)
+                    .map_err(|error| format!("{error:?}")),
+                Ok(())
+            );
+            assert_eq!(
+                crate::call_ids::CallIds::assert_round_trip(&replay)
+                    .map_err(|error| format!("{error:?}")),
+                Ok(())
+            );
         }
         return;
     }

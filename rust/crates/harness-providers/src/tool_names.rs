@@ -171,13 +171,19 @@ fn exact(alias: &str) -> String {
 
 impl<'a> Names<'a> {
     #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
-    pub(crate) fn assert_round_trip(request: &'a ModelRequest) {
+    pub(crate) fn assert_round_trip(
+        request: &'a ModelRequest,
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
         let table = Self::new(request);
         let mut seen = std::collections::BTreeSet::new();
         for name in table.bindings.iter().map(|binding| binding.canonical) {
-            let wire = table.wire(name).unwrap();
+            let wire = table.wire(name)?;
             assert!(!wire.is_empty() && wire.len() <= 64);
-            assert!(wire.as_bytes()[0].is_ascii_alphabetic() || wire.starts_with('_'));
+            assert!(
+                wire.as_bytes()
+                    .first()
+                    .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+            );
             assert!(
                 wire.bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
@@ -193,13 +199,14 @@ impl<'a> Names<'a> {
                     serde_json::json!({}),
                 ),
             );
-            table.restore(&mut event).unwrap();
+            table.restore(&mut event)?;
             let acyclic_harness_core::model::ModelEvent::ToolCall(call) = event else {
-                unreachable!()
+                return Err(crate::invalid("restored tool call changed event kind").into());
             };
             assert_eq!(call.name, name);
             let _ = table.canonical(name); // Also exercise malformed/untrusted alias strings.
         }
+        Ok(())
     }
 
     pub(crate) fn new(request: &'a ModelRequest) -> Self {

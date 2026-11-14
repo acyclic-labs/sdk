@@ -40,7 +40,10 @@ pub(super) fn assert_names(input: Vec<String>) {
         .into_iter()
         .map(definition)
         .collect();
-    Names::assert_round_trip(&request);
+    assert_eq!(
+        Names::assert_round_trip(&request).map_err(|error| format!("{error:?}")),
+        Ok(())
+    );
     let names = Names::new(&request);
     let mut seen = BTreeSet::new();
     for tool in &request.tools {
@@ -360,7 +363,10 @@ fn checked_in_tool_name_seed_exercises_the_fuzzer_oracle() {
     let seed = include_bytes!("../fuzz/corpus/provider_stream/tool-names.json");
     let request: ModelRequest = serde_json::from_slice(&seed[1..]).unwrap();
     assert_eq!(request.tools[0].name, "acyclic.read_file");
-    Names::assert_round_trip(&request);
+    assert_eq!(
+        Names::assert_round_trip(&request).map_err(|error| format!("{error:?}")),
+        Ok(())
+    );
     crate::fuzzing::assert_stream_invariants(seed);
 }
 
@@ -523,7 +529,10 @@ fn occupied_candidates_cost_one_probe_each() {
         names.wire("mcp.a.b").unwrap(),
         Names::candidate("mcp.a.b", 1025)
     );
-    Names::assert_round_trip(&request);
+    assert_eq!(
+        Names::assert_round_trip(&request).map_err(|error| format!("{error:?}")),
+        Ok(())
+    );
 }
 
 #[test]
