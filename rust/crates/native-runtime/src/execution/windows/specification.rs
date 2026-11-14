@@ -75,7 +75,7 @@ pub(super) fn encode(grant: &Grant, access: ExecutionAccess) -> io::Result<Vec<u
 }
 
 /// PSEC resolves policy paths in the Win32 namespace and rejects verbatim
-/// spellings on some volumes (a ReFS Dev Drive reports `ERROR_INVALID_DRIVE`).
+/// spellings on some volumes (a `ReFS` Dev Drive reports `ERROR_INVALID_DRIVE`).
 /// Bound roots are canonical verbatim paths, so the policy carries their drive
 /// or UNC spelling. That spelling is admitted only when Win32 normalisation
 /// maps it back to itself; a trailing dot or space can never widen a grant.

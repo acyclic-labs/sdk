@@ -406,12 +406,13 @@ impl Handoff {
         if self.count != self.handles.len() {
             return Err(io::ErrorKind::InvalidInput.into());
         }
+        let [job, process, ready, done] = self.handles;
         let frame = Opened {
             tree,
-            job: self.handles[0],
-            process: self.handles[1],
-            ready: self.handles[2],
-            done: self.handles[3],
+            job,
+            process,
+            ready,
+            done,
             secret: *secret,
         }
         .encode();
@@ -425,7 +426,7 @@ impl Handoff {
 
 impl Drop for Handoff {
     fn drop(&mut self) {
-        for handle in &self.handles[..self.count] {
+        for handle in self.handles.iter().take(self.count) {
             let mut local = std::ptr::null_mut();
             // SAFETY: these are our unpublished duplicates in the retained
             // target. CLOSE_SOURCE closes each there, including on failure.
@@ -640,13 +641,18 @@ impl Opened {
     fn encode(self) -> [u8; Self::FRAME_BYTES] {
         let mut frame = [0; Self::FRAME_BYTES];
         frame[0] = 1;
-        for (slot, value) in frame[1..Self::SECRET_OFFSET].chunks_exact_mut(8).zip([
-            self.tree,
-            self.job.expose_provenance(),
-            self.process.expose_provenance(),
-            self.ready.expose_provenance(),
-            self.done.expose_provenance(),
-        ]) {
+        for (slot, value) in frame[1..Self::SECRET_OFFSET]
+            .as_chunks_mut::<8>()
+            .0
+            .iter_mut()
+            .zip([
+                self.tree,
+                self.job.expose_provenance(),
+                self.process.expose_provenance(),
+                self.ready.expose_provenance(),
+                self.done.expose_provenance(),
+            ])
+        {
             slot.copy_from_slice(&(value as u64).to_le_bytes());
         }
         frame[Self::SECRET_OFFSET..].copy_from_slice(&self.secret);
@@ -658,8 +664,10 @@ impl Opened {
             return None;
         }
         let mut fields = frame[1..Self::SECRET_OFFSET]
-            .chunks_exact(8)
-            .map(|slot| usize::try_from(u64::from_le_bytes(slot.try_into().ok()?)).ok());
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|slot| usize::try_from(u64::from_le_bytes(*slot)).ok());
         let tree = fields.next()??;
         let mut handle = || {
             let value = fields.next()??;
@@ -679,7 +687,7 @@ impl Opened {
 
 /// Decode the startup header's native handle representation once. Null is
 /// allowed only for an absent inherited output; required owners reject it at
-/// admission. INVALID_HANDLE_VALUE can never transfer an owned kernel object.
+/// admission. `INVALID_HANDLE_VALUE` can never transfer an owned kernel object.
 fn handle_value(value: &str) -> Option<HANDLE> {
     let value = value.parse::<usize>().ok()?;
     (value != usize::MAX).then(|| std::ptr::with_exposed_provenance_mut(value))
@@ -731,24 +739,7 @@ fn serve() -> io::Result<()> {
 
 fn run(response: &mut Response) -> io::Result<()> {
     let mut input = BufReader::new(io::stdin());
-    let mut line = String::new();
-    if input.read_line(&mut line)? == 0 {
-        return Err(io::ErrorKind::BrokenPipe.into());
-    }
-    let mut fields = line
-        .strip_suffix('\n')
-        .ok_or(io::ErrorKind::InvalidData)?
-        .split(' ');
-    let mut handle = || {
-        fields
-            .next()
-            .and_then(handle_value)
-            .ok_or(io::ErrorKind::InvalidData)
-    };
-    let (owner, output, error) = (handle()?, handle()?, handle()?);
-    if owner.is_null() || fields.next().is_some() {
-        return Err(io::ErrorKind::InvalidData.into());
-    }
+    let (owner, output, error) = startup_handles(&mut input)?;
     // These original pipe handles stay live until every member has physically
     // exited. In particular, killing the owner cannot publish an early EOF.
     let _output = transport_lease(output);
@@ -792,22 +783,7 @@ fn run(response: &mut Response) -> io::Result<()> {
         visits: 0,
     };
     loop {
-        let mut message = 0;
-        let mut key = 0;
-        let mut overlapped: *mut OVERLAPPED = std::ptr::null_mut();
-        // SAFETY: the owned port and writable outputs.
-        if unsafe {
-            GetQueuedCompletionStatus(
-                port,
-                &raw mut message,
-                &raw mut key,
-                &raw mut overlapped,
-                INFINITE,
-            )
-        } == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
+        let (message, key, process) = dequeue(port)?;
         let touched = match key {
             OPENED => {
                 if let Ok(tree) = opened.receive.try_recv() {
@@ -862,7 +838,7 @@ fn run(response: &mut Response) -> io::Result<()> {
             id => {
                 if message == JOB_OBJECT_MSG_NEW_PROCESS {
                     // The message carries the new member's PID.
-                    state.admit(id, u32::try_from(overlapped.addr()).unwrap_or(0))?;
+                    state.admit(id, u32::try_from(process).unwrap_or(0))?;
                 }
                 Some(id)
             }
@@ -871,6 +847,49 @@ fn run(response: &mut Response) -> io::Result<()> {
             return Ok(());
         }
     }
+}
+
+fn startup_handles(input: &mut impl io::BufRead) -> io::Result<(HANDLE, HANDLE, HANDLE)> {
+    let mut line = String::new();
+    if input.read_line(&mut line)? == 0 {
+        return Err(io::ErrorKind::BrokenPipe.into());
+    }
+    let mut fields = line
+        .strip_suffix('\n')
+        .ok_or(io::ErrorKind::InvalidData)?
+        .split(' ');
+    let mut handle = || {
+        fields
+            .next()
+            .and_then(handle_value)
+            .ok_or(io::ErrorKind::InvalidData)
+    };
+    let (owner, output, error) = (handle()?, handle()?, handle()?);
+    if owner.is_null() || fields.next().is_some() {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    Ok((owner, output, error))
+}
+
+fn dequeue(port: HANDLE) -> io::Result<(u32, usize, usize)> {
+    let mut message = 0;
+    let mut key = 0;
+    let mut overlapped: *mut OVERLAPPED = std::ptr::null_mut();
+    // SAFETY: the caller retains the original completion port through this
+    // synchronous wait; all three writable output slots remain live.
+    if unsafe {
+        GetQueuedCompletionStatus(
+            port,
+            &raw mut message,
+            &raw mut key,
+            &raw mut overlapped,
+            INFINITE,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((message, key, overlapped.addr()))
 }
 
 /// Every tree a custodian watches, and what it knows of its owner.

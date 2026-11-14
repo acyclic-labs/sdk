@@ -18,8 +18,11 @@ use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
 mod tests;
 
 #[cfg(test)]
+type AdmissionProbe = Box<dyn FnOnce(&File)>;
+
+#[cfg(test)]
 thread_local! {
-    static BEFORE_ADMISSION: std::cell::RefCell<Option<Box<dyn FnOnce(&File)>>> = const { std::cell::RefCell::new(None) };
+    static BEFORE_ADMISSION: std::cell::RefCell<Option<AdmissionProbe>> = const { std::cell::RefCell::new(None) };
     static BEFORE_CONNECT: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
     static BEFORE_LISTEN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
     static WITHOUT_ADMISSION_LOCK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -113,7 +116,9 @@ impl PacketDevice {
         let mut request = [0; 20];
         for (slot, word) in
             request
-                .chunks_exact_mut(4)
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
                 .zip([1, mode, uid, gid, u32::from(writable)])
         {
             slot.copy_from_slice(&word.to_ne_bytes());
@@ -161,6 +166,13 @@ struct PublicationReceipts {
     // map or an additional receiver thread for every device.
     completed: [Option<PacketDevicePublication>; 2],
     failure: Option<(io::ErrorKind, Option<i32>)>,
+}
+
+impl PublicationReceipts {
+    fn slot(&mut self, notification: bool) -> &mut Option<PacketDevicePublication> {
+        let [reply, notice] = &mut self.completed;
+        if notification { notice } else { reply }
+    }
 }
 
 /// An acknowledged physical device-write outcome, distinct from transport loss.
@@ -224,7 +236,7 @@ impl PacketDeviceRetirement {
     pub fn publication(&self, notification: bool) -> io::Result<PacketDevicePublication> {
         let mut state = self.receipts.lock().unwrap_or_else(PoisonError::into_inner);
         loop {
-            if let Some(receipt) = state.completed[usize::from(notification)].take() {
+            if let Some(receipt) = state.slot(notification).take() {
                 return Ok(receipt);
             }
             if self.retired.load(Ordering::Acquire) {
@@ -262,13 +274,10 @@ impl PacketDeviceRetirement {
                     None
                 }
             };
-            if let Some((class, receipt)) = completed {
-                if state.completed[usize::from(class)]
-                    .replace(receipt)
-                    .is_some()
-                {
-                    state.failure = Some((io::ErrorKind::InvalidData, None));
-                }
+            if let Some((class, receipt)) = completed
+                && state.slot(class).replace(receipt).is_some()
+            {
+                state.failure = Some((io::ErrorKind::InvalidData, None));
             }
             self.receipt_ready.notify_all();
         }
@@ -339,6 +348,8 @@ fn owner_exit() -> io::Result<&'static OwnedFd> {
             // while another thread is waiting uninterruptibly on its own mount.
             // SAFETY: gettid has no arguments; pidfd_open transfers a fresh fd.
             let tid = unsafe { libc::syscall(libc::SYS_gettid) };
+            // SAFETY: pidfd_open takes a numeric thread ID and flags, with no pointers;
+            // tid identifies this still-live thread and success transfers a fresh fd.
             let file = unsafe { libc::syscall(libc::SYS_pidfd_open, tid, libc::PIDFD_THREAD) };
             let result = if file < 0 {
                 Err(io::Error::new(
@@ -349,8 +360,12 @@ fn owner_exit() -> io::Result<&'static OwnedFd> {
                     ),
                 ))
             } else {
-                // SAFETY: pidfd_open returned this fresh descriptor.
-                Ok(unsafe { OwnedFd::from_raw_fd(file as i32) })
+                let file = i32::try_from(file).map_err(io::Error::other);
+                file.map(|file| {
+                    // SAFETY: pidfd_open returned this fresh descriptor and no
+                    // other owner has been constructed from it.
+                    unsafe { OwnedFd::from_raw_fd(file) }
+                })
             };
             if started.send(result).is_ok() {
                 let _ = parked.recv();
@@ -371,15 +386,15 @@ fn address(path: &std::path::Path) -> io::Result<(libc::sockaddr_un, libc::sockl
     let name = path.as_os_str().as_bytes();
     // SAFETY: all-zero is valid address storage, including its trailing NUL.
     let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    address.sun_family = libc::AF_UNIX as _;
+    address.sun_family = libc::AF_UNIX.try_into().map_err(io::Error::other)?;
     if name.len() + 1 > address.sun_path.len() {
         return Err(io::ErrorKind::InvalidInput.into());
     }
     for (target, byte) in address.sun_path.iter_mut().zip(name) {
-        *target = *byte as _;
+        *target = libc::c_char::from_ne_bytes([*byte]);
     }
     let length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + 1 + name.len();
-    Ok((address, length as _))
+    Ok((address, length.try_into().map_err(io::Error::other)?))
 }
 
 fn socket() -> io::Result<OwnedFd> {
@@ -677,8 +692,11 @@ fn connect_existing(path: &std::path::Path) -> io::Result<Option<UnixStream>> {
 }
 
 fn authenticate(control: UnixStream) -> io::Result<UnixStream> {
+    // SAFETY: ucred contains only integer fields, all valid when zero initialized.
     let mut peer: libc::ucred = unsafe { std::mem::zeroed() };
-    let mut size = std::mem::size_of_val(&peer) as libc::socklen_t;
+    let mut size = std::mem::size_of_val(&peer)
+        .try_into()
+        .map_err(io::Error::other)?;
     // SAFETY: SO_PEERCRED fills the initialized peer structure.
     if unsafe {
         libc::getsockopt(
@@ -694,7 +712,7 @@ fn authenticate(control: UnixStream) -> io::Result<UnixStream> {
     }
     // A listener created by this client retains its creator's credentials;
     // ownership is authenticated by UID, not the listener's recorded PID.
-    if peer.uid != unsafe { libc::geteuid() } {
+    if peer.uid != crate::private_file::effective_user() {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     Ok(control)

@@ -54,39 +54,14 @@ fn sandbox_policy() {
             } else {
                 grant.into_read_only()
             };
-            let mut command = Command::new(&executable);
-            command
-                .args([
-                    "--exact",
-                    "execution::tests::sandbox_policy_probe",
-                    "--nocapture",
-                ])
-                .env_clear()
-                .env("ACYCLIC_POLICY_OUTSIDE", &outside)
-                .env("ACYCLIC_POLICY_VOLUME", &volume)
-                .env("ACYCLIC_POLICY_SHELL", crate::platform_shell().unwrap())
-                .env("SHELL", crate::platform_shell().unwrap())
-                .env("HOME", &workspace)
-                .env(
-                    "ACYCLIC_POLICY_DESTINATION",
-                    listener.local_addr().unwrap().to_string(),
-                )
-                .env(
-                    "ACYCLIC_POLICY_CONFINED",
-                    if confined { "yes" } else { "no" },
-                )
-                .env(
-                    "ACYCLIC_POLICY_PRIMARY_WRITE",
-                    if primary_write { "yes" } else { "no" },
-                )
-                .env(
-                    "ACYCLIC_POLICY_VOLUME_WRITE",
-                    if volume_write { "yes" } else { "no" },
-                )
-                .current_dir(grant.workspace())
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
+            let mut command = policy_command(
+                &executable,
+                &outside,
+                &volume,
+                &grant,
+                listener.local_addr().unwrap(),
+                [confined, primary_write, volume_write],
+            );
             #[cfg(target_os = "linux")]
             command.env(
                 "PATH",
@@ -170,21 +145,7 @@ fn sandbox_policy_probe() {
     allowed(std::fs::write(&traversed, b"escaped"), !confined);
     allowed(std::fs::read("escape").map(|_| ()), !confined);
     allowed(std::fs::write("escape", b"escaped"), !confined);
-    if std::env::var_os("ACYCLIC_POLICY_DESCENDANT").is_none() {
-        let descendant = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "execution::tests::sandbox_policy_probe",
-                "--nocapture",
-            ])
-            .env("ACYCLIC_POLICY_DESCENDANT", "yes")
-            .output()
-            .unwrap();
-        assert!(
-            descendant.status.success(),
-            "descendant escaped or could not execute: {descendant:?}"
-        );
-    }
+    policy_descendant();
     for ancestor in std::env::current_dir().unwrap().ancestors() {
         std::fs::metadata(ancestor).unwrap();
     }
@@ -265,6 +226,7 @@ fn outside_attributes(path: &Path, confined: bool, seed: bool) {
     if seed {
         // SAFETY: valid terminated names and a borrowed buffer of this length.
         assert_eq!(
+            // SAFETY: path/name are terminated and secret owns secret.len() readable bytes.
             unsafe {
                 libc::setxattr(
                     path.as_ptr(),
@@ -296,7 +258,7 @@ fn outside_attributes(path: &Path, confined: bool, seed: bool) {
                 Some(libc::EOPNOTSUPP)
             );
         } else {
-            assert_eq!(result, secret.len() as libc::c_long);
+            assert_eq!(result, libc::c_long::try_from(secret.len()).unwrap());
         }
     }
     for call in [libc::SYS_listxattr, libc::SYS_llistxattr] {
@@ -442,6 +404,7 @@ fn sandbox_denies_outside_write() {
     // SAFETY: this exclusively owned fixture descriptor remains open for the
     // test. Clearing CLOEXEC makes the negative control a real ambient leak.
     assert_ne!(
+        // SAFETY: inherited owns the live descriptor exclusively throughout this flag change.
         unsafe { libc::fcntl(inherited.as_raw_fd(), libc::F_SETFD, 0) },
         -1
     );
@@ -489,47 +452,9 @@ fn sandbox_denies_outside_write() {
                 .unwrap();
             grant.check_attenuation(&fifo_read).unwrap();
         }
-        let expanded = ExecutionGrant::new(
-            &workspace,
-            ExecutionAccess::WorkspaceWrite,
-            [],
-            ExecutionNetwork::Off,
-        )
-        .unwrap();
-        assert_eq!(grant.check_attenuation(&expanded).is_ok(), primary_write);
-        let mut bypass = Command::new("/bin/sh");
-        bypass
-            .args(["-c", "printf leaked"])
-            .env_clear()
-            .current_dir(grant.workspace())
-            .stdin(Stdio::null())
-            .stdout(inherited.try_clone().unwrap())
-            .stderr(Stdio::null());
-        let refusal = ProcessTree::spawn_granted(bypass, &grant, None)
-            .err()
-            .expect("file-backed standard streams must refuse");
-        assert_eq!(refusal.kind(), io::ErrorKind::PermissionDenied);
-        let mut command = Command::new("/bin/sh");
-        command
-            .args([
-                "-c",
-                r#"
-            (printf changed > escape) 2>/dev/null && exit 10
-            /bin/sh -c 'printf changed > "$1"' sh "$OUTSIDE" 2>/dev/null && exit 11
-            (eval "printf leaked >&$EXTRA_FD") 2>/dev/null && exit 12
-            (printf inside > inside) 2>/dev/null
-            (printf volume > "$VOLUME/written") 2>/dev/null
-            printf confined
-        "#,
-            ])
-            .env_clear()
-            .env("OUTSIDE", &outside)
-            .env("VOLUME", &volume)
-            .env("EXTRA_FD", inherited.as_raw_fd().to_string())
-            .current_dir(grant.workspace())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        assert_workspace_write_attenuation(&grant, &workspace, primary_write);
+        refuse_inherited_stdio(&grant, &inherited);
+        let command = outside_write_command(&grant, &outside, &volume, inherited.as_raw_fd());
         let mut tree = ProcessTree::spawn_granted(command, &grant, None).unwrap();
         let mut output = String::new();
         use std::io::Read;
@@ -745,7 +670,7 @@ fn scoped_native_reads_pin_the_original_parent_and_refuse_escape() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0)).unwrap();
+        std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0o0)).unwrap();
         let admitted = compose(&child);
         std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0o700)).unwrap();
         admitted.unwrap();
@@ -1483,7 +1408,6 @@ fn kernel_network_grants_attenuate_without_a_network_service() {
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 #[test]
 fn inherited_file_stdio_cannot_bypass_the_workspace_boundary() {
-    use crate::{ProcessCommand, ProcessStdio, ProcessTree};
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
@@ -1507,38 +1431,7 @@ fn inherited_file_stdio_cannot_bypass_the_workspace_boundary() {
         .unwrap()
     };
     for input in [true, false] {
-        let command = |file_stdio: bool| {
-            let mut command = ProcessCommand::new(crate::platform_shell().unwrap());
-            command
-                .args(acyclic_host_platform::shell::PLATFORM.arguments)
-                .arg(match (cfg!(windows), input) {
-                    (true, true) => "[Console]::Write([Console]::In.ReadToEnd())",
-                    (true, false) => "[Console]::Write('escaped')",
-                    (false, true) => "/bin/cat",
-                    (false, false) => "printf escaped",
-                })
-                .current_dir(&workspace)
-                .env_clear()
-                .stdin(if input && file_stdio {
-                    ProcessStdio::from(std::fs::File::open(&sentinel).unwrap())
-                } else {
-                    ProcessStdio::null()
-                })
-                .stderr(ProcessStdio::null())
-                .stdout(if input || !file_stdio {
-                    ProcessStdio::piped()
-                } else {
-                    ProcessStdio::from(
-                        std::fs::OpenOptions::new()
-                            .append(true)
-                            .open(&sentinel)
-                            .unwrap(),
-                    )
-                });
-            #[cfg(windows)]
-            command.env("SystemRoot", std::env::var_os("SystemRoot").unwrap());
-            command
-        };
+        let command = |file_stdio| file_stdio_command(&workspace, &sentinel, input, file_stdio);
         for custody in [None, Some(&custody)] {
             let control =
                 capture(ProcessTree::spawn_granted(command(false), &grant, custody).unwrap());
@@ -2138,4 +2031,159 @@ process.stdout.write(readFileSync("written"));"#,
         );
     }
     Ok(())
+}
+
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+fn policy_command(
+    executable: &Path,
+    outside: &Path,
+    volume: &Path,
+    grant: &ExecutionGrant,
+    destination: std::net::SocketAddr,
+    flags: [bool; 3],
+) -> Command {
+    let [confined, primary_write, volume_write] = flags;
+    let mut command = Command::new(executable);
+    command
+        .args([
+            "--exact",
+            "execution::tests::sandbox_policy_probe",
+            "--nocapture",
+        ])
+        .env_clear()
+        .env("ACYCLIC_POLICY_OUTSIDE", outside)
+        .env("ACYCLIC_POLICY_VOLUME", volume)
+        .env("ACYCLIC_POLICY_SHELL", crate::platform_shell().unwrap())
+        .env("SHELL", crate::platform_shell().unwrap())
+        .env("HOME", grant.workspace())
+        .env("ACYCLIC_POLICY_DESTINATION", destination.to_string())
+        .env(
+            "ACYCLIC_POLICY_CONFINED",
+            if confined { "yes" } else { "no" },
+        )
+        .env(
+            "ACYCLIC_POLICY_PRIMARY_WRITE",
+            if primary_write { "yes" } else { "no" },
+        )
+        .env(
+            "ACYCLIC_POLICY_VOLUME_WRITE",
+            if volume_write { "yes" } else { "no" },
+        )
+        .current_dir(grant.workspace())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+}
+
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+fn policy_descendant() {
+    if std::env::var_os("ACYCLIC_POLICY_DESCENDANT").is_none() {
+        let descendant = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "execution::tests::sandbox_policy_probe",
+                "--nocapture",
+            ])
+            .env("ACYCLIC_POLICY_DESCENDANT", "yes")
+            .output()
+            .unwrap();
+        assert!(
+            descendant.status.success(),
+            "descendant escaped or could not execute: {descendant:?}"
+        );
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn refuse_inherited_stdio(grant: &ExecutionGrant, inherited: &std::fs::File) {
+    let mut bypass = Command::new("/bin/sh");
+    bypass
+        .args(["-c", "printf leaked"])
+        .env_clear()
+        .current_dir(grant.workspace())
+        .stdin(Stdio::null())
+        .stdout(inherited.try_clone().unwrap())
+        .stderr(Stdio::null());
+    let refusal = ProcessTree::spawn_granted(bypass, grant, None)
+        .err()
+        .expect("file-backed standard streams must refuse");
+    assert_eq!(refusal.kind(), io::ErrorKind::PermissionDenied);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn outside_write_command(
+    grant: &ExecutionGrant,
+    outside: &Path,
+    volume: &Path,
+    extra: std::os::fd::RawFd,
+) -> Command {
+    let mut command = Command::new("/bin/sh");
+    command
+        .args([
+            "-c",
+            r#"
+            (printf changed > escape) 2>/dev/null && exit 10
+            /bin/sh -c 'printf changed > "$1"' sh "$OUTSIDE" 2>/dev/null && exit 11
+            (eval "printf leaked >&$EXTRA_FD") 2>/dev/null && exit 12
+            (printf inside > inside) 2>/dev/null
+            (printf volume > "$VOLUME/written") 2>/dev/null
+            printf confined
+        "#,
+        ])
+        .env_clear()
+        .env("OUTSIDE", outside)
+        .env("VOLUME", volume)
+        .env("EXTRA_FD", extra.to_string())
+        .current_dir(grant.workspace())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+}
+
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+fn file_stdio_command(workspace: &Path, sentinel: &Path, input: bool, file_stdio: bool) -> Command {
+    let mut command = Command::new(crate::platform_shell().unwrap());
+    command
+        .args(acyclic_host_platform::shell::PLATFORM.arguments)
+        .arg(match (cfg!(windows), input) {
+            (true, true) => "[Console]::Write([Console]::In.ReadToEnd())",
+            (true, false) => "[Console]::Write('escaped')",
+            (false, true) => "/bin/cat",
+            (false, false) => "printf escaped",
+        })
+        .current_dir(workspace)
+        .env_clear()
+        .stdin(if input && file_stdio {
+            Stdio::from(std::fs::File::open(sentinel).unwrap())
+        } else {
+            Stdio::null()
+        })
+        .stderr(Stdio::null())
+        .stdout(if input || !file_stdio {
+            Stdio::piped()
+        } else {
+            Stdio::from(
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(sentinel)
+                    .unwrap(),
+            )
+        });
+    #[cfg(windows)]
+    command.env("SystemRoot", std::env::var_os("SystemRoot").unwrap());
+    command
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn assert_workspace_write_attenuation(grant: &ExecutionGrant, workspace: &Path, expected: bool) {
+    let expanded = ExecutionGrant::new(
+        workspace,
+        ExecutionAccess::WorkspaceWrite,
+        [],
+        ExecutionNetwork::Off,
+    )
+    .unwrap();
+    assert_eq!(grant.check_attenuation(&expanded).is_ok(), expected);
 }

@@ -5,9 +5,9 @@
 
 use core::sync::atomic::{AtomicU8, Ordering};
 
-/// Length of the Linux fuse_in_header.
+/// Length of the Linux `fuse_in_header`.
 pub const INPUT_HEADER: usize = 40;
-/// Length of the Linux fuse_out_header.
+/// Length of the Linux `fuse_out_header`.
 pub const OUTPUT_HEADER: usize = 16;
 /// The existing protective packet envelope ceiling.
 pub const MAXIMUM_WRITE: u32 = 16 * 1024 * 1024;
@@ -147,7 +147,7 @@ impl Configuration {
         if !(4096..=MAXIMUM_WRITE).contains(&self.maximum_write)
             || !self.page_size.is_power_of_two()
             || self.page_size < 4096
-            || self.maximum_write % self.page_size != 0
+            || !self.maximum_write.is_multiple_of(self.page_size)
         {
             return Err(EINVAL);
         }
@@ -339,7 +339,9 @@ impl Session {
             (20, maximum),
             (24, 1),
         ] {
-            body[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
+            body.get_mut(offset..offset + 4)
+                .ok_or(ENOBUFS)?
+                .copy_from_slice(&value.to_ne_bytes());
         }
         body[16..18].copy_from_slice(&16_u16.to_ne_bytes());
         body[18..20].copy_from_slice(&12_u16.to_ne_bytes());
@@ -372,9 +374,10 @@ pub fn reply_header(
         None => 0,
     };
     let length_word = u32::try_from(length).map_err(|_| EOVERFLOW)?;
-    bytes[..4].copy_from_slice(&length_word.to_ne_bytes());
-    bytes[4..8].copy_from_slice(&status.to_ne_bytes());
-    bytes[8..16].copy_from_slice(&unique.to_ne_bytes());
+    let header = bytes.first_chunk_mut::<OUTPUT_HEADER>().ok_or(ENOBUFS)?;
+    header[..4].copy_from_slice(&length_word.to_ne_bytes());
+    header[4..8].copy_from_slice(&status.to_ne_bytes());
+    header[8..16].copy_from_slice(&unique.to_ne_bytes());
     Ok(length)
 }
 

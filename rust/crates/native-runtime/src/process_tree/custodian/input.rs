@@ -25,7 +25,7 @@ impl Input {
         let address = port.expose_provenance();
         let thread = std::thread::Builder::new()
             .name("custodian-input".into())
-            .spawn(move || read_trees(input, send, address))?;
+            .spawn(move || read_trees(input, &send, address))?;
         Self::watch(receive, thread, port)
     }
 
@@ -53,14 +53,15 @@ impl Input {
 
 fn read_trees(
     mut input: impl io::Read,
-    send: mpsc::SyncSender<Opened>,
+    send: &mpsc::SyncSender<Opened>,
     port: usize,
 ) -> io::Result<()> {
     let mut frame = [0; Opened::FRAME_BYTES];
     loop {
         let mut filled = 0;
         while filled < frame.len() {
-            let count = input.read(&mut frame[filled..])?;
+            let remaining = frame.get_mut(filled..).ok_or(io::ErrorKind::InvalidData)?;
+            let count = input.read(remaining)?;
             if count == 0 {
                 return if filled == 0 {
                     Ok(())
@@ -236,7 +237,7 @@ mod tests {
             let input = io::BufReader::new(read);
             let mut result = Ok(());
             let allocations = acyclic_test_support::measure(|| {
-                result = read_trees(input, send, 0);
+                result = read_trees(input, &send, 0);
             });
             assert_eq!(
                 allocations.count_total, 0,

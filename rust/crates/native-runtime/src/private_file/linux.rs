@@ -22,6 +22,8 @@ pub(crate) fn user_home_directory() -> io::Result<PathBuf> {
         // fields and returns pointers borrowing the owned buffer on success.
         let mut record: libc::passwd = unsafe { std::mem::zeroed() };
         let mut found = std::ptr::null_mut();
+        // SAFETY: record and found are writable, disjoint outputs; buffer owns
+        // buffer.len() writable bytes and all three remain live for this call.
         let error = unsafe {
             libc::getpwuid_r(
                 user,

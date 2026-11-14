@@ -398,7 +398,7 @@ impl NativeControlCompletion {
         match self {
             Self::Complete(bytes) => Ok(bytes),
             Self::MoreData(_) => Err(io::Error::from_raw_os_error(
-                windows_sys::Win32::Foundation::ERROR_MORE_DATA as i32,
+                windows_sys::Win32::Foundation::ERROR_MORE_DATA.cast_signed(),
             )),
         }
     }

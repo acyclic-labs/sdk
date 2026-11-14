@@ -38,28 +38,32 @@ pub(super) fn decode<const N: usize>(
     };
     let mut invalid = flags & (8 | 32) != 0; // MSG_CTRUNC | MSG_TRUNC
     let mut offset = 0;
-    while let Some(message) = control.get(offset..).filter(|rest| rest.len() >= 16) {
+    while let Some((header, payload)) = control
+        .get(offset..)
+        .and_then(|message| message.split_first_chunk::<16>())
+    {
         // Kernel-generated cmsghdr: length, SOL_SOCKET, SCM_RIGHTS, then fds.
         let mut length = [0; 8];
-        length.copy_from_slice(&message[..8]);
+        length.copy_from_slice(&header[..8]);
         let length = usize::from_ne_bytes(length);
         let mut level = [0; 4];
-        level.copy_from_slice(&message[8..12]);
+        level.copy_from_slice(&header[8..12]);
         let level = i32::from_ne_bytes(level);
         let mut kind = [0; 4];
-        kind.copy_from_slice(&message[12..16]);
+        kind.copy_from_slice(&header[12..16]);
         let kind = i32::from_ne_bytes(kind);
-        if length < 16 || length > message.len() {
+        let Some(data) = length
+            .checked_sub(16)
+            .and_then(|length| payload.get(..length))
+        else {
             invalid = true;
             break;
-        }
+        };
         if level == 1 && kind == 1 {
-            let data = &message[16..length];
-            invalid |= data.len() % 4 != 0;
-            for bytes in data.chunks_exact(4) {
-                let mut descriptor = [0; 4];
-                descriptor.copy_from_slice(bytes);
-                let descriptor = i32::from_ne_bytes(descriptor);
+            let (descriptors, remainder) = data.as_chunks::<4>();
+            invalid |= !remainder.is_empty();
+            for bytes in descriptors {
+                let descriptor = i32::from_ne_bytes(*bytes);
                 if let Some(slot) = handles.descriptors.get_mut(handles.count) {
                     *slot = descriptor;
                     handles.count += 1;

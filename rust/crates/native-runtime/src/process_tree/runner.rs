@@ -262,15 +262,7 @@ fn start_inner(
         std::env::vars_os().collect()
     };
     let environment = environment(command, &inherited);
-    // Which standard streams the owner has open, decided before this
-    // function allocates a descriptor that could take a closed one's number.
-    // The custody directory was opened by the caller, so its number is
-    // excluded too.
-    let open_streams = [0, 1, 2].map(|fd: RawFd| {
-        // SAFETY: F_GETFD only reads this process's descriptor flags.
-        Some(fd) != directory.map(|file| file.as_raw_fd())
-            && unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0
-    });
+    let open_streams = open_standard_streams(directory);
     let (reply, reply_end) = pipe()?;
     let report = command.boundary.as_ref().map(|_| pipe()).transpose()?;
     // Granted launches reuse this original descriptor role for the held cwd.
@@ -338,29 +330,7 @@ fn start_inner(
         .ok_or(io::ErrorKind::InvalidInput)?
         .copy_from_slice(&length.to_ne_bytes());
     #[cfg(feature = "test-support")]
-    if command.env.clear
-        && let Some(directory) = std::env::var_os("ACYCLIC_RUNNER_REQUEST_CAPTURE")
-    {
-        // Capture the actual encoded request at its transport boundary. The
-        // fixture clears its environment; inherited host secrets are excluded.
-        let mut capture = vec![u8::try_from(count).map_err(|_| io::ErrorKind::InvalidData)?];
-        capture.extend_from_slice(&message[8..]);
-        static CAPTURE_SEQUENCE: std::sync::atomic::AtomicU64 =
-            std::sync::atomic::AtomicU64::new(0);
-        let sequence = CAPTURE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path =
-            std::path::Path::new(&directory).join(format!("{}-{sequence}.bin", std::process::id()));
-        std::fs::File::create_new(path)?.write_all(&capture)?;
-        let checked = super::fuzz_runner_request(&capture);
-        assert!(checked.is_ok(), "{checked:?}");
-        // Mutate descriptor custody on the actual captured request, without
-        // launching malformed input or creating a parallel request encoder.
-        for count in 0..=9 {
-            capture[0] = count;
-            let checked = super::fuzz_runner_request(&capture);
-            assert!(checked.is_ok(), "{checked:?}");
-        }
-    }
+    capture_request(command, count, &message)?;
     // Retain the original runner, including its group anchor and control
     // socket, until the original exec acknowledgement closes this reply.
     let launch_owner = send(
@@ -383,8 +353,52 @@ fn start_inner(
         File::from(read)
     });
     drop(here);
+    let replied = read_admission(reply, activity.is_some())?;
+    drop(launch_owner);
+    admitted_child(&replied, ours, report, activity.is_none())
+}
+
+// Determine inherited standard streams before allocating any new descriptors.
+// The caller's custody directory may itself occupy a closed standard slot.
+fn open_standard_streams(directory: Option<&File>) -> [bool; 3] {
+    [0, 1, 2].map(|fd: RawFd| {
+        // SAFETY: F_GETFD reads descriptor flags without dereferencing memory or
+        // changing descriptor ownership; a closed descriptor simply returns -1.
+        Some(fd) != directory.map(|file| file.as_raw_fd())
+            && unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0
+    })
+}
+#[cfg(feature = "test-support")]
+fn capture_request(command: &ProcessCommand, count: usize, message: &[u8]) -> io::Result<()> {
+    if command.env.clear
+        && let Some(directory) = std::env::var_os("ACYCLIC_RUNNER_REQUEST_CAPTURE")
+    {
+        // Capture the actual encoded request at its transport boundary. The
+        // fixture clears its environment; inherited host secrets are excluded.
+        let mut capture = vec![u8::try_from(count).map_err(|_| io::ErrorKind::InvalidData)?];
+        capture.extend_from_slice(message.get(8..).ok_or(io::ErrorKind::InvalidData)?);
+        static CAPTURE_SEQUENCE: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        let sequence = CAPTURE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path =
+            std::path::Path::new(&directory).join(format!("{}-{sequence}.bin", std::process::id()));
+        std::fs::File::create_new(path)?.write_all(&capture)?;
+        let checked = super::fuzz_runner_request(&capture);
+        assert!(checked.is_ok(), "{checked:?}");
+        // Mutate descriptor custody on the actual captured request, without
+        // launching malformed input or creating a parallel request encoder.
+        for count in 0..=9 {
+            *capture.first_mut().ok_or(io::ErrorKind::InvalidData)? = count;
+            let checked = super::fuzz_runner_request(&capture);
+            assert!(checked.is_ok(), "{checked:?}");
+        }
+    }
+    Ok(())
+}
+
+fn read_admission(reply: OwnedFd, deferred: bool) -> io::Result<Vec<u8>> {
     let mut replied = Vec::new();
-    if activity.is_some() {
+    if deferred {
         // The deferred command cannot exec before its owner releases it. Its
         // admission frame is the acknowledgement, not its later exec event.
         replied.resize(5, 0);
@@ -392,7 +406,15 @@ fn start_inner(
     } else {
         File::from(reply).read_to_end(&mut replied)?;
     }
-    drop(launch_owner);
+    Ok(replied)
+}
+
+fn admitted_child(
+    replied: &[u8],
+    streams: [Option<OwnedFd>; 3],
+    report: Option<File>,
+    supervised: bool,
+) -> io::Result<(Child, io::Result<()>)> {
     let mut pid = None;
     let mut failure = None;
     for frame in replied.chunks(5) {
@@ -411,7 +433,7 @@ fn start_inner(
             io::Error::new(io::ErrorKind::BrokenPipe, "the process runner exited")
         }));
     };
-    let [stdin, stdout, stderr] = ours;
+    let [stdin, stdout, stderr] = streams;
     let mut child = Child::new(
         pid,
         stdin.map(Into::into),
@@ -419,7 +441,7 @@ fn start_inner(
         stderr.map(Into::into),
     );
     child.completion_report = report;
-    child.supervised = activity.is_none();
+    child.supervised = supervised;
     Ok((child, failure.map_or(Ok(()), Err)))
 }
 
@@ -735,10 +757,10 @@ pub(super) fn start_packet_device_host(
     std::thread::Builder::new()
         .name("acyclic-mount-host-reaper".into())
         .spawn(move || {
-            if let Ok(mut child) = child.recv() {
-                if let Err(error) = child.wait() {
-                    tracing::error!(%error, "packet device host wait failed");
-                }
+            if let Ok(mut child) = child.recv()
+                && let Err(error) = child.wait()
+            {
+                tracing::error!(%error, "packet device host wait failed");
             }
         })?;
     let mut child = Command::new(format!("/proc/self/fd/{}", executable.as_raw_fd()))

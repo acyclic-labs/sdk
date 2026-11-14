@@ -5,14 +5,16 @@ use crate::fuse_protocol::{self, Configuration, INPUT_HEADER, OUTPUT_HEADER};
 use std::os::fd::AsRawFd;
 
 fn request(opcode: u32, unique: u64, uid: u32, body: &[u8]) -> Vec<u8> {
-    let mut bytes = vec![0; INPUT_HEADER + body.len()];
-    let length = u32::try_from(bytes.len()).expect("proof frame length");
-    bytes[..4].copy_from_slice(&length.to_ne_bytes());
-    bytes[4..8].copy_from_slice(&opcode.to_ne_bytes());
-    bytes[8..16].copy_from_slice(&unique.to_ne_bytes());
-    bytes[16..24].copy_from_slice(&1_u64.to_ne_bytes());
-    bytes[24..28].copy_from_slice(&uid.to_ne_bytes());
-    bytes[INPUT_HEADER..].copy_from_slice(body);
+    let mut header = [0; INPUT_HEADER];
+    let length = u32::try_from(INPUT_HEADER + body.len()).expect("proof frame length");
+    header[..4].copy_from_slice(&length.to_ne_bytes());
+    header[4..8].copy_from_slice(&opcode.to_ne_bytes());
+    header[8..16].copy_from_slice(&unique.to_ne_bytes());
+    header[16..24].copy_from_slice(&1_u64.to_ne_bytes());
+    header[24..28].copy_from_slice(&uid.to_ne_bytes());
+    let mut bytes = Vec::with_capacity(INPUT_HEADER + body.len());
+    bytes.extend_from_slice(&header);
+    bytes.extend_from_slice(body);
     bytes
 }
 
@@ -56,7 +58,12 @@ fn host_with_writer() -> io::Result<(UnixStream, PacketDeviceRetirement, UnixStr
     let source = UnixStream::from(OwnedFd::from(source));
     source.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
     let mut init = [0; 16];
-    for (field, value) in init.chunks_exact_mut(4).zip([7, 31, page, 1 << 22]) {
+    for (field, value) in init
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip([7, 31, page, 1 << 22])
+    {
         field.copy_from_slice(&value.to_ne_bytes());
     }
     kernel.write_all(&request(26, 1, 0, &init))?;
@@ -84,13 +91,13 @@ fn full_request_window_keeps_unadmitted_packets_in_the_kernel()
     }
     let (mut source, custody, mut kernel, device) = host_with_writer()?;
     for unique in 2..66 {
-        let original = request(1, unique, unsafe { libc::geteuid() }, b"child\0");
+        let original = request(1, unique, crate::private_file::effective_user(), b"child\0");
         kernel.write_all(&original)?;
         let mut delivered = vec![0; original.len()];
         source.read_exact(&mut delivered)?;
         assert_eq!(delivered, original);
     }
-    let parked = request(1, 66, unsafe { libc::geteuid() }, b"parked\0");
+    let parked = request(1, 66, crate::private_file::effective_user(), b"parked\0");
     kernel.write_all(&parked)?;
     let mut notification = [0; 40];
     notification[..4].copy_from_slice(&40_u32.to_ne_bytes());
@@ -179,7 +186,7 @@ fn notification_backpressure_does_not_stop_kernel_request_delivery()
     // original kernel request must still be delivered after its full body
     // makes publication wait for the physical endpoint's missing credit.
     for unique in [2, 3] {
-        let original = request(1, unique, unsafe { libc::geteuid() }, b"child\0");
+        let original = request(1, unique, crate::private_file::effective_user(), b"child\0");
         kernel.write_all(&original)?;
         let mut delivered = vec![0; original.len()];
         source.read_exact(&mut delivered)?;
@@ -272,7 +279,7 @@ fn foreign_flush_uses_handle_authority_while_foreign_lookup_is_refused()
     // This is a real host/kernel-wire conformance case: no callback or policy
     // function is mocked. The negative lookup must never reach the backend.
     // SAFETY: geteuid has no arguments or ownership effects.
-    let foreign = unsafe { libc::geteuid() } ^ 1;
+    let foreign = crate::private_file::effective_user() ^ 1;
     let flush = request(25, 2, foreign, &[0; 24]);
     kernel.write_all(&flush)?;
     let mut ready = [
