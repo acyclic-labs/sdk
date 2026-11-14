@@ -427,31 +427,11 @@ where
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ExecutionRecord>>> {
         #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
         acyclic_differential::record(ExecutionReplayObservation::Requested);
-        if io.is_none() {
-            return crate::conversation::BoundedContentFuture::new(None, || async move {
-                let span = obs_span!(
-                    "acyclic.harness.journal.replay",
-                    rev = after,
-                    items = crate::obs::Empty
-                );
-                crate::obs::traced_future(span, async move {
-                    let records = self.records(operation, after, maximum, None).await?;
-                    crate::obs::obs_record!("items" = records.len());
-                    Ok(records)
-                })
-                .await
-            });
-        }
         crate::conversation::BoundedContentFuture::new(io, || async move {
             let records = self.records(operation, after, maximum, io).await?;
-            io.ok_or_else(|| {
-                crate::executor::stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Invalid,
-                    "bounded branch",
-                )
-            })?
-            .remaining()?;
+            if let Some(io) = io {
+                io.remaining()?;
+            }
             Ok(records)
         })
     }
