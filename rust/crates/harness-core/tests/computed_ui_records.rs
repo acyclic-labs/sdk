@@ -54,12 +54,7 @@ fn adoption(
 }
 
 fn accounting(cancellation: &CancellationToken, budget: WorkBudget) -> KernelAccounting<'_> {
-    KernelAccounting::Standalone {
-        allocations: Default::default(),
-        work: WorkCounters::UNCHARGED,
-        budget,
-        cancellation,
-    }
+    KernelAccounting::standalone(budget, cancellation)
 }
 
 fn status(path: &str) -> StatusRecord {

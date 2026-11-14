@@ -52,12 +52,7 @@ fn objects() -> MemoryObjectBackend {
 #[tokio::test]
 async fn objects_checkpoint_reopens_and_resumes_on_original_credit() -> Result {
     let cancellation = CancellationToken::new();
-    let mut ctx = KernelAccounting::Standalone {
-        allocations: Default::default(),
-        work: Default::default(),
-        budget: WorkBudget::UNBOUNDED,
-        cancellation: &cancellation,
-    };
+    let mut ctx = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let store = objects();
     let seed: Retained<FoldCheckpoint<Total>> =
         ctx.decode_json(&serde_json::to_vec(&FoldCheckpoint {
@@ -384,7 +379,7 @@ mod equivalence {
         #[test]
         fn checkpoint_tail_matches_full_fold_at_every_cut(records in prop::collection::vec(any::<u8>(), 0..128), chunk in 1u64..32) {
             let cancellation = CancellationToken::new();
-            let mut ctx = KernelAccounting::Standalone { allocations: Default::default(), work: Default::default(), budget: WorkBudget::UNBOUNDED, cancellation: &cancellation };
+            let mut ctx = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
             let chunk = NonZeroU64::new(chunk).unwrap();
             let mut checkpoint = seed();
             for cut in 0..=records.len() {

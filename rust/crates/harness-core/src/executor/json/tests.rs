@@ -10,12 +10,7 @@ fn lazy_snapshot_layout_funds_object_and_sequence_source_components() {
         kernel::{KernelAccounting, LogicalName, NameEncoding},
     };
     let cancel = acyclic_fs::CancellationToken::new();
-    let mut accounting = KernelAccounting::Standalone {
-        allocations: Default::default(),
-        work: acyclic_fs::WorkCounters::UNCHARGED,
-        budget: acyclic_fs::WorkBudget::UNBOUNDED,
-        cancellation: &cancel,
-    };
+    let mut accounting = KernelAccounting::standalone(acyclic_fs::WorkBudget::UNBOUNDED, &cancel);
     let routed = Routed::new(
         Empty,
         LogicalName::new(NameEncoding::Utf8, b"view".to_vec()).unwrap(),

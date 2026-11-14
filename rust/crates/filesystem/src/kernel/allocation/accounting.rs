@@ -103,10 +103,8 @@ impl<'a> KernelAccounting<'a> {
         work.verify(budget)?;
         Ok(())
     }
-    pub(crate) fn standalone(
-        budget: WorkBudget,
-        cancellation: &'a crate::CancellationToken,
-    ) -> Self {
+    /// Opens one standalone operation with lazy construction roots.
+    pub fn standalone(budget: WorkBudget, cancellation: &'a crate::CancellationToken) -> Self {
         Self::Standalone {
             construction: Default::default(),
             allocations: AllocationLedger::default(),
