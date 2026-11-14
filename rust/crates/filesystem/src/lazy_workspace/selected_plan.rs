@@ -254,10 +254,18 @@ impl<
             duplicate_bytes += duplicate.capacity() as u64;
             true
         });
-        let duplicate_allocation =
-            crate::kernel::split_allocation(&mut paths.allocation, duplicate_bytes)?;
-        paths.bytes -= duplicate_bytes;
-        crate::kernel::retire_allocation(duplicate_allocation, duplicate_bytes, ctx)?;
+        if duplicate_bytes != 0 {
+            let retired = (|| {
+                let allocation =
+                    crate::kernel::split_allocation(&mut paths.allocation, duplicate_bytes)?;
+                paths.bytes -= duplicate_bytes;
+                crate::kernel::retire_allocation(allocation, duplicate_bytes, ctx)
+            })();
+            if let Err(error) = retired {
+                paths.retire(ctx)?;
+                return Err(error.into());
+            }
+        }
         Ok((paths, used))
     }
 
