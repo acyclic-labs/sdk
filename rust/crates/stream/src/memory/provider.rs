@@ -81,9 +81,7 @@ impl MemoryStream {
         self.revisions.wait(&request.request().at_least).await?;
         let request = request.into_request();
         let state = self.state.read().await;
-        let path = state
-            .paths
-            .get(&request.path)
+        let path = state.path(&request.path)
             .ok_or(StreamError::NotFound)?;
         if request.from > path.tail {
             return Err(StreamError::OutOfRange);
@@ -195,6 +193,11 @@ impl MemoryStream {
             .map(|selected| crate::RetainedRecordObservation {
                 path: selected.path.clone(),
                 record: (|| {
+                    if request.at.is_some()
+                        && state.ephemeral.root_of(selected.path.as_str()).is_some()
+                    {
+                        return None;
+                    }
                     let fact = state
                         .find_commit_fact(&selected.commit_id, |_| {
                             Ok::<_, std::convert::Infallible>(())
@@ -221,14 +224,26 @@ impl MemoryStream {
             .collect();
         for path in &request.paths {
             let capture = || {
-                head_at(
+                let head = head_at(
                     paths,
                     path,
                     request.projection,
                     request.durable_through,
                     durability == HeadDurability::Durable,
                     _work,
-                )
+                )?;
+                if head.is_some() || request.at.is_some() {
+                    Ok(head)
+                } else {
+                    head_at(
+                        &state.ephemeral.paths,
+                        path,
+                        request.projection,
+                        None,
+                        false,
+                        _work,
+                    )
+                }
             };
             #[cfg(not(target_arch = "wasm32"))]
             let head = if let Some(work) = _work {
@@ -280,6 +295,7 @@ fn head_at(
             }
             Ok(())
         })?
+        .filter(|observation| !observation.node.alias)
         .map(|observation| {
             let stream = &observation.node.data;
             Ok(crate::PathHead {
@@ -1183,7 +1199,7 @@ impl MemoryStream {
         }
         let request = request.into_request();
         let state = self.state.read().await;
-        let path = inspect(&meter, || state.paths.get(&request.path))?;
+        let path = inspect(&meter, || state.path(&request.path))?;
         let Some(path) = path else {
             return Ok(Err(StreamError::NotFound));
         };

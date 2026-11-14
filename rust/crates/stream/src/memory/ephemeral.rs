@@ -16,6 +16,8 @@ enum Scope {
 
 #[derive(Default)]
 struct Ephemeral {
+    // The same persistent trie, outside canonical paging and retained cuts.
+    paths: Namespace,
     roots: std::collections::BTreeMap<StreamPath, EphemeralRoot>,
     /// The top of every owned subtree, rooted or adopted, to its lease root.
     owned: std::collections::BTreeMap<StreamPath, StreamPath>,
@@ -82,7 +84,7 @@ impl Ephemeral {
     /// could never re-evaluate it. Anything else is refused.
     fn scope<'a>(
         &self,
-        paths: &Namespace,
+        state: &State,
         published: impl IntoIterator<Item = &'a StreamPath> + Clone,
         observed: impl IntoIterator<Item = &'a StreamPath>,
     ) -> Result<Scope, StreamError> {
@@ -115,11 +117,11 @@ impl Ephemeral {
             if self.root_of(path.as_str()).is_some() {
                 continue;
             }
-            if paths.contains_key(path) {
+            if state.contains_path(path) {
                 return Err(StreamError::InvalidArgument);
             }
             if path.parent().is_some_and(|parent| {
-                !paths.contains_key(&parent)
+                !state.contains_path(&parent)
                     && !all.clone().into_iter().any(|other| *other == parent)
             }) {
                 return Err(StreamError::NotFound);
@@ -130,19 +132,25 @@ impl Ephemeral {
 
     fn append_scope(
         &self,
-        paths: &Namespace,
+        state: &State,
         request: &AppendRequest,
     ) -> Result<Scope, StreamError> {
-        self.scope(paths, [&request.path], [])
+        self.scope(state, [&request.path], [])
     }
 
-    fn fork_scope(&self, paths: &Namespace, request: &ForkRequest) -> Result<Scope, StreamError> {
-        self.scope(paths, [&request.destination], [&request.source])
+    fn fork_scope(&self, state: &State, request: &ForkRequest) -> Result<Scope, StreamError> {
+        self.scope(state, [&request.destination], [&request.source])
     }
 
     /// Records the topmost path `published` created, absent from `previous`,
     /// as owned by `scope`'s lease unless that lease already owns it.
-    fn adopt(&mut self, scope: &Scope, previous: &Namespace, published: &StreamPath) {
+    fn adopt(
+        &mut self,
+        scope: &Scope,
+        previous: &Namespace,
+        canonical: &Namespace,
+        published: &StreamPath,
+    ) {
         let Scope::Ephemeral(root) = scope else {
             return;
         };
@@ -153,23 +161,14 @@ impl Ephemeral {
             return;
         };
         let mut top = published.clone();
-        while let Some(parent) = top.parent().filter(|parent| !previous.contains_key(parent)) {
+        while let Some(parent) = top
+            .parent()
+            .filter(|parent| !previous.contains_key(parent) && !canonical.contains_key(parent))
+        {
             top = parent;
         }
         lease.adopted.push(top.clone());
         self.owned.insert(top, root.clone());
-    }
-    /// `paths` without any owned subtree: exactly the durable namespace.
-    fn without(&self, paths: &Namespace) -> Namespace {
-        let mut durable = paths.clone();
-        for top in self.owned.keys() {
-            if durable.contains_key(top) {
-                durable
-                    .remove(top, &mut NamespaceBuilder::new(&|_| Ok(None)))
-                    .unwrap_or_else(|_| unreachable!("a present path's ancestors are present"));
-            }
-        }
-        durable
     }
 }
 
@@ -252,7 +251,7 @@ impl MemoryStream {
     ) -> Result<crate::EphemeralLease, StreamError> {
         let _publication = self.publication.lock().await;
         let mut state = self.state.write().await;
-        if state.paths.contains_key(&root)
+        if state.contains_path(&root)
             || state.ephemeral.root_of(root.as_str()).is_some()
             || !state.ephemeral.nested(&root)?.is_empty()
         {
@@ -260,7 +259,7 @@ impl MemoryStream {
         }
         if root
             .parent()
-            .is_some_and(|parent| !state.paths.contains_key(&parent))
+            .is_some_and(|parent| !state.contains_path(&parent))
         {
             return Err(StreamError::NotFound);
         }
@@ -311,7 +310,7 @@ impl MemoryStream {
             .roots
             .get(root)
             .ok_or(StreamError::Unavailable)?;
-        let mut next = state.paths.clone();
+        let mut next = state.ephemeral.paths.clone();
         let mut gone = Vec::new();
         for top in std::iter::once(root).chain(held.adopted.iter()) {
             if !next.contains_key(top) {
@@ -344,11 +343,11 @@ impl MemoryStream {
         }
         state.record_count = state.record_count.saturating_sub(held.records);
         state.payload_bytes = state.payload_bytes.saturating_sub(held.payload_bytes);
-        state.path_bytes = next.bytes();
-        let previous = std::mem::replace(&mut state.paths, next);
+        state.path_bytes = state.paths.bytes().saturating_add(next.bytes());
+        let previous = std::mem::replace(&mut state.ephemeral.paths, next);
         for signals in notify {
             signals.changed.send_replace(0);
-            crate::follow_index::FollowIndex::created(&signals.follows, 0);
+            crate::follow_index::FollowIndex::created(&signals.follows);
         }
         drop(state);
         drop(_publication);

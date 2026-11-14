@@ -48,7 +48,7 @@ fn reserve_records(
 fn contains_path(state: &State, path: &str) -> bool {
     #[cfg(test)]
     PATH_LOOKUPS.with(|count| count.set(count.get() + 1));
-    state.paths.contains_key(path)
+    state.contains_path(path)
 }
 #[cfg(test)]
 std::thread_local! { static PATH_LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
@@ -99,7 +99,7 @@ fn reserve_paths(
     });
     if limits
         .paths
-        .is_some_and(|limit| state.paths.len().saturating_add(count) > limit)
+        .is_some_and(|limit| state.path_count().saturating_add(count) > limit)
         || limits
             .path_bytes
             .is_some_and(|limit| state.path_bytes.saturating_add(bytes) > limit)
@@ -160,9 +160,7 @@ fn reserve_coordinated(
         }
     }
     if limits.paths.is_some_and(|limit| {
-        state
-            .paths
-            .len()
+        state.path_count()
             .saturating_add(new_paths)
             .saturating_add(inherited_paths)
             > limit
@@ -184,7 +182,7 @@ fn checked_subtree(
     destination: &StreamPath,
     exclude: &[crate::RelativePath],
 ) -> Result<Arc<NamespaceNode>, StreamError> {
-    let source = state.paths.node(source).ok_or(StreamError::NotFound)?;
+    let source = state.node(source).ok_or(StreamError::NotFound)?;
     let node = Namespace::excluded(source, exclude, &mut NamespaceBuilder::new(&|_| Ok(None)))?;
     if destination.as_str().len().saturating_add(node.max_suffix()) > crate::MAX_PATH_BYTES {
         return Err(StreamError::InvalidPath);
@@ -216,7 +214,7 @@ fn reserve_fork(
     );
     if limits
         .paths
-        .is_some_and(|limit| state.paths.len().saturating_add(count) > limit)
+        .is_some_and(|limit| state.path_count().saturating_add(count) > limit)
         || limits
             .path_bytes
             .is_some_and(|limit| state.path_bytes.saturating_add(bytes) > limit)

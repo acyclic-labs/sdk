@@ -28,7 +28,7 @@ impl Snapshot {
     fn capture(state: &State) -> Self {
         Self {
             // Ephemeral subtrees never outlive this incarnation.
-            paths: state.ephemeral.without(&state.paths),
+            paths: state.paths.clone(),
             retained: state.retained.last().map(|entry| entry.fact.clone()),
             first_retained: state.retained.first().map(|entry| entry.fact.clone()),
             retained_len: state.retained.len(),

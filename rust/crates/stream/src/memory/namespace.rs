@@ -9,13 +9,19 @@ struct NamespaceReserve {
 struct NamespaceBuilder<'a> {
     allocate: &'a dyn Fn(usize) -> Result<Allocation, StreamError>,
     reserve: Option<&'a mut NamespaceReserve>,
+    base: Option<&'a Namespace>,
 }
 impl<'a> NamespaceBuilder<'a> {
     fn new(allocate: &'a dyn Fn(usize) -> Result<Allocation, StreamError>) -> Self {
         Self {
             allocate,
             reserve: None,
+            base: None,
         }
+    }
+    fn with_base(mut self, base: Option<&'a Namespace>) -> Self {
+        self.base = base;
+        self
     }
     fn with_frames<T>(
         &mut self,
@@ -48,6 +54,7 @@ impl<'a> NamespaceBuilder<'a> {
         data: PathState,
         children: Index,
         origin: Option<ForkMarker>,
+        alias: bool,
     ) -> Result<Arc<NamespaceNode>, StreamError> {
         if let Some(pool) = &mut self.reserve {
             let mut node = pool.nodes.pop().ok_or(StreamError::Capacity)?;
@@ -55,6 +62,7 @@ impl<'a> NamespaceBuilder<'a> {
             slot.data = data;
             slot.children = children;
             slot.origin = origin;
+            slot.alias = alias;
             Ok(node)
         } else {
             let allocation = (self.allocate)(namespace_owned_bytes::<NamespaceNode>())?;
@@ -62,6 +70,7 @@ impl<'a> NamespaceBuilder<'a> {
                 data,
                 children,
                 origin,
+                alias,
                 _allocation: allocation,
             }))
         }
@@ -99,10 +108,10 @@ impl MemoryStream {
             prefix: [None, None],
             tail: 0,
         };
-        let dummy = builder.node(blank(), None, None)?;
+        let dummy = builder.node(blank(), None, None, false)?;
         let name = SegmentText::new("", &mut builder)?;
         for _ in 0..depth {
-            nodes.push(builder.node(blank(), None, None)?);
+            nodes.push(builder.node(blank(), None, None, false)?);
         }
         for _ in 0..depth.saturating_mul(height) {
             branches.push(branch(
@@ -146,6 +155,9 @@ struct NamespaceNode {
     data: PathState,
     children: Index,
     origin: Option<ForkMarker>,
+    // An ancestor borrowed only to address another namespace's private path.
+    // It owns no public history and contributes no logical path of its own.
+    alias: bool,
     _allocation: Allocation,
 }
 // Each owner prepays the geometric work-buffer capacity for its outgoing
@@ -292,6 +304,7 @@ struct NamespaceFrame {
     index: Index,
     name: Segment,
     parent: Option<Arc<NamespaceNode>>,
+    alias: bool,
 }
 #[derive(Clone, Default)]
 struct Namespace {
@@ -311,7 +324,7 @@ impl NamespaceCut {
 }
 impl NamespaceNode {
     fn count(&self) -> usize {
-        1 + self.children.as_ref().map_or(0, |n| n.count)
+        usize::from(!self.alias) + self.children.as_ref().map_or(0, |n| n.count)
     }
     fn suffix_bytes(&self) -> usize {
         self.children.as_ref().map_or(0, |n| n.bytes + n.count)
@@ -548,14 +561,18 @@ impl Namespace {
         build: &mut NamespaceBuilder<'_>,
     ) -> Result<(), StreamError> {
         build.with_frames(path.as_str().split('/').count(), |build, frames| {
+            let empty = None;
             let mut index = &self.roots;
+            let mut base = build.base.map_or(&empty, |base| &base.roots);
             let mut parts = path.as_str().split('/').peekable();
             while let Some(text) = parts.next() {
-                let name =
-                    segment(index, text).map_or_else(|| SegmentText::new(text, build), Ok)?;
+                let name = segment(index, text)
+                    .or_else(|| segment(base, text))
+                    .map_or_else(|| SegmentText::new(text, build), Ok)?;
                 let existing = lookup(index, text);
+                let original = lookup(base, text);
                 let parent = if parts.peek().is_some() {
-                    Some(existing.ok_or(StreamError::Unavailable)?.clone())
+                    Some(existing.or(original).ok_or(StreamError::Unavailable)?.clone())
                 } else {
                     None
                 };
@@ -563,9 +580,11 @@ impl Namespace {
                     index: index.clone(),
                     name,
                     parent,
+                    alias: existing.is_none_or(|node| node.alias),
                 });
                 if parts.peek().is_some() {
-                    index = &existing.ok_or(StreamError::Unavailable)?.children;
+                    index = existing.map_or(&empty, |node| &node.children);
+                    base = original.map_or(&empty, |node| &node.children);
                 }
             }
             let mut next = node;
@@ -575,13 +594,29 @@ impl Namespace {
                 if let Some(frame) = frames.last() {
                     let parent = frame.parent.as_ref().ok_or(StreamError::Unavailable)?;
                     let children = root.take();
-                    let mut data = parent.data.clone();
+                    if frame.alias && children.is_none() {
+                        next = None;
+                        continue;
+                    }
+                    let mut data = if frame.alias {
+                        PathState {
+                            changed_at: 0,
+                            history: None,
+                            ranges: HistoryRanges::default(),
+                            keys: KeyTree::default(),
+                            prefix: [None, None],
+                            tail: 0,
+                        }
+                    } else {
+                        parent.data.clone()
+                    };
                     if let Some(changed_at) = changed_at
                         && width(&children) != width(&parent.children)
                     {
                         data.changed_at = changed_at;
                     }
-                    next = Some(build.node(data, children, parent.origin.clone())?);
+                    let origin = if frame.alias { None } else { parent.origin.clone() };
+                    next = Some(build.node(data, children, origin, frame.alias)?);
                 } else {
                     break;
                 }
@@ -614,7 +649,7 @@ impl Namespace {
         let children = existing.and_then(|n| n.children.clone());
         let origin = origin.or_else(|| existing.and_then(|n| n.origin.clone()));
         data.changed_at = changed_at;
-        let node = build.node(data, children, origin)?;
+        let node = build.node(data, children, origin, false)?;
         self.put(path, node, changed_at, build)
     }
     fn excluded(
@@ -642,7 +677,7 @@ impl Namespace {
                     let children = index_put(&frame.index, frame.name, child, build)?;
                     let parent = frame.parent.ok_or(StreamError::Unavailable)?;
                     child =
-                        Some(build.node(parent.data.clone(), children, parent.origin.clone())?);
+                        Some(build.node(parent.data.clone(), children, parent.origin.clone(), parent.alias)?);
                 }
                 child.ok_or(StreamError::InvalidArgument)
             })?;

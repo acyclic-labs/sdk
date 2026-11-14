@@ -47,9 +47,10 @@ impl CommitPlan {
     fn stage(
         self,
         state: &State,
+        scope: &Scope,
         build: &mut NamespaceBuilder<'_>,
     ) -> Result<CommitPublication, StreamError> {
-        let namespace = stage_namespace(state, self.paths, self.histories, &self.envelope, build)?;
+        let namespace = stage_namespace(state, self.paths, self.histories, &self.envelope, scope, build)?;
         Ok(CommitPublication {
             time: self.envelope.committed_at_micros,
             envelope: self.envelope,
@@ -246,7 +247,7 @@ impl MemoryStream {
             CommittedMutation::Append(append) => (&append.path, None),
             CommittedMutation::Fork(fork) => (&fork.source, Some(fork.forked_at)),
         };
-        let original = state.paths.get(source_path);
+        let original = state.path(source_path);
         let mut ranges = original.map_or_else(HistoryRanges::default, |path| path.ranges.clone());
         let mut keys = original.map_or_else(KeyTree::default, |path| path.keys.clone());
         if let Some(History::Batch { records, .. }) =
@@ -264,14 +265,10 @@ impl MemoryStream {
             keys = keys.cap(before);
         }
         let parent = match fact {
-            CommittedMutation::Append(append) => state
-                .paths
-                .get(&append.path)
+            CommittedMutation::Append(append) => state.path(&append.path)
                 .and_then(|path| path.history.clone()),
             CommittedMutation::Fork(fork) => {
-                let source = state
-                    .paths
-                    .get(&fork.source)
+                let source = state.path(&fork.source)
                     .ok_or(StreamError::NotFound)?
                     .history
                     .clone();
@@ -663,7 +660,9 @@ impl MemoryStream {
         let bytes = envelope_payload_bytes(&plan.envelope);
         let mut publication = plan.stage(
             state,
-            &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
+            &scope,
+            &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes))
+                .with_base((!durable).then_some(&state.paths)),
         )?;
         Ok(Decision::Accepted {
             ephemeral: matches!(scope, Scope::Ephemeral(_)),
@@ -711,7 +710,7 @@ impl MemoryStream {
         let applied = crate::preparation::settled_effects(request, skipped)
             .filter_map(|(omitted, effect)| (!omitted).then_some(effect));
         let scope = state.ephemeral.scope(
-            &state.paths,
+            state,
             applied
                 .clone()
                 .flat_map(|effect| effect.mutations.iter().map(CommitMutation::path)),
@@ -804,7 +803,7 @@ impl MemoryStream {
         let path = crate::CommitCondition::path(condition);
         let actual = state.tail(path);
         crate::preparation::condition_conflict(condition, actual, || {
-            let stream = state.paths.get(path).ok_or(StreamError::Unavailable)?;
+            let stream = state.path(path).ok_or(StreamError::Unavailable)?;
             self.preceding_commit(stream)
         })
     }
@@ -956,10 +955,17 @@ fn stage_namespace(
     paths: Vec<(StreamPath, PathState)>,
     histories: Vec<PreparedHistory>,
     envelope: &CommittedEnvelope,
+    scope: &Scope,
     build: &mut NamespaceBuilder<'_>,
 ) -> Result<Namespace, StreamError> {
-    let changed_at = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
-    let mut next = state.paths.clone();
+    let changed_at = match scope {
+        Scope::Durable => state.decision.checked_add(1).ok_or(StreamError::Capacity)?,
+        Scope::Ephemeral(_) => state.decision,
+    };
+    let mut next = match scope {
+        Scope::Durable => state.paths.clone(),
+        Scope::Ephemeral(_) => state.ephemeral.paths.clone(),
+    };
     for (path, data) in paths {
         next.put_data(&path, data, None, changed_at, build)?;
     }
@@ -968,15 +974,13 @@ fn stage_namespace(
         let (path, tail) = match fact {
             CommittedMutation::Append(append) => (&append.path, append.tail),
             CommittedMutation::Fork(fork) => {
-                let subtree = state
-                    .paths
-                    .node(&fork.source)
+                let subtree = state.node(&fork.source)
                     .ok_or(StreamError::NotFound)?
                     .clone();
                 #[cfg(all(loom, not(target_arch = "wasm32")))]
                 let subtree =
                     if crate::verification::fault_is(crate::verification::Fault::RootOnlyFork) {
-                        build.node(subtree.data.clone(), None, subtree.origin.clone())?
+                        build.node(subtree.data.clone(), None, subtree.origin.clone(), false)?
                     } else {
                         subtree
                     };
@@ -991,15 +995,12 @@ fn stage_namespace(
                 #[cfg(not(all(loom, not(target_arch = "wasm32"))))]
                 let excludes = &fork.exclude[..];
                 let subtree = Namespace::excluded(&subtree, excludes, build)?;
-                // No fork carries another lease's ephemeral subtree.
-                let subtree =
-                    Namespace::excluded(&subtree, &state.ephemeral.nested(&fork.source)?, build)?;
                 origin = Some(ForkMarker {
                     source: fork.source.clone(),
                     snapshot: subtree.clone(),
                     forked_at: fork.forked_at,
                     commit_id: envelope.commit_id,
-                    decision: state.decision.checked_add(1).ok_or(StreamError::Capacity)?,
+                    decision: changed_at,
                 });
                 next.put(&fork.destination, subtree, changed_at, build)?;
                 (&fork.destination, fork.tail)
@@ -1007,7 +1008,7 @@ fn stage_namespace(
         };
         // Root prefix and histories are derived from the same old cut even
         // when this envelope also appends to the source.
-        let data = fact_data(&state.paths, fact, history, tail)?;
+        let data = fact_data(state, fact, history, tail)?;
         next.put_data(path, data, origin, changed_at, build)?;
     }
     Ok(next)
@@ -1023,19 +1024,29 @@ fn install_namespace(
     if matches!(scope, Scope::Durable) && next.len() != state.paths.len() {
         state.hierarchy_version = envelope.commit_id;
     }
-    state.path_bytes = next.bytes();
-    let previous = std::mem::replace(&mut state.paths, next);
+    let previous = match scope {
+        Scope::Durable => std::mem::replace(&mut state.paths, next),
+        Scope::Ephemeral(_) => std::mem::replace(&mut state.ephemeral.paths, next),
+    };
+    state.path_bytes = state.paths.bytes().saturating_add(state.ephemeral.paths.bytes());
     // Only missing subscriptions beneath a published destination can be
     // created. Range over subscribers, never over the inherited subtree.
     for fact in &envelope.mutations {
         let path = crate::request::fact_path(fact);
-        state.ephemeral.adopt(scope, &previous, path);
-        if previous.get(path).is_some() {
+        state.ephemeral.adopt(scope, &previous, &state.paths, path);
+        let existed = |path: &StreamPath| {
+            previous.contains_key(path)
+                || match scope {
+                    Scope::Durable => state.ephemeral.paths.contains_key(path),
+                    Scope::Ephemeral(_) => state.paths.contains_key(path),
+                }
+        };
+        if existed(path) {
             continue;
         }
         let mut ancestor = Some(path.clone());
         while let Some(path) = ancestor {
-            if previous.get(&path).is_some() {
+            if existed(&path) {
                 break;
             }
             ancestor = path.parent();
@@ -1052,7 +1063,7 @@ fn install_namespace(
                 std::ops::Bound::Excluded(upper.as_str()),
             ))?;
             for path in created {
-                if state.paths.get(&path).is_none() {
+                if state.path(&path).is_none() {
                     continue;
                 }
                 if let Some(signals) = state.signals.get(&path)? {
@@ -1093,7 +1104,7 @@ fn install_namespace(
     Ok(())
 }
 fn fact_data(
-    paths: &Namespace,
+    state: &State,
     fact: &CommittedMutation,
     prepared: PreparedHistory,
     tail: u64,
@@ -1107,8 +1118,8 @@ fn fact_data(
         CommittedMutation::Append(append) => &append.path,
         CommittedMutation::Fork(fork) => &fork.source,
     };
-    let mut prefix = paths
-        .get(source)
+    let mut prefix = state
+        .path(source)
         .map_or([None, None], |path| path.prefix.clone());
     if let CommittedMutation::Fork(fork) = fact {
         for (slot, sequence) in prefix.iter_mut().zip([0_u64, 1]) {

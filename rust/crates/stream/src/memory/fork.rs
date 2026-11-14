@@ -11,7 +11,7 @@ impl MemoryStream {
         StreamError,
     > {
         let digest = fork_digest(request)?;
-        let scope = state.ephemeral.fork_scope(&state.paths, request)?;
+        let scope = state.ephemeral.fork_scope(state, request)?;
         if let Some(result) = self.replay_fork(state, &request.idempotency_key, digest)? {
             return Ok(Decision::Returned {
                 result: result,
@@ -72,7 +72,9 @@ impl MemoryStream {
             paths,
             histories,
             &envelope,
-            &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
+            &scope,
+            &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes))
+                .with_base((!durable).then_some(&state.paths)),
         )?;
         Ok(Decision::Accepted {
             ephemeral: matches!(scope, Scope::Ephemeral(_)),

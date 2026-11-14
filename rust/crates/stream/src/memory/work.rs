@@ -168,7 +168,7 @@ impl MemoryStream {
         let (mut observed_leases, lease_allocation) = self.vector(leases.clone().count())?;
         observed_leases.extend(leases);
         let (mut subtrees, allocation) = self.vector(sources.clone().count())?;
-        subtrees.extend(sources.map(|source| state.paths.node(source).cloned()));
+        subtrees.extend(sources.map(|source| state.node(source).cloned()));
         Ok(GuardCut {
             replayed,
             tails,

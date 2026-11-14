@@ -22,6 +22,25 @@ struct State {
 }
 
 impl State {
+    fn node<Q: std::borrow::Borrow<str> + ?Sized>(&self, path: &Q) -> Option<&Arc<NamespaceNode>> {
+        self.paths
+            .node(path)
+            .or_else(|| self.ephemeral.paths.node(path))
+            .filter(|node| !node.alias)
+    }
+
+    fn path<Q: std::borrow::Borrow<str> + ?Sized>(&self, path: &Q) -> Option<&PathState> {
+        Some(&self.node(path)?.data)
+    }
+
+    fn contains_path<Q: std::borrow::Borrow<str> + ?Sized>(&self, path: &Q) -> bool {
+        self.node(path).is_some()
+    }
+
+    fn path_count(&self) -> usize {
+        self.paths.len().saturating_add(self.ephemeral.paths.len())
+    }
+
     // Publication order is already the retained inventory's order. Seek that
     // owner directly instead of replaying history or registering request pins.
     fn namespace_at<E>(
@@ -48,7 +67,7 @@ impl State {
     /// The tail of `path`; `None` when it does not exist. Every planner reads
     /// presence and tails through this one lookup.
     fn tail(&self, path: &StreamPath) -> Option<u64> {
-        self.paths.get(path).map(|path| path.tail)
+        self.path(path).map(|path| path.tail)
     }
 
     fn replay_count(&self) -> usize {

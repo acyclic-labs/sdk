@@ -139,9 +139,7 @@ impl MemoryStream {
             expected;
         // Header keys arrive with the body. The shared radix owns its physical
         // node layout and fixed-width work bound; prepay both before issuance.
-        let base_keys = state
-            .paths
-            .get(&append(&plan.result).path)
+        let base_keys = state.path(&append(&plan.result).path)
             .map_or_else(KeyTree::default, |path| path.keys.clone());
         let count = u64::try_from(capacity.keys).map_err(|_| StreamError::Capacity)?;
         let bound = base_keys
@@ -421,7 +419,7 @@ impl PreparedCommit {
         let result = async {
             // A lease may have reserved the destination since preparation.
             durable_only(state.ephemeral.scope(
-                &state.paths,
+                &state,
                 [&append(&self.plan.result).path],
                 self.conditions.iter().map(CommitCondition::path),
             ))?;
@@ -503,9 +501,11 @@ impl PreparedCommit {
             ));
             let mut publication = self.plan.stage(
                 &state,
+                &Scope::Durable,
                 &mut NamespaceBuilder {
                     allocate: &|_| Err(StreamError::Capacity),
                     reserve: Some(&mut self.namespace),
+                    base: None,
                 },
             )?;
             let mut persist = std::pin::pin!(persist);

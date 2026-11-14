@@ -33,7 +33,7 @@ impl MemoryStream {
             .map(AppendRecord::payload_bytes)
             .sum::<usize>();
         let digest = self.append_request_digest(request)?;
-        let scope = state.ephemeral.append_scope(&state.paths, request)?;
+        let scope = state.ephemeral.append_scope(state, request)?;
         if let Some(result) = self.replay_append(state, &request.idempotency_key, digest)? {
             return Ok(Decision::Returned {
                 result: (result, Default::default()),
@@ -46,7 +46,7 @@ impl MemoryStream {
         } else {
             ReplayProbes::default()
         };
-        let start = state.paths.get(&request.path).map_or(0, |path| path.tail);
+        let start = state.path(&request.path).map_or(0, |path| path.tail);
         if request.if_tail.is_some_and(|expected| expected != start) {
             let result = AppendOutcome::TailConflict { actual_tail: start };
             return Ok(Decision::Returned {
@@ -104,7 +104,9 @@ impl MemoryStream {
             paths,
             histories,
             &envelope,
-            &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
+            &scope,
+            &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes))
+                .with_base((!durable).then_some(&state.paths)),
         )?;
         Ok(Decision::Accepted {
             ephemeral: matches!(scope, Scope::Ephemeral(_)),
