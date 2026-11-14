@@ -1,5 +1,141 @@
 use super::*;
 
+struct IndexedInterests(Package);
+
+impl Handler for IndexedInterests {
+    fn manifest(&self) -> &Manifest {
+        self.0.manifest()
+    }
+
+    fn subscription_filter(
+        &self,
+        id: &str,
+        checkpoint: Option<&Checkpoint>,
+    ) -> Result<Option<acyclic_stream::FollowFilter>, crate::guest::GuestError> {
+        if id != "observed" {
+            return Ok(None);
+        }
+        let checkpoint: serde_json::Value = serde_json::from_slice(
+            &checkpoint
+                .ok_or_else(|| crate::guest::GuestError::Decode("missing selection".into()))?
+                .bytes,
+        )
+        .map_err(|error| crate::guest::GuestError::Decode(error.to_string()))?;
+        let (start, end): (&[u8], &[u8]) = if checkpoint["outbox"] == "out/observer-2" {
+            (b"other/", b"other0")
+        } else {
+            (b"watched/", b"watched0")
+        };
+        acyclic_stream::FollowFilter::new(acyclic_stream::wire::SessionFilter {
+            keys: vec![acyclic_stream::wire::KeyRange {
+                start: Bytes::copy_from_slice(start),
+                end: Bytes::copy_from_slice(end),
+            }],
+            ..Default::default()
+        })
+        .map(Some)
+        .map_err(|error| crate::guest::GuestError::Decode(error.to_string()))
+    }
+
+    fn on_record<'a>(
+        &'a self,
+        delivery: Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        cancellation: crate::guest::CancellationToken,
+    ) -> GuestFuture<'a, Transition> {
+        self.0.on_record(delivery, checkpoint, cancellation)
+    }
+}
+
+#[tokio::test]
+async fn dynamic_indexed_interests_share_only_identical_filters_and_ignore_unrelated_writes()
+-> TestResult {
+    let provider = Arc::new(Counted::new(MemoryStream::default()));
+    let (store, actors, source) = observers(&provider, 3).await?;
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        Arc::new(IndexedInterests(Package::new()?)),
+        Arc::new(SystemClock),
+    );
+    let mut serving = Box::pin(runtime.run(|_, error| panic!("indexed interest failed: {error}")));
+    observe_while_running(serving.as_mut(), async {
+        runtime.complete().await?;
+        Ok(())
+    })
+    .await?;
+    assert!(futures::poll!(serving.as_mut()).is_pending());
+    assert_eq!(
+        runtime.subscriptions.lock().unwrap().paths.len(),
+        2,
+        "dynamic follows must share identical selections and isolate different filters"
+    );
+    provider
+        .append(AppendRequest {
+            path: source.clone(),
+            records: vec![AppendRecord::from("emit")],
+            if_tail: Some(0),
+            idempotency_key: key("dynamic-indexed-unrelated")?,
+        })
+        .await?;
+    let before = provider.requests();
+    assert!(futures::poll!(serving.as_mut()).is_pending());
+    let unrelated = provider.requests().since(before);
+    assert_eq!(
+        unrelated.control(),
+        0,
+        "unrelated changes woke a dynamic indexed observer"
+    );
+    assert_eq!(
+        unrelated.data(),
+        0,
+        "unrelated changes published actor state"
+    );
+    for (key_name, expected) in [("watched/file", 2usize), ("other/file", 3)] {
+        provider
+            .append(AppendRequest {
+                path: source.clone(),
+                records: vec![AppendRecord {
+                    value: Bytes::from_static(b"emit").into(),
+                    headers: acyclic_stream::RecordHeaders::new(
+                        vec![Bytes::copy_from_slice(key_name.as_bytes()).into()],
+                        vec![],
+                    )?,
+                }],
+                if_tail: None,
+                idempotency_key: key(key_name)?,
+            })
+            .await?;
+        observe_while_running(serving.as_mut(), async {
+            let selected: &[ActorReference] = if expected == 2 {
+                &actors[..2]
+            } else {
+                &actors[2..]
+            };
+            for actor in selected {
+                state_after(runtime.store(), actor, |state| {
+                    state.cursor("observed") == Some(expected as u64)
+                })
+                .await?;
+            }
+            runtime.complete().await?;
+            Ok(())
+        })
+        .await?;
+    }
+    for index in 0..actors.len() {
+        assert_eq!(
+            records(&*provider, &format!("out/observer-{index}"))
+                .await?
+                .len(),
+            1
+        );
+        assert!(runtime.release(&actors[index]));
+    }
+    assert!(runtime.subscriptions.lock().unwrap().paths.is_empty());
+    Ok(())
+}
+
 async fn observers<P: StreamProvider>(
     provider: &Arc<P>,
     count: usize,
@@ -400,7 +536,9 @@ async fn source_failure_and_fanout_remain_bounded_and_recover_without_stopping_o
         let mut subscriptions = runtime.subscriptions.lock().unwrap();
         let source = subscriptions
             .paths
-            .get_mut(&observed)
+            .iter_mut()
+            .find(|(source, _)| source.path == observed)
+            .map(|(_, watch)| watch)
             .ok_or("source missing")?;
         source.next = Some(Box::pin(async { Err(StreamError::Unavailable) }));
         source.waker.wake_by_ref();
@@ -649,7 +787,8 @@ async fn pause_retains_input<P: StreamProvider + 'static>(
             .lock()
             .unwrap()
             .paths
-            .contains_key(&source)
+            .keys()
+            .any(|selection| selection.path == source)
     );
     let child = actor("paused-child")?;
     let mut subscriptions = state.subscriptions().clone();
