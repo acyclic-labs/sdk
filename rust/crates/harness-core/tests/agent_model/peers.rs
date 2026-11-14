@@ -4,6 +4,52 @@ use acyclic_harness_core::Capabilities;
 use proptest::prelude::*;
 
 #[tokio::test]
+async fn message_intent_cannot_be_reused_at_a_different_turn_boundary() -> Result {
+    let provider = MemoryStream::default();
+    let sender = create(&provider, id(94)).await?;
+    let recipient = create(&provider, id(95)).await?;
+    let from = Sender::Agent {
+        path: sender.clone(),
+    };
+    let message = Message {
+        from: from.clone(),
+        id: intent("one-message"),
+        re: None,
+        body: Box::new(super::driver::file("body.md")?),
+        attachments: None,
+    };
+    let original = send(&recipient, &from, &InboxRecord::Message(message.clone()))?;
+    let committed = provider.commit(original.clone()).await?;
+    assert!(matches!(&committed, CommitOutcome::Committed(_)));
+    let changed = send(&recipient, &from, &InboxRecord::FollowUp(message.clone()))?;
+    let error = provider
+        .commit(changed.clone())
+        .await
+        .expect_err("changing a boundary must not create another message intent");
+    assert_eq!(error.category(), StreamError::IdempotencyMismatch);
+    assert_eq!(provider.commit(original).await?, committed);
+    assert_eq!(provider.tail(recipient.inbox()?).await?, 2);
+
+    // Negative control restores the separate follow-up key, reproducing two
+    // real inbox inputs with the same sender and caller-owned message intent.
+    let mut separate_boundary = changed;
+    separate_boundary.idempotency_key = intent_key(
+        "follow-up",
+        &[
+            recipient.as_str(),
+            &format!("agent:{sender}"),
+            message.id.as_str(),
+        ],
+    )?;
+    assert!(matches!(
+        provider.commit(separate_boundary).await?,
+        CommitOutcome::Committed(_)
+    ));
+    assert_eq!(provider.tail(recipient.inbox()?).await?, 3);
+    Ok(())
+}
+
+#[tokio::test]
 async fn membership_epochs_close_atomically_and_cannot_be_revived() -> Result {
     let provider = MemoryStream::default();
     let sender = create(&provider, id(90)).await?;

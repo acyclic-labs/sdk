@@ -63,8 +63,7 @@ pub fn send(to: &AgentPath, sender: &Sender, record: &InboxRecord) -> Result<Com
         InboxRecord::Awaited | InboxRecord::ChildSettled(_) => {
             return Err(Error::Record("only an agent step awaits a child"));
         }
-        InboxRecord::Message(_) => "message",
-        InboxRecord::FollowUp(_) => "follow-up",
+        InboxRecord::Message(_) | InboxRecord::FollowUp(_) => "message",
         InboxRecord::Notice { .. } => "notice",
         InboxRecord::ChildDone(_) => "child-done",
         InboxRecord::Approval(_) => "approval",
