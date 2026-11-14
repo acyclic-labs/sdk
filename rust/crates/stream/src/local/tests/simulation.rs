@@ -46,6 +46,9 @@ async fn records(provider: &LocalStream, path: &str) -> Result<Vec<Vec<u8>>> {
 
 async fn invariant(provider: &LocalStream, expected: &History) -> Result {
     for (path, values) in expected {
+        let marks = provider.watermarks(StreamPath::new(path)?).await?;
+        assert_eq!(marks.accepted, values.len() as u64);
+        assert_eq!(marks.durable, marks.accepted);
         assert_eq!(
             provider.tail(StreamPath::new(path)?).await?,
             values.len() as u64
@@ -90,8 +93,17 @@ async fn world(seed: u64, steps: usize) -> Result {
         compaction_operations: 4,
         ..Default::default()
     };
-    let mut provider = LocalStream::open(directory.path(), limits).await?;
+    let (opening, mut events) = Schedule::seeded(seed);
+    let mut provider = super::journal_lifecycle(
+        &opening,
+        &mut events,
+        LocalStream::open(directory.path(), limits),
+    )
+    .await??;
     let mut expected = History::new();
+    let mut retries = Vec::new();
+    let mut epoch = 0;
+    let mut faults = 0;
     // Draw the operation tape from the shared core, not a subsystem RNG. Keep
     // it independent of how much entropy the real implementation consumes.
     let (plan, _) = Schedule::seeded(seed);
@@ -114,6 +126,8 @@ async fn world(seed: u64, steps: usize) -> Result {
         let tail = expected.get(&path).map_or(0, Vec::len);
         let value = (step as u64).to_le_bytes().to_vec();
         let operation = if tail == 0 { 0 } else { choice[0] % 5 };
+        let mut uncertain = false;
+        eprintln!("seed={seed} step={step} operation={operation} path={path} tail={tail}");
         let result: Result = super::journal_lifecycle(&schedule, &mut events, async {
             match operation {
                 1 if tail > 0 => {
@@ -163,18 +177,32 @@ async fn world(seed: u64, steps: usize) -> Result {
                     expected.get_mut(&path).unwrap().push(value.clone());
                 }
                 4 => {
-                    schedule.cut_next(match choice[2] % 4 {
-                        0 => DurableFault::Before,
-                        1 => DurableFault::After,
-                        2 => DurableFault::Torn(7),
-                        _ => DurableFault::DiskFull,
-                    });
+                    // The first cut proves injection is live. Later cuts also
+                    // reach flush, snapshot publication and journal retirement;
+                    // an ordinal beyond this operation simply leaves it intact.
+                    schedule.cut_at(
+                        if faults == 0 {
+                            0
+                        } else {
+                            choice[1] as usize % 8
+                        },
+                        match choice[2] % 4 {
+                            0 => DurableFault::Before,
+                            1 => DurableFault::After,
+                            2 => DurableFault::Torn(7),
+                            _ => DurableFault::DiskFull,
+                        },
+                    );
                     let outcome = provider.append(append(&path, tail, value.clone())?).await;
-                    if matches!(outcome, Ok(AppendOutcome::Committed(_))) {
-                        expected
+                    match outcome {
+                        Ok(AppendOutcome::Committed(_)) => expected
                             .entry(path.clone())
                             .or_default()
-                            .push(value.clone());
+                            .push(value.clone()),
+                        Err(_) => uncertain = true,
+                        Ok(AppendOutcome::TailConflict { .. }) => {
+                            panic!("fault caused a conditional conflict")
+                        }
                     }
                 }
                 _ => {
@@ -182,10 +210,11 @@ async fn world(seed: u64, steps: usize) -> Result {
                     let first = provider.append(request.clone()).await?;
                     assert!(matches!(first, AppendOutcome::Committed(_)));
                     assert_eq!(
-                        provider.append(request).await?,
+                        provider.append(request.clone()).await?,
                         first,
                         "replay changed its receipt"
                     );
+                    retries.push((request, first));
                     expected
                         .entry(path.clone())
                         .or_default()
@@ -196,11 +225,21 @@ async fn world(seed: u64, steps: usize) -> Result {
         })
         .await?;
         result?;
+        faults += usize::from(schedule.storage_fault().is_some());
+        if !uncertain {
+            invariant(&provider, &expected).await?;
+        }
         // Discard the crashed scope only after its original work has drained.
         // Recovery uses the same real directory, including torn journal bytes.
         drop(provider);
-        provider = LocalStream::open(directory.path(), limits).await?;
-        if operation == 4 {
+        let (recovery, mut events) = Schedule::seeded(seed ^ (step as u64).rotate_left(32));
+        provider = super::journal_lifecycle(
+            &recovery,
+            &mut events,
+            LocalStream::open(directory.path(), limits),
+        )
+        .await??;
+        if uncertain {
             let actual = records(&provider, &path).await?;
             let prefix = expected.get(&path).cloned().unwrap_or_default();
             if actual != prefix {
@@ -214,7 +253,29 @@ async fn world(seed: u64, steps: usize) -> Result {
             }
         }
         invariant(&provider, &expected).await?;
+        if !retries.is_empty() {
+            let (request, receipt) = &retries[choice[2] as usize % retries.len()];
+            let (replay, mut events) = Schedule::seeded(seed ^ step as u64);
+            let actual =
+                super::journal_lifecycle(&replay, &mut events, provider.append(request.clone()))
+                    .await??;
+            assert_eq!(&actual, receipt, "recovery changed the original receipt");
+            assert!(
+                replay.durable_writes().is_empty(),
+                "replay wrote another journal command"
+            );
+            invariant(&provider, &expected).await?;
+        }
+        if let Some(snapshot) = read_snapshot(directory.path(), limits)? {
+            assert!(snapshot.epoch >= epoch, "snapshot epoch moved backwards");
+            epoch = snapshot.epoch;
+        }
     }
+    assert!(
+        read_snapshot(directory.path(), limits)?.is_some(),
+        "no snapshot was recovered"
+    );
+    assert!(faults > 0, "seed did not exercise a physical fault");
     Ok(())
 }
 
