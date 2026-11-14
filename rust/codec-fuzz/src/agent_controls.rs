@@ -417,6 +417,7 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
             AgentReply::Children {
                 items: Vec::new(),
                 next: None,
+                partial: None,
             },
         ),
         (

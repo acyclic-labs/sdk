@@ -220,7 +220,7 @@ async fn revoked_remote_send_does_not_stall_its_source_publication() -> Result {
                 vec![TurnEffect::Send {
                     peer: Some(admission.clone()),
                     delivery,
-                    to: recipient.clone(),
+                    to: recipient.clone().into(),
                     id: intent("held-send"),
                     re: None,
                     body: Box::new(super::driver::file("message.md")?),
@@ -233,7 +233,7 @@ async fn revoked_remote_send_does_not_stall_its_source_publication() -> Result {
         };
         let request = routing.lower(
             &within,
-            &BTreeSet::from([recipient]),
+            &BTreeSet::from([recipient.into()]),
             &step,
             1,
             intent_key("held-publication", &[])?,
@@ -315,7 +315,7 @@ async fn absent_recipient_refusal_and_notice_share_the_original_commit() -> Resu
                 vec![TurnEffect::Send {
                     peer: Some(admission),
                     delivery,
-                    to: recipient.clone(),
+                    to: recipient.clone().into(),
                     id: intent("original"),
                     re: None,
                     body: Box::new(super::driver::file("message.md")?),
@@ -330,7 +330,7 @@ async fn absent_recipient_refusal_and_notice_share_the_original_commit() -> Resu
             &source,
             sending.lower(
                 &within,
-                &BTreeSet::from([recipient.clone()]),
+                &BTreeSet::from([recipient.clone().into()]),
                 &step,
                 1,
                 intent_key("source-step", &[])?,
@@ -540,7 +540,7 @@ async fn account_rejection_settles_only_its_original_owned_send() -> Result {
                     vec![TurnEffect::Send {
                         peer: Some(admission),
                         delivery,
-                        to: recipient.clone(),
+                        to: recipient.clone().into(),
                         id: message_id.clone(),
                         re: None,
                         body: Box::new(super::driver::file("message.md")?),
@@ -555,7 +555,7 @@ async fn account_rejection_settles_only_its_original_owned_send() -> Result {
                 local.as_ref(),
                 routing.lower(
                     &within,
-                    &BTreeSet::from([recipient.clone()]),
+                    &BTreeSet::from([recipient.clone().into()]),
                     &step,
                     1,
                     intent_key("original-step", &[])?,
@@ -1100,7 +1100,7 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                         .map(|(name, delivery)| TurnEffect::Send {
                             peer: Some(admission.clone()),
                             delivery,
-                            to: recipient.clone(),
+                            to: recipient.clone().into(),
                             id: intent(name),
                             re: None,
                             body: Box::new(body.clone()),
@@ -1120,7 +1120,7 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                 &source,
                 routing.lower(
                     &within,
-                    &BTreeSet::from([recipient.clone()]),
+                    &BTreeSet::from([recipient.clone().into()]),
                     &step,
                     1,
                     intent_key("source", &[])?,
@@ -1784,7 +1784,7 @@ async fn remote_send_recovers_original_admission_from_its_source_publication() -
                     .map(|name| TurnEffect::Send {
                         peer: Some(admission.clone()),
                         delivery,
-                        to: recipient.clone(),
+                        to: recipient.clone().into(),
                         id: intent(name),
                         re: None,
                         body: Box::new(super::driver::file("message.md").expect("valid message")),
@@ -1798,7 +1798,7 @@ async fn remote_send_recovers_original_admission_from_its_source_publication() -
         };
         let request = routing.lower(
             &within,
-            &BTreeSet::from([recipient.clone()]),
+            &BTreeSet::from([recipient.clone().into()]),
             &step,
             1,
             intent_key("source-step", &[])?,
@@ -2271,7 +2271,7 @@ async fn remote_send_recovers_original_admission_from_its_source_publication() -
                 vec![TurnEffect::Send {
                     peer: Some(admission),
                     delivery,
-                    to: recipient.clone(),
+                    to: recipient.clone().into(),
                     id: intent("first"),
                     re: None,
                     body: Box::new(super::driver::file("message.md")?),
@@ -2288,7 +2288,7 @@ async fn remote_send_recovers_original_admission_from_its_source_publication() -
             &*owned,
             routing.lower(
                 &fork_actor,
-                &BTreeSet::from([recipient]),
+                &BTreeSet::from([recipient.into()]),
                 &step,
                 4,
                 intent_key("fork-send", &[])?,
@@ -2351,7 +2351,7 @@ async fn either_opt_out_fences_prepared_peer_delivery_and_replay() -> Result {
             let effect = |peer, name| TurnEffect::Send {
                 peer: Some(peer),
                 delivery,
-                to: recipient.clone(),
+                to: recipient.clone().into(),
                 id: intent(name),
                 re: None,
                 body: Box::new(super::driver::file("peer.md").expect("valid file")),

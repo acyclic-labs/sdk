@@ -35,7 +35,7 @@ pub enum TurnEffect {
         /// Safe boundary or next-turn delivery, in the same inbox.
         delivery: super::MessageDelivery,
         /// Recipient.
-        to: AgentPath,
+        to: super::AgentAddress,
         /// Message identity.
         id: IntentId,
         /// Optional identity of the message being answered.
@@ -158,14 +158,9 @@ pub fn outs(agent: &AgentState, recorded: Vec<TurnEffect>) -> Vec<Out> {
                 delivery,
                 attachments,
             } => {
-                if let Some(admission) = peer {
-                    outs.push(Out::PeerGuard {
-                        to: to.clone(),
-                        admission,
-                    });
-                }
                 outs.push(Out::Send {
                     to,
+                    peer,
                     record: {
                         let message = Message {
                             from: Sender::Agent {

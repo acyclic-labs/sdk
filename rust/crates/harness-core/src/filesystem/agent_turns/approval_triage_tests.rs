@@ -286,7 +286,8 @@ async fn original_parent_page_replays_decisions_and_merges_only_escalations() ->
                 Out::Send {
                     to,
                     record: InboxRecord::Approval(approval),
-                } => Some((to.clone(), approval.id.clone())),
+                    ..
+                } => Some((to.path().clone(), approval.id.clone())),
                 _ => None,
             })
             .collect::<Vec<_>>()
@@ -307,13 +308,13 @@ async fn original_parent_page_replays_decisions_and_merges_only_escalations() ->
     for outputs in [&reviewed.outs, &replayed.outs] {
         let mut current = Vec::new();
         for out in outputs {
-            let Out::Send { to, record } = out else {
+            let Out::Send { to, record, .. } = out else {
                 return Err("review emitted a non-wake effect".into());
             };
             let Delivered::Committed { inbox } = bound
                 .agents()
                 .send(
-                    to,
+                    to.path(),
                     &Sender::Agent {
                         path: parent.clone(),
                     },

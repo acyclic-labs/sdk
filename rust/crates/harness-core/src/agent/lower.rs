@@ -124,7 +124,7 @@ pub(super) fn lower_routed(
     routing: Option<(
         &super::Routing,
         &acyclic_actors::addressing::ActorReference,
-        &BTreeSet<AgentPath>,
+        &BTreeSet<super::AgentAddress>,
     )>,
 ) -> Result<CommitRequest, Error> {
     let state = &step.state;
@@ -132,15 +132,6 @@ pub(super) fn lower_routed(
     let sender = Sender::Agent { path: path.clone() };
     let mut builder = Builder::default();
     let mut peer_guards = BTreeMap::new();
-    for out in &step.outs {
-        if let Out::PeerGuard { to, admission } = out {
-            if routing.is_some_and(|(_, _, remote)| remote.contains(to)) {
-                continue;
-            }
-            let conditions = admission.conditions(path, to)?;
-            peer_guards.entry(to.inbox()?).or_insert(conditions);
-        }
-    }
     let conversation = path.conversation()?;
     let conversation_count = step
         .outs
@@ -284,12 +275,26 @@ pub(super) fn lower_routed(
             | Out::Steered(_)
             | Out::Notices(_)
             | Out::PendingSpawns(_)
-            | Out::AwaitWatches(_)
-            | Out::PeerGuard { .. } => {}
-            Out::Send { to, record } => {
+            | Out::AwaitWatches(_) => {}
+            Out::Send { to, record, peer } => {
+                if peer.is_some()
+                    && (path.depth() != 0
+                        || to.path().depth() != 0
+                        || !matches!(record, InboxRecord::Message(message) | InboxRecord::FollowUp(message) if message.from == sender))
+                {
+                    return Err(Error::Record("peer sends require attributed root messages"));
+                }
+                if to.qualified_actor().is_some() && (peer.is_none() || routing.is_none()) {
+                    return Err(Error::Record(
+                        "qualified sends require peer admission and routing scope",
+                    ));
+                }
                 if let InboxRecord::Cancel(cancel) = record {
-                    let (path, record) =
-                        super::cancellation::cancellation(to, cancel.input, cancel.conversation)?;
+                    let (path, record) = super::cancellation::cancellation(
+                        to.path(),
+                        cancel.input,
+                        cancel.conversation,
+                    )?;
                     builder.append(path, record);
                 }
                 if matches!(
@@ -302,41 +307,21 @@ pub(super) fn lower_routed(
                         "send cannot carry adoption, archive or workspace changes",
                     ));
                 }
-                builder.recipient(to)?;
+                builder.recipient(to.path())?;
                 let routed = routing.filter(|(_, _, remote)| remote.contains(to));
                 let mut outbox = None;
                 let mut destination = None;
                 if let Some((routing, within, _)) = routed {
-                    if path.depth() != 0 || to.depth() != 0 {
-                        return Err(Error::Record("peer routing requires member roots"));
-                    }
-                    let admission = step
-                        .outs
-                        .iter()
-                        .find_map(|out| match out {
-                            Out::PeerGuard {
-                                to: target,
-                                admission,
-                            } if target == to => Some(admission),
-                            _ => None,
-                        })
+                    let admission = peer
+                        .as_ref()
                         .ok_or(Error::Record("remote send has no peer admission"))?;
-                    if !matches!(record, InboxRecord::Message(message) | InboxRecord::FollowUp(message) if message.from == sender)
-                    {
-                        return Err(Error::Record(
-                            "peer routing accepts only attributed messages",
-                        ));
-                    }
                     let envelope = super::PeerRoute::prepare(
                         routing.node.clone(),
                         super::handler::Agents::<dyn crate::store::JournalProvider>::actor(
                             within,
                             &path.id(),
                         )?,
-                        super::handler::Agents::<dyn crate::store::JournalProvider>::actor(
-                            within,
-                            &to.id(),
-                        )?,
+                        to.actor(within)?,
                         record,
                         admission,
                     )?;
@@ -364,7 +349,7 @@ pub(super) fn lower_routed(
                     let mut marker_record: AppendRecord = super::sent::SentRecord {
                         to: match destination {
                             Some(actor) => super::AgentAddress::qualified(actor)?,
-                            None => to.clone().into(),
+                            None => to.clone(),
                         },
                         id: message.id.clone(),
                     }
@@ -391,12 +376,30 @@ pub(super) fn lower_routed(
                 if outbox.is_some() {
                     continue;
                 }
+                if let Some(admission) = peer {
+                    peer_guards
+                        .entry(to.path().inbox()?)
+                        .or_insert(admission.conditions(path, to.path())?);
+                }
+                let mut append: AppendRecord = record.encode()?.into();
+                if let (Some(admission), Some((_, within, _))) = (peer, routing) {
+                    if to.actor(within)?.account() != within.account() {
+                        return Err(Error::Record("peer target belongs to another account"));
+                    }
+                    append.headers = super::PeerRoute::headers(
+                        &super::handler::Agents::<dyn crate::store::JournalProvider>::actor(
+                            within,
+                            &path.id(),
+                        )?,
+                        admission,
+                    )?;
+                }
                 if matches!(record, InboxRecord::Message(_) | InboxRecord::FollowUp(_))
-                    && to != path
+                    && to.path() != path
                 {
-                    builder.offer(to.inbox()?, to.closed()?, record.encode()?);
+                    builder.offer(to.path().inbox()?, to.path().closed()?, append);
                 } else {
-                    builder.append(to.inbox()?, record.encode()?);
+                    builder.append(to.path().inbox()?, append);
                 }
             }
             Out::Archive { target, id } => {

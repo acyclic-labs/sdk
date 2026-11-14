@@ -19,19 +19,20 @@ async fn qualified_senders_keep_distinct_intents_and_reply_destinations()
     let account = MemoryStream::default();
     let sender = AgentPath::root(&AgentId::from_bytes([1; 16]));
     let recipient = AgentPath::root(&AgentId::from_bytes([2; 16]));
+    let adopted = |agent| ForkAdopted {
+        agent,
+        parent: None,
+        profile: None,
+        forked_at: 0,
+        conversation_tail: 0,
+        checkpoint: None,
+        volumes: Vec::new(),
+        brief: None,
+        policy: None,
+    };
     let created = create_root_with_peer(
         &IntentId::try_from("recipient")?,
-        ForkAdopted {
-            agent: recipient.id(),
-            parent: None,
-            profile: None,
-            forked_at: 0,
-            conversation_tail: 0,
-            checkpoint: None,
-            volumes: Vec::new(),
-            brief: None,
-            policy: None,
-        },
+        adopted(recipient.id()),
         true,
     )?;
     assert!(matches!(
@@ -43,17 +44,29 @@ async fn qualified_senders_keep_distinct_intents_and_reply_destinations()
         .await?
         .last
         .ok_or("membership missing")?;
-    let admission = PeerAdmission {
+    let original_admission = PeerAdmission {
         sender: PeerMembership {
             epoch: Some([7; 32]),
         },
         recipient: PeerMembership::decode(&member.value)?,
     };
-    let original = peer_envelope(&sender, &recipient, "same-intent", admission.clone())?;
+    let original = peer_envelope(
+        &sender,
+        &recipient,
+        "same-intent",
+        original_admission.clone(),
+    )?;
     let input = InboxRecord::decode(&inbox_append(&original)?.1.value)?;
+    let InboxRecord::Message(message) = &input else {
+        return Err("message missing".into());
+    };
     let routing = Routing {
         paths: route::Paths::new(StreamPath::new("routing")?),
         node: route::NodeId::new(b"destination")?,
+    };
+    let sending = Routing {
+        paths: routing.paths.clone(),
+        node: original.source.clone(),
     };
     let mut first_key: Option<acyclic_stream::IdempotencyKey> = None;
     for (index, namespace) in [b"first".as_slice(), b"second".as_slice()]
@@ -61,14 +74,85 @@ async fn qualified_senders_keep_distinct_intents_and_reply_destinations()
         .enumerate()
     {
         let source = ActorReference::new(b"account", namespace, sender.id().as_str().as_bytes())?;
-        let envelope = PeerRoute::prepare(
-            original.source.clone(),
-            source.clone(),
-            original.to.clone(),
-            &input,
-            &admission,
+        let source_store = std::sync::Arc::new(MemoryStream::default());
+        let root =
+            create_root_with_peer(&IntentId::try_from("source")?, adopted(sender.id()), true)?;
+        assert!(matches!(
+            source_store.commit(root.request).await?,
+            CommitOutcome::Committed(_)
+        ));
+        let member = source_store
+            .head(sender.peer_membership()?)
+            .await?
+            .last
+            .ok_or("source membership missing")?;
+        let admission = PeerAdmission {
+            sender: PeerMembership::decode(&member.value)?,
+            ..original_admission.clone()
+        };
+        let target = crate::agent::AgentAddress::qualified(original.to.clone())?;
+        let effect = crate::agent::TurnEffect::Send {
+            to: target.clone(),
+            peer: Some(admission.clone()),
+            delivery: crate::agent::MessageDelivery::Steer,
+            id: message.id.clone(),
+            re: message.re.clone(),
+            body: message.body.clone(),
+            attachments: message.attachments.clone(),
+        };
+        // Use the effects journal's actual versioned codec before lowering the
+        // recovered effect into its original source/outbox publication.
+        let saved = crate::agent::records::seal(&effect)?;
+        let effect: crate::agent::TurnEffect =
+            crate::agent::records::open(&saved).map_err(|_| "effect recovery failed")?;
+        let state = crate::agent::AgentState::adopted(sender.clone(), &adopted(sender.id()))?;
+        let step = crate::agent::Step {
+            outs: crate::agent::effect_outs(&state, vec![effect]),
+            state,
+            status: None,
+            alarm: crate::agent::Alarm::Clear,
+        };
+        let publication = sending.lower(
+            &source,
+            &std::collections::BTreeSet::from([target]),
+            &step,
+            1,
+            crate::agent::intent_key("source-publication", &[])?,
         )?;
+        assert!(matches!(
+            source_store.commit(publication).await?,
+            CommitOutcome::Committed(_)
+        ));
+        let staged = source_store
+            .record_at(sending.paths.outbox(&sending.node)?, 0)
+            .await?
+            .ok_or("source outbox missing")?;
+        let envelope = route::Publication::decode(&staged.value)?.delivery()?;
+        assert_eq!(
+            envelope,
+            PeerRoute::prepare(
+                original.source.clone(),
+                source.clone(),
+                original.to.clone(),
+                &input,
+                &admission
+            )?,
+            "effect lowering lost the qualified target"
+        );
         let peer = PeerRoute::parse(&envelope)?;
+        let owned_send = crate::agent::sent(source_store.as_ref(), &sender, peer.id())
+            .await?
+            .ok_or("original send missing")?;
+        assert_eq!(owned_send.to.qualified_actor(), Some(&envelope.to));
+        let pending = crate::agent::sent_reply(&source_store, &source, &sender, peer.id())
+            .await?
+            .ok_or("owned reply missing")?;
+        let watch = pending.watch.ok_or("reply watch missing")?;
+        let crate::agent::Watch::PeerReply { peer: expected, .. } =
+            crate::agent::Watch::decode_subscription(&watch.subscription()?)?
+        else {
+            return Err("watch changed kind".into());
+        };
         envelope
             .publish_relay(&account, &routing.paths, &routing.node, Vec::new())
             .await?;
@@ -92,7 +176,7 @@ async fn qualified_senders_keep_distinct_intents_and_reply_destinations()
             .ok_or("input missing")?;
         let received = InboxRecord::decode(&record.value)?;
         let InboxRecord::Message(message) = &received else {
-            return Err("peer input lost its message envelope".into());
+            return Err("peer input lost attribution".into());
         };
         assert_eq!(
             message.from,
@@ -101,41 +185,18 @@ async fn qualified_senders_keep_distinct_intents_and_reply_destinations()
             }
         );
         let owned = super::notices::PeerInput::parse(&recipient, &received, &record)?
-            .ok_or("routed input lost its source")?;
+            .ok_or("routed input lost source")?;
         let result = owned.terminal(
             &routing,
             &envelope.to,
             crate::agent::SentReplyStatus::Answered { sequence: 0 },
         )?;
         let result = route::Publication::decode(&result.value)?.delivery()?;
-        assert_eq!(
-            result.to, source,
-            "reply crossed into the receiver's namespace"
-        );
+        assert_eq!(result.to, source, "reply crossed into receiver namespace");
         assert_eq!(result.sender, envelope.to);
         super::notices::PeerResultRoute::parse(&result)?
             .verify_original(&account, &routing.paths)
             .await?;
-        let source_store = MemoryStream::default();
-        let root = create_root_with_peer(
-            &IntentId::try_from("source")?,
-            ForkAdopted {
-                agent: sender.id(),
-                parent: None,
-                profile: None,
-                forked_at: 0,
-                conversation_tail: 0,
-                checkpoint: None,
-                volumes: Vec::new(),
-                brief: None,
-                policy: None,
-            },
-            true,
-        )?;
-        assert!(matches!(
-            source_store.commit(root.request).await?,
-            CommitOutcome::Committed(_)
-        ));
         assert!(matches!(
             source_store.commit(result.request.clone()).await?,
             CommitOutcome::Committed(_)
@@ -144,23 +205,19 @@ async fn qualified_senders_keep_distinct_intents_and_reply_destinations()
             .record_at(sender.inbox()?, 1)
             .await?
             .ok_or("terminal missing")?;
-        let watch = crate::agent::Watch::PeerReply {
-            sender: sender.clone(),
-            peer: crate::agent::AgentAddress::qualified(envelope.to.clone())?,
-            id: peer.id().clone(),
-            from: 1,
-        };
-        let crate::agent::Watch::PeerReply { peer: expected, .. } =
-            crate::agent::Watch::decode_subscription(&watch.subscription()?)?
-        else {
-            return Err("watch changed kind".into());
-        };
         assert_eq!(
             super::notices::matches(&terminal, &sender, peer.id(), &expected)?,
             Some(crate::agent::SentReplyStatus::Answered { sequence: 0 })
         );
-        // The same plain root ID in another namespace cannot satisfy this
-        // persisted watch, even though its message ID and peer path match.
+        let settled = crate::agent::sent_reply(&source_store, &source, &sender, peer.id())
+            .await?
+            .ok_or("settled reply missing")?;
+        assert_eq!(
+            settled.status,
+            crate::agent::SentReplyStatus::Answered { sequence: 0 }
+        );
+        // A different namespace with the same peer root and message ID cannot
+        // satisfy the watch reconstructed from the original sender journal.
         let lookalike = crate::agent::AgentAddress::qualified(ActorReference::new(
             b"account",
             b"unrelated",
@@ -172,8 +229,6 @@ async fn qualified_senders_keep_distinct_intents_and_reply_destinations()
         );
         if let Some(first) = &first_key {
             assert_ne!(&request.idempotency_key, first);
-            // Negative control: restoring the unqualified collision rejects
-            // this genuine second sender's input on the original native store.
             let mut collided = request.clone();
             collided.idempotency_key = first.clone();
             assert_eq!(

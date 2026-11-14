@@ -56,7 +56,7 @@ async fn steering_review_sends_skip_closed_recipients() -> Result {
             &state,
             vec![TurnEffect::Send {
                 peer: None,
-                to: recipient.clone(),
+                to: recipient.clone().into(),
                 delivery,
                 id: expected.id.clone(),
                 re: expected.re.clone(),

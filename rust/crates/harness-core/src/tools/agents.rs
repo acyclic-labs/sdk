@@ -457,7 +457,7 @@ impl AgentTool {
                 // A peer by path, or by sibling name; the scope's grants or
                 // the parent's spawn-time peers authorize it.
                 let recipient = match self.recipient(&input.agent, true).await? {
-                    Some(path) => Some((path, None)),
+                    Some(path) => Some((path.into(), None)),
                     None => self.peer(&input.agent, context.as_ref()).await?,
                 };
                 let Some((to, peer)) = recipient else {
@@ -528,7 +528,7 @@ impl AgentTool {
                 "name": spawn_name(&intent).map_err(Error::from)?,
             }),
             TurnEffect::Send { to, id, .. } => {
-                json!({"sent": to.as_str(), "id": id, "status": "queued"})
+                json!({"sent": to, "id": id, "status": "queued"})
             }
             TurnEffect::Archive { target, .. } => {
                 json!({"archived": target.as_str(), "branch": target.as_str()})
@@ -580,7 +580,12 @@ impl AgentTool {
         &self,
         reference: &str,
         context: Option<&ToolContext>,
-    ) -> Result<Option<(AgentPath, Option<crate::agent::PeerAdmission>)>> {
+    ) -> Result<
+        Option<(
+            crate::agent::AgentAddress,
+            Option<crate::agent::PeerAdmission>,
+        )>,
+    > {
         let turn = &*self.turn;
         let path = match AgentPath::try_from(reference.to_owned()) {
             Ok(path) => Some(path),
@@ -607,7 +612,7 @@ impl AgentTool {
             )
             .await?
             {
-                return Ok(Some((path, admission)));
+                return Ok(Some((path.into(), admission)));
             }
         }
         Ok(None)

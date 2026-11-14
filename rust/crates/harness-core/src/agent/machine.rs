@@ -491,17 +491,12 @@ pub enum Out {
     /// The conversation entry just before this is the agent's latest context
     /// checkpoint, indexed in its state with the append.
     Checkpoint,
-    /// Fence the automatic root-peer grant at publication.
-    PeerGuard {
-        /// Message recipient.
-        to: AgentPath,
-        /// Original enabled member versions.
-        admission: super::PeerAdmission,
-    },
     /// Send an inbox record to another agent.
     Send {
         /// Recipient.
-        to: AgentPath,
+        to: super::AgentAddress,
+        /// Original automatic membership admission, attached to this send.
+        peer: Option<super::PeerAdmission>,
         /// Record (never `ForkAdopted` or `Archive`).
         record: InboxRecord,
     },
@@ -1267,7 +1262,8 @@ fn finalize_step(
         state.awaited = false;
         if let Some(parent) = &state.parent {
             outs.push(Out::Send {
-                to: parent.clone(),
+                to: parent.clone().into(),
+                peer: None,
                 record: InboxRecord::ChildSettled(ChildSettled {
                     child: state.path.clone(),
                 }),
@@ -1292,7 +1288,6 @@ fn finalize_step(
             | Out::InputCancelled { .. }
             | Out::Send { .. }
             | Out::Commit(_)
-            | Out::PeerGuard { .. }
             | Out::PendingSpawns(_)
             | Out::AwaitWatches(_)
             | Out::Steered(_)
@@ -1543,9 +1538,7 @@ fn admissible(out: &Out, path: &AgentPath) -> bool {
     match out {
         Out::Diagnostic { .. } => false,
         Out::InputCancelled { .. } => true,
-        Out::Steered(_) | Out::PendingSpawns(_) | Out::AwaitWatches(_) | Out::PeerGuard { .. } => {
-            true
-        }
+        Out::Steered(_) | Out::PendingSpawns(_) | Out::AwaitWatches(_) => true,
         Out::Conversation(record) => record.len() <= acyclic_stream::MAX_RECORD_BYTES,
         Out::Send { record, .. } => {
             !matches!(
@@ -1733,7 +1726,8 @@ async fn run<T: TurnDriver + ?Sized>(
                     }
                     if let Some(summary) = reviewed.summary {
                         let notice = Out::Send {
-                            to: state.path.clone(),
+                            to: state.path.clone().into(),
+                            peer: None,
                             record: InboxRecord::Notice {
                                 id: IntentId::try_from(format!(
                                     "approval-summary-{}",
@@ -1981,7 +1975,8 @@ async fn run<T: TurnDriver + ?Sized>(
             if matches!(wait, kernel::Wait::Await { .. }) {
                 outs.push(Out::AwaitWatches(until.watches));
                 outs.extend(open.iter().map(|child| Out::Send {
-                    to: (**child).clone(),
+                    to: (**child).clone().into(),
+                    peer: None,
                     record: InboxRecord::Awaited,
                 }));
                 for child in open {
@@ -2129,7 +2124,8 @@ async fn cascade(state: &mut AgentState, outs: &mut Vec<Out>) -> Result<(), Erro
 /// Retains the one parent notification; the kernel decides whether it publishes.
 fn report(state: &AgentState, outcome: &AgentOutcome) -> Option<Out> {
     state.parent.as_ref().map(|parent| Out::Send {
-        to: parent.clone(),
+        to: parent.clone().into(),
+        peer: None,
         record: InboxRecord::ChildDone(ChildDone {
             child: state.path.clone(),
             outcome: outcome.clone(),

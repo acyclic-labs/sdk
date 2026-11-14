@@ -135,7 +135,7 @@ impl Routing {
     pub fn lower(
         &self,
         within: &ActorReference,
-        remote: &std::collections::BTreeSet<AgentPath>,
+        remote: &std::collections::BTreeSet<super::AgentAddress>,
         step: &super::Step,
         cursor: u64,
         key: acyclic_stream::IdempotencyKey,
@@ -224,7 +224,15 @@ impl<'a> PeerRoute<'a> {
         else {
             unreachable!()
         };
-        records[0].headers = acyclic_stream::RecordHeaders::new(
+        records[0].headers = Self::headers(sender, admission)?;
+        Ok(request)
+    }
+
+    pub(super) fn headers(
+        sender: &ActorReference,
+        admission: &PeerAdmission,
+    ) -> Result<acyclic_stream::RecordHeaders, Error> {
+        acyclic_stream::RecordHeaders::new(
             Vec::new(),
             vec![
                 acyclic_stream::Attribute {
@@ -237,8 +245,7 @@ impl<'a> PeerRoute<'a> {
                 },
             ],
         )
-        .map_err(Error::Stream)?;
-        Ok(request)
+        .map_err(Error::Stream)
     }
 
     /// Accept exactly one ordinary, root-to-root Message or FollowUp. Extra

@@ -19,11 +19,11 @@ pub const MAX_RECORD_BYTES: usize = 56 * 1024;
 pub const MAX_INTENT_BYTES: usize = 128;
 /// Inline failure packing threshold; longer terminal text uses a Diagnostic.
 pub const MAX_MESSAGE_BYTES: usize = 4 * 1024;
-/// Version-nine receipts and waits retain qualified agent addresses. Routed
-/// inputs keep the qualified sender; admissions carry revocable intervals.
+/// Version-ten send effects retain qualified addresses and their admission
+/// together. Receipts and waits preserve that original qualified identity.
 /// Other formats are refused whole;
 /// sessions must start fresh, with no migration or compatibility reader.
-pub const RECORD_VERSION: u32 = 9;
+pub const RECORD_VERSION: u32 = 10;
 
 /// Version-one creation event in an agent's append-only membership stream.
 /// The first event names the owner; subsequent events name its direct children.

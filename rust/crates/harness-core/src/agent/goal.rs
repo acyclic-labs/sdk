@@ -133,7 +133,8 @@ pub(super) async fn settle(
             return Ok(ControlFlow::Break(Settlement {
                 continuation: None,
                 notice: Some(Out::Send {
-                    to: agent.path.clone(),
+                    to: agent.path.clone().into(),
+                    peer: None,
                     record: InboxRecord::Notice {
                         id: IntentId::try_from(format!("invalid-goal:{turn}"))?,
                         notice: super::NoticePayload::Quiet(crate::conversation::wire::Notice {
@@ -174,7 +175,8 @@ pub(super) async fn settle(
         // A continuation owns a later turn; it must never steer an unrelated
         // turn that was queued before it.
         continuation: Some(Out::Send {
-            to: agent.path.clone(),
+            to: agent.path.clone().into(),
+            peer: None,
             record: InboxRecord::FollowUp(Message {
                 from: Sender::Agent {
                     path: agent.path.clone(),

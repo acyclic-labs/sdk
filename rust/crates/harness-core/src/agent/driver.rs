@@ -1063,7 +1063,8 @@ async fn settlement_notice(
         .await
         .map_err(host_error)?;
     Ok(Some(Out::Send {
-        to: parent.clone(),
+        to: parent.clone().into(),
+        peer: None,
         record: InboxRecord::Notice {
             id: IntentId::try_from(format!("child-settled:{turn}"))?,
             notice: super::NoticePayload::Waking(Box::new(notice)),
@@ -1626,7 +1627,8 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     // A parent stage asks the parent in the same commit as the pause.
                     let mut outs = match &agent.parent {
                         Some(to) if parent => vec![Out::Send {
-                            to: to.clone(),
+                            to: to.clone().into(),
+                            peer: None,
                             record: InboxRecord::ApprovalRequested(ApprovalRequested {
                                 child: agent.path.clone(),
                                 id: id.clone(),

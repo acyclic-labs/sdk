@@ -897,10 +897,15 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             if let Out::Send {
                 to,
                 record: InboxRecord::Cancel(cancel),
+                ..
             } = out
             {
-                super::cancellation::validate(self.agents.store.provider().as_ref(), to, cancel)
-                    .await?;
+                super::cancellation::validate(
+                    self.agents.store.provider().as_ref(),
+                    to.path(),
+                    cancel,
+                )
+                .await?;
             }
             if let Out::Diagnostic { diagnostic, text } = out {
                 diagnostic.stage(self.agents.store.provider(), text).await?;
@@ -927,12 +932,14 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 .outs
                 .iter()
                 .filter_map(|out| match out {
-                    Out::PeerGuard { to, .. } => Some(to),
+                    Out::Send {
+                        to, peer: Some(_), ..
+                    } => Some(to),
                     _ => None,
                 })
                 .collect();
             for to in targets {
-                let actor = Agents::<P>::actor(&delivery.actor, &to.id())?;
+                let actor = to.actor(&delivery.actor)?;
                 if !self
                     .agents
                     .store
@@ -1061,16 +1068,15 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             .outs
             .iter()
             .filter_map(|out| match out {
-                Out::Send { to, .. } if !remote.contains(to) => Some(to.id()),
-                Out::Archive { target, .. } => Some(target.id()),
+                Out::Send { to, .. } if !remote.contains(to) => Some(to.actor(&delivery.actor)),
+                Out::Archive { target, .. } => {
+                    Some(Agents::<P>::actor(&delivery.actor, &target.id()))
+                }
                 _ => None,
             })
-            .collect();
-        for agent in woken {
-            effects.push(
-                self.agents
-                    .wake(&Agents::<P>::actor(&delivery.actor, &agent)?)?,
-            );
+            .collect::<Result<_, Error>>()?;
+        for actor in woken {
+            effects.push(self.agents.wake(&actor)?);
         }
         let mut dependency = None;
         let mut pause = false;

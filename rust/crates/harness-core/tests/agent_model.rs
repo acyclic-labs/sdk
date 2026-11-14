@@ -493,7 +493,8 @@ fn a_step_cannot_write_into_a_child_it_spawns() -> Result {
                 volumes: Vec::new(),
             },
             Out::Send {
-                to: child,
+                to: child.into(),
+                peer: None,
                 record: cancel("c1"),
             },
         ],
@@ -622,7 +623,7 @@ async fn done_reports_to_the_parent_exactly_once() -> Result {
     .await?;
     let reports = |outs: &[Out]| {
         outs.iter()
-            .filter(|out| matches!(out, Out::Send { to, record: InboxRecord::ChildDone(_) } if *to == parent))
+            .filter(|out| matches!(out, Out::Send { to, record: InboxRecord::ChildDone(_), .. } if to.path() == &parent))
             .count()
     };
     assert_eq!(reports(&first.outs), 1);
@@ -926,7 +927,7 @@ async fn archive_cascades_in_bounded_batches_then_reports() -> Result {
     assert!(second.state.reported);
     assert!(matches!(
         second.outs.last(),
-        Some(Out::Send { to, record: InboxRecord::ChildDone(ChildDone { outcome: AgentOutcome::Archived, .. }) }) if *to == root
+        Some(Out::Send { to, record: InboxRecord::ChildDone(ChildDone { outcome: AgentOutcome::Archived, .. }), .. }) if to.path() == &root
     ));
     let third = step(
         &driver,
@@ -1246,7 +1247,7 @@ async fn a_driver_effect_no_record_can_carry_fails_the_turn_instead_of_wedging_i
     );
     assert!(stepped.outs.iter().any(|out| matches!(
         out,
-        Out::Send { to, record: InboxRecord::ChildDone(done) } if *to == parent && done.outcome == failed
+        Out::Send { to, record: InboxRecord::ChildDone(done), .. } if to.path() == &parent && done.outcome == failed
     )));
     Ok(())
 }
@@ -1457,7 +1458,7 @@ async fn a_wait_parks_only_on_children_that_can_settle() -> Result {
         let asked = stepped
             .outs
             .iter()
-            .filter(|out| matches!(out, Out::Send { to, record: InboxRecord::Awaited } if *to == awaited))
+            .filter(|out| matches!(out, Out::Send { to, record: InboxRecord::Awaited, .. } if to.path() == &awaited))
             .count();
         assert_eq!(asked, usize::from(parks), "{awaited}");
         assert_eq!(

@@ -120,7 +120,8 @@ where
                 )
                 .await?;
                 outs.push(Out::Send {
-                    to: request.child,
+                    to: request.child.into(),
+                    peer: None,
                     record: InboxRecord::Approval(Approval { id: request.id }),
                 });
             } else {

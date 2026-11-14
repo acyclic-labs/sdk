@@ -612,7 +612,7 @@ async fn settled_turns_keep_actions_recorded_before_a_later_provider_failure() -
             .push(TurnEffect::Send {
                 peer: None,
                 delivery: MessageDelivery::Steer,
-                to: to.clone(),
+                to: to.clone().into(),
                 id: intent("sent"),
                 re: None,
                 body: body.clone(),
@@ -650,8 +650,8 @@ async fn settled_turns_keep_actions_recorded_before_a_later_provider_failure() -
             )
             .await?;
         assert!(
-            matches!(step.outs.first(), Some(Out::Send { to: recipient, record: InboxRecord::Message(message) })
-            if recipient == &to && message.id == intent("sent") && message.body == body)
+            matches!(step.outs.first(), Some(Out::Send { to: recipient, record: InboxRecord::Message(message), .. })
+            if recipient.path() == &to && message.id == intent("sent") && message.body == body)
         );
         // A failed turn settles its entry with the recorded actions too.
         assert_eq!(step.outs.len(), 2);
@@ -882,7 +882,8 @@ fn continuation(step: &Step, path: &AgentPath) -> Option<Message> {
             Out::Send {
                 to,
                 record: InboxRecord::Message(message),
-            } if to == path => Some(message.clone()),
+                ..
+            } if to.path() == path => Some(message.clone()),
             _ => None,
         })
         .collect();
@@ -1434,7 +1435,8 @@ async fn approval_selection_replays_its_policy_before_any_worker_context() -> Re
                     Out::Send {
                         to,
                         record: InboxRecord::Notice { .. },
-                    } if to == &path => Some(out),
+                        ..
+                    } if to.path() == &path => Some(out),
                     _ => None,
                 })
                 .collect();
