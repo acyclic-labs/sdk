@@ -174,10 +174,18 @@ impl Error {
             Self::Stream(error) => {
                 error.uncertain() || matches!(error.category(), StreamError::Capacity)
             }
-            Self::Handler(failure) => matches!(
-                failure,
-                GuestError::Pending(_) | GuestError::PreconditionChanged
-            ),
+            Self::Handler(failure) => match failure {
+                GuestError::Pending(_) | GuestError::PreconditionChanged => true,
+                GuestError::UnsupportedAbi(_)
+                | GuestError::UnsupportedFormat
+                | GuestError::NestedMutation
+                | GuestError::MissingIdentity
+                | GuestError::IncompatibleCodec
+                | GuestError::Decode(_)
+                | GuestError::Encode(_)
+                | GuestError::Handler(_)
+                | GuestError::Revoked => false,
+            },
             Self::CallSettled { .. }
             | Self::Unknown { .. }
             | Self::InvocationDurabilityUnknown { .. }
