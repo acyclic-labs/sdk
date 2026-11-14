@@ -368,7 +368,7 @@ async fn interrupted_bodies_are_transient_and_protocol_violations_are_invalid() 
                     Error::ModelUnavailable {
                         failure: acyclic_harness_core::ModelTransportFailure::Interrupted,
                         ref excerpt,
-                    } if !excerpt.is_empty()
+                    } if excerpt.is_empty()
                 ),
                 "{adapter:?}: {error}"
             );

@@ -271,9 +271,12 @@ async fn configured_luna_streams_api_key_reasoning_and_tools_on_ordinary_and_nat
                     .await?;
                 assert_eq!(native_count, count);
                 drop(hold);
-                let mut stream = provider
-                    .generate_with_native_work(&prepared, dispatch, &work)?
-                    .await?;
+                let mut stream = crate::fixtures::without_request_traces(
+                    provider
+                        .generate_with_native_work(&prepared, dispatch, &work)?
+                        .await?,
+                    |(event, _)| event,
+                );
                 let mut events = Vec::new();
                 while let Some(event) = stream.next().await {
                     let (event, hold) = event?;
@@ -282,10 +285,12 @@ async fn configured_luna_streams_api_key_reasoning_and_tools_on_ordinary_and_nat
                 }
                 events
             } else {
-                provider
-                    .generate(&prepared, dispatch)
-                    .try_collect::<Vec<_>>()
-                    .await?
+                crate::fixtures::without_request_traces(
+                    provider.generate(&prepared, dispatch),
+                    |event| event,
+                )
+                .try_collect::<Vec<_>>()
+                .await?
             };
             if step == 0 {
                 let parts: Vec<_> = events
@@ -324,6 +329,7 @@ async fn configured_luna_streams_api_key_reasoning_and_tools_on_ordinary_and_nat
                     }),
                 });
             } else {
+                assert_eq!(events.len(), 2);
                 assert_eq!(
                     events[0],
                     ModelEvent::Content {
