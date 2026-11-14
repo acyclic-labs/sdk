@@ -337,8 +337,10 @@ fn owner_exit() -> io::Result<&'static OwnedFd> {
         .spawn(move || {
             // This thread never accesses a volume. SIGKILL therefore ends it even
             // while another thread is waiting uninterruptibly on its own mount.
-            // SAFETY: gettid has no arguments; pidfd_open transfers a fresh fd.
+            // SAFETY: gettid takes no arguments and reads no memory.
             let tid = unsafe { libc::syscall(libc::SYS_gettid) };
+            // SAFETY: pidfd_open takes an integer thread id and flag, reads no
+            // memory, and returns a fresh descriptor that only this call owns.
             let file = unsafe { libc::syscall(libc::SYS_pidfd_open, tid, libc::PIDFD_THREAD) };
             let result = if file < 0 {
                 Err(io::Error::new(
@@ -677,6 +679,7 @@ fn connect_existing(path: &std::path::Path) -> io::Result<Option<UnixStream>> {
 }
 
 fn authenticate(control: UnixStream) -> io::Result<UnixStream> {
+    // SAFETY: ucred holds only integer fields, so all-zero bytes are a valid value.
     let mut peer: libc::ucred = unsafe { std::mem::zeroed() };
     let mut size = std::mem::size_of_val(&peer) as libc::socklen_t;
     // SAFETY: SO_PEERCRED fills the initialized peer structure.
