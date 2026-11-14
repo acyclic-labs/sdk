@@ -43,6 +43,7 @@ impl ProgramFiles {
         kind: &str,
         name: &str,
         generation: Option<&GenerationRef>,
+        configuration: Option<&[Option<PinnedLayer>; 4]>,
         io: Option<&'a PreparationIo>,
     ) -> Result<(LoadedProgram, GenerationRef, Option<ContentHold<'a>>)> {
         let directory = crate::executor::with_history_io(io, |work| {
@@ -64,7 +65,7 @@ impl ProgramFiles {
         let tree = crate::layers::ContentTree {
             reader: self.reader.as_ref(),
             home: (&self.home, &generation),
-            configuration: &self.configuration,
+            configuration: configuration.unwrap_or(&self.configuration),
             maximum_bytes: self.maximum_bytes,
             io,
         };
@@ -72,17 +73,51 @@ impl ProgramFiles {
         Ok((program, generation, hold))
     }
 
-    /// Load a hook from its original home cut. Retain that cut across approval
-    /// and recovery so an edit cannot replace an already selected program.
-    pub fn hook_at<'a>(
+    /// Select once in the original execution journal, before loading a hook.
+    /// Recovery retains the complete home/issuer cut across approval, so edits
+    /// cannot replace an already admitted program or one of its imports.
+    pub fn hook_for_execution<'a>(
         &'a self,
+        journal: &'a dyn crate::executor::ExecutionJournal,
+        operation: crate::OperationId,
         name: &'a str,
-        generation: Option<&'a GenerationRef>,
         io: Option<&'a PreparationIo>,
-    ) -> Result<BoundedContentFuture<'a, (BoundHook, GenerationRef, Option<ContentHold<'a>>)>> {
+    ) -> Result<BoundedContentFuture<'a, (BoundHook, crate::layers::RetainedContentCut<'a>)>> {
         BoundedContentFuture::new(io, || async move {
-            let (program, generation, hold) = self.load_at("hooks", name, generation, io).await?;
-            Ok((program.bind_hook(self.shell.clone())?, generation, hold))
+            let attempt = io.map(PreparationIo::scoped).transpose()?;
+            let temporary = attempt.as_ref();
+            let (key, path) = crate::executor::with_history_io(temporary, |work| {
+                Ok((
+                    crate::executor::preparation_format(
+                        format_args!("program:hooks/{name}:sources"),
+                        work,
+                    )?,
+                    crate::executor::preparation_format(
+                        format_args!("hooks/{name}/program.ts"),
+                        work,
+                    )?,
+                ))
+            })?;
+            let cut = crate::layers::ContentSources {
+                reader: self.reader.as_ref(),
+                seed: None,
+                home: &self.home,
+                configuration: &self.configuration,
+                maximum_bytes: self.maximum_bytes,
+                io,
+            }
+            .retain(journal, operation, &key, &path)
+            .await?;
+            let (program, _generation, _hold) = self
+                .load_at(
+                    "hooks",
+                    name,
+                    Some(&cut.selection.home.1),
+                    Some(&cut.selection.configuration),
+                    io,
+                )
+                .await?;
+            Ok((program.bind_hook(self.shell.clone())?, cut))
         })
     }
 }
@@ -112,7 +147,7 @@ impl ToolSource for ProgramFiles {
             {
                 return Ok(None);
             }
-            match self.load_at("tools", name, None, io).await {
+            match self.load_at("tools", name, None, None, io).await {
                 Ok((program, _generation, _hold)) => program.bind(self.shell.clone()).map(Some),
                 Err(Error::NotFound(path)) if path == format!("tools/{name}/program.ts") => {
                     Ok(None)
