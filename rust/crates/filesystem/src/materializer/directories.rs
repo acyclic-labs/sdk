@@ -50,16 +50,21 @@ impl NativeTreeMaterializationBackend {
         }
     }
     /// Clears staged contents while retaining the witnessed target root.
-    pub async fn reset_target_directory(
+    /// The accepted native operation owns `custody` through completion, even
+    /// when its caller stops observing, and returns it with the root identity.
+    pub async fn reset_target_directory<C: Send + 'static>(
         self: &std::sync::Arc<Self>,
         path: &str,
-    ) -> Result<crate::NativeRootIdentity, NativeTreeMaterializationError> {
+        custody: C,
+    ) -> Result<(crate::NativeRootIdentity, C), NativeTreeMaterializationError> {
         self.check_path(path)?;
         if self.observe_allocation_identity().await? != self.allocation_identity()
             || self.observe_preparation_identity().await? != self.preparation_identity()
         {
             return Err(NativeTreeMaterializationError::ExternalMutation);
         }
+        #[cfg(any(test, feature = "test-support"))]
+        acyclic_native_runtime::testing::boundary("materialization:reset").await;
         let (path, allocation) = self.work.copy_bytes(path.as_bytes())?;
         let backend = self.clone();
         acyclic_native_runtime::run_blocking_io(
@@ -98,7 +103,7 @@ impl NativeTreeMaterializationBackend {
                     let parent = held_child(&backend.held_target, parent, &backend.work)?;
                     parent.sync_directory(&mut &backend.work)?;
                 }
-                Ok(directory.identity())
+                Ok((directory.identity(), custody))
             },
             Some((self.work.runtime_meter(), true)),
         )
