@@ -190,7 +190,13 @@ impl PeerRoute<'_> {
             Some(&self.envelope.source),
             destination.map(|placement| &placement.node),
         ];
-        for ((path, head), node) in request.paths.into_iter().zip(view.heads).zip(nodes) {
+        for (((path, head), node), membership) in request
+            .paths
+            .into_iter()
+            .zip(view.heads)
+            .zip(nodes)
+            .zip([self.admission.sender, self.admission.recipient])
+        {
             let Some(head) = head else {
                 rejection.get_or_insert(route::Rejection::Closed);
                 conditions.push(CommitCondition::Absent { path });
@@ -205,7 +211,7 @@ impl PeerRoute<'_> {
                     "peer directory row ownership or revision differs",
                 ));
             }
-            if row.profile.is_none() {
+            if row.profile.is_none() || row.membership != membership {
                 rejection.get_or_insert(route::Rejection::Closed);
             }
             conditions.push(CommitCondition::Head {

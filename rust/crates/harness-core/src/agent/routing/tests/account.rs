@@ -115,9 +115,8 @@ async fn signed_account_admission_preserves_membership_and_original_outcomes()
     let destination = route::NodeId::new(b"destination")?;
     let debit = StreamPath::new("funding")?;
     let roots = [1, 2, 3, 4].map(|id| AgentPath::root(&AgentId::from_bytes([id; 16])));
-    let witness = PeerMembershipHead {
-        tail: 1,
-        commit: [0; 32],
+    let witness = PeerMembership {
+        epoch: Some([7; 32]),
     };
     let admission = PeerAdmission {
         sender: witness.clone(),

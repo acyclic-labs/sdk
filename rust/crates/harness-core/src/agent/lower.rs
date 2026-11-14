@@ -317,6 +317,11 @@ pub(super) fn lower_routed(
                             _ => None,
                         })
                         .ok_or(Error::Record("remote send has no peer admission"))?;
+                    // Only this node's interval can be read here. Recipient
+                    // membership is checked at account admission and drain.
+                    for condition in admission.sender.conditions(path)? {
+                        builder.condition(condition)?;
+                    }
                     if !matches!(record, InboxRecord::Message(message) | InboxRecord::FollowUp(message) if message.from == sender)
                     {
                         return Err(Error::Record(

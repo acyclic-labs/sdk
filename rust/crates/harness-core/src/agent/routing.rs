@@ -187,6 +187,11 @@ impl<'a> PeerRoute<'a> {
             return Err(Error::Record("peer route has foreign headers"));
         }
         let admission = PeerAdmission::decode(attribute.value)?;
+        if !admission.sender.enabled() || !admission.recipient.enabled() {
+            return Err(Error::Record(
+                "peer route requires enabled membership intervals",
+            ));
+        }
         let mut expected = super::commit::send(&recipient, &message.from, &input)?;
         let CommitMutation::Append { records, .. } = &mut expected.effects[0].mutations[0] else {
             unreachable!()
@@ -345,11 +350,9 @@ impl<'a> PeerRoute<'a> {
         );
         records[0].headers =
             acyclic_stream::RecordHeaders::new(Vec::new(), attributes).map_err(Error::Stream)?;
-        request.effects[0].conditions.push(
-            self.admission
-                .recipient
-                .condition(self.recipient.peer_membership()?),
-        );
+        request.effects[0]
+            .conditions
+            .extend(self.admission.recipient.conditions(&self.recipient)?);
         // A refused membership fence spends this original intent as a durable
         // skipped append. A crash before routing its Notice cannot later turn
         // that refusal into delivery after the user rejoins.

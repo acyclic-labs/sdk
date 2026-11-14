@@ -930,16 +930,13 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
             host.create(&intent("recipient"), adopted(recipient.id()))
                 .await?;
             let head =
-                async |provider: &MemoryStream, root: &AgentPath| -> Result<PeerMembershipHead> {
+                async |provider: &MemoryStream, root: &AgentPath| -> Result<PeerMembership> {
                     let record = provider
                         .head(root.peer_membership()?)
                         .await?
                         .last
                         .ok_or("membership missing")?;
-                    Ok(PeerMembershipHead {
-                        tail: record.sequence + 1,
-                        commit: *record.commit_id.as_bytes(),
-                    })
+                    Ok(PeerMembership::decode(&record.value)?)
                 };
             let admission = PeerAdmission {
                 sender: head(&source, &sender).await?,

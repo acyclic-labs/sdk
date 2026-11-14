@@ -57,41 +57,28 @@ impl PeerMembership {
     }
 }
 
-/// The two enabled membership versions admitted for an automatic peer send.
-/// Publication must still match both versions, so a later opt-out fences it.
+/// Stable membership intervals admitted for one automatic peer send.
+/// Both intervals are public identities, never credentials or private heads.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PeerAdmission {
-    /// Sender's exact enabled head.
-    pub sender: PeerMembershipHead,
-    /// Recipient's exact enabled head.
-    pub recipient: PeerMembershipHead,
-}
-
-/// An immutable membership record's publication identity.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PeerMembershipHead {
-    /// Exclusive sequence following this membership record.
-    pub tail: u64,
-    /// Original Streams commit identity.
-    pub commit: [u8; 32],
+    /// Sender's enabled interval.
+    pub sender: PeerMembership,
+    /// Recipient's enabled interval.
+    pub recipient: PeerMembership,
 }
 
 impl PeerAdmission {
-    /// Verify that a caller-retained admission refers to enabled immutable
-    /// records. Current heads are checked by the inbox commit, not this read:
-    /// exact replay must still recover its original result after opt-out.
+    /// Validate original interval records. Revocation is fenced by the inbox
+    /// publication, so exact retries retain their original outcome.
     pub async fn validate<P: crate::store::JournalProvider + ?Sized>(
         &self,
         provider: &P,
         sender: &AgentPath,
         recipient: &AgentPath,
     ) -> Result<(), super::Error> {
-        for (root, head) in [(sender, &self.sender), (recipient, &self.recipient)] {
-            head.validate(provider, root).await?;
-        }
-        Ok(())
+        self.sender.validate(provider, sender).await?;
+        self.recipient.validate(provider, recipient).await
     }
 
     pub(super) fn conditions(
@@ -104,32 +91,16 @@ impl PeerAdmission {
                 "automatic peers require distinct roots",
             ));
         }
-        let mut conditions = std::collections::BTreeMap::new();
-        for (path, head) in [
-            (sender.peer_membership()?, &self.sender),
-            (recipient.peer_membership()?, &self.recipient),
-        ] {
-            conditions.insert(path.clone(), head.condition(path));
-        }
-        Ok(conditions.into_values().collect())
+        Ok(self
+            .sender
+            .conditions(sender)?
+            .into_iter()
+            .chain(self.recipient.conditions(recipient)?)
+            .collect())
     }
 }
 
-impl PeerMembershipHead {
-    pub(super) fn condition(
-        &self,
-        path: acyclic_stream::StreamPath,
-    ) -> acyclic_stream::CommitCondition {
-        acyclic_stream::CommitCondition::Head {
-            path,
-            expected: self.tail,
-            commit_id: acyclic_stream::CommitId::from_bytes(self.commit),
-        }
-    }
-
-    /// Check the retained enabled record, independently of its current head.
-    /// A publication guard fences opt-out, while exact retries can still
-    /// recover a receipt after a later membership change.
+impl PeerMembership {
     pub(super) async fn validate<P: crate::store::JournalProvider + ?Sized>(
         &self,
         provider: &P,
@@ -141,9 +112,8 @@ impl PeerMembershipHead {
         Ok(())
     }
 
-    /// Absence is distinct from an invalid retained witness. Only an owning
-    /// delivery host can turn absence into a refusal, fenced by inbox absence
-    /// in that same publication; it must never bypass a disabled record.
+    /// Validate the original, root-owned interval without requiring any later
+    /// membership or metadata head to stay unchanged.
     pub(super) async fn retained<P: crate::store::JournalProvider + ?Sized>(
         &self,
         provider: &P,
@@ -151,23 +121,21 @@ impl PeerMembershipHead {
     ) -> Result<bool, super::Error> {
         use super::AgentRecord as _;
         use acyclic_stream::StreamProviderExt as _;
-        let sequence = self
-            .tail
-            .checked_sub(1)
-            .ok_or(super::Error::Record("peer membership head is empty"))?;
-        let path = root.peer_membership()?;
+        let epoch = self
+            .epoch
+            .ok_or(super::Error::Record("peer membership is disabled"))?;
+        let path = root.peer_epoch(&epoch)?;
         let Some(record) = provider
-            .record_at(path.clone(), sequence)
+            .record_at(path.clone(), 0)
             .await
             .map_err(super::Error::Stream)?
         else {
             return Ok(false);
         };
-        if record.origin != path
-            || record.commit_id.as_bytes() != &self.commit
-            || !PeerMembership::decode(&record.value)?.enabled()
-        {
-            return Err(super::Error::Record("peer membership was not enabled"));
+        if record.origin != path || Self::decode(&record.value)? != *self {
+            return Err(super::Error::Record(
+                "peer membership epoch provenance differs",
+            ));
         }
         Ok(true)
     }
@@ -263,13 +231,11 @@ pub async fn session_peer_admission<P: crate::store::JournalProvider + ?Sized>(
                 "peer membership head provenance differs",
             ));
         }
-        if !PeerMembership::decode(&record.value)?.enabled() {
+        let membership = PeerMembership::decode(&record.value)?;
+        if !membership.enabled() {
             return Ok(None);
         }
-        admitted.push(PeerMembershipHead {
-            tail: head.tail,
-            commit: *record.commit_id.as_bytes(),
-        });
+        admitted.push(membership);
     }
     let mut admitted = admitted.into_iter();
     let sender = admitted

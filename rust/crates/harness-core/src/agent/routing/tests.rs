@@ -1,7 +1,7 @@
 //! Original Stream publications prove the absence fence and its negative control.
 use super::*;
 use crate::agent::{
-    AgentId, ForkAdopted, InboxRecord, IntentId, Message, PeerMembershipHead, Sender, SessionPhase,
+    AgentId, ForkAdopted, InboxRecord, IntentId, Message, PeerMembership, Sender, SessionPhase,
     SessionProfile, SessionPublication, SessionRow, create_root_with_peer,
 };
 use crate::conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef};
@@ -19,9 +19,8 @@ async fn account_membership_uses_one_fenced_view_for_both_roots()
         let provider = MemoryStream::default();
         let sender = AgentPath::root(&AgentId::from_bytes([1; 16]));
         let recipient = AgentPath::root(&AgentId::from_bytes([2; 16]));
-        let witness = PeerMembershipHead {
-            tail: 1,
-            commit: [0; 32],
+        let witness = PeerMembership {
+            epoch: Some([7; 32]),
         };
         let envelope = peer_envelope(
             &sender,
@@ -238,6 +237,45 @@ async fn account_membership_uses_one_fenced_view_for_both_roots()
             spent.commit_id, relay.commit_id,
             "the host's funding effects must join relay publication atomically"
         );
+        let renewed = crate::agent::PeerMembership {
+            epoch: Some([8; 32]),
+        };
+        let rejoined = removal
+            .row
+            .changed_membership(removed.row.profile.clone(), renewed)?
+            .ok_or("rejoin missing")?;
+        assert!(matches!(
+            provider
+                .commit(CommitRequest {
+                    deadline_unix_millis: None,
+                    idempotency_key: crate::agent::intent_key("rejoin-row", &[])?,
+                    effects: vec![rejoined.effect(removal.path()?)?],
+                })
+                .await?,
+            CommitOutcome::Committed(_)
+        ));
+        assert_eq!(
+            peer.account_membership(&provider, Some(&destination))
+                .await?
+                .0,
+            Some(route::Rejection::Closed),
+            "a new public interval cannot revive the old send"
+        );
+        let mut fresh = peer.admission().clone();
+        if remove_sender {
+            fresh.sender = renewed;
+        } else {
+            fresh.recipient = renewed;
+        }
+        let fresh_envelope = peer_envelope(&sender, &recipient, "new-interval", fresh)?;
+        assert_eq!(
+            PeerRoute::parse(&fresh_envelope)?
+                .account_membership(&provider, Some(&destination))
+                .await?
+                .0,
+            None,
+            "positive control must admit the newly selected interval"
+        );
         let mut wrong = destination.clone();
         wrong.node = route::NodeId::new(b"wrong-node")?;
         assert!(
@@ -321,14 +359,8 @@ async fn absent_refusal_fences_creation_of_a_disabled_recipient()
         reference.commit(created.request.clone()).await?,
         CommitOutcome::Committed(_)
     ));
-    let membership = reference
-        .head(created.child.peer_membership()?)
-        .await?
-        .last
-        .ok_or("membership missing")?;
-    let witness = PeerMembershipHead {
-        tail: 1,
-        commit: *membership.commit_id.as_bytes(),
+    let witness = PeerMembership {
+        epoch: Some([7; 32]),
     };
     let envelope = peer_envelope(
         &sender,
