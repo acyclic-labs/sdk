@@ -13,7 +13,7 @@ pub(crate) async fn stage_chunks<P, F>(
 ) -> Result<()>
 where
     P: crate::store::JournalProvider + ?Sized,
-    F: Fn(u64) -> Result<IdempotencyKey> + Send + Sync,
+    F: Fn(u64) -> Result<(IdempotencyKey, u64)> + Send + Sync,
 {
     for (index, chunk) in bytes.chunks(acyclic_stream::MAX_RECORD_BYTES).enumerate() {
         let sequence = index as u64;
@@ -37,13 +37,13 @@ where
         }
         let (value, retained) = owned_bytes_from_retained_vec(value, &mut observer)?;
         let _value_hold = io.map(|io| io.guard_owned(retained)).transpose()?;
-        let idempotency_key = key(sequence)?;
-        let _key_hold = io
-            .map(|io| io.guard_owned(idempotency_key.as_bytes().len() as u64))
-            .transpose()?;
+        let (idempotency_key, key_retained) = key(sequence)?;
+        let _key_hold = io.map(|io| io.guard_owned(key_retained)).transpose()?;
         let mut records = crate::model::vec_with_capacity(1, io)?;
         let _records_hold = io
-            .map(|io| io.guard_owned(std::mem::size_of::<AppendRecord>() as u64))
+            .map(|io| {
+                io.guard_owned((records.capacity() * std::mem::size_of::<AppendRecord>()) as u64)
+            })
             .transpose()?;
         records.push(AppendRecord {
             value,

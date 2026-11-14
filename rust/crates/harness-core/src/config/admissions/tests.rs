@@ -188,6 +188,7 @@ async fn large_decisions_replay_from_bounded_chunks_and_refuse_incomplete_payloa
     };
     let work = work()?;
     let io = crate::executor::PreparationIo::from_native_work(&work)?;
+    let mut retained = None;
     for _ in 0..2 {
         journal
             .record(
@@ -198,6 +199,11 @@ async fn large_decisions_replay_from_bounded_chunks_and_refuse_incomplete_payloa
                 &io,
             )
             .await?;
+        let live = work.live_allocation_bytes();
+        if let Some(original) = retained {
+            assert_eq!(live, original, "chunk replay must retire temporary storage");
+        }
+        retained = Some(live);
     }
     let root = SettingsAdmissions::path(agent)?;
     assert_eq!(provider.tail(root.clone()).await.map_err(invalid)?, 1);
@@ -257,24 +263,26 @@ async fn large_decisions_replay_from_bounded_chunks_and_refuse_incomplete_payloa
             })
             .await
             .map_err(invalid)?;
-        assert!(matches!(
-            reopened
-                .latest(agent, "agent.ts", "cut-a", "original", &work)
-                .await,
-            Err(Error::Storage(_))
-        ));
+        let error = reopened
+            .latest(agent, "agent.ts", "cut-a", "original", &work)
+            .await
+            .expect_err("an incomplete payload must refuse");
+        assert_eq!(error.code(), crate::wire::ErrorCode::Storage);
     }
 
     // Stage failure must precede the indexed publication. A conflicting raw
     // prefix is a real provider failure, rather than an injected append mock.
     let other = AgentId::new();
-    let body = serde_json::to_vec(&Decision::Inline {
-        version: 1,
-        agent: other,
-        cut: "cut-a",
-        admission: &original,
-    })
-    .map_err(|error| Error::Invalid(error.to_string()))?;
+    let body = io.encode(
+        &Decision::Inline {
+            version: 1,
+            agent: other,
+            cut: "cut-a",
+            admission: &original,
+        },
+        None,
+        true,
+    )?;
     let path = SettingsAdmissions::payload_path(other, blake3::hash(&body).as_bytes(), None)?;
     provider
         .append(AppendRequest {
@@ -285,18 +293,17 @@ async fn large_decisions_replay_from_bounded_chunks_and_refuse_incomplete_payloa
         })
         .await
         .map_err(invalid)?;
-    assert!(matches!(
-        journal
-            .record(
-                other,
-                (&original.path, "cut-a", &original.version),
-                &original,
-                None,
-                &io
-            )
-            .await,
-        Err(Error::Storage(_))
-    ));
+    let error = journal
+        .record(
+            other,
+            (&original.path, "cut-a", &original.version),
+            &original,
+            None,
+            &io,
+        )
+        .await
+        .expect_err("a conflicting prefix must refuse before index publication");
+    assert_eq!(error.code(), crate::wire::ErrorCode::Storage);
     assert!(
         journal
             .latest(other, "agent.ts", "cut-a", "original", &work)

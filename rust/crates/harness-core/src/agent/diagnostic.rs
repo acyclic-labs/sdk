@@ -126,6 +126,7 @@ impl Diagnostic {
         let path = self.path()?;
         crate::store::operations::stage_chunks(provider, &path, text.as_bytes(), None, |index| {
             super::intent_key("diagnostic", &[path.as_str(), &index.to_string()])
+                .map(|key| (key, 0))
                 .map_err(crate::Error::from)
         })
         .await

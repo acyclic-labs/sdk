@@ -129,7 +129,10 @@ impl SettingsAdmissions {
                             work,
                         )
                     })?;
-                    IdempotencyKey::new(key).map_err(invalid)
+                    let retained = key.capacity() as u64;
+                    IdempotencyKey::new(key)
+                        .map(|key| (key, retained))
+                        .map_err(invalid)
                 },
             )
             .await?;
