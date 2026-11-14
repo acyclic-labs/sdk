@@ -11,6 +11,7 @@ fn operation(key: u8) -> Option<wire::OperationOptions> {
 #[tokio::test]
 async fn native_source_rpcs_keep_read_only_observation_lazy_and_capture_replay_and_seal_real_files()
 -> Result<(), Box<dyn std::error::Error>> {
+    acyclic_native_runtime::initialize_native_io_services()?;
     let root = tempfile::tempdir()?;
     let directory = root.path().join("native");
     let provider = Arc::new(FilesystemNativeSources::new(BTreeMap::from([(
