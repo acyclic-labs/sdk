@@ -209,6 +209,11 @@ impl futures::Stream for SubscriptionSource {
     }
 }
 #[derive(Debug, thiserror::Error)]
+#[error("original registration queue closed before request {requested} was accepted")]
+struct RegistrationQueueClosed {
+    requested: u64,
+}
+#[derive(Debug, thiserror::Error)]
 #[error("session open receipt {received} does not match original request {requested}")]
 struct RegistrationMismatch {
     requested: u64,
@@ -846,7 +851,11 @@ impl Client {
             .await;
             #[cfg(not(feature = "serde"))]
             let sent = sending.await;
-            sent.map_err(|source| StreamError::Unavailable.with_source(source))?;
+            // Release the unqueued command and its original ownership on failure;
+            // the cause retains the observed closure and original request identity.
+            sent.map_err(|_| {
+                StreamError::Unavailable.with_source(RegistrationQueueClosed { requested: id })
+            })?;
             let receipt = async {
                 let (opened_id, receipt) = opened
                     .await
