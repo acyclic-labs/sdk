@@ -9,9 +9,6 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use tokio::sync::{Mutex, MutexGuard};
 use tonic::Status;
 
-#[cfg(test)]
-mod tests;
-
 struct Attachment<A: 'static, O: 'static> {
     source: Source<A, O>,
     generation: GenerationId,
