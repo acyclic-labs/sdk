@@ -127,14 +127,10 @@ impl StockExecution<'_> {
                 Ok(()) => break,
                 Err(Error::ModelContextOverflow) if end > start => {
                     let policy = crate::context::CapacityCompaction::default();
-                    let first = crate::context::plan_compaction_budget(
-                        &policy,
-                        context,
-                        None,
-                        start + 1,
-                        self.io,
-                    )?
-                    .0;
+                    let first = with_history_io(self.io, |work| {
+                        policy.try_projection_budget(context, None, start + 1, work)
+                    })?
+                    .map_or(end, |(cut, _)| cut);
                     if first >= end {
                         if previous.is_some() {
                             end = start;
@@ -143,14 +139,10 @@ impl StockExecution<'_> {
                         return Err(Error::ModelContextOverflow);
                     }
                     let middle = start + (end - start) / 2;
-                    let selected = crate::context::plan_compaction_budget(
-                        &policy,
-                        context,
-                        None,
-                        middle.max(start + 1),
-                        self.io,
-                    )?
-                    .0;
+                    let selected = with_history_io(self.io, |work| {
+                        policy.try_projection_budget(context, None, middle.max(start + 1), work)
+                    })?
+                    .map_or(first, |(cut, _)| cut);
                     end = if selected < end { selected } else { first };
                 }
                 Err(error) => return Err(error),
