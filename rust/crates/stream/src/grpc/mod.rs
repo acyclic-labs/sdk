@@ -5,7 +5,7 @@ use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 pub use acyclic_auth::credential::{CredentialError, CredentialProvider};
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::{Stream, StreamExt, stream};
+use futures::{StreamExt, stream};
 use prost::Message;
 use thiserror::Error;
 use tonic::{
