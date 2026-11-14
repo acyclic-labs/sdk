@@ -7,8 +7,11 @@ impl Drop for WritableOnDrop {
     fn drop(&mut self) {
         for path in &self.0 {
             if let Ok(metadata) = std::fs::metadata(path) {
-                let mut permissions = metadata.permissions();
-                permissions.set_readonly(false);
+                use std::os::windows::fs::{MetadataExt as _, PermissionsExt as _};
+                let permissions = std::fs::Permissions::from_attributes(
+                    metadata.file_attributes()
+                        & !windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_READONLY,
+                );
                 let _ = std::fs::set_permissions(path, permissions);
             }
         }

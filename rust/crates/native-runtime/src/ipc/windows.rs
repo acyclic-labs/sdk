@@ -19,7 +19,7 @@ pub(super) async fn connect(
         match tokio::net::windows::named_pipe::ClientOptions::new().open(name) {
             Err(error)
                 if error.raw_os_error()
-                    == Some(windows_sys::Win32::Foundation::ERROR_PIPE_BUSY as i32) =>
+                    == Some(windows_sys::Win32::Foundation::ERROR_PIPE_BUSY.cast_signed()) =>
             {
                 let name: Vec<u16> = name.encode_wide().chain(Some(0)).collect();
                 crate::spawn_blocking(move || {

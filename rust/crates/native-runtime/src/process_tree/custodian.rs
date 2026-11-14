@@ -406,12 +406,13 @@ impl Handoff {
         if self.count != self.handles.len() {
             return Err(io::ErrorKind::InvalidInput.into());
         }
+        let [job, process, ready, done] = self.handles;
         let frame = Opened {
             tree,
-            job: self.handles[0],
-            process: self.handles[1],
-            ready: self.handles[2],
-            done: self.handles[3],
+            job,
+            process,
+            ready,
+            done,
             secret: *secret,
         }
         .encode();
@@ -425,7 +426,7 @@ impl Handoff {
 
 impl Drop for Handoff {
     fn drop(&mut self) {
-        for handle in &self.handles[..self.count] {
+        for handle in self.handles.iter().take(self.count) {
             let mut local = std::ptr::null_mut();
             // SAFETY: these are our unpublished duplicates in the retained
             // target. CLOSE_SOURCE closes each there, including on failure.
@@ -640,13 +641,18 @@ impl Opened {
     fn encode(self) -> [u8; Self::FRAME_BYTES] {
         let mut frame = [0; Self::FRAME_BYTES];
         frame[0] = 1;
-        for (slot, value) in frame[1..Self::SECRET_OFFSET].chunks_exact_mut(8).zip([
-            self.tree,
-            self.job.expose_provenance(),
-            self.process.expose_provenance(),
-            self.ready.expose_provenance(),
-            self.done.expose_provenance(),
-        ]) {
+        for (slot, value) in frame[1..Self::SECRET_OFFSET]
+            .as_chunks_mut::<8>()
+            .0
+            .iter_mut()
+            .zip([
+                self.tree,
+                self.job.expose_provenance(),
+                self.process.expose_provenance(),
+                self.ready.expose_provenance(),
+                self.done.expose_provenance(),
+            ])
+        {
             slot.copy_from_slice(&(value as u64).to_le_bytes());
         }
         frame[Self::SECRET_OFFSET..].copy_from_slice(&self.secret);
@@ -658,8 +664,10 @@ impl Opened {
             return None;
         }
         let mut fields = frame[1..Self::SECRET_OFFSET]
-            .chunks_exact(8)
-            .map(|slot| usize::try_from(u64::from_le_bytes(slot.try_into().ok()?)).ok());
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|slot| usize::try_from(u64::from_le_bytes(*slot)).ok());
         let tree = fields.next()??;
         let mut handle = || {
             let value = fields.next()??;
@@ -679,7 +687,7 @@ impl Opened {
 
 /// Decode the startup header's native handle representation once. Null is
 /// allowed only for an absent inherited output; required owners reject it at
-/// admission. INVALID_HANDLE_VALUE can never transfer an owned kernel object.
+/// admission. `INVALID_HANDLE_VALUE` can never transfer an owned kernel object.
 fn handle_value(value: &str) -> Option<HANDLE> {
     let value = value.parse::<usize>().ok()?;
     (value != usize::MAX).then(|| std::ptr::with_exposed_provenance_mut(value))
@@ -731,24 +739,7 @@ fn serve() -> io::Result<()> {
 
 fn run(response: &mut Response) -> io::Result<()> {
     let mut input = BufReader::new(io::stdin());
-    let mut line = String::new();
-    if input.read_line(&mut line)? == 0 {
-        return Err(io::ErrorKind::BrokenPipe.into());
-    }
-    let mut fields = line
-        .strip_suffix('\n')
-        .ok_or(io::ErrorKind::InvalidData)?
-        .split(' ');
-    let mut handle = || {
-        fields
-            .next()
-            .and_then(handle_value)
-            .ok_or(io::ErrorKind::InvalidData)
-    };
-    let (owner, output, error) = (handle()?, handle()?, handle()?);
-    if owner.is_null() || fields.next().is_some() {
-        return Err(io::ErrorKind::InvalidData.into());
-    }
+    let (owner, output, error) = startup_handles(&mut input)?;
     // These original pipe handles stay live until every member has physically
     // exited. In particular, killing the owner cannot publish an early EOF.
     let _output = transport_lease(output);
@@ -792,22 +783,7 @@ fn run(response: &mut Response) -> io::Result<()> {
         visits: 0,
     };
     loop {
-        let mut message = 0;
-        let mut key = 0;
-        let mut overlapped: *mut OVERLAPPED = std::ptr::null_mut();
-        // SAFETY: the owned port and writable outputs.
-        if unsafe {
-            GetQueuedCompletionStatus(
-                port,
-                &raw mut message,
-                &raw mut key,
-                &raw mut overlapped,
-                INFINITE,
-            )
-        } == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
+        let (message, key, process) = dequeue(port)?;
         let touched = match key {
             OPENED => {
                 if let Ok(tree) = opened.receive.try_recv() {
@@ -862,7 +838,7 @@ fn run(response: &mut Response) -> io::Result<()> {
             id => {
                 if message == JOB_OBJECT_MSG_NEW_PROCESS {
                     // The message carries the new member's PID.
-                    state.admit(id, u32::try_from(overlapped.addr()).unwrap_or(0))?;
+                    state.admit(id, u32::try_from(process).unwrap_or(0))?;
                 }
                 Some(id)
             }
@@ -871,6 +847,49 @@ fn run(response: &mut Response) -> io::Result<()> {
             return Ok(());
         }
     }
+}
+
+fn startup_handles(input: &mut impl io::BufRead) -> io::Result<(HANDLE, HANDLE, HANDLE)> {
+    let mut line = String::new();
+    if input.read_line(&mut line)? == 0 {
+        return Err(io::ErrorKind::BrokenPipe.into());
+    }
+    let mut fields = line
+        .strip_suffix('\n')
+        .ok_or(io::ErrorKind::InvalidData)?
+        .split(' ');
+    let mut handle = || {
+        fields
+            .next()
+            .and_then(handle_value)
+            .ok_or(io::ErrorKind::InvalidData)
+    };
+    let (owner, output, error) = (handle()?, handle()?, handle()?);
+    if owner.is_null() || fields.next().is_some() {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    Ok((owner, output, error))
+}
+
+fn dequeue(port: HANDLE) -> io::Result<(u32, usize, usize)> {
+    let mut message = 0;
+    let mut key = 0;
+    let mut overlapped: *mut OVERLAPPED = std::ptr::null_mut();
+    // SAFETY: the caller retains the original completion port through this
+    // synchronous wait; all three writable output slots remain live.
+    if unsafe {
+        GetQueuedCompletionStatus(
+            port,
+            &raw mut message,
+            &raw mut key,
+            &raw mut overlapped,
+            INFINITE,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((message, key, overlapped.addr()))
 }
 
 /// Every tree a custodian watches, and what it knows of its owner.
@@ -1168,6 +1187,27 @@ mod handoff_tests {
         GetNamedPipeInfo, PIPE_NOWAIT, SetNamedPipeHandleState,
     };
 
+    fn retire_member(state: &mut State, port: HANDLE, pid: u32) -> io::Result<()> {
+        while state.members.live.contains_key(&pid) {
+            let (mut message, mut key, mut context) = (0, 0, std::ptr::null_mut());
+            // SAFETY: this exact member's exit produces the original
+            // kernel packet; Job notifications may precede it.
+            if unsafe {
+                GetQueuedCompletionStatus(port, &mut message, &mut key, &mut context, INFINITE)
+            } == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            if key == MEMBER_EXITED
+                && let Some(id) = state.members.release(message)
+                && let Some(tree) = state.trees.get_mut(&id)
+            {
+                tree.members -= 1;
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn handover_refuses_failed_readiness_or_owner_termination() -> io::Result<()> {
         use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
@@ -1261,29 +1301,7 @@ mod handoff_tests {
             let retirement = unsafe { WaitForSingleObject(done.as_raw_handle(), 0) };
             drop(child.stdin.take());
             let exited = child.wait()?;
-            while state.members.live.contains_key(&child.id()) {
-                let (mut message, mut key, mut context) = (0, 0, std::ptr::null_mut());
-                // SAFETY: this exact member's exit produces the original
-                // kernel packet; Job notifications may precede it.
-                if unsafe {
-                    GetQueuedCompletionStatus(
-                        port.as_raw_handle(),
-                        &mut message,
-                        &mut key,
-                        &mut context,
-                        INFINITE,
-                    )
-                } == 0
-                {
-                    return Err(io::Error::last_os_error());
-                }
-                if key == MEMBER_EXITED
-                    && let Some(id) = state.members.release(message)
-                    && let Some(tree) = state.trees.get_mut(&id)
-                {
-                    tree.members -= 1;
-                }
-            }
+            retire_member(&mut state, port.as_raw_handle(), child.id())?;
             if state.trees.contains_key(&7) {
                 state.settle_tree(7)?;
             } else {
@@ -1363,7 +1381,7 @@ mod handoff_tests {
                     return Err(io::Error::last_os_error());
                 }
                 assert_eq!((key, message), (admission::ADMIT, 0));
-                assert_eq!(requests.as_ref().unwrap().len(), 1);
+                assert_eq!(requests.as_ref().ok_or(io::ErrorKind::BrokenPipe)?.len(), 1);
                 let mut waiting = TcpStream::connect(&address)?;
                 waiting.write_all(&bytes)?;
                 second = Some(waiting);
@@ -1393,7 +1411,11 @@ mod handoff_tests {
                     error.raw_os_error(),
                     Some(ERROR_INVALID_HANDLE.cast_signed())
                 );
-                let original = requests.as_mut().unwrap().try_recv().unwrap();
+                let original = requests
+                    .as_mut()
+                    .ok_or(io::ErrorKind::BrokenPipe)?
+                    .try_recv()
+                    .map_err(io::Error::other)?;
                 assert_eq!(
                     (original.pid, original.tree, original.secret),
                     (7, 9, [13; 16])
@@ -1542,7 +1564,7 @@ mod handoff_tests {
         for truncated in [false, true] {
             let frame = [0; Opened::FRAME_BYTES];
             let bytes = if truncated {
-                &frame[..frame.len() - 1]
+                frame.split_last().ok_or(io::ErrorKind::InvalidData)?.1
             } else {
                 frame.as_slice()
             };
@@ -1564,7 +1586,10 @@ mod handoff_tests {
                     drop(input.take());
                 }
             }
-            let error = waiter.join().unwrap().unwrap_err();
+            let error = waiter
+                .join()
+                .map_err(|_| io::Error::other("retirement observer panicked"))?
+                .unwrap_err();
             assert_eq!(error.raw_os_error(), Some(ERROR_INVALID_DATA.cast_signed()));
             let late = Link {
                 custodian: Arc::clone(&running),
@@ -1576,6 +1601,7 @@ mod handoff_tests {
             assert_eq!(retained.to_string(), error.to_string());
             // SAFETY: this exact retained event never received retirement.
             assert_eq!(
+                // SAFETY: the original owned event remains live during this observation.
                 unsafe { WaitForSingleObject(done.as_raw_handle(), 0) },
                 WAIT_TIMEOUT
             );
@@ -1594,32 +1620,7 @@ mod handoff_tests {
         let root = tempfile::tempdir()?;
         let mut random = [0; 8];
         getrandom::fill(&mut random).map_err(io::Error::other)?;
-        // SAFETY: the current-process pseudo-handle is borrowed for identity.
-        let producer = identity(unsafe { GetCurrentProcess() })?;
-        // SAFETY: the running current process retains its pseudo-handle.
-        assert!(process_running(unsafe {
-            BorrowedHandle::borrow_raw(GetCurrentProcess())
-        })?);
-        // Retain a real process handle without SYNCHRONIZE. Its refused wait
-        // must remain the native error, not a false producer-exit observation.
-        // SAFETY: both pseudo-handles are live and duplication transfers the
-        // deliberately restricted handle to this same process.
-        let restricted = unsafe {
-            duplicate(
-                GetCurrentProcess(),
-                GetCurrentProcess(),
-                PROCESS_QUERY_LIMITED_INFORMATION,
-                0,
-            )?
-        };
-        // SAFETY: the successful duplication transferred one owned handle.
-        let restricted = unsafe { OwnedHandle::from_raw_handle(restricted) };
-        assert_eq!(
-            process_running(restricted.as_handle())
-                .unwrap_err()
-                .raw_os_error(),
-            Some(ERROR_ACCESS_DENIED.cast_signed()),
-        );
+        let producer = assert_current_producer_access()?;
         let name = format!(
             "acyclic-process-tree-{}-{:016x}",
             producer,
@@ -1647,18 +1648,10 @@ mod handoff_tests {
         // Hold the unrelated original producer before its settle transition.
         // These are actual native Jobs and the SAME production State, not a
         // synthesized member count or process-exit receipt.
-        let tree = |job: &OwnedHandle, done: &OwnedHandle| -> io::Result<Tree> {
-            Ok(Tree {
-                job: job.try_clone()?.into_raw_handle().cast(),
-                done: done.try_clone()?.into_raw_handle().cast(),
-                members: 0,
-                secret: [0; 16],
-            })
-        };
         let mut state = State {
             trees: [
-                (0, tree(&selected, &done)?),
-                (1, tree(&unrelated, &unrelated_done)?),
+                (0, retained_tree(&selected, &done)?),
+                (1, retained_tree(&unrelated, &unrelated_done)?),
             ]
             .into_iter()
             .collect(),
@@ -1678,6 +1671,7 @@ mod handoff_tests {
         assert!(state.trees.contains_key(&1));
         // SAFETY: one observation of the retained original unrelated event.
         assert_eq!(
+            // SAFETY: the original unrelated event is retained by this proof.
             unsafe { WaitForSingleObject(unrelated_done.as_raw_handle().cast(), 0) },
             WAIT_TIMEOUT
         );
@@ -1700,8 +1694,11 @@ mod handoff_tests {
             await_tree(&unrelated_done, &lost).unwrap_err().kind(),
             io::ErrorKind::BrokenPipe
         );
-        let (pid, started) = producer.split_once('-').unwrap();
-        let replaced = format!("{pid}-{}", started.parse::<u64>().unwrap() ^ 1);
+        let (pid, started) = producer.split_once('-').ok_or(io::ErrorKind::InvalidData)?;
+        let replaced = format!(
+            "{pid}-{}",
+            started.parse::<u64>().map_err(io::Error::other)? ^ 1
+        );
         assert_eq!(
             await_tree(&unrelated_done, &replaced).unwrap_err().kind(),
             io::ErrorKind::BrokenPipe
@@ -1717,8 +1714,8 @@ mod handoff_tests {
         let completion = [event(true, None)?, event(true, None)?];
         let mut state = State {
             trees: [
-                (0, tree(&empty[0], &completion[0])?),
-                (1, tree(&empty[1], &completion[1])?),
+                (0, retained_tree(&empty[0], &completion[0])?),
+                (1, retained_tree(&empty[1], &completion[1])?),
             ]
             .into_iter()
             .collect(),
@@ -1733,11 +1730,52 @@ mod handoff_tests {
         for completed in completion {
             // SAFETY: this retained event belongs to the exact original Job.
             assert_eq!(
+                // SAFETY: this original completion event remains owned through the call.
                 unsafe { WaitForSingleObject(completed.as_raw_handle().cast(), 0) },
                 WAIT_OBJECT_0
             );
         }
         Ok(())
+    }
+
+    fn retained_tree(job: &OwnedHandle, done: &OwnedHandle) -> io::Result<Tree> {
+        Ok(Tree {
+            job: job.try_clone()?.into_raw_handle().cast(),
+            done: done.try_clone()?.into_raw_handle().cast(),
+            members: 0,
+            secret: [0; 16],
+        })
+    }
+
+    fn assert_current_producer_access() -> io::Result<String> {
+        // SAFETY: the current-process pseudo-handle is borrowed for identity.
+        let producer = identity(unsafe { GetCurrentProcess() })?;
+        // SAFETY: the running current process retains its pseudo-handle.
+        assert!(process_running(
+            // SAFETY: this process retains its current-process pseudo-handle.
+            unsafe { BorrowedHandle::borrow_raw(GetCurrentProcess()) }
+        )?);
+        // Retain a real process handle without SYNCHRONIZE. Its refused wait
+        // must remain the native error, not a false producer-exit observation.
+        // SAFETY: both pseudo-handles are live and duplication transfers the
+        // deliberately restricted handle to this same process.
+        let restricted = unsafe {
+            duplicate(
+                GetCurrentProcess(),
+                GetCurrentProcess(),
+                PROCESS_QUERY_LIMITED_INFORMATION,
+                0,
+            )?
+        };
+        // SAFETY: the successful duplication transferred one owned handle.
+        let restricted = unsafe { OwnedHandle::from_raw_handle(restricted) };
+        assert_eq!(
+            process_running(restricted.as_handle())
+                .unwrap_err()
+                .raw_os_error(),
+            Some(ERROR_ACCESS_DENIED.cast_signed()),
+        );
+        Ok(producer)
     }
 
     fn assert_closed(handle: HANDLE) {

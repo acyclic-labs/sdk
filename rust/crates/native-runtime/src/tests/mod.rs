@@ -417,10 +417,14 @@ impl NativeReadMeter for ReadBudgetMeter {
         );
         self.read.fetch_add(actual, Ordering::AcqRel);
         #[cfg(windows)]
-        if kind == NativeOperationKind::Write {
-            if let Some(recorded) = self.bytes_recorded.lock().unwrap().take() {
-                let _ = recorded.send((maximum, actual));
-            }
+        if kind == NativeOperationKind::Write
+            && let Some(recorded) = self
+                .bytes_recorded
+                .lock()
+                .map_err(|_| io::Error::other("write observation mutex poisoned"))?
+                .take()
+        {
+            let _ = recorded.send((maximum, actual));
         }
         if self.cancel_after_read && actual != 0 {
             self.cancelled.store(true, Ordering::Release);

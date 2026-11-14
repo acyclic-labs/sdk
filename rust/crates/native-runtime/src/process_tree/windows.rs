@@ -678,10 +678,11 @@ fn trees_started_from_many_threads_are_created_on_one() -> io::Result<()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
     assert!(created.len() >= callers.len(), "{created:?}");
+    let original = created.first().ok_or(io::ErrorKind::InvalidData)?;
     assert!(
-        created.iter().all(|thread| *thread == created[0]),
+        created.iter().all(|thread| thread == original),
         "every process is created on one thread: {created:?}"
     );
-    assert!(!callers.contains(&created[0]), "and on none of its callers");
+    assert!(!callers.contains(original), "and on none of its callers");
     Ok(())
 }

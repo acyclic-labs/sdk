@@ -1461,7 +1461,7 @@ mod tests {
                 #[cfg(windows)] {
                     use std::os::windows::ffi::OsStringExt as _;
                     let wide: Vec<u16> = bytes.chunks(2)
-                        .map(|pair| u16::from_le_bytes([pair[0], *pair.get(1).unwrap_or(&0)]))
+                        .map(|pair| u16::from_le_bytes([*pair.first().unwrap(), *pair.get(1).unwrap_or(&0)]))
                         .collect();
                     OsString::from_wide(&wide)
                 }

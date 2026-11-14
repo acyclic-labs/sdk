@@ -87,7 +87,11 @@ fn pending_stdin_keeps_original_credit_and_records_after_cancel_without_another_
     let meter = crate::tests::ReadBudgetMeter::shared(u64::MAX, bytes.len() as u64);
     let (recorded, completion) = std::sync::mpsc::channel();
     *meter.bytes_recorded.lock().unwrap() = Some(recorded);
-    let pipe = process.child.as_mut().unwrap().stdin.as_mut().unwrap();
+    let pipe = process
+        .child
+        .as_mut()
+        .and_then(|child| child.stdin.as_mut())
+        .ok_or(io::ErrorKind::BrokenPipe)?;
     // One real unmetered fixture write fills the pipe before the measured
     // write, rather than assuming an empty pipe cannot accept a full chunk.
     let (prefilled, operation) =
@@ -124,7 +128,11 @@ fn pending_stdin_keeps_original_credit_and_records_after_cancel_without_another_
     while !remaining.is_empty() {
         match process.read_output_controlled(remaining, None, true)? {
             Some(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
-            Some(count) => remaining = &mut remaining[count..],
+            Some(count) => {
+                remaining = remaining
+                    .get_mut(count..)
+                    .ok_or(io::ErrorKind::InvalidData)?;
+            }
             None => {
                 // Unread stdout must not repeatedly wake this stderr drain.
                 // Arm the same retained stderr operation and original exit.

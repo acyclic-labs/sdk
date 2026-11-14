@@ -41,8 +41,7 @@ fn sparse_device_queries_retain_partial_bytes_and_resume_at_the_original_range()
     )?;
     assert_eq!(first, NativeControlCompletion::MoreData(page.len()));
     assert_eq!(first.into_complete().unwrap_err().raw_os_error(), Some(234));
-    let offset = u64::from_le_bytes(page[..8].try_into().unwrap());
-    let length = u64::from_le_bytes(page[8..].try_into().unwrap());
+    let (offset, length) = allocation_range(&page)?;
     assert_eq!(offset, 0);
     assert!(length > 0 && length < end / 2);
     let next = offset + length;
@@ -58,7 +57,15 @@ fn sparse_device_queries_retain_partial_bytes_and_resume_at_the_original_range()
     )?;
     assert_eq!(second, NativeControlCompletion::Complete(page.len()));
     assert_eq!(second.into_complete()?, page.len());
-    assert_eq!(u64::from_le_bytes(page[..8].try_into().unwrap()), end / 2);
-    assert!(u64::from_le_bytes(page[8..].try_into().unwrap()) > 0);
+    let (offset, length) = allocation_range(&page)?;
+    assert_eq!(offset, end / 2);
+    assert!(length > 0);
     Ok(())
+}
+
+fn allocation_range(page: &[u8; 16]) -> io::Result<(u64, u64)> {
+    let [offset, length] = page.as_chunks::<8>().0 else {
+        return Err(io::ErrorKind::InvalidData.into());
+    };
+    Ok((u64::from_le_bytes(*offset), u64::from_le_bytes(*length)))
 }

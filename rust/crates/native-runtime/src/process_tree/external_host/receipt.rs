@@ -24,28 +24,27 @@ struct RootStatus {
     signal: Option<i32>,
 }
 
-impl From<ExitStatus> for RootStatus {
-    fn from(status: ExitStatus) -> Self {
+impl TryFrom<ExitStatus> for RootStatus {
+    type Error = io::Error;
+
+    fn try_from(status: ExitStatus) -> io::Result<Self> {
         #[cfg(unix)]
         {
             use std::os::unix::process::ExitStatusExt as _;
-            Self {
+            Ok(Self {
                 native: i64::from(status.into_raw()),
                 code: status.code().map(i64::from),
                 signal: status.signal(),
-            }
+            })
         }
         #[cfg(windows)]
         {
-            Self {
-                native: native_code(
-                    status
-                        .code()
-                        .expect("Windows status retains its native DWORD"),
-                ),
-                code: status.code().map(native_code),
+            let code = status.code().ok_or(io::ErrorKind::InvalidData)?;
+            Ok(Self {
+                native: native_code(code),
+                code: Some(native_code(code)),
                 signal: None,
-            }
+            })
         }
     }
 }
@@ -120,7 +119,7 @@ impl Completion {
             invocation: binding,
             platform: std::env::consts::OS,
             host_exit_code: native_code(code),
-            root_status: progress.root_status.map(RootStatus::from),
+            root_status: progress.root_status.map(RootStatus::try_from).transpose()?,
             cancelled: progress.cancelled,
             process_tree_retired: progress.retired.is_some(),
             lease_wait_seconds: progress.lease_wait.map(|elapsed| elapsed.as_secs_f64()),
