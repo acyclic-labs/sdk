@@ -43,7 +43,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 id,
                 &subscription.path,
                 from,
-                self.handler.subscription_key(id, state.checkpoint())?,
+                indexed_filter(self.handler.as_ref(), id, state.checkpoint())?,
             )
             .await?;
         }
