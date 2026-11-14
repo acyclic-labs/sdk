@@ -36,8 +36,8 @@ fn alloy_invariants(input: &[u8]) -> super::ProofResult {
                         ordinal,
                         role,
                     };
-                    assert!(spec.index(turn) < spec.models.len());
-                    assert_eq!(spec.index(turn), replay.index(turn));
+                    assert!(spec.index(turn)? < spec.models.len());
+                    assert_eq!(spec.index(turn)?, replay.index(turn)?);
                 }
             }
         }

@@ -85,32 +85,51 @@ impl AlloySpec {
         Ok(())
     }
 
-    pub(crate) fn index(&self, turn: AlloyTurn<'_>) -> usize {
-        match &self.select {
+    pub(crate) fn index(&self, turn: AlloyTurn<'_>) -> Result<usize> {
+        if self.models.is_empty() {
+            return Err(invalid("model alloy must contain a model"));
+        }
+        let index = match &self.select {
             AlloySelection::First => 0,
             AlloySelection::RoundRobin => {
-                (u128::from(turn.ordinal) % self.models.len() as u128) as usize
+                usize::try_from(u128::from(turn.ordinal) % self.models.len() as u128)
+                    .map_err(|_| invalid("alloy ordinal does not fit a model index"))?
             }
             AlloySelection::Weighted { weights } => {
-                // validate() established a nonzero sum that fits u64.
-                let sum: u64 = weights.iter().map(|&weight| u64::from(weight)).sum();
+                let sum = total(weights)?;
+                if sum == 0 || weights.len() != self.models.len() {
+                    return Err(invalid(
+                        "alloy weights must match models and have a positive sum",
+                    ));
+                }
                 let phase = blake3::hash(&turn.operation_id.into_bytes());
-                let phase =
-                    u64::from_le_bytes(phase.as_bytes()[..8].try_into().expect("eight hash bytes"));
-                let mut slot =
-                    ((u128::from(phase) + u128::from(turn.ordinal)) % u128::from(sum)) as u64;
+                let mut phase_bytes = [0; 8];
+                for (byte, hash_byte) in phase_bytes.iter_mut().zip(phase.as_bytes()) {
+                    *byte = *hash_byte;
+                }
+                let slot = (u128::from(u64::from_le_bytes(phase_bytes)) + u128::from(turn.ordinal))
+                    % u128::from(sum);
+                let mut slot = u64::try_from(slot)
+                    .map_err(|_| invalid("alloy weighted slot does not fit u64"))?;
+                let mut selected = None;
                 for (index, &weight) in weights.iter().enumerate() {
                     if slot < u64::from(weight) {
-                        return index;
+                        selected = Some(index);
+                        break;
                     }
                     slot -= u64::from(weight);
                 }
-                unreachable!("validated weighted cycle contains the slot")
+                selected
+                    .ok_or_else(|| invalid("alloy weighted cycle contains no selected model"))?
             }
             AlloySelection::PerRole { roles, fallback } => {
                 *roles.get(turn.role).unwrap_or(fallback)
             }
+        };
+        if index >= self.models.len() {
+            return Err(invalid("alloy selection names an undeclared model"));
         }
+        Ok(index)
     }
 }
 

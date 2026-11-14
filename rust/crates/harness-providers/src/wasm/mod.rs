@@ -209,6 +209,7 @@ impl WasmModelAlloy {
                     ordinal,
                     role,
                 })
+                .map_err(error)?
                 .clone(),
             limits: self.limits,
         })
