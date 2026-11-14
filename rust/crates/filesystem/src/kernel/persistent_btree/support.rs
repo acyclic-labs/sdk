@@ -405,6 +405,8 @@ where
     }
 }
 
+// Only the test page chunker converts packing failures into tree errors.
+#[cfg(test)]
 fn packing_error<E: std::error::Error>(
     error: acyclic_collections::page::PackingError<CanonicalDecodeError>,
 ) -> Error<E> {
