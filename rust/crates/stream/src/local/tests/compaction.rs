@@ -1,4 +1,5 @@
 use super::*;
+use crate::NativeStreamProviderExt as _;
 use crate::{CommitMutation, Record};
 use futures::TryFutureExt as _;
 use std::time::Instant;
@@ -281,14 +282,41 @@ async fn unrelated_mutations_complete_before_snapshot_device_release() -> Result
             async move {
                 barrier.wait().await;
                 let started = Instant::now();
-                let outcome = provider.append(AppendRequest {
-                    path: StreamPath::new(format!("agents/worker-{index}/execution"))?,
-                    records: vec![Bytes::from_static(b"tool intent").into()],
-                    if_tail: None,
-                    idempotency_key: IdempotencyKey::unique(),
-                }).await?;
-                assert!(matches!(outcome, AppendOutcome::Committed(_)));
-                Ok::<_, StreamError>(started.elapsed())
+                let path = StreamPath::new(format!("agents/worker-{index}/execution"))?;
+                if index % 3 == 0 {
+                    let outcome = provider.append(AppendRequest {
+                        path,
+                        records: vec![Bytes::from_static(b"tool intent").into()],
+                        if_tail: None,
+                        idempotency_key: IdempotencyKey::unique(),
+                    }).await?;
+                    assert!(matches!(outcome, AppendOutcome::Committed(_)));
+                } else {
+                    let meter = Arc::new(crate::test_meter::Meter::local());
+                    let request = CommitRequest {
+                        deadline_unix_millis: None,
+                        effects: vec![crate::CommitEffect::hard(
+                            vec![crate::CommitCondition::Absent { path: path.clone() }],
+                            vec![crate::CommitMutation::Append {
+                                path,
+                                records: vec![Bytes::from_static(b"tool intent").into()],
+                            }],
+                        )],
+                        idempotency_key: IdempotencyKey::unique(),
+                    };
+                    if index % 3 == 1 {
+                        let outcome = provider.native_commit(request, None, meter.original()).await??;
+                        assert!(matches!(outcome.value(), CommitOutcome::Committed(_)));
+                    } else {
+                        let prepared = provider.native_prepare_commit(request, crate::PreparedRecordCapacity {
+                            payload_bytes: b"tool intent".len(), keys: 0, attributes: 0,
+                        }, meter.original()).await??;
+                        let (prepared, _original_funding) = prepared.into_parts();
+                        let outcome = prepared.finish(Bytes::from_static(b"tool intent").into()).await??;
+                        assert!(matches!(outcome.value(), CommitOutcome::Committed(_)));
+                    }
+                }
+                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(started.elapsed())
             }
         })).await.into_iter().collect::<std::result::Result<Vec<_>, _>>()?;
         let mut writes = writes;
