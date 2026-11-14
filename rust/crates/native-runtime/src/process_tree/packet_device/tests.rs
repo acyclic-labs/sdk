@@ -21,8 +21,9 @@ fn exit_event(id: u32) -> io::Result<OwnedFd> {
     if descriptor < 0 {
         return Err(io::Error::last_os_error());
     }
-    // SAFETY: pidfd_open returned this fresh descriptor.
-    Ok(unsafe { OwnedFd::from_raw_fd(descriptor as i32) })
+    let descriptor = i32::try_from(descriptor).map_err(io::Error::other)?;
+    // SAFETY: pidfd_open returned this fresh descriptor, with no other owner.
+    Ok(unsafe { OwnedFd::from_raw_fd(descriptor) })
 }
 
 fn exited(event: &OwnedFd, timeout: i32) -> io::Result<bool> {
@@ -32,6 +33,7 @@ fn exited(event: &OwnedFd, timeout: i32) -> io::Result<bool> {
         revents: 0,
     };
     // One OS event wait. A deadline only fails the proof, never establishes it.
+    // SAFETY: interest is one live writable pollfd for the full call.
     let count = unsafe { libc::poll(&raw mut interest, 1, timeout) };
     if count < 0 {
         return Err(io::Error::last_os_error());
@@ -84,130 +86,9 @@ fn concurrent_admission_survives_startup_and_last_owner_retirement()
         crate::private_file::initialize_isolated_user_runtime()?;
     }
 
-    // An attacker can reserve the former public pathname without any access
-    // to the user's private root. Actual admission must ignore that entry.
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
-    let namespace =
-        |name| std::fs::metadata(format!("/proc/self/ns/{name}")).map(|file| file.ino());
-    let poisoned = std::path::PathBuf::from(format!(
-        "/tmp/acyclic-mount-host-{}-{}-{}.lock",
-        crate::private_file::effective_user(),
-        namespace("mnt")?,
-        namespace("net")?
-    ));
-    std::os::unix::fs::symlink("/dev/null", &poisoned)?;
-    struct Poisoned(std::path::PathBuf);
-    impl Drop for Poisoned {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-    let _poisoned = Poisoned(poisoned);
+    let (_reserved, _poisoned) = check_untrusted_authorities()?;
 
-    // The former abstract socket name was public too. A different user can
-    // bind it without entering the owner's private directory. Keep it bound
-    // but not listening, so any regression fails instead of awaiting a peer.
-    let reserved = socket()?;
-    let mut legacy: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    legacy.sun_family = libc::AF_UNIX as _;
-    let name = format!(
-        "acyclic-packet-device-v1-{}-{}",
-        crate::private_file::effective_user(),
-        namespace("mnt")?
-    );
-    for (slot, byte) in legacy.sun_path[1..].iter_mut().zip(name.bytes()) {
-        *slot = byte as _;
-    }
-    let length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + 1 + name.len();
-    if unsafe {
-        libc::bind(
-            reserved.as_raw_fd(),
-            (&raw const legacy).cast(),
-            length as _,
-        )
-    } < 0
-    {
-        return Err(io::Error::last_os_error().into());
-    }
-
-    let private = tempfile::tempdir()?;
-    std::fs::set_permissions(private.path(), std::fs::Permissions::from_mode(0o777))?;
-    assert_eq!(
-        admission_directory(private.path()).unwrap_err().kind(),
-        io::ErrorKind::PermissionDenied,
-        "a public parent lets another user reserve the authority name"
-    );
-    std::fs::set_permissions(private.path(), std::fs::Permissions::from_mode(0o700))?;
-    let alias = private.path().join(".acyclic-mount-host");
-    std::os::unix::fs::symlink("/tmp", &alias)?;
-    assert_eq!(
-        admission_directory(private.path()).unwrap_err().kind(),
-        io::ErrorKind::PermissionDenied,
-        "an alias cannot supply private directory custody"
-    );
-    std::fs::remove_file(alias)?;
-    admission_directory(private.path())?;
-
-    {
-        let admissions = admissions()?;
-        let output = with_admissions(&admissions, &mut || {
-            std::process::Command::new("/proc/self/exe")
-                .args([TEST, "--exact", "--nocapture"])
-                .env(CASE, "foreign-env")
-                .env("HOME", private.path())
-                .env("XDG_RUNTIME_DIR", private.path())
-                .output()
-        })?;
-        assert!(
-            output.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    let (first, second) = std::thread::scope(|scope| -> Result<_, Box<dyn std::error::Error>> {
-        let (bound, saw_bound) = sync_channel(1);
-        let (listen, may_listen) = sync_channel(1);
-        let leader = scope.spawn(move || {
-            BEFORE_LISTEN.with_borrow_mut(|probe| {
-                *probe = Some(Box::new(move || {
-                    bound.send(()).unwrap();
-                    may_listen.recv().unwrap();
-                }));
-            });
-            device()
-        });
-        saw_bound.recv()?;
-        // The exact old lock-free path sees the real bound socket before
-        // listen and refuses the concurrent mount. No scheduler race is used.
-        WITHOUT_ADMISSION_LOCK.set(true);
-        let old = connect();
-        WITHOUT_ADMISSION_LOCK.set(false);
-        assert_eq!(old.unwrap_err().raw_os_error(), Some(libc::ECONNREFUSED));
-
-        let (blocked, saw_blocked) = sync_channel(1);
-        let follower = scope.spawn(move || {
-            BEFORE_ADMISSION.with_borrow_mut(|probe| {
-                *probe = Some(Box::new(move |file| {
-                    let refusal = crate::FileLock::try_acquire(
-                        file.try_clone().unwrap(),
-                        crate::FileLockMode::Exclusive,
-                    )
-                    .unwrap_err();
-                    assert_eq!(refusal.kind(), io::ErrorKind::WouldBlock);
-                    blocked.send(()).unwrap();
-                }));
-            });
-            device()
-        });
-        saw_blocked.recv()?;
-        listen.send(())?;
-        Ok((
-            leader.join().map_err(|_| "leader panicked")??,
-            follower.join().map_err(|_| "follower panicked")??,
-        ))
-    })?;
+    let (first, second) = concurrent_devices()?;
     assert_eq!(first.retirement.host_id(), second.retirement.host_id());
     let host = first.retirement.host_id();
     let exit = exit_event(host)?;
@@ -255,6 +136,7 @@ fn runtime_appearance_and_read_only_home() -> Result<(), Box<dyn std::error::Err
     let flags = libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC;
     // This test already owns fresh user/mount/network namespaces. Supply an
     // account home without accessing or changing the original account files.
+    // SAFETY: strings are NUL terminated; this thread owns a private mount namespace.
     if unsafe {
         libc::mount(
             c"tmpfs".as_ptr(),
@@ -282,6 +164,7 @@ fn runtime_appearance_and_read_only_home() -> Result<(), Box<dyn std::error::Err
     // Clone the view first: even a bind remount refuses read-only mode while
     // that same mount owns the host's writable descriptor. The clone has no
     // writers, retains exactly the original inodes, and supplies the RO view.
+    // SAFETY: target is a live terminated path; the caller owns this private mount namespace.
     if unsafe {
         libc::mount(
             target.as_ptr(),
@@ -294,6 +177,7 @@ fn runtime_appearance_and_read_only_home() -> Result<(), Box<dyn std::error::Err
     {
         return Err(format!("clone original home view: {}", io::Error::last_os_error()).into());
     }
+    // SAFETY: target is terminated and remains live; only the private cloned mount is remounted.
     if unsafe {
         libc::mount(
             std::ptr::null(),
@@ -333,4 +217,139 @@ fn runtime_appearance_and_read_only_home() -> Result<(), Box<dyn std::error::Err
     drop(next);
     assert!(exited(&exit, 5000)?);
     Ok(())
+}
+
+struct Poisoned(std::path::PathBuf);
+impl Drop for Poisoned {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn check_untrusted_authorities() -> Result<(OwnedFd, Poisoned), Box<dyn std::error::Error>> {
+    // An attacker can reserve the former public pathname without any access
+    // to the user's private root. Actual admission must ignore that entry.
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let namespace =
+        |name| std::fs::metadata(format!("/proc/self/ns/{name}")).map(|file| file.ino());
+    let poisoned = std::path::PathBuf::from(format!(
+        "/tmp/acyclic-mount-host-{}-{}-{}.lock",
+        crate::private_file::effective_user(),
+        namespace("mnt")?,
+        namespace("net")?
+    ));
+    std::os::unix::fs::symlink("/dev/null", &poisoned)?;
+    let _poisoned = Poisoned(poisoned);
+
+    // The former abstract socket name was public too. A different user can
+    // bind it without entering the owner's private directory. Keep it bound
+    // but not listening, so any regression fails instead of awaiting a peer.
+    let reserved = socket()?;
+    // SAFETY: sockaddr_un contains integer fields valid when initialized to zero.
+    let mut legacy: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    legacy.sun_family = libc::AF_UNIX.try_into().map_err(io::Error::other)?;
+    let name = format!(
+        "acyclic-packet-device-v1-{}-{}",
+        crate::private_file::effective_user(),
+        namespace("mnt")?
+    );
+    for (slot, byte) in legacy.sun_path[1..].iter_mut().zip(name.bytes()) {
+        *slot = libc::c_char::from_ne_bytes([byte]);
+    }
+    let length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + 1 + name.len();
+    // SAFETY: legacy is a live initialized address of the supplied bounded length;
+    // reserved remains owned throughout bind.
+    if unsafe {
+        libc::bind(
+            reserved.as_raw_fd(),
+            (&raw const legacy).cast(),
+            length.try_into().map_err(io::Error::other)?,
+        )
+    } < 0
+    {
+        return Err(io::Error::last_os_error().into());
+    }
+
+    let private = tempfile::tempdir()?;
+    std::fs::set_permissions(private.path(), std::fs::Permissions::from_mode(0o777))?;
+    assert_eq!(
+        admission_directory(private.path()).unwrap_err().kind(),
+        io::ErrorKind::PermissionDenied,
+        "a public parent lets another user reserve the authority name"
+    );
+    std::fs::set_permissions(private.path(), std::fs::Permissions::from_mode(0o700))?;
+    let alias = private.path().join(".acyclic-mount-host");
+    std::os::unix::fs::symlink("/tmp", &alias)?;
+    assert_eq!(
+        admission_directory(private.path()).unwrap_err().kind(),
+        io::ErrorKind::PermissionDenied,
+        "an alias cannot supply private directory custody"
+    );
+    std::fs::remove_file(alias)?;
+    admission_directory(private.path())?;
+
+    {
+        let admissions = admissions()?;
+        let output = with_admissions(&admissions, &mut || {
+            std::process::Command::new("/proc/self/exe")
+                .args([TEST, "--exact", "--nocapture"])
+                .env(CASE, "foreign-env")
+                .env("HOME", private.path())
+                .env("XDG_RUNTIME_DIR", private.path())
+                .output()
+        })?;
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    Ok((reserved, _poisoned))
+}
+
+fn concurrent_devices() -> Result<(PacketDevice, PacketDevice), Box<dyn std::error::Error>> {
+    std::thread::scope(|scope| -> Result<_, Box<dyn std::error::Error>> {
+        let (bound, saw_bound) = sync_channel(1);
+        let (listen, may_listen) = sync_channel(1);
+        let leader = scope.spawn(move || {
+            BEFORE_LISTEN.with_borrow_mut(|probe| {
+                *probe = Some(Box::new(move || {
+                    bound.send(()).unwrap();
+                    may_listen.recv().unwrap();
+                }));
+            });
+            device()
+        });
+        saw_bound.recv()?;
+        // The exact old lock-free path sees the real bound socket before
+        // listen and refuses the concurrent mount. No scheduler race is used.
+        WITHOUT_ADMISSION_LOCK.set(true);
+        let old = connect();
+        WITHOUT_ADMISSION_LOCK.set(false);
+        assert_eq!(old.unwrap_err().raw_os_error(), Some(libc::ECONNREFUSED));
+
+        let (blocked, saw_blocked) = sync_channel(1);
+        let follower = scope.spawn(move || {
+            BEFORE_ADMISSION.with_borrow_mut(|probe| {
+                *probe = Some(Box::new(move |file| {
+                    let refusal = crate::FileLock::try_acquire(
+                        file.try_clone().unwrap(),
+                        crate::FileLockMode::Exclusive,
+                    )
+                    .unwrap_err();
+                    assert_eq!(refusal.kind(), io::ErrorKind::WouldBlock);
+                    blocked.send(()).unwrap();
+                }));
+            });
+            device()
+        });
+        saw_blocked.recv()?;
+        listen.send(())?;
+        Ok((
+            leader.join().map_err(|_| "leader panicked")??,
+            follower.join().map_err(|_| "follower panicked")??,
+        ))
+    })
 }

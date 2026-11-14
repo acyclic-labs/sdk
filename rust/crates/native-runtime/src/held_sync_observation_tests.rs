@@ -446,19 +446,11 @@ fn assert_attempt_sequence(
         native_error
     );
     let injected_start = failed_index + failed.len();
-    for injected in attempts
-        .get(injected_start..injected_start + 2)
-        .ok_or(io::ErrorKind::InvalidData)?
-    {
-        let evidence = injected.durability.ok_or(io::ErrorKind::InvalidData)?;
-        assert_eq!(injected.outcome, Outcome::Err);
-        assert_eq!(
-            evidence.syscall, None,
-            "synthetic attempt claimed an OS call"
-        );
-        assert_eq!(evidence.os_error, None);
-        assert_eq!(evidence.descriptor, Some(0));
-    }
+    assert_injected_attempts(
+        attempts
+            .get(injected_start..injected_start + 2)
+            .ok_or(io::ErrorKind::InvalidData)?,
+    )?;
     let worker = attempts.last().ok_or(io::ErrorKind::InvalidData)?;
     let worker_attempt = worker.durability.ok_or(io::ErrorKind::InvalidData)?;
     assert_eq!(worker_attempt.requested, full.requested);
@@ -468,6 +460,20 @@ fn assert_attempt_sequence(
     assert_eq!(worker_attempt.syscall, full.syscall);
     #[cfg(target_vendor = "apple")]
     assert_eq!(worker_attempt.syscall, Some(DurabilitySyscall::FullFsync));
+    Ok(())
+}
+
+fn assert_injected_attempts(attempts: &[acyclic_observability::Sample<'_>]) -> io::Result<()> {
+    for injected in attempts {
+        let evidence = injected.durability.ok_or(io::ErrorKind::InvalidData)?;
+        assert_eq!(injected.outcome, Outcome::Err);
+        assert_eq!(
+            evidence.syscall, None,
+            "synthetic attempt claimed an OS call"
+        );
+        assert_eq!(evidence.os_error, None);
+        assert_eq!(evidence.descriptor, Some(0));
+    }
     Ok(())
 }
 

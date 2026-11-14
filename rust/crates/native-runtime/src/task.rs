@@ -500,6 +500,33 @@ mod tests {
         assert!(matches!(finished, Ok(Ok(()))), "{finished:?}");
     }
 
+    fn refuses_reentry() {
+        let (entered, mut entering) = tokio::sync::oneshot::channel();
+        let nested = super::spawn_persistence(
+            "local",
+            "nested",
+            super::PersistenceKey::new(0, 0),
+            move || {
+                entered.send(()).unwrap();
+            },
+        );
+        // Refusal must drop the body before returning, independently of
+        // the observer's own same-service refusal below.
+        assert!(
+            matches!(
+                entering.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+            ),
+            "reentrant persistence submission retained or ran its body"
+        );
+        let mut nested = std::pin::pin!(nested);
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(
+            matches!(std::future::Future::poll(nested.as_mut(), &mut context),
+                std::task::Poll::Ready(Err(error)) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+    }
+
     #[test]
     fn persistence_reports_the_original_job_and_refuses_same_service_dependencies()
     -> std::io::Result<()> {
@@ -509,32 +536,6 @@ mod tests {
             return Ok(());
         }
         use tracing_subscriber::layer::SubscriberExt as _;
-        fn refuses_reentry() {
-            let (entered, mut entering) = tokio::sync::oneshot::channel();
-            let nested = super::spawn_persistence(
-                "local",
-                "nested",
-                super::PersistenceKey::new(0, 0),
-                move || {
-                    entered.send(()).unwrap();
-                },
-            );
-            // Refusal must drop the body before returning, independently of
-            // the observer's own same-service refusal below.
-            assert!(
-                matches!(
-                    entering.try_recv(),
-                    Err(tokio::sync::oneshot::error::TryRecvError::Closed)
-                ),
-                "reentrant persistence submission retained or ran its body"
-            );
-            let mut nested = std::pin::pin!(nested);
-            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-            assert!(
-                matches!(std::future::Future::poll(nested.as_mut(), &mut context),
-                std::task::Poll::Ready(Err(error)) if error.kind() == std::io::ErrorKind::WouldBlock)
-            );
-        }
         let report = crate::obs::WaitReport::default();
         let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(report.clone()));
         let _dispatch = tracing::dispatcher::set_default(&dispatch);

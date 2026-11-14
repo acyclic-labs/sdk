@@ -136,14 +136,6 @@ pub(super) struct Boundary {
 /// after it.
 pub(super) fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno> {
     let invalid = Errno(sys::EINVAL);
-    let descriptor = |index: usize| {
-        received
-            .descriptors
-            .get(index)
-            .copied()
-            .filter(|_| index < received.count)
-            .ok_or(invalid)
-    };
     let length = received.length;
     let (slots, flags, uid, gid, owner, mask, signals, ignored, limits, argc, envc) = {
         let mut reader = Reader(body.bytes().get(..length).ok_or(invalid)?);
@@ -176,19 +168,7 @@ pub(super) fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno
     {
         return Err(invalid);
     }
-    let mut next = 3;
-    let mut streams = [Slot::Null; 3];
-    for (stream, kind) in streams.iter_mut().zip(slots) {
-        *stream = match kind {
-            NULL => Slot::Null,
-            SENT => {
-                next += 1;
-                Slot::Descriptor(descriptor(next - 1)?)
-            }
-            CLOSED => Slot::Closed,
-            _ => return Err(invalid),
-        };
-    }
+    let (streams, next) = stream_slots(received, slots)?;
     let (policy, strings) = if flags & HAS_BOUNDARY != 0 {
         let mut reader = Reader(body.bytes().get(FIXED..length).ok_or(invalid)?);
         let count = usize::try_from(reader.word()?).map_err(|_| invalid)?;
@@ -206,12 +186,12 @@ pub(super) fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno
         let end = start
             .checked_add(count * core::mem::size_of::<entry::Instruction>())
             .ok_or(invalid)?;
-        (Some((descriptor(next)?, start, count)), end)
+        (Some((received.descriptor(next)?, start, count)), end)
     } else {
         (None, FIXED)
     };
     let activity = if flags & ON_RELEASE != 0 {
-        Some(descriptor(next + 2 * usize::from(policy.is_some()))?)
+        Some(received.descriptor(next + 2 * usize::from(policy.is_some()))?)
     } else {
         None
     };
@@ -229,18 +209,18 @@ pub(super) fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno
     } = arguments(body, length, strings, argc, envc, flags)?;
     let base = body.base;
     Ok(Spec {
-        reply: descriptor(1)?,
+        reply: received.descriptor(1)?,
         completion_report: if policy.is_some() {
-            descriptor(next + 1)?
+            received.descriptor(next + 1)?
         } else {
             -1
         },
         directory: if flags & UNRECORDED != 0 {
             -1
         } else {
-            descriptor(0)?
+            received.descriptor(0)?
         },
-        here: descriptor(2)?,
+        here: received.descriptor(2)?,
         owner,
         slots: streams,
         cwd,
@@ -262,6 +242,34 @@ pub(super) fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno
         }),
         activity,
     })
+}
+
+impl Received {
+    fn descriptor(&self, index: usize) -> Result<Fd, Errno> {
+        self.descriptors
+            .get(index)
+            .copied()
+            .filter(|_| index < self.count)
+            .ok_or(Errno(sys::EINVAL))
+    }
+}
+
+fn stream_slots(received: &Received, slots: [u8; 3]) -> Result<([Slot; 3], usize), Errno> {
+    let invalid = Errno(sys::EINVAL);
+    let mut next = 3;
+    let mut streams = [Slot::Null; 3];
+    for (stream, kind) in streams.iter_mut().zip(slots) {
+        *stream = match kind {
+            NULL => Slot::Null,
+            SENT => {
+                next += 1;
+                Slot::Descriptor(received.descriptor(next - 1)?)
+            }
+            CLOSED => Slot::Closed,
+            _ => return Err(invalid),
+        };
+    }
+    Ok((streams, next))
 }
 
 struct Arguments {
