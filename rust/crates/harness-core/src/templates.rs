@@ -324,7 +324,10 @@ mod binding_admission_tests {
 
     #[test]
     fn explicit_role_models_require_a_serving_binding() -> Result<()> {
-        assert_eq!(model_for_role(None, "fixture/fixed", None)?, "fixture/fixed");
+        assert_eq!(
+            model_for_role(None, "fixture/fixed", None)?,
+            "fixture/fixed"
+        );
         assert_eq!(
             model_for_role(Some("fixture/role"), "fixture/role", None)?,
             "fixture/role"
@@ -341,9 +344,8 @@ mod binding_admission_tests {
             crate::model::Model::new("fixture".into(), "role".into(), "1".into())?,
             Arc::new(crate::test_support::ScriptedModelProvider::new(Vec::new())),
         );
-        let served = crate::model::ModelResolver::new("fixture/fixed", move |_: &str| {
-            Ok(binding.clone())
-        });
+        let served =
+            crate::model::ModelResolver::new("fixture/fixed", move |_: &str| Ok(binding.clone()));
         assert_eq!(
             model_for_role(Some("fixture/role"), "fixture/fixed", Some(&served))?,
             "fixture/role"
