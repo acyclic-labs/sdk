@@ -83,6 +83,7 @@ dependencies = [
  "acyclic-actors",
  "acyclic-contract-derive",
  "js-sys",
+ "prost",
  "serde-wasm-bindgen",
  "tokio-util",
  "wasm-bindgen",
