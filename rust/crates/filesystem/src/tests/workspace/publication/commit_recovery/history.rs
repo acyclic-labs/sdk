@@ -132,8 +132,9 @@ async fn recover(root: &Path) -> TestResult {
 
 #[test]
 fn seeded_physical_crash_history() -> TestResult {
-    for seed_value in 0..2 {
-        let runtime = seeded_runtime(seed_value)?;
+    use acyclic_native_runtime::testing::sweep::{seeds, sweep};
+    let swept = sweep("filesystem worker restart", seeds(0..2), |seed_value| {
+        let runtime = seeded_runtime(seed_value).map_err(|error| error.to_string())?;
         runtime
             .block_on(async {
                 tokio::time::pause();
@@ -167,7 +168,11 @@ fn seeded_physical_crash_history() -> TestResult {
                 eprintln!("physical history seed={seed_value} cut={ordinal}/{count} fault={fault}");
                 Ok::<_, Box<dyn Error>>(())
             })
-            .unwrap_or_else(|error| panic!("physical history seed={seed_value}: {error}"));
-    }
+            .map_err(|error| error.to_string())
+    })?;
+    eprintln!(
+        "worker restart histories: {} seeds in {:?}",
+        swept.seeds, swept.elapsed
+    );
     Ok(())
 }

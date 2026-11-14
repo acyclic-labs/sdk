@@ -2,9 +2,9 @@
 use super::*;
 use crate::{LazyWorkspace, MemoryLazyWorkspaceStore};
 
-pub(super) async fn scenario(steps: usize) -> Result<(), Box<dyn Error>> {
+pub(super) async fn scenario(actions: &[Action]) -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
-    let source_bytes = vec![choice(); 37];
+    let source_bytes = vec![42; 37];
     std::fs::write(directory.path().join("source"), &source_bytes)?;
     let cancel = CancellationToken::new();
     let source = crate::demand::native::NativeDemandSource::open(
@@ -43,7 +43,7 @@ pub(super) async fn scenario(steps: usize) -> Result<(), Box<dyn Error>> {
         "reading an unresolved source file eagerly authored it"
     );
 
-    let mut current = vec![choice(); 11];
+    let mut current = vec![17; 11];
     lazy.write(
         "/authored",
         current.clone().into(),
@@ -53,10 +53,10 @@ pub(super) async fn scenario(steps: usize) -> Result<(), Box<dyn Error>> {
     )
     .await?;
     let mut retained = Vec::new();
-    for _ in 0..steps {
+    for action in actions {
         let cut = lazy.snapshot(&mut ctx).await?;
         retained.push((cut, current.clone()));
-        current = vec![choice(); 1 + usize::from(choice() % 31)];
+        current = action.bytes.clone();
         lazy.write(
             "/authored",
             current.clone().into(),

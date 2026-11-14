@@ -171,9 +171,10 @@ async fn command_completion_publishes_once_with_an_independent_duplicate_sync_co
 
 #[test]
 fn seeded_command_range_publications() -> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_native_runtime::testing::sweep::{seeds, sweep};
     use acyclic_native_runtime::testing::{Schedule, fill_seeded, seeded_runtime};
-    for seed in 0..4 {
-        let runtime = seeded_runtime(seed)?;
+    let swept = sweep("filesystem command publications", seeds(0..4), |seed| {
+        let runtime = seeded_runtime(seed).map_err(|error| error.to_string())?;
         runtime.block_on(async {
             tokio::time::pause();
             let (schedule, mut events) = Schedule::seeded(seed);
@@ -193,8 +194,12 @@ fn seeded_command_range_publications() -> Result<(), Box<dyn std::error::Error>>
                 }
             }
             Ok::<_, Box<dyn std::error::Error>>(())
-        }).unwrap_or_else(|error| panic!("command seed={seed}: {error}"));
-    }
+        }).map_err(|error| error.to_string())
+    })?;
+    eprintln!(
+        "command histories: {} seeds in {:?}",
+        swept.seeds, swept.elapsed
+    );
     Ok(())
 }
 

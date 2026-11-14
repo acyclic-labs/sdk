@@ -46,20 +46,25 @@ map or the pending map, never a partial mixture. An acknowledged operation must
 retain its lookup identity. A new fork and join must succeed after recovery
 without losing previously committed files.
 
-The default test uses four seeds and sixteen operations per seed. Replay one
-seed with `ACYCLIC_FS_SEED=<seed> ACYCLIC_FS_SEEDS=1`. The separate deep target is
-`ACYCLIC_FS_SEEDS=<count> bash scripts/sweep-filesystem-simulation.sh`; submit it
-only to an idle-priority remote worker. It lowers CPU priority as well. Failures
-include the seed. The same locked dependencies and
-compiler are required for scheduler replay.
+All three histories use `acyclic_native_runtime::testing::sweep`. Default volume
+and command runs use four seeds; worker restart uses two. A volume history has
+sixteen operations. `DST_SEED=<seed>` replays one world; `DST_SEEDS=<a>..<b>`
+selects a deep range. The separate deep target is
+`DST_SEEDS=0..10000 bash scripts/sweep-filesystem-simulation.sh`; submit it only
+to an idle-priority remote worker. It lowers CPU priority as well and selects
+only these seeded filesystem histories. Each sweep reports its elapsed time.
+The same locked dependencies and compiler are required for scheduler replay.
+
+A failed volume history uses the shared `minimize` function to remove actions
+while preserving the original invariant report. Error results and panics pass
+through the shared sweep capture on every replay. The failure includes its
+one-minimal action list and the standard `DST_SEED` replay command. Lazy overlay
+payloads also come from that explicit list, so shrinking does not redraw them.
 
 Historical target: commit `2aef6627c360ea70fe544800d656a1af2fcf90ea`
 fixed incremental join ancestry that could overwrite a parent's resolution of
 an earlier child change. The simulator's incremental join operation exercises
 that class. A pre-fix seed result is required before claiming historical proof.
 
-Shared-core integration still required: consume `testing::sweep` for standard
-`DST_SEED`/`DST_SEEDS` selection and trace minimization when its API is available.
-No subsystem sweep/minimization engine is introduced. Execution and timing
-evidence, including the historical negative/positive comparison, must be
-recorded before treating these obligations as proved.
+Execution and timing evidence, including the historical negative/positive
+comparison, must be recorded before treating these obligations as proved.
