@@ -787,7 +787,11 @@ impl LocalHarness {
             }
             #[cfg(any(test, not(target_arch = "wasm32")))]
             let context = if let Some(workspace) = &self.workspace {
-                let view = workspace.spawned_project_view(project).await?;
+                let view = if project == &self.project {
+                    workspace.view().clone()
+                } else {
+                    workspace.spawned_project_view(project).await?
+                };
                 let authority = crate::filesystem::NativeMountAuthority::admitted(
                     verifier.clone(),
                     scope.copy(&mut None)?,
