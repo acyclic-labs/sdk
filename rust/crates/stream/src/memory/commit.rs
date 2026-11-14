@@ -906,9 +906,15 @@ fn stage_namespace(
 
 fn install_namespace(
     state: &mut State,
-    next: Namespace,
+    mut next: Namespace,
     envelope: &CommittedEnvelope,
 ) -> Result<(), StreamError> {
+    // Index lineages advance only here, at acceptance.
+    for fact in &envelope.mutations {
+        let path = next.unpublished_path(crate::request::fact_path(fact))?;
+        path.ranges.accept()?;
+        path.keys.accept()?;
+    }
     if next.len() != state.paths.len() {
         state.hierarchy_version = envelope.commit_id;
     }

@@ -170,6 +170,57 @@ async fn releasing_a_keyed_pin_returns_superseded_index_funding() -> TestResult<
         meter.held.load(Ordering::SeqCst) < held,
         "record ancestry retained a superseded key index after its last pin"
     );
+    // A write refused at any allocation, or planned in full and then
+    // cancelled, leaves both lineages as accepted: dropping its plan refunds
+    // every index node it built and advances no generation.
+    let state = provider.state.read().await;
+    let accepted = state.paths.get(&path).ok_or(StreamError::NotFound)?;
+    let generations = |path: &PathState| {
+        (
+            path.keys
+                .shared
+                .as_ref()
+                .map(|shared| shared.with(|newest| newest.generation)),
+            path.ranges
+                .shared
+                .as_ref()
+                .map(|shared| shared.with(|newest| newest.generation)),
+        )
+    };
+    let planned_on = generations(accepted);
+    assert!(matches!(planned_on, (Some(_), Some(_))));
+    let mutations = [CommitMutation::Append {
+        path: path.clone(),
+        records: append(b"refused")?.records,
+    }];
+    let (facts, _facts) = provider.facts(
+        &state,
+        &mutations.iter().collect::<Vec<_>>(),
+        CommitId::default(),
+        0,
+    )?;
+    for allowance in 0.. {
+        let refusals = Arc::new(Meter::default());
+        let admitted = provider.with_context(Work::new(refusals.original())?);
+        refusals.limit.store(
+            refusals.allocations.load(Ordering::SeqCst) + allowance,
+            Ordering::SeqCst,
+        );
+        let planned = admitted.history(&state, &facts[0]);
+        let cancelled = planned.is_ok();
+        drop((planned, admitted));
+        assert_eq!(
+            refusals.held.load(Ordering::SeqCst),
+            0,
+            "a dropped plan left index nodes charged at allowance {allowance}"
+        );
+        refusals.assert_refunded();
+        assert_eq!(generations(accepted), planned_on);
+        if cancelled {
+            break;
+        }
+    }
+    drop(state);
     assert_records(
         &provider,
         &path,

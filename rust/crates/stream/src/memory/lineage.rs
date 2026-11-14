@@ -19,6 +19,10 @@ struct IndexLineage<I> {
     // lineage in place.
     generation: u64,
     before: Option<u64>,
+    // An extension planned by a write that is not yet accepted. Only
+    // acceptance moves it into the lineage; a refused or cancelled write
+    // drops it with its plan.
+    pending: Option<I>,
 }
 
 impl<I> Default for IndexLineage<I> {
@@ -27,6 +31,7 @@ impl<I> Default for IndexLineage<I> {
             shared: None,
             generation: 0,
             before: None,
+            pending: None,
         }
     }
 }
@@ -60,6 +65,7 @@ impl<I: LineageIndex> IndexLineage<I> {
             shared: self.shared.clone(),
             generation: self.generation,
             before: Some(self.before.map_or(before, |old| old.min(before))),
+            pending: None,
         }
     }
 
@@ -92,8 +98,9 @@ impl<I: LineageIndex> IndexLineage<I> {
     }
 
     /// Publishes `index`, built from [`Self::base`] at `tail`. The newest view
-    /// replaces the lineage's index in place; any other view keeps its cut
-    /// when nothing changed and otherwise starts a new lineage.
+    /// plans to replace the lineage's index when its write is accepted; any
+    /// other view keeps its cut when nothing changed and otherwise starts a
+    /// new lineage.
     fn publish(
         &self,
         tail: u64,
@@ -102,28 +109,13 @@ impl<I: LineageIndex> IndexLineage<I> {
         index: I,
         work: &mut impl acyclic_collections::IndexWork<Error = StreamError, Allocation = Allocation>,
     ) -> Result<Self, StreamError> {
-        let mut index = Some(index);
         if let Some(shared) = self.shared.as_ref().filter(|_| extends) {
-            // A lost race leaves the lineage alone and starts a new one below.
-            let replaced = shared.with(|newest| {
-                (newest.generation == self.generation).then(|| {
-                    newest.generation += 1;
-                    let next = index.take().unwrap_or_default();
-                    (
-                        std::mem::replace(&mut newest.index, next),
-                        newest.generation,
-                    )
-                })
+            return Ok(Self {
+                shared: Some(Arc::clone(shared)),
+                generation: self.generation,
+                before: None,
+                pending: Some(index),
             });
-            // The superseded index retires here, outside the lock, unless a
-            // reader pin still holds it.
-            if let Some((_superseded, generation)) = replaced {
-                return Ok(Self {
-                    shared: Some(Arc::clone(shared)),
-                    generation,
-                    before: None,
-                });
-            }
         }
         if !changed {
             return Ok(self.cap(tail));
@@ -133,13 +125,36 @@ impl<I: LineageIndex> IndexLineage<I> {
         Ok(Self {
             shared: Some(Arc::new(Lineage {
                 newest: crate::query_sync::SyncMutex::new(Newest {
-                    index: index.take().unwrap_or_default(),
+                    index,
                     generation: 0,
                 }),
                 _allocation: allocation,
             })),
             generation: 0,
             before: None,
+            pending: None,
         })
+    }
+
+    /// Moves this view's planned extension into its lineage. Only acceptance
+    /// calls this, so the shared index never holds a refused write.
+    fn accept(&mut self) -> Result<(), StreamError> {
+        let (Some(shared), Some(index)) = (&self.shared, self.pending.take()) else {
+            return Ok(());
+        };
+        // The publication owner excludes every other write from planning to
+        // acceptance, so the lineage is still at the planned generation.
+        let _superseded = shared
+            .with(|newest| {
+                (newest.generation == self.generation).then(|| {
+                    newest.generation += 1;
+                    std::mem::replace(&mut newest.index, index)
+                })
+            })
+            .ok_or(StreamError::Unavailable)?;
+        self.generation += 1;
+        // The superseded index retires here, outside the lock, unless a reader
+        // pin still holds it.
+        Ok(())
     }
 }
