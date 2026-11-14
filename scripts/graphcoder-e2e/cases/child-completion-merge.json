@@ -102,7 +102,7 @@
           "tool_result": "CHILD_WRITE_OK"
         },
         "text": [
-          "CHILD_COMPLETED"
+          "SECOND_COMPLETED"
         ]
       },
       {
@@ -142,19 +142,22 @@
           },
           {
             "name": "second",
-            "answer": "CHILD_COMPLETED"
+            "answer": "SECOND_COMPLETED"
           }
         ]
       }
     ],
-    "jsonl": {
-      ".acyclic-sdk/detail/agents.jsonl": [
-        {
-          "parent": null
-        },
-        {
-          "role": "worker"
-        }
+    "trace": {
+      "directory": ".acyclic-sdk/detail",
+      "usage": "../usage.jsonl",
+      "topology": null,
+      "agents": 3,
+      "width": 2,
+      "depth": 1,
+      "assistant_text": [
+        "COMPLETION_MERGED",
+        "CHILD_COMPLETED",
+        "SECOND_COMPLETED"
       ]
     }
   },
@@ -162,6 +165,8 @@
   "adapter": "responses",
   "extra_args": [
     "--transcripts",
-    "{{workspace}}/.acyclic-sdk/detail"
+    "{{workspace}}/.acyclic-sdk/detail",
+    "--usage-jsonl",
+    "{{workspace}}/../usage.jsonl"
   ]
 }
