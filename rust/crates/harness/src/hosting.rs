@@ -1144,21 +1144,24 @@ where
                 body,
                 peer: Some((source, admission)),
             } => {
-                let agent = if admission.is_none() {
-                    self.within_tree(agent)?
-                } else {
-                    agent
-                };
                 let source = self.within_tree(source)?;
+                let source_actor = agents.actor(source)?;
+                let target = agent.actor(&source_actor)?;
                 if admission.is_some()
-                    && (source.depth() != 0 || agent.depth() != 0 || source == agent)
+                    && (source.depth() != 0
+                        || agent.path().depth() != 0
+                        || source_actor == target
+                        || source_actor.account() != target.account())
                 {
                     return Err(Error::Record(
                         "peer messages require distinct root sessions",
                     ));
                 }
                 if admission.is_none()
-                    && (source.depth() != 0 || source == agent || !source.contains(agent))
+                    && (agent.qualified_actor().is_some()
+                        || source.depth() != 0
+                        || source == agent.path()
+                        || !source.contains(agent.path()))
                 {
                     return Err(Error::Record(
                         "tree attribution requires the sender's own descendant",
@@ -1190,10 +1193,40 @@ where
                     attachments: None,
                 };
                 let delivery = match admission {
-                    Some(admission) => agents.send_peer(agent, source, &message, admission).await?,
+                    Some(admission) => {
+                        let published = crate::agent::sent(&**agents.provider(), source, id)
+                            .await?
+                            .is_some();
+                        let local = !published
+                            && crate::agent::actor_store(agents.provider())?
+                                .contains(&target)
+                                .await
+                                .map_err(|error| Error::Actor(Box::new(error)))?;
+                        if !local {
+                            let routing = agents
+                                .routing()
+                                .ok_or(Error::Record("remote peer has no routing binding"))?;
+                            let sent = routing
+                                .publish(
+                                    &**agents.provider(),
+                                    source_actor,
+                                    target,
+                                    &InboxRecord::Message(message),
+                                    admission,
+                                )
+                                .await?;
+                            return Ok(AgentReply::PeerPublished {
+                                id: sent.id,
+                                delivery: sent.delivery.status().into_owned(),
+                            });
+                        }
+                        agents
+                            .send_peer(agent.path(), source, &message, admission)
+                            .await?
+                    }
                     None => {
                         agents
-                            .send(agent, &sender, &InboxRecord::Message(message))
+                            .send(agent.path(), &sender, &InboxRecord::Message(message))
                             .await?
                     }
                 };
@@ -1205,7 +1238,10 @@ where
                 body,
                 peer: None,
             } => {
-                let agent = self.within_tree(agent)?;
+                if agent.qualified_actor().is_some() {
+                    return Err(Error::Record("user prompts require a local session"));
+                }
+                let agent = self.within_tree(agent.path())?;
                 let (body, attachments) = if let ModelContent::Text(source) = body {
                     // The message's own identity, as the inbox keys it: its
                     // recipient, sender and intent.

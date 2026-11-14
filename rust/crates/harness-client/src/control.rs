@@ -793,7 +793,7 @@ mod tests {
                     },
                 }),
             )),
-            agent: recipient.clone(),
+            agent: recipient.clone().into(),
             id: IntentId::try_from("prompt-1")?,
             body: ModelContent::Text("x".repeat(2 * crate::MAX_AGENT_COMMAND_BYTES)),
         })?;

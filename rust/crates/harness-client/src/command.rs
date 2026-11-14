@@ -341,7 +341,7 @@ pub enum AgentCommand {
         )>,
         /// Exact recipient; selection changes cannot retarget a prepared command.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
-        agent: AgentPath,
+        agent: AgentAddress,
         /// Reuse with the same body after an uncertain delivery.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         id: IntentId,
@@ -888,7 +888,6 @@ impl AgentCommand {
             | Self::Pause { agent, .. }
             | Self::SetPeerMembership { agent, .. }
             | Self::MergeSession { agent, .. }
-            | Self::Prompt { agent, .. }
             | Self::Cancel { agent, .. }
             | Self::Compact { agent, .. }
             | Self::Rewind { agent, .. }
@@ -917,7 +916,7 @@ impl AgentCommand {
             | Self::Read { agent, .. }
             | Self::Stage { agent, .. }
             | Self::Staged { agent, .. } => Some(agent),
-            Self::PreparePeer { agent, .. } => Some(agent.path()),
+            Self::PreparePeer { agent, .. } | Self::Prompt { agent, .. } => Some(agent.path()),
         }
     }
 
@@ -1226,7 +1225,7 @@ mod tests {
         let text = sample.repeat(MAX_COMMAND_BYTES / sample.len() + 1);
         let command = AgentCommand::Prompt {
             peer: None,
-            agent: agent.clone(),
+            agent: agent.clone().into(),
             id: IntentId::try_from("prompt-1")?,
             body: ModelContent::Text(text.clone()),
         };

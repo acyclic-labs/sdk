@@ -169,7 +169,7 @@ impl AttachedSession {
             Ok(
                 controls.prepare(PreparedCommand::new(&AgentCommand::Prompt {
                     peer: None,
-                    agent,
+                    agent: agent.into(),
                     id,
                     body: ModelContent::Parts(parts),
                 })?)?,

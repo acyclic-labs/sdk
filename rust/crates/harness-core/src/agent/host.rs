@@ -281,6 +281,12 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         &self.provider
     }
 
+    /// Routing identity already bound to this host's root creation and turns.
+    /// This exposes no credential and grants no publication authority.
+    pub fn routing(&self) -> Option<&super::Routing> {
+        self.agents.routing.as_ref()
+    }
+
     /// Host every agent until the runtime fails: one activation follow and one
     /// timer for all agents. Per-agent failures go to `report` and stay queued.
     pub async fn run(

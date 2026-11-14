@@ -60,7 +60,7 @@ impl Reply {
         };
         Ok(AgentCommand::Prompt {
             peer: None,
-            agent,
+            agent: agent.into(),
             id,
             body: ModelContent::Text(serde_json::to_string(&payload)?),
         })

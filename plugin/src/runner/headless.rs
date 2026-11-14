@@ -879,6 +879,7 @@ impl Outstanding {
     ) -> Result<(), Failure> {
         let inbox = match conversation.deliver(&message, &prompt).await? {
             Sent::Accepted(inbox) => inbox,
+            Sent::Published(_) => return Err("user prompt returned a peer publication".into()),
             // A refused prompt, such as an unknown `/name`, is its own
             // record; the stream goes on.
             Sent::Refused(reason) => {

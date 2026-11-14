@@ -125,7 +125,7 @@ async fn editor_ingress_keeps_original_target_context_and_reconnect_cursor()
     else {
         return Err("editor input lost canonical prompt admission".into());
     };
-    assert_eq!(target, &agent);
+    assert_eq!(target.path(), &agent);
     assert_eq!(id.as_str(), "editor-input-1");
     assert_eq!(
         body,
@@ -259,7 +259,7 @@ async fn pending_context(
     let call = AgentCall::decode(invocation)?;
     assert!(
         matches!(call.command(), AgentCommand::Prompt { agent: target, body: ModelContent::Parts(parts), .. }
-        if target == agent && parts == &vec![
+        if target.path() == agent && parts == &vec![
             ModelContentPart::text("retained input".into()),
             ModelContentPart::File { file, policy: FileProjectionPolicy::BoundedFull },
         ])

@@ -81,12 +81,15 @@ pub struct Turn {
     pub answer: String,
 }
 
-/// Where a sent message stands. Only a refusal is settled: an unknown
-/// outcome may have committed, so it is resent exactly, never reported.
+/// Where a sent message stands. Durable publication is distinct from inbox
+/// acceptance. An unknown outcome may have committed and must be retried exactly.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Sent {
     /// Committed at this inbox sequence.
     Accepted(u64),
+    /// Durably published by the sender node; no recipient inbox sequence is
+    /// implied by a pending or relayed receipt.
+    Published(crate::agent::SentStatus<'static>),
     /// Definitively not committed, for this reason.
     Refused(String),
     /// Neither known to have committed nor refused: resending the same id
@@ -118,6 +121,7 @@ fn sent(exchange: super::endpoint::Exchange) -> Result<Sent> {
         Err(unsent) => return Ok(Sent::Refused(unsent.to_string())),
     };
     match exchange {
+        Ok(AgentReply::PeerPublished { delivery, .. }) => Ok(Sent::Published(delivery)),
         Ok(AgentReply::Delivered {
             delivery: Delivered::Committed { inbox },
         }) => Ok(Sent::Accepted(inbox)),
@@ -278,13 +282,18 @@ impl Conversation {
     /// Invalid roots, disabled participation, or an authenticated query failure.
     pub async fn prepare_peer_message(
         &self,
-        recipient: AgentPath,
+        recipient: impl Into<crate::agent::AgentAddress>,
         id: &str,
         prompt: &str,
     ) -> Result<PreparedPeerMessage> {
         let sender = self.agent().clone();
-        let owned = sender != recipient && sender.contains(&recipient);
-        if sender.depth() != 0 || (recipient.depth() != 0 && !owned) || sender == recipient {
+        let recipient = recipient.into();
+        let relative = recipient.qualified_actor().is_none();
+        let owned = relative && sender != *recipient.path() && sender.contains(recipient.path());
+        if sender.depth() != 0
+            || (recipient.path().depth() != 0 && !owned)
+            || (relative && sender == *recipient.path())
+        {
             return Err(Error::Invalid(
                 "message requires a peer root or the sender's own descendant".into(),
             ));
@@ -297,7 +306,7 @@ impl Conversation {
                     .connection
                     .execute(&AgentCommand::PreparePeer {
                         sender: sender.clone(),
-                        agent: recipient.clone().into(),
+                        agent: recipient.clone(),
                     })
                     .await?
                 {
@@ -540,7 +549,7 @@ impl Conversation {
         };
         let command = AgentCommand::Prompt {
             peer: None,
-            agent: self.agent().clone(),
+            agent: self.agent().clone().into(),
             id: intent,
             body: ModelContent::Text(prompt.to_owned()),
         };
@@ -557,6 +566,7 @@ impl Conversation {
     pub async fn send(&self, id: &str, prompt: &str) -> Result<u64> {
         match self.deliver(id, prompt).await? {
             Sent::Accepted(inbox) => Ok(inbox),
+            Sent::Published(_) => Err(unexpected()),
             // A refusal committed nothing: it keeps the host's own class,
             // never a storage failure the caller would treat as a fault.
             Sent::Refused(reason) => Err(Error::Refused(reason)),

@@ -160,7 +160,7 @@ pub async fn verify_with_reply_wait(
     }
     let command = AgentCommand::Prompt {
         peer: None,
-        agent: agent.clone(),
+        agent: agent.clone().into(),
         id: scenario.id.clone(),
         body: ModelContent::Text(scenario.prompt.clone()),
     };
@@ -189,7 +189,7 @@ pub async fn verify_with_reply_wait(
     }
     let changed = AgentCommand::Prompt {
         peer: None,
-        agent: agent.clone(),
+        agent: agent.clone().into(),
         id: scenario.id.clone(),
         body: ModelContent::Text(format!("{} changed", scenario.prompt)),
     };

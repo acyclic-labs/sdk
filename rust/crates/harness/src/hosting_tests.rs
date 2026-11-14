@@ -1224,7 +1224,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     ));
     let prompt = AgentCommand::Prompt {
         peer: None,
-        agent: root.clone(),
+        agent: root.clone().into(),
         id: IntentId::try_from("p1")?,
         body: ModelContent::Text("hello".into()),
     };

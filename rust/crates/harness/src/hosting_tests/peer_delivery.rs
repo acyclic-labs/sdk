@@ -121,7 +121,7 @@ async fn authenticated_peer_delivery_pins_attribution_opt_out_and_exact_retry() 
         return Err("member roots were not admitted".into());
     };
     let command = AgentCommand::Prompt {
-        agent: recipient.clone(),
+        agent: recipient.clone().into(),
         id: IntentId::try_from("external-message")?,
         body: ModelContent::Text("Please report your current status.".into()),
         peer: Some((sender.clone(), Some(admission.clone()))),
@@ -130,7 +130,7 @@ async fn authenticated_peer_delivery_pins_attribution_opt_out_and_exact_retry() 
     // grant. Only a sender's own descendants may use tree attribution.
     for target in [recipient.clone(), sender.clone()] {
         let unadmitted = AgentCommand::Prompt {
-            agent: target,
+            agent: target.into(),
             id: IntentId::try_from("missing-admission")?,
             body: ModelContent::Text("Unadmitted input".into()),
             peer: Some((sender.clone(), None)),
@@ -178,9 +178,13 @@ async fn authenticated_peer_delivery_pins_attribution_opt_out_and_exact_retry() 
         sender: sender.clone(),
         agent: crate::agent::AgentAddress::qualified(foreign)?,
     };
-    assert!(matches!(call(&client, "agents", &qualified).await??,
-        AgentReply::PeerAdmission { admission: Some(selected) }
-        if selected.recipient.epoch == Some([91; 32])));
+    let AgentReply::PeerAdmission {
+        admission: Some(remote_admission),
+    } = call(&client, "agents", &qualified).await??
+    else {
+        return Err("qualified peer was not admitted".into());
+    };
+    assert_eq!(remote_admission.recipient.epoch, Some([91; 32]));
     let before_foreign_account = directory.requests().control();
     let other_account = AgentCommand::PreparePeer {
         sender: sender.clone(),
@@ -213,7 +217,17 @@ async fn authenticated_peer_delivery_pins_attribution_opt_out_and_exact_retry() 
     ));
     for forbidden in [
         AgentCommand::Prompt {
-            agent: recipient.clone(),
+            agent: crate::agent::AgentAddress::qualified(ActorReference::new(
+                b"account",
+                b"other",
+                sender.id().as_str().as_bytes(),
+            )?)?,
+            id: IntentId::try_from("qualified-user-input")?,
+            body: ModelContent::Text("Unattributed input".into()),
+            peer: None,
+        },
+        AgentCommand::Prompt {
+            agent: recipient.clone().into(),
             id: IntentId::try_from("foreign-user-input")?,
             body: ModelContent::Text("Unattributed input".into()),
             peer: None,
@@ -262,6 +276,47 @@ async fn authenticated_peer_delivery_pins_attribution_opt_out_and_exact_retry() 
             delivery: Delivered::Committed { inbox: 1 }
         }
     ));
+    let AgentCommand::PreparePeer { agent: remote, .. } = &qualified else {
+        return Err("qualified preparation changed shape".into());
+    };
+    let remote_command = AgentCommand::Prompt {
+        agent: remote.clone(),
+        id: IntentId::try_from("remote-command")?,
+        body: ModelContent::Text("Please report your status.".into()),
+        peer: Some((sender.clone(), Some(remote_admission))),
+    };
+    let before_remote = stream.tail(outbox.clone()).await?;
+    let directory_before_send = directory.requests().control();
+    for _ in 0..2 {
+        assert!(matches!(call(&client, "agents", &remote_command).await??,
+            AgentReply::PeerPublished { id, delivery: crate::agent::SentStatus::PendingAdmission { from, .. } }
+            if id.as_str() == "remote-command" && from == before_remote));
+    }
+    assert_eq!(stream.tail(outbox.clone()).await?, before_remote + 1);
+    assert_eq!(
+        directory.requests().control(),
+        directory_before_send,
+        "prepared sends must not reselect public membership at send time"
+    );
+    assert_eq!(
+        stream.tail(recipient.inbox()?).await?,
+        2,
+        "qualified delivery wrote the same-ID local root instead of its outbox"
+    );
+    let original = crate::agent::sent(
+        stream.as_ref(),
+        &sender,
+        &IntentId::try_from("remote-command")?,
+    )
+    .await?
+    .ok_or("prepared command lost its owned receipt")?;
+    assert_eq!(&original.to, remote);
+    let mut changed_remote = remote_command;
+    if let AgentCommand::Prompt { body, .. } = &mut changed_remote {
+        *body = ModelContent::Text("Changed input".into());
+    }
+    assert!(call(&client, "agents", &changed_remote).await?.is_err());
+    assert_eq!(stream.tail(outbox.clone()).await?, before_remote + 1);
     let mut records = stream
         .read(ReadRequest {
             key: None,
@@ -346,7 +401,7 @@ async fn authenticated_peer_delivery_pins_attribution_opt_out_and_exact_retry() 
         unreachable!()
     };
     let stale = AgentCommand::Prompt {
-        agent: recipient.clone(),
+        agent: recipient.clone().into(),
         id: IntentId::try_from("stale-admission")?,
         body: body.clone(),
         peer: Some((sender, Some(admission))),

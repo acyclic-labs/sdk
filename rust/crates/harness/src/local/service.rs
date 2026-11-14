@@ -968,7 +968,7 @@ mod tests {
                 connection
                     .execute(&AgentCommand::Prompt {
                         peer: None,
-                        agent,
+                        agent: agent.into(),
                         id,
                         body: crate::model::ModelContent::Text("closed".into())
                     })

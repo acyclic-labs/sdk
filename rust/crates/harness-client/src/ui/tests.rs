@@ -488,7 +488,7 @@ fn ui_reply_roundtrip_with_unknown_kind_and_approval() -> TestResult {
         else {
             return Err("expected one prompt".into());
         };
-        assert_eq!(recipient, agent(1));
+        assert_eq!(recipient.path(), &agent(1));
         assert_eq!(id.as_str(), "reply-1");
         assert_eq!(serde_json::from_str::<ReplyPayload>(&body)?, expected);
         assert_eq!(blocks.first().ok_or("block")?.kind, kind);
