@@ -190,7 +190,7 @@ impl Providers {
             .clone()
             .ok_or_else(|| js_error(Error::Invalid("no model is configured".into())))?;
         let mut selected = crate::tools::default_names();
-        selected.push("ask_question".into());
+        crate::tools::select_question(&mut selected, true);
         let mut tools = crate::tools::registry(
             &selected,
             |name| {

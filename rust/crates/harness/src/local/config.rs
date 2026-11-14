@@ -530,10 +530,7 @@ impl LocalHarnessConfig {
     #[must_use]
     pub fn question_plugin(mut self, enabled: bool) -> Self {
         self.question = enabled;
-        self.default_tools.retain(|name| name != "ask_question");
-        if enabled {
-            self.default_tools.push("ask_question".into());
-        }
+        crate::tools::select_question(&mut self.default_tools, enabled);
         self
     }
 

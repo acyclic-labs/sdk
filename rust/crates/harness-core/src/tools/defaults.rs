@@ -5,6 +5,15 @@ pub fn defaults() -> Result<ToolRegistry> {
     registry(&names(), |_| true, Vec::new())
 }
 
+/// Selects or deselects the opt-in question tool in a host's tool names, once.
+pub fn select_question(names: &mut Vec<String>, enabled: bool) {
+    let question = crate::tool::question::SPEC.name;
+    names.retain(|name| name != question);
+    if enabled {
+        names.push(question.to_owned());
+    }
+}
+
 /// Builds the host's registry from its admitted catalog selection and custom
 /// tools. Agent tools bind later, to the original turn effects.
 pub fn registry(
@@ -53,10 +62,11 @@ pub fn call_grants<'a>(
 }
 
 /// Names of every standard tool: the catalog's, in order, then the agent tools.
+/// The question tool is opt-in; hosts select it with [`select_question`].
 #[must_use]
 pub fn names() -> Vec<String> {
     super::catalog()
-        .filter(|spec| spec.name != "ask_question")
+        .filter(|spec| spec.name != crate::tool::question::SPEC.name)
         .map(|spec| spec.name)
         .chain(super::AGENT_TOOLS)
         .map(str::to_owned)

@@ -14,7 +14,7 @@ pub use shell::{ShellCommand, ShellInput};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod code_mode;
 mod defaults;
-pub use defaults::{call_grants, defaults, names as default_names, registry};
+pub use defaults::{call_grants, defaults, names as default_names, registry, select_question};
 pub(crate) mod catalog;
 pub use catalog::{ToolBinding, ToolSpec, catalog};
 pub(crate) mod bounds;

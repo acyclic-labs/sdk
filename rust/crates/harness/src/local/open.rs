@@ -919,8 +919,8 @@ impl SessionVolumes {
 
 fn configure_tools(config: &mut LocalHarnessConfig) -> Result<ToolRegistry> {
     let mut names = config.default_tools.clone();
-    if config.has_model() && !names.iter().any(|name| name == "ask_question") {
-        names.push("ask_question".into());
+    if config.has_model() {
+        crate::tools::select_question(&mut names, true);
     }
     let tools = crate::tools::registry(&names, |_| true, std::mem::take(&mut config.tools))?;
     #[cfg(not(target_arch = "wasm32"))]

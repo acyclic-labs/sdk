@@ -647,7 +647,10 @@ async fn shell_hooks_reject_host_tool_aliases() -> Result<()> {
 
 #[tokio::test]
 async fn tool_catalog_routes_approval_hooks() -> Result<()> {
-    let registry = crate::tools::defaults()?;
+    // The registry a host builds with the question plugin selected.
+    let mut selected = crate::tools::default_names();
+    crate::tools::select_question(&mut selected, true);
+    let registry = crate::tools::registry(&selected, |_| true, Vec::new())?;
     for spec in crate::tools::catalog() {
         let mut hooks = Hooks::default();
         let matcher = spec.hook_names.first().copied().unwrap_or(spec.name);

@@ -14,7 +14,10 @@ proptest! {
     ) {
         // Agent tools are bound by the turn owner, not the default registry.
         let names: Vec<_> = crate::tools::catalog().map(|spec| spec.name).collect();
-        let registry = crate::tools::defaults().unwrap();
+        // The registry a host builds with the question plugin selected.
+        let mut selected = crate::tools::default_names();
+        crate::tools::select_question(&mut selected, true);
+        let registry = crate::tools::registry(&selected, |_| true, Vec::new()).unwrap();
         let grants = crate::Capabilities::new(
             names.iter().enumerate().filter(|(i, _)| selected[*i])
                 .map(|(_, name)| format!("tool:call:{name}"))
