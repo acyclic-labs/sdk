@@ -794,6 +794,14 @@ mod indexed_trace_tests {
             )
             .await?;
         let original_head = provider.head(data.path().clone()).await?;
+        let child_request = ChildrenPageRequest {
+            tail_stream: None,
+            parent: Some(data.path().clone()),
+            after: None,
+            hierarchy_version: None,
+            limit: 1,
+        };
+
         let trace = Stream::new(provider.clone(), "agents/worker/trace")?;
         let recorder = Arc::new(Recorder::new(trace.clone(), [51; 16]));
         let root = recorder
@@ -806,6 +814,23 @@ mod indexed_trace_tests {
             .await?
             .into_owned();
         let parent = root.id();
+        for name in ["agents/worker/data/a", "agents/worker/data/b"] {
+            Stream::new(provider.clone(), name)?
+                .append(
+                    AppendRecord::new(OwnedBytes::from_static(b"child"))?,
+                    IdempotencyKey::unique(),
+                )
+                .await?;
+        }
+        let original_children = provider.children_page(child_request.clone()).await?;
+        assert_eq!(original_children.children.len(), 1);
+        let mut continuation = child_request.clone();
+        continuation.after = original_children.next_after.clone();
+        continuation.hierarchy_version = Some(original_children.hierarchy_version);
+        assert!(continuation.after.is_some());
+        let next_children = provider.children_page(continuation.clone()).await?;
+        assert_eq!(next_children.children.len(), 1);
+        assert!(next_children.next_after.is_none());
         assert_eq!(root.within(data.head()).await?, original_head);
         assert_eq!(
             root.within(provider.head(data.path().clone())).await?,
@@ -820,6 +845,22 @@ mod indexed_trace_tests {
             .await?;
         assert_eq!(watermarks.accepted, original_head.tail);
         assert_eq!(watermarks.durable, original_head.durable);
+        assert_eq!(
+            root.within(data.children(None, 1)).await?,
+            original_children
+        );
+        assert_eq!(
+            root.within(provider.children_page(continuation)).await?,
+            next_children
+        );
+        root.within(provider.children_page(ChildrenPageRequest {
+            tail_stream: None,
+            parent: Some(trace.path().clone()),
+            after: None,
+            hierarchy_version: None,
+            limit: 1,
+        }))
+        .await?;
         root.within(provider.head(trace.path().clone())).await?;
         let (selected, condition) = root
             .within(provider.latest_fenced(
@@ -869,7 +910,7 @@ mod indexed_trace_tests {
         let mut request = false;
         let mut indexed_bytes = Vec::new();
         let mut projections = std::collections::BTreeMap::new();
-        while completed < 8 {
+        while completed < 10 {
             let Some(observation) = query.next().await? else {
                 return Err("trace ended before original request hops settled".into());
             };
@@ -907,8 +948,12 @@ mod indexed_trace_tests {
                         );
                         indexed_bytes.push(bytes);
                     }
-                    "stream.head" | "stream.tail" | "stream.watermarks" => {
+                    "stream.head"
+                    | "stream.tail"
+                    | "stream.watermarks"
+                    | "stream.children_page" => {
                         let guarantee = match start.name.as_str() {
+                            "stream.children_page" => "bounded_direct_children_at_namespace_cut",
                             "stream.head" => "atomic_history_durability_origin",
                             "stream.tail" => "accepted_tail_without_durability_wait",
                             _ => "accepted_visibility_and_confirmed_durability_at_one_snapshot",
@@ -924,12 +969,13 @@ mod indexed_trace_tests {
         assert!(fence && request);
         indexed_bytes.sort();
         assert_eq!(indexed_bytes, [Some(0), Some(8)]);
+        assert_eq!(projections["stream.children_page"], 2);
         assert_eq!(projections["stream.head"], 2);
         assert_eq!(projections["stream.tail"], 1);
         assert_eq!(projections["stream.watermarks"], 1);
         assert_eq!(
             trace.tail().await?,
-            16,
+            20,
             "zero cuts and diagnostic reads must not emit provider work"
         );
         assert_eq!(
@@ -944,7 +990,7 @@ mod indexed_trace_tests {
         );
         assert_eq!(
             trace.tail().await?,
-            16,
+            20,
             "the request owner must not leak into unrelated work"
         );
         Ok(())

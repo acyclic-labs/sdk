@@ -504,7 +504,9 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
         &self,
         request: ChildrenPageRequest,
     ) -> impl std::future::Future<Output = Result<ChildrenPage, StreamError>> + ProviderTask {
-        async move {
+        #[cfg(feature = "serde")]
+        let diagnostic = request.parent.as_ref().is_some_and(crate::trace::is_source);
+        let work = async move {
             let selection = HeadsRequest {
                 at: None,
                 retained: Default::default(),
@@ -518,6 +520,23 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
             let view = self.heads(selection.clone()).await?;
             view.validate_for(&selection)?;
             view.children.ok_or(StreamError::InvalidResponse)
+        };
+        async move {
+            #[cfg(feature = "serde")]
+            if !diagnostic {
+                return crate::trace::observe(
+                    crate::trace::Request {
+                        name: "stream.children_page",
+                        mechanism: crate::trace::Mechanism::ProviderCall,
+                        parent: None,
+                        guarantee: Some("bounded_direct_children_at_namespace_cut"),
+                    },
+                    work,
+                    |_| None,
+                )
+                .await;
+            }
+            work.await
         }
     }
 

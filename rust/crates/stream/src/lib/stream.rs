@@ -231,28 +231,16 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         after: Option<StreamPath>,
         limit: u32,
     ) -> Result<ChildrenPage, StreamError> {
-        let work = self.provider.children_page(ChildrenPageRequest {
-            offset: 0,
-            tail_stream: None,
-            parent: Some(self.path.clone()),
-            after,
-            hierarchy_version: None,
-            limit,
-        });
-        #[cfg(feature = "serde")]
-        return crate::trace::observe(
-            crate::trace::Request {
-                name: "stream.children_page",
-                mechanism: crate::trace::Mechanism::Io,
-                parent: None,
-                guarantee: Some("bounded_direct_children_at_namespace_cut"),
-            },
-            work,
-            |_| None,
-        )
-        .await;
-        #[cfg(not(feature = "serde"))]
-        work.await
+        self.provider
+            .children_page(ChildrenPageRequest {
+                offset: 0,
+                tail_stream: None,
+                parent: Some(self.path.clone()),
+                after,
+                hierarchy_version: None,
+                limit,
+            })
+            .await
     }
 
     /// Pages every record from `from` to the tail. See [`Replay`].
