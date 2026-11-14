@@ -125,6 +125,22 @@ async fn terminal_replies_prepare_no_review_source_at_any_history_size() -> Resu
 /// its cached prefix. Only a finished, source-bound decision may rewrite it.
 #[tokio::test]
 async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixes() -> Result<()> {
+    struct UnselectedProvider(ScriptedModelProvider);
+    impl ModelProvider for UnselectedProvider {
+        fn generate<'a>(
+            &'a self,
+            request: &'a crate::model::PreparedModelRequest,
+            dispatch: crate::model::ModelDispatch,
+        ) -> crate::model::ModelStream<'a> {
+            self.0.generate(request, dispatch)
+        }
+
+        fn reported_input_tokens(&self, _: &Model, _: &Value) -> Result<Option<u64>> {
+            Err(Error::Invalid(
+                "unselected provider cannot account this call".into(),
+            ))
+        }
+    }
     for (replace, change_source, tokenized) in [
         (false, false, true),
         (true, false, true),
@@ -168,14 +184,29 @@ async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixe
             Arc::new(crate::model::Recording::default()),
             Arc::new(IgnoreDivergence),
         ));
-        let executor = StockExecutor::new(
-            Model::new("fixture".into(), "selected".into(), "1".into())?,
-            recorded,
+        let selected = StockExecutor::from_binding(
+            Arc::new(crate::model::ResolvedModel::new((
+                Model::new("fixture".into(), "selected".into(), "1".into())?,
+                recorded,
+            ))),
             ContextPipeline::default(),
             ToolRegistry::default(),
         )
         .with_automatic_compaction()?;
-        let execution = StockExecution::ordinary(&executor);
+        let selected = selected.into_step_binding(None)?;
+        // The default binding has no usage counters or scripted requests. All
+        // completion accounting, review scheduling and replay use the selection.
+        let executor = StockExecutor::from_binding(
+            Arc::new(crate::model::ResolvedModel::new((
+                Model::new("fixture".into(), "default".into(), "1".into())?,
+                Arc::new(UnselectedProvider(ScriptedModelProvider::new([]))),
+            ))),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        )
+        .with_automatic_compaction()?;
+        let mut execution = StockExecution::ordinary(&executor);
+        execution.selected = Some(Arc::clone(&selected));
         let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
         let journal_owner = storage.journal();
         let journal = journal_owner.as_ref();
@@ -305,7 +336,8 @@ async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixe
                 .count(),
             1
         );
-        let reopened = StockExecution::ordinary(&executor);
+        let mut reopened = StockExecution::ordinary(&executor);
+        reopened.selected = Some(selected);
         let events = reopened
             .model_step(journal, &input, 0, &initial_prior)
             .await?;
