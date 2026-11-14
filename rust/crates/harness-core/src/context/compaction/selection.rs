@@ -71,7 +71,10 @@ impl CapacityCompaction {
                     }
                 }
             }
+            // A protected prefix alone removes nothing. Keep scanning for
+            // the first complete cut with an actual evictable message.
             if end <= position
+                && mandatory < context.messages.len()
                 && position + 1 >= through
                 && maximum_messages.is_none_or(|maximum| mandatory < maximum)
             {
@@ -85,10 +88,6 @@ impl CapacityCompaction {
         })?;
         retire_vector(groups, &mut quota)?;
         retire_vector(selected, &mut quota)?;
-        if maximum > context.messages.len() || maximum_messages.is_some_and(|limit| maximum > limit)
-        {
-            return Ok(None);
-        }
         Ok(Some((through, maximum)))
     }
 }
