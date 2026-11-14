@@ -193,6 +193,7 @@ async fn ancestor_pause_parks_on_its_original_publication_and_resume_survives_ha
             INBOX.into(),
             Subscription {
                 path: path.inbox()?,
+                paused: false,
                 cursor: 1,
             },
         )]);
