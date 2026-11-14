@@ -46,7 +46,38 @@ fn result<'a>(request: &'a crate::model::ModelRequest, id: &str) -> Result<&'a s
             } if call_id == id => Some(content),
             _ => None,
         })
-        .ok_or_else(|| Error::NotFound(format!("program result {id}")))?;
+        .ok_or_else(|| {
+            let shape: Vec<_> = request
+                .messages
+                .iter()
+                .map(|message| {
+                    let parts: Vec<_> = message
+                        .content
+                        .parts()
+                        .iter()
+                        .map(|part| match part {
+                            crate::model::ModelContentPart::ToolResult { call_id, .. } => {
+                                format!("result:{call_id}")
+                            }
+                            crate::model::ModelContentPart::ToolCall(_) => "call".into(),
+                            crate::model::ModelContentPart::File { .. } => "file".into(),
+                            crate::model::ModelContentPart::Text { .. } => "text".into(),
+                            crate::model::ModelContentPart::Notices { .. } => "notices".into(),
+                            crate::model::ModelContentPart::Configuration { .. } => {
+                                "configuration".into()
+                            }
+                            _ => "other".into(),
+                        })
+                        .collect();
+                    (
+                        message.role,
+                        matches!(message.content, ModelContent::Text(_)),
+                        parts,
+                    )
+                })
+                .collect();
+            Error::NotFound(format!("program result {id}; request shape: {shape:?}"))
+        })?;
     match content {
         crate::model::ToolResultContent::Json { value } => Ok(value),
         other => Err(Error::Invalid(format!("program result {id}: {other:?}"))),
