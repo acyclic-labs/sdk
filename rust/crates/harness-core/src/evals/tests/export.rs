@@ -272,7 +272,16 @@ pub(super) async fn selected_case_export(
         .await?
         .value;
     assert_eq!(original.bytes.as_ref(), bytes.as_ref());
-    assert_eq!(manifest.file_count, 1);
+    let listing = restored_checkout
+        .list_directory(&path("/"), None, 2, WorkBudget::UNBOUNDED, cancel)
+        .await?
+        .value;
+    assert_eq!(listing.entries.len(), 1);
+    assert_eq!(
+        listing.entries[0].name.as_bytes(),
+        selected.trim_start_matches('/').as_bytes()
+    );
+    assert!(!listing.has_more);
     let rebuilt = restored_checkout
         .export_manifest(WorkBudget::UNBOUNDED, cancel)
         .await?
