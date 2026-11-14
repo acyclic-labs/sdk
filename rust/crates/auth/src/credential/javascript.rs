@@ -31,7 +31,7 @@ pub fn valid_credential(value: &JsValue) -> bool {
 /// Encode without variadic JavaScript calls or unprotected Wasm string glue.
 pub fn websocket_protocol(value: &JsValue) -> Result<JsString, CredentialError> {
     let credential = protected_text(value)?;
-    let protocol = super::websocket_protocol(&credential);
+    let protocol = super::websocket_protocol(&credential)?;
     Ok(JsString::from(protocol.as_str()))
 }
 

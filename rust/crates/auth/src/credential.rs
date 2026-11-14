@@ -324,19 +324,24 @@ pub fn valid_credential(value: &str) -> bool {
 
 /// Encodes admitted bearer text as the shared WebSocket subprotocol.
 /// The original credential and encoded backing remain caller-owned secrets.
+/// Returns `Invalid` if the encoded length is not representable, or the
+/// original allocation failure as `Provider`, before writing any secret.
 #[must_use]
-pub fn websocket_protocol(credential: &str) -> Zeroizing<String> {
+pub fn websocket_protocol(credential: &str) -> Result<Zeroizing<String>, CredentialError> {
     use base64::Engine as _;
     const PREFIX: &str = "acyclic.bearer.";
     let capacity = base64::encoded_len(credential.len(), false)
         .and_then(|length| length.checked_add(PREFIX.len()))
-        .expect("credential protocol length fits the address space");
+        .ok_or(CredentialError::Invalid)?;
     // Reserve before writing any secret so growth cannot leave an old backing.
-    let mut protocol = Zeroizing::new(String::with_capacity(capacity));
+    let mut protocol = Zeroizing::new(String::new());
+    protocol
+        .try_reserve_exact(capacity)
+        .map_err(|error| CredentialError::Provider(Box::new(error)))?;
     protocol.push_str(PREFIX);
     base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode_string(credential.as_bytes(), &mut protocol);
-    protocol
+    Ok(protocol)
 }
 
 /// The one text form of an encoded capability: unpadded base64url, as a
