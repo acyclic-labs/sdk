@@ -7,12 +7,22 @@ impl Drop for WritableOnDrop {
     fn drop(&mut self) {
         for path in &self.0 {
             if let Ok(metadata) = std::fs::metadata(path) {
-                use std::os::windows::fs::{MetadataExt as _, PermissionsExt as _};
-                let permissions = std::fs::Permissions::from_attributes(
-                    metadata.file_attributes()
-                        & !windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_READONLY,
-                );
-                let _ = std::fs::set_permissions(path, permissions);
+                use std::os::windows::{ffi::OsStrExt as _, fs::MetadataExt as _};
+                use windows_sys::Win32::Storage::FileSystem::{
+                    FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_READONLY, SetFileAttributesW,
+                };
+                let attributes = metadata.file_attributes() & !FILE_ATTRIBUTE_READONLY;
+                let attributes = if attributes == 0 {
+                    FILE_ATTRIBUTE_NORMAL
+                } else {
+                    attributes
+                };
+                let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+                // SAFETY: metadata succeeded for this original fixture path,
+                // so it contains no NUL; its terminated UTF-16 buffer remains
+                // live through the call, which only clears the readonly bit.
+                #[expect(unsafe_code, reason = "restores Windows fixture attributes on drop")]
+                let _ = unsafe { SetFileAttributesW(path.as_ptr(), attributes) };
             }
         }
     }
