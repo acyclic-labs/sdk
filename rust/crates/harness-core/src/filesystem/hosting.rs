@@ -1614,7 +1614,7 @@ where
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-struct ObservationClock(Arc<dyn Clock>);
+pub(super) struct ObservationClock(pub(super) Arc<dyn Clock>);
 
 #[cfg(not(target_arch = "wasm32"))]
 impl acyclic_stream::UnixMillisClock for ObservationClock {

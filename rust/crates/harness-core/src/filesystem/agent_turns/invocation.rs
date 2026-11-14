@@ -63,6 +63,34 @@ where
         }))
     }
 
+    /// Source hooks use the existing authenticated observation session. A
+    /// subscription selector cannot enroll another agent's streams, invoke an
+    /// actor, or obtain host storage custody. The session rechecks its original
+    /// credential and current trust before returning source records.
+    pub(in crate::filesystem) async fn source_session(
+        &self,
+        agent: &AgentState,
+    ) -> Result<acyclic_stream::session::Client> {
+        let (journal, authority) = self.journal_authority(agent).await?;
+        let observation = self
+            .host
+            .agent_observation(
+                &authority,
+                &agent.path,
+                &journal,
+                Arc::new(super::super::hosting::ObservationClock(self.clock.clone())),
+                None,
+            )
+            .await?;
+        let client = acyclic_stream::session::Client::in_process(
+            self.stream.clone(),
+            observation.authority,
+            Arc::new(acyclic_stream::runtime::PlatformExecutor),
+        );
+        client.register_credential(1, observation.credential.into())?;
+        Ok(client.select_credential(1))
+    }
+
     async fn invocation_authority(
         &self,
         agent: &AgentState,

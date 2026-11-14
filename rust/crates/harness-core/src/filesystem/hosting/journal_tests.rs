@@ -13,6 +13,46 @@ type Binding = Bound<MemoryStream, acyclic_fs::LogicalObjectStore<acyclic_object
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
+async fn source_streams_use_the_original_agent_observation_boundary() -> TestResult {
+    use acyclic_stream::{AppendRequest, FollowRequest, IdempotencyKey, StreamProviderExt as _};
+    use futures::TryStreamExt as _;
+
+    let (bound, root) = binding().await?;
+    let state = bound.agents().state(&root).await?;
+    let client = bound.turns().source_session(&state).await?;
+    let mut request = FollowRequest::new(root.status()?, 0);
+    request.until = Some(1);
+    let mut records = client.follow_records(request).await?;
+    let first = records.try_next().await?.ok_or("missing original status")?;
+    assert_eq!(first.sequence, 0);
+    assert_eq!(first.origin, root.status()?);
+    assert!(records.try_next().await?.is_none());
+
+    let outside = acyclic_stream::StreamPath::new("private/another-agent")?;
+    bound
+        .agents()
+        .provider()
+        .append(AppendRequest {
+            path: outside.clone(),
+            records: vec![b"foreign source bytes".as_slice().into()],
+            if_tail: None,
+            idempotency_key: IdempotencyKey::new(b"foreign-source".to_vec())?,
+        })
+        .await?;
+    let mut request = FollowRequest::new(outside, 0);
+    request.until = Some(1);
+    assert!(
+        matches!(
+            client.follow_records(request).await,
+            Err(error) if error.category() == acyclic_stream::StreamError::AccessDenied
+        ),
+        "a hook selector widened the original agent's stream grant"
+    );
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
 
 async fn private_metadata_uses_the_session_cut_before_and_after_an_authored_override() -> TestResult
 {
