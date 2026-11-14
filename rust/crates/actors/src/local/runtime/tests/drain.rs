@@ -488,3 +488,49 @@ async fn finite_drain_shares_admission_and_retains_cancelled_inputs() -> TestRes
     }
     Ok(())
 }
+
+/// A worker drains an actor through its traced lock, admission and handler
+/// on a small stack: the delivery's state lives in its one heap allocation,
+/// not in the caller's future or poll frame.
+#[test]
+fn a_delivery_runs_on_a_small_worker_stack() -> TestResult {
+    // The delivery's type is erased where it is made, so trace wrappers and
+    // handler state never deepen the future types of its callers or their
+    // embedders. An unboxed `deliver` fails to compile here.
+    let _: for<'a> fn(
+        &'a Runtime<MemoryStream>,
+        &'a ActorReference,
+        &'a Arc<Slot>,
+        Option<Work<ActorReference>>,
+    ) -> BoxProviderFuture<'a, Result<bool, Error>> = Runtime::deliver;
+    const STACK_BYTES: usize = 256 * 1024;
+    std::thread::Builder::new()
+        .stack_size(STACK_BYTES)
+        .spawn(|| -> Result<(), String> {
+            let executor = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())?;
+            executor.block_on(async {
+                let provider = Arc::new(MemoryStream::default());
+                let store = Store::new(Arc::clone(&provider), root().map_err(|e| e.to_string())?);
+                let runtime = Runtime::new(
+                    crate::guest::Requests::default(),
+                    Store::new(Arc::clone(&provider), root().map_err(|e| e.to_string())?),
+                    Arc::new(Package::new().map_err(|e| e.to_string())?),
+                    Arc::new(SystemClock),
+                );
+                let address = spawn_with(&store, "small-stack", &[b"emit"])
+                    .await
+                    .map_err(|e| e.to_string())?;
+                runtime.host(address.clone()).map_err(|e| e.to_string())?;
+                runtime
+                    .drain_actor(&address)
+                    .await
+                    .map_err(|e| e.to_string())
+            })
+        })?
+        .join()
+        .map_err(|_| "the delivery thread panicked")??;
+    Ok(())
+}

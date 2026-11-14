@@ -2,7 +2,6 @@
 #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
 use super::{Comparison, Outcome};
 use super::{Recording, SpanId};
-#[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
 use crate::StreamError;
 use crate::{ProviderPlatform, StreamProvider};
 
@@ -97,26 +96,31 @@ impl OwnedRecording {
         self.id
     }
 
-    /// Poll diagnostic admission alongside original work. Pending diagnostics
-    /// cannot delay a ready result; abandoned admission remains incomplete.
-    /// Ready admission supplies the original parent for the remaining polls.
-    pub async fn accompany<T, E>(
-        admission: Option<crate::BoxProviderFuture<'_, Result<Self, E>>>,
-        work: impl std::future::Future<Output = T>,
-    ) -> (T, Option<Self>) {
-        let Some(admission) = admission else {
-            return (work.await, None);
-        };
-        let work = std::pin::pin!(work);
-        match futures::future::select(admission, work).await {
-            futures::future::Either::Left((Ok(recording), work)) => {
-                let result = recording.within(work).await;
-                (result, Some(recording))
-            }
-            futures::future::Either::Left((Err(_), work)) => (work.await, None),
-            futures::future::Either::Right((result, _)) => (result, None),
+    /// Observe `work` as a child of the span that first polls it. Pending
+    /// diagnostics cannot delay a ready result; abandoned admission remains
+    /// incomplete. Ready admission supplies the original parent for the
+    /// remaining polls.
+    pub(super) fn child<F: std::future::Future>(request: super::Request, work: F) -> Accompany<F> {
+        Accompany {
+            admission: Admission::Child(request),
+            recording: None,
+            work,
         }
     }
+
+    /// Poll diagnostic admission alongside original work, as [`Self::child`]
+    /// does for an admission already started.
+    pub fn accompany<F: std::future::Future>(
+        admission: Option<crate::BoxProviderFuture<'static, Result<Self, StreamError>>>,
+        work: F,
+    ) -> Accompany<F> {
+        Accompany {
+            admission: admission.map_or(Admission::Settled, Admission::Starting),
+            recording: None,
+            work,
+        }
+    }
+
     /// Poll the original work under this parent, restoring the caller's scope
     /// after every poll, including suspension and cancellation.
     pub async fn within<F: std::future::Future>(&self, work: F) -> F::Output {
@@ -178,5 +182,60 @@ impl<P: StreamProvider + ?Sized> super::context::Producer for super::Recorder<P>
             .await
             .map(Recording::into_owned)
         })
+    }
+}
+
+/// Diagnostic admission of one observed future.
+enum Admission {
+    /// A child of whichever span first polls the work.
+    Child(super::Request),
+    Starting(crate::BoxProviderFuture<'static, Result<OwnedRecording, StreamError>>),
+    Settled,
+}
+
+pin_project_lite::pin_project! {
+    /// Original work polled alongside its diagnostic admission. The work is
+    /// held once and its admission and recording beside it, so observation
+    /// adds a constant number of bytes and one type level to the observed
+    /// future, however deeply observations nest.
+    #[must_use = "futures do nothing unless polled"]
+    pub struct Accompany<F> {
+        admission: Admission,
+        recording: Option<OwnedRecording>,
+        #[pin]
+        work: F,
+    }
+}
+
+impl<F: std::future::Future> std::future::Future for Accompany<F> {
+    type Output = (F::Output, Option<OwnedRecording>);
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let this = self.project();
+        if let Admission::Child(_) = this.admission
+            && let Admission::Child(request) = std::mem::replace(this.admission, Admission::Settled)
+        {
+            *this.admission =
+                super::context::child(request).map_or(Admission::Settled, Admission::Starting);
+        }
+        if let Admission::Starting(start) = this.admission
+            && let std::task::Poll::Ready(started) = start.as_mut().poll(cx)
+        {
+            *this.recording = started.ok();
+            *this.admission = Admission::Settled;
+        }
+        let mut work = this.work;
+        let polled = match this.recording.as_ref() {
+            Some(recording) => recording.within_sync(|| work.as_mut().poll(cx)),
+            None => work.as_mut().poll(cx),
+        };
+        let output = std::task::ready!(polled);
+        // Admission still pending when the work finishes is abandoned now,
+        // remaining an incomplete start.
+        *this.admission = Admission::Settled;
+        std::task::Poll::Ready((output, this.recording.take()))
     }
 }

@@ -1516,20 +1516,26 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     }
 
     /// Deliver one bounded batch. False retains a wake for the next batch.
-    async fn deliver(
-        &self,
-        actor: &ActorReference,
-        slot: &Arc<Slot>,
+    ///
+    /// The delivery, its traced lock, admission and handler live in one
+    /// erased heap allocation. Every caller's future, its poll frame and its
+    /// type stay a constant size and depth whatever the handler and its
+    /// trace wrappers hold, so a delivery runs on any worker stack and every
+    /// embedding crate's future types stay within the compiler's depth limit.
+    fn deliver<'a>(
+        &'a self,
+        actor: &'a ActorReference,
+        slot: &'a Arc<Slot>,
         work: Option<Work<ActorReference>>,
-    ) -> Result<bool, Error> {
-        acyclic_stream::trace::observe(
+    ) -> BoxProviderFuture<'a, Result<bool, Error>> {
+        Box::pin(acyclic_stream::trace::observe(
             acyclic_stream::trace::Request {
                 name: "actors.delivery",
                 mechanism: acyclic_stream::trace::Mechanism::ActorDelivery,
                 parent: None,
                 guarantee: Some("settled_actor_input_or_retained_delivery_wake"),
             },
-            async {
+            async move {
                 // Duplicate events for one actor wait outside global admission. Only
                 // an actor that can make progress may occupy an active delivery slot.
                 let mut inner = acyclic_stream::trace::observe_guard(
@@ -1611,8 +1617,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 result
             },
             |_| None,
-        )
-        .await
+        ))
     }
 
     /// The one entry point of every delivery, activation replays included.
