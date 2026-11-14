@@ -7,6 +7,7 @@ async fn fork_base_refines_only_deletions_added_after_its_cut() {
     for index in 0..256 {
         std::fs::write(directory.path().join(format!("file-{index:03}")), b"source").unwrap();
     }
+    std::fs::write(directory.path().join("new-source"), b"source").unwrap();
     let source = native_source(directory.path(), crate::FilesystemProfile::Portable).await;
     let root = attach(&Fs::memory(), source, MemoryLazyWorkspaceStore::default())
         .await
@@ -26,6 +27,7 @@ async fn fork_base_refines_only_deletions_added_after_its_cut() {
         )
         .await
         .unwrap();
+    child.read("/new-source", 16, accounting!()).await.unwrap();
     child
         .remove("/file-128", None, accounting!())
         .await
