@@ -202,6 +202,8 @@ pub fn role_models(
 }
 
 /// Local test composition with temporary state and settings, independent of the per-user store, HOME and CODEX_HOME.
+/// Feedback settlement notices are opt-in so finite model scripts describe only
+/// the requests exercised by the test.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn local_harness_config(
     workspace: impl Into<std::path::PathBuf>,
@@ -217,6 +219,7 @@ pub fn local_harness_config(
     let policy = crate::approvals::ApprovalPolicy::accept_all("graphcoder-default");
     let config = crate::LocalHarnessConfig::new(workspace, model)
         .hermetic()
+        .feedback_plugin(false)
         .approval_policy(policy);
     #[cfg(any(test, not(target_arch = "wasm32")))]
     let config = {
