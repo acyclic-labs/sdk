@@ -323,7 +323,7 @@ impl MemoryStream {
         state.path_bytes = state.paths.bytes().saturating_add(next.bytes());
         let previous = std::mem::replace(&mut state.ephemeral.paths, next);
         for signals in notify {
-            signals.changed.send_replace(0);
+            let _ = signals.changed.notify();
             crate::follow_index::FollowIndex::created(&signals.follows);
         }
         drop(state);
