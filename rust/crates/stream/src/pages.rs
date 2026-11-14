@@ -178,10 +178,11 @@ pub struct ChildrenBudget {
 impl ChildrenBudget {
     /// The room one command frame leaves after `view`'s heads and revisions.
     /// `deferred` reserves durable watermarks that a later capture may raise.
+    /// Any children page already in `view` is replaced, so it is not charged.
     pub fn for_heads(view: &crate::Heads, deferred: bool) -> Self {
         Self {
             remaining: crate::MAX_COMMAND_BYTES.saturating_sub(
-                crate::wire_codec::requests::heads_len_with_durability(view, deferred),
+                crate::wire_codec::requests::heads_len_without_children(view, deferred),
             ),
             bytes: 0,
             rows: 0,

@@ -627,17 +627,18 @@ impl<V, A, const N: usize, C: Copy + Ord, K: KeyCut<N>> Tree<V, A, N, C, K> {
         // path is uniquely owned, so its on-path links are reversed on the way
         // down and restored on the way up. Stack use is independent of the key
         // width and of the tree's height, and nothing is allocated.
+        // Both passes are charged before either moves a link, so a refusal
+        // never observes a partly reversed path.
+        work.charge_items(2 * copied as u64)?;
         let mut above = Self::default();
         let mut cursor = result;
         for _ in 0..copied {
-            work.charge_items(1)?;
             let (_, bit, low, upper) = cursor.unpublished_branch();
             let child = std::mem::replace(if high(key, *bit) { upper } else { low }, above);
             above = std::mem::replace(&mut cursor, child);
         }
         let mut height = cursor.depth();
         for _ in 0..copied {
-            work.charge_items(1)?;
             let (depth, bit, low, upper) = above.unpublished_branch();
             // A copied branch holds one plus its sibling's depth.
             height = (*depth).max(1 + height);
