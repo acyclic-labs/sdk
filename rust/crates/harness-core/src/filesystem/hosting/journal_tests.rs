@@ -404,8 +404,8 @@ async fn waking_notices_steer_without_granting_their_journal_files() -> TestResu
         state.clone(),
         (operation, inbox, initial_through),
         files,
-        Arc::new(journal_reader),
-        Arc::new(writer),
+        journal_reader,
+        writer,
         None,
     );
     assert!(boundary.messages(operation, 0, None).await?.is_empty());
