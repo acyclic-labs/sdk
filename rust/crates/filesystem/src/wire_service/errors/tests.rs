@@ -177,7 +177,9 @@ fn every_stream_category_survives_the_authority_wrapper() -> Result<(), Box<dyn 
             None,
         )
         .ok_or("member diagnostic must retain the original status")?;
-        let caused = error.clone().with_source("invalid".parse::<u64>().unwrap_err());
+        let caused = error
+            .clone()
+            .with_source("invalid".parse::<u64>().unwrap_err());
         for error in [error.clone(), error.with_refusal(refusal), caused] {
             let error = authority(AuthorityStoreError::NativeStream(error));
             let response = status(&error);
