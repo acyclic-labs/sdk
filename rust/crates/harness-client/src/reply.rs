@@ -6,7 +6,7 @@ use acyclic_harness_core::{
         AgentPath, Delivered, Error as AgentError, IntentId, Phase, Reply, StatusRecord, TurnInput,
     },
     context::{DiffCursor, DiffFilePage},
-    conversation::{PrivateDirectoryPage, VolumeClass, VolumeOwner},
+    conversation::{VolumeClass, VolumeOwner},
     interaction::ApprovalBinding,
 };
 use acyclic_stream::{CommitRequest, wire_codec};
@@ -1016,6 +1016,7 @@ fn validate_diff_page(
 mod tests {
     use super::*;
     use crate::AgentPageRequest;
+    use acyclic_harness_core::conversation::PrivateDirectoryPage;
     use acyclic_stream::{
         AppendRecord, CommitCondition, CommitMutation, IdempotencyKey, StreamPath,
     };
