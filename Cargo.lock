@@ -690,9 +690,6 @@ dependencies = [
  "acyclic-stream",
  "acyclic-test-support",
  "arrayvec",
- "arrow-array",
- "arrow-ipc",
- "arrow-schema",
  "async-stream",
  "async-trait",
  "base64 0.23.1",
@@ -721,10 +718,7 @@ dependencies = [
  "oxc_semantic",
  "oxc_span",
  "oxc_transformer",
- "oxrdf",
- "oxttl",
  "p256",
- "parquet",
  "pin-project-lite",
  "proc-macro2",
  "proptest",
@@ -805,6 +799,34 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "which",
+]
+
+[[package]]
+name = "acyclic-harness-metrics"
+version = "0.2.0"
+dependencies = [
+ "acyclic-actors",
+ "acyclic-auth",
+ "acyclic-harness-core",
+ "acyclic-machines",
+ "acyclic-stream",
+ "acyclic-test-support",
+ "arrayvec",
+ "arrow-array",
+ "arrow-ipc",
+ "arrow-schema",
+ "base64 0.23.1",
+ "blake3",
+ "bytes",
+ "futures",
+ "oxrdf",
+ "oxttl",
+ "parquet",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

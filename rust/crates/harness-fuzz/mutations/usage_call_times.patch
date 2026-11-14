@@ -1,10 +1,13 @@
 diff --git a/rust/crates/harness-core/src/executor/model_usage.rs b/rust/crates/harness-core/src/executor/model_usage.rs
 --- a/rust/crates/harness-core/src/executor/model_usage.rs
 +++ b/rust/crates/harness-core/src/executor/model_usage.rs
-@@ -80,7 +80,5 @@ pub(crate) struct ModelCallUsage<'a> {
-     pub sampling: crate::model::ModelSampling,
+@@ -116,10 +116,6 @@
      pub tokens: ModelTokenUsage,
+     /// Complete input reported by the admitted adapter.
+     pub complete_input_tokens: Option<u64>,
+-    /// Wall time at live provider dispatch, in Unix nanoseconds.
 -    pub started_at: Option<u64>,
+-    /// Wall time when the terminal provider event arrived.
 -    pub completed_at: Option<u64>,
      /// Dispatch through receipt of the terminal event, including original
      /// journal backpressure between chunks. Excludes the terminal commit.
@@ -12,19 +15,22 @@ diff --git a/rust/crates/harness-core/src/executor/model_usage.rs b/rust/crates/
 diff --git a/rust/crates/harness-core/src/executor/dispatch.rs b/rust/crates/harness-core/src/executor/dispatch.rs
 --- a/rust/crates/harness-core/src/executor/dispatch.rs
 +++ b/rust/crates/harness-core/src/executor/dispatch.rs
-@@ -623,6 +623,4 @@ impl<'a> StockExecution<'a> {
-                             sampling,
-                             tokens: super::model_usage::ModelTokenUsage::reported(metadata),
+@@ -669,8 +669,6 @@
+                             complete_input_tokens: self
+                                 .selected_provider()
+                                 .reported_input_tokens(model, metadata)?,
 -                            started_at: clock.started_at(),
 -                            completed_at,
                              latency_ns,
                              provider_request_id: metadata["provider_request_id"].as_str(),
-diff --git a/rust/crates/harness-core/src/executor/metrics/inspect/tests.rs b/rust/crates/harness-core/src/executor/metrics/inspect/tests.rs
---- a/rust/crates/harness-core/src/executor/metrics/inspect/tests.rs
-+++ b/rust/crates/harness-core/src/executor/metrics/inspect/tests.rs
-@@ -549,7 +549,5 @@
+                             #[cfg(feature = "research")]
+diff --git a/rust/crates/harness-metrics/src/inspect/tests.rs b/rust/crates/harness-metrics/src/inspect/tests.rs
+--- a/rust/crates/harness-metrics/src/inspect/tests.rs
++++ b/rust/crates/harness-metrics/src/inspect/tests.rs
+@@ -547,8 +547,6 @@
          sampling: request.sampling,
-         tokens: super::super::super::ModelTokenUsage::reported(&metadata),
+         tokens: acyclic_harness_core::executor::ModelTokenUsage::reported(&metadata),
+         complete_input_tokens: None,
 -        started_at: None,
 -        completed_at: None,
          latency_ns: None,
@@ -33,10 +39,10 @@ diff --git a/rust/crates/harness-core/src/executor/metrics/inspect/tests.rs b/ru
 diff --git a/rust/crates/harness-core/src/filesystem/execution_journal/inline_tests.rs b/rust/crates/harness-core/src/filesystem/execution_journal/inline_tests.rs
 --- a/rust/crates/harness-core/src/filesystem/execution_journal/inline_tests.rs
 +++ b/rust/crates/harness-core/src/filesystem/execution_journal/inline_tests.rs
-@@ -456,8 +456,6 @@
-             ModelEvent::Completed { metadata } => metadata,
+@@ -1201,8 +1201,6 @@
              _ => unreachable!(),
          }),
+         complete_input_tokens,
 -        started_at: None,
 -        completed_at: None,
          latency_ns: Some(123),

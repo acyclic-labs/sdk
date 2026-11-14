@@ -1,5 +1,5 @@
 use super::*;
-use crate::{
+use acyclic_harness_core::{
     agent::AgentId,
     machines::MACHINE_BINDING_VERSION,
     resources::{ProviderRef, SandboxRef},
@@ -172,7 +172,6 @@ async fn original_binding_preserves_authority_and_refuses_foreign_sources() -> R
         serde_json::to_string(&retained_provider).map_err(export_error)?
     );
 
-    #[cfg(feature = "provenance-export")]
     {
         let mut output = Vec::new();
         super::super::provenance::write(&row, &mut output)?;

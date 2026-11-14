@@ -1440,28 +1440,6 @@ async fn terminal_usage_case(
     assert_eq!(resumed.next, None);
     // Rescanning the prior prefix would duplicate the admitted contribution.
     assert!(after.items.len() > resumed.items.len());
-    #[cfg(feature = "metrics-export")]
-    {
-        let projected =
-            crate::metrics::journal_page(&journal, operation, "agents/usage", 0, |_| None).await?;
-        let resumed =
-            crate::metrics::journal_page(&journal, operation, "agents/usage", quiet.end, |_| None)
-                .await?;
-        assert_eq!(projected.end, after.end);
-        assert_eq!(resumed.end, projected.end);
-        assert_eq!(resumed.batches.len(), 1);
-        let models = projected
-            .batches
-            .iter()
-            .find(|batch| batch.table == crate::metrics::Table::ModelCalls)
-            .unwrap();
-        assert_eq!(models.data.num_rows(), 2);
-        assert_eq!(
-            resumed.batches[0].data,
-            models.data.slice(1, 1),
-            "resume must project the same committed observation without its prefix"
-        );
-    }
     let output = ExecutionEvent::ModelOutput {
         step: 0,
         digest: Some([81; 32]),

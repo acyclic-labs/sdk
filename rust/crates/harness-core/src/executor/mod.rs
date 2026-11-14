@@ -61,7 +61,7 @@ mod event_page;
 mod tool_changes;
 pub use event_page::{
     EXECUTION_EVENT_PAGE_RECORDS, ExecutionActivity, ExecutionEventPage, ExecutionPayloadField,
-    event_page,
+    event_page, page_continuation,
 };
 mod model_cache;
 mod model_cost;
@@ -74,8 +74,6 @@ pub use model_cost::{
     ModelCostEstimate, ModelPriceError, ModelPriceRecord, ModelPrices, ModelUsageProjection,
     ModelUsageTotals, TokenPrice, UsageTotal,
 };
-#[cfg(feature = "metrics-export")]
-pub mod metrics;
 pub(crate) mod model_usage;
 #[cfg(feature = "test-support")]
 pub use model_usage::codec_fuzz as model_usage_codec_fuzz;
@@ -84,8 +82,9 @@ pub use model_usage::codec_fuzz as model_usage_codec_fuzz;
 pub mod read_set;
 pub(crate) use model_usage::validate as validate_model_usage;
 pub use model_usage::{
-    ContextUsage, ModelAbandonedOutput, ModelTokenUsage, ModelUsagePage, ModelUsageRecord,
-    usage_page,
+    ContextUsage, ModelAbandonedOutput, ModelTokenUsage, ModelUsageAdmission, ModelUsagePage,
+    ModelUsageRecord, project_completion as project_model_completion,
+    project_record as project_model_usage, usage_page,
 };
 mod tool_usage;
 pub use tool_usage::ToolUsage;
@@ -94,7 +93,9 @@ pub use wait_usage::WaitUsage;
 pub(crate) mod phase;
 #[cfg(test)]
 pub(crate) use model_observation::append as append_model_event;
-pub use model_observation::decode_payload as decode_model_payload;
+pub use model_observation::{
+    decode_payload as decode_model_payload, matches_turn as matches_model_turn,
+};
 mod prefix;
 mod record_index;
 pub(crate) use record_index::call_bucket_key;
@@ -127,6 +128,15 @@ pub use tool_failure::{ToolErrorClass, ToolFailureCause};
 mod agent_hooks;
 #[cfg(not(target_arch = "wasm32"))]
 mod tool_hooks;
+
+/// The original journal producers, for exporter tests outside this crate.
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub mod producers {
+    pub use super::model_observation::append as append_model_observation;
+    pub use super::model_usage::ModelCallUsage;
+    pub use super::native_stock::journal::stage_json;
+}
 
 /// Restores the defect where a resumed driver settled nothing it could not
 /// reconcile: an interrupted effect-free model call and an unreconcilable

@@ -108,44 +108,6 @@ async fn admitted_request_append_reads_only_the_manifest_as_history_grows() -> R
                         .await
                         .is_err()
                 );
-                #[cfg(feature = "metrics-export")]
-                {
-                    use arrow_array::{Array, StringArray};
-                    let mut after = 0;
-                    let mut found = false;
-                    loop {
-                        let page = crate::executor::metrics::journal_page(
-                            &journal,
-                            operation,
-                            "agents/generated",
-                            after,
-                            |_| None,
-                        )
-                        .await?;
-                        for batch in page.batches {
-                            if batch.table == crate::executor::metrics::Table::ModelCalls {
-                                let keys = batch
-                                    .data
-                                    .column_by_name("replay_key")
-                                    .unwrap()
-                                    .as_any()
-                                    .downcast_ref::<StringArray>()
-                                    .unwrap();
-                                found |= (0..keys.len()).any(|row| {
-                                    !keys.is_null(row)
-                                        && keys.value(row)
-                                            == blake3::Hash::from(expected).to_hex().as_str()
-                                });
-                            }
-                        }
-                        if let Some(next) = page.next {
-                            after = next
-                        } else {
-                            break;
-                        }
-                    }
-                    assert!(found, "export must identify reconstructed request content");
-                }
             }
             if step == 100 {
                 check_unattested_and_forged(

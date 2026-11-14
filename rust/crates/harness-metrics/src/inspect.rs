@@ -5,12 +5,12 @@
 //! a display projection; original structured content remains in message metadata.
 //! Docent can consume the same file through its Inspect JSON loader.
 
-use super::super::{
-    ExecutionEvent, ExecutionJournal, ExecutionRecord, ModelPurpose, ModelUsageRecord, OperationId,
-    model_usage::ModelUsageAdmission,
+use acyclic_harness_core::executor::{
+    ExecutionEvent, ExecutionJournal, ExecutionRecord, ModelPurpose, ModelUsageAdmission,
+    ModelUsageRecord,
 };
-use crate::{
-    Error, Result,
+use acyclic_harness_core::{
+    Error, OperationId, Result,
     model::{
         ModelContent, ModelContentPart, ModelMessage, ModelRequest, ModelRole, ToolResultContent,
     },
@@ -74,8 +74,8 @@ impl<'a> Call<'a> {
         {
             return Err(invalid("request differs from its original admission"));
         }
-        let replay_key = crate::model::replay_key(request).map_err(invalid)?;
-        let request = crate::contract::json_from_slice(request).map_err(invalid)?;
+        let replay_key = acyclic_harness_core::model::replay_key(request).map_err(invalid)?;
+        let request = acyclic_harness_core::contract::json_from_slice(request).map_err(invalid)?;
         Ok(Self {
             source,
             sequence: admission.sequence,
@@ -118,7 +118,7 @@ impl<'a> Call<'a> {
         terminal: &ExecutionRecord,
     ) -> Result<Settlement<'call, 'a>> {
         if terminal.sequence <= self.sequence
-            || !super::super::model_observation::matches_turn(
+            || !acyclic_harness_core::executor::matches_model_turn(
                 &terminal.event,
                 self.step,
                 self.purpose,
@@ -126,7 +126,7 @@ impl<'a> Call<'a> {
         {
             return Err(invalid("terminal differs from its original admission"));
         }
-        let (metadata, usage) = super::super::model_usage::project_completion(
+        let (metadata, usage) = acyclic_harness_core::executor::project_model_completion(
             journal,
             self.source.operation,
             self.source.agent_path,
@@ -147,7 +147,7 @@ impl<'a> Call<'a> {
             return Ok(());
         };
         let admitted = ModelUsageAdmission {
-            dispatch: crate::model::ModelDispatch {
+            dispatch: acyclic_harness_core::model::ModelDispatch {
                 operation_id: self
                     .purpose
                     .attempt_operation(self.source.operation, None)?,
@@ -186,8 +186,8 @@ impl<'a> Call<'a> {
             purpose: ModelPurpose,
             request_digest: &'a str,
             replay_key: &'a str,
-            requested_model: &'a crate::model::Model,
-            sampling: crate::model::ModelSampling,
+            requested_model: &'a acyclic_harness_core::model::Model,
+            sampling: acyclic_harness_core::model::ModelSampling,
             usage: Option<&'a ModelUsageRecord>,
             terminal_sequence: Option<u64>,
             terminal_metadata: Option<&'a serde_json::Value>,
@@ -391,7 +391,7 @@ impl Serialize for Message<'_> {
                     )?;
                 }
                 ToolResultContent::Parts { parts } => {
-                    struct Text<'a>(&'a [crate::model::ModelDataPart]);
+                    struct Text<'a>(&'a [acyclic_harness_core::model::ModelDataPart]);
                     impl Serialize for Text<'_> {
                         fn serialize<S: Serializer>(
                             &self,
@@ -399,7 +399,9 @@ impl Serialize for Message<'_> {
                         ) -> std::result::Result<S::Ok, S::Error> {
                             let mut seq = serializer.serialize_seq(None)?;
                             for part in self.0 {
-                                if let crate::model::ModelDataPart::Text { text } = part {
+                                if let acyclic_harness_core::model::ModelDataPart::Text { text } =
+                                    part
+                                {
                                     seq.serialize_element(&DisplayPart {
                                         r#type: "text",
                                         text: Some(text),

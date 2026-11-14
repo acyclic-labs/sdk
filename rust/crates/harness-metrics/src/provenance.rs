@@ -6,7 +6,7 @@
 //! See <https://www.w3.org/TR/prov-o/> and <https://www.w3.org/TR/n-triples/>.
 
 use super::{Batch, Table, export_error};
-use crate::Result;
+use acyclic_harness_core::Result;
 use arrow_array::{Array, StringArray, UInt32Array, UInt64Array};
 use oxrdf::{
     LiteralRef, NamedNodeRef, TermRef, TripleRef,
@@ -424,7 +424,7 @@ pub fn write(batch: &Batch, writer: impl Write) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::executor::metrics::{Row, batch};
+    use crate::{Row, batch, inbox};
     use oxrdf::{Term, Triple};
     use proptest::prelude::*;
     use std::collections::HashSet;
@@ -438,11 +438,10 @@ mod tests {
 
     #[test]
     fn adopted_templates_preserve_the_original_creation_pin() -> Result<()> {
-        use crate::{
+        use acyclic_harness_core::{
             AgentId,
             agent::{AgentRecord, CreationConfig, ForkAdopted, InboxRecord, SpawnContext},
             conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
-            executor::metrics::inbox,
             resources::ProviderRef,
         };
 
@@ -470,7 +469,7 @@ mod tests {
         let later_reference = serde_json::to_string(&later).map_err(export_error)?;
         let project = |profile: Option<CreationConfig>| -> Result<Batch> {
             let record = InboxRecord::ForkAdopted(Box::new(ForkAdopted {
-                agent: crate::agent::AgentId::from_bytes(agent.into_bytes()),
+                agent: acyclic_harness_core::agent::AgentId::from_bytes(agent.into_bytes()),
                 parent: None,
                 profile,
                 forked_at: 0,
@@ -550,7 +549,7 @@ mod tests {
             // strings must remain one opaque literal through the real RDF codec.
             let mut rows = Vec::new();
             for sequence in 0..2 {
-                let mut row = Row::new(&path, Some(crate::OperationId::from_bytes([7; 16])),
+                let mut row = Row::new(&path, Some(acyclic_harness_core::OperationId::from_bytes([7; 16])),
                     sequence, "journal", if sequence == 0 { "admitted" } else { "completed" });
                 row.step = Some(0);
                 row.call_id = Some("generated-call".into());
@@ -590,7 +589,7 @@ mod tests {
                 id("agent", &[b"user", path.as_bytes()]));
             prop_assert_ne!(id("agent", &[b"user", path.as_bytes()]),
                 id("agent", &[b"host", path.as_bytes()]));
-            let mut read = Row::new(&path, Some(crate::OperationId::from_bytes([7; 16])),
+            let mut read = Row::new(&path, Some(acyclic_harness_core::OperationId::from_bytes([7; 16])),
                 3, "journal", "file_read");
             read.source = Some(reference.clone());
             read.source_type = Some("file_generation");

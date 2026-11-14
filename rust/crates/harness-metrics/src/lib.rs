@@ -14,8 +14,11 @@
 //! layout's source and nullable ownership contracts. Export is
 //! an explicit library call and adds no work to execution or agent delivery.
 
-use super::{ExecutionEvent, ExecutionJournal, ModelPriceRecord, OperationId};
-use crate::{Error, Result, agent};
+#[cfg(test)]
+acyclic_test_support::counting_allocator!();
+
+use acyclic_harness_core::executor::{self, ExecutionEvent, ExecutionJournal, ModelPriceRecord};
+use acyclic_harness_core::{Error, OperationId, Result, agent};
 pub use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use std::{collections::HashMap, io::Write, sync::Arc};
@@ -25,18 +28,20 @@ use std::{collections::HashMap, io::Write, sync::Arc};
 pub const VERSION: u32 = 4;
 
 /// Streaming W3C PROV-O projection over these same original observations.
-#[cfg(feature = "provenance-export")]
 pub mod provenance;
 
-/// Bounded read-receipt projection; coverage is explicit rather than inferred.
 #[cfg(feature = "research")]
-pub use super::read_set;
-
-#[cfg(feature = "research")]
-pub(super) fn read_observation(
+/// Projects one original read receipt into the existing edges table. The
+/// enclosing operation identifies the activity that used this generation;
+/// the source is an immutable reference, never a current path lookup.
+///
+/// # Errors
+///
+/// Returns a projection failure for an unencodable source.
+pub fn read_observation(
     agent: &str,
     operation: OperationId,
-    observation: &super::read_set::Observation,
+    observation: &executor::read_set::Observation,
 ) -> Result<Batch> {
     let mut row = Row::new(
         agent,
@@ -328,7 +333,11 @@ columns! {
 
 impl<'a> Row<'a> {
     #[cfg(feature = "research")]
-    fn stream(agent: Option<&str>, source: crate::live::resources::Source<'a>, kind: &str) -> Self {
+    fn stream(
+        agent: Option<&str>,
+        source: acyclic_harness_core::live::resources::Source<'a>,
+        kind: &str,
+    ) -> Self {
         use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
         let mut row = Self::base(None, source.sequence, source.stream, kind);
         row.agent_path = agent.map(str::to_owned);
@@ -365,14 +374,14 @@ impl<'a> Row<'a> {
     fn model_identity(
         &mut self,
         step: u32,
-        purpose: super::ModelPurpose,
+        purpose: executor::ModelPurpose,
         request_digest: [u8; 32],
     ) {
         self.step = Some(step);
         self.purpose = Some(match purpose {
-            super::ModelPurpose::Response => "response",
-            super::ModelPurpose::Summary | super::ModelPurpose::SummaryPart(_) => "summary",
-            super::ModelPurpose::Count => "count",
+            executor::ModelPurpose::Response => "response",
+            executor::ModelPurpose::Summary | executor::ModelPurpose::SummaryPart(_) => "summary",
+            executor::ModelPurpose::Count => "count",
         });
         self.request_digest = Some(digest(request_digest));
     }
@@ -395,7 +404,7 @@ fn export_error(error: impl std::fmt::Display) -> Error {
     ))
 }
 
-fn artifact(file: &crate::conversation::FileRef) -> Result<String> {
+fn artifact(file: &acyclic_harness_core::conversation::FileRef) -> Result<String> {
     serde_json::to_string(file).map_err(export_error)
 }
 
@@ -414,11 +423,11 @@ pub async fn journal_page<'price>(
     operation: OperationId,
     agent_path: &str,
     after: u64,
-    price: impl Fn(&super::ModelUsageRecord) -> Option<&'price ModelPriceRecord>,
+    price: impl Fn(&executor::ModelUsageRecord) -> Option<&'price ModelPriceRecord>,
 ) -> Result<Page> {
     const PAGE: u32 = 32;
     let records = journal.replay(operation, after, PAGE, None)?.await?;
-    let (end, next) = super::event_page::page_continuation(after, records.len(), PAGE)?;
+    let (end, next) = executor::page_continuation(after, records.len(), PAGE)?;
     let mut turns = Vec::new();
     let mut models = Vec::new();
     let mut tools = Vec::new();
@@ -452,7 +461,7 @@ pub async fn journal_page<'price>(
             continue;
         }
         if let Some(usage) =
-            super::model_usage::project_record(journal, operation, agent_path, &record).await?
+            executor::project_model_usage(journal, operation, agent_path, &record).await?
         {
             let selected = price(&usage);
             cache_edges(
@@ -491,7 +500,7 @@ pub async fn journal_page<'price>(
                     journal,
                     operation,
                     step,
-                    super::ModelPurpose::Response,
+                    executor::ModelPurpose::Response,
                     None,
                 )
                 .await?;
@@ -511,7 +520,7 @@ pub async fn journal_page<'price>(
                     journal,
                     operation,
                     step,
-                    super::ModelPurpose::Response,
+                    executor::ModelPurpose::Response,
                     None,
                 )
                 .await?;
@@ -537,7 +546,7 @@ pub async fn journal_page<'price>(
                     journal,
                     operation,
                     step,
-                    super::ModelPurpose::Response,
+                    executor::ModelPurpose::Response,
                     None,
                 )
                 .await?;
@@ -565,7 +574,7 @@ async fn admitted_replay_key(
     journal: &dyn ExecutionJournal,
     event: &ExecutionEvent,
 ) -> Result<String> {
-    let request = super::ExecutionPayloadField::admitted_request(journal, event).await?;
+    let request = executor::ExecutionPayloadField::admitted_request(journal, event).await?;
     request.replay_key().map(digest)
 }
 
@@ -576,7 +585,7 @@ async fn step_replay_key(
     journal: &dyn ExecutionJournal,
     operation: OperationId,
     step: u32,
-    purpose: super::ModelPurpose,
+    purpose: executor::ModelPurpose,
     request_digest: Option<[u8; 32]>,
 ) -> Result<Option<String>> {
     let select = |event: &ExecutionEvent| {
@@ -584,13 +593,13 @@ async fn step_replay_key(
         ExecutionEvent::ModelStarted { purpose: recorded, .. } if *recorded == purpose)
     };
     let Some(records) = journal.indexed_records(
-        super::ExecutionRecordQuery {
+        executor::ExecutionRecordQuery {
             operation,
             step,
             call_id: None,
             include_started: false,
-            maximum_step_records: super::ExecutionRecordQuery::step_bound(
-                crate::conversation::Limits::default(),
+            maximum_step_records: executor::ExecutionRecordQuery::step_bound(
+                acyclic_harness_core::conversation::Limits::default(),
             ),
             maximum: Some(1),
             select: &select,
@@ -624,7 +633,7 @@ async fn step_replay_key(
 
 fn model_call<'a>(
     mut row: Row<'a>,
-    usage: super::ModelUsageRecord,
+    usage: executor::ModelUsageRecord,
     price: Option<&ModelPriceRecord>,
 ) -> Result<Row<'a>> {
     let (projection, savings) = usage
@@ -641,10 +650,10 @@ fn model_call<'a>(
         row.credential_scope = cache.credential_scope.map(digest);
         row.profile_prefix_digest = cache.profile_prefix_digest.map(digest);
         match cache.ttl {
-            super::ModelCacheTtl::ProviderManaged => {
+            executor::ModelCacheTtl::ProviderManaged => {
                 row.cache_ttl = Some("provider_managed".into())
             }
-            super::ModelCacheTtl::Explicit { seconds } => {
+            executor::ModelCacheTtl::Explicit { seconds } => {
                 row.cache_ttl = Some("explicit".into());
                 row.cache_ttl_seconds = Some(seconds);
             }
@@ -689,7 +698,7 @@ fn cache_edges(
     agent: &str,
     operation: OperationId,
     sequence: u64,
-    cache: Option<super::ModelCacheObservation>,
+    cache: Option<executor::ModelCacheObservation>,
     rows: &mut Vec<Row<'_>>,
 ) {
     let Some(cache) = cache else { return };
@@ -865,15 +874,19 @@ pub fn write<W: Write + Send>(batch: &Batch, writer: W, format: Format) -> Resul
 }
 
 #[cfg(test)]
+mod journal_tests;
+#[cfg(test)]
 mod tests {
     use super::*;
     use arrow_array::{Array, StringArray, UInt64Array};
 
     #[test]
     fn adoption_preserves_the_original_template_reference() -> Result<()> {
-        use crate::conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef};
+        use acyclic_harness_core::conversation::{
+            FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef,
+        };
 
-        let owner = crate::AgentId::from_bytes([5; 16]);
+        let owner = acyclic_harness_core::AgentId::from_bytes([5; 16]);
         let agent = agent::AgentId::from_bytes([5; 16]);
         let path = agent::AgentPath::root(&agent);
         for version in [None, Some("first-cut"), Some("later-cut")] {
@@ -881,7 +894,7 @@ mod tests {
                 .map(|version| {
                     FileRef::new(
                         VolumeRef::new(
-                            crate::resources::ProviderRef::new(
+                            acyclic_harness_core::resources::ProviderRef::new(
                                 "acyclic".into(),
                                 "filesystem".into(),
                                 "2".into(),
@@ -942,7 +955,6 @@ mod tests {
                     "absent templates cannot acquire an inferred reference"
                 );
             }
-            #[cfg(feature = "provenance-export")]
             {
                 let mut bytes = Vec::new();
                 provenance::write(&projected[0], &mut bytes)?;
@@ -1091,7 +1103,6 @@ mod tests {
                     let mut bytes = Vec::new();
                     assert!(write(&foreign, &mut bytes, format).is_err());
                     assert!(bytes.is_empty(), "schema refusal must precede publication");
-                    #[cfg(feature = "provenance-export")]
                     {
                         assert!(provenance::write(&foreign, &mut bytes).is_err());
                         assert!(bytes.is_empty());
@@ -1105,16 +1116,20 @@ mod tests {
                 );
             }
         }
-        #[cfg(feature = "provenance-export")]
         assert!(provenance::write(&batch(Table::Agents, &[row])?, Refused).is_err());
         #[cfg(feature = "research")]
-        assert!(read_set::Writer::new(Refused, "a", OperationId::from_bytes([1; 16]), 0).is_err());
+        assert!(
+            executor::read_set::Writer::new(Refused, "a", OperationId::from_bytes([1; 16]), 0)
+                .is_err()
+        );
         Ok(())
     }
 
     #[test]
     fn cache_edges_require_original_scope_and_never_identify_a_hit() {
-        use super::super::{ModelCacheBreakpoint, ModelCacheObservation, ModelCacheTtl};
+        use acyclic_harness_core::executor::{
+            ModelCacheBreakpoint, ModelCacheObservation, ModelCacheTtl,
+        };
         let operation = OperationId::from_bytes([1; 16]);
         let mut cache = ModelCacheObservation {
             version: 1,
