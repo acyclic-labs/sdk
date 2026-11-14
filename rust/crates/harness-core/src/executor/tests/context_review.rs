@@ -425,9 +425,6 @@ async fn reviews_bound_complete_groups_without_stopping_a_fitting_worker() -> Re
             ToolRegistry::default(),
         )
         .with_automatic_compaction()?;
-        let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
-        let journal_owner = storage.journal();
-        let journal = journal_owner.as_ref();
         let groups = if partitioned { 4 } else { 1 };
         let mut messages = Vec::new();
         for index in 0..groups {
@@ -467,6 +464,9 @@ async fn reviews_bound_complete_groups_without_stopping_a_fitting_worker() -> Re
             }),
         };
         let history = &input.selected_context.as_ref().unwrap().messages;
+        let (journal, _issuer) = crate::filesystem::test_execution_journal().await?;
+        let journal = journal.with_bound_selection(input.selected_context.clone().unwrap());
+        let journal = &journal;
         let execution = StockExecution::ordinary(&stock);
         let worker = async {
             let events = execution.model_step(journal, &input, 0, &[]).await?;
