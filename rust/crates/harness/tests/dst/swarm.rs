@@ -10,7 +10,10 @@
 use super::*;
 use acyclic_harness::{
     agent::{AgentPath, ConversationEntry, TurnOutcome, decode_record, inbox_tail},
-    model::{ModelContent, ModelContentPart, ModelEvent, ModelRequest, ModelRole, ToolCall},
+    model::{
+        ModelContent, ModelContentPart, ModelEvent, ModelRequest, ModelRole, ToolCall,
+        ToolResultContent,
+    },
     test_support::ScriptedEvent,
 };
 use acyclic_native_runtime::testing::sweep;
@@ -189,10 +192,27 @@ fn respond(plan: &[Step], request: &ModelRequest) -> Result<ScriptedTurn> {
             .unwrap_or_default()
         ))
     })?;
-    let step = request.messages[briefed..]
+    // The executor may record each tool call as its own assistant message,
+    // so a step is done once all of its calls appear in the history.
+    let mut made = request.messages[briefed..]
         .iter()
         .filter(|message| message.role == ModelRole::Assistant)
+        .flat_map(|message| message.content.parts())
+        .filter(|part| matches!(part, ModelContentPart::ToolCall(_)))
         .count();
+    let steps = agent_steps(plan, &node);
+    let mut step = 0;
+    while let Some(action) = steps.get(step) {
+        let calls = match action {
+            Action::Spawn(names) => names.len(),
+            Action::Write(_) | Action::Wait(_) => 1,
+        };
+        if made < calls {
+            break;
+        }
+        made -= calls;
+        step += 1;
+    }
     let call = |index: usize, name: &str, arguments| {
         ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
             format!("s{step}c{index}"),
@@ -203,12 +223,12 @@ fn respond(plan: &[Step], request: &ModelRequest) -> Result<ScriptedTurn> {
     if std::env::var_os("DST_SWARM_TRACE").is_some() {
         eprintln!(
             "swarm-trace {node} step {step} of {}: {:?} ({} messages, brief at {briefed})",
-            agent_steps(plan, &node).len(),
-            agent_steps(plan, &node).get(step),
+            steps.len(),
+            steps.get(step),
             request.messages.len()
         );
     }
-    let mut events = match agent_steps(plan, &node).get(step) {
+    let mut events = match steps.get(step) {
         None => return Ok(ScriptedTurn::Text(format!("{node} settled"))),
         Some(Action::Spawn(names)) => names
             .iter()
@@ -233,6 +253,45 @@ fn respond(plan: &[Step], request: &ModelRequest) -> Result<ScriptedTurn> {
         metadata: json!({}),
     }));
     Ok(ScriptedTurn::Events(events))
+}
+
+/// Every failed tool result any request's history shows, as
+/// `node: tool: cause`. A planned call never fails.
+type Refused = Arc<std::sync::Mutex<BTreeSet<String>>>;
+
+fn refusals(node: &str, request: &ModelRequest) -> Vec<String> {
+    request
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .filter_map(|part| match part {
+            ModelContentPart::ToolResult {
+                name,
+                content: ToolResultContent::Error { message },
+                ..
+            } => Some(format!("{node}: {name}: {message}")),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The plan's nodes, root first: every child a reachable node spawns.
+fn planned(plan: &[Step]) -> BTreeSet<String> {
+    let mut nodes = BTreeSet::from(["root".to_owned()]);
+    let mut pending = vec!["root".to_owned()];
+    while let Some(node) = pending.pop() {
+        for action in agent_steps(plan, &node) {
+            if let Action::Spawn(names) = action {
+                for name in names {
+                    let child = format!("{node}/{name}");
+                    if nodes.insert(child.clone()) {
+                        pending.push(child);
+                    }
+                }
+            }
+        }
+    }
+    nodes
 }
 
 /// Each model request's node and the `(child, turn)` settlements its history
@@ -395,9 +454,15 @@ fn swarm<'a>(directory: &'a Path, plan: &'a [Step], seen: &'a Seen) -> EntryFutu
         let model = Model::new("scripted".into(), "swarm".into(), "1".into())?;
         let owned = plan.to_vec();
         let recorded = Arc::clone(seen);
+        let refused = Refused::default();
+        let refusing = Arc::clone(&refused);
         let provider = Arc::new(ScriptedModelProvider::responding(move |request| {
             // An unidentified request is recorded too, so a stall names it.
             let node = node_of(&owned, request).map_or_else(|| "?".to_owned(), |(node, _)| node);
+            refusing
+                .lock()
+                .map_err(storage)?
+                .extend(refusals(&node, request));
             recorded
                 .lock()
                 .map_err(storage)?
@@ -416,6 +481,21 @@ fn swarm<'a>(directory: &'a Path, plan: &'a [Step], seen: &'a Seen) -> EntryFutu
             return Err(Error::Conflict(format!("root prompt failed: {message}")));
         }
         let tree = entry(settle(&harness, plan)).await?;
+        let refused = refused.lock().map_err(storage)?.clone();
+        if !refused.is_empty() {
+            return Err(Error::Conflict(format!(
+                "planned tool calls failed: {refused:?}"
+            )));
+        }
+        let missing: Vec<_> = planned(plan)
+            .into_iter()
+            .filter(|node| !tree.iter().any(|(found, _)| found == node))
+            .collect();
+        if !missing.is_empty() {
+            return Err(Error::Conflict(format!(
+                "planned agents never spawned: {missing:?}"
+            )));
+        }
         for (node, agent) in &tree {
             for (index, turn) in entry(turns(&harness, agent)).await?.iter().enumerate() {
                 if let TurnOutcome::Failed { message } = &turn.outcome {
