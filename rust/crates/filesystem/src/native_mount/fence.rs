@@ -661,7 +661,6 @@ impl MountDestinationGuard {
         })
     }
 
-    #[cfg(target_os = "macos")]
     pub(super) fn from_locked_existing(file: MountLockFile, lock_path: PathBuf) -> Self {
         Self {
             file: Some(file),
