@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness/src/local/agent_conversation/run.rs b/rust/crates/harness/src/local/agent_conversation/run.rs
+--- a/rust/crates/harness/src/local/agent_conversation/run.rs
++++ b/rust/crates/harness/src/local/agent_conversation/run.rs
+@@ -197,9 +197,5 @@
+                     match event.event {
+                         Lifecycle::Paused { signal } => {
+-                            if let Some(run) = event.run
+-                                && feed.run_control(run).await?.is_some_and(|through| through > position.sequence) {
+-                                continue;
+-                            }
+                             return Ok(RunOutcome::Terminal { action: Action::Pause, signal });
+                         }
+                         Lifecycle::Stopped { signal } => return Ok(RunOutcome::Terminal { action: Action::Stop, signal }),

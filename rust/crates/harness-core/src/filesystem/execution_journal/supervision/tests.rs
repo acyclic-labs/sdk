@@ -475,7 +475,15 @@ async fn failed_progress_releases_the_original_conditional_receipt_on_write_and_
 async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_original_turn()
 -> Result<()> {
     use crate::supervision::{RunAdmission, RunAdmissionSource};
-    for (same_turn, exact_command) in [(false, true), (true, true), (true, false)] {
+    for (same_turn, exact_command, changed_input) in [
+        (false, true, None),
+        (true, true, None),
+        (true, false, None),
+        (true, true, Some("cwd")),
+        (true, true, Some("timeout_ms")),
+        (true, true, Some("target")),
+        (true, true, Some("recorded_target")),
+    ] {
         let (journal, _issuer) = super::super::test_support::journal().await?;
         let run = OperationId::from_bytes([112; 16]);
         let agent = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([81; 16]));
@@ -552,7 +560,15 @@ async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_o
                 0,
                 call_id.clone(),
                 "shell".into(),
-                serde_json::json!({"command":command,"yield_time_ms":index+1,"max_output_tokens":100+index,"background":index!=0}),
+                serde_json::json!({
+                    "command":command,
+                    "cwd":format!("project-{}", if changed_input == Some("cwd") {index} else {0}),
+                    "timeout_ms":1000 + if changed_input == Some("timeout_ms") {index} else {0},
+                    "target":format!("requested-{}", if changed_input == Some("target") {index} else {0}),
+                    "yield_time_ms":index+1,
+                    "max_output_tokens":100+index,
+                    "background":index % 2 == 0,
+                }),
                 None,
             )?;
             let original_call = invocation.operation_id;
@@ -563,7 +579,14 @@ async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_o
                 &crate::tool::RecordedInvocation {
                     invocation,
                     metadata: serde_json::json!({"opaque":index}),
-                    target: None,
+                    target: Some(format!(
+                        "resolved-{}",
+                        if changed_input == Some("recorded_target") {
+                            index
+                        } else {
+                            0
+                        }
+                    )),
                     filesystem: None,
                 },
                 None,
@@ -575,6 +598,20 @@ async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_o
                 invocation,
                 publication: None,
             };
+            if index == 0 && same_turn && exact_command && changed_input.is_none() {
+                // Quiet work cannot invent an ambient clock. Restoring the
+                // original owner admits this identical, previously refused key.
+                let clock = journal
+                    .clock
+                    .take()
+                    .ok_or_else(|| Error::Invalid("fixture clock missing".into()))?;
+                let refused = match journal.append(operation, "check-0", &started, None) {
+                    Ok(pending) => pending.await,
+                    Err(error) => Err(error),
+                };
+                journal.clock = Some(clock);
+                assert!(refused.is_err(), "quiet dispatch invented a host clock");
+            }
             journal
                 .append(operation, &format!("check-{index}"), &started, None)?
                 .await?;
@@ -663,7 +700,7 @@ async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_o
                 .append(operation, &format!("check-{index}"), &started, None)?
                 .await?;
             let signal = queries.read_signal(Kind::ValidationLoop).await?;
-            if same_turn && exact_command && index == 2 {
+            if same_turn && exact_command && changed_input.is_none() && index == 2 {
                 assert_eq!(
                     signal
                         .ok_or_else(|| Error::Invalid("repeated check did not signal".into()))?
@@ -680,7 +717,10 @@ async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_o
                     Some(Kind::ValidationLoop)
                 );
             } else {
-                assert!(signal.is_none(), "check counted a replay or another turn");
+                assert!(
+                    signal.is_none(),
+                    "check merged distinct execution inputs or counted a replay/another turn: {changed_input:?}"
+                );
             }
         }
     }
@@ -689,17 +729,23 @@ async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_o
 
 #[tokio::test]
 async fn tool_failures_use_original_invocations_and_do_not_count_distinct_errors() -> Result<()> {
-    for (name, failed, same_error, exact_command, same_cwd) in [
-        ("shell", true, false, true, true),
-        ("shell", true, true, true, true),
-        ("shell", true, true, false, true),
-        ("spawn", true, false, true, true),
-        ("spawn", true, true, true, true),
-        ("spawn", true, true, false, true),
-        ("spawn", false, true, true, true),
-        ("shell", true, true, true, false),
+    for (name, failed, same_error, exact_command, changed_input, literal_argv) in [
+        ("shell", true, false, true, None, false),
+        ("shell", true, true, true, None, false),
+        ("shell", true, true, false, None, false),
+        ("shell", true, true, true, Some("cwd"), false),
+        ("shell", true, true, true, Some("timeout_ms"), false),
+        ("shell", true, true, true, Some("target"), false),
+        ("shell", true, true, true, Some("recorded_target"), false),
+        ("shell", true, true, true, None, true),
+        ("shell", true, true, false, None, true),
+        ("shell", true, true, true, Some("cwd"), true),
+        ("spawn", true, false, true, None, false),
+        ("spawn", true, true, true, None, false),
+        ("spawn", true, true, false, None, false),
+        ("spawn", false, true, true, None, false),
     ] {
-        let repeated = failed && same_error && exact_command && same_cwd;
+        let repeated = failed && same_error && exact_command && changed_input.is_none();
         let (journal, _issuer) = super::super::test_support::journal().await?;
         let run = OperationId::new();
         let agent = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([58; 16]));
@@ -732,7 +778,15 @@ async fn tool_failures_use_original_invocations_and_do_not_count_distinct_errors
                 call_id.clone(),
                 name.into(),
                 if name == "shell" {
-                    serde_json::json!({"command":command,"cwd":if same_cwd {"project".into()} else {format!("project-{index}")},"yield_time_ms":index + 1,"max_output_tokens":100 + index})
+                    serde_json::json!({
+                        "command":if literal_argv {serde_json::json!(["sh", "-c", command])} else {serde_json::json!(command)},
+                        "cwd":format!("project-{}", if changed_input == Some("cwd") {index} else {0}),
+                        "timeout_ms":1000 + if changed_input == Some("timeout_ms") {index} else {0},
+                        "target":format!("requested-{}", if changed_input == Some("target") {index} else {0}),
+                        "yield_time_ms":index + 1,
+                        "max_output_tokens":100 + index,
+                        "background":index % 2 == 0,
+                    })
                 } else {
                     serde_json::json!({"role":command})
                 },
@@ -745,7 +799,14 @@ async fn tool_failures_use_original_invocations_and_do_not_count_distinct_errors
                 &crate::tool::RecordedInvocation {
                     invocation,
                     metadata: serde_json::json!({"opaque":index}),
-                    target: None,
+                    target: Some(format!(
+                        "resolved-{}",
+                        if changed_input == Some("recorded_target") {
+                            index
+                        } else {
+                            0
+                        }
+                    )),
                     filesystem: None,
                 },
                 None,
@@ -813,7 +874,10 @@ async fn tool_failures_use_original_invocations_and_do_not_count_distinct_errors
                     Some(index as u64 + 1)
                 );
             } else {
-                assert!(signal.is_none());
+                assert!(
+                    signal.is_none(),
+                    "failure merged distinct execution inputs: {changed_input:?}, literal_argv={literal_argv}"
+                );
             }
         }
         if !failed {

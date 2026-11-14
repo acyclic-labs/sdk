@@ -205,7 +205,7 @@ async fn committed_archive_fences_dispatch_before_its_actor_consumes_the_control
         .map_err(|error| Error::Invalid(error.to_string()))?;
         let journal = journal
             .with_agent_events(agent.clone(), operation, 0, true)
-            .with_actor_admission(Some(actor_path.clone()));
+            .with_actor_admissions(vec![actor_path.clone()]);
         journal
             .append(
                 operation,
@@ -291,6 +291,179 @@ async fn committed_archive_fences_dispatch_before_its_actor_consumes_the_control
         assert_eq!(
             journal.records(operation, 0, 8, None).await?.len(),
             1 + usize::from(!archive_first || !stops_dispatch) + usize::from(!stops_dispatch)
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn ancestor_pause_fences_original_dispatch_and_resume_without_changing_child_admission()
+-> Result<()> {
+    use acyclic_actors::{
+        addressing::ActorReference,
+        local::{Creation, Store},
+    };
+    use acyclic_stream::{
+        CommitEffect, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey,
+    };
+
+    for (depth, pause_first) in
+        (0..4).flat_map(|depth| [false, true].map(move |first| (depth, first)))
+    {
+        let (journal, _issuer) = test_support::journal().await?;
+        let root = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([182; 16]));
+        let parent = root.child(&crate::agent::AgentId::from_bytes([183; 16]))?;
+        let leaf = parent.child(&crate::agent::AgentId::from_bytes([184; 16]))?;
+        let sibling = root.child(&crate::agent::AgentId::from_bytes([185; 16]))?;
+        let store = Store::new(
+            journal.stream.clone(),
+            acyclic_stream::StreamPath::new("pause-test/actors")?,
+        );
+        let mut actors = Vec::new();
+        let mut paths = Vec::new();
+        let mut effects = Vec::new();
+        for agent in [&root, &parent, &leaf, &sibling] {
+            let actor = ActorReference::new(b"account", b"agents", agent.id().as_str().as_bytes())
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            paths.push(
+                store
+                    .path(&actor)
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+            );
+            effects.push(
+                store
+                    .create(None, &actor, Creation::default())
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+            );
+            actors.push(actor);
+        }
+        assert!(matches!(
+            journal
+                .stream
+                .commit(CommitRequest {
+                    deadline_unix_millis: None,
+                    effects,
+                    idempotency_key: IdempotencyKey::unique(),
+                })
+                .await?,
+            CommitOutcome::Committed(_)
+        ));
+        let operation = OperationId::new();
+        let journal = journal
+            .with_agent_events(leaf.clone(), operation, 0, true)
+            .with_actor_admissions(paths[..3].to_vec());
+        journal
+            .append(
+                operation,
+                "started",
+                &ExecutionEvent::Started {
+                    request_digest: [1; 32],
+                },
+                None,
+            )?
+            .await?;
+        let prepared = request()?;
+        let request =
+            crate::test_support::stage_model_request(&journal, operation, "request", &prepared)
+                .await?;
+        let model = ExecutionEvent::ModelStarted {
+            step: 0,
+            purpose: ModelPurpose::Response,
+            request_digest: prepared.request_digest(),
+            request: request.clone(),
+            context: None,
+        };
+        if !pause_first {
+            journal.append(operation, "model", &model, None)?.await?;
+        }
+
+        // Capture the exact producer fence while every ancestor is open. A
+        // later pause must refuse this dispatch in the same atomic commit.
+        let paid = acyclic_stream::StreamPath::new("pause-test/stale-paid-dispatch")?;
+        let mut stale = CommitEffect::hard(
+            vec![acyclic_stream::CommitCondition::Absent { path: paid.clone() }],
+            vec![CommitMutation::Append {
+                path: paid.clone(),
+                records: vec![b"provider intent".as_slice().into()],
+            }],
+        );
+        journal.fence_dispatch(&mut stale, None).await?;
+        let previous = store
+            .load(&actors[depth])
+            .await
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        store
+            .set_paused(&previous, 0, true, IdempotencyKey::unique())
+            .await
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let stopped = depth < 3;
+        let stale_result = journal
+            .stream
+            .commit(CommitRequest {
+                deadline_unix_millis: None,
+                effects: vec![stale],
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+        assert_eq!(
+            matches!(stale_result, CommitOutcome::Conflict(_)),
+            stopped,
+            "ancestor pause did not fence a captured dispatch (depth={depth})"
+        );
+        assert_eq!(journal.stream.tail(paid).await.is_ok(), !stopped);
+
+        let model_result = journal.append(operation, "model", &model, None)?.await;
+        if stopped && pause_first {
+            assert!(
+                matches!(model_result, Err(Error::ExecutionControlled(control))
+                if control.action == crate::supervision::Action::Pause && control.source.stream == paths[depth]),
+                "ancestor pause admitted a fresh model dispatch"
+            );
+        } else {
+            // This includes exact replay of a dispatch accepted before pause.
+            model_result?;
+        }
+        let tool = ExecutionEvent::ToolStarted {
+            step: 0,
+            call_id: "paused-tool".into(),
+            invocation: request,
+            publication: None,
+        };
+        let tool_result = journal.append(operation, "tool", &tool, None)?.await;
+        if stopped {
+            assert!(
+                matches!(tool_result, Err(Error::ExecutionControlled(control))
+                if control.action == crate::supervision::Action::Pause && control.source.stream == paths[depth]),
+                "ancestor pause admitted a fresh tool dispatch"
+            );
+        } else {
+            tool_result?;
+        }
+        if depth < 2 {
+            let child = store
+                .load(&actors[2])
+                .await
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            assert_eq!(
+                child.state().map(|state| state.paused()),
+                Some(false),
+                "ancestor pause rewrote child admission"
+            );
+        }
+        let previous = store
+            .load(&actors[depth])
+            .await
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        store
+            .set_paused(&previous, 0, false, IdempotencyKey::unique())
+            .await
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        journal.append(operation, "model", &model, None)?.await?;
+        journal.append(operation, "tool", &tool, None)?.await?;
+        assert_eq!(
+            journal.records(operation, 0, 8, None).await?.len(),
+            3,
+            "resume or accepted replay duplicated a paid intent"
         );
     }
     Ok(())

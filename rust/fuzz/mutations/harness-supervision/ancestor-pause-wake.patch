@@ -1,0 +1,11 @@
+--- a/rust/crates/harness-core/src/agent/handler.rs
++++ b/rust/crates/harness-core/src/agent/handler.rs
+@@ -839,7 +839,7 @@
+                 });
+             }
+         }
+-        if let Some(source) = dependency {
++        if let Some(source) = dependency.filter(|_| false) {
+             subscriptions.push(acyclic_actors::guest::SubscriptionChange::Add {
+                 id: ADMISSION_SUBSCRIPTION.into(),
+                 path: source.stream,

@@ -235,6 +235,7 @@ pub(super) async fn transition<P: AuthorityProvider + ?Sized>(
         return Err(Error::Record("quiet lifecycle identity"));
     }
     let mut retired = closed || matches!(job.event, tool_jobs::Event::Finished);
+    let mut output = None;
     if !retired {
         let source = delivery
             .subscriptions
@@ -242,8 +243,29 @@ pub(super) async fn transition<P: AuthorityProvider + ?Sized>(
             .ok_or(Error::Record("quiet completion subscription"))?
             .path
             .clone();
-        if let Some(record) = latest(store, source, key(COMPLETED, original)?, &mut effects).await?
+        if delivery
+            .subscriptions
+            .get(ACTIVITY)
+            .map(|bound| &bound.path)
+            != Some(&source)
         {
+            return Err(Error::Record("quiet output sources differ"));
+        }
+        let ([completed, activity], condition) = store
+            .provider()
+            .latest_many_fenced(
+                source.clone(),
+                [
+                    key(COMPLETED, original)?.map(Into::into),
+                    key(ACTIVITY, original)?.map(Into::into),
+                ],
+                Default::default(),
+            )
+            .await
+            .map_err(Error::Stream)?;
+        effects.push(CommitEffect::hard(vec![condition], vec![]));
+        output = activity.map(|record| (source, record));
+        if let Some(record) = completed {
             let context = acyclic_stream::changes_context(&record.value, &record.headers)
                 .map_err(Error::Stream)?
                 .ok_or(Error::Record("quiet completion publication"))?;
@@ -252,20 +274,7 @@ pub(super) async fn transition<P: AuthorityProvider + ?Sized>(
         }
     }
     if !retired {
-        let source = delivery
-            .subscriptions
-            .get(ACTIVITY)
-            .ok_or(Error::Record("quiet output subscription"))?
-            .path
-            .clone();
-        if let Some(record) = latest(
-            store,
-            source.clone(),
-            key(ACTIVITY, original)?,
-            &mut effects,
-        )
-        .await?
-        {
+        if let Some((source, record)) = output {
             if state.activity.stream != source || record.sequence > state.activity.sequence {
                 // An exact filesystem change key identifies the output cursor's
                 // original atomic publication, whose time survives replay.

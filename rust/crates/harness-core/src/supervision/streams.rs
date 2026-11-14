@@ -55,17 +55,63 @@ pub async fn active_run<P: StreamProvider + ?Sized>(
 const PAUSED_RUN_KEY: &[u8] = b"paused-run";
 pub(crate) const CURRENT_RUN_KEY: &[u8] = b"current-run";
 
+/// Indexed admission state for one original run, independent of later runs.
+pub fn run_control_key(run: OperationId) -> acyclic_stream::OwnedBytes {
+    Bytes::from(format!("run-control/{run}")).into()
+}
+
+fn pause_source_key(source: &Position) -> acyclic_stream::OwnedBytes {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"supervision-pause-source-v1\0");
+    hash.update(source.stream.as_str().as_bytes());
+    hash.update(&source.sequence.to_le_bytes());
+    Bytes::from(format!("pause-source/{}", hash.finalize().to_hex())).into()
+}
+
+pub(crate) async fn paused_at<P: StreamProvider + ?Sized>(
+    provider: &P,
+    agent: &AgentPath,
+    source: &Position,
+) -> Result<OperationId> {
+    let record = provider
+        .latest(path(agent)?, pause_source_key(source), Default::default())
+        .await?
+        .ok_or_else(|| invalid("original inherited pause is missing"))?;
+    let event: Event = serde_json::from_slice(&record.value).map_err(invalid)?;
+    if event.version != 1
+        || event.agent != *agent
+        || event.source != *source
+        || !matches!(event.event, Lifecycle::Paused { .. })
+    {
+        return Err(invalid("original inherited pause differs"));
+    }
+    event
+        .run
+        .ok_or_else(|| invalid("original inherited pause has no run"))
+}
+
 /// Retain the run whose original lifecycle publication closed admission.
 /// Owner file events have no run and never replace this source identity.
 pub(crate) fn lifecycle_record(event: &Event) -> Result<AppendRecord> {
     let bytes = serde_json::to_vec(event).map_err(invalid)?;
     let mut keys = Vec::new();
-    if event.run.is_some() {
+    if let Some(run) = event.run {
         keys.push(Bytes::from_static(CURRENT_RUN_KEY).into());
         if matches!(event.event, Lifecycle::Paused { .. }) {
             keys.push(Bytes::from_static(PAUSED_RUN_KEY).into());
+            keys.push(pause_source_key(&event.source).into());
+        }
+        if matches!(
+            event.event,
+            Lifecycle::Paused { .. }
+                | Lifecycle::Resumed {}
+                | Lifecycle::Stopped { .. }
+                | Lifecycle::TurnDone { .. }
+        ) {
+            keys.push(run_control_key(run).into());
         }
     }
+    keys.sort_unstable();
     Ok(AppendRecord {
         value: bytes.into(),
         headers: acyclic_stream::RecordHeaders::new(keys, Vec::new())?,
@@ -216,9 +262,17 @@ fn cell_path(agent: &AgentPath, run: OperationId, key: &[u8; 32]) -> Result<Stre
 fn signal_key_text(
     run: OperationId,
     kind: Kind,
-) -> arrayvec::ArrayString<{ 5 + 36 + 19 + 15 + 5 }> {
+) -> arrayvec::ArrayString<
+    {
+        "runs/".len()
+            + 36
+            + "/status/supervision/".len()
+            + Kind::ValidationLoop.name().len()
+            + ".json".len()
+    },
+> {
     use std::fmt::Write as _;
-    // Fixed schema: prefix, canonical UUID, namespace, longest Kind, suffix.
+    // Derive literal segment sizes: prefix, UUID, namespace, longest Kind, suffix.
     // No user-provided component or variable-size history occupies this buffer.
     let mut text = arrayvec::ArrayString::new();
     write!(text, "runs/{run}/status/supervision/{}.json", kind.name())

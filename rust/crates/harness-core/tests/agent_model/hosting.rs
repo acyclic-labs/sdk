@@ -446,12 +446,12 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
         }
     }
     for completion in [0, 1, 2, 3] {
-        let finish = completion != 0;
+        let finish = matches!(completion, 1 | 2);
         let commit_clock = Arc::new(CommitClock(AtomicU64::new(100)));
-        let stream = Arc::new(MemoryStream::new_with_clock(
-            MemoryLimits::default(),
-            commit_clock.clone(),
-        ));
+        let stream = Arc::new(Evidence {
+            inner: MemoryStream::new_with_clock(MemoryLimits::default(), commit_clock.clone()),
+            ..Evidence::default()
+        });
         let (clock, mut time) = ControlledClock::new(100);
         let mut execution = turns()?;
         execution.clock = Arc::new(clock);
@@ -738,7 +738,45 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
                     .0,
                 Some(independent)
             );
+            if completion == 3 {
+                let snapshot = store.load(&actor).await?;
+                let output = snapshot
+                    .state()
+                    .ok_or("quiet actor missing")?
+                    .subscriptions()
+                    .get("job-completed")
+                    .ok_or("completion source missing")?
+                    .path
+                    .clone();
+                let original = stream
+                    .latest(output.clone(), path.clone().into(), Default::default())
+                    .await?
+                    .ok_or("original output cursor missing")?;
+                // Commit a real retained output record between completion and
+                // activity selection. Both reads must keep the original head.
+                *stream.race.lock().unwrap() = Some((
+                    output,
+                    completed_path.clone().into(),
+                    AppendRecord {
+                        value: original.value,
+                        headers: original.headers,
+                    },
+                ));
+                commit_clock.0.store(110, Ordering::SeqCst);
+            }
             time.advance_to(115)?;
+            if completion == 3 {
+                wait(&mut states, Some(120), false).await?;
+                assert!(
+                    stream.race.lock().unwrap().is_none(),
+                    "output race was not exercised"
+                );
+                assert!(
+                    queries.read_signal(Kind::Stuck).await?.is_none(),
+                    "racing output caused a stale quiet action"
+                );
+                time.advance_to(120)?;
+            }
             if finish {
                 wait(&mut states, None, true).await?;
                 assert!(
@@ -2051,6 +2089,13 @@ async fn staged_waking_notices_keep_entries_bounded_and_replay_exact() -> Result
 /// first commit's acknowledgement after applying it.
 #[derive(Default)]
 pub(super) struct Evidence {
+    race: std::sync::Mutex<
+        Option<(
+            acyclic_stream::StreamPath,
+            bytes::Bytes,
+            acyclic_stream::AppendRecord,
+        )>,
+    >,
     missing: std::sync::Mutex<Option<(acyclic_stream::StreamPath, StreamError)>>,
     inner: MemoryStream,
     valid: bool,
@@ -2183,6 +2228,32 @@ impl StreamProvider for Evidence {
         request: acyclic_stream::ReadRequest,
     ) -> std::result::Result<acyclic_stream::RecordStream, StreamError> {
         let path = request.path.clone();
+        let race = {
+            let mut race = self.race.lock().expect("output race");
+            if race.as_ref().is_some_and(|(path, key, _)| {
+                request.path == *path
+                    && request
+                        .key
+                        .as_ref()
+                        .is_some_and(|selected| selected.key.as_ref() == key.as_ref())
+            }) {
+                race.take()
+            } else {
+                None
+            }
+        };
+        if let Some((path, _, record)) = race {
+            let records = self.inner.read(request).await?;
+            self.inner
+                .append(acyclic_stream::AppendRequest {
+                    path,
+                    records: vec![record],
+                    if_tail: None,
+                    idempotency_key: acyclic_stream::IdempotencyKey::unique(),
+                })
+                .await?;
+            return Ok(records);
+        }
         match self.inner.read(request).await {
             Err(StreamError::NotFound) => {
                 if let Some((selected, error)) = &*self.missing.lock().expect("missing diagnostic")

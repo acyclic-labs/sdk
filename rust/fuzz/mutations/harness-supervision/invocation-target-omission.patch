@@ -1,0 +1,11 @@
+--- a/rust/crates/harness-core/src/filesystem/execution_journal/supervision.rs
++++ b/rust/crates/harness-core/src/filesystem/execution_journal/supervision.rs
+@@ -338,7 +338,7 @@
+                     value: &invocation.arguments,
+                     shell: invocation.name == "shell",
+                 },
+-                target: target.as_deref(),
++                target: target.as_deref().filter(|_| false),
+             },
+             io,
+         )?;

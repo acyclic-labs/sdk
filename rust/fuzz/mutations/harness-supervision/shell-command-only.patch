@@ -1,0 +1,12 @@
+--- a/rust/crates/harness-core/src/filesystem/execution_journal/supervision.rs
++++ b/rust/crates/harness-core/src/filesystem/execution_journal/supervision.rs
+@@ -58,6 +58,9 @@
+         if !self.shell {
+             return self.value.serialize(serializer);
+         }
++        if let Some(command) = self.value.get("command") {
++            return command.serialize(serializer);
++        }
+         let Some(arguments) = self.value.as_object() else {
+             return self.value.serialize(serializer);
+         };
