@@ -43,6 +43,47 @@ impl Client {
 }
 
 impl ActorSocket {
+    /// Forward this socket through another authenticated Session without
+    /// another protocol driver or per-socket task. Both halves retain this
+    /// original channel: dropping either one cancels it. Queued sends retain
+    /// their actual result; an asynchronous send failure ends the output.
+    pub fn into_channel(self) -> SocketChannel {
+        let (results, receive) = mpsc::channel(crate::MAX_ITEMS);
+        let inbound = ForwardInput {
+            client: self.cursor.client.clone(),
+            id: self.cursor.id,
+            progress: self.cursor.progress.clone(),
+            results,
+        };
+        let pending =
+            FuturesUnordered::<BoxProviderFuture<'static, Result<(), StreamError>>>::new();
+        let outbound = stream::try_unfold(
+            (self, receive, pending),
+            |(mut socket, mut results, mut pending)| async move {
+                loop {
+                    tokio::select! {
+                        result = pending.next(), if !pending.is_empty() => {
+                            result.ok_or(StreamError::Unavailable)??;
+                        }
+                        result = results.recv(), if pending.len() < crate::MAX_ITEMS => {
+                            let result = result.ok_or(StreamError::Unavailable)?;
+                            pending.push(Box::pin(async move {
+                                result.await.map_err(|_| StreamError::Unavailable)?
+                            }));
+                        }
+                        frame = socket.next() => {
+                            return Ok(frame?.map(|frame| (frame, (socket, results, pending))));
+                        }
+                    }
+                }
+            },
+        );
+        SocketChannel {
+            outbound: Box::pin(outbound),
+            inbound: Box::new(inbound),
+        }
+    }
+
     /// Retains the original write channel so upload credit never prevents
     /// observing this socket's incoming Close.
     #[must_use]
@@ -85,6 +126,50 @@ impl ActorSocket {
             Some(Item::ActorSocket(frame)) => Ok(Some((frame, credit))),
             _ => Err(StreamError::InvalidResponse),
         }
+    }
+}
+
+struct ForwardInput {
+    client: Client,
+    id: u64,
+    progress: Arc<Progress>,
+    results: mpsc::Sender<oneshot::Receiver<Result<(), StreamError>>>,
+}
+
+impl SocketInbound for ForwardInput {
+    fn receive(&self, frame: Bytes) -> Result<(), StreamError> {
+        if frame.is_empty() || frame.len() > crate::MAX_RECORD_BYTES {
+            return Err(StreamError::InvalidArgument);
+        }
+        if self.progress.cancelled() || self.progress.ended() {
+            return Err(StreamError::Unavailable);
+        }
+        let result = self.results.try_reserve().map_err(queue_error)?;
+        let (sent, completion) = oneshot::channel();
+        self.client
+            .pool
+            .commands
+            .try_send(Command::Socket {
+                id: self.id,
+                frame,
+                sent,
+            })
+            .map_err(queue_error)?;
+        result.send(completion);
+        Ok(())
+    }
+}
+
+fn queue_error<T>(error: mpsc::error::TrySendError<T>) -> StreamError {
+    match error {
+        mpsc::error::TrySendError::Full(_) => StreamError::Capacity,
+        mpsc::error::TrySendError::Closed(_) => StreamError::Unavailable,
+    }
+}
+
+impl Drop for ForwardInput {
+    fn drop(&mut self) {
+        self.client.pool.cancel_interest(self.id, &self.progress);
     }
 }
 

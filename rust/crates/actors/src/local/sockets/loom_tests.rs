@@ -27,7 +27,7 @@ async fn records(provider: &MemoryStream, path: &StreamPath) -> Result<Vec<Recor
 async fn race() -> Result {
     let provider = Arc::new(MemoryStream::default());
     let store = Store::new(Arc::clone(&provider), StreamPath::new("loom/actors")?);
-    let layout = Layout::new(&store)?;
+    let layout = Layout::new(StreamPath::new("loom/actors/_sockets/v1")?)?;
     let target = Target {
         actor: ActorReference::new(b"account", b"sockets", b"loom")?,
         inbox: StreamPath::new("loom/inbox")?,

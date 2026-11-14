@@ -64,6 +64,7 @@ impl LocalSockets {
         let provider = Arc::clone(self.store.provider());
         let sockets = Sockets::open(
             Store::new(Arc::clone(&provider), root()?),
+            StreamPath::new("harness/actors/_sockets/v1")?,
             Arc::new(PlatformExecutor),
             Arc::new(SystemClock),
         )
@@ -189,7 +190,7 @@ async fn socket_ledger_exhaustion_preserves_committed_history() -> TestResult {
             .await?,
         );
         let store = Store::new(Arc::clone(&provider), root()?);
-        let layout = Layout::new(&store)?;
+        let layout = Layout::new(StreamPath::new("harness/actors/_sockets/v1")?)?;
         // Persist the real epoch format at its representable boundary.
         let record = EpochWire {
             version: 1,
@@ -210,7 +211,13 @@ async fn socket_ledger_exhaustion_preserves_committed_history() -> TestResult {
             )
             .await?
         );
-        let opened = Sockets::open(store, Arc::new(PlatformExecutor), Arc::new(SystemClock)).await;
+        let opened = Sockets::open(
+            store,
+            StreamPath::new("harness/actors/_sockets/v1")?,
+            Arc::new(PlatformExecutor),
+            Arc::new(SystemClock),
+        )
+        .await;
         let expected = if segment == u64::MAX {
             assert!(matches!(
                 opened,
@@ -249,6 +256,38 @@ async fn socket_ledger_exhaustion_preserves_committed_history() -> TestResult {
 }
 
 #[tokio::test]
+async fn recovery_fences_only_the_selected_hosts_socket_ledger() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let first_root = StreamPath::new("hosts/first/sockets/v1")?;
+    let second_root = StreamPath::new("hosts/second/sockets/v1")?;
+    let open = |ledger| {
+        Sockets::open(
+            Store::new(provider.clone(), root().expect("valid actor root")),
+            ledger,
+            Arc::new(HeldCloseExecutor::default()),
+            Arc::new(SystemClock),
+        )
+    };
+    let first = open(first_root.clone()).await?;
+    let (connection, inbox, _, _) = admitted_close_fixture(&first, "first-host").await?;
+    let socket = first.shared.layout.socket(&connection)?;
+    let second = open(second_root.clone()).await?;
+    let (other, other_inbox, _, _) = admitted_close_fixture(&second, "second-host").await?;
+    let other_socket = second.shared.layout.socket(&other)?;
+    assert_eq!(records(&first.shared.store, &socket).await?.len(), 1);
+    let _second_replacement = open(second_root).await?;
+    assert_eq!(records(&first.shared.store, &socket).await?.len(), 1);
+    assert_eq!(records(&second.shared.store, &other_socket).await?.len(), 2);
+    assert_eq!(records(&second.shared.store, &other_inbox).await?.len(), 2);
+    let _first_replacement = open(first_root.clone()).await?;
+    let _next_replacement = open(first_root).await?;
+    assert_eq!(records(&first.shared.store, &socket).await?.len(), 2);
+    let events = records(&first.shared.store, &inbox).await?;
+    assert_eq!(events.len(), 2, "repeated recovery published another Close");
+    Ok(())
+}
+
+#[tokio::test]
 async fn native_socket_admission_rechecks_the_retained_target_before_installing() -> TestResult {
     struct Admission {
         current: AtomicBool,
@@ -268,6 +307,7 @@ async fn native_socket_admission_rechecks_the_retained_target_before_installing(
     let sockets = Arc::new(
         Sockets::open(
             Store::new(Arc::new(MemoryStream::default()), root()?),
+            StreamPath::new("harness/actors/_sockets/v1")?,
             Arc::new(PlatformExecutor),
             Arc::new(SystemClock),
         )
@@ -326,6 +366,7 @@ async fn socket_admission_binds_namespace_grants_to_the_certified_account() -> T
     let provider = Arc::new(MemoryStream::default());
     let sockets = Sockets::open(
         Store::new(Arc::clone(&provider), root()?),
+        StreamPath::new("harness/actors/_sockets/v1")?,
         Arc::new(PlatformExecutor),
         Arc::new(SystemClock),
     )
@@ -547,6 +588,7 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
         let provider = Arc::new(ControlledStream::default());
         let sockets = Sockets::open(
             Store::new(Arc::clone(&provider), root()?),
+            StreamPath::new("harness/actors/_sockets/v1")?,
             Arc::new(HeldCloseExecutor::default()),
             Arc::new(SystemClock),
         )
@@ -605,6 +647,7 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
         let executor = Arc::new(HeldCloseExecutor::default());
         let sockets = Sockets::open(
             Store::new(Arc::clone(&provider), root()?),
+            StreamPath::new("harness/actors/_sockets/v1")?,
             executor.clone(),
             Arc::new(SystemClock),
         )
@@ -678,6 +721,7 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
         drop(sockets);
         let recovered = Sockets::open(
             Store::new(provider, root()?),
+            StreamPath::new("harness/actors/_sockets/v1")?,
             executor,
             Arc::new(SystemClock),
         )
@@ -699,6 +743,7 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
         let executor = Arc::new(HeldCloseExecutor::default());
         let sockets = Sockets::open(
             Store::new(Arc::clone(&provider), root()?),
+            StreamPath::new("harness/actors/_sockets/v1")?,
             executor.clone(),
             Arc::new(SystemClock),
         )
@@ -777,6 +822,7 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
         drop(sockets);
         let recovered = Sockets::open(
             Store::new(provider, root()?),
+            StreamPath::new("harness/actors/_sockets/v1")?,
             executor,
             Arc::new(SystemClock),
         )
@@ -793,7 +839,13 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
     };
     let first = store()?;
     let provider = Arc::clone(first.provider());
-    let sockets = Sockets::open(first, Arc::new(PlatformExecutor), Arc::new(SystemClock)).await?;
+    let sockets = Sockets::open(
+        first,
+        StreamPath::new("harness/actors/_sockets/v1")?,
+        Arc::new(PlatformExecutor),
+        Arc::new(SystemClock),
+    )
+    .await?;
     let shared = &sockets.shared;
     let layout = shared.layout.clone();
     let actor = ActorReference::new(b"account", b"sockets", b"compacted")?;
@@ -844,8 +896,13 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
 
     // The next incarnation closes exactly the survivor, from segment 2 only.
     let restarted = Store::new(provider, root()?);
-    let recovered =
-        Sockets::open(restarted, Arc::new(PlatformExecutor), Arc::new(SystemClock)).await?;
+    let recovered = Sockets::open(
+        restarted,
+        StreamPath::new("harness/actors/_sockets/v1")?,
+        Arc::new(PlatformExecutor),
+        Arc::new(SystemClock),
+    )
+    .await?;
     let store = &recovered.shared.store;
     assert_eq!(records(store, &survivor).await?.len(), 2);
     let delivered = records(store, &inbox).await?;
@@ -1018,6 +1075,7 @@ async fn concurrent_hosts_cannot_share_an_incarnation() -> TestResult {
     let open = || -> Result<_, Error> {
         Ok(Sockets::open(
             Store::new(Arc::clone(&provider), root()?),
+            StreamPath::new("harness/actors/_sockets/v1")?,
             Arc::new(PlatformExecutor),
             Arc::new(SystemClock),
         ))
@@ -1205,6 +1263,7 @@ async fn automatic_reply_admission_preserves_the_open_socket_at_the_frame_bound(
     let executor = Arc::new(HeldCloseExecutor::default());
     let sockets = Sockets::open(
         Store::new(Arc::new(MemoryStream::default()), root()?),
+        StreamPath::new("harness/actors/_sockets/v1")?,
         executor.clone(),
         Arc::new(SystemClock),
     )
@@ -1307,6 +1366,7 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
     let executor = Arc::new(HeldCloseExecutor::default());
     let sockets = Sockets::open(
         Store::new(Arc::new(MemoryStream::default()), root()?),
+        StreamPath::new("harness/actors/_sockets/v1")?,
         executor.clone(),
         Arc::new(SystemClock),
     )
@@ -1819,6 +1879,7 @@ async fn accepted_open_retries_uncertain_durability_without_closing() -> TestRes
         let provider = Arc::new(ControlledStream::default());
         let sockets = Sockets::open(
             Store::new(Arc::clone(&provider), root()?),
+            StreamPath::new("harness/actors/_sockets/v1")?,
             Arc::new(PlatformExecutor),
             Arc::new(SystemClock),
         )

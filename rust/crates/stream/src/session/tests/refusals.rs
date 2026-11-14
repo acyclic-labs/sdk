@@ -29,15 +29,9 @@ impl PreparedSocketOpen for Arc<Rejected> {
 
     fn open(
         self: Box<Self>,
-        authorization: CallAuthorization,
+        authorization: &dyn SocketAuthorization,
     ) -> Result<SocketChannel, StreamError> {
-        authorization.authorize(
-            self.resource(),
-            &[],
-            &acyclic_auth::contract::RecordAttributes::try_new(vec![])
-                .map_err(|_| StreamError::InvalidArgument)?,
-            acyclic_auth::authority::PolicyDecision::Allow,
-        )?;
+        authorization.authorize_socket(b"account", self.resource())?;
         if matches!(self.phase, Phase::Open) {
             return Err(self.error.clone());
         }

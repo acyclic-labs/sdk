@@ -406,6 +406,56 @@ async fn socket_input_renewal_preserves_the_certified_account() -> TestResult {
 }
 
 #[tokio::test]
+async fn forwarding_retains_the_original_socket_and_its_send_results() -> TestResult {
+    let (gone, left) = oneshot::channel();
+    let client = client(Arc::new(Echo {
+        gone: std::sync::Mutex::new(Some(gone)),
+        ends: false,
+        received: None,
+    }));
+    client.register_credential(
+        0,
+        testing::credential_with_grants(vec![acyclic_auth::contract::ResourceGrant {
+            resource: acyclic_auth::contract::ResourcePattern {
+                name: "actors:/fixture".into(),
+                prefix: false,
+            },
+            actions: vec!["actors/invoke".into()],
+        }]),
+    )?;
+    let mut channel = client
+        .actor_socket(Bytes::from_static(b"open"), 0)
+        .await?
+        .into_channel();
+    assert_eq!(
+        channel.outbound.next().await.transpose()?.as_deref(),
+        Some(&b"hello"[..])
+    );
+    let bytes = Bytes::from(vec![7; crate::MAX_RECORD_BYTES]);
+    channel.inbound.receive(bytes.clone())?;
+    let echoed = channel
+        .outbound
+        .next()
+        .await
+        .transpose()?
+        .ok_or("echo ended")?;
+    assert_eq!(echoed.as_ptr(), bytes.as_ptr());
+    assert_eq!(
+        channel.inbound.receive(Bytes::new()),
+        Err(StreamError::InvalidArgument)
+    );
+    drop(channel.inbound);
+    // The downstream peer can stop reading forever; dropping only its input
+    // still retires the upstream socket and its original product owner.
+    left.await?;
+    assert_eq!(
+        channel.outbound.next().await,
+        Some(Err(StreamError::Unavailable))
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn socket_frames_flow_both_ways_and_dropping_the_peer_ends_the_owner() -> TestResult {
     let (gone, left) = oneshot::channel();
     let client = client(Arc::new(Echo {
