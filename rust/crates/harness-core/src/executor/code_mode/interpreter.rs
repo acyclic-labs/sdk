@@ -583,7 +583,8 @@ mod tests {
                             serde_json::json!({"ok":true,"value":result.value,"version":version.map(|v| v.0)})
                         }
                         Err(error) => serde_json::json!({"ok":false,"value":{
-                            "class":crate::executor::ToolErrorClass::of(&error),"message":error.to_string(),
+                            "class":crate::executor::ToolErrorClass::of(&error),
+                            "message":format!("{name} {}: {error}", invocation.arguments["path"]),
                         }}),
                     };
                     let _ = call
