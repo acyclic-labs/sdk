@@ -2026,41 +2026,55 @@ async fn a_local_agent_reads_what_its_journal_publishes_and_nothing_private() ->
         PRIVATE_VOLUME.into(),
         private.clone(),
     )];
-    let runtime: RuntimeAuthority = issuer.clone().into();
-    let admitted = AdmittedAgent::verify(&runtime, &TurnAdmission::LocalRoot, &path, &volumes)?;
-    let (_, custody) = admitted.journal_authority(&host, &[], &[]).await?;
-    let grant = ContentGrant::verify(
-        &custody.verifier,
-        &custody.scope,
-        &journal,
-        VolumeOperation::Write,
+    // Issued before the agent's own authority, for the negative control.
+    let with_journal = issuer.bootstrap_scope(
+        "journal-reader",
+        &Capabilities::new([journal.capability(VolumeOperation::Read, &mut None)?]),
+        Some(owner),
         &mut None,
     )?;
+    let without_journal = issuer.bootstrap_scope(
+        "private-reader",
+        &Capabilities::new([private.capability(VolumeOperation::Read, &mut None)?]),
+        Some(owner),
+        &mut None,
+    )?;
+    let runtime: RuntimeAuthority = issuer.clone().into();
+    let admitted = AdmittedAgent::verify(&runtime, &TurnAdmission::LocalRoot, &path, &volumes)?;
+    // The turn's own journal stages both classes, exactly as compaction does.
+    use crate::executor::ExecutionJournal as _;
+    let (volume, custody) = admitted.journal_authority(&host, &[], &[]).await?;
+    let writer = FilesystemExecutionJournal::new(
+        Arc::new(acyclic_stream::MemoryStream::default()),
+        Arc::clone(&host),
+        FilesystemJournalBinding {
+            volume: &volume,
+            verifier: &custody.verifier,
+            scope: &custody.scope,
+            io: None,
+        },
+    )?;
     let operation = OperationId::from_bytes([216; 16]);
-    let mut staged = Vec::new();
-    for (class, bytes) in [("summaries", "summary"), ("execution", "execution record")] {
-        staged.push(
-            host.put_content(
-                &journal,
-                &grant,
-                &format!(".system/{class}/{operation}/{}.json", "a".repeat(64)),
-                bytes.as_bytes(),
-                "text/plain",
-                "record.json",
-                Some(1024),
-                &crate::IdempotencyKey::new(class)?,
-                None,
-                Default::default(),
-            )
-            .await?,
-        );
-    }
-    let execution = staged
-        .pop()
-        .ok_or_else(|| Error::NotFound("execution record".into()))?;
-    let summary = staged
-        .pop()
-        .ok_or_else(|| Error::NotFound("summary".into()))?;
+    let summary = writer
+        .stage(
+            operation,
+            "summary:1:output",
+            b"summary",
+            "text/plain",
+            None,
+        )?
+        .await?;
+    let execution = writer
+        .stage(
+            operation,
+            "context",
+            b"execution record",
+            "text/plain",
+            None,
+        )?
+        .await?;
+    assert!(summary.path().starts_with(".system/summaries/"));
+    assert!(execution.path().starts_with(".system/execution/"));
     let authority =
         agent_authority(&runtime, &TurnAdmission::LocalRoot, &path, &volumes, &[]).await?;
     assert!(
@@ -2084,17 +2098,22 @@ async fn a_local_agent_reads_what_its_journal_publishes_and_nothing_private() ->
         .await
         .expect_err("an agent read its host-private execution record");
     assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
-    // Negative control: the same agent without the journal read is refused
-    // the summary, so the grant, not the agent's identity, admits it.
-    let narrowed = issuer.bootstrap_scope(
-        "narrowed",
-        &Capabilities::new([private.capability(VolumeOperation::Read, &mut None)?]),
-        Some(owner),
-        &mut None,
-    )?;
-    let narrowed =
-        FilesystemContentVerifier::new(host.clone(), &authority.verifier, &narrowed, 1024, None)?;
-    let denied = async { narrowed.read(&summary, 1024, None, None)?.await }
+    // Negative control: two scopes of the same agent from the same signer,
+    // differing only in the journal read. Only the one holding it reads the
+    // summary, so the grant, not the agent's identity, admits it.
+    let verifier = issuer.verifier(&mut None)?;
+    let with_journal =
+        FilesystemContentVerifier::new(host.clone(), &verifier, &with_journal, 1024, None)?;
+    assert_eq!(
+        with_journal
+            .read(&summary, 1024, None, None)?
+            .await?
+            .as_ref(),
+        b"summary"
+    );
+    let without_journal =
+        FilesystemContentVerifier::new(host.clone(), &verifier, &without_journal, 1024, None)?;
+    let denied = async { without_journal.read(&summary, 1024, None, None)?.await }
         .await
         .expect_err("a scope without the journal read projected a summary");
     assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
