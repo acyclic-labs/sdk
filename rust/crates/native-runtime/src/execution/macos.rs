@@ -191,7 +191,7 @@ impl Prepared {
                         profile,
                         "(allow network-outbound (remote tcp \"*:{port}\"))"
                     )
-                    .expect("writing to String");
+                    .map_err(io::Error::other)?;
                 }
             }
         }
@@ -375,7 +375,7 @@ fn rule(profile: &mut String, operations: &str, root: &super::BoundPath) -> io::
 fn path_rule(profile: &mut String, operations: &str, filter: &str, path: &Path) -> io::Result<()> {
     let path = profile_path(path)?;
     use std::fmt::Write;
-    write!(profile, "(allow {operations} ({filter} \"{path}\"))").expect("writing to String");
+    write!(profile, "(allow {operations} ({filter} \"{path}\"))").map_err(io::Error::other)?;
     Ok(())
 }
 
