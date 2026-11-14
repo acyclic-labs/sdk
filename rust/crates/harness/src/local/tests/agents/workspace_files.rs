@@ -78,6 +78,41 @@ async fn private_computed_views_reopen_through_the_real_session() -> Result<()> 
                 return Err(Error::Conflict("private UI event reply".into()));
             };
             assert_ne!(changed.generation, page.generation);
+            let AgentReply::Directory { page: cases } = connection
+                .execute(&AgentCommand::Directory {
+                    agent: root.clone(),
+                    target: DirectoryTarget::Private {},
+                    path: "evals".into(),
+                    generation: None,
+                    after_generation: None,
+                    page: AgentPageRequest::default(),
+                })
+                .await?
+            else {
+                return Err(Error::Conflict("evaluation directory reply".into()));
+            };
+            assert_eq!(cases.entries.len(), 1);
+            assert_eq!(cases.entries[0].name, "00000000000000000000.json");
+            let case = connection
+                .execute(&AgentCommand::Read {
+                    agent: root.clone(),
+                    offset: 0,
+                    target: ReadTarget::Path {
+                        target: DirectoryTarget::Private {},
+                        path: format!("evals/{}", cases.entries[0].name),
+                        generation: cases.generation,
+                    },
+                })
+                .await?;
+            let (case, _) = case.content().map_err(agent)?;
+            let case: serde_json::Value = serde_json::from_slice(&case).map_err(agent)?;
+            assert_eq!(
+                case["cut"]["stream"],
+                root.conversation().map_err(agent)?.as_str()
+            );
+            assert_eq!(case["cut"]["through"], 0);
+            assert_eq!(case["cut"]["checkpoint"]["conversation"], 0);
+            assert_eq!(case["outcome"]["checkpoint"]["conversation"], 1);
             pinned = Some(page.generation);
             let state = harness
                 .agents()
