@@ -717,7 +717,7 @@ fn a_root_alone_narrows_but_never_rotates() {
     let raised = world
         .root
         .raise_minimum_epoch(2, NOW)
-        .map_err(|error| error.to_string())?;
+        .expect("signed epoch proposal");
     assert!(verify::verify(&bytes, &trust, NOW).is_ok());
     trust.apply(&raised, NOW).unwrap();
     assert!(verify::verify(&bytes, &trust, NOW).is_err());
