@@ -9,6 +9,9 @@ use acyclic_stream::{
 use futures::{StreamExt as _, future::poll_fn};
 use std::sync::Arc;
 
+#[path = "agents_tests/delivery.rs"]
+mod delivery;
+
 struct Endpoint(Arc<MemoryStream>);
 impl transport::Transport for Endpoint {
     fn session(
