@@ -17,12 +17,12 @@ trap restore EXIT
 cd "$source_root"
 
 run_case() {
-    local test=$1 expected=$2 log=$3
+    local test=$1 expected=$2 log=$3 features=${4:---all-features}
     local result=0 revision
     revision=$(git rev-parse HEAD)
     # Compile, then run the one test under the suite's 10 s per-test limit.
     (
-        cargo test --locked --all-features -p acyclic-actors --lib --no-run 2>&1 | tee "$log.build"
+        cargo test --locked $features -p acyclic-actors --lib --no-run 2>&1 | tee "$log.build"
         binary=$(grep -oE '\([^()]*/acyclic_actors-[0-9a-f]+\)' "$log.build" | tail -1 | tr -d '()')
         cd rust/crates/actors
         timeout --signal=KILL 10 "$binary" "$test" --nocapture
@@ -80,5 +80,7 @@ fs.appendFileSync(`${model}/composition.rs`, '\n' + helper[0]);
 JS
 cp "$scratch/overlay/custody.rs" "$model/historical_custody.rs"
 printf '\nmod historical_custody;\n' >> "$model.rs"
-run_case "$custody_test" fail "$scratch/custody-before.log"
+# This revision does not build its gRPC stream feature (unlinked `url`); the
+# custody path needs only test-support.
+run_case "$custody_test" fail "$scratch/custody-before.log" "--features test-support"
 printf 'ACTORS_HISTORY_COMPLETE source=%s cases=4\n' "$source_sha"
