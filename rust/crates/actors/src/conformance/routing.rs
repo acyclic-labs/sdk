@@ -10,6 +10,9 @@ use acyclic_stream::{
 };
 use futures::TryStreamExt as _;
 
+/// Signed account admission and event-driven reservation backpressure.
+pub mod account;
+
 /// A destination restart after inbox commit but before relay acknowledgement
 /// replays through ordinary activation without running the input twice. Every
 /// backend executes its real package and scheduler, not just inbox appends.

@@ -429,12 +429,18 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
         case: &'static str,
         template: Option<&crate::local::Snapshot>,
     ) -> Result<Self, Failure> {
-        let actor = ActorReference::new(
-            b"conformance",
-            b"actors",
-            format!("{run}-{case}").as_bytes(),
-        )
-        .map_err(|_| Error::Invalid("conformance actor id"))?;
+        Self::spawn_in_account(target, run, case, template, b"conformance").await
+    }
+
+    async fn spawn_in_account(
+        target: &'a T,
+        run: &str,
+        case: &'static str,
+        template: Option<&crate::local::Snapshot>,
+        account: &[u8],
+    ) -> Result<Self, Failure> {
+        let actor = ActorReference::new(account, b"actors", format!("{run}-{case}").as_bytes())
+            .map_err(|_| Error::Invalid("conformance actor id"))?;
         let inbox =
             StreamPath::new(format!("conformance/{run}/{case}/inbox")).map_err(Error::from)?;
         let outbox =
@@ -729,6 +735,7 @@ pub async fn verify<T: Backend + ?Sized>(target: &T) -> Result<(), Failure> {
     .await?;
     let run = target.namespace();
     routing::replayed_delivery(target, run).await?;
+    routing::account::credited_delivery(target, run).await?;
     ordered(target, run).await?;
     applied(target, run).await?;
     invoked(target, run).await?;

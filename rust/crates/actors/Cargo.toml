@@ -17,7 +17,7 @@ path = "src/bin/actors-rpc-inventory.rs"
 test = false
 
 [features]
-conformance = ["acyclic-stream/conformance"]
+conformance = ["acyclic-auth/test-support", "acyclic-stream/test-support"]
 model-checking = ["dep:loom", "acyclic-stream/model-checking"]
 test-support = [
     "acyclic-auth/test-support",
