@@ -105,10 +105,16 @@ export async function generationInputs(root, action = generation) {
  * mechanism: an action names its root crates (its Rust inputs are their workspace closure), any further input paths, and
  * any further parts that select its outputs.
  * @param {string} root @param {{label: string, roots: () => Promise<string[]>, paths?: string[], parts?: string[]}} [action] */
+// Every environment setting that selects a compiler or changes what it emits: the compiler Cargo runs, its flags, Cargo's
+// profile, build and per-target configuration. Directories (CARGO_TARGET_DIR, CARGO_BUILD_TARGET_DIR) place outputs that
+// are remapped away, and a wrapper (sccache) caches without changing a byte, so neither selects an entry.
+const buildSetting = name => /^(?:SDK_PROTO_CODEGEN|ACYCLIC_CARGO_BIN|RUSTC|RUSTFLAGS|RUSTC_BOOTSTRAP|CARGO_ENCODED_RUSTFLAGS|CARGO_PROFILE_\w+|CARGO_BUILD_\w+|CARGO_TARGET_\w+)$/.test(name)
+  && !name.endsWith("_DIR");
+
 export async function generationKey(root, action = generation) {
   const tools = [`sdk-generation-v1\0${process.version}\0${process.platform}-${process.arch}`,
-    execFileSync("rustc", ["-vV"], { cwd: root, encoding: "utf8" }),
-    ...["SDK_PROTO_CODEGEN", "ACYCLIC_CARGO_BIN", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"].map(name => `${name}=${process.env[name] ?? ""}`),
+    execFileSync(process.env.RUSTC || "rustc", ["-vV"], { cwd: root, encoding: "utf8" }),
+    ...Object.keys(process.env).filter(buildSetting).sort().map(name => `${name}=${process.env[name]}`),
     process.env.SDK_PROTO_CODEGEN ? sha256(readFileSync(process.env.SDK_PROTO_CODEGEN)) : "",
     action.label, ...action.parts ?? []];
   return sha256(`${tools.map(part => `${part.length}:${part}`).join("")}${digestOf(await inputDigests(root, action))}`);

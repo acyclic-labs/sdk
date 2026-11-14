@@ -252,7 +252,7 @@ test("a memoized generation restores exactly what its run projected and pruned, 
 });
 
 test("a generation key covers every crate a generator compiles and names content alone, whatever its Git state", async () => {
-  const { digests, generationInputs } = await import("./generation-cache.mjs");
+  const { digests, generationInputs, generationKey } = await import("./generation-cache.mjs");
   const store = mkdtempSync(join(tmpdir(), "sdk-memo-store-"));
   const repository = mkdtempSync(join(tmpdir(), "sdk-memo-digests-"));
   const previous = process.env.SDK_GENERATION_CACHE;
@@ -263,6 +263,20 @@ test("a generation key covers every crate a generator compiles and names content
     for (const crate of ["actors-napi", "stream-napi", "filesystem-napi", "filesystem"]) {
       assert.ok(inputs.has(`rust/crates/${crate}/src/lib.rs`), `${crate} sources are generation inputs`);
     }
+    // The compiler Cargo runs and every setting that changes its output select the entry; output directories do not.
+    const fake = join(repository, "rustc");
+    writeFileSync(fake, "#!/bin/sh\necho fake-rustc\n", { mode: 0o755 });
+    const keyWith = async settings => {
+      const saved = Object.fromEntries(Object.keys(settings).map(name => [name, process.env[name]]));
+      Object.assign(process.env, settings);
+      try { return await generationKey(process.cwd()); }
+      finally { for (const [name, value] of Object.entries(saved)) if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+    };
+    const base = await keyWith({});
+    assert.notEqual(await keyWith({ RUSTC: fake }), base, "RUSTC selects the compiler");
+    assert.notEqual(await keyWith({ CARGO_PROFILE_WASM_RELEASE_OPT_LEVEL: "0" }), base, "a profile override changes the output");
+    assert.equal(await keyWith({ CARGO_TARGET_DIR: join(repository, "target") }), base, "an output directory selects nothing");
+    rmSync(fake);
     const git = (...args) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args], { cwd: repository });
     git("init", "-q");
     writeFileSync(join(repository, "kept"), "kept");

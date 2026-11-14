@@ -185,15 +185,9 @@ for (const name of targets) {
       roots: async () => selection.filter((_, index) => selection[index - 1] === "-p"),
       // A family's receipt digests its source roots, so they are inputs whole.
       paths: family?.sourceRoots ?? [],
-      parts: [name, profile, expectedVersion, placed],
+      // A family's receipt records its exact source snapshot, ignored files included, so the key does too.
+      parts: [name, profile, expectedVersion, placed, source?.sha256 ?? ""],
     }),
     owns: path => isWasmArtifactPath(path.slice(placed.length + 1)),
   });
-  // A family's receipt names the source digest it was built from; whether built or restored, it is this checkout's.
-  if (producer) {
-    const receipt = JSON.parse(readFileSync(resolve(output, "producer-receipt.json"), "utf8"));
-    if (receipt.source_sha256 !== source.sha256 || JSON.stringify(receipt.source_files) !== JSON.stringify(source.files)) {
-      throw new Error(`WASM receipt for ${name} names another source than this checkout`);
-    }
-  }
 }
