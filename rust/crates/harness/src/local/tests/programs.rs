@@ -1060,3 +1060,87 @@ async fn refused_settings_preserve_the_published_file_and_running_model() -> Res
     assert_eq!(provider.request_count(), 4);
     Ok(())
 }
+
+#[tokio::test]
+async fn authored_lifecycle_hooks_run_once_through_the_original_turn() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    std::fs::create_dir(directory.path().join(".git"))
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let pause = Arc::new(PauseBeforeReply::default());
+    let provider = pause.provider(
+        ScriptedModelProvider::new([ScriptedTurn::Text("ready".into())])
+            .with_context_capacity(capacity()),
+    );
+    let harness = Arc::new(
+        super::open_scripted(checkout_config(
+            directory.path(),
+            (model()?, provider.clone()),
+        )?)
+        .await?,
+    );
+    let connection = harness.connect().await?;
+    pause.arm(&harness, connection.root())?;
+    let AgentReply::Spawned { agent: worker, .. } = connection
+        .execute(&AgentCommand::Spawn {
+            parent: connection.root().clone(),
+            id: crate::agent::IntentId::try_from("hook-writer")
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            brief: ModelContent::Text("Prepare to author a hook".into()),
+            role: "worker".into(),
+        })
+        .await?
+    else {
+        return Err(Error::Invalid("hook worker did not open".into()));
+    };
+    agents::settled(&harness, &worker).await?;
+    assert_eq!(provider.request_count(), 1);
+    provider.extend([
+        code("author-hook", r#"
+            import {write} from 'acyclic';
+            await write('volume:///home/hooks/context/program.ts', {
+                version: 1, name: 'context', description: 'Contribute tool context',
+                inputSchema: {type: 'object'},
+                entry: {sh: 'main.sh', ps1: 'main.ps1'},
+                on: {kind: 'lifecycle', event: 'PreToolUse'},
+            }, 'absent');
+            await write('volume:///home/hooks/context/main.sh', `printf '%s' '{"hookSpecificOutput":{"additionalContext":"authored-hook-context"}}'`, 'absent');
+            await write('volume:///home/hooks/context/main.ps1', `[Console]::Out.Write('{"hookSpecificOutput":{"additionalContext":"authored-hook-context"}}')`, 'absent');
+            export default 'authored';
+        "#),
+        code("trigger-hook", "export default 'triggered';"),
+        ScriptedTurn::Text("hook delivered".into()),
+    ]);
+    let conversation = Conversation::open(connection.select(worker).await?);
+    let mut observed = ObservedConversation::observe(conversation, None).await?;
+    let entry = observed
+        .send("author-lifecycle-hook", "Write and run a lifecycle hook")
+        .await?;
+    assert!(entry.outcome.is_completed(), "{:?}", entry.outcome);
+    assert_eq!(provider.request_count(), 4);
+    assert_eq!(
+        observed.conversation.output_text(&entry).await?,
+        "hook delivered"
+    );
+    let before = provider.request(2).unwrap();
+    let after = provider.request(3).unwrap();
+    assert_eq!(result(&before, "author-hook")?, "authored");
+    assert_eq!(result(&after, "trigger-hook")?, "triggered");
+    let contributions = |request: &crate::model::ModelRequest| {
+        request.messages.iter().filter(|message| {
+            matches!(&message.content, ModelContent::Text(text) if text == "authored-hook-context")
+        }).count()
+    };
+    assert_eq!(contributions(&before), 0);
+    assert_eq!(contributions(&after), 1);
+    assert_eq!(before.operation_id, after.operation_id);
+    assert_eq!(system_prefix(&before)?, system_prefix(&after)?);
+    assert_eq!(
+        observed
+            .conversation
+            .send("author-lifecycle-hook", "Write and run a lifecycle hook")
+            .await?,
+        entry.inbox
+    );
+    assert_eq!(provider.request_count(), 4);
+    Ok(())
+}
