@@ -532,7 +532,7 @@ async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
     );
     assert!(unbounded!(target, read("/source-after-plan", 16)).is_err());
 
-    let stale_plan = source
+    let composing_plan = source
         .join_into(&target)
         .plan(
             acyclic_fs::WorkBudget::UNBOUNDED,
@@ -542,36 +542,12 @@ async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
     target.write_text("/target-race", "winner").await?;
-    assert!(matches!(
-        stale_plan
-            .apply(
-                ApplyOptions {
-                    if_target: stale_plan.target_head(),
-                    idempotency_key: IdempotencyKey::from_bytes([5; 16]),
-                },
-                std::collections::BTreeMap::new(),
-                acyclic_fs::PublicationPermit::Unrestricted
-            )
-            .await?,
-        JoinOutcome::StaleTarget(_)
-    ));
-    assert!(unbounded!(target, read("/source-after-plan", 16)).is_err());
-
-    let current_plan = source
-        .join_into(&target)
-        .plan(
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
     let options = ApplyOptions {
-        if_target: current_plan.target_head(),
-        idempotency_key: IdempotencyKey::from_bytes([6; 16]),
+        if_target: composing_plan.target_head(),
+        idempotency_key: IdempotencyKey::from_bytes([5; 16]),
     };
     assert!(matches!(
-        current_plan
+        composing_plan
             .apply(
                 options,
                 std::collections::BTreeMap::new(),
@@ -581,7 +557,7 @@ async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
         JoinOutcome::Applied(_)
     ));
     assert!(matches!(
-        current_plan
+        composing_plan
             .apply(
                 options,
                 std::collections::BTreeMap::new(),
@@ -593,6 +569,39 @@ async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
     assert_eq!(
         unbounded!(target, read("/source-after-plan", 16))?.as_ref(),
         &b"two"[..]
+    );
+    assert_eq!(
+        unbounded!(target, read("/target-race", 16))?.as_ref(),
+        &b"winner"[..]
+    );
+
+    source.write_text("/source-after-plan", "three").await?;
+    let stale_plan = source
+        .join_into(&target)
+        .plan(
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)?;
+    target.write_text("/source-after-plan", "winner").await?;
+    assert!(matches!(
+        stale_plan
+            .apply(
+                ApplyOptions {
+                    if_target: stale_plan.target_head(),
+                    idempotency_key: IdempotencyKey::from_bytes([6; 16]),
+                },
+                std::collections::BTreeMap::new(),
+                acyclic_fs::PublicationPermit::Unrestricted
+            )
+            .await?,
+        JoinOutcome::StaleTarget(_)
+    ));
+    assert_eq!(
+        unbounded!(target, read("/source-after-plan", 16))?.as_ref(),
+        &b"winner"[..]
     );
     Ok(())
 }
