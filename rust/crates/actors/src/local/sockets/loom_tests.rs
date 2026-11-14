@@ -22,7 +22,7 @@ async fn records(provider: &MemoryStream, path: &StreamPath) -> Result<Vec<Recor
 }
 
 /// Two closers race one message after the production Open effects commit.
-async fn race(recover: bool) -> Result {
+fn race(recover: bool) -> Result {
     let provider = Arc::new(MemoryStream::default());
     let store = Store::new(Arc::clone(&provider), StreamPath::new("loom/actors")?);
     let layout = Layout::new(StreamPath::new("loom/actors/_sockets/v1")?)?;
@@ -37,21 +37,18 @@ async fn race(recover: bool) -> Result {
         allocated: 1,
         epochs: epochs.len() as u64,
     };
-    assert!(
-        commit(
-            &store,
-            &PlatformExecutor,
-            layout.key(&[b"epochs"])?,
-            vec![append(
-                layout.epochs.clone(),
-                epochs,
-                vec![CommitCondition::Absent {
-                    path: layout.epochs.clone(),
-                }],
-            )],
-        )
-        .await?
-    );
+    assert!(block_on(Box::pin(commit(
+        &store,
+        &PlatformExecutor,
+        layout.key(&[b"epochs"])?,
+        vec![append(
+            layout.epochs.clone(),
+            epochs,
+            vec![CommitCondition::Absent {
+                path: layout.epochs.clone(),
+            }],
+        )],
+    )))?);
     let open = SocketOpen {
         actor: target.actor.clone(),
         subscription: "inbox".into(),
@@ -79,8 +76,13 @@ async fn race(recover: bool) -> Result {
         Vec::new(),
     ));
     effects.push(store.activation(&target.actor)?);
-    assert!(commit(&store, &PlatformExecutor, layout.key(&[b"open"])?, effects,).await?);
-    let inbox = records(&provider, &target.inbox).await?;
+    assert!(block_on(Box::pin(commit(
+        &store,
+        &PlatformExecutor,
+        layout.key(&[b"open"])?,
+        effects,
+    )))?);
+    let inbox = block_on(Box::pin(records(&provider, &target.inbox)))?;
     assert_eq!(inbox.len(), 1);
     let invocation = crate::invocation::Invocation::decode(&inbox[0])?
         .ok_or("Open admission omitted its invocation")?;
@@ -107,7 +109,7 @@ async fn race(recover: bool) -> Result {
             .map_err(|error| error.to_string())
         }
     });
-    commit_message(
+    block_on(Box::pin(commit_message(
         &store,
         &PlatformExecutor,
         &layout,
@@ -120,23 +122,21 @@ async fn race(recover: bool) -> Result {
                 text: "frame".into(),
             }),
         )?,
-    )
-    .await?;
+    )))?;
     if recover {
         // A crash loses every in-memory socket owner. Recovery uses only the
         // persisted frontier and ledger, fences old opens/closes, and publishes
         // the missing Close. A second crash must not publish it again.
         for _ in 0..2 {
-            Sockets::open(
+            block_on(Box::pin(Sockets::open(
                 Store::new(provider.clone(), store.root().clone()),
                 layout.root.clone(),
                 Arc::new(PlatformExecutor),
                 Arc::new(super::super::SystemClock),
-            )
-            .await?;
+            )))?;
         }
     } else {
-        commit_close(
+        block_on(Box::pin(commit_close(
             &store,
             &PlatformExecutor,
             &layout,
@@ -144,11 +144,10 @@ async fn race(recover: bool) -> Result {
             &target,
             Some(ledger),
             &Close::new(1000, "actor closed", SocketCloseInitiator::Actor),
-        )
-        .await?;
+        )))?;
     }
     peer.join().map_err(|_| "peer closer panicked")??;
-    let inbox = records(&provider, &target.inbox).await?;
+    let inbox = block_on(Box::pin(records(&provider, &target.inbox)))?;
     let kinds: Vec<&str> = inbox
         .iter()
         .skip(1)
@@ -164,16 +163,16 @@ async fn race(recover: bool) -> Result {
         Some(&"close"),
         "an event followed the Close: {kinds:?}"
     );
-    assert_eq!(records(&provider, &socket).await?.len(), 2);
+    assert_eq!(block_on(Box::pin(records(&provider, &socket)))?.len(), 2);
     Ok(())
 }
 
 #[test]
 fn concurrent_closes_and_messages_deliver_exactly_one_final_close() {
     loom::model(|| {
-        // Keep the operation state in one pinned future rather than copying
-        // each nested future through a by-value blocking helper.
-        let result = block_on(Box::pin(race(false)));
+        // Match Stream's models: drive one production publication at a time
+        // instead of retaining the whole scenario in a nested async frame.
+        let result = race(false);
         assert!(result.is_ok(), "{result:?}");
     });
 }
@@ -181,7 +180,7 @@ fn concurrent_closes_and_messages_deliver_exactly_one_final_close() {
 #[test]
 fn crash_recovery_and_live_closers_deliver_exactly_one_final_close() {
     loom::model(|| {
-        let result = block_on(Box::pin(race(true)));
+        let result = race(true);
         assert!(result.is_ok(), "{result:?}");
     });
 }
