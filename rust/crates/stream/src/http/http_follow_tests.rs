@@ -355,8 +355,31 @@ async fn cancelling_a_pending_unary_body_closes_the_connection() {
         }),
     )
     .await;
+    #[cfg(feature = "serde")]
+    let trace = Stream::new(
+        Arc::new(MemoryStream::default()),
+        "agents/http-cancel/trace",
+    )
+    .unwrap();
+    #[cfg(feature = "serde")]
+    let recorder = Arc::new(crate::trace::Recorder::new(trace.clone(), [95; 16]));
+    #[cfg(feature = "serde")]
+    let root = recorder
+        .start(
+            "http-owner",
+            crate::trace::Mechanism::ToolCall,
+            None,
+            Some("original_request"),
+        )
+        .await
+        .unwrap()
+        .into_owned();
+    #[cfg(feature = "serde")]
+    let parent = root.id();
     {
         let reading = server.client.inspect_idempotency(key);
+        #[cfg(feature = "serde")]
+        let reading = root.within(reading);
         tokio::pin!(reading);
         tokio::select! {
             result = &mut reading => panic!("body completed while held: {}", result.is_ok()),
@@ -370,6 +393,47 @@ async fn cancelling_a_pending_unary_body_closes_the_connection() {
     }
     closed.await.unwrap();
     assert_eq!(server.requests().len(), 1);
+    #[cfg(feature = "serde")]
+    {
+        use crate::trace::{Mechanism, Observation, Outcome, TraceQuery};
+        let _completion = root.finish_submitted(None, Outcome::Succeeded).unwrap();
+        let mut query = TraceQuery::new(
+            trace.follow(0, Default::default()).await.unwrap(),
+            Default::default(),
+        );
+        let mut completed = 0;
+        let mut cancelled = false;
+        while completed < 2 {
+            if let Observation::Completed {
+                id,
+                start,
+                bytes,
+                result,
+                ..
+            } = query
+                .next()
+                .await
+                .unwrap()
+                .expect("original trace must remain readable")
+            {
+                completed += 1;
+                if id == parent {
+                    assert_eq!(result, Outcome::Succeeded);
+                } else {
+                    assert!(
+                        !cancelled,
+                        "one physical request emitted duplicate terminals"
+                    );
+                    cancelled = true;
+                    assert_eq!(start.parent, Some(parent));
+                    assert_eq!(start.mechanism, Mechanism::RoundTrip);
+                    assert_eq!(result, Outcome::Unsettled);
+                    assert_eq!(bytes, None, "a partial response has no settled body size");
+                }
+            }
+        }
+        assert!(cancelled, "dropped HTTP work was reported as settled");
+    }
 }
 
 #[cfg(feature = "serde")]
