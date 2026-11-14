@@ -163,6 +163,13 @@ struct PublicationReceipts {
     failure: Option<(io::ErrorKind, Option<i32>)>,
 }
 
+impl PublicationReceipts {
+    fn slot(&mut self, notification: bool) -> &mut Option<PacketDevicePublication> {
+        let [reply, notice] = &mut self.completed;
+        if notification { notice } else { reply }
+    }
+}
+
 /// An acknowledged physical device-write outcome, distinct from transport loss.
 /// A rejected frame published no bytes and does not retire its connection.
 #[derive(Debug, PartialEq, Eq)]
@@ -224,7 +231,7 @@ impl PacketDeviceRetirement {
     pub fn publication(&self, notification: bool) -> io::Result<PacketDevicePublication> {
         let mut state = self.receipts.lock().unwrap_or_else(PoisonError::into_inner);
         loop {
-            if let Some(receipt) = state.completed[usize::from(notification)].take() {
+            if let Some(receipt) = state.slot(notification).take() {
                 return Ok(receipt);
             }
             if self.retired.load(Ordering::Acquire) {
@@ -263,10 +270,7 @@ impl PacketDeviceRetirement {
                 }
             };
             if let Some((class, receipt)) = completed {
-                if state.completed[usize::from(class)]
-                    .replace(receipt)
-                    .is_some()
-                {
+                if state.slot(class).replace(receipt).is_some() {
                     state.failure = Some((io::ErrorKind::InvalidData, None));
                 }
             }
@@ -351,8 +355,12 @@ fn owner_exit() -> io::Result<&'static OwnedFd> {
                     ),
                 ))
             } else {
-                // SAFETY: pidfd_open returned this fresh descriptor.
-                Ok(unsafe { OwnedFd::from_raw_fd(file as i32) })
+                let file = i32::try_from(file).map_err(io::Error::other);
+                file.map(|file| {
+                    // SAFETY: pidfd_open returned this fresh descriptor and no
+                    // other owner has been constructed from it.
+                    unsafe { OwnedFd::from_raw_fd(file) }
+                })
             };
             if started.send(result).is_ok() {
                 let _ = parked.recv();
@@ -373,15 +381,15 @@ fn address(path: &std::path::Path) -> io::Result<(libc::sockaddr_un, libc::sockl
     let name = path.as_os_str().as_bytes();
     // SAFETY: all-zero is valid address storage, including its trailing NUL.
     let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    address.sun_family = libc::AF_UNIX as _;
+    address.sun_family = libc::AF_UNIX.try_into().map_err(io::Error::other)?;
     if name.len() + 1 > address.sun_path.len() {
         return Err(io::ErrorKind::InvalidInput.into());
     }
     for (target, byte) in address.sun_path.iter_mut().zip(name) {
-        *target = *byte as _;
+        *target = libc::c_char::from_ne_bytes([*byte]);
     }
     let length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + 1 + name.len();
-    Ok((address, length as _))
+    Ok((address, length.try_into().map_err(io::Error::other)?))
 }
 
 fn socket() -> io::Result<OwnedFd> {
@@ -681,7 +689,9 @@ fn connect_existing(path: &std::path::Path) -> io::Result<Option<UnixStream>> {
 fn authenticate(control: UnixStream) -> io::Result<UnixStream> {
     // SAFETY: ucred contains only integer fields, all valid when zero initialized.
     let mut peer: libc::ucred = unsafe { std::mem::zeroed() };
-    let mut size = std::mem::size_of_val(&peer) as libc::socklen_t;
+    let mut size = std::mem::size_of_val(&peer)
+        .try_into()
+        .map_err(io::Error::other)?;
     // SAFETY: SO_PEERCRED fills the initialized peer structure.
     if unsafe {
         libc::getsockopt(
