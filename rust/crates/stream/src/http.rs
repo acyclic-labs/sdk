@@ -702,11 +702,16 @@ mod tests {
                 http.status = 777_u64
             );
             let result = provider
-                .tail(StreamPath::new("filtered/test")?)
+                .append(crate::AppendRequest {
+                    path: StreamPath::new("filtered/test")?,
+                    records: vec![crate::OwnedBytes::from_static(b"original-request").into()],
+                    if_tail: None,
+                    idempotency_key: crate::IdempotencyKey::unique(),
+                })
                 .instrument(parent)
                 .await;
             server.await?;
-            let error = result.expect_err("the closed connection cannot return a tail");
+            let error = result.expect_err("the closed connection cannot return an append receipt");
             assert_eq!(error.code(), StreamError::Unavailable.code());
             assert!(error.uncertain());
             drop(provider);
