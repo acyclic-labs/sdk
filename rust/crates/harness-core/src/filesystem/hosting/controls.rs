@@ -737,10 +737,11 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
             metadata_home_from: None,
             paused: false,
         };
-        let metadata = (agent.depth() == 0 && self.routing.is_some())
-            .then_some([(PEERS, agent.peer_membership()?)])
-            .into_iter()
-            .flatten();
+        let metadata = if agent.depth() == 0 && self.routing.is_some() {
+            Some((PEERS, agent.peer_membership()?))
+        } else {
+            None
+        };
         let subscriptions: std::collections::BTreeMap<String, Subscription> = [PAUSE, STOP, STEER]
             .into_iter()
             .map(|id| {
