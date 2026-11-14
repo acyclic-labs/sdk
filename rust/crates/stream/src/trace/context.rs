@@ -64,7 +64,7 @@ pin_project_lite::pin_project! {
 impl<F: Future> Future for Inherited<F> {
     type Output = F::Output;
     fn poll(
-        self: std::pin::Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         let this = self.project();
