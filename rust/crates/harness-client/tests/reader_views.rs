@@ -1,7 +1,9 @@
 //! Views driven by the original provider's cuts and wake events.
 
 use acyclic_harness_client::explorer::{Explorer, Row};
-use acyclic_harness_client::reader::{Driver, Op, Outcome, Priority, Reader, ReaderPolicy, Want};
+use acyclic_harness_client::reader::{
+    Driver, Op, Outcome, Priority, ReadIssue, Reader, ReaderPolicy, Want,
+};
 use acyclic_harness_core::agent::{AgentId, AgentPath, AgentRecord, Phase, StatusRecord};
 use acyclic_stream::{
     AppendRequest, ForkRequest, IdempotencyKey, MemoryStream, StreamPath, StreamProviderExt as _,
@@ -184,6 +186,19 @@ fn explorer_prefetch_and_expansion_keep_original_provider_cuts() {
                 .cache()
                 .listing(&root.children().unwrap(), 0)
                 .is_some()
+        );
+        assert_eq!(
+            explorer
+                .reader_ref()
+                .cache()
+                .listing(&root.children().unwrap(), 0)
+                .unwrap()
+                .children,
+            [StreamPath::new(child.as_str()).unwrap()]
+        );
+        assert_eq!(
+            explorer.reader_ref().issue(&root.membership().unwrap()),
+            Some(&ReadIssue::Refused(acyclic_stream::StreamError::NotFound))
         );
         // More logical expansion intents than the former hidden limit. Only
         // the existing visible branch has provider data or consumes credit.

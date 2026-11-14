@@ -170,9 +170,11 @@ pub enum Want {
         /// Relative stream whose last record each child row carries.
         tail: Option<StreamPath>,
         /// A stream committed with every change to this parent's children
-        /// (an agent's status, written by the step that spawns a child). A
+        /// (an agent's membership feed, written when a child is created). A
         /// cached page revalidates once this stream's tail moves past the
-        /// tail seen when the page was requested.
+        /// tail seen when the page was requested. If the witness is absent,
+        /// the page is cached without a freshness position and its original
+        /// NotFound issue remains available to the caller.
         witness: Option<StreamPath>,
     },
 }
@@ -935,6 +937,13 @@ impl Reader {
                 // be opened and the first child would remain invisible.
                 if let Some(witness) = witness
                     && self.cache.tail(witness).is_none()
+                    // A missing witness does not make the subtree absent.
+                    // Cache its page without a freshness position, retaining
+                    // the original refusal until the caller acknowledges it.
+                    && !matches!(
+                        self.issues.get(witness),
+                        Some(ReadIssue::Refused(error)) if error.category() == StreamError::NotFound
+                    )
                 {
                     return Some((OpKey::Head(witness.clone()), Paging::default()));
                 }
