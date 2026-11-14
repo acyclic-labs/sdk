@@ -57,7 +57,7 @@ impl Mode {
             Self::Local => {
                 let project = volume(directory.path()).await?;
                 let local = Arc::new(
-                    open_scripted(
+                    LocalHarness::open(
                         volume_config(directory.path(), project, provider)?
                             .without_default_tools()
                             .compaction(crate::context::CompactionPolicy::default()),
@@ -250,7 +250,8 @@ impl Platform {
 async fn summaries_remain_readable(mode: Mode) -> Result<()> {
     let provider = Arc::new(
         ScriptedModelProvider::new(
-            ["FIRST", "SUMMARY", "AFTER"].map(|text| ScriptedTurn::Text(text.into())),
+            ["FIRST", "none", "SUMMARY", "AFTER", "none"]
+                .map(|text| ScriptedTurn::Text(text.into())),
         )
         .with_context_capacity(capacity())
         .reading_content(),
@@ -277,10 +278,10 @@ async fn summaries_remain_readable(mode: Mode) -> Result<()> {
     );
     let after = client.send("after", "use the retained fact").await?;
     assert!(after.outcome.is_completed(), "{:?}", after.outcome);
-    assert_eq!(provider.request_count(), 3);
+    assert_eq!(provider.request_count(), 5);
     assert_eq!(provider.remaining(), 0);
     let request = provider
-        .request(2)
+        .request(3)
         .ok_or_else(|| Error::NotFound("request after compaction".into()))?;
     let text = platform.request_text(&request).await?;
     assert!(text.contains("SUMMARY"), "{text}");
@@ -305,6 +306,7 @@ async fn cancelled_input_remains_in_context(mode: Mode) -> Result<()> {
         ScriptedModelProvider::new([
             ScriptedTurn::Events(vec![crate::test_support::ScriptedEvent::Pending {}]),
             ScriptedTurn::Text("AFTER_REPLY".into()),
+            ScriptedTurn::Text("none".into()),
         ])
         .with_context_capacity(capacity())
         .reading_content()
@@ -425,8 +427,11 @@ async fn in_turn_summary_remains_readable(mode: Mode) -> Result<()> {
     let script = Arc::new(
         ScriptedModelProvider::new([
             ScriptedTurn::Text("FIRST".into()),
+            ScriptedTurn::Text("none".into()),
             ScriptedTurn::Text("SECOND".into()),
+            ScriptedTurn::Text("none".into()),
             ScriptedTurn::Text("AFTER".into()),
+            ScriptedTurn::Text("none".into()),
         ])
         .with_context_capacity(capacity())
         .reading_content(),
@@ -449,9 +454,9 @@ async fn in_turn_summary_remains_readable(mode: Mode) -> Result<()> {
     let second = client.send("second", &pressure).await?;
     assert!(second.outcome.is_completed(), "{:?}", second.outcome);
     assert!(summaries.load(std::sync::atomic::Ordering::SeqCst) > 0);
-    assert_eq!(script.request_count(), 3);
+    assert_eq!(script.request_count(), 6);
     let request = script
-        .request(2)
+        .request(4)
         .ok_or_else(|| Error::NotFound("compacted response request".into()))?;
     let text = platform.request_text(&request).await?;
     assert!(
