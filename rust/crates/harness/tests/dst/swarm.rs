@@ -190,6 +190,66 @@ fn respond(plan: &[Step], request: &ModelRequest) -> Result<ScriptedTurn> {
     Ok(ScriptedTurn::Events(events))
 }
 
+/// Each model request's node and the `(child, turn)` settlements its history
+/// delivers, in history order.
+type Seen = Arc<std::sync::Mutex<Vec<(String, Vec<(String, String)>)>>>;
+
+fn settlements(request: &ModelRequest) -> Vec<(String, String)> {
+    request
+        .messages
+        .iter()
+        .filter_map(|message| message.content.notice_parts())
+        .flat_map(|(notices, _)| notices)
+        .filter(|notice| notice.kind == "child.settled")
+        .map(|notice| (notice.source.clone(), notice.body["turn"].to_string()))
+        .collect()
+}
+
+/// Every child result reaches its parent exactly once: no request's history
+/// holds one settlement twice, and each parent's requests deliver exactly one
+/// settlement per child turn that reports (every turn but cancelled ones).
+async fn exactly_once(
+    harness: &Arc<LocalHarness>,
+    tree: &[(String, AgentPath)],
+    seen: &Seen,
+) -> Result<()> {
+    let seen = seen.lock().map_err(storage)?.clone();
+    for (node, delivered) in &seen {
+        let mut unique = BTreeSet::new();
+        if let Some(twice) = delivered.iter().find(|settled| !unique.insert(*settled)) {
+            return Err(Error::Conflict(format!(
+                "{node} received settlement {twice:?} twice in one request"
+            )));
+        }
+    }
+    for (node, agent) in tree {
+        let Some((parent, _)) = node.rsplit_once('/') else {
+            continue;
+        };
+        let reported = entry(turns(harness, agent))
+            .await?
+            .iter()
+            .filter(|turn| {
+                turn.input.context().is_none() && !matches!(turn.outcome, TurnOutcome::Cancelled)
+            })
+            .count();
+        let source = agent.to_string();
+        let delivered: BTreeSet<_> = seen
+            .iter()
+            .filter(|(owner, _)| owner == parent)
+            .flat_map(|(_, settled)| settled)
+            .filter(|(child, _)| *child == source)
+            .collect();
+        if delivered.len() != reported {
+            return Err(Error::Conflict(format!(
+                "{parent} received {} settlements of {node}, which reported {reported} turns: {delivered:?}",
+                delivered.len()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Every agent of the plan that exists, root first, by node id.
 async fn agents_of(harness: &Arc<LocalHarness>, plan: &[Step]) -> Result<Vec<(String, AgentPath)>> {
     let (agents, root) = harness.agents().await?;
@@ -289,7 +349,15 @@ fn swarm<'a>(directory: &'a Path, plan: &'a [Step]) -> EntryFuture<'a, Result<()
             .await?;
         let model = Model::new("scripted".into(), "swarm".into(), "1".into())?;
         let owned = plan.to_vec();
+        let seen = Seen::default();
+        let recorded = Arc::clone(&seen);
         let provider = Arc::new(ScriptedModelProvider::responding(move |request| {
+            if let Some((node, _)) = node_of(request) {
+                recorded
+                    .lock()
+                    .map_err(storage)?
+                    .push((node, settlements(request)));
+            }
             respond(&owned, request)
         }));
         let config = local_harness_config(directory.join("filesystem"), (model, provider))?
@@ -303,8 +371,9 @@ fn swarm<'a>(directory: &'a Path, plan: &'a [Step]) -> EntryFuture<'a, Result<()
         {
             return Err(Error::Conflict(format!("root prompt failed: {message}")));
         }
-        for (node, agent) in entry(settle(&harness, plan)).await? {
-            for (index, turn) in entry(turns(&harness, &agent)).await?.iter().enumerate() {
+        let tree = entry(settle(&harness, plan)).await?;
+        for (node, agent) in &tree {
+            for (index, turn) in entry(turns(&harness, agent)).await?.iter().enumerate() {
                 if let TurnOutcome::Failed { message } = &turn.outcome {
                     return Err(Error::Conflict(format!(
                         "{node} turn {index} failed: {message}"
@@ -312,7 +381,7 @@ fn swarm<'a>(directory: &'a Path, plan: &'a [Step]) -> EntryFuture<'a, Result<()
                 }
             }
         }
-        Ok(())
+        exactly_once(&harness, &tree, &seen).await
     })
 }
 
