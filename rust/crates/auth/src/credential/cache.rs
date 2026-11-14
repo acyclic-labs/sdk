@@ -564,7 +564,7 @@ mod tests {
     use super::*;
     use std::sync::{
         Weak,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU8, AtomicUsize, Ordering},
     };
 
     struct Reenter {
@@ -583,7 +583,7 @@ mod tests {
                 self.locked.fetch_add(1, Ordering::SeqCst);
                 return;
             }
-            CredentialCache(inner).invalidate().unwrap();
+            assert!(CredentialCache(inner).invalidate().is_ok());
             self.drops.fetch_add(1, Ordering::SeqCst);
         }
     }
@@ -636,7 +636,7 @@ mod tests {
             let owner = Arc::new(Mutex::new(Weak::new()));
             let drops = Arc::new(AtomicUsize::new(0));
             let locked = Arc::new(AtomicUsize::new(0));
-            let revision = Arc::new(AtomicUsize::new(1));
+            let revision = Arc::new(AtomicU8::new(1));
             let cache = CredentialCache::new(
                 {
                     let (owner, drops, locked, revision) = (
@@ -655,7 +655,7 @@ mod tests {
                                     locked: locked.clone(),
                                 },
                             )),
-                            CredentialRevision::Bytes([revision.load(Ordering::SeqCst) as u8; 32]),
+                            CredentialRevision::Bytes([revision.load(Ordering::SeqCst); 32]),
                             100,
                         ))
                     }
@@ -665,7 +665,7 @@ mod tests {
                     move || CredentialValidity {
                         now_unix_seconds: 1,
                         revision: Some(CredentialRevision::Bytes(
-                            [revision.load(Ordering::SeqCst) as u8; 32],
+                            [revision.load(Ordering::SeqCst); 32],
                         )),
                     }
                 },

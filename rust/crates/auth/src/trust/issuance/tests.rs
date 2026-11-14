@@ -31,7 +31,16 @@ fn context(clock: Arc<OriginalClock>) -> Context {
 fn request(operation: u8, epoch: u64, change: impl FnOnce(&mut CertifiedKey)) -> Request {
     let root = crate::testing::root(|_| {});
     let verified = crate::verify::verify(&root, &crate::testing::Snapshot::default(), 100).unwrap();
-    let mut claims = verified.blocks()[0].certificates.as_ref().unwrap().keys[0]
+    let mut claims = verified
+        .blocks()
+        .first()
+        .expect("signed root block")
+        .certificates
+        .as_ref()
+        .unwrap()
+        .keys
+        .first()
+        .expect("issued key")
         .key
         .clone();
     claims.key_epoch = epoch;
@@ -119,7 +128,10 @@ impl IssuerModel {
         if self.record.is_some() {
             return Ok(self.lookup(request));
         }
-        let certificates = self.root.certify_request(&self.birth, request).unwrap();
+        let certificates = self
+            .root
+            .certify_request(&self.birth, request)
+            .map_err(|_| Unknown::InvalidReply)?;
         self.signatures += 1;
         if self.retain {
             self.record = Some(Stored {
@@ -154,6 +166,126 @@ impl Provider for Mutex<IssuerModel> {
     }
 }
 
+fn assert_request_envelope(client: &Client<Mutex<IssuerModel>>) {
+    // Mutations of the actual admitted envelope cannot create another
+    // spelling of its operation identity or bypass version admission.
+    let mut changed = client.request.wire().to_vec();
+    *changed.get_mut(1).expect("versioned envelope") = 2;
+    assert_eq!(
+        Request::decode(&changed).err(),
+        Some(VerifyError::Version(2))
+    );
+    let mut duplicate = client.request.wire().to_vec();
+    duplicate.extend_from_slice(client.request.wire().get(..2).expect("envelope header"));
+    assert_eq!(
+        Request::decode(&duplicate).err(),
+        Some(VerifyError::Malformed)
+    );
+    let missing = crate::contract::IssuanceReplyProto {
+        version: 1,
+        request_digest: client.request.digest().to_vec(),
+        decision: None,
+    };
+    assert_eq!(
+        Reply::decode(&missing.encode_to_vec()).err(),
+        Some(VerifyError::Malformed)
+    );
+    let invalid = crate::contract::IssuanceReplyProto {
+        decision: Some(crate::contract::IssuanceDecisionProto::Refused(
+            crate::contract::IssuanceRejectedProto { reason: 99 },
+        )),
+        ..missing
+    };
+    assert_eq!(
+        Reply::decode(&invalid.encode_to_vec()).err(),
+        Some(VerifyError::Malformed)
+    );
+}
+
+async fn assert_foreign_issuer_and_expiry(
+    client: &mut Client<Mutex<IssuerModel>>,
+    trust: &mut Snapshot,
+    accepted: &CertificateChain,
+    clock: &Arc<OriginalClock>,
+    epoch: u64,
+) {
+    // A valid signature by ANOTHER currently trusted account issuer must
+    // not settle an operation pinned to the original root.
+    let foreign = SigningKey::from_bytes(&[6; 32]);
+    let mut other = accepted.clone();
+    let mut transcript = Vec::new();
+    crate::crypto::claims_message(
+        &mut transcript,
+        crate::KEY_DOMAIN,
+        &CertifiedKeyProto::from(other.keys.first().expect("issued key").key.clone()),
+    )
+    .unwrap();
+    other.keys.first_mut().expect("issued key").signature =
+        foreign.sign(&transcript).to_bytes().to_vec();
+    trust.issuer_keys.push(foreign.verifying_key().to_bytes());
+    assert_eq!(
+        CertificateVerifier::default()
+            .verify_certificates(other.clone().into(), client.request.issuer(), trust, 100)
+            .err(),
+        Some(VerifyError::Trust)
+    );
+    // Negative control: the SAME signed certificate is acceptable for an
+    // explicit request to that other trusted issuer.
+    assert!(
+        CertificateVerifier::default()
+            .verify_certificates(
+                other.into(),
+                &foreign.verifying_key().to_bytes(),
+                trust,
+                100
+            )
+            .is_ok()
+    );
+
+    // Even a genuine certificate cannot substitute changed request claims.
+    {
+        let mut owner = client.provider.lock().unwrap();
+        let changed = request(8, epoch, |claims| claims.grants.grants.clear());
+        let certificate = owner.root.certify_request(&owner.birth, &changed).unwrap();
+        owner.record.as_mut().unwrap().certificate = certificate;
+    }
+    assert!(matches!(
+        client.recover(trust).await.unwrap(),
+        Outcome::Unknown(Unknown::InvalidReply)
+    ));
+    client
+        .provider
+        .lock()
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap()
+        .certificate = (*accepted).clone().into();
+    trust.issuer_keys.clear();
+    assert!(matches!(
+        client.recover(trust).await.unwrap(),
+        Outcome::Unknown(Unknown::Authority(_))
+    ));
+    trust.issuer_keys.push(*client.request.issuer());
+    // Time is read after the remote wait from the original clock, not a
+    // caller timestamp captured before dispatch.
+    clock.0.store(
+        accepted
+            .keys
+            .first()
+            .expect("issued key")
+            .key
+            .validity
+            .expires_at_unix_seconds
+            * 1000,
+        Ordering::SeqCst,
+    );
+    assert!(matches!(
+        client.recover(trust).await.unwrap(),
+        Outcome::Unknown(Unknown::Authority(VerifyError::Time))
+    ));
+}
+
 #[test]
 fn same_key_recovery_preserves_original_issuance_and_current_authority() {
     block_on(async {
@@ -165,47 +297,14 @@ fn same_key_recovery_preserves_original_issuance_and_current_authority() {
             context(clock.clone()),
             request(8, epoch, |_| {}),
         );
-        // Mutations of the actual admitted envelope cannot create another
-        // spelling of its operation identity or bypass version admission.
-        let mut changed = client.request.wire().to_vec();
-        changed[1] = 2;
-        assert_eq!(
-            Request::decode(&changed).err(),
-            Some(VerifyError::Version(2))
-        );
-        let mut duplicate = client.request.wire().to_vec();
-        duplicate.extend_from_slice(&client.request.wire()[..2]);
-        assert_eq!(
-            Request::decode(&duplicate).err(),
-            Some(VerifyError::Malformed)
-        );
-        let missing = crate::contract::IssuanceReplyProto {
-            version: 1,
-            request_digest: client.request.digest().to_vec(),
-            decision: None,
-        };
-        assert_eq!(
-            Reply::decode(&missing.encode_to_vec()).err(),
-            Some(VerifyError::Malformed)
-        );
-        let invalid = crate::contract::IssuanceReplyProto {
-            decision: Some(crate::contract::IssuanceDecisionProto::Refused(
-                crate::contract::IssuanceRejectedProto { reason: 99 },
-            )),
-            ..missing
-        };
-        assert_eq!(
-            Reply::decode(&invalid.encode_to_vec()).err(),
-            Some(VerifyError::Malformed)
-        );
+        assert_request_envelope(&client);
         assert!(matches!(
             client.issue(&trust).await.unwrap(),
             Outcome::Unknown(Unknown::Unavailable)
         ));
         let before = crate::crypto::signature_verifications();
-        let accepted = match client.recover(&trust).await.unwrap() {
-            Outcome::Accepted(certificates) => certificates,
-            _ => panic!("lost acknowledgement must recover the retained certificate"),
+        let Outcome::Accepted(accepted) = client.recover(&trust).await.unwrap() else {
+            panic!("lost acknowledgement must recover the retained certificate");
         };
         assert_eq!(crate::crypto::signature_verifications() - before, 2);
         // Repeated issue with the exact key is a replay, not another signing.
@@ -247,9 +346,15 @@ fn same_key_recovery_preserves_original_issuance_and_current_authority() {
         ));
         assert_eq!(client.provider.lock().unwrap().signatures, 1);
 
-        trust
-            .revoked_key_ids
-            .insert(accepted.keys[0].key.key_id.clone());
+        trust.revoked_key_ids.insert(
+            accepted
+                .keys
+                .first()
+                .expect("issued key")
+                .key
+                .key_id
+                .clone(),
+        );
         assert!(matches!(
             client.recover(&trust).await.unwrap(),
             Outcome::Unknown(Unknown::Authority(VerifyError::Revoked))
@@ -266,73 +371,7 @@ fn same_key_recovery_preserves_original_issuance_and_current_authority() {
         ));
         trust.revoked_block_ids.clear();
 
-        // A valid signature by ANOTHER currently trusted account issuer must
-        // not settle an operation pinned to the original root.
-        let foreign = SigningKey::from_bytes(&[6; 32]);
-        let mut other = accepted.clone();
-        let mut transcript = Vec::new();
-        crate::crypto::claims_message(
-            &mut transcript,
-            crate::KEY_DOMAIN,
-            &CertifiedKeyProto::from(other.keys[0].key.clone()),
-        )
-        .unwrap();
-        other.keys[0].signature = foreign.sign(&transcript).to_bytes().to_vec();
-        trust.issuer_keys.push(foreign.verifying_key().to_bytes());
-        assert_eq!(
-            CertificateVerifier::default()
-                .verify_certificates(other.clone().into(), client.request.issuer(), &trust, 100)
-                .err(),
-            Some(VerifyError::Trust)
-        );
-        // Negative control: the SAME signed certificate is acceptable for an
-        // explicit request to that other trusted issuer.
-        assert!(
-            CertificateVerifier::default()
-                .verify_certificates(
-                    other.into(),
-                    &foreign.verifying_key().to_bytes(),
-                    &trust,
-                    100
-                )
-                .is_ok()
-        );
-
-        // Even a genuine certificate cannot substitute changed request claims.
-        {
-            let mut owner = client.provider.lock().unwrap();
-            let changed = request(8, epoch, |claims| claims.grants.grants.clear());
-            let certificate = owner.root.certify_request(&owner.birth, &changed).unwrap();
-            owner.record.as_mut().unwrap().certificate = certificate;
-        }
-        assert!(matches!(
-            client.recover(&trust).await.unwrap(),
-            Outcome::Unknown(Unknown::InvalidReply)
-        ));
-        client
-            .provider
-            .lock()
-            .unwrap()
-            .record
-            .as_mut()
-            .unwrap()
-            .certificate = accepted.clone().into();
-        trust.issuer_keys.clear();
-        assert!(matches!(
-            client.recover(&trust).await.unwrap(),
-            Outcome::Unknown(Unknown::Authority(_))
-        ));
-        trust.issuer_keys.push(*client.request.issuer());
-        // Time is read after the remote wait from the original clock, not a
-        // caller timestamp captured before dispatch.
-        clock.0.store(
-            accepted.keys[0].key.validity.expires_at_unix_seconds * 1000,
-            Ordering::SeqCst,
-        );
-        assert!(matches!(
-            client.recover(&trust).await.unwrap(),
-            Outcome::Unknown(Unknown::Authority(VerifyError::Time))
-        ));
+        assert_foreign_issuer_and_expiry(&mut client, &mut trust, &accepted, &clock, epoch).await;
 
         // Negative control: deleting the original commit cut loses recovery
         // and a repeat signs twice even though the caller preserved the key.
@@ -375,44 +414,48 @@ impl Provider for Source {
     }
 }
 
+async fn assert_pre_dispatch_stop() {
+    for reason in [
+        BudgetError::ClockUnavailable,
+        BudgetError::Stopped(Stopped::Cancelled),
+        BudgetError::Stopped(Stopped::Deadline),
+    ] {
+        let (_reply, receive) = oneshot::channel();
+        let (entered, _ready) = oneshot::channel();
+        let context = match reason {
+            BudgetError::Stopped(Stopped::Cancelled) => Context::from_clock(
+                1_000_000,
+                futures::future::ready(Stopped::Cancelled),
+                Arc::new(OriginalClock(AtomicU64::new(100_000))),
+            ),
+            BudgetError::Stopped(Stopped::Deadline) => Context::from_clock(
+                100_000,
+                pending(),
+                Arc::new(OriginalClock(AtomicU64::new(100_000))),
+            ),
+            BudgetError::ClockUnavailable => Context::from_stopped(1_000_000, pending()),
+        };
+        let mut client = Client::new(
+            Source {
+                reply: Mutex::new(Some(receive)),
+                entered: Mutex::new(Some(entered)),
+            },
+            context,
+            request(8, 0, |_| {}),
+        );
+        let error = client
+            .issue(&crate::testing::Snapshot::default())
+            .await
+            .err();
+        assert_eq!(error, Some(reason));
+        assert!(client.provider.entered.lock().unwrap().is_some());
+    }
+}
+
 #[test]
 fn original_stop_and_source_loss_settle_issuance_without_a_reply() {
     block_on(async {
-        for reason in [
-            BudgetError::ClockUnavailable,
-            BudgetError::Stopped(Stopped::Cancelled),
-            BudgetError::Stopped(Stopped::Deadline),
-        ] {
-            let (_reply, receive) = oneshot::channel();
-            let (entered, _ready) = oneshot::channel();
-            let context = match reason {
-                BudgetError::Stopped(Stopped::Cancelled) => Context::from_clock(
-                    1_000_000,
-                    futures::future::ready(Stopped::Cancelled),
-                    Arc::new(OriginalClock(AtomicU64::new(100_000))),
-                ),
-                BudgetError::Stopped(Stopped::Deadline) => Context::from_clock(
-                    100_000,
-                    pending(),
-                    Arc::new(OriginalClock(AtomicU64::new(100_000))),
-                ),
-                BudgetError::ClockUnavailable => Context::from_stopped(1_000_000, pending()),
-            };
-            let mut client = Client::new(
-                Source {
-                    reply: Mutex::new(Some(receive)),
-                    entered: Mutex::new(Some(entered)),
-                },
-                context,
-                request(8, 0, |_| {}),
-            );
-            let error = client
-                .issue(&crate::testing::Snapshot::default())
-                .await
-                .err();
-            assert_eq!(error, Some(reason));
-            assert!(client.provider.entered.lock().unwrap().is_some());
-        }
+        assert_pre_dispatch_stop().await;
         for cause in ["source", "caller", "expiry", "deadline", "ready-caller"] {
             let (send, receive) = oneshot::channel();
             let (entered, ready) = oneshot::channel();

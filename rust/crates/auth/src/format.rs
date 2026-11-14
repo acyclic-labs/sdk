@@ -73,10 +73,10 @@ mod tests {
             });
             assert_eq!(allocation.count_total, 0);
             let payload = admitted.unwrap().unwrap();
-            assert_eq!(payload.as_ptr(), encoded.as_bytes()[header.len()..].as_ptr());
+            assert_eq!(payload.as_ptr(), encoded.as_bytes().get(header.len()..).expect("rendered header prefix").as_ptr());
             assert_eq!(super::decimal_header(encoded.as_bytes(), b"format:", version.wrapping_add(1), b',', || false, || true), Err(true));
             for cut in 0..header.len() {
-                assert_eq!(super::decimal_header(&encoded.as_bytes()[..cut], b"format:", version, b',', || false, || true), Err(false));
+                assert_eq!(super::decimal_header(encoded.as_bytes().get(..cut).expect("truncated header prefix"), b"format:", version, b',', || false, || true), Err(false));
             }
         }
     }

@@ -158,7 +158,7 @@ impl Context {
                 expiry.min(self.deadline_unix_millis)
             });
         if let Some(timeout) = timeout {
-            // Compare in u128 first: even an unrepresentably large duration
+            // Admit the duration width first: even an unrepresentably large duration
             // cannot overflow, refuse a valid original budget or extend it.
             let remaining = deadline.saturating_sub(now);
             if let Ok(millis) = u64::try_from(timeout.as_millis())
@@ -271,64 +271,65 @@ mod tests {
     };
     use std::cell::Cell;
 
+    use futures::channel::oneshot;
+    use std::{
+        collections::BTreeMap,
+        sync::{
+            Mutex,
+            atomic::{AtomicU64, Ordering},
+        },
+    };
+    type Registrations = BTreeMap<u64, (u64, oneshot::Sender<Stopped>)>;
+    #[derive(Default)]
+    struct State {
+        now: AtomicU64,
+        next: AtomicU64,
+        registrations: Mutex<Registrations>,
+    }
+    #[derive(Clone, Default)]
+    struct SimClock(Arc<State>);
+    impl SimClock {
+        fn advance(&self, now: u64) {
+            self.0.now.store(now, Ordering::SeqCst);
+            let mut registrations = self.0.registrations.lock().unwrap();
+            let due: Vec<_> = registrations
+                .iter()
+                .filter_map(|(id, (deadline, _))| (*deadline <= now).then_some(*id))
+                .collect();
+            for id in due {
+                let (_, sender) = registrations.remove(&id).unwrap();
+                let _ = sender.send(Stopped::Deadline);
+            }
+        }
+    }
+    struct Registration(SimClock, u64);
+    impl Drop for Registration {
+        fn drop(&mut self) {
+            self.0.0.registrations.lock().unwrap().remove(&self.1);
+        }
+    }
+    impl Clock for SimClock {
+        fn now_unix_millis(&self) -> Result<u64, Stopped> {
+            Ok(self.0.now.load(Ordering::SeqCst))
+        }
+        fn expires_at(&self, deadline: u64) -> Result<StopFuture, Stopped> {
+            let id = self.0.next.fetch_add(1, Ordering::SeqCst);
+            let (send, receive) = oneshot::channel();
+            self.0
+                .registrations
+                .lock()
+                .map_err(|_| Stopped::Cancelled)?
+                .insert(id, (deadline, send));
+            let guard = Registration(self.clone(), id);
+            Ok(Box::pin(async move {
+                let _guard = guard;
+                receive.await.unwrap_or(Stopped::Cancelled)
+            }))
+        }
+    }
+
     #[test]
     fn narrowed_budget_preserves_original_stop_and_constant_registration_ownership() {
-        use futures::channel::oneshot;
-        use std::{
-            collections::BTreeMap,
-            sync::{
-                Mutex,
-                atomic::{AtomicU64, Ordering},
-            },
-        };
-        type Registrations = BTreeMap<u64, (u64, oneshot::Sender<Stopped>)>;
-        #[derive(Default)]
-        struct State {
-            now: AtomicU64,
-            next: AtomicU64,
-            registrations: Mutex<Registrations>,
-        }
-        #[derive(Clone, Default)]
-        struct SimClock(Arc<State>);
-        impl SimClock {
-            fn advance(&self, now: u64) {
-                self.0.now.store(now, Ordering::SeqCst);
-                let mut registrations = self.0.registrations.lock().unwrap();
-                let due: Vec<_> = registrations
-                    .iter()
-                    .filter_map(|(id, (deadline, _))| (*deadline <= now).then_some(*id))
-                    .collect();
-                for id in due {
-                    let (_, sender) = registrations.remove(&id).unwrap();
-                    let _ = sender.send(Stopped::Deadline);
-                }
-            }
-        }
-        struct Registration(SimClock, u64);
-        impl Drop for Registration {
-            fn drop(&mut self) {
-                self.0.0.registrations.lock().unwrap().remove(&self.1);
-            }
-        }
-        impl Clock for SimClock {
-            fn now_unix_millis(&self) -> Result<u64, Stopped> {
-                Ok(self.0.now.load(Ordering::SeqCst))
-            }
-            fn expires_at(&self, deadline: u64) -> Result<StopFuture, Stopped> {
-                let id = self.0.next.fetch_add(1, Ordering::SeqCst);
-                let (send, receive) = oneshot::channel();
-                self.0
-                    .registrations
-                    .lock()
-                    .unwrap()
-                    .insert(id, (deadline, send));
-                let guard = Registration(self.clone(), id);
-                Ok(Box::pin(async move {
-                    let _guard = guard;
-                    receive.await.unwrap_or(Stopped::Cancelled)
-                }))
-            }
-        }
         block_on(async {
             for cause in ["expiry", "cancel", "loss", "completing-expiry"] {
                 let clock = SimClock::default();
