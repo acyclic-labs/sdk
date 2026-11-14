@@ -35,6 +35,7 @@ async fn latest_activity_reads_one_authenticated_cut_independent_of_history() ->
                     step,
                     projection: projection.clone(),
                     steering: None,
+                    configuration: None,
                 },
                 None,
             )?
