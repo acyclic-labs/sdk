@@ -533,6 +533,7 @@ pub(super) struct NativeAgents {
     host: Arc<AgentHost<LocalStream>>,
     driver: Arc<HostDriver>,
     files: Arc<LocalFilesystem>,
+    cuts: Option<Arc<dyn crate::filesystem::VolumeResources>>,
     /// Only uncertain creations are retained. A later request resubmits the
     /// original sealed commit, including its unpublished-object custody.
     roots: std::sync::Mutex<BTreeMap<String, Prepared>>,
@@ -555,10 +556,13 @@ impl NativeAgents {
         });
         let within = ActorReference::new(b"local", b"native", b"hosts").map_err(storage)?;
         let volumes = FilesystemSpawnVolumes::new(local.files.clone());
-        let volumes = if let Some(workspace) = local.workspace() {
-            volumes.with_volume_resources(Arc::new(crate::local::workspace::LocalVolumeResources(
-                Arc::clone(workspace),
-            )))
+        let cuts = local.workspace().map(|workspace| {
+            Arc::new(crate::local::workspace::LocalVolumeResources(Arc::clone(
+                workspace,
+            ))) as Arc<dyn crate::filesystem::VolumeResources>
+        });
+        let volumes = if let Some(cuts) = &cuts {
+            volumes.with_volume_resources(cuts.clone())
         } else {
             volumes
         };
@@ -578,6 +582,7 @@ impl NativeAgents {
             host,
             driver,
             files: local.files.clone(),
+            cuts,
             roots: Default::default(),
             issuer,
             bindings: local.session_bindings(),
@@ -651,7 +656,7 @@ impl NativeAgents {
                 false,
             )
             .map_err(storage)?;
-        Prepared::prepare(&self.files, spawn, &fresh, None)
+        Prepared::prepare(&self.files, spawn, &fresh, None, self.cuts.as_deref())
             .await
             .map_err(storage)
     }
