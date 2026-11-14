@@ -434,16 +434,6 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
             return Err(Error::Conflict);
         }
         let journal = self.journal_path()?;
-        if transition
-            .effects
-            .iter()
-            .flat_map(|effect| &effect.mutations)
-            .any(|mutation| super::mutation_targets(mutation, &journal))
-        {
-            return Err(Error::Invalid(
-                "guest effect targets the host's actor journal",
-            ));
-        }
         let effects = self.effects(transition.alarm, Some(&journal))?;
         let state = self.snapshot.state.take().ok_or(Error::Conflict)?;
         let mut prepared = self.store.prepare_publication(

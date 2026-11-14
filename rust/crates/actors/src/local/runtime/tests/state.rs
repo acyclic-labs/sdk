@@ -10,6 +10,7 @@ struct Flushes {
     retained: std::sync::Mutex<Option<ActorStateHost>>,
     entered: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<crate::guest::RequestId>>>,
     gate: Option<Arc<tokio::sync::Semaphore>>,
+    stage_final: bool,
 }
 
 impl Handler for Flushes {
@@ -59,20 +60,23 @@ impl Handler for Flushes {
                 state.read_journal(0, 10).await?,
                 vec![Bytes::from_static(b"one")]
             );
-            state
-                .stage(ActorStateCommit {
-                    writes: vec![ActorMetadataWrite {
-                        key: "value".into(),
-                        value: Bytes::from_static(b"second"),
-                    }],
-                    deletions: Vec::new(),
-                    journal_from: "1".into(),
-                    journal: vec![Bytes::from_static(b"two")],
-                    alarm: ActorStateAlarm::Set {
-                        deadline: "1000".into(),
-                    },
-                })
-                .await?;
+            let packet = ActorStateCommit {
+                writes: vec![ActorMetadataWrite {
+                    key: "value".into(),
+                    value: Bytes::from_static(b"second"),
+                }],
+                deletions: Vec::new(),
+                journal_from: "1".into(),
+                journal: vec![Bytes::from_static(b"two")],
+                alarm: ActorStateAlarm::Set {
+                    deadline: "1000".into(),
+                },
+            };
+            if self.stage_final {
+                state.stage(packet).await?;
+            } else {
+                state.commit(packet).await?;
+            }
             Ok(Transition {
                 response: None,
                 checkpoint: Checkpoint {
@@ -138,6 +142,7 @@ async fn final_state_packet_shares_the_delivery_fence_and_preserves_flushed_pref
                 retained: std::sync::Mutex::new(None),
                 entered: std::sync::Mutex::new(None),
                 gate: None,
+                stage_final: true,
             },
             entered: std::sync::Mutex::new(Some(entered)),
             finish: tokio::sync::Semaphore::new(0),
@@ -219,6 +224,7 @@ async fn stale_epoch_flush_is_a_typed_revocation_and_publishes_nothing() -> Test
         retained: std::sync::Mutex::new(None),
         entered: std::sync::Mutex::new(Some(entered)),
         gate: Some(Arc::new(tokio::sync::Semaphore::new(0))),
+        stage_final: true,
     });
     let runtime = Runtime::new(
         requests.clone(),
@@ -271,7 +277,9 @@ async fn stale_epoch_flush_is_a_typed_revocation_and_publishes_nothing() -> Test
 
 #[tokio::test]
 async fn state_flush_advances_the_delivery_cut_without_reentering_the_handler() -> TestResult {
-    for alarm_delivery in [false, true] {
+    for (alarm_delivery, stage_final) in
+        [(false, false), (false, true), (true, false), (true, true)]
+    {
         let provider = Arc::new(MemoryStream::default());
         let store = Store::new(provider.clone(), root()?);
         let address = actor("state-owner")?;
@@ -291,6 +299,7 @@ async fn state_flush_advances_the_delivery_cut_without_reentering_the_handler() 
             retained: std::sync::Mutex::new(None),
             entered: std::sync::Mutex::new(None),
             gate: None,
+            stage_final,
         });
         let runtime = Runtime::new(
             requests,
@@ -391,6 +400,7 @@ async fn unknown_state_flush_retains_its_publication_without_reentering_the_hand
         retained: std::sync::Mutex::new(None),
         entered: std::sync::Mutex::new(Some(entered)),
         gate: Some(gate.clone()),
+        stage_final: true,
     });
     let runtime = Runtime::new(
         requests,
@@ -467,6 +477,7 @@ async fn handler_deadline_cancels_reads_and_revokes_calls_but_retains_publicatio
             retained: std::sync::Mutex::new(None),
             entered: std::sync::Mutex::new(Some(entered)),
             gate: Some(gate.clone()),
+            stage_final: true,
         });
         let runtime = Runtime::new(
             requests.clone(),
