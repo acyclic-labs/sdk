@@ -2,6 +2,80 @@ use super::*;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
+async fn unchanged_fork_base_skips_inherited_observations_but_keeps_source_deletions() {
+    let mut costs = Vec::new();
+    for entries in [1, 256] {
+        let directory = tempfile::tempdir().unwrap();
+        for index in 0..entries {
+            std::fs::write(directory.path().join(format!("file-{index:03}")), b"source").unwrap();
+        }
+        let source = native_source(directory.path(), crate::FilesystemProfile::Portable).await;
+        let root = attach(&Fs::memory(), source, MemoryLazyWorkspaceStore::default())
+            .await
+            .unwrap();
+        for index in 0..entries {
+            root.read(&format!("/file-{index:03}"), 16, accounting!())
+                .await
+                .unwrap();
+        }
+        let (child, cut) = root
+            .fork(
+                "child",
+                IdempotencyKey::new(),
+                crate::PublicationPermit::Unrestricted,
+                accounting!(),
+            )
+            .await
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let mut accounting = KernelAccounting::standalone(
+            WorkBudget {
+                source_entries_visited: 0,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        );
+        let unchanged = root
+            .exactify_observed_base(cut, &[], &child, &mut accounting)
+            .await
+            .unwrap();
+        assert_eq!(unchanged.id(), cut.authored_generation);
+        costs.push(accounting.spent());
+
+        // A source-only deletion leaves the authored generation unchanged.
+        // Its changed overlay must still refine the original before-image.
+        child
+            .remove("/file-000", None, accounting!())
+            .await
+            .unwrap();
+        assert_eq!(
+            child
+                .snapshot(accounting!())
+                .await
+                .unwrap()
+                .authored_generation,
+            cut.authored_generation
+        );
+        let deleted = root
+            .exactify_observed_base(cut, &[], &child, accounting!())
+            .await
+            .unwrap();
+        assert_eq!(
+            deleted
+                .read("/file-000", 16, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .unwrap()
+                .value
+                .as_slice(),
+            b"source"
+        );
+    }
+    eprintln!("unchanged fork base work: {costs:?}");
+    assert_eq!(costs[0].bytes_copied, costs[1].bytes_copied);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
 async fn selected_import_orders_overlapping_roots_without_pairwise_path_searches() {
     let directory = tempfile::tempdir().unwrap();
     std::fs::create_dir(directory.path().join("nested")).unwrap();

@@ -171,6 +171,16 @@ impl<
             work,
             cancel
         ))?;
+        // No requested frontier and identical source facts cannot add a base
+        // entry. Inherited tombstones already belong to this exact cut; do not
+        // rediscover them by walking every retained source observation.
+        if paths.is_empty()
+            && witnessed.source == cut.source
+            && witnessed.overlay == cut.overlay
+            && witnessed.shadows == cut.shadows
+        {
+            return Ok(authored);
+        }
         let tombstones = witness.source_tombstones_owned(usize::MAX, ctx).await?;
         let deleted_paths = match self.deleted_base_paths(cut, &tombstones.value, ctx).await {
             Ok(paths) => paths,
