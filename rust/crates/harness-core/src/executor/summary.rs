@@ -90,6 +90,33 @@ impl StockExecution<'_> {
         phase: &mut DispatchPhase,
         purpose: ModelPurpose,
     ) -> Result<(crate::context::ContextSummary, String)> {
+        self.summarize_output(
+            journal,
+            parent,
+            operation_id,
+            step,
+            material,
+            phase,
+            purpose,
+        )
+        .await?
+        .map_err(|defect| stock_boundary(self.io, crate::wire::ErrorCode::Invalid, defect))
+    }
+
+    /// The inner error is a defect of the model's own completed output (no
+    /// text, a tool request, a truncated or oversized reply). Its usage is
+    /// already journaled, so a caller that owns the decision may re-ask
+    /// instead of failing; the outer error is every other failure.
+    pub(super) async fn summarize_output(
+        &self,
+        journal: &dyn ExecutionJournal,
+        parent: Option<&TurnInput>,
+        operation_id: OperationId,
+        step: u32,
+        material: (crate::context::Context, ModelContent),
+        phase: &mut DispatchPhase,
+        purpose: ModelPurpose,
+    ) -> Result<std::result::Result<(crate::context::ContextSummary, String), &'static str>> {
         let (source, instruction) = material;
         // Validate the original task's summary authority before model admission,
         // even though the summary session disables recursive compaction.
@@ -169,10 +196,14 @@ impl StockExecution<'_> {
             for event in stock_into_iter(events, self.io)? {
                 stock_retire_event(event, self.io)?;
             }
-            return Err(stock_boundary(self.io, crate::wire::ErrorCode::Invalid,
-                "summary reached its output-token limit; request a shorter summary"));
+            return Ok(Err(
+                "summary reached its output-token limit; request a shorter summary",
+            ));
         }
-        let text = self.collect_summary_text(events)?;
+        let text = match self.summary_text(events)? {
+            Ok(text) => text,
+            Err(defect) => return Ok(Err(defect)),
+        };
         let output_key = with_history_io(self.io, |work| match purpose {
             ModelPurpose::SummaryPart(part) => {
                 preparation_format(format_args!("summary:{step}:part:{part}:output"), work)
@@ -187,7 +218,7 @@ impl StockExecution<'_> {
                 (&output_key, text.as_bytes()),
             )
             .await?;
-        Ok((summary, text))
+        Ok(Ok((summary, text)))
     }
 
     fn summary_source_identity(
@@ -220,6 +251,15 @@ impl StockExecution<'_> {
     }
 
     fn collect_summary_text(&self, events: Vec<ModelEvent>) -> Result<String> {
+        self.summary_text(events)?
+            .map_err(|defect| stock_boundary(self.io, crate::wire::ErrorCode::Invalid, defect))
+    }
+
+    /// The inner error is a defect of the model's output, never of this host.
+    fn summary_text(
+        &self,
+        events: Vec<ModelEvent>,
+    ) -> Result<std::result::Result<String, &'static str>> {
         let scope = crate::filesystem::PreparationScope::with_input(
             self.io,
             self.io
@@ -238,6 +278,11 @@ impl StockExecution<'_> {
         for event in stock_into_iter(events, io)? {
             match event {
                 ModelEvent::Content { delta } if !completed_message => {
+                    if self.stock.limits.render_bytes.is_some_and(|maximum| {
+                        (text.len() as u64).saturating_add(delta.len() as u64) > maximum
+                    }) {
+                        return Ok(Err("summary output exceeds caller render budget"));
+                    }
                     stock_string_push(
                         &mut text,
                         &delta,
@@ -254,21 +299,13 @@ impl StockExecution<'_> {
                         .render_bytes
                         .is_some_and(|maximum| completed.len() as u64 > maximum)
                     {
-                        return Err(stock_boundary(
-                            io,
-                            crate::wire::ErrorCode::Invalid,
-                            "summary output exceeds caller render budget",
-                        ));
+                        return Ok(Err("summary output exceeds caller render budget"));
                     }
                     stock_retire_text(text, io)?;
                     text = completed;
                 }
                 ModelEvent::ToolCall(_) => {
-                    return Err(stock_boundary(
-                        io,
-                        crate::wire::ErrorCode::Invalid,
-                        "summary requested a tool operation",
-                    ));
+                    return Ok(Err("summary requested a tool operation"));
                 }
                 event @ (ModelEvent::Restarted
                 | ModelEvent::Wait(_)
@@ -282,14 +319,10 @@ impl StockExecution<'_> {
             }
         }
         if text.is_empty() {
-            return Err(stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "summary operation returned no content",
-            ));
+            return Ok(Err("summary operation returned no content"));
         }
         scope.finish(text.capacity() as u64)?;
-        Ok(text)
+        Ok(Ok(text))
     }
 
     /// Publish a selected summary with the exact source and output provenance

@@ -450,6 +450,16 @@ pub enum ExecutionEvent {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         worker_paused: bool,
     },
+    /// A completed model reply that its consumer rejected. It authorised
+    /// nothing; the reason names the defect, never the reply's content.
+    ModelRejected {
+        /// Zero-based executor step.
+        step: u32,
+        /// The settled response or summary attempt that was rejected.
+        purpose: ModelPurpose,
+        /// Why the reply was rejected.
+        reason: String,
+    },
     /// Semantic output of one completed response, before dispatching its tools.
     /// Transport call identities, usage and provider metadata are excluded.
     ModelOutput {

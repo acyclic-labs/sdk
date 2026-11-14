@@ -181,10 +181,17 @@ mod tests {
             ],
         };
         let journal = journal.with_bound_selection(selected.clone());
+        // The selected history must exceed the response window, while its
+        // first complete prefix fits the manager's separate summary request.
         let provider = Arc::new(
-            ScriptedModelProvider::new([ScriptedTurn::Text("done".into())])
+            ScriptedModelProvider::new([
+                ScriptedTurn::Text(
+                    r#"{"version":1,"drop_through":1,"summary":"retained older history"}"#.into(),
+                ),
+                ScriptedTurn::Text("done".into()),
+            ])
                 .with_context_capacity(ModelContextCapacity {
-                    context_tokens: 65_536,
+                    context_tokens: 49_152,
                     output_tokens: Some(4_096),
                     output_shares_context: false,
                 })
@@ -224,11 +231,11 @@ mod tests {
         };
         let output = executor.execute(input.clone(), &journal).await?;
         assert_eq!(output.text, "done");
-        assert_eq!(provider.request_count(), 1);
+        assert_eq!(provider.request_count(), 2);
         assert_eq!(executor.execute(input.clone(), &journal).await?, output);
         assert_eq!(
             provider.request_count(),
-            1,
+            2,
             "replay dispatched another model request"
         );
 

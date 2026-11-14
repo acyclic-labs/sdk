@@ -490,16 +490,35 @@ async fn shared_output_window_starts_and_compacts_from_observed_responses() -> R
 
 #[tokio::test]
 async fn rejected_manager_rewrites_preserve_history_and_never_dispatch_the_worker() -> Result<()> {
-    for reply in [
-        "not a rewrite",
-        r#"{"version":2,"drop_through":2,"summary":"wrong version"}"#,
-        r#"{"version":1,"drop_through":0,"summary":"empty range"}"#,
-        r#"{"version":1,"drop_through":3,"summary":"unseen source"}"#,
-        r#"{"version":1,"drop_through":1,"summary":"insufficient rewrite"}"#,
+    for (reply, admitted) in [
+        ("not a rewrite", false),
+        (
+            r#"{"version":2,"drop_through":2,"summary":"wrong version"}"#,
+            false,
+        ),
+        (
+            r#"{"version":1,"drop_through":0,"summary":"empty range"}"#,
+            false,
+        ),
+        (
+            r#"{"version":1,"drop_through":3,"summary":"unseen source"}"#,
+            false,
+        ),
+        (
+            r#"{"version":1,"drop_through":1,"summary":"valid partial rewrite"}"#,
+            true,
+        ),
     ] {
         let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
         let journal = storage.journal();
-        let (provider, _) = counted_model(32_768, None, [ScriptedTurn::Text(reply.into())], []);
+        let mut script = vec![ScriptedTurn::Text(reply.into())];
+        if admitted {
+            script.push(ScriptedTurn::Text(
+                r#"{"version":1,"drop_through":2,"summary":"complete retained history"}"#.into(),
+            ));
+            script.push(ScriptedTurn::Text("verified answer".into()));
+        }
+        let (provider, _) = counted_model(32_768, None, script, []);
         let source = crate::context::Context {
             messages: vec![
                 ModelMessage {
@@ -531,28 +550,49 @@ async fn rejected_manager_rewrites_preserve_history_and_never_dispatch_the_worke
             max_steps: None,
         };
         for _ in 0..2 {
-            assert!(
-                matches!(
-                    executor
-                        .execute_progress(input.clone(), journal.as_ref())
-                        .await?,
-                    ExecutionProgress::PreDispatchFailed(_)
-                ),
-                "manager response {reply} must not authorize an unchecked worker request"
-            );
+            // The summary provider has already dispatched. A malformed reply
+            // is an ordinary error, never proof that no provider attempt began.
+            match (
+                admitted,
+                executor
+                    .execute_progress(input.clone(), journal.as_ref())
+                    .await,
+            ) {
+                (false, Err(Error::Invalid(_))) => {}
+                (true, Ok(ExecutionProgress::Ready(output))) => {
+                    assert_eq!(output.text, "verified answer");
+                }
+                (_, Err(error)) => return Err(error),
+                _ => panic!("manager response {reply} produced an incorrect dispatch outcome"),
+            }
         }
         let requests = provider.requests();
-        assert_eq!(requests.len(), 1, "replay must not call the manager again");
+        assert_eq!(
+            requests.len(),
+            if admitted { 3 } else { 1 },
+            "replay dispatches nothing"
+        );
         assert!(
             requests[0].summary,
             "a rejected rewrite must never dispatch the worker"
         );
+        if admitted {
+            assert!(
+                requests[1].summary,
+                "a partial rewrite still needs capacity proof"
+            );
+            assert!(
+                !requests[2].summary,
+                "the completed rewrite admits the worker"
+            );
+        }
         let records = journal.replay(input.operation_id, 0, 128, None)?.await?;
-        assert!(
+        assert_eq!(
             records
                 .iter()
-                .all(|record| !matches!(record.event, ExecutionEvent::ContextCompacted { .. })),
-            "a rejected rewrite must not replace its source history"
+                .any(|record| matches!(record.event, ExecutionEvent::ContextCompacted { .. })),
+            admitted,
+            "only a valid rewrite may replace its source history"
         );
     }
     Ok(())
@@ -908,9 +948,12 @@ fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled() -> Re
         .enable_all()
         .build()
         .map_err(|error| Error::Storage(error.to_string()))?;
-    for (capacity, source_length, fault, counts) in [
-        (4_096, 5_000, None, 1),
-        (131_072, 1, Some(AccountingFault::Digest), 1),
+    for (capacity, source_length, fault, counts, overflow) in [
+        // A reserve consuming the entire window fails before token accounting.
+        (4_096, 5_000, None, 0, false),
+        // A valid window still refuses an oversized source after its real count.
+        (8_192, 5_000, None, 1, true),
+        (131_072, 1, Some(AccountingFault::Digest), 1, false),
     ] {
         let (provider, accounting_calls) = counted_model(capacity, fault, [], []);
         let executor = uncompacted_executor(
@@ -936,7 +979,13 @@ fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled() -> Re
             ))
             .err()
             .ok_or_else(|| Error::Invalid("invalid summary was admitted".into()))?;
-        assert!(matches!(error, Error::Invalid(_)), "{error}");
+        assert!(
+            matches!(
+                (&error, overflow),
+                (Error::ModelContextOverflow, true) | (Error::Invalid(_), false)
+            ),
+            "{error}"
+        );
         assert_eq!(accounting_calls.load(Ordering::SeqCst), counts);
         assert!(provider.requests().is_empty());
         assert!(journal.0.lock().unwrap().is_empty());
@@ -1323,14 +1372,26 @@ impl ModelProvider for CeilingCounter {
 
 #[tokio::test]
 async fn response_reserve_requests_a_tighter_count_before_rewriting() -> Result<()> {
+    let verified_calls = Arc::new(AtomicUsize::new(0));
+    let observed = verified_calls.clone();
     let provider = Arc::new(CeilingCounter(
-        ScriptedModelProvider::new([ScriptedTurn::Text("answer".into())]).with_context_capacity(
-            crate::context::ModelContextCapacity {
+        ScriptedModelProvider::new([ScriptedTurn::Text("answer".into())])
+            .with_context_capacity(crate::context::ModelContextCapacity {
                 context_tokens: 65_536,
                 output_tokens: Some(8192),
                 output_shares_context: false,
-            },
-        ),
+            })
+            .with_token_counter(move |request| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                // The fixture provider reports this verified count. Its local
+                // serialized upper bound exceeds the reserved input window.
+                Ok(crate::context::ModelTokenCount {
+                    request_digest: request.request_digest(),
+                    input_tokens: 50_000,
+                    fixed_tokens: 0,
+                    message_tokens: vec![0; request.request().messages.len()],
+                })
+            }),
     ));
     let executor = StockExecutor::new(
         Model::new("fixture".into(), "ceiling-counter".into(), "1".into())?,
@@ -1373,6 +1434,11 @@ async fn response_reserve_requests_a_tighter_count_before_rewriting() -> Result<
         "an exact count fits; no manager call is needed"
     );
     assert!(!requests[0].summary);
+    assert_eq!(
+        verified_calls.load(Ordering::SeqCst),
+        1,
+        "replay reuses the verified count"
+    );
     let prepared =
         crate::model::PreparedModelRequest::prepare(requests[0].clone(), Limits::default(), None)?;
     assert!(

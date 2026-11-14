@@ -110,6 +110,10 @@ impl ExecutionSummary {
                 .models
                 .get(&(*step, *purpose), io)?
                 .is_some_and(Option::is_some),
+            // Only a settled reply can be rejected.
+            ExecutionEvent::ModelRejected { step, purpose, .. } => {
+                matches!(self.models.get(&(*step, *purpose), io)?, Some(None))
+            }
             ExecutionEvent::ModelOutput { step, .. } => {
                 self.latest_response == Some(*step)
                     && !self.latest_response_output
@@ -396,6 +400,7 @@ impl ExecutionSummary {
                     })?;
             }
             ExecutionEvent::ModelOutput { .. } => self.latest_response_output = true,
+            ExecutionEvent::ModelRejected { .. } => {}
             ExecutionEvent::ToolStarted { step, .. }
             | ExecutionEvent::ToolCompleted { step, .. }
             | ExecutionEvent::ToolFailed { step, .. } => {
@@ -564,6 +569,7 @@ impl PreparationRecord for Observation {
                 "context_compacted",
                 "model_started",
                 "model_stopped",
+                "model_rejected",
                 "model",
                 "model_inline",
                 "model_output",

@@ -283,7 +283,8 @@ where
             | ExecutionEvent::Model { step, purpose, .. }
             | ExecutionEvent::ModelInline { step, purpose, .. }
             | ExecutionEvent::ModelWait { step, purpose, .. }
-            | ExecutionEvent::ModelStopped { step, purpose, .. } => {
+            | ExecutionEvent::ModelStopped { step, purpose, .. }
+            | ExecutionEvent::ModelRejected { step, purpose, .. } => {
                 load(&mut summary.models, &reader, roots[2], (*step, *purpose)).await?;
             }
             ExecutionEvent::ToolStarted { step, call_id, .. }
@@ -376,6 +377,7 @@ where
             }
             ExecutionEvent::ToolStarted { .. }
             | ExecutionEvent::ModelOutput { .. }
+            | ExecutionEvent::ModelRejected { .. }
             | ExecutionEvent::ToolCompleted { .. }
             | ExecutionEvent::ToolFailed { .. }
             | ExecutionEvent::Started { .. }

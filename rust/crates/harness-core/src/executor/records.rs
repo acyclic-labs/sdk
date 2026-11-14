@@ -59,7 +59,8 @@ impl StockExecution<'_> {
                     | ExecutionEvent::Model { .. }
                     | ExecutionEvent::ModelInline { .. }
                     | ExecutionEvent::ModelWait { .. }
-                    | ExecutionEvent::ModelStopped { .. } => false,
+                    | ExecutionEvent::ModelStopped { .. }
+                    | ExecutionEvent::ModelRejected { .. } => false,
                 },
             )
             .await?;
