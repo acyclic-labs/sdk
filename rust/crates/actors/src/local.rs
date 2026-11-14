@@ -214,7 +214,6 @@ impl Error {
             | Self::UndecidedUnchanged(_)
             | Self::InvocationFailed { .. }
             | Self::Deleted
-            | Self::AdmissionClosed(_)
             | Self::Invalid(_) => false,
         }
     }
