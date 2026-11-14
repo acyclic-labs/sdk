@@ -64,6 +64,22 @@ impl<'de> Deserialize<'de> for ResourceRef {
 }
 
 impl ResourceRef {
+    pub(crate) fn clone_in_quota(
+        &self,
+        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    ) -> Result<Self> {
+        Ok(Self {
+            kind: self.kind,
+            provider: crate::core::copy_provider(&self.provider, quota)?,
+            key: crate::core::copy_copy_vector(&self.key, quota)?,
+            version: self
+                .version
+                .as_deref()
+                .map(|value| crate::core::copy_text(value, quota))
+                .transpose()?,
+        })
+    }
+
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         capacity_sum([
             self.key.capacity(),

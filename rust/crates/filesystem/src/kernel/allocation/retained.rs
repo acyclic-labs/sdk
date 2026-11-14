@@ -375,8 +375,9 @@ impl RetainedAllocation {
         }
     }
 
+    /// Transfers native custody without another admission or allocation.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn native(allocation: crate::NativeAllocation) -> Self {
+    pub fn native(allocation: crate::NativeAllocation) -> Self {
         Self {
             inner: RetainedAllocationInner::Native {
                 _allocation: allocation,

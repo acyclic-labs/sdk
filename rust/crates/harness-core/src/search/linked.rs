@@ -324,9 +324,10 @@ impl Matcher for ContentMatcher<'_> {
                 acyclic_stream::StreamError::Unsupported => crate::wire::ErrorCode::Unsupported,
                 _ => crate::wire::ErrorCode::Storage,
             };
-            return Error::NativeStream {
+            return Error::StreamFailure {
                 code,
                 source,
+                native: true,
                 custody: None,
             };
         }
