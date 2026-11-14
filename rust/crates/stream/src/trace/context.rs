@@ -72,13 +72,6 @@ pub(super) async fn within<F: Future>(
     scoped(Some(Active { id, producer }), future).await
 }
 
-/// Capture at submission, then restore the exact causal owner on each worker poll.
-/// An unobserved submission carries no producer or per-agent background task.
-pub(crate) fn inherit<F: Future>(future: F) -> impl Future<Output = F::Output> {
-    let active = CURRENT.with_borrow(Clone::clone);
-    scoped(active, future)
-}
-
 pub(super) async fn disabled<F: Future>(future: F) -> F::Output {
     scoped(None, future).await
 }
