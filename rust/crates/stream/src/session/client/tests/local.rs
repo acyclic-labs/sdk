@@ -332,16 +332,6 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
             "filtered finite read disclosed a hidden row or failed EOF"
         );
     }
-    let mut source = client
-        .follow_records(crate::FollowRequest::new(path.clone(), 0))
-        .await?;
-    for sequence in [1, 3] {
-        let record = next(&mut source).await;
-        assert!(record.is_ok(), "typed follow rejected skipped progress");
-        let record = record?;
-        assert_eq!(record.sequence, sequence);
-        assert_eq!(record.value.backing(), Some(backing.clone()));
-    }
     #[cfg(feature = "serde")]
     let (trace, root, parent) = {
         let trace = crate::Stream::new(Arc::new(MemoryStream::default()), "owner/trace")?;
@@ -357,6 +347,18 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
         let parent = root.id();
         (trace, root.into_owned(), parent)
     };
+    let opening = client.follow_records(crate::FollowRequest::new(path.clone(), 0));
+    #[cfg(feature = "serde")]
+    let mut source = root.within(opening).await?;
+    #[cfg(not(feature = "serde"))]
+    let mut source = opening.await?;
+    for sequence in [1, 3] {
+        let record = next(&mut source).await;
+        assert!(record.is_ok(), "typed follow rejected skipped progress");
+        let record = record?;
+        assert_eq!(record.sequence, sequence);
+        assert_eq!(record.value.backing(), Some(backing.clone()));
+    }
     #[cfg(feature = "serde")]
     let mut pending = Box::pin(root.within(next(&mut source)));
     #[cfg(not(feature = "serde"))]
@@ -380,7 +382,7 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
             trace.read(0, u32::try_from(trace.tail().await?)?).await?,
             Default::default(),
         );
-        let mut settled = 0;
+        let mut settled = std::collections::BTreeMap::new();
         while let Some(event) = query.next().await? {
             if let Observation::Completed {
                 start,
@@ -388,20 +390,34 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
                 result,
                 ..
             } = event
-                && start.name == "stream.session_delivery_wait"
+                && matches!(
+                    start.name.as_str(),
+                    "stream.session_delivery_wait"
+                        | "stream.session_open_queue"
+                        | "stream.session_registration"
+                )
             {
                 assert_eq!(start.parent, Some(parent));
                 assert_eq!(start.mechanism, Mechanism::Wait);
                 assert_eq!(
                     start.guarantee.as_deref(),
-                    Some("queued_delivery_or_confirmed_session_end")
+                    Some(match start.name.as_str() {
+                        "stream.session_open_queue" => "queued_original_session_open",
+                        "stream.session_registration" => "original_session_open_receipt",
+                        _ => "queued_delivery_or_confirmed_session_end",
+                    })
                 );
                 assert_eq!(result, Outcome::Succeeded);
                 assert_eq!(bytes, Some(0));
-                settled += 1;
+                *settled.entry(start.name).or_insert(0_u32) += 1;
             }
         }
-        assert_eq!(settled, 1, "original delivery wait did not settle");
+        assert_eq!(
+            settled.len(),
+            3,
+            "original registration or delivery wait lost"
+        );
+        assert!(settled.values().all(|count| *count == 1));
     }
     drop(source);
     assert_eq!(client.pool.active.load(super::super::Ordering::Acquire), 0);
