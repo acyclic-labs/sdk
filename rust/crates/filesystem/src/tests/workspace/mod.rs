@@ -146,3 +146,6 @@ fn selected_transaction_budget() -> WorkBudget {
         materializations: 1_000_000,
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+mod simulation;
