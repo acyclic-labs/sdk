@@ -1727,6 +1727,43 @@ mod cleanup_tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    fn definitive_guest_failure_retains_original_json_category()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use std::error::Error as _;
+        let source = serde_json::from_slice::<serde_json::Value>(b"{").unwrap_err();
+        let guest = Error::guest(Error::NativeJson {
+            code: ErrorCode::Invalid,
+            source,
+            custody: None,
+        })
+        .with_context("guest request");
+        let mut cause = guest.source();
+        let original = loop {
+            let source = cause.ok_or("guest conversion discarded the JSON cause")?;
+            if let Some(original) = source.downcast_ref::<serde_json::Error>() {
+                break original;
+            }
+            cause = source.source();
+        };
+        assert_eq!(original.classify(), serde_json::error::Category::Eof);
+        assert!(!acyclic_actors::local::Error::Handler(guest.clone()).retryable());
+        let wire = serde_json::to_value(&guest)?;
+        assert_eq!(wire["type"], "handler");
+        assert!(wire["detail"].is_string());
+        let decoded: acyclic_actors::guest::GuestError = serde_json::from_value(wire)?;
+        assert!(matches!(
+            decoded,
+            acyclic_actors::guest::GuestError::Handler(_)
+        ));
+        assert!(
+            decoded.source().is_none(),
+            "local causes crossed the guest wire"
+        );
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
     fn stream_conversion_retains_original_io_cause_and_uncertainty()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         use std::error::Error as _;
