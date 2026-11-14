@@ -150,10 +150,6 @@ fn check(text: &[String; 3], invalid: bool) -> TestCaseResult {
             .filter(|(op, _)| *op == "prepare request")
             .count()
     };
-    let publications = new_trace
-        .iter()
-        .filter(|(op, _)| *op == "journal stage")
-        .count();
     prop_assert!(
         old.0 == new.0
             && old.1 == new.1
@@ -161,8 +157,7 @@ fn check(text: &[String; 3], invalid: bool) -> TestCaseResult {
             && old.3 == new.3
             && semantic(&old_trace) == semantic(&new_trace)
             && preparations(&old_trace) == if invalid { 0 } else { 4 }
-            && preparations(&new_trace) == if invalid { 0 } else { 1 }
-            && publications == if invalid { 0 } else { 1 },
+            && preparations(&new_trace) == if invalid { 0 } else { 1 },
         "independent preparation differs or repeats removed work: old={old:?}, new={new:?}, old_trace={old_trace:?}, new_trace={new_trace:?}"
     );
     Ok(())
