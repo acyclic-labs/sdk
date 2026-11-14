@@ -1,5 +1,5 @@
 [package]
-include = ["clippy.toml", "Cargo.toml", "README.md", "docs/**", "src/**", "tests/**", "examples/**", "fixtures/**", "conformance/**", "fuzz/corpus/**"]
+include = ["build.rs", "clippy.toml", "Cargo.toml", "README.md", "docs/**", "src/**", "tests/**", "examples/**", "fixtures/**", "conformance/**", "fuzz/corpus/**"]
 autotests = false
 autobins = false
 name = "acyclic-harness"
@@ -126,6 +126,9 @@ tokio = { version = "1.48.0", default-features = false, features = ["signal", "i
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rustix = { workspace = true, features = ["fs"] }
+
+[build-dependencies]
+serde_json.workspace = true
 
 [dev-dependencies]
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }

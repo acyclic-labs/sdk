@@ -314,9 +314,7 @@ async fn archive_destroys_the_agents_machines_before_it_closes() -> Result {
             host.send(
                 &root,
                 &user(),
-                &InboxRecord::Approval(Approval {
-                    id: intent("stop"),
-                }),
+                &InboxRecord::Approval(Approval { id: intent("stop") }),
             )
             .await?
         } else {

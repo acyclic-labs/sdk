@@ -264,7 +264,9 @@ pub async fn prompt_settled(
     let mut phase = None;
     let (sequence, entry) = loop {
         let dropped = match conversation.reply(id, inbox).await? {
-            Reply::Answered { sequence, entry, .. } => break (sequence, entry),
+            Reply::Answered {
+                sequence, entry, ..
+            } => break (sequence, entry),
             Reply::Dropped => true,
             Reply::Pending | Reply::Continuing { .. } => false,
         };

@@ -21,7 +21,6 @@ fn identity() -> &'static CodecIdentity {
             name: "acyclic.harness.agent.workspace-snapshot".into(),
             // Freeze review pages and retain deadlines with deferred wait releases.
             version: "9".into(),
-
         });
     &IDENTITY
 }
