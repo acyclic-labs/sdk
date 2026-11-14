@@ -114,6 +114,9 @@ async fn staged_bytes(
                 .ok_or_else(|| Error::Invalid("staged byte count overflow".into()))?;
         }
     }
+    if query.unpaired_finishes() != 0 || query.active().len() != 0 {
+        return Err(Error::Invalid("staged work trace is incomplete".into()));
+    }
     Ok(total)
 }
 
@@ -184,6 +187,12 @@ async fn first_step_reuses_preceding_turn_and_writes_only_appended_content() -> 
         let output = executor.execute(current.clone(), &journal).await?;
         let written = log_length()? - before;
         let payload = staged_bytes(&trace, trace_before).await?;
+        if history == 1 {
+            assert!(
+                staged_bytes(&trace, trace_before + 1).await.is_err(),
+                "omitting an original start must not undercount staged work"
+            );
+        }
         let baseline = *first_payload.get_or_insert(payload);
         first_log_write.get_or_insert(written);
         // The journal boundary counts original staged payloads. The physical
