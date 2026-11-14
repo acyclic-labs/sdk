@@ -1312,22 +1312,22 @@ impl ToolContext {
             .tool_input());
         }
         let seeded = self.task().harness.seed.is_some();
-        let seed = || {
-            crate::executor::with_history_io(io, |history| {
-                crate::executor::preparation_format(format_args!("{SEED_PATH}{relative}"), history)
-            })
-        };
         if !layered(relative) {
-            let selected = if (relative.starts_with("sys/models/")
+            let prefix = if (relative.starts_with("sys/models/")
                 || relative.starts_with("sys/secrets/"))
                 && self.task().harness.system.is_some()
             {
-                format!("{SYSTEM_PATH}{relative}")
+                SYSTEM_PATH
             } else if seeded {
-                seed()?
+                SEED_PATH
             } else {
                 return Err(missing());
             };
+            let scope = crate::filesystem::PreparationScope::new(io)?;
+            let io = scope.io();
+            let selected = crate::executor::with_history_io(io, |history| {
+                crate::executor::preparation_format(format_args!("{prefix}{relative}"), history)
+            })?;
             if let Some(volume) = original
                 && self.tool_path_selection(&selected, io)?.0 != volume
             {
@@ -1336,7 +1336,10 @@ impl ToolContext {
                         .tool_input(),
                 );
             }
-            return Ok((selected.into(), None));
+            let retained = selected.capacity() as u64;
+            let result = (selected.into(), None);
+            scope.finish(retained)?;
+            return Ok(result);
         }
         for prefix in crate::layers::PRECEDENCE_PATHS {
             if prefix != HOME_PATH
@@ -1348,29 +1351,26 @@ impl ToolContext {
             {
                 continue;
             }
-            // Declare custody first so the physical text retires before its credit
-            // on every refusal, cancellation, and dropped probe future.
-            let concrete_custody;
+            // Scratch retires with this candidate on refusal or cancellation.
+            let scope = crate::filesystem::PreparationScope::new(io)?;
+            let io = scope.io();
             let concrete = crate::executor::with_history_io(io, |history| {
                 crate::executor::preparation_format(format_args!("{prefix}{relative}"), history)
             })?;
-            concrete_custody = io
-                .map(|io| io.guard_owned(concrete.capacity() as u64))
-                .transpose()?;
             if let Some(original) = original {
                 if self.tool_path_selection(&concrete, io)?.0 == original {
-                    if let Some(custody) = concrete_custody {
-                        custody.into_retained()?;
-                    }
-                    return Ok((concrete.into(), None));
+                    let retained = concrete.capacity() as u64;
+                    let result = (concrete.into(), None);
+                    scope.finish(retained)?;
+                    return Ok(result);
                 }
                 continue;
             }
             if prefix == SEED_PATH {
-                if let Some(custody) = concrete_custody {
-                    custody.into_retained()?;
-                }
-                return Ok((concrete.into(), None));
+                let retained = concrete.capacity() as u64;
+                let result = (concrete.into(), None);
+                scope.finish(retained)?;
+                return Ok(result);
             }
             // Every probe and continuation uses the same bounded interval.
             let probe = acyclic_fs::ByteRange {
@@ -1442,10 +1442,14 @@ impl ToolContext {
                     .map(|io| io.take_native_custody(retained))
                     .transpose()?
             };
-            if let Some(custody) = concrete_custody {
-                custody.into_retained()?;
-            }
-            return Ok((concrete.into(), Some((selected, custody))));
+            drop(bytes);
+            let retained = crate::core::owned_sum([
+                concrete.capacity() as u64,
+                if custody.is_some() { 0 } else { retained },
+            ])?;
+            let result = (concrete.into(), Some((selected, custody)));
+            scope.finish(retained)?;
+            return Ok(result);
         }
         if original.is_some() {
             Err(Error::Conflict("effective version belongs to another layer".into()).tool_input())
