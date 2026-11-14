@@ -190,6 +190,7 @@ async fn source_before_images_collection<S: LazyWorkspaceStore>(
                 &cancellation,
             )
             .await?;
+        checkout.bind_authored_operation(crate::OperationId::new());
         assert!(
             root.stage_into_checkout(&mut checkout, "/file", id, original.len() as u64, &mut ctx)
                 .await?
