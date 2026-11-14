@@ -105,6 +105,7 @@ const FILES: &[(&str, &[u8])] = &[
     seed_file!("templates/orchestrator/AGENT.md"),
     seed_file!("templates/pipeline/AGENT.md"),
     seed_file!("templates/reviewer/AGENT.md"),
+    seed_file!("templates/single/AGENT.md"),
     seed_file!("templates/worker/AGENT.md"),
 ];
 

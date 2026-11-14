@@ -57,7 +57,10 @@
       {
         "step": 0,
         "absent": [
-          "spawn"
+          "spawn",
+          "send",
+          "archive",
+          "wait"
         ],
         "present": [
           "write"
@@ -65,14 +68,21 @@
       },
       {
         "absent": [
-          "spawn"
+          "spawn",
+          "send",
+          "archive",
+          "wait"
         ],
         "step": 1
       }
     ],
     "each_model_absent": [
       "Forced topology:",
-      "Delegate and coordinate work as an unrestricted tree"
+      "Delegate and coordinate work as an unrestricted tree",
+      "delegate",
+      "parallel fork",
+      "speculative fork",
+      "coordinate the work"
     ],
     "trace": {
       "topology": {
@@ -86,7 +96,10 @@
     },
     "files": {
       "single.txt": "SINGLE_ARTIFACT\n"
-    }
+    },
+    "each_model_contains": [
+      "Quality first, then latency; cost is not a goal."
+    ]
   },
   "physical": true,
   "adapter": "responses"
