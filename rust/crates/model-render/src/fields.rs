@@ -93,7 +93,7 @@ fields! {
 /// Slots are the finite protocol schema, not a bound on caller data. Tool
 /// declarations are encoded once, between the header fields and the
 /// conversation, from the profile's borrowed schema views.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Fields {
     values: Values,
     tools: Option<Box<RawValue>>,
@@ -107,17 +107,6 @@ impl PartialEq for Fields {
             && self.tools.as_deref().map(RawValue::get) == other.tools.as_deref().map(RawValue::get)
             && self.summary_tools.as_deref().map(RawValue::get)
                 == other.summary_tools.as_deref().map(RawValue::get)
-    }
-}
-
-impl Default for Fields {
-    fn default() -> Self {
-        Self {
-            values: Values::default(),
-            tools: None,
-            summary_tools: None,
-            server_tools: false,
-        }
     }
 }
 

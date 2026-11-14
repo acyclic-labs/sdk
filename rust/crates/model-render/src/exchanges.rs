@@ -60,7 +60,6 @@ pub struct Group {
 
 impl Group {
     /// Independent declaration dependencies, without counting a shared group twice.
-    #[must_use]
     pub fn sources(self) -> impl Iterator<Item = usize> {
         self.source.into_iter().chain(
             self.native_source
