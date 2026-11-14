@@ -62,6 +62,7 @@ impl ActorSocket {
             |(mut socket, mut results, mut pending)| async move {
                 loop {
                     tokio::select! {
+                        biased;
                         result = pending.next(), if !pending.is_empty() => {
                             result.ok_or(StreamError::Unavailable)??;
                         }
