@@ -358,17 +358,7 @@ where
                 )
                 .await?;
             if let Some(quiet_ms) = policy.quiet_ms {
-                let at_ms = self
-                    .clock
-                    .as_ref()
-                    .ok_or_else(|| {
-                        crate::executor::stock_boundary(
-                            io,
-                            crate::wire::ErrorCode::Invalid,
-                            "quiet supervision has no original host clock",
-                        )
-                    })?
-                    .now_unix_ms();
+                let at_ms = self.clock.now_unix_ms();
                 self.tool_job_projection(
                     &mut projection,
                     crate::supervision::tool_jobs::Record {

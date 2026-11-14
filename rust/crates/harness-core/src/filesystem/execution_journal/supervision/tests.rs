@@ -598,20 +598,6 @@ async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_o
                 invocation,
                 publication: None,
             };
-            if index == 0 && same_turn && exact_command && changed_input.is_none() {
-                // Quiet work cannot invent an ambient clock. Restoring the
-                // original owner admits this identical, previously refused key.
-                let clock = journal
-                    .clock
-                    .take()
-                    .ok_or_else(|| Error::Invalid("fixture clock missing".into()))?;
-                let refused = match journal.append(operation, "check-0", &started, None) {
-                    Ok(pending) => pending.await,
-                    Err(error) => Err(error),
-                };
-                journal.clock = Some(clock);
-                assert!(refused.is_err(), "quiet dispatch invented a host clock");
-            }
             journal
                 .append(operation, &format!("check-{index}"), &started, None)?
                 .await?;
