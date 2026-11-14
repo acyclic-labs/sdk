@@ -1101,22 +1101,36 @@ mod tests {
             let ops = reader.poll(0);
             assert_eq!(
                 ops.len(),
-                2,
-                "one original fetch per tail projection must serve every admitted witness"
+                1,
+                "one cold page must establish the original hierarchy cut"
             );
-            for flight in reader.inflight.values() {
-                assert!(
-                    reader
-                        .demand
-                        .get(&flight.key)
-                        .unwrap()
-                        .paging
-                        .witnesses
-                        .is_empty()
-                );
-                assert!(!flight.paging.witnesses.is_empty());
-            }
+            let assert_original_custody = |reader: &Reader| {
+                for flight in reader.inflight.values() {
+                    assert!(
+                        reader
+                            .demand
+                            .get(&flight.key)
+                            .unwrap()
+                            .paging
+                            .witnesses
+                            .is_empty()
+                    );
+                    assert!(!flight.paging.witnesses.is_empty());
+                }
+            };
+            assert_original_custody(&reader);
             for op in ops.into_iter().rev() {
+                let id = op.id();
+                reader.complete(id, execute(&provider, op).await, 0);
+            }
+            let ops = reader.poll(0);
+            assert_eq!(
+                ops.len(),
+                1,
+                "the cold-page completion must release the other tail projection"
+            );
+            assert_original_custody(&reader);
+            for op in ops {
                 let id = op.id();
                 reader.complete(id, execute(&provider, op).await, 0);
             }
@@ -1212,8 +1226,8 @@ mod tests {
             let ops = reader.poll(1);
             assert_eq!(
                 ops.len(),
-                2,
-                "persistence fabricated fresh projection observations"
+                1,
+                "restored views must establish a fresh hierarchy cut"
             );
             // Returning request custody on transient failure preserves the
             // original observations without a second plan or copied map.
@@ -1245,14 +1259,14 @@ mod tests {
             reader.restore(&bytes).unwrap();
             reader.plan(projections.iter().map(want));
             let ops = reader.poll(retry_at);
-            assert_eq!(ops.len(), 2);
+            assert_eq!(ops.len(), 1);
             // A newer plan replaces the pending view while the old flight
             // still owns its observations. Timeout cannot restore withdrawn
             // witnesses or resurrect the removed projection.
             reader.plan([want(&projections[2])]);
             let deadline = reader.next_deadline().unwrap();
             reader.begin_frame(deadline);
-            assert_eq!(reader.take_cancelled().len(), 2);
+            assert_eq!(reader.take_cancelled().len(), 1);
             let retry_at = reader.next_deadline().unwrap();
             let mut retried = reader.poll(retry_at);
             let op = retried.pop().unwrap();
@@ -1277,12 +1291,13 @@ mod tests {
             reader.restore(&bytes).unwrap();
             reader.plan(projections.iter().map(want));
             let ops = reader.poll(retry_at);
+            assert_eq!(ops.len(), 1);
             // Original indexed parent invalidation covers every projection,
             // including a valid original reply arriving after cancellation.
             let late_id = ops[0].id();
             let late = execute(&provider, ops[0].clone()).await;
             reader.denied(&parent);
-            assert_eq!(reader.take_cancelled().len(), 2);
+            assert_eq!(reader.take_cancelled().len(), 1);
             reader.complete(late_id, late, retry_at);
             assert!(reader.cache().listing(&parent, 0, 64).is_none());
             assert!(reader.poll(retry_at).is_empty());
