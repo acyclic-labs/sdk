@@ -453,7 +453,7 @@ fn arbitrary_history_arguments_are_lossless_idempotent_objects_in_every_protocol
         json!({"retained": "\"\n\0hé".repeat(32_768)}),
     ));
     proptest!(ProptestConfig::with_cases(64), |(value in values())| {
-        crate::fuzzing::assert_model_json_round_trip(&value);
+        assert_eq!(crate::fuzzing::assert_model_json_round_trip(&value).map_err(|error| format!("{error:?}")), Ok(()));
         oracle.check(&Case::Projected(value));
     });
 }
@@ -471,7 +471,11 @@ fn raw_marker_names_and_non_object_fixtures_are_preserved() {
         json!({"$serde_json::private::RawValue":"null","nested":[]}),
         json!({"$serde_json::private::Number":"null","nested":[]}),
     ] {
-        crate::fuzzing::assert_model_json_round_trip(&value);
+        assert_eq!(
+            crate::fuzzing::assert_model_json_round_trip(&value)
+                .map_err(|error| format!("{error:?}")),
+            Ok(())
+        );
         let bytes = serde_json::to_vec(&value).unwrap();
         for adapter in [
             Adapter::Anthropic,
@@ -479,8 +483,10 @@ fn raw_marker_names_and_non_object_fixtures_are_preserved() {
             Adapter::Chat,
             Adapter::Gemini,
         ] {
-            assert!(
-                crate::fuzzing::input_round_trip(adapter, &bytes),
+            assert_eq!(
+                crate::fuzzing::input_round_trip(adapter, &bytes)
+                    .map_err(|error| format!("{error:?}")),
+                Ok(true),
                 "accepted literal-key input skipped validation"
             );
         }
@@ -524,7 +530,7 @@ fn generated_envelopes_preserve_every_admitted_argument_depth() {
     let oracle = oracle();
     proptest!(ProptestConfig::with_cases(32), |(depth in 0usize..=128)| {
         let value = nested(depth);
-        crate::fuzzing::assert_model_json_round_trip(&value);
+        assert_eq!(crate::fuzzing::assert_model_json_round_trip(&value).map_err(|error| format!("{error:?}")), Ok(()));
         oracle.check(&Case::Normalized(value));
     });
 }

@@ -83,7 +83,7 @@ pub fn assert_stream_invariants(input: &[u8]) {
     );
 }
 
-type ProofResult = Result<(), Box<dyn std::error::Error>>;
+type ProofResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 fn adapter_for(kind: u8) -> Adapter {
     match kind % 4 {
@@ -117,7 +117,7 @@ fn stream_invariants(input: &[u8]) -> ProofResult {
         };
         let adapter = adapter_for(kind);
         assert!(
-            input_round_trip(adapter, input) || crate::json(input).is_err(),
+            input_round_trip(adapter, input)? || crate::json(input).is_err(),
             "production-accepted input skipped fuzz validation"
         );
         return Ok(());
@@ -139,7 +139,7 @@ fn stream_invariants(input: &[u8]) -> ProofResult {
         return reasoning_round_trip(input);
     }
     if kind == b'C' {
-        catalog_round_trip(input);
+        catalog_round_trip(input)?;
         return Ok(());
     }
     if kind == b'N' {
@@ -341,30 +341,30 @@ fn stream_round_trip(adapter: Adapter, input: &[u8]) -> ProofResult {
     Ok(())
 }
 
-pub(crate) fn input_round_trip(adapter: Adapter, input: &[u8]) -> bool {
+pub(crate) fn input_round_trip(adapter: Adapter, input: &[u8]) -> ProofResult<bool> {
     let Ok(body) = crate::json(input) else {
-        return false;
+        return Ok(false);
     };
     let before = crate::validate_input(adapter, &body);
-    let encoded = serde_json::to_vec(&body).unwrap();
-    let replay = crate::json(&encoded).unwrap();
+    let encoded = serde_json::to_vec(&body)?;
+    let replay = crate::json(&encoded)?;
     assert_eq!(body, replay, "input JSON round trip changed literal values");
     assert_eq!(before, crate::validate_input(adapter, &replay));
-    true
+    Ok(true)
 }
 
-fn catalog_round_trip(input: &[u8]) -> bool {
+fn catalog_round_trip(input: &[u8]) -> ProofResult<bool> {
     let Ok(spec) = serde_json::from_slice::<crate::ProviderSpec>(input) else {
-        return false;
+        return Ok(false);
     };
-    let canonical = serde_json::to_vec(&spec).unwrap();
-    let restored: crate::ProviderSpec = serde_json::from_slice(&canonical).unwrap();
-    assert_eq!(serde_json::to_vec(&restored).unwrap(), canonical);
+    let canonical = serde_json::to_vec(&spec)?;
+    let restored: crate::ProviderSpec = serde_json::from_slice(&canonical)?;
+    assert_eq!(serde_json::to_vec(&restored)?, canonical);
     assert_eq!(
         crate::registry::validate_spec("fixture", &spec).is_ok(),
         crate::registry::validate_spec("fixture", &restored).is_ok()
     );
-    true
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -387,7 +387,7 @@ mod properties {
             for mut spec in crate::default_catalog().into_values() {
                 spec.base_url = format!("https://example.test/{endpoint}");
                 spec.max_event_bytes = Some(maximum);
-                prop_assert!(catalog_round_trip(&serde_json::to_vec(&spec).unwrap()));
+                prop_assert_eq!(catalog_round_trip(&serde_json::to_vec(&spec).unwrap()).map_err(|error| format!("{error:?}")), Ok(true));
             }
         }
 
@@ -479,9 +479,11 @@ mod properties {
         assert_stream_invariants(include_bytes!(
             "../fuzz/corpus/provider_stream/llamacpp-text-request-literal-extension"
         ));
-        assert!(catalog_round_trip(
-            &include_bytes!("../fuzz/corpus/provider_stream/catalog.json")[1..]
-        ));
+        assert_eq!(
+            catalog_round_trip(&include_bytes!("../fuzz/corpus/provider_stream/catalog.json")[1..])
+                .map_err(|error| format!("{error:?}")),
+            Ok(true)
+        );
         for input in [
             include_bytes!("../fuzz/corpus/provider_stream/llamacpp-text-request").as_slice(),
             include_bytes!("../fuzz/corpus/provider_stream/llamacpp-tool-request").as_slice(),
@@ -502,8 +504,10 @@ mod properties {
                     &format!("{{\"extra\":{extra},"),
                     1,
                 );
-                assert!(
-                    input_round_trip(Adapter::Chat, mutated.as_bytes()),
+                assert_eq!(
+                    input_round_trip(Adapter::Chat, mutated.as_bytes())
+                        .map_err(|error| format!("{error:?}")),
+                    Ok(true),
                     "accepted captured request skipped input validation"
                 );
                 let value = crate::json(mutated.as_bytes()).unwrap();
@@ -566,7 +570,7 @@ mod properties {
 }
 
 /// Typed model/tool JSON must preserve literal maps, including reserved serde keys.
-pub(crate) fn assert_model_json_round_trip(value: &serde_json::Value) {
+pub(crate) fn assert_model_json_round_trip(value: &serde_json::Value) -> ProofResult {
     use acyclic_harness_core::model::{
         Model, ModelContentPart, ModelEvent, ToolCall, ToolResultContent,
     };
@@ -574,35 +578,36 @@ pub(crate) fn assert_model_json_round_trip(value: &serde_json::Value) {
         T: serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + PartialEq,
     >(
         value: T,
-    ) {
-        let encoded = serde_json::to_value(&value).unwrap();
-        let replay: T = serde_json::from_value(encoded).unwrap();
+    ) -> ProofResult {
+        let encoded = serde_json::to_value(&value)?;
+        let replay: T = serde_json::from_value(encoded)?;
         assert_eq!(replay, value);
+        Ok(())
     }
     let call =
         ToolCall::new("call".into(), "echo".into(), value.clone()).with_metadata(value.clone());
-    round_trip(ModelEvent::ToolCall(call.clone()));
-    round_trip(ModelContentPart::ToolCall(call));
+    round_trip(ModelEvent::ToolCall(call.clone()))?;
+    round_trip(ModelContentPart::ToolCall(call))?;
     round_trip(ModelEvent::Completed {
         metadata: value.clone(),
-    });
+    })?;
     round_trip(ToolResultContent::Json {
         value: value.clone(),
-    });
+    })?;
     round_trip(Model {
         provider: "fixture".into(),
         name: "model".into(),
         revision: "1".into(),
-    });
+    })?;
     round_trip(acyclic_harness_core::tool::ToolInvocation {
         operation_id: acyclic_harness_core::OperationId::from_bytes([1; 16]),
         call_id: "call".into(),
         name: "echo".into(),
         arguments: value.clone(),
-    });
+    })?;
     round_trip(acyclic_harness_core::tool::ToolResult {
         value: value.clone(),
-    });
+    })?;
     round_trip(acyclic_harness_core::tool::ToolDefinition {
         name: "echo".into(),
         revision: "1".into(),
@@ -610,21 +615,34 @@ pub(crate) fn assert_model_json_round_trip(value: &serde_json::Value) {
         input_schema: value.clone(),
         output_schema: value.clone(),
         projection_schema: value.clone(),
-    });
+    })?;
+    Ok(())
 }
 
 /// OAR-RSN-02 from raw bytes. Validation agrees with an independent
 /// input-derived reference. Incomplete pairs refuse; complete sequences retain
 /// every original item without inserting, dropping or reordering content.
+///
+/// # Panics
+/// If validation, canonical replay or the independent sequence reference disagree.
 pub fn assert_response_sequence(input: &[u8]) {
+    assert_eq!(
+        response_sequence(input).map_err(|error| format!("{error:?}")),
+        Ok(())
+    );
+}
+
+fn response_sequence(input: &[u8]) -> ProofResult {
     use crate::projection::native_reasoning::replay_responses;
-    let Ok(body) = crate::json(input) else { return };
+    let Ok(body) = crate::json(input) else {
+        return Ok(());
+    };
     let errors = crate::validate_input(Adapter::Responses, &body);
-    let replay = crate::json(&serde_json::to_vec(&body).unwrap()).unwrap();
+    let replay = crate::json(&serde_json::to_vec(&body)?)?;
     assert_eq!(body, replay);
     assert_eq!(errors, crate::validate_input(Adapter::Responses, &replay));
     let Some(items) = body["input"].as_array() else {
-        return;
+        return Ok(());
     };
     assert_eq!(
         errors.contains(&"OAR-RSN-02"),
@@ -632,6 +650,7 @@ pub fn assert_response_sequence(input: &[u8]) {
     );
     let result = replay_responses(items);
     assert_eq!(response_sequence_violation(items, &result), None);
+    Ok(())
 }
 
 /// The structured detector shared by the fuzz oracle and its negative controls.
@@ -650,9 +669,11 @@ pub(crate) fn response_sequence_violation(
 /// Independent reference, deliberately not `ResponseItem`: a reasoning run
 /// ends with a function call or an assistant message, without an interruption.
 fn unanswered_reasoning(items: &[serde_json::Value]) -> usize {
-    (0..items.len())
-        .filter(|&index| {
-            items[index]["type"] == "reasoning"
+    items
+        .iter()
+        .enumerate()
+        .filter(|&(index, item)| {
+            item["type"] == "reasoning"
                 && !items.get(index + 1).is_some_and(|next| {
                     matches!(
                         next["type"].as_str(),
@@ -672,7 +693,11 @@ pub fn assert_turns(input: &[u8]) {
     let Some((&selector, input)) = input.split_first() else {
         return;
     };
-    let adapter = [Adapter::Anthropic, Adapter::Gemini][usize::from(selector % 2)];
+    let adapter = if selector.is_multiple_of(2) {
+        Adapter::Anthropic
+    } else {
+        Adapter::Gemini
+    };
     let Ok(serde_json::Value::Array(messages)) = crate::json(input) else {
         return;
     };
