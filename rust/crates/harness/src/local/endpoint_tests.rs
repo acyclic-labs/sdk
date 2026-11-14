@@ -27,7 +27,7 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
     // The script publishes two text turns; it has no summary-model requests.
     let config = volume_config(directory.path(), project, provider)?
         .compaction(crate::context::CompactionPolicy::Disabled)
-        .served(Arc::new(crate::server::KeyFileVerifier));
+        .admitted(Arc::new(crate::server::KeyFileVerifier));
     let local = Arc::new(LocalHarness::open(config).await?);
     local.agents().await?;
     let owner = local.connect_sessions().await?;

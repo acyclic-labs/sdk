@@ -1,0 +1,523 @@
+//! Agent behaviour vectors use both production compositions. Only storage,
+//! admission and transport setup belong in this fixture.
+use super::*;
+use crate::{
+    Capabilities,
+    agent::{IntentId, WorkspaceEntry, WorkspaceRole},
+    core::{AggregateKind, Authority, AuthorityRoot},
+    filesystem::{PRIVATE_VOLUME, TurnLimits},
+    hosting::{Placement, RootRequest, VerifiedCaller},
+    local::Connection,
+    server::{self, Actors, Execution, ServerConfig},
+};
+use acyclic_actors::{addressing::ActorReference, domain::ActorLimits};
+use acyclic_auth::{authority::PolicyDecision, contract::Principal};
+use acyclic_fs::{EmbeddedCapabilities, Fs, LogicalObjectStore, StreamAuthorityStore};
+use acyclic_harness_client::AgentCommand;
+use acyclic_stream::{MemoryStream, StreamError};
+use tokio::sync::oneshot;
+
+#[derive(Clone, Copy)]
+pub(super) enum Mode {
+    Local,
+    Hosted,
+}
+
+pub(super) struct Platform {
+    pub(super) connection: Connection,
+    _directory: tempfile::TempDir,
+    _local: Option<Arc<LocalHarness>>,
+    serving: Option<tokio::task::JoinHandle<Result<()>>>,
+    stop: Option<oneshot::Sender<()>>,
+}
+
+impl Drop for Platform {
+    fn drop(&mut self) {
+        if let Some(serving) = &self.serving {
+            serving.abort();
+        }
+    }
+}
+
+struct Owner;
+impl crate::hosting::Platform for Owner {
+    fn policy<'a>(
+        &'a self,
+        _: &'a Principal,
+        _: &'a AgentCommand,
+    ) -> BoxProviderFuture<'a, std::result::Result<PolicyDecision, StreamError>> {
+        Box::pin(async { Ok(PolicyDecision::Allow) })
+    }
+}
+
+impl Mode {
+    pub(super) async fn open(self, provider: Arc<dyn ModelProvider>) -> Result<Platform> {
+        let directory = tempfile::tempdir().map_err(super::super::storage)?;
+        match self {
+            Self::Local => {
+                let project = volume(directory.path()).await?;
+                let local = Arc::new(
+                    LocalHarness::open(
+                        volume_config(directory.path(), project, provider)?
+                            .without_default_tools()
+                            .compaction(crate::context::CompactionPolicy::default()),
+                    )
+                    .await?,
+                );
+                Ok(Platform {
+                    connection: local.connect().await?,
+                    _directory: directory,
+                    _local: Some(local),
+                    serving: None,
+                    stop: None,
+                })
+            }
+            Self::Hosted => Self::hosted(directory, provider).await,
+        }
+    }
+
+    async fn hosted(
+        directory: tempfile::TempDir,
+        provider: Arc<dyn ModelProvider>,
+    ) -> Result<Platform> {
+        let root = crate::agent::AgentId::from_bytes([37; 16]);
+        let audience = Authority {
+            kind: AggregateKind::Task,
+            id: "agent-conformance".into(),
+        };
+        let issuer = AuthorityRoot::new("agent-conformance", [37; 32], audience.clone());
+        let filesystem = crate::resources::ProviderRef::new(
+            "conformance".into(),
+            "filesystem".into(),
+            "1".into(),
+            &mut None,
+        )?;
+        let scope = issuer.bootstrap_scope(
+            "owner",
+            &Capabilities::new([
+                acyclic_fs::access::Capability::whole_volume(
+                    None,
+                    &acyclic_fs::access::Action::ALL,
+                )
+                .to_scope_label()
+                .map_err(super::super::storage)?,
+                crate::contract::capability::INTERACTION_ROUTE.to_owned(),
+            ]),
+            None,
+            &mut None,
+        )?;
+        let private = VolumeRef::new(
+            filesystem.clone(),
+            "private".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(crate::AgentId::from_bytes(root.to_bytes())),
+            &mut None,
+        )?;
+        let mut actors = Actors::graphcoder(
+            issuer,
+            VerifiedCaller { audience, scope },
+            Placement {
+                filesystem: Fs::new(
+                    StreamAuthorityStore::new(Arc::new(MemoryStream::default())),
+                    LogicalObjectStore::new(Arc::new(acyclic_objects::MemoryObjects::memory())),
+                    EmbeddedCapabilities::MEMORY,
+                ),
+                provider: filesystem,
+                within: ActorReference::new(b"test", b"agents", b"conformance")
+                    .map_err(super::super::storage)?,
+            },
+            (
+                IntentId::try_from("root").map_err(super::super::storage)?,
+                RootRequest {
+                    peer: true,
+                    agent: root,
+                    fresh: vec![WorkspaceEntry::initial_volume(
+                        WorkspaceRole::Private,
+                        PRIVATE_VOLUME.into(),
+                        private,
+                    )],
+                    retained: Vec::new(),
+                    brief: None,
+                    policy: None,
+                },
+            ),
+            Execution {
+                models: None,
+                model: (model()?, provider),
+                limits: Default::default(),
+                turns: TurnLimits {
+                    maximum_bytes: None,
+                    history_turns: 8,
+                },
+                actors: ActorLimits::default(),
+                compaction: Default::default(),
+                tools: Vec::new(),
+                default_tools: Vec::new(),
+                workspace: false,
+                context: None,
+                approvers: Default::default(),
+                goals: None,
+            },
+            Arc::new(Owner),
+        );
+        actors.preset.approval_policy = crate::approvals::ApprovalPolicy::accept_all("conformance");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(super::super::storage)?;
+        let (ready, announced) = oneshot::channel();
+        let (stop, stopped) = oneshot::channel();
+        let mut serving = tokio::spawn(async move {
+            server::serve(
+                listener,
+                ServerConfig::new(actors),
+                move |endpoint| {
+                    let _ = ready.send((
+                        endpoint.endpoint.clone(),
+                        endpoint
+                            .observation
+                            .as_ref()
+                            .map(|observation| observation.credential.clone()),
+                    ));
+                },
+                async {
+                    let _ = stopped.await;
+                },
+            )
+            .await
+            .map_err(super::super::storage)
+        });
+        let (endpoint, credential) = tokio::select! {
+            endpoint = announced => endpoint.map_err(super::super::storage)?,
+            result = &mut serving => {
+                result.map_err(super::super::storage)??;
+                return Err(Error::Storage("server ended before readiness".into()));
+            }
+        };
+        let options = acyclic_harness_client::resolve_connection_options(
+            Some(&endpoint),
+            credential.as_deref(),
+            None,
+            None,
+        )
+        .map_err(super::super::storage)?;
+        let platform = Platform {
+            connection: Connection::connect(&options).await?,
+            _directory: directory,
+            _local: None,
+            serving: Some(serving),
+            stop: Some(stop),
+        };
+        // Ownership is installed before returning to the shared vector.
+        platform.connection.require_execution(None, false).await?;
+        Ok(platform)
+    }
+}
+
+impl Platform {
+    async fn request_text(&self, request: &crate::model::ModelRequest) -> Result<String> {
+        let conversation = Conversation::open(self.connection.clone());
+        let mut text = String::new();
+        for message in &request.messages {
+            if message.role == crate::model::ModelRole::System {
+                continue;
+            }
+            if let crate::model::ModelContent::Text(body) = &message.content {
+                text.push_str(body);
+            }
+            for part in message.content.parts() {
+                if let crate::model::ModelContentPart::Text { text: body, .. } = part {
+                    text.push_str(body);
+                }
+            }
+            for (file, _) in message.content.file_parts() {
+                text.push_str(&conversation.text(file).await?);
+            }
+        }
+        Ok(text)
+    }
+
+    pub(super) async fn close(mut self) -> Result<()> {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(serving) = self.serving.take() {
+            serving.await.map_err(super::super::storage)??;
+        }
+        Ok(())
+    }
+}
+
+async fn summaries_remain_readable(mode: Mode) -> Result<()> {
+    let provider = Arc::new(
+        ScriptedModelProvider::new(
+            ["FIRST", "none", "SUMMARY", "none", "AFTER", "none"]
+                .map(|text| ScriptedTurn::Text(text.into())),
+        )
+        .with_context_capacity(capacity())
+        .reading_content(),
+    );
+    let platform = mode.open(provider.clone()).await?;
+    let conversation = Conversation::open(platform.connection.clone());
+    let mut client = ObservedConversation::observe(conversation, None).await?;
+    assert!(
+        client
+            .send("first", "remember the first fact")
+            .await?
+            .outcome
+            .is_completed()
+    );
+    let compact = client
+        .conversation
+        .compact("compact", Some("retain the fact"))
+        .await?;
+    let (sequence, entry) = client.settled_at(compact).await?;
+    assert!(entry.outcome.is_completed(), "{:?}", entry.outcome);
+    assert_eq!(
+        client.conversation.turn(sequence, &entry).await?.answer,
+        "SUMMARY"
+    );
+    let after = client.send("after", "use the retained fact").await?;
+    assert!(after.outcome.is_completed(), "{:?}", after.outcome);
+    assert_eq!(provider.request_count(), 6);
+    assert_eq!(provider.remaining(), 0);
+    let request = provider
+        .request(4)
+        .ok_or_else(|| Error::NotFound("request after compaction".into()))?;
+    let text = platform.request_text(&request).await?;
+    assert!(text.contains("SUMMARY"), "{text}");
+    assert!(!text.contains("FIRST"), "{text}");
+    drop(client);
+    platform.close().await
+}
+
+async fn dispatched_before_settlement(
+    client: &mut ObservedConversation,
+    requests: &mut tokio::sync::mpsc::Receiver<()>,
+    inbox: u64,
+) -> Result<()> {
+    tokio::select! {
+        request = requests.recv() => request.ok_or_else(|| Error::Storage("model dispatch producer closed".into()))?,
+        settled = client.settled(inbox) => {
+            let entry = settled?;
+            return Err(Error::Conflict(format!("held turn settled before model dispatch: {:?}", entry.outcome)));
+        }
+    }
+    Ok(())
+}
+
+fn pending_turn(reply: &str) -> (Arc<ScriptedModelProvider>, tokio::sync::mpsc::Receiver<()>) {
+    let (dispatched, requests) = tokio::sync::mpsc::channel(1);
+    let provider = Arc::new(
+        ScriptedModelProvider::new([
+            ScriptedTurn::Events(vec![crate::test_support::ScriptedEvent::Pending {}]),
+            ScriptedTurn::Text(reply.into()),
+            ScriptedTurn::Text("none".into()),
+        ])
+        .with_context_capacity(capacity())
+        .reading_content()
+        .with_dispatch_observer(move |_| {
+            let _ = dispatched.try_send(());
+            Box::pin(async { Ok(()) })
+        }),
+    );
+    (provider, requests)
+}
+
+async fn cancelled_input_remains_in_context(mode: Mode) -> Result<()> {
+    let (provider, mut requests) = pending_turn("AFTER_REPLY");
+    let platform = mode.open(provider.clone()).await?;
+    let conversation = Conversation::open(platform.connection.clone());
+    let mut client = ObservedConversation::observe(conversation, None).await?;
+    let inbox = client.conversation.send("held", "CANCELLED_PROMPT").await?;
+    dispatched_before_settlement(&mut client, &mut requests, inbox).await?;
+    assert_eq!(client.conversation.cancel().await?, Some(inbox));
+    let (sequence, entry) = client.settled_at(inbox).await?;
+    assert_eq!(entry.outcome, crate::agent::TurnOutcome::Cancelled);
+    assert_eq!(crate::local::agent_conversation::checkpoint(&entry), None);
+    let prompt = client.conversation.turn(sequence, &entry).await?.prompt;
+    assert_eq!(prompt.as_deref(), Some("CANCELLED_PROMPT"));
+    assert_eq!(provider.request_count(), 1);
+    let after = client.send("after", "AFTER_PROMPT").await?;
+    assert!(after.outcome.is_completed(), "{:?}", after.outcome);
+    assert_eq!(provider.request_count(), 3);
+    assert_eq!(provider.remaining(), 0);
+    let request = provider
+        .request(1)
+        .ok_or_else(|| Error::NotFound("request after cancellation".into()))?;
+    let text = platform.request_text(&request).await?;
+    assert!(text.contains("CANCELLED_PROMPT"), "{text}");
+    drop(client);
+    platform.close().await
+}
+
+async fn cancelling_current_input_preserves_a_newer_queued_prompt(mode: Mode) -> Result<()> {
+    let (provider, mut requests) = pending_turn("queued prompt survived");
+    let platform = mode.open(provider.clone()).await?;
+    let conversation = Conversation::open(platform.connection.clone());
+    let mut observed = ObservedConversation::observe(conversation, None).await?;
+    let client = observed.conversation.clone();
+    let running = client.send("running-input", "hold this turn").await?;
+    dispatched_before_settlement(&mut observed, &mut requests, running).await?;
+    let queued = client
+        .send("queued-input", "answer the next prompt")
+        .await?;
+    assert!(queued > running);
+    assert_eq!(client.cancel().await?, Some(running));
+    assert_eq!(
+        observed.settled(running).await?.outcome,
+        crate::agent::TurnOutcome::Cancelled
+    );
+    let (sequence, next) = observed.settled_at(queued).await?;
+    assert_eq!(next.outcome, crate::agent::TurnOutcome::Completed);
+    assert_eq!(
+        client.output_text_at(sequence, &next).await?,
+        "queued prompt survived"
+    );
+    assert_eq!(provider.request_count(), 3);
+    assert_eq!(provider.remaining(), 0);
+    drop(client);
+    drop(observed);
+    platform.close().await
+}
+
+struct RewriteModel {
+    inner: Arc<dyn ModelProvider>,
+    content: Option<(Arc<dyn ContentResidencyVerifier>, Option<u64>)>,
+    summaries: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl ModelProvider for RewriteModel {
+    fn bind_content(
+        &self,
+        reader: Arc<dyn ContentResidencyVerifier>,
+        maximum: Option<u64>,
+    ) -> Option<Arc<dyn ModelProvider>> {
+        Some(Arc::new(Self {
+            inner: self
+                .inner
+                .bind_content(reader.clone(), maximum)
+                .unwrap_or_else(|| self.inner.clone()),
+            content: Some((reader, maximum)),
+            summaries: self.summaries.clone(),
+        }))
+    }
+
+    fn context_capacity(&self, model: &Model) -> Result<ModelContextCapacity> {
+        self.inner.context_capacity(model)
+    }
+
+    fn count_tokens<'a>(
+        &'a self,
+        request: &'a crate::model::PreparedModelRequest,
+        ceiling: u64,
+    ) -> crate::model::ModelStream<'a> {
+        self.inner.count_tokens(request, ceiling)
+    }
+
+    fn generate<'a>(
+        &'a self,
+        request: &'a crate::model::PreparedModelRequest,
+        dispatch: crate::model::ModelDispatch,
+    ) -> crate::model::ModelStream<'a> {
+        if !request.request().summary {
+            return self.inner.generate(request, dispatch);
+        }
+        use futures::TryStreamExt as _;
+        crate::model::ModelStream::new(Box::pin(
+            futures::stream::once(async move {
+                let reader = self
+                    .content
+                    .as_ref()
+                    .map(|(reader, maximum)| (reader.as_ref(), *maximum));
+                crate::test_support::read_request_files(reader, request).await?;
+                let (source, _) = request.request().split_summary_instruction()?;
+                self.summaries
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok::<_, Error>(futures::stream::iter([
+                    Ok(crate::model::ModelEvent::Content {
+                        delta: serde_json::json!({
+                            "version": 1, "drop_through": source.len(), "summary": "RETAINED_FACT",
+                        })
+                        .to_string(),
+                    }),
+                    Ok(crate::model::ModelEvent::Completed {
+                        metadata: serde_json::Value::Null,
+                    }),
+                ]))
+            })
+            .try_flatten(),
+        ))
+    }
+}
+
+async fn in_turn_summary_remains_readable(mode: Mode) -> Result<()> {
+    let script = Arc::new(
+        ScriptedModelProvider::new([
+            ScriptedTurn::Text("FIRST".into()),
+            ScriptedTurn::Text("none".into()),
+            ScriptedTurn::Text("SECOND".into()),
+            ScriptedTurn::Text("none".into()),
+            ScriptedTurn::Text("AFTER".into()),
+            ScriptedTurn::Text("none".into()),
+        ])
+        .with_context_capacity(capacity())
+        .reading_content(),
+    );
+    let summaries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let model = Arc::new(RewriteModel {
+        inner: script.clone(),
+        content: None,
+        summaries: summaries.clone(),
+    });
+    let platform = mode.open(model).await?;
+    let conversation = Conversation::open(platform.connection.clone());
+    let mut client = ObservedConversation::observe(conversation, None).await?;
+    let pressure = "x".repeat(capacity().context_tokens as usize * 3 / 5);
+    let first = client.send("first", &pressure).await?;
+    assert!(first.outcome.is_completed(), "{:?}", first.outcome);
+    let recent = client.send("recent", "retain a recent exchange").await?;
+    assert!(recent.outcome.is_completed(), "{:?}", recent.outcome);
+    assert_eq!(summaries.load(std::sync::atomic::Ordering::SeqCst), 0);
+    let second = client.send("second", &pressure).await?;
+    assert!(second.outcome.is_completed(), "{:?}", second.outcome);
+    assert!(summaries.load(std::sync::atomic::Ordering::SeqCst) > 0);
+    assert_eq!(script.request_count(), 6);
+    let request = script
+        .request(4)
+        .ok_or_else(|| Error::NotFound("compacted response request".into()))?;
+    let text = platform.request_text(&request).await?;
+    assert!(
+        text.contains("RETAINED_FACT"),
+        "summary absent from response context"
+    );
+    drop(client);
+    platform.close().await
+}
+
+// Register a vector once; every registration emits both deployment tests.
+macro_rules! dual_mode {
+    ($($vector:ident),+ $(,)?) => {
+        mod cases {
+            $(
+                mod $vector {
+                    #[tokio::test]
+                    async fn local() -> crate::Result<()> {
+                        super::super::$vector(super::super::Mode::Local).await
+                    }
+
+                    #[tokio::test]
+                    async fn hosted() -> crate::Result<()> {
+                        super::super::$vector(super::super::Mode::Hosted).await
+                    }
+                }
+            )+
+        }
+    };
+}
+
+dual_mode! {
+    summaries_remain_readable,
+    cancelled_input_remains_in_context,
+    cancelling_current_input_preserves_a_newer_queued_prompt,
+    in_turn_summary_remains_readable,
+}

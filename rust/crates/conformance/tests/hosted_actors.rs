@@ -226,6 +226,7 @@ fn composition_at(
             actors: ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             compaction: CompactionPolicy::Disabled,
             tools: Vec::new(),
+            default_tools: acyclic_harness::tools::default_names(),
             workspace: false,
             context: None,
             approvers: Default::default(),

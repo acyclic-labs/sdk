@@ -1,6 +1,31 @@
 use super::*;
 
 #[test]
+fn compaction_budget_advances_past_an_irreducible_prefix() -> Result<()> {
+    let source = context(
+        vec![
+            text(ModelRole::System, "instructions"),
+            text(ModelRole::User, "older input"),
+            text(ModelRole::Assistant, "older answer"),
+            text(ModelRole::User, "current input"),
+        ],
+        Some(3),
+    );
+    let policy = CapacityCompaction::default();
+    assert_eq!(policy.window_boundary(&source, 1, &mut None)?, Some(1));
+    for limit in [None, Some(source.messages.len())] {
+        let (through, maximum) = policy.projection_budget(&source, limit, 1, &mut None)?;
+        assert_eq!(through, 2);
+        let (retained, proof) = compact(&source, maximum, through)?;
+        validate_compaction(&proof, &source, &retained, None)?;
+        assert!(retained.messages.contains(&source.messages[0]));
+        assert!(retained.messages.contains(&source.messages[3]));
+        assert!(!retained.messages.contains(&source.messages[1]));
+    }
+    Ok(())
+}
+
+#[test]
 fn every_cut_of_the_only_protected_exchange_retains_all_input() -> Result<()> {
     let payload = "old ".repeat(6_500);
     let source = context(

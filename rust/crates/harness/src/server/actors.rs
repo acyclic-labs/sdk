@@ -34,6 +34,9 @@ pub struct Execution {
     pub compaction: CompactionPolicy,
     /// Host tools in addition to the preset's stock tools.
     pub tools: Vec<Tool>,
+    /// Exact stock tool selection. An empty selection enables none; use
+    /// [`crate::tools::default_names`] for the standard catalog.
+    pub default_tools: Vec<String>,
     /// Whether this host supplies native workspace tools.
     pub workspace: bool,
     /// Additional task context, when the host supplies one. Otherwise tools
@@ -159,7 +162,7 @@ where
     ) -> BoxProviderFuture<'static, std::result::Result<Hosted<P, O, Runtime>, Self::Error>> {
         Box::pin(async move {
             let execution = self.execution;
-            let selected = crate::tools::default_names();
+            let selected = execution.default_tools;
             let tools =
                 crate::tools::registry(&selected, |_| execution.workspace, execution.tools)?;
             let context = match execution.context {

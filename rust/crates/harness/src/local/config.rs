@@ -91,8 +91,8 @@ pub struct LocalHarnessConfig {
     pub(super) default_tools: Vec<String>,
     pub(super) question: bool,
     pub(super) feedback: Option<bool>,
-    /// Hosts the agents for [`crate::server::serve`].
-    pub(super) served: Option<Arc<dyn super::Verifier>>,
+    /// Verifies the caller of every agent, including embedded sessions.
+    pub(super) admission: Arc<dyn super::Verifier>,
     pub(super) approval_policy: crate::approvals::ApprovalPolicy,
     pub(super) approval_issuer: Option<AuthorityRoot>,
     pub(super) approval_models: std::collections::BTreeMap<String, (Model, Arc<dyn ModelProvider>)>,
@@ -290,7 +290,7 @@ impl LocalHarnessConfig {
             default_tools: crate::tools::default_names(),
             question: false,
             feedback: None,
-            served: None,
+            admission: Arc::new(super::KeyFileVerifier),
             approval_policy: Default::default(),
             approval_issuer: None,
             approval_models: Default::default(),
@@ -505,13 +505,12 @@ impl LocalHarnessConfig {
         self.approval_models.insert(selection.into(), model);
         self
     }
-    /// Hosts the agent tree as a self-hosted endpoint does: admitted under
-    /// this harness's own owner scope, exactly as a managed host admits its
-    /// verified caller, instead of as the tree's root custody.
+    /// Supplies the platform's caller verification. Embedded sessions use the
+    /// same admission with the default key-file verifier.
     #[must_use]
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn served(mut self, verifier: Arc<dyn super::Verifier>) -> Self {
-        self.served = Some(verifier);
+    pub(crate) fn admitted(mut self, verifier: Arc<dyn super::Verifier>) -> Self {
+        self.admission = verifier;
         self
     }
     /// Applies the shared approval policy. Tool availability remains with the

@@ -21,62 +21,6 @@ async fn conversation(harness: &Arc<LocalHarness>) -> Result<Arc<Conversation>> 
 }
 
 #[tokio::test]
-async fn cancelling_current_input_preserves_a_newer_queued_prompt() -> Result<()> {
-    let directory = tempfile::tempdir().map_err(agent)?;
-    let (dispatched, mut requests) = tokio::sync::mpsc::unbounded_channel();
-    let provider = Arc::new(
-        ScriptedModelProvider::new([
-            super::ScriptedTurn::Events(vec![crate::test_support::ScriptedEvent::Pending {}]),
-            super::ScriptedTurn::Text("queued prompt survived".into()),
-        ])
-        .with_context_capacity(super::capacity())
-        .with_dispatch_observer(move |_| {
-            let _ = dispatched.send(());
-            Box::pin(async { Ok(()) })
-        }),
-    );
-    let harness = Arc::new(
-        super::open_scripted(
-            volume_config(directory.path(), volume(directory.path()).await?, provider)?
-                .without_default_tools()
-                .compaction(crate::context::CompactionPolicy::Disabled),
-        )
-        .await?,
-    );
-    let mut observed = ObservedConversation::open(&harness).await?;
-    let client = observed.conversation.clone();
-    let running = client.send("running-input", "hold this turn").await?;
-    model_dispatch_before_settlement(&harness, client.agent(), async {
-        requests
-            .recv()
-            .await
-            .ok_or_else(|| Error::Storage("dispatch producer closed".into()))
-    })
-    .await?;
-    let queued = client
-        .send("queued-input", "answer the next prompt")
-        .await?;
-    assert!(queued > running);
-    assert_eq!(client.cancel().await?, Some(running));
-    assert_eq!(
-        observed.settled(running).await?.outcome,
-        crate::agent::TurnOutcome::Cancelled
-    );
-    let next = observed.settled(queued).await?;
-    assert_eq!(next.outcome, crate::agent::TurnOutcome::Completed);
-    let sequence = observed
-        .observer
-        .seen()
-        .checked_sub(1)
-        .expect("settled entry advanced the conversation cursor");
-    assert_eq!(
-        client.output_text_at(sequence, &next).await?,
-        "queued prompt survived"
-    );
-    Ok(())
-}
-
-#[tokio::test]
 async fn peer_pages_expose_members_without_private_titles_or_directory_authority() -> Result<()> {
     use crate::client::{AgentPageRequest, SessionsScope};
     use crate::local::sessions::{self, Filter};
@@ -1770,7 +1714,7 @@ async fn a_shell_call_stages_its_output_on_the_journal_volume() -> Result<()> {
         crate::test_support::ScriptedTurn::Text("done".into()),
     ]);
     let mut config = super::checkout_config(directory.path(), (super::model()?, provider.clone()))?;
-    config.served = Some(admission.clone());
+    config.admission = admission.clone();
     let harness = Arc::new(super::open_scripted(config).await?);
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());

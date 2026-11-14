@@ -600,9 +600,14 @@ impl LocalHarness {
             .root_authority
             .as_ref()
             .ok_or_else(|| Error::Unsupported("agent signing custody is closed".into()))?;
+        let hosted = self
+            .agents
+            .get()
+            .ok_or_else(|| Error::Unsupported("agent admission is closed".into()))?;
+        let bound = hosted.server().bound();
         let authority = crate::filesystem::agent_authority(
-            &issuer.clone().into(),
-            &crate::filesystem::TurnAdmission::LocalRoot,
+            bound.issuer(),
+            bound.admission(),
             &receiver.path,
             &receiver.volumes,
             &[],
@@ -1011,33 +1016,22 @@ impl LocalHarness {
         });
         #[cfg(not(any(test, not(target_arch = "wasm32"))))]
         let cuts: Option<Arc<dyn crate::filesystem::VolumeResources>> = None;
-        if let Some(verifier) = &self.served {
-            let caller = verifier.caller(
-                &super::Custody {
-                    issuer: &authority,
-                    clock: &self.clock,
-                },
-                &self.signed,
-            )?;
-            Bound::admitted_host(
-                authority,
-                caller,
-                Arc::clone(&self.files),
-                within,
-                turns,
-                cuts,
-                configure,
-            )
-        } else {
-            Bound::local_host(
-                authority,
-                Arc::clone(&self.files),
-                within,
-                turns,
-                cuts,
-                configure,
-            )
-        }
+        let caller = self.admission.caller(
+            &super::Custody {
+                issuer: &authority,
+                clock: &self.clock,
+            },
+            &self.signed,
+        )?;
+        Bound::admitted_host(
+            authority,
+            caller,
+            Arc::clone(&self.files),
+            within,
+            turns,
+            cuts,
+            configure,
+        )
         .map_err(storage)
     }
 

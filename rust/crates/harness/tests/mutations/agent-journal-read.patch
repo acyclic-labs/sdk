@@ -1,0 +1,96 @@
+diff --git a/rust/crates/harness/src/local/agents.rs b/rust/crates/harness/src/local/agents.rs
+--- a/rust/crates/harness/src/local/agents.rs
++++ b/rust/crates/harness/src/local/agents.rs
+@@ -1090,16 +1090,8 @@ impl LocalHarness {
+         });
+         #[cfg(not(any(test, not(target_arch = "wasm32"))))]
+         let cuts: Option<Arc<dyn crate::filesystem::VolumeResources>> = None;
+-        let caller = self.admission.caller(
+-            &super::Custody {
+-                issuer: &authority,
+-                clock: &self.clock,
+-            },
+-            &self.signed,
+-        )?;
+-        Bound::admitted_host(
++        Bound::local_host(
+             authority,
+-            caller,
+             Arc::clone(&self.files),
+             within,
+             turns,
+diff --git a/rust/crates/harness-core/src/filesystem/hosting.rs b/rust/crates/harness-core/src/filesystem/hosting.rs
+--- a/rust/crates/harness-core/src/filesystem/hosting.rs
++++ b/rust/crates/harness-core/src/filesystem/hosting.rs
+@@ -385,6 +385,24 @@ where
+         Self::new(issuer.into(), TurnAdmission::LocalRoot, placement, turns)
+     }
+ 
++    pub fn local_host(
++        issuer: AuthorityRoot,
++        volumes: Arc<FilesystemHost<StreamAuthorityStore<P>, O>>,
++        within: ActorReference,
++        turns: Turns,
++        cuts: Option<Arc<dyn super::VolumeResources>>,
++        configure: impl FnOnce(Turner<P, O>) -> Turner<P, O>,
++    ) -> Result<Self, Error> {
++        Self::on(
++            issuer.into(),
++            TurnAdmission::LocalRoot,
++            volumes,
++            within,
++            (turns, cuts),
++            configure,
++        )
++    }
++
+     fn new(
+         issuer: RuntimeAuthority,
+         admission: TurnAdmission,
+diff --git a/rust/crates/harness-core/src/filesystem/agent_turns.rs b/rust/crates/harness-core/src/filesystem/agent_turns.rs
+--- a/rust/crates/harness-core/src/filesystem/agent_turns.rs
++++ b/rust/crates/harness-core/src/filesystem/agent_turns.rs
+@@ -283,7 +283,7 @@
+                 }
+                 None => {
+-                    let mut grants = root_grants(self.volumes, &self.journal, external)?;
++                    let mut grants = root_grants(self.volumes, external)?;
+                     if let Some(turn) = turn {
+                         // Keep the fixed native input route alongside the journal
+                         // policy's ordinary read admission (including summaries).
+                         grants.push(self.journal.directory_read_capability(
+@@ -480,12 +480,8 @@ pub(super) fn journal_grants(journal: &VolumeRef, content: &Capabilities) -> Res
+ /// ceilings, its provider's seed layer, its own journal's reads and retained
+ /// exact input versions. Raw writers cannot widen a rooted entry; scoped
+ /// publication belongs to the table's view composition.
+-fn root_grants(
+-    volumes: &[WorkspaceEntry],
+-    journal: &VolumeRef,
+-    external: &[FileRef],
+-) -> Result<Vec<String>> {
+-    let mut grants = Vec::with_capacity(3 * volumes.len() + 3);
++fn root_grants(volumes: &[WorkspaceEntry], external: &[FileRef]) -> Result<Vec<String>> {
++    let mut grants = Vec::with_capacity(3 * volumes.len() + 2);
+     let seed = volumes
+         .iter()
+         .find_map(WorkspaceEntry::as_volume)
+@@ -495,11 +491,6 @@ fn root_grants(
+         grants.push(seed.capability(VolumeOperation::Read, &mut None)?);
+     }
+     grants.push(crate::contract::capability::INTERACTION_ROUTE.to_owned());
+-    // The journal read every admitted agent's admission carries. The journal
+-    // policy alone decides each path: what a turn publishes for its agent to
+-    // read (inputs, tool outputs, inherited conversation, compaction
+-    // summaries) is readable, and execution records stay host-private.
+-    grants.push(journal.capability(VolumeOperation::Read, &mut None)?);
+     // Every agent may spawn, message and archive within its own subtree.
+     grants.extend(crate::tools::AGENT_TOOLS.map(crate::contract::capability::tool_call));
+     for binding in volumes
+@@ -524,7 +515,6 @@ fn root_grants(
+         // A retained exact file can lie outside the current root on a still
+         // bound volume. Its immutable conversation selection grants it alone.
+         if seed.as_ref() != Some(file.volume())
+-            && file.volume() != journal
+             && !volumes.iter().any(|binding| {
+                 binding.role != crate::agent::WorkspaceRole::Internal
+                     && binding.as_volume() == Some(file.volume())
