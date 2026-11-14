@@ -260,7 +260,7 @@ mod tests {
         assert_eq!(observer.wakes.load(Ordering::SeqCst), 2);
         assert!(matches!(
             waiting.as_mut().poll(&mut context),
-            Poll::Ready(Err(StreamError::Unavailable))
+            Poll::Ready(Err(error)) if error.category() == StreamError::Unavailable
         ));
     }
 }

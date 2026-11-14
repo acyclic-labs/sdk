@@ -58,7 +58,7 @@ async fn scoped_credentials_share_the_pool_and_retire_after_the_last_cursor() ->
     };
     assert!(matches!(
         root.subscribe(read).await,
-        Err(StreamError::AccessDenied) | Err(StreamError::Refused(_))
+        Err(error) if error.category() == StreamError::AccessDenied
     ));
     Ok(())
 }

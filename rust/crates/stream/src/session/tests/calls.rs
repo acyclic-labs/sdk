@@ -513,7 +513,7 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
     assert_eq!(pending.await, Err(StreamError::Unavailable));
     assert!(matches!(
         input.next_chunk().await,
-        Err(StreamError::Unavailable)
+        Err(error) if error.category() == StreamError::Unavailable
     ));
     assert_eq!(cancelled_first.as_ref().as_ptr(), original.as_ptr());
     assert_eq!(cancelled_second.as_ref().as_ptr(), second_original.as_ptr());
