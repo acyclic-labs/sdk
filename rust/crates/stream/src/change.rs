@@ -208,7 +208,8 @@ impl Drop for Subscription {
     }
 }
 
-#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use std::{future::Future, sync::Mutex as StdMutex, task::Wake};

@@ -32,7 +32,8 @@ pub(crate) fn compat_error<S: super::CommandStore>(error: GitCompatError<S::Stor
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
     #[test]

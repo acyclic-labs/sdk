@@ -38,7 +38,8 @@ mod bootstrap;
 #[cfg(test)]
 #[cfg(not(loom))]
 mod performance_tests;
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod source_tests;
 
 mod children;
@@ -127,9 +128,11 @@ pub struct LocalWorkspace {
     pub(super) processes: Option<Arc<acyclic_native_runtime::ProcessCustody>>,
     /// Diff baselines of the workspaces this owner selected, shared with the
     /// views it derives.
-    #[cfg(all(test, not(loom)))]
+    #[cfg(test)]
+    #[cfg(not(loom))]
     pub(super) selection_reads: std::sync::atomic::AtomicUsize,
-    #[cfg(all(test, not(loom)))]
+    #[cfg(test)]
+    #[cfg(not(loom))]
     pub(super) mount_advances: std::sync::atomic::AtomicUsize,
 }
 
@@ -374,14 +377,16 @@ impl LocalWorkspace {
         )>,
     > + Send
     + '_ {
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(not(loom))]
         let selection_reads = &self.selection_reads;
         let root = self.view.workspace().id();
         let repository = acyclic_fs::GitCompatRepository::new(root, self.store.clone());
         // Selection needs only the repository handle, not the workspace's
         // recursive binding graph, while its store read is suspended.
         async move {
-            #[cfg(all(test, not(loom)))]
+            #[cfg(test)]
+            #[cfg(not(loom))]
             selection_reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             repository.checkout_selection().await.map_err(storage)
         }
@@ -597,9 +602,11 @@ pub(super) async fn open(
     Ok(LocalWorkspace {
         shutdown: acyclic_fs::CancellationToken::new(),
         native_mount_probe: attach.native_mount_probe.clone(),
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(not(loom))]
         selection_reads: std::sync::atomic::AtomicUsize::new(0),
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(not(loom))]
         mount_advances: std::sync::atomic::AtomicUsize::new(0),
         source_root,
         path,

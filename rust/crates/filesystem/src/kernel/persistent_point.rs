@@ -10,7 +10,8 @@ use crate::performance::{OperationFailure, OperationReceipt, WorkBudget};
 use crate::storage::ObjectId;
 use std::collections::VecDeque;
 
-#[cfg(all(test, loom, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(loom, not(target_arch = "wasm32")))]
 mod model_checking;
 
 pub(crate) type Failure = OperationFailure<Error>;

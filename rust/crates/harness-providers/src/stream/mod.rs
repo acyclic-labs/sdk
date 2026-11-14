@@ -7,9 +7,11 @@ mod gemini;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod limits_tests;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod message_tests;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod optional_properties;
 mod reasoning;
 mod responses;

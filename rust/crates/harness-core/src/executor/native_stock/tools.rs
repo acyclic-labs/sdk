@@ -210,7 +210,8 @@ pub(in crate::executor) async fn stock_project_tool(
     Ok(Ok((value, content)))
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
     use crate::model::{FileProjectionPolicy, ModelDataPart, ToolResultContent};

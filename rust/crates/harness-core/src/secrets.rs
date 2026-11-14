@@ -102,7 +102,8 @@ fn read_secret(path: &std::path::Path) -> crate::Result<Option<SecretValue>> {
     Ok(Some(SecretValue::new(value)))
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
 

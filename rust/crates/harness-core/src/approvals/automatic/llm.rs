@@ -129,7 +129,8 @@ pub(crate) async fn review_model(
     Ok((review.verdict, review.reason))
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
     use crate::{

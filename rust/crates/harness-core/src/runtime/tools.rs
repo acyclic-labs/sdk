@@ -279,7 +279,8 @@ fn copy_approval_subject(
     ))
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "tools/approval_tests.rs"]
 mod approval_tests;
 

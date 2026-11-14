@@ -17,7 +17,8 @@ mod directory;
 mod events;
 mod history;
 mod inspect;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod pending_tests;
 mod recording;
 mod run;

@@ -309,7 +309,8 @@ fn complete_input(
     Ok(())
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "responses_properties.rs"]
 mod properties;
 

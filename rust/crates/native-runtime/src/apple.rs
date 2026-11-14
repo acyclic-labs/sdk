@@ -103,9 +103,11 @@ struct Shard {
 struct Idle {
     classes: Vec<(usize, Vec<Vec<u8>>)>,
     bytes: usize,
-    #[cfg(all(test, loom))]
+    #[cfg(test)]
+    #[cfg(loom)]
     broken_accounting: bool,
-    #[cfg(all(test, loom))]
+    #[cfg(test)]
+    #[cfg(loom)]
     broken_ownership: bool,
 }
 
@@ -113,9 +115,11 @@ impl Idle {
     const EMPTY: Self = Self {
         classes: Vec::new(),
         bytes: 0,
-        #[cfg(all(test, loom))]
+        #[cfg(test)]
+        #[cfg(loom)]
         broken_accounting: false,
-        #[cfg(all(test, loom))]
+        #[cfg(test)]
+        #[cfg(loom)]
         broken_ownership: false,
     };
 }
@@ -191,7 +195,8 @@ impl Shard {
                 .iter_mut()
                 .find(|(capacity, _)| *capacity == class)
                 .and_then(|(_, buffers)| buffers.pop());
-            #[cfg(all(test, loom))]
+            #[cfg(test)]
+            #[cfg(loom)]
             let broken = idle.broken_accounting;
             #[cfg(not(all(test, loom)))]
             let broken = false;
@@ -224,7 +229,8 @@ impl Idle {
         if self.bytes + class > POOL_BUDGET / POOL_SHARDS {
             return Some(buffer);
         }
-        #[cfg(all(test, loom))]
+        #[cfg(test)]
+        #[cfg(loom)]
         if self.broken_ownership {
             return Some(buffer);
         }

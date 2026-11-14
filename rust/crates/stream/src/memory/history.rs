@@ -94,7 +94,8 @@ enum History {
 }
 
 impl History {
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(not(target_arch = "wasm32"))]
     fn parent(&self) -> Option<&Arc<Self>> {
         match self {
             Self::Batch { parent, .. } => parent.as_ref(),
@@ -102,7 +103,8 @@ impl History {
         }
     }
 
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(not(target_arch = "wasm32"))]
     fn boundary(&self) -> u64 {
         match self {
             Self::Batch { records, .. } => records.start,
@@ -131,14 +133,16 @@ impl Drop for History {
 }
 
 // Original ancestry traversal retained only as the independent test oracle.
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 struct HistoryWalk<'a> {
     next: Option<&'a Arc<History>>,
     ceiling: u64,
     from: u64,
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 impl<'a> HistoryWalk<'a> {
     fn new(next: Option<&'a Arc<History>>, ceiling: u64, from: u64) -> Self {
         Self {
@@ -149,7 +153,8 @@ impl<'a> HistoryWalk<'a> {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 impl<'a> Iterator for HistoryWalk<'a> {
     type Item = (&'a History, u64);
 

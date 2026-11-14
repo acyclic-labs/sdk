@@ -4,7 +4,8 @@
     reason = "field-level wire semantics are canonical in proto/machines/v1/machines.proto"
 )]
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 acyclic_test_support::counting_allocator!();
 
 /// Shared canonical account-relative resource addressing.

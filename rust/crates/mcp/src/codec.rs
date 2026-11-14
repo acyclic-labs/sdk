@@ -154,7 +154,8 @@ impl Write for BoundedWrite<'_> {
     }
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod frame_tests {
     use super::*;
 
@@ -215,7 +216,8 @@ mod frame_tests {
     }
 }
 
-#[cfg(all(test, loom))]
+#[cfg(test)]
+#[cfg(loom)]
 mod tests {
     use super::*;
     use loom::sync::mpsc;

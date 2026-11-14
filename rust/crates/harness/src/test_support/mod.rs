@@ -317,7 +317,8 @@ pub async fn prompt_settled(
 }
 
 /// Drives the accepted native boundaries while running a scoped regression.
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) async fn run_native_schedule<F: std::future::Future>(
     schedule: &acyclic_native_runtime::testing::Schedule,
     mut boundaries: tokio::sync::mpsc::UnboundedReceiver<acyclic_native_runtime::testing::Boundary>,

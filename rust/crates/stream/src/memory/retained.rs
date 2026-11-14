@@ -126,7 +126,8 @@ mod retained_owner {
         }
     }
 
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(not(target_arch = "wasm32"))]
     mod tests {
         include!("retained_retirement_tests.rs");
     }

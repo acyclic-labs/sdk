@@ -448,7 +448,8 @@ impl<'a> KernelAccounting<'a> {
             }
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeOriginal { work, cancellation } => {
-                #[cfg(all(test, loom))]
+                #[cfg(test)]
+                #[cfg(loom)]
                 if charge_model::split_charge() {
                     work.admit(WorkCounters::UNCHARGED)?;
                     cancellation.check()?;
@@ -473,7 +474,8 @@ impl<'a> KernelAccounting<'a> {
         delta: WorkCounters,
         effect: impl FnOnce() -> T,
     ) -> Result<T, crate::FsError> {
-        #[cfg(all(test, loom, not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(all(loom, not(target_arch = "wasm32")))]
         if super::effects::broken_reservation() {
             self.admit(delta)?;
             let output = effect();
@@ -599,7 +601,8 @@ impl<'a> KernelAccounting<'a> {
     }
 
     pub(crate) fn spent(&self) -> WorkCounters {
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(not(loom))]
         super::snapshot_tests::observe();
         match self {
             Self::Standalone {

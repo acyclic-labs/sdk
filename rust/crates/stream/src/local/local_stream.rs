@@ -422,7 +422,8 @@ impl LocalStream {
                 // Publication owns this offset through completion. Journal
                 // metadata and earlier flush cuts remain available during I/O.
                 file.write(|file| {
-                    #[cfg(all(test, not(loom)))]
+                    #[cfg(test)]
+                    #[cfg(not(loom))]
                     pause_journal_write(&stream.inner.journal)?;
                     acyclic_native_runtime::persistence_syscall(|| {
                         Ok(frame.write(&mut acyclic_native_runtime::WriteAt::new(file, offset)))

@@ -196,7 +196,8 @@ impl Drop for Binding {
     }
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod tests {
     use super::*;
     use futures::FutureExt as _;

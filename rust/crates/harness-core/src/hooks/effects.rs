@@ -149,5 +149,6 @@ fn start_operation(operation: OperationId) -> OperationId {
     OperationId::from_bytes(id)
 }
 
-#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod tests;

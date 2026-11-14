@@ -26,7 +26,8 @@ use acyclic_harness_core::{
 use serde::Deserialize;
 use std::future::Future;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "acp_tests.rs"]
 mod tests;
 

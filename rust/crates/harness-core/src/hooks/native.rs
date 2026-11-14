@@ -287,7 +287,8 @@ fn check_cancelled(cancelled: &AtomicBool) -> std::io::Result<()> {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 #[path = "native/granted.rs"]
 mod granted;
 

@@ -39,7 +39,8 @@ impl Clock {
         std::time::Instant::now()
     }
 
-    #[cfg(all(test, target_os = "macos", feature = "test-support"))]
+    #[cfg(test)]
+    #[cfg(all(target_os = "macos", feature = "test-support"))]
     pub(super) fn elapsed(&self) -> Option<Duration> {
         self.seeded.as_ref().map(|clock| clock.elapsed())
     }

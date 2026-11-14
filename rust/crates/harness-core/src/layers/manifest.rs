@@ -3,7 +3,8 @@ use acyclic_fs::{
     AsyncObjectStore, FilesystemCommit, Fs, Generation, StreamAuthorityStore, WorkspaceError,
 };
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests;
 
 /// One complete configuration cut. Every position is an original retained

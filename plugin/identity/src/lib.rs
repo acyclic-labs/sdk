@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use std::fs;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 use std::fs::File;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};

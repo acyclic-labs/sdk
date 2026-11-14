@@ -5,7 +5,8 @@ use std::borrow::Cow;
 #[derive(Deserialize)]
 struct Text<'a>(#[serde(borrow)] Cow<'a, str>);
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
     use proptest::prelude::*;

@@ -440,7 +440,8 @@ pub(super) fn is_claimed<H: Host>(host: &H, file: &H::File) -> io::Result<(bool,
 }
 
 impl<H: Host> Claim<H> {
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(super) fn path(&self) -> &Path {
         &self.path
     }
@@ -451,7 +452,8 @@ impl<H: Host> Claim<H> {
     }
 
     /// The claimed file's identity.
-    #[cfg(all(test, loom))]
+    #[cfg(test)]
+    #[cfg(loom)]
     pub(super) fn key(&self) -> &H::Key {
         &self.key
     }

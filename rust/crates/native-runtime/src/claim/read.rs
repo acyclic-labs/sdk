@@ -18,7 +18,8 @@ enum Status {
 }
 
 impl ReadRecord {
-    #[cfg(all(test, loom))]
+    #[cfg(test)]
+    #[cfg(loom)]
     pub(super) fn from_bytes(bytes: Vec<u8>) -> Self {
         Self {
             bytes,

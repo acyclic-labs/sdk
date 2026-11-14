@@ -1,5 +1,6 @@
 //! Shared streaming adapters and immutable model selection.
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 acyclic_test_support::counting_allocator!();
 
 mod accounting;
@@ -14,7 +15,8 @@ mod catalog_document;
 mod codex;
 #[cfg(not(target_arch = "wasm32"))]
 mod credential_file;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod length_continuation_tests;
 mod model_spec;
 #[cfg(not(target_arch = "wasm32"))]

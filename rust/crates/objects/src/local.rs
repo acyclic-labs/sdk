@@ -705,7 +705,8 @@ fn failed(error: std::io::Error) -> MediumError {
     MediumError::Failed(error)
 }
 
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(test)]
+#[cfg(feature = "test-support")]
 mod outcome_tests;
 
 #[async_trait::async_trait]

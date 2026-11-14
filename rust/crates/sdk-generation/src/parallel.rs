@@ -90,7 +90,8 @@ fn join_all<R>(jobs: Vec<thread::JoinHandle<R>>) -> Vec<R> {
         .collect()
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};

@@ -270,7 +270,8 @@ async fn host_name_has_binding<O: crate::AsyncObjectStore>(
     Ok(false)
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
 

@@ -69,6 +69,7 @@ fn estimate(tokens: u64, bytes: u64) -> u64 {
     tokens.saturating_add(bytes.div_ceil(3))
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "usage_count_tests.rs"]
 mod tests;

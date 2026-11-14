@@ -717,7 +717,8 @@ fn projection_seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
     Ok(seeds)
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn emitted_persistence_seeds_satisfy_shared_oracle() -> Result<(), StreamError> {
     let seeds = futures::executor::block_on(seeds())?;

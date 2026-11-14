@@ -160,11 +160,13 @@ pub(crate) fn sync_data_descriptor_once(
 #[path = "held_sync_observation_tests.rs"]
 mod observation_tests;
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(windows)]
 #[path = "held_sync_windows_tests.rs"]
 mod windows_tests;
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use std::{fs::File, io::Write as _, os::fd::AsFd as _};

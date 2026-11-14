@@ -2241,6 +2241,7 @@ fn reply(
     })
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "hosting_tests.rs"]
 mod tests;

@@ -9,7 +9,8 @@ use workspace::owner::{AgentOwner, ViewOwner};
 
 mod volume_guard;
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 pub(super) mod tests;
 
 pub use super::workspace::HOST_VIEW_ROOT;

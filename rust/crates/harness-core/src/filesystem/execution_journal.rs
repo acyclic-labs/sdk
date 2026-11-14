@@ -28,7 +28,8 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod activity_tests;
 mod cancellation;
 mod canonical;
@@ -58,7 +59,8 @@ pub mod codec_fuzz {
         Ok(seeds)
     }
 }
-#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod claim_tests;
 mod configuration;
 mod content;
@@ -67,13 +69,15 @@ mod context_publication;
 mod conversation;
 mod durability;
 mod indexed_publication;
-#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod inline_tests;
 mod interactions;
 mod model_calls;
 mod observations;
 mod publication_authorization;
-#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod request_prefix_tests;
 #[cfg(not(target_arch = "wasm32"))]
 pub use context_publication::{
@@ -87,7 +91,8 @@ mod replay;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod replay_capacity_tests;
-#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod request_segments_tests;
 mod selected;
 mod step_index;

@@ -81,6 +81,7 @@ impl<T, E: Clone> PullCursor<T, E> {
     }
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 #[path = "pull_tests.rs"]
 mod tests;

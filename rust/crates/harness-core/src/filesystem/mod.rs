@@ -521,9 +521,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            #[cfg(all(test, not(target_arch = "wasm32")))]
+            #[cfg(test)]
+            #[cfg(not(target_arch = "wasm32"))]
             pinned_read_tests::retained::sample_items(false, io);
-            #[cfg(all(test, not(target_arch = "wasm32")))]
+            #[cfg(test)]
+            #[cfg(not(target_arch = "wasm32"))]
             if pinned_read_tests::retained::reopen() {
                 let result = self.read_pinned_io(reference, maximum_bytes, io).await;
                 pinned_read_tests::retained::sample_items(true, io);
@@ -565,7 +567,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             crate::executor::with_history_io(io, |work| {
                 reference.descriptor().verify(&bytes, work)
             })?;
-            #[cfg(all(test, not(target_arch = "wasm32")))]
+            #[cfg(test)]
+            #[cfg(not(target_arch = "wasm32"))]
             pinned_read_tests::retained::sample_items(true, io);
             Ok(bytes)
         })

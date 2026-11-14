@@ -145,7 +145,8 @@ mod prepared;
 pub use prepared::PreparedClosedProcess;
 #[cfg(test)]
 mod custody_tests;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod execution_boundary_tests;
 #[cfg(unix)]
 #[path = "unix.rs"]
@@ -194,7 +195,8 @@ pub struct ProcessTree {
     /// its child is created.
     _events: events::Events,
     // Original first-arm completion, retained by this tree through failed setup.
-    #[cfg(all(test, feature = "test-support", not(loom)))]
+    #[cfg(test)]
+    #[cfg(all(feature = "test-support", not(loom)))]
     capture_armed: Option<tokio::sync::oneshot::Sender<()>>,
 }
 

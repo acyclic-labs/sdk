@@ -339,7 +339,8 @@ where
 {
     if let Some(mount) = &workspace.mounted {
         before_effect().await?;
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(not(loom))]
         workspace
             .mount_advances
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);

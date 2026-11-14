@@ -775,7 +775,8 @@ mod native_capture_storage_tests {
     }
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod deadline_tests {
     use super::*;
 

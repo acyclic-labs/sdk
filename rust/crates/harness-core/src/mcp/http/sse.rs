@@ -171,7 +171,8 @@ fn decode(event: Result<crate::sse::Frame>, operation: OperationId) -> Result<Op
         .map_err(|error| Error::Invalid(error.to_string()))
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
     use proptest::prelude::*;

@@ -26,7 +26,8 @@ impl<'a> InstructionSources<'a> {
             original.with(|work| history_step_traced(work, 1))?;
             trace_operation("instruction-source-visit", 1);
             original.with(|work| file.validate_source(work))?;
-            #[cfg(all(test, feature = "test-support", not(target_arch = "wasm32")))]
+            #[cfg(test)]
+            #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
             if PREFIX_SCAN.with(std::cell::Cell::get) {
                 for prior in &files[..position] {
                     std::hint::black_box(
@@ -67,10 +68,12 @@ impl<'a> InstructionSources<'a> {
     }
 }
 
-#[cfg(all(test, feature = "test-support", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 thread_local! { static PREFIX_SCAN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 
-#[cfg(all(test, feature = "test-support", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 fn with_prefix_scan<T>(enabled: bool, run: impl FnOnce() -> T) -> T {
     PREFIX_SCAN.with(|state| assert!(!state.replace(enabled)));
     struct Reset;
@@ -83,5 +86,6 @@ fn with_prefix_scan<T>(enabled: bool, run: impl FnOnce() -> T) -> T {
     run()
 }
 
-#[cfg(all(test, feature = "test-support", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 mod tests;

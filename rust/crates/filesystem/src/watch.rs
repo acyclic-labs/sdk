@@ -2706,7 +2706,8 @@ impl NativeWatch {
 
     /// Negative control: key registrations as requested and match reported
     /// paths exactly.
-    #[cfg(all(test, windows))]
+    #[cfg(test)]
+    #[cfg(windows)]
     pub(crate) fn windows_match_exactly(&self) {
         if let Ok(mut state) = self.shared.state.lock()
             && let Some(registered) = &mut state.registered
@@ -2716,7 +2717,8 @@ impl NativeWatch {
     }
 
     /// Directories a non-recursive Windows watch currently observes.
-    #[cfg(all(test, windows))]
+    #[cfg(test)]
+    #[cfg(windows)]
     pub(crate) fn windows_registered(&self) -> usize {
         self.shared
             .state

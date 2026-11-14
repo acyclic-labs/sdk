@@ -3,7 +3,8 @@ use super::super::checkout_tools::{State, capture, reconciliation};
 use super::owner::ViewOwner;
 use super::*;
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod tests;
 
 pub(in crate::local) struct CommandContext<'a> {

@@ -90,6 +90,7 @@ pub(crate) async fn read(
     })
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "bounded_tests.rs"]
 mod tests;

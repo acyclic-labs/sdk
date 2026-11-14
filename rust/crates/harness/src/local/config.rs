@@ -646,7 +646,8 @@ std::thread_local! {
 #[cfg(any(test, not(target_arch = "wasm32")))]
 pub use crate::model::ModelResolver;
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod resolver_tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -939,7 +940,8 @@ mod resolver_tests {
     }
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod fixed_role_binding_tests {
     use super::*;
 

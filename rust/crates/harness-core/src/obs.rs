@@ -156,7 +156,8 @@ fn traced_future_retains_one_payload_and_records_only_when_ready() {
     ));
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn filtered_operation_cannot_record_failure_on_its_parent() {
     let (seen, _guard) = capture::install();

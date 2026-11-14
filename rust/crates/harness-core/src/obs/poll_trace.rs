@@ -80,7 +80,8 @@ where
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn lazy_trace_owns_one_payload_and_keeps_first_poll_context_through_drop() {
     use crate::obs::capture;

@@ -329,6 +329,7 @@ fn run_task(
     waker
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 #[path = "job_observation_tests.rs"]
 mod observation_tests;

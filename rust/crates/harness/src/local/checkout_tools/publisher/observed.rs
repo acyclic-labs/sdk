@@ -75,7 +75,8 @@ impl CheckoutPublisher {
         file: &FileRef,
         budget: acyclic_fs::WorkBudget,
     ) -> Result<bool> {
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(not(loom))]
         if tests::REREAD_MATCHING_PAYLOAD.get() {
             return Ok(false);
         }

@@ -237,5 +237,6 @@ impl AsyncWrite for InheritedOutput {
     }
 }
 
-#[cfg(all(test, target_os = "linux", not(loom)))]
+#[cfg(test)]
+#[cfg(all(target_os = "linux", not(loom)))]
 mod tests;

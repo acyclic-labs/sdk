@@ -2103,7 +2103,9 @@ fn change_alarm(alarm: &mut Alarm, change: AlarmChange) -> Result<(), Error> {
     Ok(())
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod model;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests;

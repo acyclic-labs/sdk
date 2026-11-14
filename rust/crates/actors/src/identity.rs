@@ -34,7 +34,8 @@ fn host_random_id() -> uuid::Uuid {
     uuid::Uuid::from_bytes([a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p])
 }
 
-#[cfg(all(test, feature = "test-support", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use crate::namespace::Error;

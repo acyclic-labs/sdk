@@ -8,7 +8,8 @@ pub(crate) use acyclic_harness_core::http::owned_bytes;
 pub use acyclic_harness_core::http::{HttpRequest, HttpResponse, HttpTransport};
 pub(crate) mod bounded;
 pub(crate) mod phase;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod refusal_tests;
 
 /// Issue one exchange through the selected platform adapter. Native work never

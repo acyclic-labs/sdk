@@ -227,7 +227,8 @@ impl FileRecord {
     }
 
     pub(crate) fn validate(self) -> Result<(), FileTableError> {
-        #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(all(not(loom), not(target_arch = "wasm32")))]
         decode_probe::validation();
         if self.link_count == 0
             || self.metadata.kind != ObjectKind::Metadata

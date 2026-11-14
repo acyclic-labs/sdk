@@ -94,6 +94,7 @@ fn components(path: &str, windows: bool, unc: bool) -> impl Iterator<Item = &str
         })
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(windows)]
 #[path = "workspace/tests.rs"]
 mod tests;

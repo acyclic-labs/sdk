@@ -248,7 +248,8 @@ impl LocalCoreStateStore {
                     serde_json::to_writer(&mut encoded, &owned.value)?;
                     // Immutable records need atomic no-replace publication,
                     // not exclusion between unrelated content addresses.
-                    #[cfg(all(test, target_os = "linux"))]
+                    #[cfg(test)]
+                    #[cfg(target_os = "linux")]
                     publication_pause::install(&namespace.root, T::address(id));
                     let mut original = work.clone();
                     let mut publish = || -> Result<(), crate::DemandError> {
@@ -287,7 +288,8 @@ impl LocalCoreStateStore {
 
 mod store;
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 pub(super) mod publication_pause {
     use std::path::{Path, PathBuf};
     use std::sync::{Mutex, PoisonError, mpsc};

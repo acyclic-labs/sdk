@@ -1019,7 +1019,8 @@ pub(in crate::filesystem) fn require_file_read(
 
 use crate::executor::stock_boundary;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests;
 
 impl PrivateDirectoryEntry {

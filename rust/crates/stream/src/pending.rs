@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::NativePending;

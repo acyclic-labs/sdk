@@ -143,7 +143,8 @@ impl DemandWork {
             return Ok(shared.clone());
         }
         let bytes = NativeAllocationAccounting::ALLOCATION_BYTES;
-        #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(all(not(loom), not(target_arch = "wasm32")))]
         let bytes = metadata_tests::admitted_bytes(bytes);
         // This shared control belongs to the original ledger, not the first
         // resource or capture that needs deferred retirement.

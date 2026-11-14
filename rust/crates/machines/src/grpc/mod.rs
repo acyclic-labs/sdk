@@ -61,9 +61,11 @@ pub use native::{NativeEndpoint, Tls};
 /// Authenticated native gRPC Machines provider.
 pub type GrpcProvider = Provider<NativeEndpoint>;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 use native::BearerAuth;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 use tonic::{
     metadata::MetadataValue,
     service::Interceptor as _,
@@ -89,7 +91,9 @@ pub use recovery::{
     settled_fork, settled_machine, validate_recovered_admission,
 };
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod credential_tests;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests;

@@ -129,7 +129,8 @@ impl CheckoutPublisher {
     }
 
     fn selected_workspace(&self, state: &State) -> Result<Arc<LocalWorkspace>> {
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(not(loom))]
         if tests::PUBLISH_TO_INITIAL_MOUNT.get() {
             return Ok(Arc::clone(&self.tools.workspace));
         }
@@ -349,7 +350,8 @@ impl CheckoutPublisher {
         self.tools
             .owe_write_capture(selected, watcher, owed)
             .await?;
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(not(loom))]
         if tests::KILL_BEFORE_WRITE.get() {
             return Err(Error::Storage("killed before the write".into()));
         }
@@ -364,7 +366,8 @@ impl CheckoutPublisher {
         view: &workspace::View,
         watcher: &mut Option<capture::Cursor>,
     ) -> Result<()> {
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(not(loom))]
         if tests::REPLAY_SKIPS_CAPTURE.get() {
             return Ok(());
         }
@@ -595,7 +598,8 @@ impl ContentPublisher for CheckoutPublisher {
                             error @ (Error::FilesystemAccessConfiguration(_)
                             | Error::Unauthorized(_)),
                         ) => {
-                            #[cfg(all(test, not(loom)))]
+                            #[cfg(test)]
+                            #[cfg(not(loom))]
                             if tests::OBSERVE_EVERY_MOUNT.get() {
                                 return Err(error);
                             }
@@ -654,7 +658,9 @@ impl ContentPublisher for CheckoutPublisher {
     }
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod mount_tests;
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod tests;

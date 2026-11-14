@@ -16,10 +16,12 @@ use std::sync::{Arc, OnceLock};
 
 mod admission;
 mod cache;
-#[cfg(all(test, loom))]
+#[cfg(test)]
+#[cfg(loom)]
 mod model;
 mod owned;
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod tests;
 
 pub use admission::{

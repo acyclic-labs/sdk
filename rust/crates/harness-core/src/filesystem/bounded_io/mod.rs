@@ -7,13 +7,15 @@ use crate::sync::SyncMutex as Mutex;
 use crate::sync::atomic::{AtomicU64, Ordering};
 use acyclic_fs::kernel::{KernelAccounting, KernelOwnedAllocation, allocation::AllocationLedger};
 use acyclic_fs::{CancellationToken, OperationReceipt, WorkBudget, WorkCounters, WorkspaceError};
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod charge_tests;
 mod codec;
 #[cfg(test)]
 #[cfg(all(not(target_arch = "wasm32"), not(loom)))]
 mod codec_properties;
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod custody_tests;
 mod history;
 mod index;

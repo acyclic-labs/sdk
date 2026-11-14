@@ -590,7 +590,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                     )
                     .map_err(WorkspaceError::from)
                 };
-                #[cfg(all(test, not(target_arch = "wasm32")))]
+                #[cfg(test)]
+                #[cfg(not(target_arch = "wasm32"))]
                 let bytes = crate::test_support::observe_text_output(merge)?;
                 #[cfg(not(all(test, not(target_arch = "wasm32"))))]
                 let bytes = merge()?;
@@ -686,14 +687,16 @@ fn json(
         let bytes = crate::kernel::allocation::retained::Retained::from_owned(bytes, accounting)?;
         Ok(bytes.into_bytes((), accounting)?.into())
     };
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(not(target_arch = "wasm32"))]
     return crate::test_support::observe_json_output(serialize);
     #[cfg(not(all(test, not(target_arch = "wasm32"))))]
     serialize()
 }
 
 fn json_error(error: serde_json::Error) -> WorkspaceError {
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let mut result = None;
         let first = acyclic_test_support::first_allocation(|| {

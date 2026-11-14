@@ -36,7 +36,8 @@ where
     }
 }
 
-#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use crate::{

@@ -339,7 +339,8 @@ pub(crate) fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()>
         }
     }
     for (name, model) in &config.models {
-        #[cfg(all(test, not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(not(target_arch = "wasm32"))]
         let validate_identity =
             !catalog_update::tests::SKIP_MODEL_IDENTITY.with(std::cell::Cell::get);
         #[cfg(not(all(test, not(target_arch = "wasm32"))))]

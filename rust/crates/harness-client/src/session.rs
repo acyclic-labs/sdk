@@ -14,7 +14,8 @@ use std::{
 };
 
 mod subscription;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod viewport_tests;
 mod views;
 pub(crate) use subscription::Interest;

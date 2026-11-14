@@ -27,7 +27,8 @@ pub struct Epoch {
     /// Where the current epoch survives a restart, for a store that collects.
     #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
     pointer: Option<PathBuf>,
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) hooks: hooks::Hooks,
 }
 
@@ -70,7 +71,8 @@ impl Epoch {
             current: AtomicU64::new(current),
             unreleased: AtomicU64::new(unreleased),
             pointer: Some(pointer),
-            #[cfg(all(test, not(target_arch = "wasm32")))]
+            #[cfg(test)]
+            #[cfg(not(target_arch = "wasm32"))]
             hooks: hooks::Hooks::default(),
         })
     }
@@ -174,7 +176,8 @@ pub(crate) enum Step {
     Released,
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod hooks {
     use super::Step;
     use std::sync::{Arc, Mutex, PoisonError};

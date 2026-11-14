@@ -280,7 +280,8 @@ impl Placement {
     }
 }
 
-#[cfg(all(test, loom))]
+#[cfg(test)]
+#[cfg(loom)]
 mod model {
     use super::*;
 

@@ -500,7 +500,8 @@ pub fn json_bytes_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Re
     code: Option<crate::wire::ErrorCode>,
     charge: &mut F,
 ) -> Result<Vec<u8>> {
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(not(target_arch = "wasm32"))]
     if super::baseline::LEGACY.get() {
         return super::baseline::serialization::json_bytes_bounded(value, bounds, code, charge);
     }
@@ -555,7 +556,8 @@ pub(crate) fn canonical_digest_with_work<T: Serialize + ?Sized>(
     code: Option<crate::wire::ErrorCode>,
     observer: &mut dyn crate::store::HistoryIo,
 ) -> Result<[u8; 32]> {
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(not(target_arch = "wasm32"))]
     if super::baseline::LEGACY.get() {
         return super::baseline::serialization::canonical_digest_with_work(
             value, bounds, code, observer,
@@ -612,7 +614,8 @@ pub fn canonical_json_bytes_bounded<
     code: Option<crate::wire::ErrorCode>,
     charge: &mut F,
 ) -> Result<Vec<u8>> {
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(not(target_arch = "wasm32"))]
     if super::baseline::LEGACY.get() {
         return super::baseline::serialization::canonical_json_bytes_bounded(
             value, bounds, code, charge,
@@ -650,7 +653,8 @@ pub fn json_value_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Re
     code: Option<crate::wire::ErrorCode>,
     charge: &mut F,
 ) -> Result<Value> {
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(not(target_arch = "wasm32"))]
     if super::baseline::LEGACY.get() {
         return super::baseline::serialization::json_value_bounded(value, bounds, code, charge);
     }

@@ -39,7 +39,8 @@ use std::ffi::OsString;
 use std::io::Read as _;
 use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError, Weak, mpsc};
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod tests;
 
 #[cfg(feature = "test-support")]

@@ -1,9 +1,11 @@
 use super::*;
 mod capture;
 pub(crate) mod media_type;
-#[cfg(all(test, not(target_arch = "wasm32"), not(loom)))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32"), not(loom)))]
 mod skills_tests;
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod tests;
 
 struct PrivateReadSelection<'a, A: 'static, O: 'static> {

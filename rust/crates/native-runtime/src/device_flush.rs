@@ -38,7 +38,8 @@ struct Progress {
 pub(crate) struct Coalescer {
     progress: Mutex<Progress>,
     drained: Condvar,
-    #[cfg(all(test, not(loom)))]
+    #[cfg(test)]
+    #[cfg(not(loom))]
     arrivals: tests::Arrivals,
 }
 
@@ -47,7 +48,8 @@ impl Default for Coalescer {
         Self {
             progress: Mutex::new(Progress::default()),
             drained: Condvar::new(),
-            #[cfg(all(test, not(loom)))]
+            #[cfg(test)]
+            #[cfg(not(loom))]
             arrivals: tests::Arrivals::default(),
         }
     }
@@ -110,7 +112,8 @@ impl Coalescer {
         // An exhausted counter cannot identify a later covering drain.
         // Such requests keep their own drain obligation under the same lock.
         let target = progress.started.checked_add(1);
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(not(loom))]
         self.arrivals.arrive();
         loop {
             if target.is_some_and(|target| progress.completed >= target) {
@@ -215,7 +218,8 @@ impl std::fmt::Debug for HeldDevice {
     }
 }
 
-#[cfg(all(target_vendor = "apple", test, not(loom)))]
+#[cfg(test)]
+#[cfg(all(target_vendor = "apple", not(loom)))]
 pub(crate) fn classification_work() -> [usize; 3] {
     apple::CLASSIFICATION_WORK.with(std::cell::Cell::get)
 }
@@ -701,7 +705,8 @@ mod apple {
     }
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod tests {
     use super::*;
     use std::sync::Arc;

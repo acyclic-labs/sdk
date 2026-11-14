@@ -657,7 +657,8 @@ use std::cell::Cell;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod comparison_work;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod header_tests;
 
 #[inline]

@@ -4,9 +4,11 @@ use super::*;
 use acyclic_fs::{CancellationToken, MountOptions, WorkBudget};
 use acyclic_stream::BoxProviderFuture;
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod concurrency_tests;
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod tests;
 
 pub(super) fn view_options(
@@ -271,9 +273,11 @@ impl LocalWorkspace {
         LocalWorkspace {
             shutdown: self.shutdown.clone(),
             native_mount_probe: self.native_mount_probe.clone(),
-            #[cfg(all(test, not(loom)))]
+            #[cfg(test)]
+            #[cfg(not(loom))]
             selection_reads: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(all(test, not(loom)))]
+            #[cfg(test)]
+            #[cfg(not(loom))]
             mount_advances: std::sync::atomic::AtomicUsize::new(0),
             state: StateArc::new(AsyncMutex::new(State::new(view.workspace().id()))),
             publication_debt: std::sync::atomic::AtomicBool::new(true),
@@ -438,9 +442,11 @@ impl LocalWorkspace {
         let workspace = Arc::new(LocalWorkspace {
             shutdown: self.shutdown.clone(),
             native_mount_probe: self.native_mount_probe.clone(),
-            #[cfg(all(test, not(loom)))]
+            #[cfg(test)]
+            #[cfg(not(loom))]
             selection_reads: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(all(test, not(loom)))]
+            #[cfg(test)]
+            #[cfg(not(loom))]
             mount_advances: std::sync::atomic::AtomicUsize::new(0),
             context_line: mounts.context_line(),
             processes: self.processes.clone(),

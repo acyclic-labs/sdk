@@ -953,5 +953,6 @@ pub(super) fn poll_dials(
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod filtered_credit_tests;
 
-#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod credential_ownership_tests;

@@ -511,7 +511,8 @@ fn arm_with<'a>(
     mut wake_at: Option<Instant>,
     owner: impl Fn(Option<Source<'_>>) -> &'a Hub,
 ) -> io::Result<Wait<'a>> {
-    #[cfg(all(test, feature = "test-support", not(loom)))]
+    #[cfg(test)]
+    #[cfg(all(feature = "test-support", not(loom)))]
     LIVE_WAITS.fetch_add(1, Ordering::Relaxed);
     let mut wait = Wait {
         signal: Arc::new(Signal::default()),
@@ -665,10 +666,12 @@ impl Drop for Registration<'_> {
     }
 }
 
-#[cfg(all(test, feature = "test-support", not(loom)))]
+#[cfg(test)]
+#[cfg(all(feature = "test-support", not(loom)))]
 static LIVE_WAITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-#[cfg(all(test, feature = "test-support", not(loom)))]
+#[cfg(test)]
+#[cfg(all(feature = "test-support", not(loom)))]
 impl Drop for Wait<'_> {
     fn drop(&mut self) {
         LIVE_WAITS.fetch_sub(1, Ordering::Relaxed);
@@ -676,7 +679,8 @@ impl Drop for Wait<'_> {
 }
 
 /// Counts original wait owners, independent of their number of native sources.
-#[cfg(all(test, feature = "test-support", not(loom)))]
+#[cfg(test)]
+#[cfg(all(feature = "test-support", not(loom)))]
 pub(super) fn live_waits() -> usize {
     LIVE_WAITS.load(Ordering::Relaxed)
 }

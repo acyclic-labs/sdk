@@ -74,7 +74,8 @@ impl<R: Read> Iterator for JsonLineReader<R> {
     }
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod tests {
     use super::*;
     use serde_json::json;

@@ -261,7 +261,8 @@ impl<'a> StockExecution<'a> {
         let (source, bytes) = with_history_io(self.io, |work| {
             crate::context::clone_context(&base, Some(through), work)
         })?;
-        #[cfg(all(test, not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(not(target_arch = "wasm32"))]
         acyclic_test_support::differential::record((
             "context review source messages",
             through as u64,
@@ -660,7 +661,8 @@ impl<'a> StockExecution<'a> {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
 

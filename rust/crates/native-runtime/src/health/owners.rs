@@ -30,6 +30,7 @@ impl OwnerCount {
     }
 }
 
-#[cfg(all(test, loom))]
+#[cfg(test)]
+#[cfg(loom)]
 #[path = "owners/model.rs"]
 mod model;

@@ -4,7 +4,8 @@ use std::{
 };
 
 mod job;
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 pub(crate) use job::inspection::{Cut, Probe, observe};
 #[cfg(loom)]
 pub(crate) mod model;

@@ -1140,7 +1140,8 @@ fn session_operation(agent: &crate::agent::AgentPath) -> OperationId {
     OperationId::from_bytes(id)
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod completion_tests {
     use super::*;
 

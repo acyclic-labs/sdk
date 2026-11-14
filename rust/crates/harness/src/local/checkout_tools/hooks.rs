@@ -192,7 +192,8 @@ where
     Ok((result, state))
 }
 
-#[cfg(all(test, unix, not(loom)))]
+#[cfg(test)]
+#[cfg(all(unix, not(loom)))]
 mod tests {
     use super::*;
 

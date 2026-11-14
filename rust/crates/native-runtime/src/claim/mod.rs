@@ -16,7 +16,8 @@ use std::path::Path;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-#[cfg(all(test, loom))]
+#[cfg(test)]
+#[cfg(loom)]
 mod model;
 mod process;
 mod protocol;
@@ -267,7 +268,8 @@ impl StoreClaim {
     }
 
     /// The path this claim releases by.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn path(&self) -> &Path {
         self._claim.path()
     }
@@ -323,7 +325,8 @@ pub(crate) fn recorded_process_lock(claim: &[u8]) -> Option<std::path::PathBuf> 
 
 /// A record naming process `pid`, started as `start`, by the process lock
 /// `lock`, which has no file identity.
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 pub(crate) fn foreign_record(pid: u32, start: &[u8], lock: &Path) -> Vec<u8> {
     use std::os::unix::ffi::OsStrExt as _;
     record::Record {

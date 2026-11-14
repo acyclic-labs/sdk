@@ -64,8 +64,8 @@ async fn canonical_local_root(
     .map_err(FsError::LocalRoot)
 }
 
+#[cfg(test)]
 #[cfg(all(
-    test,
     any(test, not(target_arch = "wasm32")),
     not(target_arch = "wasm32"),
     not(loom)

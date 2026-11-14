@@ -136,7 +136,8 @@ impl<F: Files> Cache<F> {
 
     /// Files whose descriptor the cache holds.
     /// The files the ring lists, wanted or not.
-    #[cfg(all(test, not(loom)))]
+    #[cfg(test)]
+    #[cfg(not(loom))]
     pub(super) fn listed(&self) -> usize {
         self.listed.load(SeqCst)
     }

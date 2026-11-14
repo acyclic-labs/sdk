@@ -128,7 +128,8 @@ pub(super) fn insertion_work<T>(
         .map_err(crate::async_storage::object_error)?
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn verify_original_flight_admission_and_retirement()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::kernel::KernelAccounting;

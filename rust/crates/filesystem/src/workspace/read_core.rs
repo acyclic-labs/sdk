@@ -78,7 +78,8 @@ pub(super) async fn read_selected_with_accounting<
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<crate::kernel::OwnedSourceChunk, WorkspaceError> {
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(not(target_arch = "wasm32"))]
     if matches!(selector, GenerationSelector::Head) {
         acyclic_test_support::differential::record(("workspace read", maximum_bytes));
     }

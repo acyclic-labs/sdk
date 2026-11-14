@@ -55,7 +55,8 @@ mod journal;
 pub(super) mod policy;
 mod quiet;
 mod run_admission;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 pub(in crate::filesystem) use journal::tests::binding_with;
 mod sessions;
 

@@ -1330,7 +1330,8 @@ fn schema_refusal_preserves_the_previous_final_artifact() -> Result<(), Failure>
     );
     Ok(())
 }
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod tests {
     use super::*;
     use acyclic_native_runtime::{

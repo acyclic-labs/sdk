@@ -82,7 +82,8 @@ impl Drop for Resources {
     }
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod tests {
     use super::*;
     use std::sync::{

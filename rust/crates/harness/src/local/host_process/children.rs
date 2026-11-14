@@ -756,7 +756,8 @@ fn output(running: &mut Running, buffer: &mut [u8]) -> Result<bool> {
     Ok(true)
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod tests;
 
 #[cfg(test)]

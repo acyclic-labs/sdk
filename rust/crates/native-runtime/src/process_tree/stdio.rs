@@ -77,7 +77,8 @@ impl AsyncRead for ProcessPipeReader {
     }
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(windows)]
 mod tests {
     use super::super::{ProcessCommand as Command, ProcessStdio as Stdio};
     use super::*;

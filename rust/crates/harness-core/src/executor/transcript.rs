@@ -45,10 +45,12 @@ pub(super) async fn usage_request(
     Ok(header)
 }
 
-#[cfg(all(test, not(target_arch = "wasm32"), not(loom)))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32"), not(loom)))]
 mod tests;
 
-#[cfg(all(test, not(target_arch = "wasm32"), not(loom)))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32"), not(loom)))]
 mod metadata_tests;
 
 #[derive(Serialize, Deserialize, crate::HeapLayout)]

@@ -329,7 +329,8 @@ where
 
 pub use crate::filesystem::workspace_access::*;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod workload_tests {
     use super::*;
 

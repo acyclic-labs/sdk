@@ -170,5 +170,6 @@ fn run_admitted<T>(
     result
 }
 
-#[cfg(all(test, any(windows, target_os = "linux", target_vendor = "apple")))]
+#[cfg(test)]
+#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 mod tests;

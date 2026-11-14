@@ -1097,5 +1097,6 @@ const ALLOWED_SYSCALLS: &[libc::c_long] = &[
     libc::SYS_arch_prctl,
 ];
 
-#[cfg(all(test, any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(test)]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 mod checks;

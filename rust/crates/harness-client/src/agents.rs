@@ -11,7 +11,8 @@ use std::{
     task::{Context, Poll},
 };
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "agents_tests.rs"]
 mod tests;
 

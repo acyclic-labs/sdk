@@ -51,7 +51,8 @@ impl StateGuard<'_> {
         {
             wake.wake();
         }
-        #[cfg(all(test, loom))]
+        #[cfg(test)]
+        #[cfg(loom)]
         invalidation::model_checking::before_waiter_wait();
         self.state = Some(
             condition
@@ -74,7 +75,8 @@ impl Drop for StateGuard<'_> {
             .get()
             .filter(|_| state.invalidation_wanted());
         drop(state);
-        #[cfg(all(test, loom))]
+        #[cfg(test)]
+        #[cfg(loom)]
         let notify = !invalidation::model_checking::omit_guard_notification();
         #[cfg(not(all(test, loom)))]
         let notify = true;
@@ -84,7 +86,8 @@ impl Drop for StateGuard<'_> {
         if let Some(wake) = wake {
             wake.wake();
         }
-        #[cfg(all(test, loom))]
+        #[cfg(test)]
+        #[cfg(loom)]
         invalidation::model_checking::after_guard_drop();
     }
 }
@@ -94,7 +97,8 @@ pub(super) use crate::native_mount::shared::metering::source_original as fuse_na
 pub(super) struct ProjectionCore {
     #[cfg(test)]
     pub(super) write_pause: std::sync::Mutex<tests::write_gate::PauseSlot>,
-    #[cfg(all(test, not(loom)))]
+    #[cfg(test)]
+    #[cfg(not(loom))]
     pub(super) publication_test: std::sync::Mutex<tests::owner::PublicationTest>,
     pub(super) source: Arc<dyn MountFilesystem>,
     pub(super) clock: super::super::clock::Clock,
@@ -171,7 +175,8 @@ impl ProjectionCore {
         Ok(Arc::new(Self {
             #[cfg(test)]
             write_pause: std::sync::Mutex::new(tests::write_gate::PauseSlot::default()),
-            #[cfg(all(test, not(loom)))]
+            #[cfg(test)]
+            #[cfg(not(loom))]
             publication_test: std::sync::Mutex::new(tests::owner::PublicationTest::default()),
             source,
             clock: super::super::clock::Clock::capture(),
@@ -269,7 +274,8 @@ impl ProjectionCore {
         let queued = std::mem::take(&mut state.invalidation.deferred);
         drop(state);
         drop(queued);
-        #[cfg(all(test, loom))]
+        #[cfg(test)]
+        #[cfg(loom)]
         if invalidation::model_checking::omit_terminal_notification() {
             return;
         }

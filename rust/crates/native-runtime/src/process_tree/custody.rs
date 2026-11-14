@@ -505,7 +505,8 @@ mod unix {
         }
     }
 
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(test)]
+    #[cfg(target_os = "linux")]
     mod member_tests {
         use super::*;
 
@@ -757,7 +758,8 @@ mod windows {
 }
 #[cfg(windows)]
 use windows::fence;
-#[cfg(all(windows, test))]
+#[cfg(test)]
+#[cfg(windows)]
 pub(super) use windows::job_name;
 #[cfg(windows)]
 pub(super) use windows::members;

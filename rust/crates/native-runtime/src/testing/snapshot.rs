@@ -11,10 +11,12 @@ mod privacy_tests;
 
 #[cfg(test)]
 mod tests;
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(windows)]
 mod windows_tests;
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(windows)]
 #[derive(Debug, PartialEq)]
 struct PermissionWrite;
 
@@ -132,7 +134,8 @@ impl Snapshot {
             if !permissions.readonly() {
                 continue;
             }
-            #[cfg(all(test, windows))]
+            #[cfg(test)]
+            #[cfg(windows)]
             acyclic_test_support::differential::record(PermissionWrite);
             std::fs::set_permissions(path, permissions.clone())?;
         }

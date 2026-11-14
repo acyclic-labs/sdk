@@ -24,7 +24,8 @@ pub struct Credentials {
     #[serde(skip)]
     watch:
         Option<std::sync::Arc<dyn Fn() -> acyclic_auth::credential::CredentialWatch + Send + Sync>>,
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(not(target_arch = "wasm32"))]
     #[serde(skip)]
     pub(crate) source: Option<std::sync::Arc<dyn Fn(&str, Source) -> KeyResult + Send + Sync>>,
 }
@@ -54,7 +55,8 @@ pub(crate) enum Source {
     Environment,
     Configuration,
     /// The test double's CODEX_HOME, so tests never discover the user's login.
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(not(target_arch = "wasm32"))]
     CodexHome,
 }
 
@@ -74,7 +76,8 @@ impl Default for Credentials {
             path: None,
             #[cfg(not(target_arch = "wasm32"))]
             watch: None,
-            #[cfg(all(test, not(target_arch = "wasm32")))]
+            #[cfg(test)]
+            #[cfg(not(target_arch = "wasm32"))]
             source: None,
         }
     }
@@ -171,7 +174,8 @@ impl Credentials {
             path: None,
             #[cfg(not(target_arch = "wasm32"))]
             watch: None,
-            #[cfg(all(test, not(target_arch = "wasm32")))]
+            #[cfg(test)]
+            #[cfg(not(target_arch = "wasm32"))]
             source: None,
         }
     }
@@ -216,7 +220,8 @@ impl Credentials {
     }
 
     fn read(&self, provider: &str, source: Source) -> KeyResult {
-        #[cfg(all(test, not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(read) = &self.source {
             return read(provider, source);
         }
@@ -257,7 +262,8 @@ impl Credentials {
                 Ok(None)
             }
             Source::Configuration => Ok(self.api_keys.get(provider).cloned()),
-            #[cfg(all(test, not(target_arch = "wasm32")))]
+            #[cfg(test)]
+            #[cfg(not(target_arch = "wasm32"))]
             Source::CodexHome => Ok(None),
         }
     }
@@ -293,7 +299,8 @@ fn environment_variable(provider: &str) -> String {
     variable
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn environment_only_custom_provider_has_no_configuration_fallback() -> Result<()> {
     const CHILD: &str = "HARNESS_ENVIRONMENT_CREDENTIALS_CHILD";
@@ -337,7 +344,8 @@ fn environment_only_custom_provider_has_no_configuration_fallback() -> Result<()
     Ok(())
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 #[test]
 fn explicit_credential_files_refuse_links() -> std::io::Result<()> {
     let temporary = tempfile::tempdir()?;

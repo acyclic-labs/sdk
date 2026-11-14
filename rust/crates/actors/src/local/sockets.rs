@@ -217,7 +217,8 @@ impl Layout {
 }
 
 fn ledger_record(kind: LedgerKind) -> AppendRecord {
-    #[cfg(all(test, not(loom)))]
+    #[cfg(test)]
+    #[cfg(not(loom))]
     tests::LEDGER_ENCODINGS.with(|count| count.set(count.get() + 1));
     LedgerWire { kind: Some(kind) }.encode_to_vec().into()
 }
@@ -1894,7 +1895,9 @@ pub mod codec_fuzz {
     }
 }
 
-#[cfg(all(test, loom))]
+#[cfg(test)]
+#[cfg(loom)]
 mod loom_tests;
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod tests;

@@ -1,7 +1,8 @@
 //! Projection metadata refers to the same immutable segments used by dispatch.
 use super::*;
 
-#[cfg(all(test, not(target_arch = "wasm32"), not(loom)))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32"), not(loom)))]
 mod tests;
 
 impl SteeringPrefix {

@@ -357,9 +357,11 @@ fn read_record<const N: usize, W: NativeHostWork<Error = DemandError>>(
     leaf: &Path,
     work: &mut W,
 ) -> Result<[u8; N], DemandError> {
-    #[cfg(all(test, target_os = "linux", loom))]
+    #[cfg(test)]
+    #[cfg(all(target_os = "linux", loom))]
     let kernel = models::current();
-    #[cfg(all(test, target_os = "linux", loom))]
+    #[cfg(test)]
+    #[cfg(all(target_os = "linux", loom))]
     let _atomic_read = kernel.as_ref().map(|kernel| kernel.state.lock().unwrap());
     let mut file = open_leaf(directory, leaf, &NativeOpenOptions::Read, work)?;
     record::read(&mut file).map_err(Into::into)
@@ -464,9 +466,11 @@ fn rename_no_replace<W: NativeHostWork>(
     to: &Path,
     work: &mut W,
 ) -> Result<(), W::Error> {
-    #[cfg(all(test, target_os = "linux", loom))]
+    #[cfg(test)]
+    #[cfg(all(target_os = "linux", loom))]
     let kernel = models::current();
-    #[cfg(all(test, target_os = "linux", loom))]
+    #[cfg(test)]
+    #[cfg(all(target_os = "linux", loom))]
     let mut atomic_rename = kernel.as_ref().map(|kernel| kernel.state.lock().unwrap());
     let mode = acyclic_native_runtime::RenameMode::NoReplace;
     let result = host_path(from, work, |from, work| {
@@ -474,7 +478,8 @@ fn rename_no_replace<W: NativeHostWork>(
             rename_held(directory, from, directory, to, mode, None, work)
         })
     });
-    #[cfg(all(test, target_os = "linux", loom))]
+    #[cfg(test)]
+    #[cfg(all(target_os = "linux", loom))]
     if result.is_ok()
         && let Some(state) = atomic_rename.as_mut()
     {

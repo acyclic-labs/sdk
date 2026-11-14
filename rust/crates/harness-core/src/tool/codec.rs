@@ -108,7 +108,8 @@ fn retained_value_bytes(value: &Value) -> Result<u64> {
         })
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod custody_tests;
 
 /// Closed tool DTO diagnostic labels.

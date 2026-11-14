@@ -52,7 +52,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn changed_content_refuses_as_tool_feedback_without_reclassifying_native_faults() -> Result<()>
 {

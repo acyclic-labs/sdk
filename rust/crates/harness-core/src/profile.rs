@@ -8,7 +8,8 @@ use crate::{Error, Result, approvals::ApprovalGate, context::ModelContextCapacit
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{collections::BTreeSet, io::Write};
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests;
 
 mod binding;

@@ -223,7 +223,8 @@ fn invariant(message: &'static str) -> CanonicalDecodeError {
     CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static(message))
 }
 
-#[cfg(all(test, not(target_arch = "wasm32"), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32"), not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     #[test]

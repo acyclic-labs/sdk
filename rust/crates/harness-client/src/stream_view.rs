@@ -367,7 +367,8 @@ fn retain_metadata(
     charge(origin.capacity())?;
     charge(record.commit_id.len())?;
     for (index, key) in record.keys.iter().enumerate() {
-        #[cfg(all(test, not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(not(target_arch = "wasm32"))]
         tests::visit_metadata();
         charge(key.len())?;
         keys.push(retain_header(
@@ -376,7 +377,8 @@ fn retain_metadata(
         ));
     }
     for (index, attribute) in record.attributes.iter().enumerate() {
-        #[cfg(all(test, not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(not(target_arch = "wasm32"))]
         tests::visit_metadata();
         let name = attribute.name.clone();
         charge(name.capacity())?;
@@ -422,5 +424,6 @@ fn retain_header(bytes: &Bytes, original: Option<&acyclic_stream::OwnedBytes>) -
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests;

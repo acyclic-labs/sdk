@@ -163,7 +163,8 @@ fn appended_by_context(
         .is_some_and(|path| path == record.origin.as_str())
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod tests {
     use super::*;
     use crate::kernel::NamespacePath;

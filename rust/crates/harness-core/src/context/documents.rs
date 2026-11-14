@@ -83,7 +83,8 @@ pub async fn capture_working_documents(
     Ok(capture.documents)
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
     use crate::{AgentId, OperationId, conversation::ContentChange};

@@ -19,7 +19,8 @@ pub use native_events::check_native_event_resume;
 /// The production closed-log selector, exposed only for validation.
 #[cfg(feature = "test-support")]
 pub use sessions::logged_session_id;
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod tests;
 
 /// One agent's view, attached once however many requests await it.

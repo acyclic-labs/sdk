@@ -293,7 +293,8 @@ impl acyclic_stream::NativeStreamProvider for Observed {}
 
 impl acyclic_harness_core::filesystem::attestation::AttestedProvider for Observed {}
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
 

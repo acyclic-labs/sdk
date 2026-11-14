@@ -106,7 +106,8 @@ pub(crate) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
     Ok(())
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn selected_open_survives_later_publication() -> Result<(), Box<dyn std::error::Error>> {
     verify(&crate::MemoryStream::default()).await?;

@@ -102,7 +102,8 @@ impl LineBuffer {
     }
 }
 
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(test)]
+#[cfg(feature = "test-support")]
 mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt as _;

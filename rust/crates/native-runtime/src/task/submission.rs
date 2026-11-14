@@ -22,7 +22,8 @@ impl SubmissionHandoff {
     }
 }
 
-#[cfg(all(test, loom))]
+#[cfg(test)]
+#[cfg(loom)]
 mod tests {
     use super::*;
     use loom::sync::{Arc, atomic::AtomicBool};

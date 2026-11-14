@@ -348,7 +348,8 @@ pub fn decode<'a>(
     Box::pin(frames(body, maximum, Decoder::default()).map(|frame| frame.map(|frame| frame.data)))
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
     use acyclic_fs::{CancellationToken, NativeMaterializationWork};

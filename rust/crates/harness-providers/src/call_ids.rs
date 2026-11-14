@@ -186,7 +186,8 @@ impl<'a> CallIds<'a> {
         ))
     }
 
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn freeform(&self, id: &str) -> bool {
         self.binding(id).is_ok_and(|(_, freeform, _)| freeform)
     }

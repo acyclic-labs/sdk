@@ -406,7 +406,8 @@ pub(super) fn adopt(
             writer: Writer,
             queued_stdin: None,
             _events: events,
-            #[cfg(all(test, feature = "test-support", not(loom)))]
+            #[cfg(test)]
+            #[cfg(all(feature = "test-support", not(loom)))]
             capture_armed: None,
         });
         started
@@ -581,7 +582,8 @@ impl SpawnObjects<'_> {
                     writer: Writer,
                     queued_stdin: None,
                     _events: self.events,
-                    #[cfg(all(test, feature = "test-support", not(loom)))]
+                    #[cfg(test)]
+                    #[cfg(all(feature = "test-support", not(loom)))]
                     capture_armed: None,
                 });
                 if let Some(actions) = retained.actions {
@@ -692,7 +694,8 @@ impl SpawnObjects<'_> {
                         writer: Writer,
                         queued_stdin: None,
                         _events: self.events,
-                        #[cfg(all(test, feature = "test-support", not(loom)))]
+                        #[cfg(test)]
+                        #[cfg(all(feature = "test-support", not(loom)))]
                         capture_armed: None,
                     });
                 }

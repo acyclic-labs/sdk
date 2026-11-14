@@ -42,12 +42,14 @@ impl Cursor {
             } else {
                 optional_before_images
             };
-            #[cfg(all(test, not(loom)))]
+            #[cfg(test)]
+            #[cfg(not(loom))]
             self.inject("begin")?;
             self.watcher
                 .watch_tree(workspace::SOURCE_EXCLUDED_ROOTS)
                 .map_err(storage)?;
-            #[cfg(all(test, not(loom)))]
+            #[cfg(test)]
+            #[cfg(not(loom))]
             self.inject("watch-tree")?;
             let captured = capture_baseline(
                 checkout,
@@ -71,10 +73,12 @@ impl Cursor {
                     return Err(storage(failure));
                 }
             }
-            #[cfg(all(test, not(loom)))]
+            #[cfg(test)]
+            #[cfg(not(loom))]
             self.inject("baseline")?;
             let batch = self.watcher.finish_rescan(rescan).map_err(storage)?;
-            #[cfg(all(test, not(loom)))]
+            #[cfg(test)]
+            #[cfg(not(loom))]
             self.inject("finish")?;
             Ok(batch)
         })
@@ -102,7 +106,8 @@ pub(super) fn capture<'a>(
         baseline |= matches!(initial, Some(WatchBatch::RescanRequired { .. }));
         if !baseline {
             cursor.watcher.fence().map_err(storage)?;
-            #[cfg(all(test, not(loom)))]
+            #[cfg(test)]
+            #[cfg(not(loom))]
             cursor.inject("fence")?;
         }
         let mut rescans = 0;
@@ -182,7 +187,8 @@ fn drain<'a>(
                 Some(batch) => batch,
                 None => cursor.poll(&cut, cancellation)?,
             };
-            #[cfg(all(test, not(loom)))]
+            #[cfg(test)]
+            #[cfg(not(loom))]
             cursor.inject("poll")?;
             let empty = matches!(&batch, WatchBatch::Changes { changes, .. } if changes.is_empty());
             if !replay(
@@ -229,7 +235,8 @@ pub(super) fn replay<'a>(
             .watcher
             .watch_arrivals(&batch, policy, options.maximum_paths)
             .map_err(storage)?;
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(not(loom))]
         cursor.inject("register")?;
         let result = capture_watch_batch(
             checkout,
@@ -240,7 +247,8 @@ pub(super) fn replay<'a>(
             cancellation,
         )
         .await;
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(not(loom))]
         cursor.inject("replay")?;
         match result {
             Ok(_) => Ok(true),

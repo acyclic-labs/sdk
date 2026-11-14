@@ -544,5 +544,6 @@ pub(super) fn sync_directory(path: &Path) -> Result<(), std::io::Error> {
     acyclic_native_runtime::sync_parent(path, acyclic_native_runtime::Durability::Full)
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(windows)]
 mod windows_publication_tests;

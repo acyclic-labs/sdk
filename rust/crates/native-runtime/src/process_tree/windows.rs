@@ -297,7 +297,8 @@ fn spawn_in_job(
         queued_stdin: None,
         readers: [None, None],
         _events: events,
-        #[cfg(all(test, feature = "test-support", not(loom)))]
+        #[cfg(test)]
+        #[cfg(all(feature = "test-support", not(loom)))]
         capture_armed: None,
     });
     // The physical record may already exist when completion accounting fails.

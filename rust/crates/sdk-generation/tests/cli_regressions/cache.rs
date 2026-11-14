@@ -40,7 +40,8 @@ pub fn get_or_try_init<T, E>(
     Ok(initialized)
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod tests {
     use super::{get_or_try_init, Arc, InitError, Mutex};
 

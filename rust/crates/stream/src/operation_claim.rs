@@ -233,7 +233,8 @@ impl Drop for OperationClaim<'_> {
     }
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod tests {
     use super::*;
     use std::cell::Cell;

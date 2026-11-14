@@ -144,7 +144,8 @@ impl<'a, T> BoundedContentFuture<'a, T> {
             }
         }
         let _ = io;
-        #[cfg(all(test, not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(not(target_arch = "wasm32"))]
         if PAD_FRAME.get() {
             // Size-only mutation: keep the shipping future inline in its one
             // allocation, with extra retained state across the real await.

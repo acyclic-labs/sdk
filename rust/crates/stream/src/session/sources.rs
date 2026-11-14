@@ -2,7 +2,8 @@
 #[cfg(loom)]
 use super::sync::{AtomicU64, Ordering};
 use super::*;
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 use crate::runtime::sources::OPENING;
 #[cfg(any(test, loom))]
 use crate::runtime::sources::Wake;
@@ -14,7 +15,8 @@ use std::task::{Context, Poll};
 
 #[cfg(loom)]
 pub(super) mod model;
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod tests;
 
 pub(super) type Sources = crate::runtime::ReadySources<Source>;

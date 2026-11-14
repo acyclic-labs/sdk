@@ -283,7 +283,8 @@ pub(crate) fn stock_into_iter<'a, T>(
     })
 }
 
-#[cfg(all(test, feature = "test-support", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use std::cell::Cell;

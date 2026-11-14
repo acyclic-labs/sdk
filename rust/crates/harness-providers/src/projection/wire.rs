@@ -3,7 +3,8 @@ use acyclic_model_render::{Field, Fields};
 use serde::Serialize;
 use serde_json::{Value, value::RawValue};
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "trailer_tests.rs"]
 mod tests;
 

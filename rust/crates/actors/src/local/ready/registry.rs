@@ -29,13 +29,15 @@ impl<K> Default for Registry<K> {
     }
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 std::thread_local! {
     static WORK: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
 }
 
 fn visit(comparisons: usize) {
-    #[cfg(all(test, not(loom)))]
+    #[cfg(test)]
+    #[cfg(not(loom))]
     WORK.with(|work| {
         let (visits, compared) = work.get();
         work.set((visits + 1, compared + comparisons));
@@ -44,7 +46,8 @@ fn visit(comparisons: usize) {
     let _ = comparisons;
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 pub(super) fn work() -> (usize, usize) {
     WORK.with(std::cell::Cell::get)
 }

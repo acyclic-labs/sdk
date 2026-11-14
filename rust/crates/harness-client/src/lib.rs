@@ -1,7 +1,8 @@
 //! Bounded view demand and provider-owned pages shared by client adapters, and
 //! the lazy stream [`reader`] every client renders from.
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 acyclic_test_support::counting_allocator!();
 
 mod connection;

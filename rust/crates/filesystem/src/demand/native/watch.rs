@@ -3,8 +3,8 @@ struct NativeWatch {
     _ownership: SourcePayloadOwnership,
 }
 
+#[cfg(test)]
 #[cfg(all(
-    test,
     any(target_os = "linux", target_os = "macos"),
     not(target_arch = "wasm32")
 ))]
@@ -81,7 +81,8 @@ struct NativeChanges {
 }
 impl NativeDemandSource {
     /// Observes the actual watch created by the production subscription path.
-    #[cfg(all(test, target_os = "linux", not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
     pub(crate) fn physical_watch_for_test(
         &self,
     ) -> Option<Arc<crate::source_watch::NativeSourceWatch>> {

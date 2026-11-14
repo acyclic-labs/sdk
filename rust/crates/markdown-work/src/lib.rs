@@ -23,7 +23,8 @@ mod counters;
 #[cfg(feature = "enabled")]
 pub use counters::{Counts, node, scan, snapshot, span_copy};
 
-#[cfg(all(test, not(feature = "enabled")))]
+#[cfg(test)]
+#[cfg(not(feature = "enabled"))]
 #[test]
 fn disabled_recording_does_not_evaluate_arguments() {
     record!(scan(panic!(
@@ -31,7 +32,8 @@ fn disabled_recording_does_not_evaluate_arguments() {
     )));
 }
 
-#[cfg(all(test, feature = "enabled"))]
+#[cfg(test)]
+#[cfg(feature = "enabled")]
 #[test]
 fn snapshots_exclude_another_parsers_thread() -> Result<(), Box<dyn std::error::Error>> {
     let before = snapshot();

@@ -199,7 +199,8 @@ pub enum TraceRecord {
     V1(SpanEvent),
 }
 
-#[cfg(all(test, feature = "serde", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "serde", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use crate::{

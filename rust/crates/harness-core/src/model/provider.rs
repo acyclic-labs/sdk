@@ -314,7 +314,8 @@ impl futures::stream::FusedStream for NativeModelStream<'_> {
         self.terminated
     }
 }
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "provider_tests.rs"]
 mod tests;
 impl ModelEvent {

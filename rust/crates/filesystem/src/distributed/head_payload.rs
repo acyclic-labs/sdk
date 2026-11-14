@@ -36,7 +36,8 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                     work,
                 ));
             }
-            #[cfg(all(test, loom, loom))]
+            #[cfg(test)]
+            #[cfg(all(loom, loom))]
             let replacement = if super::head_payload_loom_tests::resample_payload() {
                 Some(
                     Box::pin(super::head_payload_loom_tests::resampled_payload(
@@ -47,7 +48,8 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             } else {
                 None
             };
-            #[cfg(all(test, loom, loom))]
+            #[cfg(test)]
+            #[cfg(all(loom, loom))]
             let payload = replacement.as_deref().unwrap_or(&record.value[offset..]);
             #[cfg(not(all(test, loom, loom)))]
             let payload = &record.value[offset..];

@@ -18,7 +18,8 @@ pub(in crate::local) struct Cursor {
     initial: Option<WatchBatch>,
     baseline_pending: bool,
     before_images_complete: bool,
-    #[cfg(all(test, not(loom)))]
+    #[cfg(test)]
+    #[cfg(not(loom))]
     injection: Option<tests::Injection>,
 }
 
@@ -62,7 +63,8 @@ impl Cursor {
             initial: None,
             baseline_pending: workspace.import_source,
             before_images_complete: true,
-            #[cfg(all(test, not(loom)))]
+            #[cfg(test)]
+            #[cfg(not(loom))]
             injection: None,
         })
     }
@@ -219,14 +221,16 @@ where
         // stopped before its physical publication is published first, so its
         // capture holds the write's bytes, whichever entry point finishes it.
         // A replay of an already published transition is idempotent.
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(not(loom))]
         let apply = !OWED_WRITE_UNAPPLIED.get();
         #[cfg(not(all(test, not(loom))))]
         let apply = true;
         if apply {
             apply_owed_write(physical, view, operation, staged.generation).await?;
         }
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(not(loom))]
         if KILL_BEFORE_CAPTURE.get() {
             return Err(Error::Storage("killed before the write's capture".into()));
         }
@@ -245,7 +249,8 @@ where
     reconciliation::replace_owed_write(physical, Some(owed), None).await
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 std::thread_local! {
     /// Stops an owed write between its physical publication and its capture.
     pub(in crate::local) static KILL_BEFORE_CAPTURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };

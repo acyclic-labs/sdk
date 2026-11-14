@@ -99,7 +99,8 @@ where
     std::task::Poll::Pending
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod tests {
     use super::*;
 

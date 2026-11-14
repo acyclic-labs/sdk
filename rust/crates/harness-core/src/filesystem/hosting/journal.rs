@@ -14,7 +14,8 @@ type OriginalInput<P, O> = (
     u64,
 );
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "journal_tests.rs"]
 pub(in crate::filesystem) mod tests;
 

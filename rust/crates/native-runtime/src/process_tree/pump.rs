@@ -587,7 +587,8 @@ impl<'a> Pump<'a> {
         };
         // Report the original registration only after every source is armed.
         // Failed setup or owner loss drops the sender with the original tree.
-        #[cfg(all(test, feature = "test-support", not(loom)))]
+        #[cfg(test)]
+        #[cfg(all(feature = "test-support", not(loom)))]
         if let Some(armed) = tree.capture_armed.take() {
             let _ = armed.send(());
         }

@@ -644,7 +644,8 @@ pub fn check_native_root_name_prefix(name: &str) {
     assert_eq!(denied.receipt().backend_read_operations, 0);
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod prepared_leaf_tests {
     use super::*;
 

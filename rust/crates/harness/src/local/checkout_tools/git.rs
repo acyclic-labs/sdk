@@ -106,7 +106,8 @@ fn child_lifecycle(arguments: &[String]) -> bool {
     }
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod tests {
     use super::*;
     use acyclic_fs::facade::FsWork as _;

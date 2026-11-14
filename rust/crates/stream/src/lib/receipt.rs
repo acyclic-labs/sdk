@@ -282,7 +282,8 @@ impl CommitReceipt {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod receipt_membership_tests {
     use super::*;
 

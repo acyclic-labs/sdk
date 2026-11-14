@@ -334,7 +334,8 @@ pub(crate) mod faults {
     }
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};

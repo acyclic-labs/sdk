@@ -78,7 +78,8 @@ pub(crate) fn body(
     spec: &TokenCounterSpec,
 ) -> Result<Vec<u8>> {
     let adapter = spec.adapter;
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(not(target_arch = "wasm32"))]
     let model =
         if crate::tests::catalog_identity_tests::SUBSTITUTE_WIRE_MODEL.with(std::cell::Cell::get) {
             "unselected-model"
