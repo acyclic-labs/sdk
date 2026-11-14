@@ -182,7 +182,7 @@ impl<
             return Ok(authored);
         }
         let tombstones = witness
-            .source_tombstones_owned(usize::MAX, Some(cut.overlay), ctx)
+            .source_tombstones_owned(witnessed.overlay, usize::MAX, Some(cut.overlay), ctx)
             .await?;
         let deleted_paths = match self.deleted_base_paths(cut, &tombstones.value, ctx).await {
             Ok(paths) => paths,

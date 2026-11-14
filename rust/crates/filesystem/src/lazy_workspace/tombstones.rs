@@ -12,19 +12,22 @@ impl<
         maximum: usize,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Vec<(String, SourceVersion)>, KernelOwnedAllocation), LazyWorkspaceError> {
-        let output = self.source_tombstones_owned(maximum, None, ctx).await?;
+        let overlay = self.state(ctx).await?.overlay;
+        let output = self
+            .source_tombstones_owned(overlay, maximum, None, ctx)
+            .await?;
         Ok((output.value, output.allocation))
     }
 
     pub(super) async fn source_tombstones_owned(
         &self,
+        overlay: LazyOverlayId,
         maximum: usize,
         inherited: Option<LazyOverlayId>,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Owned<Vec<(String, SourceVersion)>>, LazyWorkspaceError> {
-        let state = self.state(ctx).await?;
         let mut pending = Owned::allocate(1, ctx)?;
-        pending.value.push((state.overlay, inherited));
+        pending.value.push((overlay, inherited));
         let mut output = Owned::allocate(0, ctx)?;
         let result = async {
             while let Some((id, original)) = pending.value.pop() {

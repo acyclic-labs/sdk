@@ -29,14 +29,16 @@ async fn fork_base_refines_only_deletions_added_after_its_cut() {
         .await
         .unwrap();
     child.read("/new-source", 16, accounting!()).await.unwrap();
+    let observed = child.snapshot(accounting!()).await.unwrap();
     child
         .remove("/file-128", None, accounting!())
         .await
         .unwrap();
+    let current = child.snapshot(accounting!()).await.unwrap();
     let cancellation = CancellationToken::new();
     let mut complete = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let all = child
-        .source_tombstones_owned(usize::MAX, None, &mut complete)
+        .source_tombstones_owned(current.overlay, usize::MAX, None, &mut complete)
         .await
         .unwrap();
     assert_eq!(
@@ -49,7 +51,12 @@ async fn fork_base_refines_only_deletions_added_after_its_cut() {
     all.retire(&mut complete).unwrap();
     let mut frontier = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let added = child
-        .source_tombstones_owned(usize::MAX, Some(cut.overlay), &mut frontier)
+        .source_tombstones_owned(
+            current.overlay,
+            usize::MAX,
+            Some(cut.overlay),
+            &mut frontier,
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -62,6 +69,18 @@ async fn fork_base_refines_only_deletions_added_after_its_cut() {
     );
     added.retire(&mut frontier).unwrap();
     assert!(frontier.spent().bytes_copied < complete.spent().bytes_copied);
+    // A deletion after the selected witness cannot enter that witness's base.
+    let original = child
+        .source_tombstones_owned(
+            observed.overlay,
+            usize::MAX,
+            Some(cut.overlay),
+            &mut frontier,
+        )
+        .await
+        .unwrap();
+    assert!(original.value.is_empty());
+    original.retire(&mut frontier).unwrap();
     let base = root
         .exactify_observed_base(cut, &[], &child, accounting!())
         .await
