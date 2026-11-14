@@ -798,6 +798,72 @@ mod tests {
     }
 
     #[test]
+    fn foreign_metadata_retains_header_attribution_without_original_status_parts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use acyclic_auth::refusal::{Canonical, Cause, Refusal};
+        let header_cause = Cause::new("actor.owner", "unavailable");
+        let body_cause = Cause::new("actor.delivery", "interrupted");
+        let parts = Refusal::encode(
+            Some(&Refusal::caused(header_cause.clone())),
+            Canonical {
+                code: 14,
+                message: "owner unavailable",
+                details: &[],
+                owned: &[],
+                cause_is_embedded: false,
+            },
+        )?;
+        for body in 0..3 {
+            let details = match body {
+                0 => Vec::new(),
+                _ => wire::Error {
+                    code: wire::ErrorCode::DependencyUnavailable as i32,
+                    message: "delivery unavailable".into(),
+                    component: if body == 2 {
+                        body_cause.component.clone()
+                    } else {
+                        String::new()
+                    },
+                    reason: if body == 2 {
+                        body_cause.reason.clone()
+                    } else {
+                        String::new()
+                    },
+                    request_id: if body == 2 {
+                        body_cause.request_id.clone()
+                    } else {
+                        String::new()
+                    },
+                }
+                .encode_to_vec(),
+            };
+            let status = tonic::Status::with_details_and_metadata(
+                tonic::Code::Unavailable,
+                &parts.message,
+                details.into(),
+                tonic::metadata::MetadataMap::from_headers(parts.metadata.clone()),
+            );
+            let error = Error::from(status);
+            let metadata = error.metadata();
+            assert!(
+                metadata.refusal.is_none(),
+                "canonical status parts must not hide the regression"
+            );
+            let expected = if body == 2 {
+                &body_cause
+            } else {
+                &header_cause
+            };
+            assert_eq!(metadata.cause.as_ref(), Some(expected));
+            assert_eq!(
+                serde_json::to_value(metadata).unwrap()["cause"],
+                serde_json::to_value(expected).unwrap()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn error_code_names_are_shared_by_native_and_browser_bridges() {
         for (code, name) in [
             (0, "ok"),
