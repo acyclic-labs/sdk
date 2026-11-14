@@ -4199,22 +4199,22 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
 async fn historical_session_forks_keep_source_only_files_from_adoption() -> Result<()> {
     use acyclic_fs::{CancellationToken, WorkBudget};
     let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
     let provider = super::scripted([
         crate::test_support::ScriptedTurn::Text("parent answer".into()),
         crate::test_support::ScriptedTurn::Text("child answer".into()),
     ]);
-    let harness = Arc::new(
-        super::open_scripted(super::checkout_config(
-            directory.path(),
-            (super::model()?, provider),
-        )?)
-        .await?,
-    );
-    // Opening a fresh checkout imports its initial baseline. Add this native
-    // file afterwards, before adoption retains its lazy source cut, so the
-    // historical fork must preserve source data absent from authored storage.
+    let harness =
+        Arc::new(super::open_scripted(volume_config(directory.path(), project, provider)?).await?);
+    let workspace = harness
+        .workspace
+        .as_ref()
+        .ok_or_else(|| Error::Invalid("historical session has no native workspace".into()))?;
+    // An existing volume has no pending external-checkout import. Add a native
+    // source file before session adoption so the fork must retain both the
+    // authored generation and its independently selected lazy source cut.
     std::fs::write(
-        directory.path().join("source-only.txt"),
+        workspace.path.join("source-only.txt"),
         b"original native source",
     )
     .map_err(agent)?;
@@ -4226,10 +4226,6 @@ async fn historical_session_forks_keep_source_only_files_from_adoption() -> Resu
         .send("original", "settle one turn without changing project files")
         .await?;
     settled(&harness, &root).await?;
-    let workspace = harness
-        .workspace
-        .as_ref()
-        .ok_or_else(|| Error::Invalid("historical session has no native workspace".into()))?;
     let adoption =
         crate::filesystem::history_checkpoint(agents.provider().as_ref(), &root, 0).await?;
     let selected = adoption
