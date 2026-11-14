@@ -196,7 +196,8 @@ async fn partial_private_pages_resume_the_original_cut_without_skipping_retained
     let mut accepted = false;
     let mut select = |_: &GenerationRef,
                       entry: Option<&crate::conversation::PrivateDirectoryEntry>,
-                      _: Option<&[u8]>|
+                      _: Option<&[u8]>,
+                      _: u32|
      -> crate::Result<bool> {
         if entry.is_none() {
             return Ok(true);

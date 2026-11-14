@@ -1005,30 +1005,40 @@ where
                 page: request,
             } => {
                 let agent = self.within_tree(agent)?;
-                let mut credit = None;
+                let mut credit: Option<PageCredit> = None;
                 let mut admit = |generation: &crate::resources::GenerationRef,
                                  entry: Option<&crate::conversation::PrivateDirectoryEntry>,
-                                 next: Option<&[u8]>|
+                                 next: Option<&[u8]>,
+                                 examined: u32|
                  -> crate::Result<bool> {
                     use crate::conversation::PrivateDirectoryPageView;
-                    if credit.is_none() {
-                        let end = AgentReply::Directory {
-                            page: PrivateDirectoryPageView {
-                                examined: u32::MAX,
-                                generation,
-                                entries: &[],
-                                next: None,
-                            },
-                        };
-                        let more = AgentReply::Directory {
-                            page: PrivateDirectoryPageView {
-                                examined: u32::MAX,
-                                generation,
-                                entries: &[],
-                                next: Some(&[]),
-                            },
-                        };
-                        credit = Some(PageCredit::from_envelopes(request, &end, &more)?);
+                    let end = AgentReply::Directory {
+                        page: PrivateDirectoryPageView {
+                            examined,
+                            generation,
+                            entries: &[],
+                            next: None,
+                        },
+                    };
+                    let more = AgentReply::Directory {
+                        page: PrivateDirectoryPageView {
+                            examined,
+                            generation,
+                            entries: &[],
+                            next: Some(&[]),
+                        },
+                    };
+                    let prior = credit.is_some();
+                    let envelope = match PageCredit::from_envelopes(request, &end, &more) {
+                        Err(Error::Stream(StreamError::Capacity)) if prior => return Ok(false),
+                        value => value?,
+                    };
+                    match credit.as_mut() {
+                        Some(credit) => {
+                            credit.end_envelope = envelope.end_envelope;
+                            credit.next_envelope = envelope.next_envelope;
+                        }
+                        None => credit = Some(envelope),
                     }
                     let next = next
                         .map(|next| page_json_bytes(&next).map(|bytes| bytes - 2))
@@ -1036,11 +1046,14 @@ where
                     let credit = credit
                         .as_mut()
                         .ok_or(Error::Record("directory credit is uninitialized"))?;
-                    match entry {
+                    let accepted = match entry {
                         Some(entry) => credit.accept(entry, next),
                         None => credit.accept_boundary(next),
+                    };
+                    match accepted {
+                        Err(Error::Stream(StreamError::Capacity)) if prior => Ok(false),
+                        value => value.map_err(crate::Error::from),
                     }
-                    .map_err(crate::Error::from)
                 };
                 let page = self
                     .bound
@@ -1937,23 +1950,6 @@ struct PageCredit {
 }
 
 impl PageCredit {
-    /// A complete page needs only its producer's existing continuation. This
-    /// also preserves whole-page serving for producers without interior cuts.
-    fn fits_page(
-        &self,
-        items: &[impl serde::Serialize],
-        next: Option<&str>,
-    ) -> Result<bool, Error> {
-        let mut bytes = next.map_or(self.end_envelope, |next| {
-            self.next_envelope + next.len() as u64
-        });
-        for (index, item) in items.iter().enumerate() {
-            bytes += page_json_bytes(item)? + u64::from(index != 0);
-        }
-        Ok(acyclic_harness_client::encoded_agent_reply_size(bytes)
-            .is_ok_and(|encoded| encoded <= self.maximum))
-    }
-
     fn new(
         page: &AgentPageRequest,
         empty: impl Fn(Option<String>) -> AgentReply,

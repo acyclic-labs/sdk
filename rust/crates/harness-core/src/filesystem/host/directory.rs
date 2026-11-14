@@ -8,6 +8,7 @@ pub type DirectoryCredit<'a> = dyn FnMut(
         &GenerationRef,
         Option<&crate::conversation::PrivateDirectoryEntry>,
         Option<&[u8]>,
+        u32,
     ) -> Result<bool>
     + Send
     + Sync
@@ -298,10 +299,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let now = super::super::access::access_now()?;
             let removed = filter_page(&mut incoming.0, parent, data_parent, now);
             incoming.1.substitute(incoming.1.bytes() - removed)?;
+            let examined = selected
+                .0
+                .examined
+                .checked_add(incoming.0.examined)
+                .ok_or_else(|| io.invalid("directory work count overflows"))?;
             if incoming.0.entries.is_empty()
                 && let Some(credit) = credit.as_mut()
             {
-                if !credit(&selected.0.generation, None, incoming.0.next.as_deref())? {
+                if !credit(
+                    &selected.0.generation,
+                    None,
+                    incoming.0.next.as_deref(),
+                    examined,
+                )? {
                     break;
                 }
             }
@@ -316,6 +327,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         &selected.0.generation,
                         Some(&offered.0),
                         incoming.0.next.as_deref(),
+                        examined,
                     )? {
                         drop(offered);
                         drop(entries);
@@ -337,11 +349,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 selected.1.absorb(offered.1)?;
             }
             drop(entries);
-            selected.0.examined = selected
-                .0
-                .examined
-                .checked_add(incoming.0.examined)
-                .ok_or_else(|| io.invalid("directory work count overflows"))?;
+            selected.0.examined = examined;
             let old = selected.0.next.take();
             let bytes = old.as_ref().map_or(0, |next| next.capacity() as u64);
             drop(old);
