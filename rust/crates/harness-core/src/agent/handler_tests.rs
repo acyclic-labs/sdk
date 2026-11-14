@@ -183,6 +183,7 @@ async fn ancestor_pause_parks_on_its_original_publication_and_resume_survives_ha
         crate::agent::submit(provider.as_ref(), spawn.request).await?;
         let mut state = AgentState::adopted(path.clone(), &adopted)?;
         state.turn = Some(crate::agent::Progress {
+            output_owner: None,
             inbox: 0,
             checkpoint: Vec::new(),
         });
@@ -1006,6 +1007,7 @@ async fn cancelling_a_goal_continuation_closes_only_its_run_without_an_entry()
         state.conversation_tail = 2;
         if steered {
             state.turn = Some(Progress {
+                output_owner: None,
                 inbox: 3,
                 checkpoint: Vec::new(),
             });
@@ -1022,6 +1024,7 @@ async fn cancelling_a_goal_continuation_closes_only_its_run_without_an_entry()
             );
         } else if let Some(host) = parked {
             state.turn = Some(Progress {
+                output_owner: None,
                 inbox: cancelled_input,
                 checkpoint: Vec::new(),
             });

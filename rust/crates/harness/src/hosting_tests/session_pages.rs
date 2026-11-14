@@ -39,6 +39,7 @@ async fn session_and_peer_pages_keep_discovery_at_two_bounded_head_views() -> Re
         };
         let roots = server.bound().session_roots()?;
         let status = StatusRecord {
+            output_owner: None,
             cancelled_input: None,
             child_settlement: None,
             child_wakes: None,

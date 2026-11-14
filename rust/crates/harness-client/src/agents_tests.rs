@@ -403,6 +403,7 @@ async fn real_json_status_bootstraps_head_filters_keys_and_rejects_invalid_paylo
     let history = (0..64)
         .map(|cursor| {
             StatusRecord {
+                output_owner: None,
                 cancelled_input: None,
                 child_settlement: None,
                 child_wakes: None,
@@ -441,6 +442,7 @@ async fn real_json_status_bootstraps_head_filters_keys_and_rejects_invalid_paylo
     )
     .await?;
     let attention = StatusRecord {
+        output_owner: None,
         cancelled_input: None,
         child_settlement: None,
         child_wakes: None,
@@ -865,6 +867,7 @@ async fn source_selection_opens_only_requested_producers() -> Result<(), Box<dyn
     )
     .await?;
     let published = StatusRecord {
+        output_owner: None,
         cancelled_input: None,
         child_settlement: None,
         child_wakes: None,

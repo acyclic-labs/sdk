@@ -56,6 +56,7 @@ impl OutputTail {
         &self,
         records: impl IntoIterator<Item = (u64, Vec<String>)>,
         end: u64,
+        model_owner: Option<&str>,
     ) -> Plan {
         let mut call = None;
         let mut kind = LiveKind::Output;
@@ -66,7 +67,11 @@ impl OutputTail {
                 continue;
             }
             for path in paths {
-                if path.starts_with("tools/.model/") && path.contains("/restart/") {
+                let is_model = path.starts_with("tools/.model/");
+                if is_model && !model_owner.is_some_and(|owner| path.starts_with(owner)) {
+                    continue;
+                }
+                if is_model && path.contains("/restart/") {
                     // The original restart observation ends the prior text
                     // even while replaying several attempts in one page.
                     call = Some(path);
@@ -78,7 +83,9 @@ impl OutputTail {
                 // A dispatch's answer and reasoning are separate displays:
                 // their owner includes the stream's own directory.
                 let model = |label: &str, kind| {
-                    path.find(label)
+                    is_model
+                        .then(|| path.find(label))
+                        .flatten()
                         .map(|at| (at + label.len() - 1, false, kind))
                 };
                 if let Some((owner, stderr, chunk)) = path
@@ -159,6 +166,13 @@ impl OutputTail {
         self.kind = LiveKind::Output;
         self.text.clear();
         self.split = Default::default();
+    }
+
+    /// Reconsider the retained display window for a newly declared owner.
+    /// This cursor belongs only to rendering, never transport recovery.
+    pub(super) fn select(&mut self, from: u64) {
+        self.next = from;
+        self.reset(from);
     }
 
     pub(super) fn text(&self) -> &str {
@@ -287,6 +301,37 @@ mod tests {
         paths.iter().map(|path| (*path).to_owned()).collect()
     }
 
+    #[test]
+    fn model_selection_rejects_stale_text_but_keeps_historical_tool_output() {
+        let records = vec![
+            (0, paths(&["tools/.model/old/0/reply/0"])),
+            (1, paths(&["tools/old/call/stdout/0"])),
+            (2, paths(&["tools/.model/current/0/reasoning/0"])),
+            (3, paths(&["tools/.model/current/0/reply/0"])),
+            (
+                4,
+                paths(&[
+                    "tools/.model/old/0/restart/1.txt",
+                    "tools/.model/old/0/reply/1",
+                ]),
+            ),
+        ];
+        let tail = OutputTail::default();
+        let history = tail.plan(records.clone(), 5, None);
+        assert_eq!(history.kind, LiveKind::Output);
+        assert_eq!(
+            history.reads,
+            vec![("tools/old/call/stdout/0".into(), false)]
+        );
+        let current = tail.plan(records, 5, Some("tools/.model/current/"));
+        assert_eq!(current.kind, LiveKind::Answer);
+        assert!(!current.restarted);
+        assert_eq!(
+            current.reads,
+            vec![("tools/.model/current/0/reply/0".into(), false)]
+        );
+    }
+
     /// Plans and applies one absorb whose reads return `bytes` in order.
     fn absorb(
         tail: &mut OutputTail,
@@ -294,7 +339,7 @@ mod tests {
         end: u64,
         bytes: &[&[u8]],
     ) -> Vec<String> {
-        let plan = tail.plan(records, end);
+        let plan = tail.plan(records, end, Some("tools/.model/t/"));
         let reads = plan.reads.iter().map(|(path, _)| path.clone()).collect();
         tail.apply(
             plan,
@@ -351,13 +396,19 @@ mod tests {
     #[test]
     fn a_restarted_dispatch_replaces_published_text_before_its_next_delta() {
         let mut tail = OutputTail::default();
-        let old = (0, paths(&["tools/t/attempt-a/reply/0000000000000000"]));
+        let old = (
+            0,
+            paths(&["tools/.model/t/attempt-a/reply/0000000000000000"]),
+        );
         absorb(&mut tail, vec![old], 1, &[b"abandoned"]);
         assert_eq!(tail.text(), "abandoned");
         let restarted = (1, paths(&["tools/.model/t/0/restart/1.txt"]));
         absorb(&mut tail, vec![restarted], 2, &[]);
         assert_eq!((tail.kind(), tail.text()), (LiveKind::Answer, ""));
-        let answer = (2, paths(&["tools/t/attempt-b/reply/0000000000000001"]));
+        let answer = (
+            2,
+            paths(&["tools/.model/t/attempt-b/reply/0000000000000001"]),
+        );
         absorb(&mut tail, vec![answer], 3, &[b"answer"]);
         assert_eq!(tail.text(), "answer");
         let mut reopened = OutputTail::default();
@@ -383,7 +434,7 @@ mod tests {
     #[test]
     fn a_dispatch_shows_its_reasoning_then_only_its_answer() {
         let mut tail = OutputTail::default();
-        let reasoning = (0, paths(&["tools/t/d/reasoning/0"]));
+        let reasoning = (0, paths(&["tools/.model/t/d/reasoning/0"]));
         absorb(&mut tail, vec![reasoning], 1, &[b"weighing"]);
         assert_eq!(
             (tail.kind(), tail.text()),
@@ -391,10 +442,13 @@ mod tests {
         );
         // The answer is its own display; the reasoning chunks are not read
         // into it, though one record announces both.
-        let both = (1, paths(&["tools/t/d/reasoning/1", "tools/t/d/reply/0"]));
+        let both = (
+            1,
+            paths(&["tools/.model/t/d/reasoning/1", "tools/.model/t/d/reply/0"]),
+        );
         assert_eq!(
             absorb(&mut tail, vec![both], 2, &[b"answer"]),
-            vec!["tools/t/d/reply/0".to_owned()]
+            vec!["tools/.model/t/d/reply/0".to_owned()]
         );
         assert_eq!((tail.kind(), tail.text()), (LiveKind::Answer, "answer"));
         // Negative control: a tool call after the answer is tool output.
@@ -427,12 +481,15 @@ mod tests {
             .map(|n| ["a", "\u{e9}", "\u{2713}", "b"][n % 4])
             .collect();
         let files = BTreeMap::from([
-            ("tools/t/d/reply/0".to_owned(), b"earlier".to_vec()),
-            ("tools/t/d/reply/1".to_owned(), answer.clone().into_bytes()),
+            ("tools/.model/t/d/reply/0".to_owned(), b"earlier".to_vec()),
+            (
+                "tools/.model/t/d/reply/1".to_owned(),
+                answer.clone().into_bytes(),
+            ),
         ]);
         let reads = vec![
-            ("tools/t/d/reply/0".to_owned(), false),
-            ("tools/t/d/reply/1".to_owned(), false),
+            ("tools/.model/t/d/reply/0".to_owned(), false),
+            ("tools/.model/t/d/reply/1".to_owned(), false),
         ];
         let calls = Cell::new(0);
         let largest = Cell::new(0);
@@ -456,8 +513,11 @@ mod tests {
         assert!(calls.get() <= 3, "{} reads", calls.get());
         assert!(largest.get() <= 32 * 1024);
         let mut tail = OutputTail::default();
-        let records = vec![(0, paths(&["tools/t/d/reply/0", "tools/t/d/reply/1"]))];
-        let plan = tail.plan(records, 1);
+        let records = vec![(
+            0,
+            paths(&["tools/.model/t/d/reply/0", "tools/.model/t/d/reply/1"]),
+        )];
+        let plan = tail.plan(records, 1, Some("tools/.model/t/"));
         tail.apply(plan, bytes, cut);
         assert_eq!(tail.kind(), LiveKind::Answer);
         assert!(answer.ends_with(tail.text()));

@@ -636,6 +636,7 @@ async fn settled_turns_keep_actions_recorded_before_a_later_provider_failure() -
             .await?;
         assert!(opened.outs.is_empty() && matches!(opened.wait, Wait::Continue));
         state.turn = Some(Progress {
+            output_owner: None,
             inbox: 0,
             checkpoint: opened
                 .checkpoint
@@ -708,6 +709,20 @@ async fn an_approval_pause_keeps_the_operation_and_ignores_other_approvals() -> 
             }
         );
         assert!(first.state.turn.is_some());
+        let owner = *script
+            .operations
+            .lock()
+            .expect("lock")
+            .first()
+            .expect("execution");
+        assert_eq!(
+            first.state.turn.as_ref().and_then(|turn| turn.output_owner),
+            Some(owner)
+        );
+        assert_eq!(
+            first.status.as_ref().and_then(|status| status.output_owner),
+            Some(owner)
+        );
         assert_eq!(first.state.reserved_spawns, u64::from(mode == "team:1"));
         // An unrelated approval does not resume the paused operation.
         let other = step_to_rest(

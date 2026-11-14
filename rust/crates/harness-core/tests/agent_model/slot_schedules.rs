@@ -17,6 +17,7 @@ async fn an_invalid_wait_fails_before_publishing_status_or_effects() -> Result {
     for wait in invalid {
         let (root, mut state) = populated_parent(0).await?;
         state.turn = Some(Progress {
+            output_owner: None,
             inbox: 0,
             checkpoint: Vec::new(),
         });
@@ -56,6 +57,7 @@ async fn an_invalid_wait_fails_before_publishing_status_or_effects() -> Result {
             "invalid wait published unchecked effects"
         );
         StatusRecord {
+            output_owner: None,
             cancelled_input: None,
             child_settlement: None,
             child_wakes: None,
@@ -75,6 +77,7 @@ async fn a_child_finishing_during_pause_cannot_strand_a_recorded_replay() -> Res
     let child = TurnEffect::child(&root, &recorded)?;
     state.open_children.insert(&child).await?;
     state.turn = Some(Progress {
+        output_owner: None,
         inbox: 0,
         checkpoint: Vec::new(),
     });
@@ -168,6 +171,7 @@ async fn admission_schedules_preserve_every_spawn_and_replay() -> Result {
                     .collect();
                 state.phase = Phase::Running;
                 state.turn = Some(Progress {
+                    output_owner: None,
                     inbox: 0,
                     checkpoint: Vec::new(),
                 });

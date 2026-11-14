@@ -401,6 +401,7 @@ fn first_status(
         path: agent.status()?,
         records: vec![
             StatusRecord {
+                output_owner: None,
                 cancelled_input: None,
                 child_settlement: None,
                 child_wakes: None,

@@ -19,8 +19,8 @@ fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
             name: "acyclic.harness.agent.workspace-snapshot".into(),
-            // Freeze review pages and retain deadlines with deferred wait releases.
-            version: "9".into(),
+            // Retain the original live-output owner with the raw turn checkpoint.
+            version: "10".into(),
         });
     &IDENTITY
 }
@@ -122,6 +122,9 @@ struct Encoded {
     /// Version-one immutable workspace snapshot, never embedded table entries.
     #[prost(bytes = "vec", tag = "7")]
     workspace: Vec<u8>,
+    /// Original turn owning shared live model text, not a goal-run identity.
+    #[prost(bytes = "vec", optional, tag = "8")]
+    output_owner: Option<Vec<u8>>,
 }
 
 /// Retains the exact final checkpoint bytes for atomic publication.
@@ -147,6 +150,10 @@ fn encode_head(state: &AgentState, table: &TableRef) -> Result<Vec<u8>, Error> {
         state: super::records::encode_payload(&rest)
             .map_err(|_| Error::Record("agent checkpoint does not encode"))?,
         turn_inbox: turn.as_ref().map(|turn| turn.inbox),
+        output_owner: turn
+            .as_ref()
+            .and_then(|turn| turn.output_owner)
+            .map(|owner| owner.into_bytes().to_vec()),
         turn: turn.map(|turn| turn.checkpoint),
         workspace: crate::contract::canonical_json_bytes(table)
             .map_err(|_| Error::Record("workspace snapshot reference does not encode"))?,
@@ -166,9 +173,22 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Head, Error> {
     let table: TableRef = serde_json::from_slice(&encoded.workspace).map_err(|_| malformed())?;
     table.check().map_err(|_| malformed())?;
     state.parent = state.path.parent();
-    state.turn = match (encoded.turn, encoded.turn_inbox) {
-        (Some(checkpoint), Some(inbox)) => Some(super::Progress { inbox, checkpoint }),
-        (None, None) => None,
+    let output_owner = encoded
+        .output_owner
+        .map(|owner| {
+            owner
+                .try_into()
+                .map(crate::OperationId::from_bytes)
+                .map_err(|_| malformed())
+        })
+        .transpose()?;
+    state.turn = match (encoded.turn, encoded.turn_inbox, output_owner) {
+        (Some(checkpoint), Some(inbox), output_owner) => Some(super::Progress {
+            inbox,
+            checkpoint,
+            output_owner,
+        }),
+        (None, None, None) => None,
         _ => return Err(malformed()),
     };
     Ok(Head {
@@ -217,6 +237,19 @@ pub(super) fn check_wire(bytes: &[u8]) {
         changed.turn_inbox = (!retained_body).then_some(0);
         refuses(changed, "checkpoint admitted an incomplete turn");
     }
+    for length in [0, 15, 17] {
+        let mut changed = encoded.clone();
+        changed.output_owner = Some(vec![0; length]);
+        refuses(changed, "checkpoint admitted a malformed output owner");
+    }
+    let mut changed = encoded.clone();
+    changed.turn = None;
+    changed.turn_inbox = None;
+    changed.output_owner = Some(vec![0; 16]);
+    refuses(
+        changed,
+        "checkpoint admitted an output owner without a turn",
+    );
 }
 
 #[cfg(test)]
@@ -247,6 +280,49 @@ mod tests {
         let mut bytes = [0xff; 16];
         bytes[..8].copy_from_slice(&n.to_le_bytes());
         AgentId::from_bytes(bytes)
+    }
+
+    #[test]
+    fn retained_output_owners_roundtrip_with_their_original_turn() -> Result<(), Error> {
+        let adopted = ForkAdopted {
+            agent: id(3),
+            parent: None,
+            profile: None,
+            forked_at: 0,
+            conversation_tail: 0,
+            checkpoint: None,
+            volumes: Vec::new(),
+            brief: None,
+            policy: None,
+        };
+        let mut state = AgentState::adopted(AgentPath::root(&adopted.agent), &adopted)?;
+        let owner = crate::OperationId::from_bytes([35; 16]);
+        state.phase = Phase::Running;
+        state.turn = Some(super::super::Progress {
+            inbox: 7,
+            checkpoint: vec![0, 1, 255],
+            output_owner: Some(owner),
+        });
+        let encoded = encode(&state)?;
+        assert_eq!(decode(&encoded)?.restore(Vec::new())?, state);
+        check_wire(&encoded);
+        let status = StatusRecord {
+            output_owner: Some(owner),
+            cancelled_input: None,
+            child_settlement: None,
+            child_wakes: None,
+            phase: Phase::Running,
+            cursor: 8,
+            conversation: 2,
+        };
+        assert_eq!(StatusRecord::decode(&status.encode()?)?, status);
+        let mut settled = status;
+        settled.phase = Phase::Idle;
+        assert!(
+            settled.encode().is_err(),
+            "settlement must retire the live owner"
+        );
+        Ok(())
     }
 
     /// The widest name, label or path of `bytes` bytes: none admits a control
@@ -564,6 +640,7 @@ mod tests {
         // Statuses and conversation entries.
         for outcome in outcomes() {
             StatusRecord {
+                output_owner: None,
                 cancelled_input: None,
                 child_settlement: None,
                 child_wakes: None,
@@ -815,7 +892,7 @@ mod tests {
                 message: widest_text(MAX_MESSAGE_BYTES),
             }]);
             for phase in phases.into_iter().chain(record_outcomes.map(|outcome| Phase::Done { outcome })) {
-                let record = StatusRecord { cancelled_input: None, child_settlement: Some(crate::agent::ChildSettlement { child: id(u64::MAX), settled_at_micros: u64::MAX }), child_wakes: Some(crate::agent::ChildWakes { from: 0, until: u64::MAX, woke_at_micros: u64::MAX }), phase, cursor: u64::MAX, conversation: u64::MAX };
+                let record = StatusRecord { output_owner: phase.in_turn().then_some(crate::OperationId::from_bytes([255; 16])), cancelled_input: None, child_settlement: Some(crate::agent::ChildSettlement { child: id(u64::MAX), settled_at_micros: u64::MAX }), child_wakes: Some(crate::agent::ChildWakes { from: 0, until: u64::MAX, woke_at_micros: u64::MAX }), phase, cursor: u64::MAX, conversation: u64::MAX };
                 let worst = assert_record_bound(&record);
                 let mut sample: StatusRecord = varied(&record, name, text);
                 sample.cursor = cursor;
@@ -834,6 +911,7 @@ mod tests {
     fn waiting_host_status_requires_a_bounded_name() {
         for host in [String::new(), widest(MAX_INTENT_BYTES + 1), "\0".into()] {
             let record = StatusRecord {
+                output_owner: None,
                 cancelled_input: None,
                 child_settlement: None,
                 child_wakes: None,
@@ -847,6 +925,7 @@ mod tests {
             );
         }
         let record = StatusRecord {
+            output_owner: None,
             cancelled_input: None,
             child_settlement: None,
             child_wakes: None,

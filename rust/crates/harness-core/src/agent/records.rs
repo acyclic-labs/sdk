@@ -19,10 +19,10 @@ pub const MAX_RECORD_BYTES: usize = 56 * 1024;
 pub const MAX_INTENT_BYTES: usize = 128;
 /// Inline failure packing threshold; longer terminal text uses a Diagnostic.
 pub const MAX_MESSAGE_BYTES: usize = 4 * 1024;
-/// Version-five records require input-scoped cancellation and selected-input journal policy.
+/// Version-six records retain original live-output ownership with turn status.
 /// Other formats are refused whole;
 /// sessions must start fresh, with no migration or compatibility reader.
-pub const RECORD_VERSION: u32 = 5;
+pub const RECORD_VERSION: u32 = 6;
 
 /// Version-one creation event in an agent's append-only membership stream.
 /// The first event names the owner; subsequent events name its direct children.
@@ -783,6 +783,11 @@ impl ChildWakes {
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(deny_unknown_fields)]
 pub struct StatusRecord {
+    /// Original active turn owning live model text. Its conversation frontier
+    /// below retires this owner once that turn's settled entry is observed.
+    #[cfg_attr(feature = "wasm", tsify(type = "string", optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_owner: Option<crate::OperationId>,
     /// Exact input cancelled by this transition, independently of agent phase.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancelled_input: Option<u64>,
@@ -991,6 +996,9 @@ fn check_sender(sender: &Sender) -> Result<(), Error> {
 
 impl AgentRecord for StatusRecord {
     fn check(&self) -> Result<(), Error> {
+        if self.output_owner.is_some() && !self.phase.in_turn() {
+            return Err(Error::Record("settled status retains an output owner"));
+        }
         match &self.phase {
             Phase::Done { outcome } => check_outcome(outcome),
             Phase::WaitingHost { host } => check_text(host),

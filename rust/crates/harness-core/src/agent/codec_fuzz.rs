@@ -398,6 +398,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
             (
                 "status",
                 StatusRecord {
+                    output_owner: None,
                     cancelled_input: None,
                     child_settlement: None,
                     child_wakes: None,
@@ -600,6 +601,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
                 binding,
             };
             let status = StatusRecord {
+                output_owner: Some(crate::OperationId::from_bytes([21; 16])),
                 cancelled_input: None,
                 child_settlement: None,
                 child_wakes: None,
@@ -636,6 +638,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
         state.need = 2;
         state.reserved_spawns = 3;
         state.turn = Some(Progress {
+            output_owner: Some(crate::OperationId::from_bytes([21; 16])),
             inbox: 17,
             checkpoint: vec![0, 1, 255],
         });
@@ -696,6 +699,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
         seeds.push((
             "complete-diagnostic-status-v2",
             written(&StatusRecord {
+                output_owner: None,
                 cancelled_input: None,
                 child_settlement: None,
                 child_wakes: None,

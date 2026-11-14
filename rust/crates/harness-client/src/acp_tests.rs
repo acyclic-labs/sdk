@@ -153,6 +153,7 @@ async fn editor_ingress_keeps_original_target_context_and_reconnect_cursor()
     assert!(matches!(call.command(), AgentCommand::Cancel {agent: target, ..} if target == &agent));
 
     let outcome = StatusRecord {
+        output_owner: None,
         cancelled_input: None,
         child_settlement: None,
         child_wakes: None,
@@ -173,6 +174,7 @@ async fn editor_ingress_keeps_original_target_context_and_reconnect_cursor()
     drop(editor);
     let mut editor = attachment(memory.clone(), agent.clone(), 1)?;
     let next = StatusRecord {
+        output_owner: None,
         cancelled_input: None,
         child_settlement: None,
         child_wakes: None,
@@ -229,6 +231,7 @@ async fn pending_context(
     let mut prepared = core::pin::pin!(prepared);
     assert!(futures::poll!(&mut prepared).is_pending());
     let running = StatusRecord {
+        output_owner: None,
         cancelled_input: None,
         child_settlement: None,
         child_wakes: None,

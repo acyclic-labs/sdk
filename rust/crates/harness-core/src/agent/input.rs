@@ -123,6 +123,10 @@ pub struct Queued {
 pub struct Progress {
     /// Inbox sequence of the turn's starting input.
     pub inbox: u64,
+    /// Original turn owning shared live model output, declared before I/O.
+    /// Custom drivers without that output retain no owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_owner: Option<crate::OperationId>,
     /// Turn driver checkpoint for the next step.
     pub checkpoint: Vec<u8>,
 }

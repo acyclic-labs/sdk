@@ -24,6 +24,7 @@ fn agent(n: u128) -> AgentPath {
 }
 fn status(phase: Phase) -> StatusRecord {
     StatusRecord {
+        output_owner: None,
         cancelled_input: None,
         child_settlement: None,
         child_wakes: None,

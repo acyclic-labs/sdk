@@ -263,7 +263,8 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                 builder.condition(CommitCondition::Absent { path: path.clone() })?;
                 builder.append(path, super::goal::Completed { sequence }.encode()?);
             }
-            Out::Checkpoint
+            Out::OutputOwner(_)
+            | Out::Checkpoint
             | Out::Announced(_)
             | Out::Steered(_)
             | Out::Notices(_)

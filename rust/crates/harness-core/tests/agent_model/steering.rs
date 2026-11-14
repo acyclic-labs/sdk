@@ -69,6 +69,7 @@ async fn steering_review_sends_skip_closed_recipients() -> Result {
             outs,
             // Soft delivery accompanies the sender's own durable publication.
             status: Some(StatusRecord {
+                output_owner: None,
                 cancelled_input: None,
                 child_settlement: None,
                 child_wakes: None,

@@ -1338,10 +1338,17 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
             else {
                 return Ok(cancelled_open(agent, inbox));
             };
-            if turn_announcements(agent)?.is_none() {
+            if turn_announcements(agent)?.is_none()
+                || agent
+                    .turn
+                    .as_ref()
+                    .and_then(|progress| progress.output_owner)
+                    .is_none()
+            {
                 // Freeze even an empty delta before a model or tool can change
                 // its sources. The actor commit makes crash recovery reopen
-                // the same selection instead of rebuilding it from new heads.
+                // the same selection instead of rebuilding it from new heads,
+                // and declares this turn's output owner before any model I/O.
                 return Ok(TurnStep {
                     checkpoint: Some(encode(&Checkpoint {
                         inbox,
@@ -1351,7 +1358,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         opened: true,
                         notices,
                     })?),
-                    outs: Vec::new(),
+                    outs: vec![Out::OutputOwner(turn)],
                     wait: Wait::Continue,
                     drops: None,
                 });

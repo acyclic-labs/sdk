@@ -438,6 +438,9 @@ impl AgentState {
 /// An effect of one step, lowered into the step's single commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Out {
+    /// Declare the original live-output owner in the same commit as the
+    /// driver's first retained checkpoint, before model or tool I/O.
+    OutputOwner(crate::OperationId),
     /// Stage complete original terminal text before its reference can commit.
     Diagnostic {
         /// Immutable identity on the failed agent's original stream subtree.
@@ -834,7 +837,7 @@ impl PreparedStep {
 struct StepDraft {
     state: AgentState,
     outs: Vec<Out>,
-    previous: (Phase, u64),
+    previous: (Phase, u64, Option<crate::OperationId>),
     cursor: u64,
     child_wakes: Option<ChildWakes>,
     child_settlement: Option<ChildSettlement>,
@@ -1016,8 +1019,8 @@ async fn draft_step<T: TurnDriver + ?Sized>(
     );
     // The last published phase: the creating commit published `Idle`, and
     // admitting a record (a cancel) can itself change the phase.
-    let previous = state.as_ref().map_or((Phase::Idle, 0), |state| {
-        (published(state), state.dropped_before)
+    let previous = state.as_ref().map_or((Phase::Idle, 0, None), |state| {
+        (published(state), state.dropped_before, output_owner(state))
     });
     let mut child_settlement = None;
     let mut state = match (state, wake) {
@@ -1168,7 +1171,11 @@ pub(super) async fn failed_step(
         ) => AgentState::adopted(path.clone(), &adopted)?,
         _ => return Err(Error::Record("first agent input is not ForkAdopted")),
     };
-    let previous = (published(&state), state.dropped_before);
+    let previous = (
+        published(&state),
+        state.dropped_before,
+        output_owner(&state),
+    );
     let mut outs = Vec::new();
     shed(&mut state, &mut outs, failure);
     let step = finalize_step(state, outs, &previous, cursor, None, None)?;
@@ -1197,7 +1204,7 @@ fn wake_input(state: &AgentState) -> Option<u64> {
 fn finalize_step(
     mut state: AgentState,
     mut outs: Vec<Out>,
-    previous: &(Phase, u64),
+    previous: &(Phase, u64, Option<crate::OperationId>),
     cursor: u64,
     child_wakes: Option<ChildWakes>,
     child_settlement: Option<ChildSettlement>,
@@ -1279,6 +1286,7 @@ fn finalize_step(
             Out::Announced(documents) => state.announcements.extend(documents.iter().copied()),
             Out::Notices(selection) => selection.consume(&mut state)?,
             Out::Diagnostic { .. }
+            | Out::OutputOwner(_)
             | Out::InputCancelled { .. }
             | Out::Send { .. }
             | Out::Commit(_)
@@ -1319,13 +1327,16 @@ fn finalize_step(
         Out::InputCancelled { input, .. } => Some(*input),
         _ => None,
     });
+    let owner = output_owner(&state);
     let status = (phase != previous.0
+        || owner != previous.2
         || cancelled_input.is_some()
         || state.dropped_before != previous.1
         || child_wakes.is_some()
         || child_settlement.is_some()
         || appended != 0)
         .then_some(StatusRecord {
+            output_owner: owner,
             cancelled_input,
             child_settlement,
             child_wakes,
@@ -1375,6 +1386,10 @@ fn control(state: &AgentState) -> Control {
         reported: state.reported,
         turn: state.turn.is_some(),
     }
+}
+
+fn output_owner(state: &AgentState) -> Option<crate::OperationId> {
+    state.turn.as_ref().and_then(|turn| turn.output_owner)
 }
 
 /// Folds one inbox record into the state.
@@ -1558,7 +1573,8 @@ fn admissible(out: &Out, path: &AgentPath) -> bool {
                 && super::AgentRecord::check(&closed).is_ok()
                 && super::records::fits_frame(&closed)
         }
-        Out::Checkpoint
+        Out::OutputOwner(_)
+        | Out::Checkpoint
         | Out::Announced(_)
         | Out::Notices(_)
         | Out::TurnDone { .. }
@@ -1573,11 +1589,11 @@ fn admissible(out: &Out, path: &AgentPath) -> bool {
 fn admit_wait(
     wait: Wait,
     state: &AgentState,
-    cursor: u64,
-    conversation: u64,
+    position: (u64, u64, Option<crate::OperationId>),
     child_wakes: &Option<ChildWakes>,
     child_settlement: Option<&ChildSettlement>,
 ) -> Option<(Wait, Option<Out>, Option<Out>)> {
+    let (cursor, conversation, owner) = position;
     let (phase, staged) = match wait {
         Wait::Host(host) if super::records::check_text(&host).is_ok() => {
             (Phase::WaitingHost { host }, None)
@@ -1603,6 +1619,7 @@ fn admit_wait(
         wait => return Some((wait, None, None)),
     };
     let status = StatusRecord {
+        output_owner: owner.filter(|_| phase.in_turn()),
         cancelled_input: None,
         phase,
         cursor,
@@ -1834,7 +1851,23 @@ async fn run<T: TurnDriver + ?Sized>(
         }
     }
     let base_conversation = conversation;
+    let owner = turn
+        .outs
+        .iter()
+        .find_map(|out| match out {
+            Out::OutputOwner(owner) => Some(*owner),
+            _ => None,
+        })
+        .or_else(|| output_owner(state));
+    let mut declared_owner = None;
     let valid = turn.outs.iter().all(|out| {
+        if let Out::OutputOwner(owner) = out {
+            if declared_owner.replace(*owner).is_some()
+                || output_owner(state).is_some_and(|previous| previous != *owner)
+            {
+                return false;
+            }
+        }
         if !admissible(out, &state.path) {
             return false;
         }
@@ -1850,8 +1883,7 @@ async fn run<T: TurnDriver + ?Sized>(
         admit_wait(
             turn.wait,
             state,
-            cursor,
-            conversation,
+            (cursor, conversation, owner),
             child_wakes,
             child_settlement,
         )
@@ -1869,8 +1901,7 @@ async fn run<T: TurnDriver + ?Sized>(
                     message: INADMISSIBLE_EFFECT.into(),
                 }),
                 state,
-                cursor,
-                base_conversation,
+                (cursor, base_conversation, None),
                 child_wakes,
                 child_settlement,
             )
@@ -1890,7 +1921,11 @@ async fn run<T: TurnDriver + ?Sized>(
         })
         .unwrap_or(0);
     let spawned = outs.len();
-    outs.extend(turn.outs);
+    outs.extend(
+        turn.outs
+            .into_iter()
+            .filter(|out| !matches!(out, Out::OutputOwner(_))),
+    );
     outs.extend(staged);
     if matches!(wait, Wait::Done(AgentOutcome::Archived)) {
         // The same step can admit children before observing a stop. Include
@@ -1991,6 +2026,7 @@ async fn run<T: TurnDriver + ?Sized>(
     control_trace::record(state, Decision::Settle(before, wait, (next, send)));
     state.turn = started.filter(|_| next.turn).map(|inbox| Progress {
         inbox,
+        output_owner: owner,
         checkpoint: turn.checkpoint.unwrap_or_default(),
     });
     state.reported = next.reported;
