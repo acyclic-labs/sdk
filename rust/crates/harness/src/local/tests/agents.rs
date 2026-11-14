@@ -2019,10 +2019,34 @@ async fn follow_tool_output(
     observation(harness, &reader, path).await?;
     // From after the settled turn: its output stays the newest call's.
     let mut observer = conversation(harness).await?.observe(Some(1)).await?;
+    // Rendering before the first delivery must not turn an initial zero
+    // storage watermark into proof that the tools backfill is complete.
+    observer.absorb().await?;
+    let mut opening = None;
+    let mut opening_seen = false;
     loop {
-        if matches!(observer.next().await?, super::super::Event::Delta) {
+        let (event, delivery) = observer.next_projected().await?;
+        if delivery.resource.starts_with("fs:/") {
+            let drain = opening.get_or_insert_with(|| {
+                acyclic_harness_client::EventDrain::new([(delivery.resource.clone(), 0)])
+            });
+            if let Some(acyclic_stream::wire::session_frame::Body::Watermark(mark)) =
+                &delivery.frame.body
+                && let Some(tail) = mark.opening_tail
+            {
+                assert!(tail > 0, "the staged output must belong to the opening cut");
+                opening_seen = true;
+            }
+            drain.accepted(&delivery);
+        }
+        if matches!(event?, Some(super::super::Event::Delta)) {
             observer.absorb().await?;
+            if opening.as_ref().is_none_or(|drain| !drain.complete()) {
+                assert_eq!(observer.live().1, "", "opening history is not live output");
+            }
             if observer.live().1.contains("staged") {
+                assert!(opening_seen, "the original opening event must be observed");
+                assert!(opening.as_ref().is_some_and(|drain| drain.complete()));
                 break;
             }
         }

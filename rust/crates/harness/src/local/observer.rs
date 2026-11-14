@@ -12,7 +12,8 @@ use crate::{
     agent::{AgentPath, ConversationEntry, StatusRecord},
 };
 use acyclic_harness_client::{
-    AgentClient, AgentClientError, AgentEvent, AgentSelection, ReadTarget, WireSessionError,
+    AgentClient, AgentClientError, AgentEvent, AgentSelection, EventDrain, ReadTarget,
+    WireSessionError,
 };
 use acyclic_stream::{StreamPath, wire};
 
@@ -58,6 +59,8 @@ pub struct Observer {
     /// A phase-aware opening already supplied the state through this checkpoint.
     /// Replayed statuses must not replace that opening state.
     status_floor: Option<u64>,
+    /// The original tools opening cut, retired once its backfill is consumed.
+    output_opening: EventDrain,
     tail: OutputTail,
 }
 
@@ -140,25 +143,25 @@ impl Observer {
             None => connection.controls.observe(selection),
         }
         .map_err(storage)?;
+        let output_from = match projection {
+            Some(projection) => projection
+                .cursor(&connection.tools)
+                .wire()
+                .map_err(storage)?,
+            None => wire::SessionCursor::default(),
+        };
+        let output_opening = EventDrain::new([(connection.tools.clone(), output_from.next)]);
         client
             .open_resource(wire::SessionSubscription {
                 credential: connection.controls.observation_credential(),
                 filter: None,
                 channel: None,
-                resume: Some(match projection {
-                    Some(projection) => projection
-                        .cursor(&connection.tools)
-                        .wire()
-                        .map_err(storage)?,
-                    None => wire::SessionCursor {
-                        next: 0,
-                        opaque: Default::default(),
-                    },
-                }),
+                resume: Some(output_from),
                 kind: Some(wire::session_subscription::Kind::Follow(
                     wire::SessionFollow {
                         resource: connection.tools.clone(),
                         delivery: wire::SessionDelivery::All as i32,
+                        opening_cut: true,
                         ..Default::default()
                     },
                 )),
@@ -173,6 +176,7 @@ impl Observer {
             input_through: 0,
             next_turn: from,
             status_floor: None,
+            output_opening,
             tail: OutputTail::default(),
             connection: connection.clone(),
             agent,
@@ -200,7 +204,16 @@ impl Observer {
             .client
             .decode_delivery(&delivery)
             .map_err(|error| self.follow_error(error))
-            .and_then(|event| self.apply(event, after));
+            .and_then(|event| {
+                let was_opening = !self.output_opening.complete();
+                self.output_opening.accepted(&delivery);
+                let event = self.apply(event, after)?;
+                // A filtered progress delivery may finish backfill without a
+                // data record. Wake the display for that original cut too.
+                Ok(event.or_else(|| {
+                    (was_opening && self.output_opening.complete()).then_some(Event::Delta)
+                }))
+            });
         Ok((event, delivery))
     }
 
@@ -336,6 +349,9 @@ impl Observer {
     /// # Errors
     /// Fails when an announced chunk cannot be read.
     pub async fn absorb(&mut self) -> Result<()> {
+        if !self.output_opening.complete() {
+            return Ok(());
+        }
         let view = self.client.resource_view(&self.resource).map_err(storage)?;
         let next = self.tail.next();
         let mut records = Vec::new();
@@ -350,12 +366,7 @@ impl Observer {
                 .collect();
             records.push((record.sequence, paths));
         }
-        let Some(plan) = self
-            .tail
-            .plan(records, view.next_sequence(), view.watermarks().accepted)
-        else {
-            return Ok(());
-        };
+        let plan = self.tail.plan(records, view.next_sequence());
         // Only the displayed tail is read, in bounded ranges, however large
         // the announced files are.
         let (connection, agent) = (&self.connection, &self.agent);

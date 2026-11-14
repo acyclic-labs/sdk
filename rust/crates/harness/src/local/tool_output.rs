@@ -24,9 +24,6 @@ const TAIL_BYTES: usize = 16 * 1024;
 pub(super) struct OutputTail {
     /// Next change record not yet absorbed.
     next: u64,
-    /// The opened follow's replayed history ends here; nothing is chosen
-    /// before it is drained, so a reopen reads only the newest call.
-    replayed: Option<u64>,
     /// `tools/{turn}/{operation}` of the newest call, or
     /// `tools/.model/{turn}/{dispatch}/{reply|reasoning}` of the newest model text.
     call: Option<String>,
@@ -54,17 +51,12 @@ impl OutputTail {
 
     /// Plans reading the newest call's chunks that `records`, each a
     /// sequence and its changed paths, announce at or after [`Self::next`],
-    /// up to `end`. `accepted` is the follow's accepted watermark; until the
-    /// first one opened is drained this returns `None` and plans nothing.
+    /// up to `end`, after the caller consumed its original opening cut.
     pub(super) fn plan(
-        &mut self,
+        &self,
         records: impl IntoIterator<Item = (u64, Vec<String>)>,
         end: u64,
-        accepted: u64,
-    ) -> Option<Plan> {
-        if end < *self.replayed.get_or_insert(accepted) {
-            return None;
-        }
+    ) -> Plan {
         let mut call = None;
         let mut kind = LiveKind::Output;
         let mut chunks = Vec::new();
@@ -114,13 +106,13 @@ impl OutputTail {
             .filter(|(owner, path, _)| call.as_deref() == Some(&path[..*owner]))
             .map(|(_, path, stderr)| (path, stderr))
             .collect();
-        Some(Plan {
+        Plan {
             end,
             call,
             kind,
             restarted,
             reads,
-        })
+        }
     }
 
     /// Commits `plan` once every one of its reads settled: `bytes` holds the
@@ -300,21 +292,20 @@ mod tests {
         tail: &mut OutputTail,
         records: Vec<(u64, Vec<String>)>,
         end: u64,
-        accepted: u64,
         bytes: &[&[u8]],
-    ) -> Option<Vec<String>> {
-        let plan = tail.plan(records, end, accepted)?;
+    ) -> Vec<String> {
+        let plan = tail.plan(records, end);
         let reads = plan.reads.iter().map(|(path, _)| path.clone()).collect();
         tail.apply(
             plan,
             bytes.iter().map(|bytes| bytes.to_vec()).collect(),
             false,
         );
-        Some(reads)
+        reads
     }
 
     #[test]
-    fn a_reopen_drains_replayed_history_and_reads_only_the_newest_call() {
+    fn consumed_opening_history_reads_only_the_newest_call() {
         let mut tail = OutputTail::default();
         let old = (
             0,
@@ -324,17 +315,14 @@ mod tests {
             1,
             paths(&["tools/t2/b/request.json", "tools/t2/b/stdout/0"]),
         );
-        // The first frame replays only the old call; the follow opened at 2.
-        assert!(absorb(&mut tail, vec![old.clone()], 1, 2, &[]).is_none());
-        assert_eq!(tail.next(), 0);
         assert_eq!(
-            absorb(&mut tail, vec![old, new], 2, 2, &[b"new"]),
-            Some(vec!["tools/t2/b/stdout/0".to_owned()])
+            absorb(&mut tail, vec![old, new], 2, &[b"new"]),
+            vec!["tools/t2/b/stdout/0".to_owned()]
         );
         assert_eq!(tail.text(), "new");
         // Once drained, live records are absorbed as they arrive.
         let live = (2, paths(&["tools/t2/b/stdout/1"]));
-        assert!(absorb(&mut tail, vec![live], 3, 4, &[b" more"]).is_some());
+        absorb(&mut tail, vec![live], 3, &[b" more"]);
         assert_eq!(tail.text(), "new more");
     }
 
@@ -342,21 +330,21 @@ mod tests {
     fn a_settled_turn_clears_the_display_and_skips_its_records() {
         let mut tail = OutputTail::default();
         let first = (0, paths(&["tools/t1/a/stdout/0"]));
-        assert!(absorb(&mut tail, vec![first.clone()], 1, 1, &[b"old"]).is_some());
+        absorb(&mut tail, vec![first.clone()], 1, &[b"old"]);
         let late = (1, paths(&["tools/t1/a/stdout/1"]));
         tail.reset(2);
         assert_eq!(tail.text(), "");
         // Records the settled turn announced are not read again.
         assert_eq!(
-            absorb(&mut tail, vec![first, late], 2, 2, &[]),
-            Some(Vec::new())
+            absorb(&mut tail, vec![first, late], 2, &[]),
+            Vec::<String>::new()
         );
         assert_eq!(tail.text(), "");
         // The next turn's call starts its own display.
         let next = (2, paths(&["tools/t2/b/request.json"]));
-        assert!(absorb(&mut tail, vec![next], 3, 3, &[]).is_some());
+        absorb(&mut tail, vec![next], 3, &[]);
         let output = (3, paths(&["tools/t2/b/stdout/0"]));
-        assert!(absorb(&mut tail, vec![output], 4, 4, &[b"fresh"]).is_some());
+        absorb(&mut tail, vec![output], 4, &[b"fresh"]);
         assert_eq!(tail.text(), "fresh");
     }
 
@@ -364,13 +352,13 @@ mod tests {
     fn a_restarted_dispatch_replaces_published_text_before_its_next_delta() {
         let mut tail = OutputTail::default();
         let old = (0, paths(&["tools/t/attempt-a/reply/0000000000000000"]));
-        absorb(&mut tail, vec![old], 1, 1, &[b"abandoned"]).unwrap();
+        absorb(&mut tail, vec![old], 1, &[b"abandoned"]);
         assert_eq!(tail.text(), "abandoned");
         let restarted = (1, paths(&["tools/.model/t/0/restart/1.txt"]));
-        absorb(&mut tail, vec![restarted], 2, 2, &[]).unwrap();
+        absorb(&mut tail, vec![restarted], 2, &[]);
         assert_eq!((tail.kind(), tail.text()), (LiveKind::Answer, ""));
         let answer = (2, paths(&["tools/t/attempt-b/reply/0000000000000001"]));
-        absorb(&mut tail, vec![answer], 3, 3, &[b"answer"]).unwrap();
+        absorb(&mut tail, vec![answer], 3, &[b"answer"]);
         assert_eq!(tail.text(), "answer");
         let mut reopened = OutputTail::default();
         let same = "tools/.model/t/0/reply/";
@@ -380,15 +368,15 @@ mod tests {
             (2, paths(&[&format!("{same}2.txt")])),
         ];
         assert_eq!(
-            absorb(&mut reopened, records, 3, 3, &[b"answer"]),
-            Some(vec![format!("{same}2.txt")])
+            absorb(&mut reopened, records, 3, &[b"answer"]),
+            vec![format!("{same}2.txt")]
         );
         assert_eq!(reopened.text(), "answer");
         let records = vec![
             (3, paths(&["tools/.model/t/0/restart/3.txt"])),
             (4, paths(&[&format!("{same}4.txt")])),
         ];
-        absorb(&mut reopened, records, 5, 5, &[b"fresh"]).unwrap();
+        absorb(&mut reopened, records, 5, &[b"fresh"]);
         assert_eq!(reopened.text(), "fresh");
     }
 
@@ -396,7 +384,7 @@ mod tests {
     fn a_dispatch_shows_its_reasoning_then_only_its_answer() {
         let mut tail = OutputTail::default();
         let reasoning = (0, paths(&["tools/t/d/reasoning/0"]));
-        assert!(absorb(&mut tail, vec![reasoning], 1, 1, &[b"weighing"]).is_some());
+        absorb(&mut tail, vec![reasoning], 1, &[b"weighing"]);
         assert_eq!(
             (tail.kind(), tail.text()),
             (LiveKind::Reasoning, "weighing")
@@ -405,13 +393,13 @@ mod tests {
         // into it, though one record announces both.
         let both = (1, paths(&["tools/t/d/reasoning/1", "tools/t/d/reply/0"]));
         assert_eq!(
-            absorb(&mut tail, vec![both], 2, 2, &[b"answer"]),
-            Some(vec!["tools/t/d/reply/0".to_owned()])
+            absorb(&mut tail, vec![both], 2, &[b"answer"]),
+            vec!["tools/t/d/reply/0".to_owned()]
         );
         assert_eq!((tail.kind(), tail.text()), (LiveKind::Answer, "answer"));
         // Negative control: a tool call after the answer is tool output.
         let call = (2, paths(&["tools/t/c/request.json", "tools/t/c/stdout/0"]));
-        assert!(absorb(&mut tail, vec![call], 3, 3, &[b"ran"]).is_some());
+        absorb(&mut tail, vec![call], 3, &[b"ran"]);
         assert_eq!((tail.kind(), tail.text()), (LiveKind::Output, "ran"));
     }
 
@@ -420,14 +408,14 @@ mod tests {
         let mut tail = OutputTail::default();
         let bytes = "é✓".as_bytes();
         let records = vec![(0, paths(&["tools/t/a/stdout/0", "tools/t/a/stdout/1"]))];
-        assert!(absorb(&mut tail, records, 1, 1, &[&bytes[..1], &bytes[1..3]]).is_some());
+        absorb(&mut tail, records, 1, &[&bytes[..1], &bytes[1..3]]);
         assert_eq!(tail.text(), "é");
         let records = vec![(1, paths(&["tools/t/a/stdout/2"]))];
-        assert!(absorb(&mut tail, records, 2, 2, &[&bytes[3..]]).is_some());
+        absorb(&mut tail, records, 2, &[&bytes[3..]]);
         assert_eq!(tail.text(), "é✓");
         // An invalid byte is replaced, and decoding resumes after it.
         let records = vec![(2, paths(&["tools/t/a/stderr/0"]))];
-        assert!(absorb(&mut tail, records, 3, 3, &[b"\xffok"]).is_some());
+        absorb(&mut tail, records, 3, &[b"\xffok"]);
         assert_eq!(tail.text(), "é✓\u{fffd}ok");
     }
 
@@ -469,9 +457,7 @@ mod tests {
         assert!(largest.get() <= 32 * 1024);
         let mut tail = OutputTail::default();
         let records = vec![(0, paths(&["tools/t/d/reply/0", "tools/t/d/reply/1"]))];
-        let Some(plan) = tail.plan(records, 1, 1) else {
-            panic!("the drained follow plans its reads");
-        };
+        let plan = tail.plan(records, 1);
         tail.apply(plan, bytes, cut);
         assert_eq!(tail.kind(), LiveKind::Answer);
         assert!(answer.ends_with(tail.text()));
