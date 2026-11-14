@@ -157,3 +157,34 @@ fn persistent_physical_retirement() -> Result<(), &'static str> {
     );
     Ok(())
 }
+
+/// Each key sets one more trailing bit, so every insertion extends one spine:
+/// the tree reaches the maximum height its key width allows.
+fn spine<const N: usize>(height: usize) -> Result<usize, &'static str> {
+    let mut work = Work::default();
+    let mut tree = PersistentIndex::<usize, Allocation, N>::default();
+    tree = tree.insert([0; N], 0, &mut work)?;
+    for bit in 0..height {
+        let mut key = [0; N];
+        key[bit / 8] = 0x80 >> (bit % 8);
+        tree = tree.insert(key, bit + 1, &mut work)?;
+    }
+    let depth = tree.depth();
+    drop(tree);
+    assert_eq!(work.live.get(), 0, "every node retires with its funding");
+    Ok(depth)
+}
+
+#[test]
+fn insertion_and_retirement_stack_is_independent_of_width_and_height() {
+    // Far below one 8 * N word array for the record-key width (66 KiB).
+    std::thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(|| {
+            assert_eq!(spine::<64>(8 * 64), Ok(8 * 64));
+            assert_eq!(spine::<1032>(64), Ok(64));
+        })
+        .expect("small-stack thread starts")
+        .join()
+        .expect("insertion and retirement fit a small stack");
+}

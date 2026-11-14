@@ -113,54 +113,71 @@ impl<V, A, const N: usize, C> Clone for Node<V, A, N, C> {
 
 impl<V, A, const N: usize, C> Drop for Node<V, A, N, C> {
     fn drop(&mut self) {
-        // All references are these private handles; there are no weak handles.
-        // into_inner elects exactly one last owner even on concurrent drops,
-        // and releases the physical Arc backing before returning its body.
-        // Its token therefore refunds after both backing and value retirement.
-        let Some(body) = self.0.take().and_then(Arc::into_inner) else {
-            return;
-        };
-        if matches!(body.kind, Kind::Leaf(_)) {
-            return;
-        }
-        // At most one sibling per strictly increasing branch coordinate.
-        // Physical retirement needs no allocator or fallible admission, even
-        // for wide adversarial keys or concurrently released shared roots.
-        let mut pending = [const { [const { None }; 8] }; N];
-        let pending = pending.as_flattened_mut();
-        let mut depth = 0;
-        let mut current = Some(body);
+        // Retirement keeps constant stack and needs no allocator or fallible
+        // admission, whatever the key width or the tree's height. A uniquely
+        // held branch whose high child must wait is threaded onto `pending`
+        // through its own low slot; its low child is retired next. A pending
+        // branch's high child resumes once the low subtree is gone.
+        let mut current = self.0.take();
+        let mut pending: Option<Arc<Body<V, A, N, C>>> = None;
         loop {
-            if let Some(mut body) = current.take() {
-                if let Kind::Branch { low, high, .. } = &mut body.kind {
-                    if let Some(upper) = high.root.take() {
-                        *pending.get_mut(depth).unwrap_or_else(|| {
-                            unreachable!("strictly increasing branch coordinates fit the key width")
-                        }) = Some(upper);
-                        depth += 1;
-                    }
-                    current = low
-                        .root
-                        .take()
-                        .and_then(|mut node| node.0.take())
-                        .and_then(Arc::into_inner);
-                }
-                drop(body);
-            }
-            if current.is_none() {
-                if depth == 0 {
+            let Some(mut node) = current.take() else {
+                let Some(mut branch) = pending.take() else {
                     break;
+                };
+                let Some(Body {
+                    kind: Kind::Branch { low, high, .. },
+                    ..
+                }) = Arc::get_mut(&mut branch)
+                else {
+                    unreachable!("a pending branch is uniquely held")
+                };
+                pending = take_root(low);
+                current = take_root(high);
+                retire(branch);
+                continue;
+            };
+            let step = Arc::get_mut(&mut node).map(|body| match &mut body.kind {
+                Kind::Branch { low, high, .. } => {
+                    let next = take_root(low);
+                    let waits = high.root.is_some();
+                    if waits {
+                        low.root = pending.take().map(|link| Node(Some(link)));
+                    }
+                    (next, waits)
                 }
-                depth -= 1;
-                current = pending
-                    .get_mut(depth)
-                    .unwrap_or_else(|| unreachable!("the original pending branch is retained"))
-                    .take()
-                    .and_then(|mut node: Node<V, A, N, C>| node.0.take())
-                    .and_then(Arc::into_inner);
+                Kind::Leaf(_) => (None, false),
+            });
+            match step {
+                Some((next, true)) => {
+                    pending = Some(node);
+                    current = next;
+                }
+                Some((next, false)) => {
+                    retire(node);
+                    current = next;
+                }
+                // Another handle shared this node. into_inner elects exactly
+                // one last owner even on concurrent drops. Only when that
+                // other handle was released after the uniqueness check does
+                // this handle retire the body, through one nested drop of its
+                // children; each such frame consumes one concurrent release.
+                None => drop(Arc::into_inner(node)),
             }
         }
     }
+}
+
+fn take_root<V, A, const N: usize, C>(
+    tree: &mut Tree<V, A, N, C>,
+) -> Option<Arc<Body<V, A, N, C>>> {
+    tree.root.take().and_then(|mut node| node.0.take())
+}
+
+/// Releases the physical Arc backing before the body, so the original funding
+/// refunds after both backing and value retirement.
+fn retire<V, A, const N: usize, C>(node: Arc<Body<V, A, N, C>>) {
+    drop(Arc::into_inner(node));
 }
 
 impl<V, A, const N: usize, C: Copy> Clone for Tree<V, A, N, C> {
@@ -514,10 +531,9 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
         let mut view = self.clone();
         let mut result = Self::default();
         let mut destination = &mut result;
-        // One original sibling depth per possible branch, with no allocation.
-        let mut depths = [[0_usize; 8]; N];
-        let depths = depths.as_flattened_mut();
-        let mut depth = 0;
+        // Each copied branch is created holding one plus its sibling's depth;
+        // the on-path child is still empty. Heights are completed below.
+        let mut copied = 0_usize;
         loop {
             let Some(body) = view.visible_body(work)? else {
                 *destination = leaf;
@@ -544,10 +560,7 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
                         view = selected;
                         continue;
                     }
-                    *depths.get_mut(depth).unwrap_or_else(|| {
-                        unreachable!("strictly increasing branch coordinates fit the key width")
-                    }) = sibling.depth();
-                    depth += 1;
+                    copied += 1;
                     let (low, high) = if selected_high {
                         (sibling, Self::default())
                     } else {
@@ -568,22 +581,28 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
                 }
             }
         }
-        let mut height = destination.depth();
-        let depths = depths
-            .get_mut(..depth)
-            .unwrap_or_else(|| unreachable!("the original copied branch depths are retained"));
-        for sibling_depth in depths.iter_mut().rev() {
+        // Heights complete bottom-up without per-branch scratch: the copied
+        // path is uniquely owned, so its on-path links are reversed on the way
+        // down and restored on the way up. Stack use is independent of the key
+        // width and of the tree's height, and nothing is allocated.
+        let mut above = Self::default();
+        let mut cursor = result;
+        for _ in 0..copied {
             work.charge_items(1)?;
-            height = 1 + height.max(*sibling_depth);
-            *sibling_depth = height;
+            let (_, bit, low, upper) = cursor.unpublished_branch();
+            let child = std::mem::replace(if high(&key, *bit) { upper } else { low }, above);
+            above = std::mem::replace(&mut cursor, child);
         }
-        let mut cursor = &mut result;
-        for &branch_height in depths.iter() {
+        let mut height = cursor.depth();
+        for _ in 0..copied {
             work.charge_items(1)?;
-            let (height, bit, low, upper) = cursor.unpublished_branch();
-            *height = branch_height;
-            cursor = if high(&key, *bit) { upper } else { low };
+            let (depth, bit, low, upper) = above.unpublished_branch();
+            // A copied branch holds one plus its sibling's depth.
+            height = (*depth).max(1 + height);
+            *depth = height;
+            let parent = std::mem::replace(if high(&key, *bit) { upper } else { low }, cursor);
+            cursor = std::mem::replace(&mut above, parent);
         }
-        Ok(result)
+        Ok(cursor)
     }
 }
