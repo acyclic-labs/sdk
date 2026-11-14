@@ -72,7 +72,7 @@ pub(super) async fn scenario(actions: &[Action]) -> Result<(), Box<dyn Error>> {
         // All retained cuts must remain immutable across later publications.
         for (snapshot, expected) in &retained {
             let (bytes, from_source) = lazy
-                .read_at_snapshot(*snapshot, "/authored", None, 64, &mut ctx)
+                .read_at_snapshot(snapshot, "/authored", None, 64, &mut ctx)
                 .await?;
             assert!(!from_source);
             assert_eq!(bytes.bytes.as_ref(), expected);
