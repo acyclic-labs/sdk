@@ -261,8 +261,8 @@ async fn real_provider_cache_reads_match_recorded_usage() -> ProbeResult {
             adapter,
             calls: calls.clone(),
         });
-        let mut registry =
-            Registry::with_transport(Credentials::explicit(keys.clone()), transport)?;
+        let mut registry = Registry::with_transport(Credentials::explicit(keys.clone()), transport)
+            .map_err(|_| "live provider registry initialization failed")?;
         let mut spec = registry.catalog()[provider].as_ref().clone();
         spec.authentication = Authentication::ApiKey;
         registry
