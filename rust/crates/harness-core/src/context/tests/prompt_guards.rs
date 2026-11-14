@@ -23,8 +23,14 @@ async fn optional_planning_does_not_enter_worker_context() -> Result<()> {
             payload_limits(),
         )
         .await?;
-    let (_, stage) =
-        ContextManifest::bind(reference, &payloads, tools.clone(), payload_limits()).await?;
+    let (_, stage) = ContextManifest::bind(
+        reference,
+        &payloads,
+        Some(&payloads),
+        tools.clone(),
+        payload_limits(),
+    )
+    .await?;
     let projected = ContextPipeline::new([stage])
         .run(&input(), payload_limits(), None)
         .await?;
