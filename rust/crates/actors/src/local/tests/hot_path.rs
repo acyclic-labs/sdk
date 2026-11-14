@@ -1209,7 +1209,12 @@ async fn source_alarm_publication() -> TestResult {
         let before = store.load(&address).await?;
         let replay_cut = store.load(&address).await?;
         let original_anchor = before.anchor;
-        let wakes = provider.tail(store.root().clone()).await?;
+        let deadline = store.deadline(&address, 10)?;
+        let [CommitMutation::Append { path: window, .. }] = deadline.mutations.as_slice() else {
+            return Err("deadline must append one scheduling window".into());
+        };
+        let window = window.clone();
+        let wakes = store.head(&window).await?.map_or(0, |head| head.tail);
         let source = StreamPath::new("source/output")?;
         let prepare = |snapshot| -> Result<PreparedPublish, Error> {
             let mut binding = store.bind_state(snapshot, 1)?;
@@ -1251,7 +1256,7 @@ async fn source_alarm_publication() -> TestResult {
             assert!(matches!(result, Err(Error::Conflict)));
             assert_eq!(snapshot.anchor, original_anchor);
             assert_eq!(
-                provider.tail(store.root().clone()).await?,
+                store.head(&window).await?.map_or(0, |head| head.tail),
                 wakes,
                 "a refused activity record must not rearm or wake its actor"
             );
@@ -1276,7 +1281,22 @@ async fn source_alarm_publication() -> TestResult {
                 accepted.anchor,
                 "activity and the new deadline must share the source commit"
             );
-            assert_eq!(provider.tail(store.root().clone()).await?, wakes + 1);
+            assert_eq!(provider.tail(window.clone()).await?, wakes + 1);
+            let mut deadlines = provider
+                .read(ReadRequest {
+                    path: window.clone(),
+                    from: wakes,
+                    limit: 1,
+                    key: None,
+                    at_least: Default::default(),
+                })
+                .await?;
+            let deadline = deadlines.try_next().await?.ok_or("missing deadline wake")?;
+            assert_eq!(
+                Some(deadline.commit_id),
+                accepted.anchor,
+                "the deadline wake must share the activity and state commit"
+            );
             let replay = store
                 .submit_retained(prepare(replay_cut)?)
                 .await?
@@ -1288,7 +1308,7 @@ async fn source_alarm_publication() -> TestResult {
                 "replay duplicated activity"
             );
             assert_eq!(
-                provider.tail(store.root().clone()).await?,
+                provider.tail(window).await?,
                 wakes + 1,
                 "replay duplicated the deadline activation"
             );
