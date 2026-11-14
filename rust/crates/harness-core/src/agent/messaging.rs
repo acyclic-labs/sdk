@@ -19,6 +19,20 @@ pub struct PeerMembership {
 impl super::AgentRecord for PeerMembership {}
 
 impl PeerMembership {
+    fn from_record(
+        path: &acyclic_stream::StreamPath,
+        tail: u64,
+        record: &acyclic_stream::Record,
+    ) -> Result<Self, super::Error> {
+        use super::AgentRecord as _;
+        if record.origin != *path || record.sequence.checked_add(1) != Some(tail) {
+            return Err(super::Error::Record(
+                "peer membership head provenance differs",
+            ));
+        }
+        Self::decode(&record.value)
+    }
+
     /// Whether the user's current participation grant is active.
     pub fn enabled(&self) -> bool {
         self.epoch.is_some()
@@ -91,12 +105,13 @@ impl PeerAdmission {
                 "automatic peers require distinct roots",
             ));
         }
-        Ok(self
-            .sender
-            .conditions(sender)?
-            .into_iter()
-            .chain(self.recipient.conditions(recipient)?)
-            .collect())
+        Ok([acyclic_stream::CommitCondition::Absent {
+            path: sender.closed()?,
+        }]
+        .into_iter()
+        .chain(self.sender.conditions(sender)?.into_iter())
+        .chain(self.recipient.conditions(recipient)?)
+        .collect())
     }
 }
 
@@ -192,7 +207,6 @@ pub async fn session_peer_admission<P: crate::store::JournalProvider + ?Sized>(
     sender: &AgentPath,
     recipient: &AgentPath,
 ) -> Result<Option<PeerAdmission>, super::Error> {
-    use super::AgentRecord as _;
     use acyclic_stream::{HeadProjection, HeadsRequest};
 
     if !grants.contains(SEND_PEER)
@@ -226,12 +240,7 @@ pub async fn session_peer_admission<P: crate::store::JournalProvider + ?Sized>(
         let Some(record) = head.last else {
             return Ok(None);
         };
-        if record.origin != *path || record.sequence.checked_add(1) != Some(head.tail) {
-            return Err(super::Error::Record(
-                "peer membership head provenance differs",
-            ));
-        }
-        let membership = PeerMembership::decode(&record.value)?;
+        let membership = PeerMembership::from_record(path, head.tail, &record)?;
         if !membership.enabled() {
             return Ok(None);
         }
@@ -245,6 +254,57 @@ pub async fn session_peer_admission<P: crate::store::JournalProvider + ?Sized>(
         .next()
         .ok_or(super::Error::Record("recipient membership missing"))?;
     Ok(Some(PeerAdmission { sender, recipient }))
+}
+
+/// Select a remote peer using only the sender's own membership and the public
+/// directory row. The directory may be an authenticated account provider or a
+/// locally followed view. Account admission and owning-node delivery fence the
+/// selected intervals; this observation grants no additional authority.
+pub async fn directory_peer_admission<P, D>(
+    local: &P,
+    directory: &D,
+    grants: &crate::Capabilities,
+    sender: &acyclic_actors::addressing::ActorReference,
+    recipient: &acyclic_actors::addressing::ActorReference,
+) -> Result<Option<PeerAdmission>, super::Error>
+where
+    P: crate::store::JournalProvider + ?Sized,
+    D: acyclic_stream::StreamProvider + ?Sized,
+{
+    use acyclic_stream::{StreamError, StreamProviderExt as _};
+    if !grants.contains(SEND_PEER) || sender == recipient || sender.account() != recipient.account()
+    {
+        return Ok(None);
+    }
+    let root = AgentPath::root(&super::AgentId::try_from(sender.id().to_owned())?);
+    let member_path = root.peer_membership()?;
+    let member = match local.head(member_path.clone()).await {
+        Ok(head) => head,
+        Err(error) if error.category() == StreamError::NotFound => return Ok(None),
+        Err(error) => return Err(super::Error::Stream(error)),
+    };
+    let member_record = member
+        .last
+        .ok_or(super::Error::Record("sender membership is empty"))?;
+    let member = PeerMembership::from_record(&member_path, member.tail, &member_record)?;
+    if !member.enabled() {
+        return Ok(None);
+    }
+    super::AgentId::try_from(recipient.id().to_owned())?;
+    let row_path = super::SessionPublication::row_path(recipient)?;
+    let row = match directory.head(row_path.clone()).await {
+        Ok(head) => head,
+        Err(error) if error.category() == StreamError::NotFound => return Ok(None),
+        Err(error) => return Err(super::Error::Stream(error)),
+    };
+    let row_record = row
+        .last
+        .ok_or(super::Error::Record("peer directory row is empty"))?;
+    let row = super::SessionRow::from_record(&row_path, row.tail, &row_record)?;
+    Ok(row.profile.is_some().then_some(PeerAdmission {
+        sender: member,
+        recipient: row.membership,
+    }))
 }
 
 /// A sibling capability follows its name across released setup failures. The

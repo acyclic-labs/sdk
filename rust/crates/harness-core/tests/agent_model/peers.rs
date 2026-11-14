@@ -50,6 +50,62 @@ async fn message_intent_cannot_be_reused_at_a_different_turn_boundary() -> Resul
 }
 
 #[tokio::test]
+async fn archived_sender_cannot_publish_a_held_peer_message() -> Result {
+    let provider = MemoryStream::default();
+    let sender = create(&provider, id(96)).await?;
+    let recipient = create(&provider, id(97)).await?;
+    let admission = session_peer_admission(
+        &provider,
+        &Capabilities::new([SEND_PEER]),
+        &sender,
+        &recipient,
+    )
+    .await?
+    .ok_or("admission missing")?;
+    let state = AgentState::adopted(sender.clone(), &adopted(sender.id()))?;
+    let prepare = |name: &str| -> Result<CommitRequest> {
+        let step = Step {
+            outs: effect_outs(
+                &state,
+                vec![TurnEffect::Send {
+                    to: recipient.clone().into(),
+                    peer: Some(admission.clone()),
+                    delivery: MessageDelivery::Steer,
+                    id: intent(name),
+                    re: None,
+                    body: Box::new(super::driver::file("body.md")?),
+                    attachments: None,
+                }],
+            ),
+            state: state.clone(),
+            status: None,
+            alarm: Alarm::Clear,
+        };
+        Ok(lower(&step, 1, intent_key("held-source", &[name])?)?)
+    };
+    let held = prepare("held")?;
+    submit(&provider, archive(&sender, &user(), &intent("archive"))?).await?;
+    assert!(matches!(provider.commit(held.clone()).await?,
+        CommitOutcome::Committed(receipt) if !receipt.skipped.is_empty()));
+    assert!(matches!(provider.commit(held).await?,
+        CommitOutcome::Committed(receipt) if !receipt.skipped.is_empty()));
+    assert_eq!(provider.tail(recipient.inbox()?).await?, 1);
+    // Archive's existing close marker is sufficient. Removing only that fence
+    // admits the old interval, reproducing delivery from an archived sender.
+    let mut bypass = prepare("without-source-close")?;
+    let closed = sender.closed()?;
+    for effect in &mut bypass.effects {
+        effect
+            .conditions
+            .retain(|condition| condition.path() != &closed);
+    }
+    assert!(matches!(provider.commit(bypass).await?,
+        CommitOutcome::Committed(receipt) if receipt.skipped.is_empty()));
+    assert_eq!(provider.tail(recipient.inbox()?).await?, 2);
+    Ok(())
+}
+
+#[tokio::test]
 async fn membership_epochs_close_atomically_and_cannot_be_revived() -> Result {
     let provider = MemoryStream::default();
     let sender = create(&provider, id(90)).await?;

@@ -87,8 +87,9 @@ mod watch;
 pub use watch::Watch;
 mod steering;
 pub use messaging::{
-    MessageDelivery, PeerAdmission, PeerMembership, SEND_PEER, initial_peer_membership,
-    peer_send_allowed, session_peer_admission, session_peer_allowed, sibling_send_allowed,
+    MessageDelivery, PeerAdmission, PeerMembership, SEND_PEER, directory_peer_admission,
+    initial_peer_membership, peer_send_allowed, session_peer_admission, session_peer_allowed,
+    sibling_send_allowed,
 };
 pub use steering::{
     BoundaryCut, BoundaryEnd, BoundarySelection, ModelBoundary, SteeringSnapshot,

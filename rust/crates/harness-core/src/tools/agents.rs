@@ -72,7 +72,7 @@ pub struct SpawnAgentInput {
 #[serde(deny_unknown_fields)]
 pub struct SendAgentInput {
     /// Recipient: a child's name or agent path, as spawn returned them, the
-    /// parent's agent path, or a peer's sibling name or agent path.
+    /// parent's agent path, or a peer's sibling name, path or address from peers.
     pub agent: String,
     /// Message text. Relative paths in prose refer to the recipient's fork;
     /// select sender files with `files` to share their immutable contents.
@@ -456,10 +456,7 @@ impl AgentTool {
                 };
                 // A peer by path, or by sibling name; the scope's grants or
                 // the parent's spawn-time peers authorize it.
-                let recipient = match self.recipient(&input.agent, true).await? {
-                    Some(path) => Some((path.into(), None)),
-                    None => self.peer(&input.agent, context.as_ref()).await?,
-                };
+                let recipient = self.send_recipient(&input.agent, context.as_ref()).await?;
                 let Some((to, peer)) = recipient else {
                     return Ok(rejected(
                         "send requires a parent, open child or authorized peer inbox",
@@ -576,7 +573,7 @@ impl AgentTool {
             .then_some(child))
     }
 
-    async fn peer(
+    async fn send_recipient(
         &self,
         reference: &str,
         context: Option<&ToolContext>,
@@ -587,17 +584,35 @@ impl AgentTool {
         )>,
     > {
         let turn = &*self.turn;
-        let path = match AgentPath::try_from(reference.to_owned()) {
-            Ok(path) => Some(path),
-            Err(_) => match &turn.parent {
-                Some(parent) => {
-                    named_child(turn.observer.as_deref(), parent, reference, false).await?
+        let address = match crate::agent::AgentAddress::try_from(reference.to_owned()) {
+            Ok(address) => {
+                if address.qualified_actor().is_none()
+                    && (turn.parent.as_ref() == Some(address.path())
+                        || (address.path().is_child_of(&turn.agent)
+                            && turn
+                                .children
+                                .contains(address.path())
+                                .await
+                                .map_err(Error::from)?))
+                {
+                    return Ok(Some((address, None)));
                 }
-                None => None,
-            },
-        };
-        let Some(path) = path else {
-            return Ok(None);
+                address
+            }
+            Err(_) => {
+                if let Some(child) = self.recipient(reference, true).await? {
+                    return Ok(Some((child.into(), None)));
+                }
+                let Some(parent) = &turn.parent else {
+                    return Ok(None);
+                };
+                let Some(sibling) =
+                    named_child(turn.observer.as_deref(), parent, reference, false).await?
+                else {
+                    return Ok(None);
+                };
+                sibling.into()
+            }
         };
         for grants in context
             .map(|context| context.effective_scope().grants())
@@ -608,11 +623,11 @@ impl AgentTool {
                 turn.observer.as_deref(),
                 grants,
                 turn.parent.as_ref(),
-                &path,
+                &address,
             )
             .await?
             {
-                return Ok(Some((path.into(), admission)));
+                return Ok(Some((address, admission)));
             }
         }
         Ok(None)
@@ -920,24 +935,26 @@ async fn peer_grant_allowed(
     observer: Option<&dyn TurnChildren>,
     grants: &crate::Capabilities,
     parent: Option<&AgentPath>,
-    recipient: &AgentPath,
+    recipient: &crate::agent::AgentAddress,
 ) -> Result<Option<Option<crate::agent::PeerAdmission>>> {
-    if crate::agent::peer_send_allowed(grants, recipient) {
+    if recipient.qualified_actor().is_none()
+        && crate::agent::peer_send_allowed(grants, recipient.path())
+    {
         return Ok(Some(None));
     }
     let Some(observer) = observer else {
         return Ok(None);
     };
     match parent {
-        None if recipient.depth() == 0 && grants.contains(crate::agent::SEND_PEER) => {
+        None if recipient.path().depth() == 0 && grants.contains(crate::agent::SEND_PEER) => {
             Ok(observer.peer_admission(grants, recipient).await?.map(Some))
         }
-        Some(parent) => Ok(
-            crate::agent::sibling_send_allowed(observer, grants, parent, recipient)
+        Some(parent) if recipient.qualified_actor().is_none() => Ok(
+            crate::agent::sibling_send_allowed(observer, grants, parent, recipient.path())
                 .await?
                 .then_some(None),
         ),
-        None => Ok(None),
+        _ => Ok(None),
     }
 }
 
@@ -1379,12 +1396,27 @@ mod tests {
     #[tokio::test]
     async fn explicit_root_peer_grants_do_not_require_a_membership_observer() -> Result<()> {
         let root = AgentPath::root(&crate::agent::AgentId::from_bytes([42; 16]));
+        let relative = crate::agent::AgentAddress::from(root.clone());
+        let qualified = crate::agent::AgentAddress::qualified(
+            acyclic_actors::addressing::ActorReference::new(
+                b"account",
+                b"foreign",
+                root.id().as_str().as_bytes(),
+            )
+            .map_err(|error| Error::Invalid(error.to_string()))?,
+        )?;
         for prefix in ["agent.send:", "agent.send-subtree:"] {
             let grants = crate::Capabilities::new([format!("{prefix}{root}")]);
             assert!(
-                peer_grant_allowed(None, &grants, None, &root)
+                peer_grant_allowed(None, &grants, None, &relative)
                     .await?
                     .is_some()
+            );
+            assert!(
+                peer_grant_allowed(None, &grants, None, &qualified)
+                    .await?
+                    .is_none(),
+                "a relative grant must not authorize the same ID in another namespace"
             );
         }
         for grants in [
@@ -1392,7 +1424,7 @@ mod tests {
             crate::Capabilities::new([crate::agent::SEND_PEER]),
         ] {
             assert!(
-                peer_grant_allowed(None, &grants, None, &root)
+                peer_grant_allowed(None, &grants, None, &relative)
                     .await?
                     .is_none()
             );

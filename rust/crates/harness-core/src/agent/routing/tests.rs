@@ -68,6 +68,33 @@ async fn qualified_senders_keep_distinct_intents_and_reply_destinations()
         paths: routing.paths.clone(),
         node: original.source.clone(),
     };
+    let row = SessionPublication {
+        actor: original.to.clone(),
+        row: SessionRow::new(
+            routing.node.clone(),
+            SessionProfile {
+                phase: SessionPhase::Idle,
+                title: "Peer".into(),
+                workspaces: Vec::new(),
+                goal_preview: String::new(),
+            },
+            original_admission
+                .recipient
+                .epoch
+                .ok_or("recipient interval missing")?,
+        ),
+        intent: crate::agent::intent_key("directory-row", &[])?,
+    };
+    assert!(matches!(
+        account
+            .commit(CommitRequest {
+                deadline_unix_millis: None,
+                idempotency_key: row.intent.clone(),
+                effects: vec![row.effect()?],
+            })
+            .await?,
+        CommitOutcome::Committed(_)
+    ));
     let mut first_key: Option<acyclic_stream::IdempotencyKey> = None;
     for (index, namespace) in [b"first".as_slice(), b"second".as_slice()]
         .into_iter()
@@ -81,15 +108,37 @@ async fn qualified_senders_keep_distinct_intents_and_reply_destinations()
             source_store.commit(root.request).await?,
             CommitOutcome::Committed(_)
         ));
-        let member = source_store
-            .head(sender.peer_membership()?)
+        let local_view = acyclic_stream::testing::Counted::new(source_store.as_ref().clone());
+        let public_view = acyclic_stream::testing::Counted::new(account.clone());
+        assert!(
+            crate::agent::directory_peer_admission(
+                &local_view,
+                &public_view,
+                &crate::Capabilities::default(),
+                &source,
+                &original.to
+            )
             .await?
-            .last
-            .ok_or("source membership missing")?;
-        let admission = PeerAdmission {
-            sender: PeerMembership::decode(&member.value)?,
-            ..original_admission.clone()
-        };
+            .is_none()
+        );
+        assert_eq!(local_view.requests().control(), 0);
+        assert_eq!(public_view.requests().control(), 0);
+        let admission = crate::agent::directory_peer_admission(
+            &local_view,
+            &public_view,
+            &crate::Capabilities::new([crate::agent::SEND_PEER]),
+            &source,
+            &original.to,
+        )
+        .await?
+        .ok_or("public directory did not admit peer")?;
+        assert_eq!(local_view.requests().control(), 1);
+        assert_eq!(public_view.requests().control(), 1);
+        assert_eq!(
+            public_view.requests().data(),
+            0,
+            "selection must not read another node's private membership or transcript"
+        );
         let target = crate::agent::AgentAddress::qualified(original.to.clone())?;
         let effect = crate::agent::TurnEffect::Send {
             to: target.clone(),
@@ -226,6 +275,36 @@ async fn qualified_senders_keep_distinct_intents_and_reply_destinations()
         assert_eq!(
             super::notices::matches(&terminal, &sender, peer.id(), &lookalike)?,
             None
+        );
+        let disable = crate::agent::set_peer_membership(
+            source_store.as_ref(),
+            &sender,
+            &Sender::User {
+                principal: "owner".into(),
+            },
+            &IntentId::try_from("opt-out")?,
+            false,
+        )
+        .await?;
+        assert!(matches!(
+            source_store.commit(disable).await?,
+            CommitOutcome::Committed(_)
+        ));
+        assert!(
+            crate::agent::directory_peer_admission(
+                &local_view,
+                &public_view,
+                &crate::Capabilities::new([crate::agent::SEND_PEER]),
+                &source,
+                &original.to
+            )
+            .await?
+            .is_none()
+        );
+        assert_eq!(
+            public_view.requests().control(),
+            1,
+            "an opted-out sender must not query account peers"
         );
         if let Some(first) = &first_key {
             assert_ne!(&request.idempotency_key, first);

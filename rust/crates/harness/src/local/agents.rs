@@ -1003,6 +1003,10 @@ impl LocalHarness {
             approval_policy: self.preset.approval_policy.clone(),
         };
         let configure = |turns: LocalTurns| {
+            let turns = match &self.peer_directory {
+                Some(directory) => turns.with_peer_directory(directory.provider.clone()),
+                None => turns,
+            };
             let turns = match &self.topology {
                 Some(topology) => turns.with_topology(topology.clone()),
                 None => turns,

@@ -735,6 +735,7 @@ pub struct FilesystemTurnHost<P: ?Sized, A: 'static, O: 'static> {
     traces: Option<acyclic_stream::trace::Registry<P>>,
     within: acyclic_actors::addressing::ActorReference,
     actor_root: Option<acyclic_stream::StreamPath>,
+    peer_directory: Option<Arc<dyn acyclic_stream::StreamProvider>>,
     host: Arc<FilesystemHost<A, O>>,
     issuer: RuntimeAuthority,
     admission: TurnAdmission,
@@ -831,6 +832,7 @@ where
             stream,
             within,
             actor_root: None,
+            peer_directory: None,
             traces: None,
             clock: Arc::new(acyclic_actors::local::SystemClock),
             host,
@@ -861,6 +863,17 @@ where
     #[must_use]
     pub fn with_clock(mut self, clock: Arc<dyn acyclic_actors::local::Clock>) -> Self {
         self.clock = clock;
+        self
+    }
+
+    /// Bind the host's already authenticated public account view. Credentials
+    /// remain in the provider; neither the model nor a peer row receives them.
+    #[must_use]
+    pub fn with_peer_directory(
+        mut self,
+        directory: Arc<dyn acyclic_stream::StreamProvider>,
+    ) -> Self {
+        self.peer_directory = Some(directory);
         self
     }
 
@@ -2604,6 +2617,8 @@ where
                     files: Arc::clone(&files),
                     stream: Arc::clone(&self.stream),
                     within: self.within.clone(),
+                    actor_root: self.actor_root.clone(),
+                    peer_directory: self.peer_directory.clone(),
                     host: Arc::clone(&self.host),
                     issuer: self.issuer.clone(),
                     admission: self.admission.clone(),
@@ -2803,6 +2818,8 @@ struct FilesystemTurnChildren<P: ?Sized, A: 'static, O: 'static> {
     files: Arc<AgentInternalFiles<A, O>>,
     stream: Arc<P>,
     within: acyclic_actors::addressing::ActorReference,
+    actor_root: Option<acyclic_stream::StreamPath>,
+    peer_directory: Option<Arc<dyn acyclic_stream::StreamProvider>>,
     host: Arc<FilesystemHost<A, O>>,
     issuer: RuntimeAuthority,
     admission: TurnAdmission,
@@ -2835,12 +2852,52 @@ where
     fn peer_admission<'a>(
         &'a self,
         grants: &'a crate::Capabilities,
-        recipient: &'a AgentPath,
+        recipient: &'a crate::agent::AgentAddress,
     ) -> BoxFuture<'a, Result<Option<crate::agent::PeerAdmission>>> {
         Box::pin(async move {
-            crate::agent::session_peer_admission(&*self.stream, grants, &self.agent, recipient)
+            if self.agent.depth() != 0
+                || !grants.contains(crate::agent::SEND_PEER)
+                || recipient.path().depth() != 0
+            {
+                return Ok(None);
+            }
+            let actor = recipient.actor(&self.within).map_err(Error::from)?;
+            if actor.account() != self.within.account() {
+                return Ok(None);
+            }
+            let store = match &self.actor_root {
+                Some(root) => acyclic_actors::local::Store::new(self.stream.clone(), root.clone()),
+                None => crate::agent::actor_store(&self.stream).map_err(Error::from)?,
+            };
+            if store
+                .contains(&actor)
                 .await
-                .map_err(Error::from)
+                .map_err(|error| Error::from(crate::agent::Error::Actor(Box::new(error))))?
+            {
+                return crate::agent::session_peer_admission(
+                    &*self.stream,
+                    grants,
+                    &self.agent,
+                    recipient.path(),
+                )
+                .await
+                .map_err(Error::from);
+            }
+            let Some(directory) = &self.peer_directory else {
+                return Ok(None);
+            };
+            let sender = crate::agent::AgentAddress::from(self.agent.clone())
+                .actor(&self.within)
+                .map_err(Error::from)?;
+            crate::agent::directory_peer_admission(
+                self.stream.as_ref(),
+                directory.as_ref(),
+                grants,
+                &sender,
+                &actor,
+            )
+            .await
+            .map_err(Error::from)
         })
     }
 

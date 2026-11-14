@@ -167,7 +167,7 @@ pub trait TurnChildren: acyclic_stream::ProviderPlatform {
     fn peer_admission<'a>(
         &'a self,
         _grants: &'a crate::Capabilities,
-        _recipient: &'a AgentPath,
+        _recipient: &'a super::AgentAddress,
     ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Option<super::PeerAdmission>>> {
         Box::pin(async { Ok(None) })
     }
