@@ -282,6 +282,10 @@ pub fn check(bytes: &[u8]) -> bool {
         Some(Err(StreamError::LimitExceeded)) => {}
         Some(Err(_)) | None => return false,
     }
+    retained_facts(bytes)
+}
+
+fn retained_facts(bytes: &[u8]) -> bool {
     let observation = persistence::decode_observation(bytes, usize::MAX);
     if !truncated_header_is_invalid(bytes, persistence::OBSERVATION_DOMAIN, &observation) {
         return false;
@@ -312,15 +316,21 @@ pub fn check(bytes: &[u8]) -> bool {
             if crate::wire_codec::append_record(crate::wire_codec::append_record_wire(
                 record.clone(),
             )) != Ok(record.clone())
-                || crate::follow_filter::projection_contract(&crate::Record {
-                    sequence: 0,
-                    value: record.value,
-                    headers: record.headers,
-                    commit_id: crate::CommitId::from_bytes([1; 32]),
-                    committed_at_micros: 0,
-                    origin: crate::StreamPath::new("codec/events").expect("canonical fixture path"),
-                })
-                .is_err()
+            {
+                return false;
+            }
+            let Ok(origin) = crate::StreamPath::new("codec/events") else {
+                return false;
+            };
+            if crate::follow_filter::projection_contract(&crate::Record {
+                sequence: 0,
+                value: record.value,
+                headers: record.headers,
+                commit_id: crate::CommitId::from_bytes([1; 32]),
+                committed_at_micros: 0,
+                origin,
+            })
+            .is_err()
             {
                 return false;
             }
