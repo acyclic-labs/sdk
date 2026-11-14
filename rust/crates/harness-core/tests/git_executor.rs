@@ -2485,13 +2485,25 @@ three
             "materialized={materialized}: the child's version replaced an unrecoverable base: {:?}",
             merged.map(|(output, _)| output)
         );
+        // Git leaves the conflict in the worktree: the parent's host edit is
+        // ours, the child's version theirs, and the unrecoverable base empty.
         let stop = CancellationToken::new();
         let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
         assert_eq!(
-            main.read("/calc.txt", 64, &mut work).await?.bytes.as_ref(),
-            b"PARENT ONE
+            main.read("/calc.txt", 1 << 10, &mut work)
+                .await?
+                .bytes
+                .as_ref(),
+            b"<<<<<<< ours
+PARENT ONE
 two
 three
+||||||| original
+=======
+one
+two
+THREE
+>>>>>>> theirs
 ",
             "materialized={materialized}"
         );
