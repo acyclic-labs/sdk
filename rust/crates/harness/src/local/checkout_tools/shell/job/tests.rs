@@ -104,12 +104,10 @@ fn shell_job_child() {
     if std::fs::exists("shell-job.timeout").unwrap() {
         std::fs::write("retained", b"before-stop").unwrap();
         // The command's own view of the home volume, not the shared destination.
-        let home = crate::native_environment::variable("ACYCLIC_VOLUME_HOME").unwrap();
-        std::fs::write(
-            std::path::PathBuf::from(home).join("timeout-retained"),
-            b"before-stop",
-        )
-        .unwrap();
+        let discovery = crate::native_environment::variable("ACYCLIC_WORKSPACES").unwrap();
+        let workspaces: std::collections::BTreeMap<String, std::path::PathBuf> =
+            serde_json::from_str(discovery.to_str().unwrap()).unwrap();
+        std::fs::write(workspaces["home"].join("timeout-retained"), b"before-stop").unwrap();
     }
     let mut gate = std::net::TcpStream::connect(address).unwrap();
     println!("JOB_READY");
