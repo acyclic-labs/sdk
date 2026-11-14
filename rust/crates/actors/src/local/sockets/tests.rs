@@ -423,6 +423,36 @@ async fn independent_hosts_keep_same_actor_socket_ids_and_attachments_distinct()
 }
 
 #[tokio::test]
+async fn long_ledger_roots_can_open_sockets_and_recover_exactly_one_close() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let ledger = StreamPath::new("a".repeat(32_768))?;
+    let open = || {
+        Sockets::open(
+            Store::new(provider.clone(), root().expect("valid actor root")),
+            ledger.clone(),
+            Arc::new(HeldCloseExecutor::default()),
+            Arc::new(SystemClock),
+        )
+    };
+    let sockets = open().await?;
+    let (connection, inbox, _last, _frames) = admitted_close_fixture(&sockets, "long-ledger-root")
+        .await
+        .expect("valid long ledger roots must publish SocketOpen");
+    let socket = sockets.shared.layout.socket(&connection)?;
+    assert_eq!(records(&sockets.shared.store, &socket).await?.len(), 1);
+    assert_eq!(records(&sockets.shared.store, &inbox).await?.len(), 1);
+    let _replacement = open().await?;
+    let _next_replacement = open().await?;
+    assert_eq!(records(&sockets.shared.store, &socket).await?.len(), 2);
+    assert_eq!(
+        records(&sockets.shared.store, &inbox).await?.len(),
+        2,
+        "repeated recovery must close the long-root socket exactly once"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn recovery_fences_only_the_selected_hosts_socket_ledger() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let first_root = StreamPath::new("hosts/first/sockets/v1")?;
