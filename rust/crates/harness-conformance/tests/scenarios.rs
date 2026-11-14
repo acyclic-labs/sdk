@@ -157,9 +157,10 @@ async fn bad_fixture_and_wrong_expected_answer_each_fail_with_a_record()
     )?;
     // Instructions live on the file volume, not the journal's: a wrong byte must
     // fail as a content mismatch, proving the attachment was actually read.
-    let mut instructions: Value = serde_json::from_slice(include_bytes!(
-        "../../harness/tests/scenarios/discovery/instructions/agents.json"
-    ))?;
+    let mut instructions = scenario_data::load_value(
+        &corpus(),
+        &corpus().join("discovery/instructions/agents.json"),
+    )?;
     *instructions
         .pointer_mut("/expect/request_files/0/0")
         .ok_or("missing request file expectation")? = "WRONG".into();
