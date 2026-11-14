@@ -29,6 +29,12 @@ A `service` input owns the server separately from terminal clients. A later
 native close event. A following `service` input restarts it with the original
 owner arguments, so recovery cases preserve configuration across the restart.
 
+`kill-during-count` holds the first token-count response, kills the attaching
+client and the actual service owner, and reopens the retained turn. Replaying
+that completed operation must reuse its answer; a new operation must generate
+its own answer. Exactly two generation requests cover the recovered and fresh
+turns together. Count requests do not consume generation steps.
+
 `when.new_contains` lists alternative complete text groups. A group must appear
 in the current committed frame and have been absent from the previous accepted
 action. Paging cases use it to observe each patch without assuming path order.

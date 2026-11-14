@@ -38,6 +38,12 @@ Headless inputs can declare `descendant_custody: true` when their service
 descendants must retire before the next input. This uses the same native owner
 as terminal inputs.
 GraphCoder orphan-fencing cases retain their direct process launch and recovery oracle.
+Service inputs can declare `descendant_custody: false` and later use
+`kill: "executable"` to kill the service owner without an external descendant
+retirement. The next invocation reopens the same original arguments and must
+fence the old tool tree itself. Its inherited transcript joins after recovery.
+Per-input `extra_args` configure that launch alone, including service startup;
+startup-only options do not accompany clients attaching to that service.
 External acceptance
 commands run under a Linux subreaper, a macOS session or a Windows Job Object. Normal
 exit and suite cancellation drain their service descendants before returning.

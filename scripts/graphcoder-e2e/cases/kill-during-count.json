@@ -1,5 +1,6 @@
 {
   "id": "kill-during-count",
+  "physical": true,
   "workspace": {
     "kind": "plain",
     "files": {}
@@ -29,10 +30,20 @@
         "text": [
           "resumed"
         ]
+      },
+      {
+        "when": {
+          "path": "responses",
+          "user": "fresh marker"
+        },
+        "text": [
+          "fresh"
+        ]
       }
     ]
   },
   "inputs": [
+    { "mode": "service", "descendant_custody": false },
     {
       "mode": "headless",
       "text": "count marker",
@@ -41,13 +52,25 @@
         "step": 0
       }
     },
+    { "mode": "service", "kill": "executable" },
     {
       "mode": "headless",
       "text": "count marker",
       "answer": "resumed"
+    },
+    {
+      "mode": "headless",
+      "text": "count marker",
+      "answer": "resumed"
+    },
+    {
+      "mode": "headless",
+      "operation": "00000000-0000-0000-0000-000000000002",
+      "text": "fresh marker",
+      "answer": "fresh"
     }
   ],
   "assert": {
-    "requests": 1
+    "requests": 2
   }
 }

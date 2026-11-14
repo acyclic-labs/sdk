@@ -2,7 +2,10 @@
   "id": "orphan-fencing",
   "workspace": {
     "kind": "plain",
-    "files": { "orphan-endpoint.txt": "{{url}}" }
+    "files": {
+      "orphan-endpoint.txt": "{{url}}",
+      "orphan.mjs": { "source": "orphan.mjs" }
+    }
   },
   "model": {
     "steps": [
@@ -15,7 +18,7 @@
             "id": "native-tree",
             "name": "shell",
             "arguments": {
-              "command": "node \"{{support}}/orphan.mjs\" tree orphan-endpoint.txt"
+              "command": "node orphan.mjs tree orphan-endpoint.txt"
             }
           }
         ]
@@ -32,6 +35,8 @@
     ]
   },
   "inputs": [
+    { "mode": "service", "descendant_custody": false,
+      "extra_args": ["--workspace-mounting", "physical"] },
     {
       "mode": "headless",
       "text": "ORPHAN_START",
@@ -40,10 +45,12 @@
         "step": 1
       }
     },
+    { "mode": "service", "kill": "executable" },
     {
       "mode": "headless",
       "text": "ORPHAN_START",
       "exit": 1,
+      "extra_args": ["--workspace-mounting", "physical"],
       "outcome": {
         "completion": "failed",
         "error": "tool was interrupted before its outcome was recorded; it may have run, partly or fully"
