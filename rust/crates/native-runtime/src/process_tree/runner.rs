@@ -361,15 +361,7 @@ fn start_inner(
         File::from(read)
     });
     drop(here);
-    let mut replied = Vec::new();
-    if activity.is_some() {
-        // The deferred command cannot exec before its owner releases it. Its
-        // admission frame is the acknowledgement, not its later exec event.
-        replied.resize(5, 0);
-        File::from(reply).read_exact(&mut replied)?;
-    } else {
-        File::from(reply).read_to_end(&mut replied)?;
-    }
+    let replied = read_admission(reply, activity.is_some())?;
     drop(launch_owner);
     admitted_child(&replied, ours, report, activity.is_none())
 }
@@ -400,6 +392,19 @@ fn capture_request(command: &ProcessCommand, count: usize, message: &[u8]) -> io
         }
     }
     Ok(())
+}
+
+fn read_admission(reply: OwnedFd, deferred: bool) -> io::Result<Vec<u8>> {
+    let mut replied = Vec::new();
+    if deferred {
+        // The deferred command cannot exec before its owner releases it. Its
+        // admission frame is the acknowledgement, not its later exec event.
+        replied.resize(5, 0);
+        File::from(reply).read_exact(&mut replied)?;
+    } else {
+        File::from(reply).read_to_end(&mut replied)?;
+    }
+    Ok(replied)
 }
 
 fn admitted_child(

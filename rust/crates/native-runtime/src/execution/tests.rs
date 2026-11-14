@@ -452,14 +452,7 @@ fn sandbox_denies_outside_write() {
                 .unwrap();
             grant.check_attenuation(&fifo_read).unwrap();
         }
-        let expanded = ExecutionGrant::new(
-            &workspace,
-            ExecutionAccess::WorkspaceWrite,
-            [],
-            ExecutionNetwork::Off,
-        )
-        .unwrap();
-        assert_eq!(grant.check_attenuation(&expanded).is_ok(), primary_write);
+        assert_workspace_write_attenuation(&grant, &workspace, primary_write);
         refuse_inherited_stdio(&grant, &inherited);
         let command = outside_write_command(&grant, &outside, &volume, inherited.as_raw_fd());
         let mut tree = ProcessTree::spawn_granted(command, &grant, None).unwrap();
@@ -2181,4 +2174,16 @@ fn file_stdio_command(workspace: &Path, sentinel: &Path, input: bool, file_stdio
     #[cfg(windows)]
     command.env("SystemRoot", std::env::var_os("SystemRoot").unwrap());
     command
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn assert_workspace_write_attenuation(grant: &ExecutionGrant, workspace: &Path, expected: bool) {
+    let expanded = ExecutionGrant::new(
+        workspace,
+        ExecutionAccess::WorkspaceWrite,
+        [],
+        ExecutionNetwork::Off,
+    )
+    .unwrap();
+    assert_eq!(grant.check_attenuation(&expanded).is_ok(), expected);
 }

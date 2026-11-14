@@ -140,7 +140,7 @@ pub(super) fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno
     let (slots, flags, uid, gid, owner, mask, signals, ignored, limits, argc, envc) = {
         let mut reader = Reader(body.bytes().get(..length).ok_or(invalid)?);
         let slots = reader.take(3)?;
-        let flags = *reader.take(1)?.first().ok_or(invalid)?;
+        let flags = reader.flags()?;
         let uid = reader.word()?;
         let gid = reader.word()?;
         let owner = Pid::try_from(reader.word()?).map_err(|_| invalid)?;
@@ -159,15 +159,6 @@ pub(super) fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno
             kinds, flags, uid, gid, owner, mask, signals, ignored, limits, argc, envc,
         )
     };
-    // A confined request's original `here` descriptor is its bound cwd.
-    // Reject a second path-based selection before any warden is created.
-    if flags & !(HAS_CWD | HAS_UID | HAS_GID | HAS_BOUNDARY | ON_RELEASE | UNRECORDED) != 0
-        || flags & (HAS_BOUNDARY | HAS_CWD) == (HAS_BOUNDARY | HAS_CWD)
-        || flags & (HAS_BOUNDARY | ON_RELEASE) == (HAS_BOUNDARY | ON_RELEASE)
-        || (flags & UNRECORDED != 0 && flags & HAS_BOUNDARY == 0)
-    {
-        return Err(invalid);
-    }
     let (streams, next) = stream_slots(received, slots)?;
     let (policy, strings) = if flags & HAS_BOUNDARY != 0 {
         let mut reader = Reader(body.bytes().get(FIXED..length).ok_or(invalid)?);
@@ -372,6 +363,20 @@ fn arguments(
 struct Reader<'a>(&'a [u8]);
 
 impl<'a> Reader<'a> {
+    fn flags(&mut self) -> Result<u8, Errno> {
+        let flags = *self.take(1)?.first().ok_or(Errno(sys::EINVAL))?;
+        // A confined request's original `here` descriptor is its bound cwd.
+        // Reject a second path-based selection before any warden is created.
+        if flags & !(HAS_CWD | HAS_UID | HAS_GID | HAS_BOUNDARY | ON_RELEASE | UNRECORDED) != 0
+            || flags & (HAS_BOUNDARY | HAS_CWD) == (HAS_BOUNDARY | HAS_CWD)
+            || flags & (HAS_BOUNDARY | ON_RELEASE) == (HAS_BOUNDARY | ON_RELEASE)
+            || (flags & UNRECORDED != 0 && flags & HAS_BOUNDARY == 0)
+        {
+            return Err(Errno(sys::EINVAL));
+        }
+        Ok(flags)
+    }
+
     fn take(&mut self, length: usize) -> Result<&'a [u8], Errno> {
         if length > self.0.len() {
             return Err(Errno(sys::EINVAL));
