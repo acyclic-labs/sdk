@@ -163,12 +163,12 @@ export async function pty(processes, binary, fixture, input, capture) {
       frames.write(bytes);
     });
     let result;
-    // Interactive waits must stop on native failure; ordinary commands retain
-    // their original exit status so declared refusal cases can assert it.
+    // Successful interactions stop on native failure. Declared refusal cases
+    // join the original exit so cancellation cannot replace its status.
     // A missing interaction is a failed case, never an indefinitely live PTY.
     // This is only a protective bound; every successful action waits on frames.
     const signal = AbortSignal.any([AbortSignal.timeout(120_000),
-      ...(running.failure ? [running.failure] : []), ...(fixture.signal ? [fixture.signal] : [])]);
+      ...((input.exit ?? 0) === 0 && running.failure ? [running.failure] : []), ...(fixture.signal ? [fixture.signal] : [])]);
     try { result = await withCancellation(running, signal); }
     catch (error) {
       (errors ??= []).push(error);
@@ -200,6 +200,7 @@ export async function pty(processes, binary, fixture, input, capture) {
     }
     // A refused start reports only through its termination record.
     const cause = result.termination?.execution_failure;
+    if (input.execution_failure !== undefined) assert.equal(cause?.cause, input.execution_failure);
     assert.equal(index, input.actions.length, `PTY completed ${index}/${input.actions.length} actions: ${cause ? JSON.stringify(cause) : ""}${result.stderr}\n${result.stdout}`);
     if (!input.killed) {
       assert.ok(frames.ready(), `step=admit completed terminal transaction; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);

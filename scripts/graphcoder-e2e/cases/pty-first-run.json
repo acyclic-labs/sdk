@@ -14,12 +14,12 @@
     { "mode": "headless", "descendant_custody": true, "args": ["-p", "must not prompt"], "exit": 1,
       "stderr_contains": ["model provider API key is unavailable", "recovery:"],
       "stdout_absent": ["GraphCoder first run", "API key (hidden)"] },
-    { "mode": "pty", "text": "\u0003", "exit": 1, "actions": [] },
-    { "mode": "pty", "text": "0\r", "exit": 1, "actions": [
+    { "mode": "pty", "text": "\u0003", "exit": 1, "execution_failure": "setup cancelled", "actions": [] },
+    { "mode": "pty", "text": "0\r", "exit": 1, "execution_failure": "setup cancelled", "actions": [
       { "when": { "contains": ["Choose a listed number.", "Provider:", "e2e"] }, "choose": "e2e" },
       { "when": { "contains": ["Model:", "e2e/alternate"] }, "assert": { "absent": ["API key (hidden)"] }, "send": "\u0003" }
     ] },
-    { "mode": "pty", "exit": 1, "actions": [
+    { "mode": "pty", "exit": 1, "execution_failure": "setup cancelled", "actions": [
       { "when": { "contains": ["GraphCoder first run: choose a provider", "Provider:", "e2e"] }, "choose": "e2e" },
       { "when": { "contains": ["Model:", "e2e/alternate"] }, "choose": "e2e/alternate" },
       { "when": { "contains": ["API key (hidden):"] }, "send": "CANCELLED_KEY_NONSECRET\u0004" }
