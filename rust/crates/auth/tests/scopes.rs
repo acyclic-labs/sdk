@@ -15,8 +15,15 @@ fn discovery_defers_only_record_facts_and_never_current_authority() {
     ] {
         let trust = signed::Snapshot::default();
         let token = signed::root(|block| {
-            block.certificates.as_mut().unwrap().keys[0].key.grants =
-                signed::claims::grants(resource, true, action);
+            block
+                .certificates
+                .as_mut()
+                .unwrap()
+                .keys
+                .first_mut()
+                .expect("signed root certificate")
+                .key
+                .grants = signed::claims::grants(resource, true, action);
             block.caveats.push(Caveat {
                 kind: CaveatKind::Pin(Pin {
                     name: "record".into(),

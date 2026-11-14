@@ -11,12 +11,19 @@ fn capture() -> Result<(), Box<dyn Error>> {
     let mut foreign = None;
     for key in 3..=u8::MAX {
         let (_, records) = issuer.genesis("other", SigningKey::from_bytes(&[key; 32]), 100)?;
-        if !records[0].contains(&0xA5) {
+        if !records
+            .first()
+            .ok_or("genesis record absent")?
+            .contains(&0xA5)
+        {
             foreign = Some((key, records));
             break;
         }
     }
     let (key, foreign) = foreign.ok_or("no separator-free signed foreign record")?;
+    let mut foreign = foreign.into_iter();
+    let foreign_keyring = foreign.next().ok_or("foreign keyring absent")?;
+    let foreign_checkpoint = foreign.next().ok_or("foreign checkpoint absent")?;
     let (mut account, genesis) =
         issuer.genesis("account", SigningKey::from_bytes(&[2; 32]), 100)?;
     let mut environment = EnvironmentFrontier::genesis("test", AnchorKeys::new(issuer.anchor()));
@@ -53,12 +60,12 @@ fn capture() -> Result<(), Box<dyn Error>> {
         ),
         (
             "foreign-keyring",
-            foreign[0].clone(),
+            foreign_keyring,
             format!("Issuer::genesis(other, signing-key[{key};32],100)[0]"),
         ),
         (
             "foreign-checkpoint",
-            foreign[1].clone(),
+            foreign_checkpoint,
             format!("Issuer::genesis(other, signing-key[{key};32],100)[1]"),
         ),
         (

@@ -178,7 +178,13 @@ fn checkpoints_cannot_resurrect_revocations_or_roll_back_epoch_or_time() {
     // caller holding a fresh trust view but asking to verify at an old time.
     let owner = capability::Snapshot::default();
     let bytes = capability::root(|block| {
-        block.certificates.as_mut().unwrap().keys[0]
+        block
+            .certificates
+            .as_mut()
+            .unwrap()
+            .keys
+            .first_mut()
+            .expect("signed root certificate")
             .key
             .validity
             .expires_at_unix_seconds = 100;
@@ -298,9 +304,10 @@ fn malformed_forged_gapped_and_wrong_account_updates_are_atomic() {
         RevocationState::from_checkpoint(&checkpoint(1, 10, 10, vec![]), "account", &issuer(), 10)
             .unwrap();
     let before = state.frontier();
-    let base = match delta(&state, vec![key("target", 100)], None).publication {
-        RevocationPublication::Delta(delta) => delta,
-        _ => unreachable!(),
+    let RevocationPublication::Delta(base) =
+        delta(&state, vec![key("target", 100)], None).publication
+    else {
+        unreachable!()
     };
     let mut cases = Vec::new();
     let mut gap = base.clone();

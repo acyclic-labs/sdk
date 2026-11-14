@@ -74,7 +74,9 @@ fn direct_and_delegated_calls_preserve_customer_and_exact_recipient()
             .revocation
             .as_mut()
             .unwrap()
-            .blocks[0]
+            .blocks
+            .first_mut()
+            .expect("caller revocation block")
             .pop();
         assert!(CallerContext::try_from(changed).is_err());
         let mut changed = wire;

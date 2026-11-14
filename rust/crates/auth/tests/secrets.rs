@@ -104,6 +104,61 @@ enum Call {
     List(SecretListRequest),
     Delete(SecretDeleteRequest),
 }
+fn declared_route_count(path: &str, action: &str) -> Result<usize, Error> {
+    static DESCRIPTOR: std::sync::OnceLock<Result<prost_reflect::DescriptorPool, Error>> =
+        std::sync::OnceLock::new();
+    let pool = DESCRIPTOR
+        .get_or_init(|| {
+            prost_reflect::DescriptorPool::decode(acyclic_auth::FILE_DESCRIPTOR_SET)
+                .map_err(|_| Error::InvalidRequest)
+        })
+        .as_ref()
+        .map_err(|_| Error::InvalidRequest)?;
+    let extension = pool
+        .get_extension_by_name("acyclic.validation.v1.http_routes")
+        .ok_or(Error::InvalidRequest)?;
+    let options = pool
+        .get_file_by_name("auth/v1/auth.proto")
+        .ok_or(Error::InvalidRequest)?
+        .options();
+    let routes = options.get_extension(&extension);
+    let mut admitted = 0;
+    for route in routes.as_list().ok_or(Error::InvalidRequest)? {
+        let route = route.as_message().ok_or(Error::InvalidRequest)?;
+        if route
+            .get_field_by_name("method")
+            .ok_or(Error::InvalidRequest)?
+            .as_str()
+            != Some("POST")
+            || route
+                .get_field_by_name("path")
+                .ok_or(Error::InvalidRequest)?
+                .as_str()
+                != Some(path)
+        {
+            continue;
+        }
+        let auth = route
+            .get_field_by_name("auth")
+            .ok_or(Error::InvalidRequest)?;
+        let mut declared = false;
+        for rule in auth.as_list().ok_or(Error::InvalidRequest)? {
+            let rule = rule.as_message().ok_or(Error::InvalidRequest)?;
+            let actions = rule
+                .get_field_by_name("action")
+                .ok_or(Error::InvalidRequest)?;
+            declared |= actions
+                .as_list()
+                .ok_or(Error::InvalidRequest)?
+                .iter()
+                .any(|value| value.as_str() == Some(action));
+        }
+        if declared {
+            admitted += 1;
+        }
+    }
+    Ok(admitted)
+}
 impl Provider {
     fn call(&self, path: &str, body: &[u8]) -> Result<Response, Error> {
         let decode = |_| Error::InvalidRequest;
@@ -125,46 +180,7 @@ impl Provider {
         };
         // Check the actual production client's dispatch trace against its
         // public descriptor, including the owning authorization declaration.
-        static DESCRIPTOR: std::sync::OnceLock<prost_reflect::DescriptorPool> =
-            std::sync::OnceLock::new();
-        let pool = DESCRIPTOR.get_or_init(|| {
-            prost_reflect::DescriptorPool::decode(acyclic_auth::FILE_DESCRIPTOR_SET)
-                .expect("public Auth descriptor")
-        });
-        let extension = pool
-            .get_extension_by_name("acyclic.validation.v1.http_routes")
-            .expect("public Auth HTTP operation declarations");
-        let options = pool
-            .get_file_by_name("auth/v1/auth.proto")
-            .expect("Auth file")
-            .options();
-        let routes = options.get_extension(&extension);
-        let admitted = routes
-            .as_list()
-            .expect("HTTP routes")
-            .iter()
-            .filter(|route| {
-                let route = route.as_message().expect("HTTP route");
-                route.get_field_by_name("method").expect("method").as_str() == Some("POST")
-                    && route.get_field_by_name("path").expect("path").as_str() == Some(path)
-                    && route
-                        .get_field_by_name("auth")
-                        .expect("auth")
-                        .as_list()
-                        .expect("route authorization")
-                        .iter()
-                        .any(|rule| {
-                            rule.as_message()
-                                .expect("authorization")
-                                .get_field_by_name("action")
-                                .expect("action")
-                                .as_list()
-                                .expect("actions")
-                                .iter()
-                                .any(|declared| declared.as_str() == Some(action))
-                        })
-            })
-            .count();
+        let admitted = declared_route_count(path, action)?;
         assert_eq!(admitted, 1, "missing or ambiguous descriptor for {path}");
         if !authorizes(&self.authority, action, &resource, PolicyDecision::Allow) {
             return response(403, PLANTED);
@@ -413,7 +429,15 @@ fn secrets_listing_pages_every_row_once_and_a_mid_listing_mutation_fails_typed()
             }
             let restarted = allowed.list(&list_request(None, 0)).await?;
             assert_eq!(restarted.generation, generation + 1);
-            assert_eq!(restarted.variables[0].identity().0, "b");
+            assert_eq!(
+                restarted
+                    .variables
+                    .first()
+                    .ok_or("restarted listing empty")?
+                    .identity()
+                    .0,
+                "b"
+            );
         }
         Ok(())
     })
@@ -618,7 +642,7 @@ fn secrets_redacts_requests_protobuf_and_every_provider_error() -> TestResult {
                 std::io::Error::other(PLANTED).into(),
             ))
         }),
-        Some(context.clone()),
+        Some(context),
     );
     let result = block_on(client.put(&request));
     assert_eq!(result, Err(Error::Credential));
@@ -746,9 +770,7 @@ mod http {
         }
     }
 
-    #[tokio::test]
-    async fn secrets_native_http_runs_conformance_and_redacts_errors_without_following_redirects()
-    -> TestResult {
+    fn assert_native_response_collection() -> TestResult {
         use futures::FutureExt;
 
         // Exercise the native response constructor used by HttpTransport::post,
@@ -829,6 +851,10 @@ mod http {
             assert!(original.iter().all(|byte| *byte == 7));
         }
 
+        Ok(())
+    }
+
+    fn assert_bearer_metadata_custody() -> TestResult {
         // The original bearer allocation survives the actual HTTP and gRPC
         // metadata constructors and clones. The old Vec route is a full-copy
         // negative control, measured independently of encoding the credential.
@@ -885,6 +911,10 @@ mod http {
             assert_eq!(retained.as_bytes().as_ptr(), pointer);
             assert_eq!(retained.as_bytes().len(), length + b"Bearer ".len());
         }
+        Ok(())
+    }
+
+    fn assert_native_request_body_custody() -> TestResult {
         // The shared native body must retain the encoded allocation through
         // transport clones and slices. Its control cost is independent of the
         // payload; an ordinary full copy is the allocation negative control.
@@ -914,8 +944,9 @@ mod http {
                 assert_eq!(current, controls, "body transfer copied payload bytes");
             }
             controls = Some(current);
+            let bytes = request.as_bytes().ok_or("native request body absent")?;
             let copied = acyclic_test_support::measure(|| {
-                std::hint::black_box(request.as_bytes().unwrap().to_vec());
+                std::hint::black_box(bytes.to_vec());
             });
             assert!(copied.bytes_total >= (length - 1) as u64);
             assert!(cost.bytes_total < copied.bytes_total);
@@ -924,6 +955,15 @@ mod http {
                 cost.count_total, cost.bytes_total, copied.count_total, copied.bytes_total,
             );
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn secrets_native_http_runs_conformance_and_redacts_errors_without_following_redirects()
+    -> TestResult {
+        assert_native_response_collection()?;
+        assert_bearer_metadata_custody()?;
+        assert_native_request_body_custody()?;
         let logs = Arc::new(Mutex::new(Vec::new()));
         let capture = logs.clone();
         let subscriber = tracing_subscriber::fmt()
