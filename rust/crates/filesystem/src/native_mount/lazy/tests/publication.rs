@@ -1348,7 +1348,7 @@ async fn post_ack_reads_keep_operation_custody_until_real_companion_settlement()
         // Native reads may advance access time. Every other source fact and
         // the original content pin must survive the custody fence unchanged.
         let pinned_identity = |(mut lookup, pin): (MountLookup, Option<MountContentPin>)| {
-            lookup.metadata.accessed_ns = crate::MetadataField::Unavailable;
+            lookup.metadata.accessed_ns = crate::kernel::MetadataField::Unavailable;
             (lookup, pin)
         };
         let expected_source = view
