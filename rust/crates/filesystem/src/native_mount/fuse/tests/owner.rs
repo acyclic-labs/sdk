@@ -699,10 +699,10 @@ fn controller(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
             // A physical notifier must also retire when its host dies while
             // blocked in the kernel; descriptor closure alone cannot abort
             // a connection whose notification syscall still borrows it.
-            nix::sys::signal::kill(
-                nix::unistd::Pid::from_raw(i32::try_from(host_id)?),
-                nix::sys::signal::Signal::SIGKILL,
-            )?;
+            // SAFETY: the retained pidfd identifies this live test-owned host.
+            if unsafe { libc::kill(i32::try_from(host_id)?, libc::SIGKILL) } < 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
         }
         child.kill()?;
         wait_exit(&thread_exit)?;
