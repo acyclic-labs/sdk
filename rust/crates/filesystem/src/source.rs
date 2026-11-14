@@ -1410,9 +1410,15 @@ mod tests {
     #[tokio::test]
     async fn source_rebinding_preserves_pending_watch_changes_and_rejects_another_workspace()
     -> Result<(), Box<dyn std::error::Error>> {
+        acyclic_native_runtime::initialize_native_io_services()?;
         let streams = Arc::new(acyclic_stream::MemoryStream::default());
         let objects = Arc::new(acyclic_objects::MemoryObjects::memory());
-        let original = Fs::from_memory_providers(streams.clone(), objects.clone());
+        let original_store = crate::Simulation::wrap(
+            crate::StreamAuthorityStore::new(streams.clone()),
+            crate::LogicalObjectStore::new(objects.clone()),
+        );
+        let (authority, blobs) = original_store.stores();
+        let original = Fs::new(authority, blobs, crate::EmbeddedCapabilities::MEMORY);
         let root = tempfile::tempdir()?;
         std::fs::write(root.path().join("value"), b"before")?;
         let workspace = Box::pin(original.attach_directory(
@@ -1422,7 +1428,12 @@ mod tests {
         ))
         .await?;
         let source = workspace.source().ok_or("source missing")?.clone();
-        let fresh = Fs::from_memory_providers(streams, objects);
+        let fresh_store = crate::Simulation::wrap(
+            crate::StreamAuthorityStore::new(streams),
+            crate::LogicalObjectStore::new(objects),
+        );
+        let (authority, blobs) = fresh_store.stores();
+        let fresh = Fs::new(authority, blobs, crate::EmbeddedCapabilities::MEMORY);
         let admitted = fresh
             .open_workspace(
                 "retained-source",
@@ -1449,6 +1460,16 @@ mod tests {
         let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
         source.changed_with_native_work(&work).await?;
+        for operation in [
+            crate::SimulationOperation::AuthorityHead,
+            crate::SimulationOperation::AuthorityAppend,
+            crate::SimulationOperation::ObjectPut,
+            crate::SimulationOperation::ObjectRead,
+            crate::SimulationOperation::ObjectReadMany,
+        ] {
+            original_store.schedule_next(operation, crate::SimulationFault::RejectBefore)?;
+        }
+        let fresh_before = fresh_store.trace()?.len();
         let mut bound = source.bind_workspace(admitted).await?;
         let key = IdempotencyKey::new();
         let ReconcileOutcome::Clean(generation) = bound.reconcile_with_key(key).await? else {
@@ -1467,6 +1488,17 @@ mod tests {
         };
         assert_eq!(generation.id(), replayed.id());
         assert_eq!(bound.state(), SourceState::Clean);
+        assert!(
+            fresh_store.trace()?[fresh_before..]
+                .iter()
+                .any(|entry| { entry.operation == crate::SimulationOperation::AuthorityAppend })
+        );
+        assert!(
+            original_store
+                .trace()?
+                .iter()
+                .all(|entry| entry.fault.is_none())
+        );
         Ok(())
     }
 
