@@ -187,18 +187,25 @@ async fn history() -> TestResult {
             "child creation escaped the parent's commit"
         );
         assert_eq!(cut.state().and_then(|state| state.cursor("inbox")), Some(0));
-        runtime.host(child.clone())?;
     }
-    futures::future::try_join_all(children.iter().map(|child| runtime.drain_actor(child))).await?;
+    // The real dispatcher must find both children through their shared
+    // shard's activation records; nothing hosts or drains them directly.
+    {
+        let mut serving = Box::pin(runtime.run(|_, _| {}));
+        for child in &children {
+            // Simulated time: a child nothing wakes fails here, not by hanging.
+            tokio::time::timeout(
+                std::time::Duration::from_secs(3600),
+                observe_while_running(
+                    serving.as_mut(),
+                    state_after(&store, child, |state| state.cursor("inbox") == Some(1)),
+                ),
+            )
+            .await
+            .map_err(|_| format!("composed child {} never woke", child.id()))??;
+        }
+    }
     for child in &children {
-        assert_eq!(
-            store
-                .load(child)
-                .await?
-                .state()
-                .and_then(|state| state.cursor("inbox")),
-            Some(1)
-        );
         assert_eq!(
             records(provider.as_ref(), &format!("out/{}", child.id())).await?,
             vec![Bytes::from_static(b"r0")]
