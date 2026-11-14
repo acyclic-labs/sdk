@@ -243,7 +243,8 @@ function buildFile(p) {
   };
   if (script) {
     // A build script compiles from its own module closure and runs over every package file.
-    const extra = extras(script, () => false);
+    // Its non-Rust package files are already in the compile_data glob.
+    const extra = extras(script, file => !file.endsWith(".rs") && !TEST_DIRS.test(file));
     rules.push(["cargo_build_script", [
       ["name", q("build_script")],
       ["crate_root", q(local(script.src_path))],
@@ -253,7 +254,7 @@ function buildFile(p) {
       ["pkg_name", q(p.name)],
       ["links", p.links ? q(p.links) : undefined],
       ...common(script),
-      ["build_script_env", scriptEnv.get(p.id).length ? `PACKAGE_ENV | ${platformSelect(p.id, vars => Object.fromEntries(vars.map(([variable, file]) => [variable, `$\${pwd}/$(execpath ${file})`])))}` : "PACKAGE_ENV"],
+      ["build_script_env", scriptEnv.get(p.id).length ? `PACKAGE_ENV | ${platformSelect(p.id, vars => Object.fromEntries(vars.map(([variable, file]) => [variable, `$(execpath ${file})`])))}` : "PACKAGE_ENV"],
       ...deps(["build"], { deps: "build = True", procMacros: "build_proc_macro = True", aliases: "build = True, build_proc_macro = True" }),
     ]]);
   }
@@ -275,7 +276,10 @@ function buildFile(p) {
       ...deps(["dev"], { deps: "normal_dev = True", procMacros: "proc_macro_dev = True", aliases: "normal_dev = True, proc_macro_dev = True" }),
     ]);
   }
-  for (const bin of p.targets.filter(t => t.kind.includes("bin"))) {
+  // Targets whose required features the package's resolved features enable, as Cargo builds them.
+  const enabled = new Set(features[0]);
+  const buildable = t => (t["required-features"] ?? []).every(f => enabled.has(f));
+  for (const bin of p.targets.filter(t => t.kind.includes("bin") && buildable(t))) {
     rules.push(["rust_binary", [
       ["name", q(bin.name)],
       ["crate_root", q(local(bin.src_path))],
@@ -294,8 +298,7 @@ function buildFile(p) {
         [...ownLib, ...ownDeps], ownMacro),
     ]);
   }
-  const enabled = new Set(features[0]);
-  for (const target of p.targets.filter(t => t.kind.includes("test") && (t["required-features"] ?? []).every(f => enabled.has(f)))) {
+  for (const target of p.targets.filter(t => t.kind.includes("test") && buildable(t))) {
     const crateRoot = local(target.src_path), testDir = crateRoot.startsWith("//") ? "." : path.posix.dirname(crateRoot);
     const extra = extras(target, file => testDir === "." || file.startsWith(`${testDir}/`));
     test(lib && target.name === crateName(lib) ? `${target.name}_integration` : target.name, [
