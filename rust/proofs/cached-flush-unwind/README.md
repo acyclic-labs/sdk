@@ -25,7 +25,7 @@ A timeout, compiler error, signal or zero selected tests is not evidence.
 
 ```sh
 git apply rust/proofs/cached-flush-unwind/mutation.patch
-cargo test --locked -p acyclic-native-runtime --test cached_flush public_leases_keep_unfinished_flushes_until_physical_close -- --exact
+cargo test --locked -p acyclic-native-runtime --test main cached_flush::public_leases_keep_unfinished_flushes_until_physical_close -- --exact
 # Restore descriptor/cache.rs from the tested source commit, then run the same control.
 ```
 

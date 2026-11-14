@@ -13,8 +13,6 @@ use std::{
 use tokio::io::{AsyncWrite as _, AsyncWriteExt as _};
 use tracing_subscriber::{Layer as _, layer::SubscriberExt as _};
 
-acyclic_test_support::counting_allocator!();
-
 fn disabled_event() {
     tracing::info!("disabled {}", 19);
 }

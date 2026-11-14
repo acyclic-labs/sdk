@@ -1,5 +1,6 @@
 [package]
 name = "acyclic-observability"
+autotests = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -32,3 +33,7 @@ tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
+
+[[test]]
+name = "main"
+path = "tests/main.rs"

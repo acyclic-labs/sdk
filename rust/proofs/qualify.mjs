@@ -1042,10 +1042,10 @@ const claims = {
   ],
   "seeded-runtime-configuration": [
     "rust/crates/native-runtime/src/testing.rs", "acyclic-native-runtime",
-    "seeded_runtime_requires_explicit_executor_configuration",
+    "seeded_runtime::seeded_runtime_requires_explicit_executor_configuration",
     "unconfigured replay admitted an unseeded executor", ["--features", "test-support"],
     {
-      target: ["--test", "seeded_runtime"],
+      target: ["--test", "main"],
       // This claim exercises refusal when Tokio's unstable seed API is absent.
       env: { RUSTFLAGS: "-Dunexpected_cfgs", CARGO_ENCODED_RUSTFLAGS: "-Dunexpected_cfgs" },
     },

@@ -497,8 +497,8 @@ export function qualifyNativeHostEvents(run = runCommand) {
 }
 
 export function qualifyNativeOwnerEnvelope(run = runCommand) {
-  return qualifyLoom("acyclic-native-runtime", "native_owner_record", [], run, {
-    targetCfg: [], filters: ["retained_owner_corpus_satisfies_the_shared_oracle"],
+  return qualifyLoom("acyclic-native-runtime", "main", [], run, {
+    targetCfg: [], filters: ["native_owner_record::retained_owner_corpus_satisfies_the_shared_oracle"],
   });
 }
 
