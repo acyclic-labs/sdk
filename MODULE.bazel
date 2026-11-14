@@ -1,5 +1,6 @@
 module(name = "acyclic_sdk")
 
+bazel_dep(name = "platforms", version = "1.0.0")
 bazel_dep(name = "rules_rust", version = "0.75.0")
 bazel_dep(name = "toolchains_llvm", version = "1.13.0")
 

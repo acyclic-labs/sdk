@@ -36,14 +36,39 @@ fn rust_source_subtree(root: &Path, path: &Path) -> bool {
         && parts.next() == Some(std::ffi::OsStr::new("src"))
 }
 
+/// The path with `.` and `..` resolved by name, never through the filesystem.
+fn logical(path: &Path) -> PathBuf {
+    let mut normal = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !normal.pop() {
+                    normal.push("..");
+                }
+            }
+            other => normal.push(other),
+        }
+    }
+    normal
+}
+
+/// Whether `path` names a location under `root` by its logical path. Sources
+/// may be staged as links (Bazel's sandbox), so containment is a property of
+/// the name: links pass, and a name that leaves the root through `..` fails.
+fn contained(root: &Path, path: &Path) -> bool {
+    logical(path).starts_with(root)
+}
+
 fn collect(
     root: &Path,
     directory: &Path,
     active: &mut BTreeSet<PathBuf>,
     files: &mut Vec<PathBuf>,
 ) -> io::Result<()> {
+    // Cycles are found by real path; containment is judged by name.
     let real = directory.canonicalize()?;
-    if !real.starts_with(root) || !active.insert(real.clone()) {
+    if !contained(root, directory) || !active.insert(real.clone()) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "source directory escapes or cycles",
@@ -65,8 +90,12 @@ fn collect(
         if metadata.is_dir() {
             collect(root, &path, active, files)?;
         } else if path.extension().is_some_and(|extension| extension == "rs") {
-            // The file is named inside a held directory of the root. Build
-            // systems may stage it as a link, so its bytes are read by name.
+            if !contained(root, &path) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "source file escapes repository",
+                ));
+            }
             files.push(path);
         }
     }
@@ -81,7 +110,7 @@ fn entry(name: &str) -> String {
 }
 
 pub fn generate(root: &Path, output: &Path) -> io::Result<()> {
-    let root = root.canonicalize()?;
+    let root = logical(&std::path::absolute(root)?);
     let mut files = Vec::new();
     let mut active = BTreeSet::new();
     for name in ROOTS {
@@ -119,6 +148,20 @@ mod tests {
         fn drop(&mut self) {
             fs::remove_dir_all(&self.0).expect("remove catalog fixture");
         }
+    }
+
+    #[test]
+    fn containment_is_logical() {
+        let root = Path::new("/repository");
+        assert!(contained(
+            root,
+            Path::new("/repository/rust/crates/./a/../b.rs")
+        ));
+        assert!(!contained(
+            root,
+            Path::new("/repository/rust/../../outside.rs")
+        ));
+        assert!(!contained(root, Path::new("/repository-sibling/a.rs")));
     }
 
     #[test]

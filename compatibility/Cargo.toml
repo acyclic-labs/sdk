@@ -26,11 +26,11 @@ protoc-bin-vendored-macos-x86_64 = "=3.3.0"
 protoc-bin-vendored-macos-aarch_64 = "=3.3.0"
 protoc-bin-vendored-win32 = "=3.3.0"
 
-# Bazel stages these pinned build-dependency files for the build script, named by
-# variable as `package/path` (see scripts/bazel-build-files.mjs).
-[package.metadata.bazel.build-script-env]
-ACYCLIC_PROTOC_EXECUTABLE = "protoc-bin-vendored-linux-x86_64/bin/protoc"
-ACYCLIC_PROTOC_INCLUDE = "protoc-bin-vendored-win32/include"
+# Bazel sets each build-script variable to a vendored file for the configured
+# platform, as `package/path`; any other platform fails to configure.
+[package.metadata.bazel.build-script-env.linux-x86_64]
+PROTOC = "protoc-bin-vendored-linux-x86_64/bin/protoc"
+PROTOC_INCLUDE = "protoc-bin-vendored-linux-x86_64/include"
 
 [lints]
 workspace = true

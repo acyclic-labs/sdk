@@ -97,9 +97,10 @@ for (const id of members) {
     if (ownerOf(file) !== dir(packages.get(id))) fileLabel(file);
   }
 }
-// Files of third-party build dependencies that a build script reads, from
-// [package.metadata.bazel.build-script-env]: VARIABLE = "package/path". Each file is exported from
-// the package's crate universe repository and named to the script by its execution path.
+// Files of third-party build dependencies that a build script reads, per platform, from
+// [package.metadata.bazel.build-script-env.<os>-<cpu>]: VARIABLE = "package/path". Each file is
+// exported from the package's crate universe repository and named to the script by its execution
+// path. A platform the table does not name fails to configure, never builds with another's files.
 const staged = new Map();
 function stagedFile(spec) {
   const [, name, file] = /^([^/]+)\/(.+)$/.exec(spec) ?? [];
@@ -110,10 +111,21 @@ function stagedFile(spec) {
   staged.get(repo).files.add(file);
   return `@${repo}//:${file}`;
 }
+const scriptPlatforms = new Set();
 const scriptEnv = new Map([...members].map(id => {
   const p = packages.get(id);
-  return [id, Object.entries(p.metadata?.bazel?.["build-script-env"] ?? {}).map(([variable, spec]) => [variable, stagedFile(spec)])];
+  return [id, Object.entries(p.metadata?.bazel?.["build-script-env"] ?? {}).map(([platform, variables]) => {
+    if (!/^(linux|macos|windows)-(x86_64|aarch64)$/.test(platform)) throw new Error(`STEP_FAILED bazel-build-files: ${p.name} build-script-env names unknown platform ${platform}`);
+    scriptPlatforms.add(platform);
+    return [platform, Object.entries(variables).map(([variable, spec]) => [variable, stagedFile(spec)])];
+  })];
 }));
+// select() over the platforms a package names, with no default.
+const platformSelect = (id, render) => `select(${q(Object.fromEntries(scriptEnv.get(id).map(([platform, vars]) => [`//:${platform}`, render(vars)])))}, no_match_error = ${q(`${packages.get(id).name}: build-script-env names no file for this platform`)})`;
+const platformRules = [...scriptPlatforms].sort().map(platform => {
+  const [os, cpu] = platform.split("-");
+  return `\n${rule("config_setting", [["name", q(platform)], ["constraint_values", list([`@platforms//os:${os}`, `@platforms//cpu:${cpu}`])]])}\n`;
+}).join("");
 // A package with [package.metadata.bazel] repository-rust-sources = true compiles and builds
 // from every Rust source in the repository; each package then exports its own as `rust_sources`.
 const readsRepository = p => p.metadata?.bazel?.["repository-rust-sources"] === true;
@@ -137,7 +149,7 @@ function perTriple(values, render) {
 }
 const list = items => (items.length ? `[\n${items.map(i => `        ${q(i)},\n`).join("")}    ]` : "[]");
 const glob = (include, exclude) => `glob(${q(include)}${exclude.length ? `, exclude = ${q(exclude)}` : ""}, allow_empty = True)`;
-const plus = (...parts) => parts.filter(p => p !== "[]").join(" + ") || "[]";
+const plus = (...parts) => parts.filter(p => p !== undefined && p !== "[]").join(" + ") || "[]";
 const rule = (kind, attrs) => `${kind}(\n${attrs.filter(([, v]) => v !== undefined && v !== "[]").map(([k, v]) => `    ${k} = ${v},\n`).join("")})\n`;
 
 // First-party edges of one member for the selected dependency kinds, per triple.
@@ -211,11 +223,11 @@ function buildFile(p) {
       ["crate_root", q(local(script.src_path))],
       ["srcs", list([local(script.src_path), ...modules])],
       ["compile_data", glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB])],
-      ["data", plus(glob(["**"], ["BUILD.bazel", ...NOT_LIB]), list([...scriptEnv.get(p.id).map(([, file]) => file), ...(readsRepository(p) ? repositorySources : [])]))],
+      ["data", plus(glob(["**"], ["BUILD.bazel", ...NOT_LIB]), list(readsRepository(p) ? repositorySources : []), scriptEnv.get(p.id).length ? platformSelect(p.id, vars => vars.map(([, file]) => file)) : undefined)],
       ["pkg_name", q(p.name)],
       ["links", p.links ? q(p.links) : undefined],
       ...common(script),
-      ["build_script_env", scriptEnv.get(p.id).length ? `PACKAGE_ENV | ${q(Object.fromEntries(scriptEnv.get(p.id).map(([variable, file]) => [variable, `\${pwd}/$(execpath ${file})`])))}` : "PACKAGE_ENV"],
+      ["build_script_env", scriptEnv.get(p.id).length ? `PACKAGE_ENV | ${platformSelect(p.id, vars => Object.fromEntries(vars.map(([variable, file]) => [variable, `\${pwd}/$(execpath ${file})`])))}` : "PACKAGE_ENV"],
       ...deps(["build"], { deps: "build = True", procMacros: "build_proc_macro = True", aliases: "build = True, build_proc_macro = True" }),
     ]]);
   }
@@ -332,7 +344,7 @@ function moduleFile() {
 
 const files = new Map([
   ["cargo.MODULE.bazel", moduleFile()],
-  ["BUILD.bazel", `${HEADER}\nexports_files(${list(["Cargo.lock", "Cargo.toml"])})\n${sourcesRule}${exportsRule("")}`],
+  ["BUILD.bazel", `${HEADER}\nexports_files(${list(["Cargo.lock", "Cargo.toml"])})\n${platformRules}${sourcesRule}${exportsRule("")}`],
 ]);
 for (const id of members) files.set(`${dir(packages.get(id))}/BUILD.bazel`, buildFile(packages.get(id)));
 // A generated file whose package left the workspace is stale.
