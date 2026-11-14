@@ -274,6 +274,66 @@ pub async fn replayed_delivery<T: Backend + ?Sized>(target: &T, run: &str) -> Re
             .map_err(Error::from)?
             == 3,
         "replay appended another inbox record",
+    )?;
+
+    // Resume normal traffic with both original pumps running concurrently.
+    // The actor publishes the next outbox record as forwarding and draining
+    // resume their original prefixes; no reconnect or readiness timer helps it.
+    let mut live = messages[1].clone();
+    live.request.idempotency_key = key(&root, "live-input")?;
+    let command = serde_json::to_string(&RouteCommand {
+        root,
+        envelope: live.encode().to_vec(),
+    })
+    .map_err(|_| Error::Invalid("route command cannot encode"))?;
+    let publish = async {
+        sender.send(&format!("route {command}")).await?;
+        sender.expect(&["r0", "r1", "r2"]).await
+    };
+    let forward = crate::route::forward(
+        provider.as_ref(),
+        &paths,
+        &source,
+        async |_| Err(crate::route::Error::InvalidRecord),
+        async |message| {
+            let destination = Placement::read(provider.as_ref(), &paths, &message.to)
+                .await?
+                .ok_or(crate::route::Error::InvalidRecord)?;
+            message
+                .publish_relay(provider.as_ref(), &paths, &destination.node, Vec::new())
+                .await
+        },
+    );
+    let drain = crate::route::drain(provider.as_ref(), &paths, &destination, async |record| {
+        if record.envelope != live {
+            return Err(crate::route::Error::InvalidRecord);
+        }
+        receiver.deliver(record.envelope.request).await?;
+        Ok(())
+    });
+    futures::try_join!(
+        publish,
+        until_ack(
+            provider.as_ref(),
+            paths.outbox_cursor(&source).map_err(Error::from)?,
+            2,
+            forward
+        ),
+        until_ack(
+            provider.as_ref(),
+            paths.relay_cursor(&destination).map_err(Error::from)?,
+            2,
+            drain
+        ),
+    )?;
+    receiver.expect(&["r0", "r1", "r2", "r3"]).await?;
+    require(
+        provider
+            .tail(receiver.inbox.clone())
+            .await
+            .map_err(Error::from)?
+            == 4,
+        "live routing duplicated or lost an inbox record",
     )
 }
 

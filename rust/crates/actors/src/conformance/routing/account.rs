@@ -281,13 +281,9 @@ pub async fn credited_delivery<T: Backend + ?Sized>(target: &T, run: &str) -> Re
         0,
         drain,
     );
-    let (admitted, drained) = futures::join!(pending, drained);
-    drained?;
+    let (admitted, ()) = futures::try_join!(async { pending.await.map_err(violation) }, drained,)?;
     require(
-        matches!(
-            admitted.map_err(violation)?,
-            Routed::Relayed { relay_seq: 1, .. }
-        ),
+        matches!(admitted, Routed::Relayed { relay_seq: 1, .. }),
         "drain event did not release the waiting send",
     )?;
     require(
