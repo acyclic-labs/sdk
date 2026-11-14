@@ -37,7 +37,9 @@ pub use resources::{
     ResourceAuthorization, ResourceFollowRequest, ResourceProvider, ResourceRevalidation,
     ResourceSubscription,
 };
-pub use sockets::{PreparedSocketOpen, SocketChannel, SocketInbound, SocketProvider};
+pub use sockets::{
+    PreparedSocketOpen, SocketAuthorization, SocketChannel, SocketInbound, SocketProvider,
+};
 mod client;
 mod read_provider;
 pub use read_provider::ReadProvider;

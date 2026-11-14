@@ -53,16 +53,9 @@ impl PreparedSocketOpen for EchoOpen {
 
     fn open(
         self: Box<Self>,
-        authorization: CallAuthorization,
+        authorization: &dyn SocketAuthorization,
     ) -> Result<SocketChannel, StreamError> {
-        let attributes = acyclic_auth::contract::RecordAttributes::try_new(vec![])
-            .map_err(|_| StreamError::InvalidArgument)?;
-        authorization.authorize(
-            "actors:/fixture",
-            &[],
-            &attributes,
-            acyclic_auth::authority::PolicyDecision::Allow,
-        )?;
+        authorization.authorize_socket(b"account", "actors:/fixture")?;
         let (frames, echoed) = mpsc::unbounded();
         let hello = stream::once(future::ready(Ok(Bytes::from_static(b"hello"))));
         Ok(SocketChannel {

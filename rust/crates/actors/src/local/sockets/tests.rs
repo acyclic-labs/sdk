@@ -249,6 +249,78 @@ async fn socket_ledger_exhaustion_preserves_committed_history() -> TestResult {
 }
 
 #[tokio::test]
+async fn native_socket_admission_rechecks_the_retained_target_before_installing() -> TestResult {
+    struct Admission {
+        current: AtomicBool,
+    }
+    impl SocketAuthorization for Admission {
+        fn authorize_socket(&self, account: &[u8], resource: &str) -> Result<(), StreamError> {
+            if self.current.load(Ordering::Acquire)
+                && account == b"account"
+                && resource == "actors:/sockets"
+            {
+                Ok(())
+            } else {
+                Err(StreamError::AccessDenied)
+            }
+        }
+    }
+    let sockets = Arc::new(
+        Sockets::open(
+            Store::new(Arc::new(MemoryStream::default()), root()?),
+            Arc::new(PlatformExecutor),
+            Arc::new(SystemClock),
+        )
+        .await?,
+    );
+    let admission = Admission {
+        current: AtomicBool::new(true),
+    };
+    let mut open = SocketOpen {
+        actor: ActorReference::new(b"account", b"sockets", b"target")?,
+        subscription: "inbox".into(),
+        app_channel: None,
+        subprotocols: Vec::new(),
+        headers: Vec::new(),
+        resume_after: 0,
+        reconnected: false,
+    };
+    // Validation retains the original target; losing authority while the host
+    // admits placement must refuse before allocating or publishing a socket.
+    let prepared = sockets.clone().prepare(open.encode())?;
+    admission.current.store(false, Ordering::Release);
+    assert!(matches!(
+        prepared.open(&admission),
+        Err(StreamError::AccessDenied)
+    ));
+    assert!(sockets.is_empty());
+    assert_eq!(sockets.shared.next.load(Ordering::Relaxed), 0);
+    admission.current.store(true, Ordering::Release);
+    for actor in [
+        ActorReference::new(b"foreign", b"sockets", b"target")?,
+        ActorReference::new(b"account", b"ungranted", b"target")?,
+    ] {
+        open.actor = actor;
+        assert!(matches!(
+            sockets.clone().prepare(open.encode())?.open(&admission),
+            Err(StreamError::AccessDenied)
+        ));
+    }
+    assert_eq!(sockets.shared.next.load(Ordering::Relaxed), 0);
+    open.actor = ActorReference::new(b"account", b"sockets", b"target")?;
+    let channel = sockets.clone().prepare(open.encode())?.open(&admission)?;
+    assert_eq!(sockets.len(), 1);
+    // The original inbound owner retires an open abandoned before publication.
+    drop(channel);
+    assert!(sockets.is_empty());
+    assert!(matches!(
+        records(&sockets.shared.store, &sockets.shared.layout.segment(1)?).await,
+        Err(Error::Stream(StreamError::NotFound))
+    ));
+    Ok(())
+}
+
+#[tokio::test]
 async fn socket_admission_binds_namespace_grants_to_the_certified_account() -> TestResult {
     let decode_work = || crate::sockets::OPEN_DECODE_WORK.with(std::cell::Cell::get);
     let provider = Arc::new(MemoryStream::default());
