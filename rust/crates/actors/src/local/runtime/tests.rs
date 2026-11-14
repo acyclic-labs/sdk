@@ -817,6 +817,29 @@ async fn a_deleted_actor_is_terminal_and_leaves_no_orphans() -> TestResult {
         crate::local::tests::orphans(&store, &[actor]).await?,
         Vec::<String>::new()
     );
+    // A closed original reservation must retain its actual acquisition failure
+    // without consuming the next actor's input or changing classification.
+    let refused = spawn_with(&store, "closed-admission", &[b"emit"]).await?;
+    runtime.track(refused.clone())?;
+    runtime.admission[0]
+        .as_ref()
+        .ok_or("missing configured credit")?
+        .close();
+    let error = runtime.drain_actor(&refused).await.unwrap_err();
+    assert_eq!(error.kind(), "invalid");
+    assert!(
+        std::error::Error::source(&error)
+            .is_some_and(|source| source.is::<tokio::sync::AcquireError>())
+    );
+    assert_eq!(
+        store
+            .load(&refused)
+            .await?
+            .state()
+            .and_then(|state| state.cursor("inbox")),
+        Some(0)
+    );
+
     Ok(())
 }
 

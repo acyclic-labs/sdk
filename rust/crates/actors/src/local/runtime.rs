@@ -1528,7 +1528,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     )
                     .await
                     .map(Some)
-                    .map_err(|_| Error::Invalid("runtime admission is closed")),
+                    .map_err(Error::AdmissionClosed),
                     None => Ok(None),
                 };
                 let result = match result.and_then(|admission| {

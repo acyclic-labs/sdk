@@ -156,6 +156,9 @@ pub enum Error {
     /// control write or second deletion.
     #[error("actor is deleted")]
     Deleted,
+    /// The original configured delivery-credit owner closed admission.
+    #[error("invalid actor transition: runtime admission is closed")]
+    AdmissionClosed(#[source] tokio::sync::AcquireError),
     /// A request contradicts the durable state machine.
     #[error("invalid actor transition: {0}")]
     Invalid(&'static str),
@@ -185,7 +188,7 @@ impl Error {
             Self::InvocationFailed { .. } => "invocation_failed",
             Self::AlarmNotDue { .. } => "alarm_not_due",
             Self::Deleted => "deleted",
-            Self::Invalid(_) => "invalid",
+            Self::Invalid(_) | Self::AdmissionClosed(_) => "invalid",
         }
     }
 }
