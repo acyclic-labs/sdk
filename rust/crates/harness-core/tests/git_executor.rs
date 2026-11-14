@@ -2494,17 +2494,7 @@ three
                 .await?
                 .bytes
                 .as_ref(),
-            b"<<<<<<< ours
-PARENT ONE
-two
-three
-||||||| original
-=======
-one
-two
-THREE
->>>>>>> theirs
-",
+            b"<<<<<<< ours\nPARENT ONE\ntwo\nthree\n||||||| original\n=======\none\ntwo\nTHREE\n>>>>>>> theirs\n",
             "materialized={materialized}"
         );
     }
