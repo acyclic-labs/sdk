@@ -9,7 +9,6 @@ proptest::proptest! {
         payload in proptest::collection::vec(proptest::num::u8::ANY, 1..128),
         identity in proptest::collection::vec(proptest::num::u8::ANY, 1..32),
     ) {
-        use super::StreamProvider as _;
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
         runtime.block_on(async {
             for hosted in [false, true] {
