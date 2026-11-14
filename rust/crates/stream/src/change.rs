@@ -91,11 +91,8 @@ impl Drop for Change {
 }
 // Both publication and final producer retirement transfer wake custody outside
 // the original lock; callbacks may immediately re-enter the event.
-fn dispatch(mut waiters: FixedIndex<Option<Waker>, (), 8>) {
-    let extracted = waiters
-        .extract_prefix(&[], |_| {})
-        .expect("empty prefix fits every key");
-    for entry in extracted.into_entries(|_| {}) {
+fn dispatch(waiters: FixedIndex<Option<Waker>, (), 8>) {
+    for entry in waiters.into_entries(|_| {}) {
         let (_, wake, ()) = entry.into_parts();
         if let Some(wake) = wake {
             wake.wake();
@@ -105,7 +102,7 @@ fn dispatch(mut waiters: FixedIndex<Option<Waker>, (), 8>) {
 
 // Registration nodes are unmetered host observation metadata, shared by the
 // subscriptions of this event, with no configured admission limit. Radix
-// extraction keeps each waker alive until after the lock is released;
+// iteration keeps each waker alive until after the lock is released;
 // retirement never allocates or runs a waker under that lock.
 struct RegistrationWork;
 impl IndexWork for RegistrationWork {

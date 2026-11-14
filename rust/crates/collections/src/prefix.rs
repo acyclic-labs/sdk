@@ -61,14 +61,11 @@ impl<V, A, const N: usize> ExtractedPrefix<V, A, N> {
     /// The infallible retained-owner `visit` sink observes node examinations,
     /// including retirement on iterator drop. It never admits fresh work.
     pub fn into_entries<F: FnMut(u64)>(self, visit: F) -> ExtractedEntries<V, A, N, F> {
-        ExtractedEntries {
-            entries: self.into_index(),
-            visit,
-        }
+        self.into_index().into_entries(visit)
     }
 }
 
-/// An owned, allocation-free retirement cursor over one extracted prefix.
+/// An owned, allocation-free retirement cursor over a fixed-width index.
 /// Its original subtree remains private while it is consumed or retired.
 pub struct ExtractedEntries<V, A, const N: usize, F: FnMut(u64)> {
     entries: FixedIndex<V, A, N>,
@@ -122,6 +119,19 @@ impl<V, A, const N: usize, F: FnMut(u64)> Drop for ExtractedEntries<V, A, N, F> 
 }
 
 impl<V, A, const N: usize> FixedIndex<V, A, N> {
+    /// Consumes all entries in unsigned big-endian key order without allocation.
+    ///
+    /// This uses the same constant-space retirement cursor as extracted prefixes.
+    /// Entries retain their original funding through value destruction; dropping
+    /// the iterator retires every remaining node through the retained `visit` sink.
+    /// Call this after leaving any lock that payload destruction or funding may re-enter.
+    pub fn into_entries<F: FnMut(u64)>(self, visit: F) -> ExtractedEntries<V, A, N, F> {
+        ExtractedEntries {
+            entries: self,
+            visit,
+        }
+    }
+
     /// Extracts all original keys less than or equal to `through`.
     ///
     /// Like byte-prefix extraction, this is infallible retained-owner cleanup:
