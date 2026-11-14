@@ -11,6 +11,6 @@
     {"when":{"user":"NESTED_ROOT"},"text":["NESTED_ROOT_DONE"]}
   ]},
   "inputs":[{"mode":"headless","text":"NESTED_ROOT","answer":"NESTED_ROOT_DONE"}],
-  "assert":{"requests":7,"tool_contains":["NESTED_LEAF_DONE","NESTED_WORKER_DONE"]},
+  "assert":{"requests":7,"tool_contains":["NESTED_LEAF_DONE","NESTED_WORKER_DONE"],"each_model_contains":["Quality first, then latency; cost is not a goal.","atomic","parallel fork","speculative fork","sequence"]},
   "physical": true
 }

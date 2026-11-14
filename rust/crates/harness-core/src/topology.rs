@@ -33,6 +33,16 @@ pub enum Mode {
 }
 
 impl Topology {
+    /// Whether this run exposes an agent coordination tool to this agent.
+    #[must_use]
+    pub fn offers_tool(&self, name: &str, root: bool) -> bool {
+        if matches!(self.mode, Mode::Single) && crate::tools::AGENT_TOOLS.contains(&name) {
+            false
+        } else {
+            name != "spawn" || self.offers_spawn(root)
+        }
+    }
+
     /// Rejects unsupported persisted formats before execution.
     pub fn validate(&self) -> Result<()> {
         if self.version != 1 {

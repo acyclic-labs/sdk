@@ -89,6 +89,15 @@ pub fn role_models() -> Result<std::collections::BTreeSet<String>> {
     Ok(models)
 }
 const ROOT: &str = include_str!("seed/templates/orchestrator/AGENT.md");
+const SINGLE: &str = include_str!("seed/templates/single/AGENT.md");
+
+fn root_source(topology: Option<&crate::topology::Topology>) -> &'static [u8] {
+    if topology.is_some_and(|policy| matches!(policy.mode, crate::topology::Mode::Single)) {
+        SINGLE.as_bytes()
+    } else {
+        ROOT.as_bytes()
+    }
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Creation {
@@ -156,7 +165,7 @@ pub fn root() -> Result<CreationConfig> {
 pub(crate) fn root_with_topology(
     topology: Option<&crate::topology::Topology>,
 ) -> Result<CreationConfig> {
-    let root = parse(ROOT.as_bytes())?;
+    let root = parse(root_source(topology))?;
     Ok(CreationConfig {
         question_plugin: false,
         topology: topology.cloned(),
@@ -185,7 +194,7 @@ pub(crate) async fn admit_child(
                 .await?;
             bytes.as_ref()
         }
-        None => ROOT.as_bytes(),
+        None => root_source(parent.topology.as_ref()),
     };
     let parent = parse(source)?;
     if !parent.may_spawn.iter().any(|allowed| allowed == name) {
@@ -287,7 +296,7 @@ pub(crate) async fn directive(
                 .await?;
             bytes.as_ref()
         }
-        None => ROOT.as_bytes(),
+        None => root_source(creation.topology.as_ref()),
     };
     let capabilities = parse(source)?;
     let mut digest = blake3::Hasher::new();
@@ -301,6 +310,17 @@ pub(crate) async fn directive(
     let text = std::str::from_utf8(&source[body..])
         .map_err(|_| Error::Invalid("template directive is not UTF-8".into()))?
         .trim();
+    let text = if !capabilities.may_spawn.is_empty()
+        && creation
+            .topology
+            .as_ref()
+            .is_none_or(|policy| policy.offers_spawn(creation.template.is_none()))
+    {
+        format!("{text}\n\n{}", include_str!("seed/delegation.md").trim())
+    } else {
+        text.to_owned()
+    };
+    digest.update(text.as_bytes());
     Ok(Directive {
         digest: digest.finalize().to_hex().to_string(),
         allowed_tools: capabilities.allowed_tools,
@@ -309,7 +329,7 @@ pub(crate) async fn directive(
             messages: (!text.is_empty())
                 .then(|| ModelMessage {
                     role: ModelRole::System,
-                    content: ModelContent::Text(text.to_owned()),
+                    content: ModelContent::Text(text),
                 })
                 .into_iter()
                 .collect(),

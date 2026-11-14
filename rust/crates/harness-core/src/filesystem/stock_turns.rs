@@ -429,12 +429,11 @@ impl TurnExecutors for StockExecutors {
                 .agent_tools
                 .iter()
                 .filter(|name| {
-                    name.as_str() != "spawn"
-                        || agent
-                            .profile
-                            .as_ref()
-                            .and_then(|profile| profile.topology.as_ref())
-                            .is_none_or(|topology| topology.offers_spawn(agent.parent.is_none()))
+                    agent
+                        .profile
+                        .as_ref()
+                        .and_then(|profile| profile.topology.as_ref())
+                        .is_none_or(|topology| topology.offers_tool(name, agent.parent.is_none()))
                 })
                 .cloned()
                 .collect::<Vec<_>>();

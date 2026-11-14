@@ -113,13 +113,12 @@ impl LocalHarness {
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ContextEpoch>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             let mut tools = self.declared_tools()?;
-            if agent
+            if let Some(topology) = agent
                 .profile
                 .as_ref()
                 .and_then(|profile| profile.topology.as_ref())
-                .is_some_and(|topology| !topology.offers_spawn(agent.parent.is_none()))
             {
-                tools.retain(|tool| tool.name != "spawn");
+                tools.retain(|tool| topology.offers_tool(&tool.name, agent.parent.is_none()));
             }
             let operation = ContextEpoch::operation(agent.path.as_str(), agent.checkpoint)?;
             ContextEpoch::open(publisher, operation, self.limits, || {

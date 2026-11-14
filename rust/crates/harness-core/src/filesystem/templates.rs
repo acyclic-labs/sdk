@@ -107,19 +107,27 @@ mod tests {
             crate::conversation::MAX_EXACT_JS_INTEGER,
             None,
         )?;
-        // Actual seeded root and child role directives remain their selected
-        // instructions. The spawn capability never appends delegation orders.
+        // Coordination instructions follow the run's admitted spawn capability.
         for mode in ["single", "team:2", "swarm"] {
             let topology = crate::topology::Topology::select(mode)?;
             for creation in [&parent, &original] {
-                let expected = crate::templates::directive(creation, reader.as_ref()).await?;
                 let mut configured = creation.clone();
                 configured.topology = Some(topology.clone());
                 let actual = crate::templates::directive(&configured, reader.as_ref()).await?;
-                assert_eq!(
-                    actual.context.messages, expected.context.messages,
-                    "mode={mode}"
-                );
+                let can_spawn = topology.offers_spawn(creation.template.is_none());
+                for message in &actual.context.messages {
+                    let crate::model::ModelContent::Text(text) = &message.content else {
+                        panic!("role directive must be text");
+                    };
+                    for step in ["atomic", "parallel fork", "speculative fork", "sequence"] {
+                        assert_eq!(text.contains(step), can_spawn, "{mode}: {step}");
+                    }
+                    if mode == "single" && creation.template.is_none() {
+                        for word in ["delegat", "spawn", "orchestrat"] {
+                            assert!(!text.contains(word), "single root contains {word}");
+                        }
+                    }
+                }
             }
         }
         let writer = super::super::FilesystemContentPublisher::new(
@@ -170,10 +178,10 @@ mod tests {
             None,
         )?;
         let directive = crate::templates::directive(&selected, reader.as_ref()).await?;
-        assert_eq!(
-            directive.context.messages[0].content,
-            crate::model::ModelContent::Text("Retain this exact directive.".into())
-        );
+        assert!(matches!(
+            &directive.context.messages[0].content,
+            crate::model::ModelContent::Text(text) if text.starts_with("Retain this exact directive.") && text.contains("speculative fork")
+        ));
         // A child reads its original parent-home template by the same exact
         // external-file grant its turn uses, without gaining that whole volume.
         let child = path
