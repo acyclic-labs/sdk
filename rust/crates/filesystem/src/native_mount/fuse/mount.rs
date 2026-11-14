@@ -205,6 +205,7 @@ impl Mount {
             acyclic_native_runtime::ProcessExitAction::spawn(&cleanup, &work.runtime_meter())?
         };
         if let Some(mut previous) = self.exit_action.replace(action) {
+            // The acknowledged successor already holds the original fence.
             previous.cancel()?;
         }
         Ok(())

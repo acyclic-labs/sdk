@@ -131,8 +131,8 @@ impl ProcessExitAction {
         self.child.id()
     }
 
-    /// Cancels an action whose external effect has already been retired,
-    /// then waits for its original physical exit before ownership is released.
+    /// Cancels an action whose external effect has been retired or transferred
+    /// to an acknowledged successor, then waits for its original physical exit.
     pub fn cancel(&mut self) -> io::Result<()> {
         if let (Some(release), Some(mut credit)) = (self.release.as_mut(), self.cancel.take()) {
             let (written, recorded) = credit.attempt(|| release.write_all(&[0]));
