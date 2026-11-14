@@ -9,6 +9,32 @@ mod observed;
 
 type Publisher = FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>;
 
+/// Observe the original publication work, including time suspended on its
+/// providers. Phases contain no path or content, and use the shared operation
+/// lifecycle rather than issuing diagnostic reads or a second clock sample.
+pub(super) async fn publication_phase<T>(
+    phase: &'static str,
+    future: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    let span = acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
+        "acyclic.harness.checkout.publication",
+        phase,
+        outcome = tracing::field::Empty,
+        error.kind = tracing::field::Empty,
+    ));
+    let result = span.scope(future).await;
+    match &result {
+        Ok(_) => {
+            span.record("outcome", "ok");
+        }
+        Err(error) => {
+            span.record("outcome", "error");
+            span.record("error.kind", tracing::field::debug(error.code()));
+        }
+    }
+    result
+}
+
 fn publication_operation(operation: OperationId, path: &str) -> acyclic_fs::OperationId {
     let mut hash = blake3::Hasher::new_derive_key("acyclic.local.checkout-publication/v2");
     hash.update(&operation.into_bytes());
@@ -247,7 +273,11 @@ impl CheckoutPublisher {
                 return Err(Error::Invalid("path is a directory".into()));
             }
         }
-        serialized(&self.tools.state, async |mut state| {
+        let mut state = publication_phase("checkout-admission", async {
+            Ok(lock_owned(StateArc::clone(&self.tools.state)).await)
+        })
+        .await?;
+        async {
             let physical = self.selected_workspace(&state)?;
             let (mount, relative) = physical.mounts.file_for(
                 acyclic_fs::access::Action::Write, volume, path,
@@ -255,7 +285,7 @@ impl CheckoutPublisher {
                 None,
             )?;
             let view = state.active.as_ref().unwrap_or_else(|| self.tools.workspace.view());
-            if reconciliation::recover(&physical, view, &|| async { Ok(()) }).await? {
+            if publication_phase("recovery", reconciliation::recover(&physical, view, &|| async { Ok(()) })).await? {
                 state.watcher = None;
             }
             let State { active, watcher, .. } = &mut *state;
@@ -266,30 +296,30 @@ impl CheckoutPublisher {
             }
             let workspace = mount.view.source.as_ref()
                 .map_or_else(|| view.workspace(), |source| source.workspace.workspace());
-            let native = workspace::projection::PublicationGroup::acquire(
+            let native = publication_phase("projection-admission", workspace::projection::PublicationGroup::acquire(
                 &physical.mounts,
                 &mount.view.volume,
                 workspace.id(),
                 None,
-            ).await?;
+            )).await?;
             access::require_volume_access(workspace, &mount.view.volume, &self.tools.signed, ceiling.unwrap_or(self.tools.signed.capabilities()), "local checkout publication").await?;
             let writer = self.writer_for(&mount.view.volume, workspace)?;
             // Recover the original committed generation before capture: a
             // missing physical publication must not become a deletion.
             let original = self.original_publication(&writer, operation, &relative, &publication, ceiling).await?;
             if original.is_none() {
-                native.sync().await?;
+                publication_phase("projection-sync", native.sync()).await?;
                 if mount.view.source.is_none() {
                     if let Some(mounted) = &physical.mounted {
-                        mounted.sync().await.map_err(storage)?;
+                        publication_phase("mount-sync", async { mounted.sync().await.map_err(storage) }).await?;
                     } else {
                         // Completed native edits must enter the transaction cut
                         // before the writer decides destination type/existence.
-                        self.tools.capture((&physical, view), watcher, write_capture(operation, &relative), 0, PublicationPermit::Unrestricted)?.await?;
+                        publication_phase("capture-before", self.tools.capture((&physical, view), watcher, write_capture(operation, &relative), 0, PublicationPermit::Unrestricted)?).await?;
                     }
                 }
             }
-            let file = match publication {
+            let file = publication_phase("content-stage", async { Ok(match publication {
                 Publication::Once { media, display, .. } => {
                     writer.stage_once(operation, &relative, bytes, media, display, crate::conversation::ContentAccess { ceiling, io: None })?.await?.0
                 }
@@ -297,14 +327,13 @@ impl CheckoutPublisher {
                     writer.stage(operation, &relative, bytes, media, display, crate::conversation::ContentAccess { ceiling, io: None })?.await?.0
                 }
                 Publication::Replace(source) => writer.stage_at(operation, source, bytes, ceiling, None)?.await?.0,
-            };
-            native.advance_to_head().await?;
+            })}).await?;
+            publication_phase("projection-advance", native.advance_to_head()).await?;
             if mount.view.source.is_none() {
                 return self.settle(&physical, view, watcher, operation, file).await;
             }
             Ok(file)
-        })
-        .await
+        }.await
         .inspect_err(|error| tracing::error!(%operation, ?error, "checkout file publication did not complete"))
     }
 
@@ -324,7 +353,11 @@ impl CheckoutPublisher {
         if physical.mounted.is_some() {
             // A native view already projects the committed generation. Advancing
             // that view replaces physical checkout publication and recapture.
-            reconciliation::advance_mount(physical, &|| async { Ok(()) }).await?;
+            publication_phase(
+                "mount-advance",
+                reconciliation::advance_mount(physical, &|| async { Ok(()) }),
+            )
+            .await?;
             return Ok(file);
         }
         // The physical write carries host metadata (mode, owner, times) that
@@ -346,15 +379,17 @@ impl CheckoutPublisher {
                 generation: self.staged_generation(&file)?,
             },
         );
-        self.tools
-            .owe_write_capture(selected, watcher, owed)
-            .await?;
+        publication_phase(
+            "capture-debt",
+            self.tools.owe_write_capture(selected, watcher, owed),
+        )
+        .await?;
         #[cfg(all(test, not(loom)))]
         if tests::KILL_BEFORE_WRITE.get() {
             return Err(Error::Storage("killed before the write".into()));
         }
         self.finish_pending_capture(physical, view, watcher).await?;
-        self.observed(view, operation, file).await
+        publication_phase("content-observe", self.observed(view, operation, file)).await
     }
 
     // Every publication entry point settles the same durable debt.

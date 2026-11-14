@@ -22,6 +22,7 @@ use std::{path::Path, sync::Arc};
 mod agents;
 mod context;
 mod context_documents;
+mod edit_cost;
 mod history_retry;
 mod programs;
 mod replay;

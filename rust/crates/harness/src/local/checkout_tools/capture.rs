@@ -1,4 +1,5 @@
 //! Push watcher hints captured in one filesystem generation commit.
+use super::publisher::publication_phase;
 use super::*;
 use acyclic_fs::{
     CancellationToken, CaptureOptions, CapturePolicy, LivePublicationObservation,
@@ -224,25 +225,36 @@ where
         #[cfg(not(all(test, not(loom))))]
         let apply = true;
         if apply {
-            apply_owed_write(physical, view, operation, staged.generation).await?;
+            publication_phase(
+                "physical-publication",
+                apply_owed_write(physical, view, operation, staged.generation),
+            )
+            .await?;
         }
         #[cfg(all(test, not(loom)))]
         if KILL_BEFORE_CAPTURE.get() {
             return Err(Error::Storage("killed before the write's capture".into()));
         }
-        record_changes(
-            configuration,
-            selected,
-            slot,
-            (OperationId::from_bytes(operation.into_bytes()), 1),
-            permit,
-            before_effect,
-            Some(staged.generation.digest()),
+        publication_phase(
+            "capture-after",
+            record_changes(
+                configuration,
+                selected,
+                slot,
+                (OperationId::from_bytes(operation.into_bytes()), 1),
+                permit,
+                before_effect,
+                Some(staged.generation.digest()),
+            ),
         )
         .await?;
     }
     before_effect().await?;
-    reconciliation::replace_owed_write(physical, Some(owed), None).await
+    publication_phase(
+        "capture-acknowledgement",
+        reconciliation::replace_owed_write(physical, Some(owed), None),
+    )
+    .await
 }
 
 #[cfg(all(test, not(loom)))]
@@ -357,14 +369,17 @@ where
         .await
         .map_err(storage)?
         .value;
-    converge::capture(
-        &mut cursor,
-        &mut checkout,
-        physical,
-        (options, policy),
-        baseline,
-        &cancellation,
-    )?
+    publication_phase(
+        "capture-observe",
+        converge::capture(
+            &mut cursor,
+            &mut checkout,
+            physical,
+            (options, policy),
+            baseline,
+            &cancellation,
+        )?,
+    )
     .await?;
     // A best-effort before-image refusal cannot certify an exact snapshot.
     let first_baseline = baseline_pending && cursor.before_images_complete;
