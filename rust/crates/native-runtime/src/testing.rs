@@ -15,9 +15,9 @@
 //!   torn, disk full, or a non-crashing `Interrupted` refusal), latched as
 //!   [`Schedule::storage_fault`] so the driver drops the world as a crash and
 //!   reopens it from disk. A simulated store's own operations are logical
-//!   sites: [Schedule::inject] plans a store-defined fault at an exact call,
-//!   [Schedule::intercept] applies it and [Schedule::hold] parks a call at a
-//!   [Boundary]. OS processes are scripted
+//!   sites: [`Schedule::inject`] plans a store-defined fault at an exact call,
+//!   [`Schedule::intercept`] applies it and [`Schedule::hold`] parks a call at a
+//!   [`Boundary`]. OS processes are scripted
 //!   ([`Schedule::set_process_provider`]), never spawned.
 //! - **Boundaries**: each owned operation pauses at a [`Boundary`] the driver
 //!   releases, so a driver chooses interleavings at real submission points.
