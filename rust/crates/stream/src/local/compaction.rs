@@ -20,6 +20,30 @@ impl Drop for PendingCompaction {
 }
 
 impl LocalStream {
+    // A synchronous flush can publish the required strength while a queued
+    // group-flush worker still owns a lease of the previous file. Join that
+    // original owner's retirement event before choosing another active file.
+    async fn await_rotation_ready(&self, through: u64) -> Result<(), StreamError> {
+        self.await_flushed(through).await?;
+        let mut synced = self.inner.synced.subscribe();
+        loop {
+            self.check_available()?;
+            if !self
+                .inner
+                .journal
+                .lock()
+                .map_err(|_| self.inner.poison())?
+                .syncing
+            {
+                return Ok(());
+            }
+            synced
+                .changed()
+                .await
+                .map_err(|_| StreamError::Unavailable)?;
+        }
+    }
+
     // Called under mutation visibility. Capture the immutable state and rotate
     // a flushed journal; neither encoding nor snapshot I/O owns this fence.
     async fn prepare_compaction(&self) -> Result<Option<PendingCompaction>, StreamError> {
@@ -31,7 +55,7 @@ impl LocalStream {
             (journal.root.clone(), journal.limits, journal.appended)
         };
         // A flush of the next file must not certify an unflushed previous file.
-        self.await_flushed(through).await?;
+        self.await_rotation_ready(through).await?;
         let state = self.inner.provider.capture_state().await;
         let inner = Arc::clone(&self.inner);
         let work = self.work.clone();

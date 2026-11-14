@@ -1,0 +1,12 @@
+diff --git a/rust/crates/stream/src/local/compaction.rs b/rust/crates/stream/src/local/compaction.rs
+--- a/rust/crates/stream/src/local/compaction.rs
++++ b/rust/crates/stream/src/local/compaction.rs
+@@ -33,7 +33,7 @@ impl LocalStream {
+                 .journal
+                 .lock()
+                 .map_err(|_| self.inner.poison())?
+-                .syncing
++                .compacting
+             {
+                 return Ok(());
+             }
