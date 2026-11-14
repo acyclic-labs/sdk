@@ -70,7 +70,7 @@ pub enum GuestError {
     #[error("guest handler pending: {0}")]
     Pending(String),
     /// A capability call named a request whose handler invocation ended:
-    /// it returned, timed out or was cancelled.
+    /// it returned, timed out, was cancelled or lost its placement epoch.
     #[error("host request is revoked")]
     Revoked,
 }

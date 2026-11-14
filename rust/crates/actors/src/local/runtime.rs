@@ -169,6 +169,8 @@ pub struct DeliveryFailure {
 
 #[derive(Default)]
 struct Inner {
+    /// Final unflushed state, owned by the original delivery publication.
+    staged_state: Option<crate::guest::ActorStateCommit>,
     /// A removed slot must not begin another publication through an older Arc.
     released: bool,
     /// Epoch admitted by an explicit placement command, never by delivery.
@@ -1878,6 +1880,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             // Keep its scheduling position pinned only while a guard is retried
             // or an uncertain publication retains its original input.
             let publication = (|| -> Result<PreparedPublish, Error> {
+                let staged = inner.staged_state.take();
                 let mut publication = match result {
                     Ok(transition) => self.prepare_transition(
                         &handled_cut,
@@ -1886,6 +1889,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         &trigger,
                         record.as_ref(),
                         transition,
+                        staged,
                         key(&snapshot, "publish")?,
                     )?,
                     Err(Error::Handler(failure)) if !cancellation.is_cancelled() => {
@@ -1964,6 +1968,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         failure => failure,
                     };
                     inner.follows.clear();
+                    let staged = inner.staged_state.take();
                     let publication = failure.and_then(|transition| {
                         transition
                             .map(|transition| {
@@ -1974,6 +1979,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                                     &trigger,
                                     record.as_ref(),
                                     transition,
+                                    staged,
                                     key(&snapshot, "failure")?,
                                 )?;
                                 self.finish_publication(&mut publication, actor)?;
@@ -2036,6 +2042,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         trigger: &Trigger,
         record: Option<&Record>,
         transition: Transition,
+        staged: Option<crate::guest::ActorStateCommit>,
         identity: IdempotencyKey,
     ) -> Result<PreparedPublish, Error> {
         if self
@@ -2049,17 +2056,23 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         }
         // A state flush can replace the desired alarm while this delivery
         // still consumes its originally admitted generation.
-        let mut publication = self.store.prepare_publication(
-            snapshot,
-            owned(snapshot, epoch)?.clone(),
-            &owned(admitted, epoch)?.alarm,
-            Publication {
-                trigger,
-                delivered: record,
-                transition,
-                key: identity,
-            },
-        )?;
+        let mut publication = if let Some(packet) = staged {
+            let mut binding = self.store.bind_state(snapshot.clone(), epoch)?;
+            binding.apply(packet)?;
+            binding.prepare_delivery(admitted, trigger, record, transition, identity)?
+        } else {
+            self.store.prepare_publication(
+                snapshot,
+                owned(snapshot, epoch)?.clone(),
+                &owned(admitted, epoch)?.alarm,
+                Publication {
+                    trigger,
+                    delivered: record,
+                    transition,
+                    key: identity,
+                },
+            )?
+        };
         if self
             .handler
             .revalidate_foreign_conflicts(&self.store.actor(snapshot.path())?)

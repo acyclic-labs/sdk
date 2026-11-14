@@ -402,7 +402,29 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
     /// consumed cursor, response and effects. Submit the returned publication
     /// once through the original Store; no preceding flush is needed.
     pub fn prepare_publish(
+        self,
+        trigger: &crate::guest::Trigger,
+        delivered: Option<&acyclic_stream::Record>,
+        transition: crate::guest::Transition,
+        key: IdempotencyKey,
+    ) -> Result<super::PreparedPublish, Error> {
+        self.prepare_publish_at(None, trigger, delivered, transition, key)
+    }
+
+    pub(super) fn prepare_delivery(
+        self,
+        admitted: &Snapshot,
+        trigger: &crate::guest::Trigger,
+        delivered: Option<&acyclic_stream::Record>,
+        transition: crate::guest::Transition,
+        key: IdempotencyKey,
+    ) -> Result<super::PreparedPublish, Error> {
+        self.prepare_publish_at(Some(admitted), trigger, delivered, transition, key)
+    }
+
+    fn prepare_publish_at(
         mut self,
+        admitted: Option<&Snapshot>,
         trigger: &crate::guest::Trigger,
         delivered: Option<&acyclic_stream::Record>,
         transition: crate::guest::Transition,
@@ -427,7 +449,10 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
         let mut prepared = self.store.prepare_publication(
             &self.snapshot,
             state,
-            &self.committed_alarm,
+            match admitted {
+                Some(snapshot) => &owned(snapshot, self.epoch)?.alarm,
+                None => &self.committed_alarm,
+            },
             Publication {
                 trigger,
                 delivered,
