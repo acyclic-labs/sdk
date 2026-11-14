@@ -48,7 +48,7 @@ impl Client {
             .get_or_try_init(|| {
                 if let Some(connect) = &self.session_connector {
                     return crate::session::Client::connector(
-                        self.channel.clone(),
+                        self.channel.current().channel,
                         self.authorization.clone(),
                         self.metadata.clone(),
                         self.credential.clone(),
@@ -58,7 +58,7 @@ impl Client {
                     .into_pool();
                 }
                 crate::session::Client::open_with_metadata(
-                    self.channel.clone(),
+                    self.channel.current().channel,
                     self.authorization.clone(),
                     self.metadata.clone(),
                     self.credential.clone(),

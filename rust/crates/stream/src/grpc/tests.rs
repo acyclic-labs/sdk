@@ -884,3 +884,81 @@ proptest::proptest! {
         }
     }
 }
+
+/// A member's refusal before dispatch replays the same request on the member
+/// the route selects next, without transport backoff; a route that declines
+/// returns the original refusal after one attempt.
+#[tokio::test]
+async fn a_routed_refusal_replays_the_same_request_on_the_next_member() -> TestResult {
+    struct Members {
+        current: AtomicUsize,
+        replay: bool,
+        refused: std::sync::Mutex<Vec<usize>>,
+    }
+    impl HomeRoute for Members {
+        fn current(&self) -> RoutedChannel {
+            RoutedChannel {
+                member: self.current.load(Ordering::SeqCst),
+                channel: Endpoint::from_static("http://fixture.invalid").connect_lazy(),
+            }
+        }
+        fn refused<'a>(
+            &'a self,
+            member: usize,
+            _: &'a Status,
+        ) -> futures::future::BoxFuture<'a, bool> {
+            self.refused
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(member);
+            if self.replay {
+                self.current.store(member + 1, Ordering::SeqCst);
+            }
+            Box::pin(std::future::ready(self.replay))
+        }
+    }
+    for replay in [true, false] {
+        let route = Arc::new(Members {
+            current: AtomicUsize::new(0),
+            replay,
+            refused: std::sync::Mutex::new(Vec::new()),
+        });
+        let connect: ChannelConnector =
+            Arc::new(|_| Box::pin(async { Err(StreamError::Unavailable.into()) }));
+        let client = Client::from_routed_channel(
+            route.clone(),
+            CredentialProvider::transport_identity(),
+            connect,
+        );
+        let body = Bytes::from_static(b"original");
+        let mut attempts = Vec::new();
+        let result = client
+            .unary(body.clone(), |_, request| {
+                let member = route.current.load(Ordering::SeqCst);
+                attempts.push((member, request.into_inner()));
+                let result = if member == 0 {
+                    Err(Status::unavailable("not the leader"))
+                } else {
+                    Ok(Response::new(()))
+                };
+                Box::pin(async move { result })
+            })
+            .await
+            .and_then(|response| decode_response(response, Ok));
+        assert_eq!(result.is_ok(), replay);
+        let expected = if replay {
+            vec![(0, body.clone()), (1, body)]
+        } else {
+            vec![(0, body)]
+        };
+        assert_eq!(attempts, expected);
+        assert_eq!(
+            *route
+                .refused
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![0]
+        );
+    }
+    Ok(())
+}
