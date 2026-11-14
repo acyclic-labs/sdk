@@ -50,7 +50,7 @@ impl crate::hosting::Platform for Owner {
 }
 
 impl Mode {
-    pub(super) async fn open(self, provider: Arc<ScriptedModelProvider>) -> Result<Platform> {
+    pub(super) async fn open(self, provider: Arc<dyn ModelProvider>) -> Result<Platform> {
         let directory = tempfile::tempdir().map_err(super::super::storage)?;
         match self {
             Self::Local => {
@@ -77,7 +77,7 @@ impl Mode {
 
     async fn hosted(
         directory: tempfile::TempDir,
-        provider: Arc<ScriptedModelProvider>,
+        provider: Arc<dyn ModelProvider>,
     ) -> Result<Platform> {
         let root = crate::agent::AgentId::from_bytes([37; 16]);
         let audience = Authority {
@@ -347,4 +347,122 @@ async fn local_cancelled_input_remains_in_context() -> Result<()> {
 #[tokio::test]
 async fn hosted_cancelled_input_remains_in_context() -> Result<()> {
     cancelled_input_remains_in_context(Mode::Hosted).await
+}
+
+struct RewriteModel {
+    inner: Arc<dyn ModelProvider>,
+    content: Option<(Arc<dyn ContentResidencyVerifier>, Option<u64>)>,
+    summaries: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl ModelProvider for RewriteModel {
+    fn bind_content(
+        &self,
+        reader: Arc<dyn ContentResidencyVerifier>,
+        maximum: Option<u64>,
+    ) -> Option<Arc<dyn ModelProvider>> {
+        Some(Arc::new(Self {
+            inner: self
+                .inner
+                .bind_content(reader.clone(), maximum)
+                .unwrap_or_else(|| self.inner.clone()),
+            content: Some((reader, maximum)),
+            summaries: self.summaries.clone(),
+        }))
+    }
+
+    fn context_capacity(&self, model: &Model) -> Result<ModelContextCapacity> {
+        self.inner.context_capacity(model)
+    }
+
+    fn count_tokens<'a>(
+        &'a self,
+        request: &'a crate::model::PreparedModelRequest,
+        ceiling: u64,
+    ) -> crate::model::ModelStream<'a> {
+        self.inner.count_tokens(request, ceiling)
+    }
+
+    fn generate<'a>(
+        &'a self,
+        request: &'a crate::model::PreparedModelRequest,
+        dispatch: crate::model::ModelDispatch,
+    ) -> crate::model::ModelStream<'a> {
+        if !request.request().summary {
+            return self.inner.generate(request, dispatch);
+        }
+        use futures::TryStreamExt as _;
+        crate::model::ModelStream::new(Box::pin(
+            futures::stream::once(async move {
+                let reader = self
+                    .content
+                    .as_ref()
+                    .map(|(reader, maximum)| (reader.as_ref(), *maximum));
+                crate::test_support::read_request_files(reader, request).await?;
+                let (source, _) = request.request().split_summary_instruction()?;
+                self.summaries
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok::<_, Error>(futures::stream::iter([
+                    Ok(crate::model::ModelEvent::Content {
+                        delta: serde_json::json!({
+                            "version": 1, "drop_through": source.len(), "summary": "RETAINED_FACT",
+                        })
+                        .to_string(),
+                    }),
+                    Ok(crate::model::ModelEvent::Completed {
+                        metadata: serde_json::Value::Null,
+                    }),
+                ]))
+            })
+            .try_flatten(),
+        ))
+    }
+}
+
+async fn in_turn_summary_remains_readable(mode: Mode) -> Result<()> {
+    let script = Arc::new(
+        ScriptedModelProvider::new([
+            ScriptedTurn::Text("FIRST".into()),
+            ScriptedTurn::Text("AFTER".into()),
+        ])
+        .with_context_capacity(capacity())
+        .reading_content(),
+    );
+    let summaries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let model = Arc::new(RewriteModel {
+        inner: script.clone(),
+        content: None,
+        summaries: summaries.clone(),
+    });
+    let platform = mode.open(model).await?;
+    let conversation = Conversation::open(platform.connection.clone());
+    let mut client = ObservedConversation::observe(conversation, None).await?;
+    let pressure = "x".repeat(capacity().context_tokens as usize * 3 / 5);
+    let first = client.send("first", &pressure).await?;
+    assert!(first.outcome.is_completed(), "{:?}", first.outcome);
+    assert_eq!(summaries.load(std::sync::atomic::Ordering::SeqCst), 0);
+    let second = client.send("second", &pressure).await?;
+    assert!(second.outcome.is_completed(), "{:?}", second.outcome);
+    assert!(summaries.load(std::sync::atomic::Ordering::SeqCst) > 0);
+    assert_eq!(script.request_count(), 2);
+    let request = script
+        .request(1)
+        .ok_or_else(|| Error::NotFound("compacted response request".into()))?;
+    let text = platform.request_text(&request).await?;
+    assert!(
+        text.contains("RETAINED_FACT"),
+        "summary absent from response context"
+    );
+    drop(client);
+    platform.close().await
+}
+
+#[tokio::test]
+async fn local_in_turn_summary_remains_readable() -> Result<()> {
+    in_turn_summary_remains_readable(Mode::Local).await
+}
+
+#[tokio::test]
+async fn hosted_in_turn_summary_remains_readable() -> Result<()> {
+    in_turn_summary_remains_readable(Mode::Hosted).await
 }
