@@ -168,7 +168,7 @@ mod tests {
             .child(&parent, &path, &volumes, "worker", None)
             .await?;
         assert_eq!(later.context, SpawnContext::Fork);
-        assert_eq!(later.model, parent.model);
+        assert_eq!(later.model.as_deref(), Some("example/later"));
         assert_ne!(later.template, selected.template);
         let reader = FilesystemContentVerifier::new(
             Arc::clone(&host),
