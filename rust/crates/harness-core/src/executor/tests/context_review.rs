@@ -204,6 +204,7 @@ async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixe
             ContextPipeline::default(),
             ToolRegistry::default(),
         )
+        .with_compaction_policy(crate::context::CompactionPolicy::default())
         .with_automatic_compaction()?;
         let mut execution = StockExecution::ordinary(&executor);
         execution.selected = Some(Arc::clone(&selected));
