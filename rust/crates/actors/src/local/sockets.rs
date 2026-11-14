@@ -649,6 +649,7 @@ impl Tables {
 
 struct Shared<P: StreamProvider + ?Sized> {
     store: Store<P>,
+    owner: String,
     layout: Layout,
     executor: Arc<dyn Executor>,
     clock: Arc<dyn Clock>,
@@ -687,6 +688,8 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
     /// host-owned socket ledger root; independently owned hosts sharing an
     /// actor store MUST use distinct roots. A replacement MUST reuse its
     /// predecessor's root. This does not change the actor store's state paths.
+    /// Connection IDs include this root's encoded identity, so independent
+    /// owners cannot alias the actor-visible identity of a connection.
     /// Every socket a previous
     /// incarnation left open receives Close(Runtime, 1012) first, in work
     /// proportional to those sockets, and that incarnation can open no more.
@@ -784,6 +787,7 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
         Ok(Self {
             shared: Arc::new(Shared {
                 store,
+                owner: acyclic_auth::encode_component(layout.root.as_str().as_bytes()),
                 layout,
                 executor,
                 clock,
@@ -853,7 +857,8 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
 impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
     fn connection_id(&self, actor: &ActorReference) -> String {
         format!(
-            "{}-{}-{}",
+            "{}-{}-{}-{}",
+            self.owner,
             self.incarnation,
             self.next.fetch_add(1, Ordering::Relaxed),
             self.table.actor(actor),

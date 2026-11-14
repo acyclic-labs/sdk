@@ -6,11 +6,12 @@ use acyclic_stream::{BoxProviderFuture, MemoryStream, Record};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-// Match the runtime's erased delivery boundary. A concrete boxed future can
-// still inline its nested poll frames into the simulator's small coroutine.
+// Construct each production future in its own frame as well as erasing its
+// polling type. Boxing an already constructed future leaves all construction
+// temporaries in race's unoptimized scenario frame.
 #[inline(never)]
-fn block_on<T>(future: BoxProviderFuture<'_, T>) -> T {
-    loom::future::block_on(future)
+fn block_on<'a, T>(make: impl FnOnce() -> BoxProviderFuture<'a, T>) -> T {
+    loom::future::block_on(make())
 }
 
 async fn records(provider: &MemoryStream, path: &StreamPath) -> Result<Vec<Record>> {
@@ -43,10 +44,11 @@ fn race(recover: bool) -> Result {
         allocated: 1,
         epochs: epochs.len() as u64,
     };
-    assert!(block_on(Box::pin(commit(
+    let epochs_key = layout.key(&[b"epochs"])?;
+    assert!(block_on(|| Box::pin(commit(
         &store,
         &PlatformExecutor,
-        layout.key(&[b"epochs"])?,
+        epochs_key,
         vec![append(
             layout.epochs.clone(),
             epochs,
@@ -82,13 +84,14 @@ fn race(recover: bool) -> Result {
         Vec::new(),
     ));
     effects.push(store.activation(&target.actor)?);
-    assert!(block_on(Box::pin(commit(
+    let open_key = layout.key(&[b"open"])?;
+    assert!(block_on(|| Box::pin(commit(
         &store,
         &PlatformExecutor,
-        layout.key(&[b"open"])?,
+        open_key,
         effects,
     )))?);
-    let inbox = block_on(Box::pin(records(&provider, &target.inbox)))?;
+    let inbox = block_on(|| Box::pin(records(&provider, &target.inbox)))?;
     assert_eq!(inbox.len(), 1);
     let invocation = crate::invocation::Invocation::decode(&inbox[0])?
         .ok_or("Open admission omitted its invocation")?;
@@ -103,57 +106,68 @@ fn race(recover: bool) -> Result {
         let layout = layout.clone();
         let target = target.clone();
         move || {
-            block_on(Box::pin(commit_close(
+            let close = Close::new(1006, "peer went away", SocketCloseInitiator::Peer);
+            block_on(|| {
+                Box::pin(commit_close(
+                    &store,
+                    &PlatformExecutor,
+                    &layout,
+                    "1-0",
+                    &target,
+                    Some(ledger),
+                    &close,
+                ))
+            })
+            .map_err(|error| error.to_string())
+        }
+    });
+    let message = input_record(
+        "1-0",
+        SocketInput::Message(SocketPayload::Text {
+            text: "frame".into(),
+        }),
+    )?;
+    block_on(|| {
+        Box::pin(commit_message(
+            &store,
+            &PlatformExecutor,
+            &layout,
+            "1-0",
+            &target,
+            1,
+            message,
+        ))
+    })?;
+    if recover {
+        // A crash loses every in-memory socket owner. Recovery uses only the
+        // persisted frontier and ledger, fences old opens/closes, and publishes
+        // the missing Close. A second crash must not publish it again.
+        for _ in 0..2 {
+            block_on(|| {
+                Box::pin(Sockets::open(
+                    Store::new(provider.clone(), store.root().clone()),
+                    layout.root.clone(),
+                    Arc::new(PlatformExecutor),
+                    Arc::new(super::super::SystemClock),
+                ))
+            })?;
+        }
+    } else {
+        let close = Close::new(1000, "actor closed", SocketCloseInitiator::Actor);
+        block_on(|| {
+            Box::pin(commit_close(
                 &store,
                 &PlatformExecutor,
                 &layout,
                 "1-0",
                 &target,
                 Some(ledger),
-                &Close::new(1006, "peer went away", SocketCloseInitiator::Peer),
-            )))
-            .map_err(|error| error.to_string())
-        }
-    });
-    block_on(Box::pin(commit_message(
-        &store,
-        &PlatformExecutor,
-        &layout,
-        "1-0",
-        &target,
-        1,
-        input_record(
-            "1-0",
-            SocketInput::Message(SocketPayload::Text {
-                text: "frame".into(),
-            }),
-        )?,
-    )))?;
-    if recover {
-        // A crash loses every in-memory socket owner. Recovery uses only the
-        // persisted frontier and ledger, fences old opens/closes, and publishes
-        // the missing Close. A second crash must not publish it again.
-        for _ in 0..2 {
-            block_on(Box::pin(Sockets::open(
-                Store::new(provider.clone(), store.root().clone()),
-                layout.root.clone(),
-                Arc::new(PlatformExecutor),
-                Arc::new(super::super::SystemClock),
-            )))?;
-        }
-    } else {
-        block_on(Box::pin(commit_close(
-            &store,
-            &PlatformExecutor,
-            &layout,
-            "1-0",
-            &target,
-            Some(ledger),
-            &Close::new(1000, "actor closed", SocketCloseInitiator::Actor),
-        )))?;
+                &close,
+            ))
+        })?;
     }
     peer.join().map_err(|_| "peer closer panicked")??;
-    let inbox = block_on(Box::pin(records(&provider, &target.inbox)))?;
+    let inbox = block_on(|| Box::pin(records(&provider, &target.inbox)))?;
     let kinds: Vec<&str> = inbox
         .iter()
         .skip(1)
@@ -169,7 +183,7 @@ fn race(recover: bool) -> Result {
         Some(&"close"),
         "an event followed the Close: {kinds:?}"
     );
-    assert_eq!(block_on(Box::pin(records(&provider, &socket)))?.len(), 2);
+    assert_eq!(block_on(|| Box::pin(records(&provider, &socket)))?.len(), 2);
     Ok(())
 }
 
