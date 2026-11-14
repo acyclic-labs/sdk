@@ -127,6 +127,10 @@ async fn terminal_replies_prepare_no_review_source_at_any_history_size() -> Resu
 async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixes() -> Result<()> {
     struct UnselectedProvider(ScriptedModelProvider);
     impl ModelProvider for UnselectedProvider {
+        fn context_capacity(&self, model: &Model) -> Result<crate::context::ModelContextCapacity> {
+            self.0.context_capacity(model)
+        }
+
         fn generate<'a>(
             &'a self,
             request: &'a crate::model::PreparedModelRequest,
@@ -194,8 +198,9 @@ async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixe
         )
         .with_automatic_compaction()?;
         let selected = selected.into_step_binding(None)?;
-        // The default binding has no usage counters or scripted requests. All
-        // completion accounting, review scheduling and replay use the selection.
+        // The parent binding supplies capacity for its durable turn identity,
+        // but has no usage counters or scripted requests. Completion accounting,
+        // review scheduling and replay use the selection.
         let executor = StockExecutor::from_binding(
             Arc::new(crate::model::ResolvedModel::new((
                 Model::new("fixture".into(), "default".into(), "1".into())?,
