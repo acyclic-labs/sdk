@@ -74,6 +74,33 @@ async fn original_guard_unlock_precedes_its_trace_settlement()
     assert_eq!(start.guarantee.as_deref(), Some("exclusive_original_state"));
     assert_eq!(bytes, Some(0));
     assert_eq!(result, Outcome::Succeeded);
+    let original = mutex.lock().await;
+    let mut abandoned = Box::pin(root.within(observe_guard(request(), mutex.lock())));
+    assert!(futures::poll!(&mut abandoned).is_pending());
+    drop(abandoned);
+    assert!(
+        mutex.try_lock().is_err(),
+        "cancelled acquisition released another owner's lock"
+    );
+    let Some(Observation::Started { id, .. }) = query.next().await? else {
+        return Err("abandoned guard start was lost".into());
+    };
+    assert_ne!(id, child);
+    let Some(Observation::Completed {
+        start,
+        bytes,
+        result,
+        ..
+    }) = query.next().await?
+    else {
+        return Err("abandoned acquisition lost its unsettled observation".into());
+    };
+    assert_eq!(start.name, "original_guard");
+    assert_eq!(start.parent, Some(parent));
+    assert_eq!(bytes, None);
+    assert_eq!(result, Outcome::Unsettled);
+    drop(original);
+    assert_eq!(*mutex.try_lock()?, 7);
     let terminal = root.finish_submitted(None, Outcome::Succeeded)?;
     assert!(matches!(
         terminal.result().await?,
