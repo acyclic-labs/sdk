@@ -96,20 +96,57 @@ fn reap(directory: &Path) {
         {
             continue;
         }
-        // A live owner's lock can refuse this read; it is not reaped.
-        let Some(destination) = std::fs::read(entry.path())
-            .ok()
-            .and_then(|record| fence_destination(&record))
-        else {
-            continue;
-        };
-        match super::detach_native_mount_destination_after_crash(&destination) {
+        match reap_fence(&entry.path()) {
             Ok(()) | Err(NativeMountError::DestinationBusy) => {}
             Err(error) => {
-                tracing::warn!(%error, destination = %destination.display(), "dead native mount was not reaped");
+                tracing::warn!(%error, fence = %entry.path().display(), "dead native mount was not reaped");
             }
         }
     }
+}
+
+/// Decode only under the original inode's exclusive lock, and bind its bytes
+/// back to that same fence. A torn record can never choose another destination.
+fn read_locked_fence(
+    path: &Path,
+) -> Result<Option<(PathBuf, fence_io::MountLockFile)>, NativeMountError> {
+    use std::io::Read as _;
+    // Opening and locking share the same registry transaction as creation
+    // and retirement, so an unlinked inode cannot authenticate its successor.
+    let cancellation = crate::CancellationToken::new();
+    let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
+    let registry = shared(&mut work)?;
+    let held = registry.lock(&mut work)?;
+    let file = super::fence::acquire_existing_mount_lock(path)?;
+    held.unlock(&mut work)?;
+    let mut record = Vec::new();
+    (&*file).read_to_end(&mut record)?;
+    let Some(destination) = fence_destination(&record).filter(|path| path.is_absolute()) else {
+        return Ok(None);
+    };
+    let (expected, _) = MountDestinationGuard::paths_for_canonical(&destination)?;
+    if expected != path {
+        return Ok(None);
+    }
+    Ok(Some((destination, file)))
+}
+
+fn reap_fence(path: &Path) -> Result<(), NativeMountError> {
+    let Some((destination, file)) = read_locked_fence(path)? else {
+        return Ok(());
+    };
+    let original = crate::NativeMaterializationWork::new(
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )
+    .map_err(|(error, _)| NativeMountError::from(error))?;
+    let owner = NativeMountRecoveryOwner::from_locked_fence(
+        &destination,
+        file,
+        path.to_path_buf(),
+        &original,
+    )?;
+    super::lifecycle::detach_recovery_owner_after_crash(owner)
 }
 
 fn directory() -> Result<&'static Path, NativeMountError> {

@@ -142,8 +142,7 @@ pub struct NativeMountRecoveryOwner {
 }
 
 enum RecoveryDestination {
-    #[cfg(target_os = "macos")]
-    Locked(MountDestinationGuard),
+    Locked(super::fence_io::MountLockFile, PathBuf),
     Parent(Option<cap_std::fs::Dir>),
     #[cfg(any(target_os = "macos", test))]
     ExistingCanonical,
@@ -285,10 +284,28 @@ impl NativeMountRecoveryOwner {
     #[cfg(target_os = "macos")]
     pub(super) fn from_locked_existing(
         destination: &Path,
-        guard: MountDestinationGuard,
+        mut guard: MountDestinationGuard,
         original: &crate::NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {
-        Self::acquire_bound(destination, original, RecoveryDestination::Locked(guard))
+        let file = guard.file.take().ok_or(NativeMountError::ControlPending)?;
+        let path = std::mem::take(&mut guard.lock_path);
+        Self::from_locked_fence(destination, file, path, original)
+    }
+
+    /// Transfer the authenticated original lock without reopening its name.
+    /// Until the recovery owner is prepared, failure only closes the file;
+    /// it cannot run destination cleanup or unlink the recovery record.
+    pub(super) fn from_locked_fence(
+        destination: &Path,
+        file: super::fence_io::MountLockFile,
+        path: PathBuf,
+        original: &crate::NativeMaterializationWork,
+    ) -> Result<Self, NativeMountError> {
+        Self::acquire_bound(
+            destination,
+            original,
+            RecoveryDestination::Locked(file, path),
+        )
     }
 
     fn acquire_bound(
@@ -518,10 +535,9 @@ impl NativeRecoveryState {
         source: RecoveryDestination,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
-        #[cfg(target_os = "macos")]
         let source = match source {
-            RecoveryDestination::Locked(guard) => {
-                self.guard = Some(guard);
+            RecoveryDestination::Locked(file, path) => {
+                self.guard = Some(MountDestinationGuard::from_locked_existing(file, path));
                 RecoveryDestination::Parent(None)
             }
             source => source,

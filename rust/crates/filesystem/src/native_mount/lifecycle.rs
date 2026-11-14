@@ -420,7 +420,13 @@ pub fn recover_native_mount_destination(destination: &Path) -> Result<(), Native
 pub fn detach_native_mount_destination_after_crash(
     destination: &Path,
 ) -> Result<(), NativeMountError> {
-    let mut owner = NativeMountRecoveryOwner::acquire(destination)?;
+    let owner = NativeMountRecoveryOwner::acquire(destination)?;
+    detach_recovery_owner_after_crash(owner)
+}
+
+pub(super) fn detach_recovery_owner_after_crash(
+    mut owner: NativeMountRecoveryOwner,
+) -> Result<(), NativeMountError> {
     #[cfg(target_os = "macos")]
     let initialized =
         acyclic_native_runtime::initialize_native_io_services().map_err(NativeMountError::from);

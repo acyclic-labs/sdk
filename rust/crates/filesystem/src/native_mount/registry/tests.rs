@@ -1,5 +1,60 @@
 use super::*;
 
+#[cfg(not(loom))]
+#[test]
+fn recovery_reads_the_locked_fence_and_rejects_a_valid_truncated_destination()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = tempfile::tempdir()?;
+    let victim = fixture.path().join("victim");
+    let destination = victim.join("child");
+    std::fs::create_dir_all(&destination)?;
+    let destination = destination.canonicalize()?;
+    let victim = victim.canonicalize()?;
+    let record = |path: &Path| {
+        #[cfg(unix)]
+        return fence_record(path);
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt as _;
+            fence_record(&path.as_os_str().encode_wide().collect::<Vec<_>>())
+        }
+    };
+    let (path, _) = MountDestinationGuard::paths_for_canonical(&destination)?;
+    let file: fence_io::MountLockFile = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&path)?
+        .into();
+    fence_io::try_lock(&file)?;
+    let shortened = record(&victim);
+    assert!(record(&destination).starts_with(&shortened));
+    write_fence_record(&file, &shortened)?;
+    // The former unlocked decoder accepts this interrupted write as another
+    // valid destination. Recovery must not read it while its owner is live.
+    assert_eq!(fence_destination(&shortened), Some(victim));
+    assert!(matches!(
+        read_locked_fence(&path),
+        Err(NativeMountError::DestinationBusy)
+    ));
+    fence_io::unlock(&file)?;
+    assert!(read_locked_fence(&path)?.is_none());
+
+    write_fence_record(&file, &record(&destination))?;
+    let (selected, original) = read_locked_fence(&path)?.ok_or("valid fence was refused")?;
+    assert_eq!(selected, destination);
+    // The returned ownership is the original locked inode, not a decoded
+    // path followed by another acquisition that permits a replacement owner.
+    assert!(matches!(
+        super::super::fence::acquire_existing_mount_lock(&path),
+        Err(NativeMountError::DestinationBusy)
+    ));
+    drop(original);
+    drop(file);
+    std::fs::remove_file(&path)?;
+    Ok(())
+}
+
 #[test]
 fn explicit_state_directory_is_used_by_a_fresh_registry() -> Result<(), Box<dyn std::error::Error>>
 {
