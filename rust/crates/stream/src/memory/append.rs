@@ -138,6 +138,7 @@ impl MemoryStream {
                         ephemeral
                             .unwrap_or_else(|| unreachable!("leased write reserves its indexes")),
                         RetainedFact {
+                            namespace: Default::default(),
                             previous: None,
                             replay: Some(request.idempotency_key.0.clone()),
                             next: Default::default(),

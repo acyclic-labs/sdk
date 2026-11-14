@@ -108,6 +108,7 @@ impl CommitPublication {
                     scope,
                     retention,
                     RetainedFact {
+                        namespace: Default::default(),
                         previous: None,
                         replay: Some(key.0),
                         next: Default::default(),
