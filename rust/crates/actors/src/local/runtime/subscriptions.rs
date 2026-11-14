@@ -99,22 +99,21 @@ impl Subscriptions {
             self.remove(path, actor);
         }
         for (path, from) in &selected {
-            if !self.paths.contains_key(path) {
-                let registration = self.ready.register(path.clone())?;
-                let waker = registration.waker();
-                self.paths.insert(
-                    path.clone(),
-                    Watch {
+            let watch = match self.paths.entry(path.clone()) {
+                std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    let registration = self.ready.register(path.clone())?;
+                    let waker = registration.waker();
+                    entry.insert(Watch {
                         _registration: registration,
                         waker,
                         next: None,
                         next_from: tails.get(path).map_or(*from, |&tail| tail.max(*from)),
                         notification: None,
                         observers: BTreeMap::new(),
-                    },
-                );
-            }
-            let watch = self.paths.get_mut(path).expect("registered follow");
+                    })
+                }
+            };
             watch.observers.insert(actor.clone(), *from);
             // A registration starts idle: every follow this opens is armed
             // through its own wake, the first one included. Arming polls the
@@ -157,48 +156,51 @@ impl Subscriptions {
         let Some(work) = self.ready.take() else {
             return Poll::Pending;
         };
-        let watch = self.paths.get_mut(work.key()).expect("registered source");
-        if watch.notification.is_none() {
-            let Some(next) = watch.next.as_mut() else {
-                return Poll::Ready((Vec::new(), None));
-            };
-            let notification = match next.poll_unpin(&mut Context::from_waker(&watch.waker)) {
-                Poll::Pending => return Poll::Ready((Vec::new(), None)),
-                Poll::Ready(Ok((sequence, mut records))) => match sequence.checked_add(1) {
-                    Some(from) => {
-                        watch.next_from = from;
-                        watch.next = Some(Box::pin(async move {
-                            let record =
-                                records.try_next().await?.ok_or(StreamError::Unavailable)?;
-                            Ok((record.sequence, records))
-                        }));
-                        Notification {
-                            through: sequence,
-                            after: None,
-                            error: None,
+        let Some(watch) = self.paths.get_mut(work.key()) else {
+            return Poll::Ready((Vec::new(), Some(StreamError::InvalidResponse)));
+        };
+        let mut notification = match watch.notification.take() {
+            Some(notification) => notification,
+            None => {
+                let Some(next) = watch.next.as_mut() else {
+                    return Poll::Ready((Vec::new(), None));
+                };
+                match next.poll_unpin(&mut Context::from_waker(&watch.waker)) {
+                    Poll::Pending => return Poll::Ready((Vec::new(), None)),
+                    Poll::Ready(Ok((sequence, mut records))) => match sequence.checked_add(1) {
+                        Some(from) => {
+                            watch.next_from = from;
+                            watch.next = Some(Box::pin(async move {
+                                let record =
+                                    records.try_next().await?.ok_or(StreamError::Unavailable)?;
+                                Ok((record.sequence, records))
+                            }));
+                            Notification {
+                                through: sequence,
+                                after: None,
+                                error: None,
+                            }
                         }
-                    }
-                    None => {
+                        None => {
+                            watch.next = None;
+                            Notification {
+                                through: u64::MAX,
+                                after: None,
+                                error: Some(StreamError::InvalidResponse),
+                            }
+                        }
+                    },
+                    Poll::Ready(Err(error)) => {
                         watch.next = None;
                         Notification {
                             through: u64::MAX,
                             after: None,
-                            error: Some(StreamError::InvalidResponse),
+                            error: Some(error),
                         }
                     }
-                },
-                Poll::Ready(Err(error)) => {
-                    watch.next = None;
-                    Notification {
-                        through: u64::MAX,
-                        after: None,
-                        error: Some(error),
-                    }
                 }
-            };
-            watch.notification = Some(notification);
-        }
-        let notification = watch.notification.as_mut().expect("source notification");
+            }
+        };
         let after = notification.after.clone();
         let mut ready = Vec::new();
         let mut scanned = 0;
@@ -217,8 +219,8 @@ impl Subscriptions {
         let finished = scanned < limit
             || notification.after.as_ref()
                 == watch.observers.last_key_value().map(|(actor, _)| actor);
-        if finished {
-            watch.notification = None;
+        if !finished {
+            watch.notification = Some(notification);
         }
         if !finished || watch.next.is_some() {
             watch.waker.wake_by_ref();

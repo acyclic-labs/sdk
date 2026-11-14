@@ -2,11 +2,13 @@
 use super::*;
 
 /// Checks canonical requests and decisions, and validates checkpoint ownership.
+///
+/// # Panics
+/// If a canonical production writer fails its decoder or round-trip proof.
 pub fn check(bytes: &[u8]) -> bool {
-    static WRITERS: std::sync::LazyLock<()> = std::sync::LazyLock::new(|| {
-        seeds().expect("reservation decoders must admit their production writers");
-    });
-    std::sync::LazyLock::force(&WRITERS);
+    static WRITERS: std::sync::LazyLock<Result<(), String>> =
+        std::sync::LazyLock::new(|| seeds().map(|_| ()).map_err(|error| error.to_string()));
+    assert_eq!(std::sync::LazyLock::force(&WRITERS), &Ok(()));
     if let Ok(book) = decode::<Book>(bytes)
         && book.validate().is_ok()
     {
@@ -43,6 +45,9 @@ pub fn check(bytes: &[u8]) -> bool {
 }
 
 /// Capture actual reservation request, result and initial checkpoint encoders.
+///
+/// # Panics
+/// If a committed writer output changes through its production decoder.
 pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error>> {
     let owner = OwnerEvidence::new(
         Bytes::from_static(b"owner"),
