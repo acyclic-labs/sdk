@@ -107,10 +107,7 @@ impl FoldCheckpointObject {
             if bytes.len() as u64 != self.bytes {
                 return Err(FoldObjectError::Mismatch);
             }
-            let mut decode = KernelAccounting::NativeOriginal {
-                work: &native.work,
-                cancellation,
-            };
+            let mut decode = KernelAccounting::native(&native.work, cancellation);
             let checkpoint: Retained<FoldCheckpoint<T>> = decode.decode_json(&bytes)?;
             if checkpoint.version != 1 || checkpoint.accounted_key(&mut decode)? != self.key {
                 return Err(FoldObjectError::Mismatch);

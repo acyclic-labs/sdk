@@ -113,10 +113,7 @@ impl<P: NativeStreamProvider + ?Sized, S: AsyncObjectStore> FoldCache<P, S> {
         }
         let cancellation = ctx.cancellation();
         let native = NativeAccounting::take(ctx)?;
-        let mut accounting = KernelAccounting::NativeOriginal {
-            work: &native.work,
-            cancellation,
-        };
+        let mut accounting = KernelAccounting::native(&native.work, cancellation);
         let result = self
             .run(fold, at, seed, &native.work, &mut accounting)
             .await;

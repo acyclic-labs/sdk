@@ -2,6 +2,57 @@ use super::*;
 use crate::{CommitCondition, CommitEffect, CommitMutation};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+#[tokio::test]
+async fn captured_head_ownership_survives_lease_release() -> Result {
+    let directory = tempfile::tempdir()?;
+    let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+    let durable = StreamPath::new("durable")?;
+    let temporary = StreamPath::new("scratch/temporary")?;
+    provider.append(append(&durable, 0)?).await?;
+    let lease = provider
+        .lease_ephemeral(StreamPath::new("scratch")?)
+        .await?;
+    provider.append(append(&temporary, 0)?).await?;
+    provider.durability_barrier().await?;
+    let request = crate::HeadsRequest {
+        at: None,
+        retained: Default::default(),
+        durable_through: Some(1),
+        projection: crate::HeadProjection::Watermarks,
+        paths: [temporary.clone(), durable.clone()]
+            .into_iter()
+            .collect(),
+        children: None,
+        limit: 2,
+        at_least: Default::default(),
+    };
+    let (captured, ownership) = provider
+        .inner
+        .provider
+        .capture_heads_with_ephemeral(&request, crate::memory::HeadDurability::Deferred)
+        .await?;
+    // Force the disputed ordering: publication is captured before retirement,
+    // and durability confirmation runs after it. No scheduler timing is needed.
+    lease.settle().await?;
+    assert_eq!(ownership.as_slice(), [true, false]);
+    let temporary = captured.heads[0].as_ref().ok_or("temporary head missing")?;
+    assert_eq!(temporary.tail, 1);
+    assert_eq!(temporary.durable, 0);
+    assert_eq!(temporary.retained_through, None);
+    // Negative control: re-reading ownership after retirement loses precisely
+    // the classification that the local adapter must retain for its response.
+    assert_eq!(
+        provider.inner.provider.ephemeral_mask(&request.paths).await,
+        [false, false]
+    );
+    let confirmed = provider.heads(request).await?;
+    assert!(confirmed.heads[0].is_none());
+    let durable = confirmed.heads[1].as_ref().ok_or("durable control missing")?;
+    assert_eq!(durable.durable, 1);
+    assert_eq!(durable.retained_through, Some(1));
+    Ok(())
+}
+
 /// One conditioned commit forking `source`, at tail 1, to `destination`: the
 /// shape of a filesystem fork.
 fn fork_into(

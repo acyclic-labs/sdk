@@ -134,9 +134,37 @@ impl MemoryStream {
         view.heads
             .try_reserve_exact(request.paths.len())
             .map_err(|_| StreamError::Capacity)?;
-        self.capture_heads_into(request, durability, &mut view, None, &mut allocation)
+        self.capture_heads_into(request, durability, &mut view, None, &mut allocation, None)
             .await?;
         Ok(view)
+    }
+
+    /// Retains lease ownership from the same state guard as the captured heads.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn capture_heads_with_ephemeral(
+        &self,
+        request: &crate::HeadsRequest,
+        durability: HeadDurability,
+    ) -> Result<(crate::Heads, crate::HeadSet<bool>), StreamError> {
+        let mut allocation = None;
+        let mut view = self.empty_heads(request);
+        let mut ephemeral = crate::HeadSet::new();
+        view.heads
+            .try_reserve_exact(request.paths.len())
+            .map_err(|_| StreamError::Capacity)?;
+        ephemeral
+            .try_reserve_exact(request.paths.len())
+            .map_err(|_| StreamError::Capacity)?;
+        self.capture_heads_into(
+            request,
+            durability,
+            &mut view,
+            None,
+            &mut allocation,
+            Some(&mut ephemeral),
+        )
+        .await?;
+        Ok((view, ephemeral))
     }
 
     fn empty_heads(&self, request: &crate::HeadsRequest) -> crate::Heads {
@@ -158,6 +186,7 @@ impl MemoryStream {
         view: &mut crate::Heads,
         _work: CaptureWork<'_>,
         allocation: &mut Allocation,
+        mut ephemeral: Option<&mut crate::HeadSet<bool>>,
     ) -> Result<(), StreamError> {
         let state = self.state.read().await;
         let applied = self.revisions.at(state.decision);
@@ -239,6 +268,9 @@ impl MemoryStream {
             };
             #[cfg(target_arch = "wasm32")]
             let head = capture()?;
+            if let Some(ephemeral) = &mut ephemeral {
+                ephemeral.push(state.ephemeral.root_of(path.as_str()).is_some());
+            }
             view.heads.push(head);
         }
         view.snapshot = self.revisions.at(index);
@@ -1166,6 +1198,7 @@ impl MemoryStream {
             &mut output.value,
             Some(work),
             &mut children_allocation,
+            None,
         )
         .await?;
         if let Some(mut children) = children_allocation.take() {

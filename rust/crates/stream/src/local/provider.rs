@@ -73,16 +73,19 @@ impl StreamProvider for LocalStream {
                     .await?;
                 let projection = request.projection;
                 let through = request.durable_through;
-                let (mut view, revision) = self
+                let (mut view, revision, ephemeral) = self
                     .accepted(|| async {
-                        let mut view = self
+                        let (mut view, ephemeral) = self
                             .inner
                             .provider
-                            .capture_heads(&request, crate::memory::HeadDurability::Deferred)
+                            .capture_heads_with_ephemeral(
+                                &request,
+                                crate::memory::HeadDurability::Deferred,
+                            )
                             .await?;
                         let revision = *self.inner.revision.borrow();
                         if projection == crate::HeadProjection::Tail || request.paths.is_empty() {
-                            return Ok::<_, StreamError>((view, revision));
+                            return Ok::<_, StreamError>((view, revision, ephemeral));
                         }
                         let synced = self
                             .inner
@@ -90,17 +93,16 @@ impl StreamProvider for LocalStream {
                             .borrow()
                             .flushed
                             .is_some_and(|cut| cut >= revision);
-                        let ephemeral = self.inner.provider.ephemeral_mask(&request.paths).await;
                         let mut tails = self
                             .inner
                             .durable_tails
                             .lock()
                             .map_err(|_| StreamError::Unavailable)?;
                         for ((path, head), ephemeral) in
-                            request.paths.iter().zip(&mut view.heads).zip(ephemeral)
+                            request.paths.iter().zip(&mut view.heads).zip(&ephemeral)
                         {
                             if let Some(head) = head
-                                && !ephemeral
+                                && !*ephemeral
                             {
                                 let mut durable = tails.get(path).copied().unwrap_or(0);
                                 if synced && head.tail > durable {
@@ -112,18 +114,14 @@ impl StreamProvider for LocalStream {
                                     through.filter(|through| *through <= head.durable);
                             }
                         }
-                        Ok((view, revision))
+                        Ok((view, revision, ephemeral))
                     })
                     .await??;
                 // An ephemeral path is never sealed: it has no journal frame.
-                let ephemeral = match through {
-                    Some(_) => self.inner.provider.ephemeral_mask(&request.paths).await,
-                    None => Vec::new(),
-                };
                 if through.is_some_and(|through| {
                     view.heads.iter().zip(&ephemeral).any(|(head, ephemeral)| {
                         head.as_ref().is_some_and(|head| {
-                            !ephemeral && through <= head.tail && head.retained_through.is_none()
+                            !*ephemeral && through <= head.tail && head.retained_through.is_none()
                         })
                     })
                 }) {
@@ -139,10 +137,10 @@ impl StreamProvider for LocalStream {
                         .paths
                         .into_iter()
                         .zip(&mut view.heads)
-                        .zip(ephemeral)
+                        .zip(&ephemeral)
                     {
                         if let Some(head) = head
-                            && !ephemeral
+                            && !*ephemeral
                         {
                             let durable = tails.entry(path).or_default();
                             let marks = flushed_watermarks(durable, head.tail, flushed);
