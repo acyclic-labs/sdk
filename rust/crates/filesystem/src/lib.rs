@@ -166,6 +166,7 @@ mod record_store;
 pub mod s3;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod s3_http;
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
 pub mod simulation;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod source;
@@ -391,10 +392,8 @@ pub use s3_http::{
     FilesystemS3Adapter, FilesystemS3Authentication, FilesystemS3Limits, FilesystemS3Principal,
     FilesystemS3Resolver, S3MultipartRetentionLimits, active_s3_multipart_objects,
 };
-pub use simulation::{
-    ScheduledSimulationFault, SimulatedStore, Simulation, SimulationError, SimulationFault,
-    SimulationOperation, SimulationTrace,
-};
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
+pub use simulation::{SimulatedStore, Simulation, SimulationFault};
 #[cfg(not(target_arch = "wasm32"))]
 pub use source::{ReconcileOutcome, Source, SourceError, SourceMode, SourceOptions, SourceState};
 #[cfg(not(target_arch = "wasm32"))]

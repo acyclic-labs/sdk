@@ -365,22 +365,25 @@ async fn coupled_publication_refuses_the_whole_cut_on_any_conflict() -> Result<(
 /// The shared object simulator stops at each actual read, batch, presence,
 /// write or durability-barrier await. Both errors and dropped futures must
 /// unwind every partial contribution, including the first workspace's proof.
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn coupled_publication_preparation_is_atomic_at_every_object_cut()
 -> Result<(), Box<dyn Error>> {
-    use crate::{ScheduledSimulationFault, Simulation, SimulationFault, SimulationOperation};
+    use crate::{Simulation, SimulationFault};
     for fault in [SimulationFault::RejectBefore, SimulationFault::PauseBefore] {
-        for operation in [
-            SimulationOperation::ObjectPut,
-            SimulationOperation::ObjectRead,
-            SimulationOperation::ObjectReadMany,
-            SimulationOperation::ObjectContains,
-            SimulationOperation::ObjectFlush,
+        for site in [
+            crate::simulation::sites::OBJECT_PUT,
+            crate::simulation::sites::OBJECT_READ,
+            crate::simulation::sites::OBJECT_READ_MANY,
+            crate::simulation::sites::OBJECT_CONTAINS,
+            crate::simulation::sites::OBJECT_FLUSH,
         ] {
-            for fail_at in 1.. {
+            for fail_at in 0_u64.. {
                 let stream = Arc::new(acyclic_stream::MemoryStream::default());
                 let cutting = Arc::new(CutStream::new(Arc::clone(&stream)));
+                let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::new();
                 let simulation = Simulation::wrap(
+                    &schedule,
                     crate::StreamAuthorityStore::new(Arc::clone(&cutting)),
                     crate::LogicalObjectStore::new(Arc::new(
                         acyclic_objects::MemoryObjects::memory(),
@@ -395,18 +398,12 @@ async fn coupled_publication_preparation_is_atomic_at_every_object_cut()
                 let (workspaces, expected, staged) = staged(&fs).await?;
                 let states = merge_states(&expected);
                 let state_changes = merge_changes(&expected, &states);
-                let baseline = simulation
-                    .trace()?
+                let baseline = schedule
+                    .site_calls()
                     .iter()
-                    .filter(|event| event.operation == operation)
-                    .map(|event| event.occurrence)
-                    .max()
-                    .unwrap_or(0);
-                simulation.schedule(ScheduledSimulationFault {
-                    operation,
-                    occurrence: baseline + fail_at,
-                    fault,
-                })?;
+                    .filter(|call| call.site == site)
+                    .count();
+                schedule.inject(site, u64::try_from(baseline)? + fail_at, fault);
                 let original = caller()?;
                 let mut commit = FilesystemCommit::new(original.clone());
                 let specs = specs(&expected, &staged);
@@ -422,13 +419,13 @@ async fn coupled_publication_preparation_is_atomic_at_every_object_cut()
                     tokio::pin!(future);
                     tokio::select! {
                         result = &mut future => Some(result),
-                        () = simulation.wait_for_pause(), if fault == SimulationFault::PauseBefore => None,
+                        _ = events.recv(), if fault == SimulationFault::PauseBefore => None,
                     }
                 };
-                let fired = simulation
-                    .trace()?
+                let fired = schedule
+                    .site_calls()
                     .iter()
-                    .any(|event| event.fault == Some(fault));
+                    .any(|call| call.fault() == Some(&fault));
                 if !fired {
                     result.ok_or("unscheduled object pause")??;
                     break;

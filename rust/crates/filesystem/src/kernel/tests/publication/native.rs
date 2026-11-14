@@ -232,19 +232,20 @@ async fn native_publication_partial_closure_and_allocation_denials_release_owned
 #[tokio::test]
 async fn native_publication_lost_ack_reopens_original_without_resealing_or_second_append()
 -> TestResult {
-    use crate::simulation::{Simulation, SimulationFault, SimulationOperation};
+    use crate::simulation::{Simulation, SimulationFault, sites};
     let objects = std::sync::Arc::new(MemoryObjectStore::default());
     let authority = std::sync::Arc::new(MemoryAuthorityStore::default());
     let volume_id = VolumeId::from_bytes([34; 16]);
     let root = native_fixture(&objects, volume_id).await?;
     let changed_root = fixture(&objects, volume_id).await?;
     let request = native_request(&objects, &authority, volume_id, root).await?;
-    let simulation = Simulation::wrap(authority, objects);
+    let (schedule, _events) = acyclic_native_runtime::testing::Schedule::new();
+    let simulation = Simulation::wrap(&schedule, authority, objects);
     let (authority, objects) = simulation.stores();
-    simulation.schedule_next(
-        SimulationOperation::AuthorityAppend,
+    schedule.inject_next(
+        sites::AUTHORITY_APPEND,
         SimulationFault::AmbiguousAuthorityAppend,
-    )?;
+    );
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;

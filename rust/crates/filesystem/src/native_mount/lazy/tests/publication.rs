@@ -1318,7 +1318,8 @@ async fn post_ack_reads_keep_operation_custody_until_real_companion_settlement()
         let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
         let mut accounting = KernelAccounting::native(&work, &cancellation);
-        let simulation = crate::Simulation::default();
+        let (schedule, _events) = acyclic_native_runtime::testing::Schedule::new();
+        let simulation = crate::Simulation::new(&schedule);
         let (authority, objects) = simulation.stores();
         let fs = crate::Fs::new(authority, objects, crate::EmbeddedCapabilities::MEMORY);
         let lazy = Arc::new(
@@ -1376,10 +1377,10 @@ async fn post_ack_reads_keep_operation_custody_until_real_companion_settlement()
         };
         let mut acknowledged = None;
         if unknown_ack {
-            simulation.schedule_next(
-                crate::SimulationOperation::AuthorityAppend,
+            schedule.inject_next(
+                crate::simulation::sites::AUTHORITY_APPEND,
                 crate::SimulationFault::AmbiguousAuthorityAppend,
-            )?;
+            );
             let lost = view
                 .sync_async_with_permit_qualified_native_work_guarded_with_ack(
                     crate::PublicationPermit::Unrestricted,

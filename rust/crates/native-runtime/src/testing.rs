@@ -14,7 +14,10 @@
 //!   [`Schedule::cut_next`] inject a [`DurableFault`] (crash before or after,
 //!   torn, disk full, or a non-crashing `Interrupted` refusal), latched as
 //!   [`Schedule::storage_fault`] so the driver drops the world as a crash and
-//!   reopens it from disk. OS processes are scripted
+//!   reopens it from disk. A simulated store's own operations are logical
+//!   sites: [`Schedule::inject`] plans a store-defined fault at an exact call,
+//!   [`Schedule::intercept`] applies it and [`Schedule::hold`] parks a call at a
+//!   [`Boundary`]. OS processes are scripted
 //!   ([`Schedule::set_process_provider`]), never spawned.
 //! - **Boundaries**: each owned operation pauses at a [`Boundary`] the driver
 //!   releases, so a driver chooses interleavings at real submission points.
@@ -52,9 +55,11 @@ pub use host::blocking_on;
 mod process;
 pub use process::{ProcessCapture, capture_process};
 mod metadata;
+mod sites;
 pub mod snapshot;
 pub mod sweep;
 pub use metadata::{NativeMetadataInput, NativeTimes, capture_native_times};
+pub use sites::{SiteCall, SiteFault};
 #[cfg(test)]
 #[cfg(loom)]
 mod model;
@@ -128,6 +133,7 @@ struct State {
     // Read only through a seeded schedule; see `Schedule::is_seeded`.
     wall: clock::Wall,
     writes: durability::Writes,
+    sites: sites::Sites,
     process: Option<Arc<process::Provider>>,
     metadata: Option<Arc<metadata::Provider>>,
 }

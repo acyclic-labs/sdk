@@ -6,12 +6,14 @@ type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 const CHILD: &str = "workspace::tests::publication::commit_recovery::commit_crash_child";
 const KEY: IdempotencyKey = IdempotencyKey::from_bytes([0x73; 16]);
 
+mod history;
 mod multi_root;
 
 #[derive(Clone, Copy, Debug)]
 enum PublicationKind {
     Transaction,
     MultiRoot,
+    History,
 }
 
 impl PublicationKind {
@@ -19,6 +21,7 @@ impl PublicationKind {
         match self {
             Self::Transaction => "transaction",
             Self::MultiRoot => "multi-root",
+            Self::History => "history",
         }
     }
 }
@@ -28,11 +31,21 @@ fn run_child(
     kind: PublicationKind,
     cut: Option<(usize, &str)>,
 ) -> TestResult<usize> {
+    run_seeded_child(root, kind, cut, 113)
+}
+
+fn run_seeded_child(
+    root: &std::path::Path,
+    kind: PublicationKind,
+    cut: Option<(usize, &str)>,
+    seed: u64,
+) -> TestResult<usize> {
     let mut command = acyclic_native_runtime::ProcessCommand::new(std::env::current_exe()?);
     command
         .args(["--exact", CHILD, "--nocapture"])
         .env("ACYCLIC_WORKSPACE_CRASH_ROOT", root)
         .env("ACYCLIC_WORKSPACE_CRASH_KIND", kind.name())
+        .env("ACYCLIC_WORKSPACE_CRASH_SEED", seed.to_string())
         .stdout(acyclic_native_runtime::ProcessStdio::piped())
         .stderr(acyclic_native_runtime::ProcessStdio::piped());
     if let Some((ordinal, fault)) = cut {
@@ -196,12 +209,13 @@ fn commit_crash_child() -> TestResult {
     let kind = match std::env::var("ACYCLIC_WORKSPACE_CRASH_KIND")?.as_str() {
         "transaction" => PublicationKind::Transaction,
         "multi-root" => PublicationKind::MultiRoot,
+        "history" => PublicationKind::History,
         _ => return Err("unknown workspace publication kind".into()),
     };
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
+    let seed = std::env::var("ACYCLIC_WORKSPACE_CRASH_SEED")?.parse()?;
+    let runtime = acyclic_native_runtime::testing::seeded_runtime(seed)?;
     runtime.block_on(async {
+        tokio::time::pause();
         let fs = Fs::local(crate::LocalOptions::new(&root)).await?;
         let workspace = unbounded!(fs, open_workspace("repo"))?;
         let coordinator = if matches!(kind, PublicationKind::MultiRoot) {
@@ -212,7 +226,7 @@ fn commit_crash_child() -> TestResult {
         } else {
             None
         };
-        let (schedule, mut events) = Schedule::seeded(113);
+        let (schedule, mut events) = Schedule::seeded(seed);
         let mut returned_fault = None;
         if let Ok(ordinal) = std::env::var("ACYCLIC_WORKSPACE_CRASH_ORDINAL") {
             let fault = match std::env::var("ACYCLIC_WORKSPACE_CRASH_FAULT")?.as_str() {
@@ -245,6 +259,9 @@ fn commit_crash_child() -> TestResult {
         });
         let result = schedule
             .scope(async {
+                if matches!(kind, PublicationKind::History) {
+                    return history::publish(&root, &workspace).await;
+                }
                 if let Some(coordinator) = &coordinator {
                     assert!(matches!(
                         coordinator.publish(multi_root::candidate(&root)?).await?,

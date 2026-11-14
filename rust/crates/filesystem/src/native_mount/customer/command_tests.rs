@@ -20,6 +20,7 @@ fn take_trace() -> Vec<&'static str> {
 async fn publish_command(
     duplicate_sync: bool,
     retire: bool,
+    edits: &[(usize, u8)],
 ) -> Result<(Vec<u8>, Vec<&'static str>), Box<dyn std::error::Error>> {
     crate::initialize_native_mount_services()?;
     let cancellation = crate::CancellationToken::new();
@@ -75,6 +76,28 @@ async fn publish_command(
         false,
         &work,
     )?;
+    let mut expected = b"updated!".to_vec();
+    for &(offset, byte) in edits {
+        mount.source.open_file(&path)?.write_range_with_meter(
+            u64::try_from(offset)?,
+            crate::kernel::OwnedSourceChunk::claimed(
+                acyclic_stream::OwnedBytes::copy_from_slice(&[byte]),
+                0,
+            ),
+            false,
+            &work,
+        )?;
+        expected[offset] = byte;
+        assert_eq!(
+            mount
+                .source
+                .read_range_with_meter(&path, 0, 8, &work)?
+                .bytes
+                .as_ref(),
+            expected,
+            "command checkout lost a completed range write"
+        );
+    }
     take_trace();
     if duplicate_sync {
         // Restore exactly the previous sync -> advance -> unmount path.
@@ -119,25 +142,64 @@ async fn publish_command(
     let bytes = workspace
         .read("/result.txt", 64, &work, &cancellation)
         .await?;
+    assert_eq!(
+        bytes.as_ref(),
+        expected,
+        "command completion lost staged writes"
+    );
     Ok((bytes.as_ref().to_vec(), trace))
 }
 
 #[tokio::test]
 async fn command_completion_publishes_once_with_an_independent_duplicate_sync_control()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (bytes, trace) = publish_command(false, true).await?;
+    let (bytes, trace) = publish_command(false, true, &[]).await?;
     assert_eq!(bytes, b"updated!");
     assert_eq!(trace, ["sync", "detach"]);
-    let (baseline_bytes, duplicate_trace) = publish_command(true, true).await?;
+    let (baseline_bytes, duplicate_trace) = publish_command(true, true, &[]).await?;
     assert_eq!(baseline_bytes, bytes);
     assert_eq!(duplicate_trace, ["sync", "advance", "sync", "detach"]);
     assert_ne!(
         duplicate_trace, trace,
         "duplicate sync escaped the production trace oracle"
     );
-    let (retained_bytes, retained_trace) = publish_command(false, false).await?;
+    let (retained_bytes, retained_trace) = publish_command(false, false, &[]).await?;
     assert_eq!(retained_bytes, bytes);
     assert_eq!(retained_trace, ["sync", "advance"]);
+    Ok(())
+}
+
+#[test]
+fn seeded_command_range_publications() -> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_native_runtime::testing::sweep::{seeds, sweep};
+    use acyclic_native_runtime::testing::{Schedule, fill_seeded, seeded_runtime};
+    let swept = sweep("filesystem command publications", seeds(0..4), |seed| {
+        let runtime = seeded_runtime(seed).map_err(|error| error.to_string())?;
+        runtime.block_on(async {
+            tokio::time::pause();
+            let (schedule, mut events) = Schedule::seeded(seed);
+            let operation = schedule.scope(async {
+                let mut input = [0; 33];
+                assert!(fill_seeded(&mut input));
+                let edits = input[..32].chunks_exact(2)
+                    .map(|pair| (usize::from(pair[0] % 8), pair[1]))
+                    .collect::<Vec<_>>();
+                publish_command(false, input[32] & 1 != 0, &edits).await
+            });
+            tokio::pin!(operation);
+            loop {
+                tokio::select! {
+                    result = &mut operation => { result?; break; }
+                    boundary = events.recv() => boundary.ok_or("command boundary producer dropped")?.release(),
+                }
+            }
+            Ok::<_, Box<dyn std::error::Error>>(())
+        }).map_err(|error| error.to_string())
+    })?;
+    eprintln!(
+        "command histories: {} seeds in {:?}",
+        swept.seeds, swept.elapsed
+    );
     Ok(())
 }
 
