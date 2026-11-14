@@ -1,13 +1,62 @@
 //! Timings include inbox admission, execution, result publication and follow delivery.
 use super::*;
-use crate::model::{ModelContentPart, ModelEvent, ToolCall, ToolResultContent};
+use crate::model::{
+    ModelContent, ModelContentPart, ModelDispatch, ModelEvent, ModelRequest, ModelStream,
+    PreparedModelRequest, ToolCall, ToolResultContent,
+};
 use crate::test_support::ScriptedEvent;
 use acyclic_fs::{CancellationToken, WorkBudget};
+use std::sync::Mutex;
 
-struct Writer {
-    harness: Arc<LocalHarness>,
-    observed: ObservedConversation,
-    provider: Arc<ScriptedModelProvider>,
+struct WritingModel {
+    counter: Arc<ScriptedModelProvider>,
+    calls: Mutex<Vec<ToolCall>>,
+    requests: Mutex<Vec<ModelRequest>>,
+}
+
+impl WritingModel {
+    fn last_request(&self) -> Option<ModelRequest> {
+        self.requests.lock().unwrap().last().cloned()
+    }
+}
+
+impl ModelProvider for WritingModel {
+    fn context_capacity(&self, model: &Model) -> Result<ModelContextCapacity> {
+        self.counter.context_capacity(model)
+    }
+
+    fn count_tokens<'a>(
+        &'a self,
+        request: &'a PreparedModelRequest,
+        ceiling: u64,
+    ) -> ModelStream<'a> {
+        self.counter.count_tokens(request, ceiling)
+    }
+
+    fn generate<'a>(
+        &'a self,
+        request: &'a PreparedModelRequest,
+        dispatch: ModelDispatch,
+    ) -> ModelStream<'a> {
+        self.requests
+            .lock()
+            .unwrap()
+            .push(request.request().clone());
+        let calls = self.calls.lock().unwrap().clone();
+        let turn = if dispatch.step == 0 && !calls.is_empty() {
+            let mut events = calls
+                .into_iter()
+                .map(|call| ScriptedEvent::Event(ModelEvent::ToolCall(call)))
+                .collect::<Vec<_>>();
+            events.push(ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: json!({}),
+            }));
+            ScriptedTurn::Events(events)
+        } else {
+            ScriptedTurn::Text("ready".into())
+        };
+        ModelStream::new(turn.stream())
+    }
 }
 
 #[tokio::test]
@@ -15,109 +64,135 @@ async fn concurrent_model_writes_settle_project_and_home_payloads() -> Result<()
     let backing = tempfile::tempdir().map_err(crate::local::storage)?;
     acyclic_native_runtime::initialize_native_io_services().map_err(crate::local::storage)?;
     acyclic_fs::initialize_native_mount_services().map_err(crate::local::storage)?;
+    let checkout = backing.path().join("checkout");
+    std::fs::create_dir(&checkout).map_err(crate::local::storage)?;
+    for file in 0..128 {
+        std::fs::write(checkout.join(format!("source-{file:03}.txt")), b"source\n")
+            .map_err(crate::local::storage)?;
+    }
+    let provider = Arc::new(WritingModel {
+        counter: scripted([]),
+        calls: Mutex::new(Vec::new()),
+        requests: Mutex::new(Vec::new()),
+    });
+    let harness = Arc::new(
+        open_scripted(
+            crate::test_support::local_harness_config(&checkout, (model()?, provider.clone()))?
+                .state_directory(backing.path().join("state")),
+        )
+        .await?,
+    );
+    let (agents, root) = harness.agents().await?;
+    let (agents, root) = (Arc::clone(agents), root.clone());
+    let connection = harness.connect().await?;
     let cancellation = CancellationToken::new();
-    let mut writers: Vec<Writer> = Vec::new();
+    let mut writers: Vec<ObservedConversation> = Vec::new();
     let mut projects = Vec::new();
     let mut homes = Vec::new();
     for index in 0..8 {
-        let checkout = backing.path().join(format!("checkout-{index}"));
-        std::fs::create_dir(&checkout).map_err(crate::local::storage)?;
-        for file in 0..128 {
-            std::fs::write(checkout.join(format!("source-{file:03}.txt")), b"source\n")
-                .map_err(crate::local::storage)?;
+        provider.calls.lock().unwrap().clear();
+        let name = format!("writer-{index}");
+        let crate::client::AgentReply::Spawned { agent: child, .. } = connection
+            .execute(&crate::client::AgentCommand::Spawn {
+                parent: root.clone(),
+                id: crate::agent::IntentId::try_from(name.as_str())
+                    .map_err(crate::local::storage)?,
+                brief: ModelContent::Text("prepare this workspace".into()),
+                role: "worker".into(),
+            })
+            .await?
+        else {
+            return Err(Error::Conflict("spawn did not return its child".into()));
+        };
+        let conversation = Conversation::open(connection.select(child.clone()).await?);
+        let mut observed = ObservedConversation::observe(conversation, None).await?;
+        // Consume the child's original brief before changing the model script.
+        loop {
+            match observed.observer.next().await? {
+                Event::Turn { entry, .. } => {
+                    assert!(matches!(entry.input, crate::agent::TurnInput::Brief { .. }));
+                    assert_eq!(entry.outcome, crate::agent::TurnOutcome::Completed);
+                    break;
+                }
+                Event::Status(status)
+                    if matches!(status.phase, crate::agent::Phase::Done { .. }) =>
+                {
+                    return Err(Error::Conflict(format!("child finished: {status:?}")));
+                }
+                _ => {}
+            }
         }
-        let provider = scripted([
-            ScriptedTurn::Events(vec![
-                ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
-                    "prepare-project".into(),
-                    "write".into(),
-                    json!({"path": "prepared.txt", "content": "baseline"}),
-                ))),
-                ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
-                    "prepare-home".into(),
-                    "write".into(),
-                    json!({"path": "volume:///home/prepared.txt", "content": "baseline"}),
-                ))),
-                ScriptedEvent::Event(ModelEvent::Completed {
-                    metadata: json!({}),
-                }),
-            ]),
-            ScriptedTurn::Text("prepared".into()),
-        ]);
-        let harness = Arc::new(
-            open_scripted(
-                crate::test_support::local_harness_config(&checkout, (model()?, provider.clone()))?
-                    .state_directory(backing.path().join(format!("state-{index}"))),
-            )
-            .await?,
-        );
-        let mut observed = ObservedConversation::open(&harness).await?;
-        // Initial capture and executor preparation are outside write timings.
-        let warm = observed.send("prepare", "prepare this workspace").await?;
+        *provider.calls.lock().unwrap() = vec![
+            ToolCall::new(
+                "prepare-project".into(),
+                "write".into(),
+                json!({"path": "prepared.txt", "content": "baseline"}),
+            ),
+            ToolCall::new(
+                "prepare-home".into(),
+                "write".into(),
+                json!({"path": "volume:///home/prepared.txt", "content": "baseline"}),
+            ),
+        ];
+        let warm = observed
+            .send(&format!("prepare-{index}"), "prepare this workspace")
+            .await?;
         assert_eq!(warm.outcome, crate::agent::TurnOutcome::Completed);
         assert_eq!(returned_path(&provider, "prepare-project")?, "prepared.txt");
         assert_eq!(
             returned_path(&provider, "prepare-home")?,
             "volume:///home/prepared.txt"
         );
-        let selected = harness.project.clone();
-        let home = harness.scratch.clone();
-        assert_ne!(selected, home);
-        assert!(
-            !projects.contains(&selected),
-            "writers must have separate projects"
-        );
-        projects.push(selected);
-        assert!(!homes.contains(&home), "writers must have private homes");
+        let state = agents.state(&child).await.map_err(crate::local::storage)?;
+        let volume = |name: &str| -> Result<VolumeRef> {
+            Ok(state
+                .volumes
+                .iter()
+                .find(|binding| binding.name == name)
+                .ok_or_else(|| Error::NotFound(format!("child {name} volume")))?
+                .volume()?
+                .clone())
+        };
+        let project = volume("project")?;
+        let home = volume("home")?;
+        assert_ne!(project, home);
+        assert!(!projects.contains(&project), "private child projects");
+        assert!(!homes.contains(&home), "private child homes");
+        projects.push(project);
         homes.push(home);
-        for earlier in &writers {
-            assert_ne!(
-                observed.conversation.agent(),
-                earlier.observed.conversation.agent()
-            );
-        }
-        writers.push(Writer {
-            harness,
-            observed,
-            provider,
-        });
+        writers.push(observed);
     }
     for count in [1, 8] {
         for prefix in ["volume:///home/", ""] {
+            let call = format!("write-{count}-{}", prefix.is_empty());
+            let path = format!("{prefix}settled-{count}.txt");
+            let content = format!("writers {count}\n");
+            *provider.calls.lock().unwrap() = vec![ToolCall::new(
+                call.clone(),
+                "write".into(),
+                json!({"path": path, "content": content}),
+            )];
+            let request_start = provider.requests.lock().unwrap().len();
             let barrier = tokio::sync::Barrier::new(count);
             let results = futures::future::join_all(writers[..count].iter_mut().enumerate().map(
                 |(index, writer)| {
-                    let barrier = &barrier;
+                    let (barrier, call) = (&barrier, &call);
                     async move {
-                        let call = format!("write-{count}-{index}-{}", prefix.is_empty());
-                        let path = format!("{prefix}settled-{count}-{index}.txt");
-                        let content = format!("writer {index}\n");
-                        writer.provider.extend([
-                            ScriptedTurn::Events(vec![
-                                ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
-                                    call.clone(),
-                                    "write".into(),
-                                    json!({"path": path, "content": content}),
-                                ))),
-                                ScriptedEvent::Event(ModelEvent::Completed {
-                                    metadata: json!({}),
-                                }),
-                            ]),
-                            ScriptedTurn::Text("published".into()),
-                        ]);
                         barrier.wait().await;
                         let started = std::time::Instant::now();
-                        let conversation = Arc::clone(&writer.observed.conversation);
-                        let inbox = conversation.send(&call, "publish the file").await?;
+                        let conversation = Arc::clone(&writer.conversation);
+                        let inbox = conversation
+                            .send(&format!("{call}-{index}"), "publish the file")
+                            .await?;
                         let (settled, completed) = tokio::join!(
                             async {
-                                let settled = writer.observed.settled(inbox).await?;
+                                let settled = writer.settled(inbox).await?;
                                 assert_eq!(settled.outcome, crate::agent::TurnOutcome::Completed);
                                 Ok::<_, Error>(started.elapsed())
                             },
-                            tool_completed_at(&conversation, inbox, &call, started),
+                            tool_completed_at(&conversation, inbox, call, started),
                         );
-                        Ok::<_, Error>((settled?, completed?, call, content))
+                        Ok::<_, Error>((settled?, completed?))
                     }
                 },
             ))
@@ -136,21 +211,22 @@ async fn concurrent_model_writes_settle_project_and_home_payloads() -> Result<()
                 completed[completed.len() / 2].as_micros(),
                 completed.last().expect("writers").as_micros()
             );
-            // Inspect committed payloads only after every writer has settled.
-            for (index, (writer, (_, _, call, content))) in
-                writers[..count].iter().zip(results).enumerate()
-            {
-                assert_eq!(
-                    returned_path(&writer.provider, &call)?,
-                    format!("{prefix}settled-{count}-{index}.txt")
-                );
+            // Inspect model delivery and committed payloads after all timers stop.
+            let mut delivered = 0;
+            for request in provider.requests.lock().unwrap().iter().skip(request_start) {
+                if let Some(returned) = result_path(request, &call)? {
+                    assert_eq!(returned, path);
+                    delivered += 1;
+                }
+            }
+            assert_eq!(delivered, count, "every child model receives its result");
+            for index in 0..count {
                 let volume = if prefix.is_empty() {
                     &projects[index]
                 } else {
                     &homes[index]
                 };
-                let workspace = writer
-                    .harness
+                let workspace = harness
                     .workspace
                     .as_ref()
                     .expect("source-backed checkout")
@@ -163,14 +239,13 @@ async fn concurrent_model_writes_settle_project_and_home_payloads() -> Result<()
                     .await
                     .map_err(|failure| crate::local::storage(failure.error))?
                     .value;
-                let head = workspace
+                let bytes = workspace
                     .head(WorkBudget::UNBOUNDED, &cancellation)
                     .await
                     .map_err(|failure| crate::local::storage(failure.error))?
-                    .value;
-                let bytes = head
+                    .value
                     .read(
-                        &format!("/settled-{count}-{index}.txt"),
+                        &format!("/settled-{count}.txt"),
                         64,
                         WorkBudget::UNBOUNDED,
                         &cancellation,
@@ -182,16 +257,13 @@ async fn concurrent_model_writes_settle_project_and_home_payloads() -> Result<()
             }
         }
     }
-    for Writer {
-        harness, observed, ..
-    } in writers
-    {
-        drop(observed);
-        Arc::try_unwrap(harness)
-            .map_err(|_| Error::Conflict("measurement still owns its harness".into()))?
-            .disconnect()
-            .await?;
-    }
+    drop(writers);
+    drop(connection);
+    drop(agents);
+    Arc::try_unwrap(harness)
+        .map_err(|_| Error::Conflict("measurement still owns its harness".into()))?
+        .disconnect()
+        .await?;
     Ok(())
 }
 
@@ -224,10 +296,15 @@ async fn tool_completed_at(
     }
 }
 
-fn returned_path(provider: &ScriptedModelProvider, call: &str) -> Result<String> {
+fn returned_path(provider: &WritingModel, call: &str) -> Result<String> {
     let request = provider
         .last_request()
         .ok_or_else(|| Error::Conflict("missing result delivery".into()))?;
+    result_path(&request, call)?
+        .ok_or_else(|| Error::Conflict("settled turn omitted its tool result".into()))
+}
+
+fn result_path(request: &ModelRequest, call: &str) -> Result<Option<String>> {
     for part in request
         .messages
         .iter()
@@ -243,7 +320,7 @@ fn returned_path(provider: &ScriptedModelProvider, call: &str) -> Result<String>
                     let path = value["path"].as_str();
                     let version = value["version"].as_str();
                     match (path, version) {
-                        (Some(path), Some(version)) if !version.is_empty() => Ok(path.into()),
+                        (Some(path), Some(version)) if !version.is_empty() => Ok(Some(path.into())),
                         _ => Err(Error::Invalid(
                             "write omitted its public path or version".into(),
                         )),
@@ -255,7 +332,5 @@ fn returned_path(provider: &ScriptedModelProvider, call: &str) -> Result<String>
             };
         }
     }
-    Err(Error::Conflict(
-        "settled turn omitted its tool result".into(),
-    ))
+    Ok(None)
 }
