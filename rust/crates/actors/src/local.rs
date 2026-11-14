@@ -1869,7 +1869,15 @@ fn extends(original: &CommitRequest, composed: &CommitRequest, activations: &Str
                                     path: to,
                                     records: extended,
                                 },
-                            ) if path == activations && to == path => extended.starts_with(records),
+                            ) if to == path
+                                && path
+                                    .as_str()
+                                    .strip_prefix(activations.as_str())
+                                    .and_then(|suffix| suffix.strip_prefix('/'))
+                                    .is_some_and(scheduling::wake_log) =>
+                            {
+                                extended.starts_with(records)
+                            }
                             _ => candidate == entry,
                         })
                 })

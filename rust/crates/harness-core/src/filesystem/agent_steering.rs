@@ -42,7 +42,6 @@ pub(super) struct FilesystemBoundary<P: ?Sized, A: 'static, O: 'static> {
     pub inbox: u64,
     initial_through: u64,
     pub files: Arc<AgentInternalFiles<A, O>>,
-    journal_reader: Arc<FilesystemContentVerifier<A, O>>,
     pub writer: Arc<dyn ContentPublisher>,
     maximum: Option<u64>,
     admitted: Mutex<Admitted>,
@@ -67,7 +66,6 @@ impl<P: ?Sized, A: 'static, O: 'static> FilesystemBoundary<P, A, O> {
         agent: AgentState,
         identity: (OperationId, u64, u64),
         files: Arc<AgentInternalFiles<A, O>>,
-        journal_reader: Arc<FilesystemContentVerifier<A, O>>,
         writer: Arc<dyn ContentPublisher>,
         maximum: Option<u64>,
     ) -> Self {
@@ -81,7 +79,6 @@ impl<P: ?Sized, A: 'static, O: 'static> FilesystemBoundary<P, A, O> {
             inbox: identity.1,
             initial_through: identity.2,
             files,
-            journal_reader,
             writer,
             maximum,
             admitted: Mutex::default(),
@@ -181,11 +178,30 @@ where
             }
             let content = crate::agent::model_input_at(&self.agent.path, inbox, &input.input)
                 .map_err(Error::from)?;
+            let external = content.file_refs().cloned().collect::<Vec<_>>();
             // Notice envelopes retain host custody; their described paths
-            // never enter the agent's content grants.
+            // never enter the agent's content grants. Like a turn's initial
+            // input, the host reads each envelope under journal authority over
+            // that envelope alone: a child's settlement lives in the child's
+            // journal, which no grant fixed at turn start can name.
             if waking_notice {
-                let content =
-                    crate::agent::expand_attachments(content, self.journal_reader.as_ref()).await?;
+                let authority = AdmittedAgent::verify(
+                    &self.issuer,
+                    &self.admission,
+                    &self.agent.path,
+                    &self.agent.volumes,
+                )?
+                .journal_authority(&self.host, &[], &external)
+                .await?
+                .1;
+                let reader = FilesystemContentVerifier::new(
+                    Arc::clone(&self.host),
+                    &authority.verifier,
+                    &authority.scope,
+                    crate::conversation::MAX_EXACT_JS_INTEGER,
+                    None,
+                )?;
+                let content = crate::agent::expand_attachments(content, &*reader).await?;
                 let ModelContent::Part(ModelContentPart::Notices { notices: events }) = content
                 else {
                     return Err(Error::Invalid(
@@ -199,7 +215,6 @@ where
                 }
                 continue;
             }
-            let external = content.file_refs().cloned().collect::<Vec<_>>();
             if external.is_empty() {
                 messages.push(ModelMessage {
                     role: ModelRole::User,
@@ -207,20 +222,14 @@ where
                 });
                 continue;
             }
-            let admitted = AdmittedAgent::verify(
+            let authority = AdmittedAgent::verify(
                 &self.issuer,
                 &self.admission,
                 &self.agent.path,
                 &self.agent.volumes,
-            )?;
-            let authority = if waking_notice {
-                admitted
-                    .journal_authority(&self.host, &[], &external)
-                    .await?
-                    .1
-            } else {
-                admitted.authority(&external, None).await?
-            };
+            )?
+            .authority(&external, None)
+            .await?;
             let mut reader = FilesystemContentVerifier::new(
                 Arc::clone(&self.host),
                 &authority.verifier,
