@@ -723,8 +723,20 @@ where
         digest: [u8; 32],
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        self.require_operation(operation, io)?;
-        self.approvals(io)?.verify(id, operation, digest).await
+        self.observe_request(
+            acyclic_stream::trace::Request {
+                name: "harness.verify_tool_approval",
+                mechanism: acyclic_stream::trace::Mechanism::AuthCheck,
+                parent: None,
+                guarantee: Some("settled_original_tool_approval"),
+            },
+            async {
+                self.require_operation(operation, io)?;
+                self.approvals(io)?.verify(id, operation, digest).await
+            },
+            |_| None,
+        )
+        .await
     }
 }
 

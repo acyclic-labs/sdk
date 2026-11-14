@@ -1235,7 +1235,11 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     use crate::client_files::{ClientFileChange, FileRoot};
     use crate::executor::{ExecutionEvent, ExecutionJournal};
     use acyclic_stream::StreamProviderExt as _;
-    let (bound, agent) = binding().await?;
+    let (bound, agent) = binding_with(
+        Arc::new(NoTurns),
+        crate::approvals::ApprovalPolicy::accept_all("trace-reviewer"),
+    )
+    .await?;
     let root = FileRoot::Private {};
     let paths = vec!["notes.txt".to_owned()];
     bound
@@ -1336,7 +1340,43 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     );
     // Trace demand is held by this same authenticated file wait, including
     // before the original trace stream has its first publication.
-    let journal = bound.turns().query_journal(&state).await?;
+    let (journal_volume, authority) = bound.turns().journal_authority(&state).await?;
+    let (private_scope, private_verifier) = bound.volume_scope(&agent).await?;
+    let private = state.volumes[0].volume()?;
+    let files = Arc::new(crate::filesystem::agent_internal::AgentInternalFiles::new(
+        Arc::clone(bound.volumes()),
+        journal_volume.clone(),
+        crate::conversation::ContentGrant::verify(
+            &authority.verifier,
+            &authority.scope,
+            &journal_volume,
+            crate::conversation::VolumeOperation::Write,
+            &mut None,
+        )?,
+        private.clone(),
+        crate::conversation::ContentGrant::verify(
+            &private_verifier,
+            &private_scope,
+            private,
+            crate::conversation::VolumeOperation::Write,
+            &mut None,
+        )?,
+    ));
+    let policy = crate::approvals::AgentApprovalPolicy::new(
+        agent.id(),
+        crate::approvals::ApprovalPolicy::accept_all("trace-reviewer"),
+        None,
+        Default::default(),
+        Default::default(),
+    )?;
+    let journal = bound
+        .turns()
+        .query_journal(&state)
+        .await?
+        .with_agent_approvals(Arc::new(crate::approvals::AgentApprovals::new(
+            files,
+            Arc::new(policy),
+        )));
     let operation = OperationId::from_bytes([74; 16]);
     let event = ExecutionEvent::Started {
         request_digest: [75; 32],
@@ -1346,6 +1386,21 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
         journal.replay(operation, 0, 1, None)?.await?[0].event,
         event
     );
+    let approval_id = InteractionId::from_bytes([78; 16]);
+    let approval_digest = [79; 32];
+    let approval = crate::interaction::Interaction::approval(
+        "original action".into(),
+        operation,
+        approval_digest,
+        crate::interaction::ApprovalSubject::Opaque {},
+    )?;
+    journal
+        .open_interaction(approval_id, &approval, None)?
+        .await?;
+    assert!(matches!(
+        journal.interaction_outcome(approval_id, None)?.await?,
+        Some(crate::interaction::InteractionOutcome::Approved {})
+    ));
     let requested = "live/agents/self/trace/0/2.json".to_owned();
     let trace_paths = vec![requested.clone()];
     let before = bound.files(&agent, root, &trace_paths, None).await?;
@@ -1354,6 +1409,22 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     let mut watching = Box::pin(bound.files(&agent, root, &trace_paths, Some(&before.cut)));
     assert!(futures::poll!(&mut watching).is_pending());
     assert!(bound.trace_recorder(&agent)?.is_some());
+    journal
+        .append(
+            OperationId::from_bytes([76; 16]),
+            "observed-start",
+            &event,
+            None,
+        )?
+        .await?;
+    assert!(
+        !journal
+            .append_if_tail(operation, 0, "stale-start", &event, None)?
+            .await?,
+        "stale original tail unexpectedly accepted"
+    );
+    crate::tool::ToolApprovalVerifier::verify(&journal, approval_id, operation, approval_digest)
+        .await?;
     let records = journal.replay(operation, 0, 1, None)?.await?;
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].event, event);
@@ -1448,23 +1519,34 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
             ..
         } = observation
         {
+            if start.parent.is_some() {
+                continue;
+            }
             let expected = match start.name.as_str() {
+                "harness.execution_append" | "harness.execution_append_if_tail" => {
+                    (None, "original_execution_publication_decision")
+                }
                 "harness.execution_replay_page" => (None, "authenticated_execution_prefix"),
                 "harness.private_stage" => (Some(3), "authenticated_private_publication"),
                 "harness.private_load" => (Some(3), "authenticated_immutable_content"),
                 "harness.private_load_range" => (Some(2), "authenticated_immutable_range"),
                 "harness.verify_input_file" => (None, "authenticated_original_input_file"),
+                "harness.verify_tool_approval" => (None, "settled_original_tool_approval"),
                 "harness.authenticate_publication" => {
                     (None, "original_publication_membership_decision")
                 }
                 _ => continue,
             };
-            assert_eq!(start.parent, None);
             assert_eq!(
                 start.mechanism,
                 match start.name.as_str() {
-                    "harness.private_stage" => acyclic_stream::trace::Mechanism::Commit,
-                    "harness.verify_input_file" | "harness.authenticate_publication" =>
+                    "harness.private_stage"
+                    | "harness.execution_append"
+                    | "harness.execution_append_if_tail" =>
+                        acyclic_stream::trace::Mechanism::Commit,
+                    "harness.verify_input_file"
+                    | "harness.verify_tool_approval"
+                    | "harness.authenticate_publication" =>
                         acyclic_stream::trace::Mechanism::AuthCheck,
                     _ => acyclic_stream::trace::Mechanism::Io,
                 }
@@ -1479,7 +1561,7 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
             }
         }
     }
-    assert_eq!(original.len(), 5);
+    assert_eq!(original.len(), 8);
     assert_eq!(membership, 2);
     Ok(())
 }

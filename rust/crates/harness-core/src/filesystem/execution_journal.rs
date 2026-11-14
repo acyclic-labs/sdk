@@ -2,7 +2,6 @@
 
 use super::bounded_io::{PreparationIo, PreparationRecord};
 use super::{FilesystemHost, InternalContentClass};
-use crate::obs::{obs_span, traced};
 use crate::{
     Error, IdempotencyKey, InteractionId, OperationId, Result,
     conversation::{
