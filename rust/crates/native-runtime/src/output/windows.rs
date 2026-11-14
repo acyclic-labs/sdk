@@ -21,7 +21,7 @@ pub(super) fn admit(file: File) -> io::Result<InheritedOutput> {
                     "unknown inherited output handle",
                 )
             } else {
-                io::Error::from_raw_os_error(error as i32)
+                io::Error::from_raw_os_error(error.cast_signed())
             });
         }
         let mut mode = 0;
@@ -53,7 +53,10 @@ pub(super) fn write_console(file: &File, bytes: &[u8]) -> io::Result<()> {
             if length + width > encoded.len() {
                 break;
             }
-            character.encode_utf16(&mut encoded[length..length + width]);
+            let target = encoded
+                .get_mut(length..length + width)
+                .ok_or(io::ErrorKind::InvalidData)?;
+            character.encode_utf16(target);
             length += width;
             characters.next();
         }
@@ -63,6 +66,10 @@ pub(super) fn write_console(file: &File, bytes: &[u8]) -> io::Result<()> {
         let mut offset = 0;
         while offset < length {
             let mut written = 0;
+            let pending = encoded
+                .get(offset..length)
+                .ok_or(io::ErrorKind::InvalidData)?;
+            let count = u32::try_from(pending.len()).map_err(|_| io::ErrorKind::InvalidInput)?;
             // SAFETY: this synchronous call borrows a live owned handle and
             // the initialized UTF-16 prefix on this same worker's stack. The
             // original UTF-8 buffer and its credit remain owned until return.
@@ -70,8 +77,8 @@ pub(super) fn write_console(file: &File, bytes: &[u8]) -> io::Result<()> {
             let result = unsafe {
                 WriteConsoleW(
                     file.as_raw_handle(),
-                    encoded[offset..length].as_ptr().cast(),
-                    (length - offset) as u32,
+                    pending.as_ptr().cast(),
+                    count,
                     &mut written,
                     std::ptr::null_mut(),
                 )

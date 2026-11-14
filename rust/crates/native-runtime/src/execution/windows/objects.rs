@@ -50,7 +50,7 @@ pub(in crate::execution) fn open_beneath(
             Buffer: name.as_mut_ptr(),
         };
         let attributes = OBJECT_ATTRIBUTES {
-            Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+            Length: u32::try_from(size_of::<OBJECT_ATTRIBUTES>()).map_err(refused)?,
             RootDirectory: parent.as_ref().unwrap_or(root).as_raw_handle(),
             ObjectName: &raw const name,
             Attributes: 0x40,
@@ -114,7 +114,7 @@ pub(in crate::execution) fn validate_stdio(handles: &[HANDLE]) -> io::Result<()>
         let mut needed = 0;
         // SAFETY: the sizing call has no buffer, only its required-size output.
         unsafe { NtQueryObject(*handle, 1, std::ptr::null_mut(), 0, &raw mut needed) };
-        if needed < size_of::<UNICODE_STRING>() as u32 {
+        if (needed as usize) < size_of::<UNICODE_STRING>() {
             return Err(refused("cannot establish confined stream identity"));
         }
         let mut buffer = vec![0usize; (needed as usize).div_ceil(size_of::<usize>())];
@@ -156,5 +156,5 @@ pub(in crate::execution) fn validate_stdio(handles: &[HANDLE]) -> io::Result<()>
 
 fn nt_error(status: i32) -> io::Error {
     // SAFETY: the pure system mapping accepts any NTSTATUS value.
-    io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(status) } as i32)
+    io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(status) }.cast_signed())
 }

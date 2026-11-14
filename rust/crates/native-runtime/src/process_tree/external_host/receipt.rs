@@ -37,12 +37,9 @@ impl From<ExitStatus> for RootStatus {
         }
         #[cfg(windows)]
         {
+            use std::os::windows::process::ExitStatusExt as _;
             Self {
-                native: native_code(
-                    status
-                        .code()
-                        .expect("Windows status retains its native DWORD"),
-                ),
+                native: i64::from(status.into_raw()),
                 code: status.code().map(native_code),
                 signal: None,
             }

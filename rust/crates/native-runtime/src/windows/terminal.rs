@@ -131,7 +131,7 @@ pub fn cancel_thread(worker: &std::thread::JoinHandle<()>) {
 }
 
 /// Read VT bytes directly into the caller's buffer. A native call consumes at
-/// most u32::MAX bytes; larger buffers continue in the caller's next read.
+/// most `u32::MAX` bytes; larger buffers continue in the caller's next read.
 /// None waits indefinitely on the original console input or close event.
 pub fn console_read(
     input: usize,
@@ -259,9 +259,11 @@ impl ConsoleClose {
             // is a wait chunk, not an earlier caller deadline.
             let timeout = deadline.map_or(INFINITE, |deadline| {
                 let remaining = deadline - now;
-                let milliseconds =
-                    remaining.as_millis() + u128::from(remaining.subsec_nanos() % 1_000_000 != 0);
-                milliseconds.min(u128::from(u32::MAX - 1)) as u32
+                let milliseconds = remaining.as_millis()
+                    + u128::from(!remaining.subsec_nanos().is_multiple_of(1_000_000));
+                u32::try_from(milliseconds)
+                    .unwrap_or(u32::MAX - 1)
+                    .min(u32::MAX - 1)
             });
             // SAFETY: both original handles are retained by their owners;
             // this fixed array lives through the wait. Close has priority
