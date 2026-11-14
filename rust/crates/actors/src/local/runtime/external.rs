@@ -8,10 +8,10 @@ use tokio::sync::watch;
 #[cfg(test)]
 mod tests;
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq)]
 struct Selection {
     subscription: Subscription,
-    key: Option<bytes::Bytes>,
+    filter: Option<acyclic_stream::FollowFilter>,
 }
 
 #[derive(Default)]
@@ -92,7 +92,7 @@ impl Registry {
                     id,
                     Selection {
                         subscription: cut.clone(),
-                        key: handler.subscription_key(id, state.checkpoint())?,
+                        filter: indexed_filter(handler, id, state.checkpoint())?,
                     },
                 ))
             })
@@ -171,7 +171,7 @@ impl Watch {
     fn update(&mut self) {
         let next = self.receive.borrow_and_update().clone();
         if next.subscription.path != self.selected.subscription.path
-            || next.key != self.selected.key
+            || next.filter != self.selected.filter
             || next.subscription.cursor < self.selected.subscription.cursor
             || next.subscription.cursor > self.next
         {
@@ -191,8 +191,8 @@ impl Watch {
                     self.update();
                     if self.records.is_none() {
                         let mut request = acyclic_stream::FollowRequest::new(self.selected.subscription.path.clone(), self.next);
-                        if let Some(key) = &self.selected.key {
-                            request.filter = acyclic_stream::FollowFilter::exact_key(key.clone())?;
+                        if let Some(filter) = &self.selected.filter {
+                            request.filter = filter.clone();
                         }
                         request.when_absent = acyclic_stream::WhenAbsent::Wait;
                         let open = provider.follow(request);

@@ -559,12 +559,12 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Han
     fn revalidate_foreign_conflicts(&self, _: &ActorReference) -> bool {
         true
     }
-    fn subscription_key(
+    fn subscription_filter(
         &self,
         id: &str,
         checkpoint: Option<&Checkpoint>,
-    ) -> Result<Option<Bytes>, GuestError> {
-        if [
+    ) -> Result<Option<acyclic_stream::FollowFilter>, GuestError> {
+        let key = if [
             super::quiet::ACTIVITY,
             super::quiet::COMPLETED,
             super::quiet::LIFECYCLE,
@@ -572,17 +572,21 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Han
         ]
         .contains(&id)
         {
-            return super::quiet::key(id, checkpoint).map_err(guest);
-        }
-        Ok(match id {
-            PAUSE => Some(Bytes::from_static(b"control/pause")),
-            STOP => Some(Bytes::from_static(b"control/stop")),
-            STEER => Some(Bytes::from_static(b"control/steer.md")),
-            JOBS => Some(Bytes::from_static(
-                crate::supervision::tool_jobs::STARTED_KEY,
-            )),
-            _ => None,
-        })
+            super::quiet::key(id, checkpoint).map_err(guest)?
+        } else {
+            match id {
+                PAUSE => Some(Bytes::from_static(b"control/pause")),
+                STOP => Some(Bytes::from_static(b"control/stop")),
+                STEER => Some(Bytes::from_static(b"control/steer.md")),
+                JOBS => Some(Bytes::from_static(
+                    crate::supervision::tool_jobs::STARTED_KEY,
+                )),
+                _ => None,
+            }
+        };
+        key.map(acyclic_stream::FollowFilter::exact_key)
+            .transpose()
+            .map_err(guest)
     }
     fn on_record<'a>(
         &'a self,

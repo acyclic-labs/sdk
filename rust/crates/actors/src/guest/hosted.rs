@@ -78,12 +78,12 @@ where
         self.host.ordered_subscriptions()
     }
 
-    fn subscription_key(
+    fn subscription_filter(
         &self,
         id: &str,
         checkpoint: Option<&Checkpoint>,
-    ) -> Result<Option<Bytes>, GuestError> {
-        self.host.subscription_key(id, checkpoint)
+    ) -> Result<Option<acyclic_stream::FollowFilter>, GuestError> {
+        self.host.subscription_filter(id, checkpoint)
     }
 
     fn publication_conditions(&self, actor: &ActorReference) -> Vec<CommitCondition> {

@@ -897,6 +897,104 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
 }
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
+async fn combined_file_controls_keep_steering_while_paused_through_the_session() -> Result<()> {
+    use crate::{
+        agent::{AgentRecord as _, InboxRecord},
+        client_files::{ClientFileChange, FileRoot},
+        local::agent_conversation::Conversation,
+        supervision::Lifecycle,
+    };
+    use futures::StreamExt as _;
+
+    let directory = tempfile::tempdir().map_err(storage)?;
+    let project = volume(directory.path()).await?;
+    let provider = text();
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project, provider.clone())?.without_default_tools(),
+        )
+        .await?,
+    );
+    let connection = harness.connect().await?;
+    let conversation = Conversation::open(connection.clone());
+    let mut observer = conversation.observe(None).await?;
+    loop {
+        if matches!(observer.next().await?, Event::Status(status) if matches!(status.phase, crate::agent::Phase::Idle))
+        {
+            break;
+        }
+    }
+    let inbox = connection.root().inbox().map_err(storage)?;
+    let streams = connection.session.read_provider();
+    let before = streams.tail(inbox.clone()).await.map_err(storage)?;
+    let mut lifecycle = connection.supervision_own().await?;
+    let changes = vec![
+        ClientFileChange {
+            path: "control/pause".into(),
+            expected: None,
+            text: Some(String::new()),
+        },
+        ClientFileChange {
+            path: "control/steer.md".into(),
+            expected: None,
+            text: Some("Retain this steering input while paused.\n".into()),
+        },
+    ];
+    let operation = crate::OperationId::new();
+    let generation = conversation
+        .publish_files(FileRoot::Private {}, operation, changes.clone())
+        .await?;
+    loop {
+        if matches!(
+            lifecycle.next().await?.event,
+            Lifecycle::Paused { signal: None }
+        ) {
+            break;
+        }
+    }
+    // Pause and steering belong to the same control transition. Its public
+    // lifecycle event therefore witnesses the original input publication too.
+    assert_eq!(
+        streams.tail(inbox.clone()).await.map_err(storage)?,
+        before + 1,
+        "combined control publication lost or repeated steering"
+    );
+    let mut records = streams
+        .read(acyclic_stream::ReadRequest {
+            key: None,
+            path: inbox.clone(),
+            from: before,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await
+        .map_err(storage)?;
+    let original = records
+        .next()
+        .await
+        .transpose()
+        .map_err(storage)?
+        .ok_or_else(|| Error::Conflict("steering input is absent".into()))?;
+    assert!(matches!(
+        InboxRecord::decode(&original.value).map_err(storage)?,
+        InboxRecord::Message(_)
+    ));
+    assert_eq!(
+        conversation
+            .publish_files(FileRoot::Private {}, operation, changes)
+            .await?,
+        generation
+    );
+    assert_eq!(streams.tail(inbox).await.map_err(storage)?, before + 1);
+    assert!(
+        provider.request(0).is_none(),
+        "paused steering dispatched a model"
+    );
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
 async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_sessions()
 -> Result<()> {
     use crate::{
