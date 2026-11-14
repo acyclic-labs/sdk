@@ -181,6 +181,8 @@ struct Inner {
     pending: Option<(Arc<Snapshot>, PreparedPublish, Option<String>)>,
     /// Conflicts of the last composed-guard refusal since a publication.
     refused: Option<Vec<acyclic_stream::CommitConflict>>,
+    /// The last undecided handler failure since a publication.
+    undecided: Option<crate::guest::GuestError>,
     /// This resident actor's interest marker is durable (or not needed).
     interests_marked: bool,
 }
@@ -201,6 +203,19 @@ impl Inner {
         self.refused = Some(conflicts);
         Ok(())
     }
+
+    /// An undecided handler failure retains its input, and nothing else owes
+    /// the actor a wake: its own failure is the event that redelivers it, at
+    /// once. A redelivery that is undecided again, with no publication
+    /// between, settles through the handler's failure path instead of idling
+    /// with the input or retrying without bound.
+    fn undecided(&mut self, failure: crate::guest::GuestError) -> Result<(), Error> {
+        if self.undecided.take().is_some() {
+            return Err(Error::UndecidedUnchanged(failure));
+        }
+        self.undecided = Some(failure);
+        Ok(())
+    }
 }
 
 /// Only a decided refusal can be replaced with a failure transition. Capacity
@@ -210,7 +225,7 @@ fn terminal(error: &Error) -> bool {
         Error::Stream(error) => {
             !error.uncertain() && !matches!(error.category(), StreamError::Capacity)
         }
-        Error::PreconditionUnchanged => true,
+        Error::PreconditionUnchanged | Error::UndecidedUnchanged(_) => true,
         Error::Handler(failure) => !matches!(failure, crate::guest::GuestError::Pending(_)),
         _ => false,
     }
@@ -1620,6 +1635,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         if inner.released {
             return Ok(true);
         }
+        // Each delivery redelivers its own undecided failure once.
+        inner.undecided = None;
         let mut steps = 0;
         loop {
             // A pending follow may own asynchronous provider I/O or a fair
@@ -1880,6 +1897,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 }
                 Err(Error::PreconditionChanged(conflicts)) => {
                     inner.refused(conflicts).map(|()| true)
+                }
+                Err(Error::Handler(failure @ crate::guest::GuestError::Pending(_)))
+                    if !cancellation.is_cancelled() =>
+                {
+                    inner.undecided(failure).map(|()| true)
                 }
                 Err(error) => Err(error),
             };
@@ -2221,6 +2243,7 @@ async fn settle_pending<P: StreamProvider + ?Sized>(
                 inner.last_input = subscription;
             }
             inner.refused = None;
+            inner.undecided = None;
             inner.observed = Some(Arc::new(
                 observed.ok_or(Error::Invalid("actor receipt has no state"))?,
             ));

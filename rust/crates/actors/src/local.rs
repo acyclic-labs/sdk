@@ -130,6 +130,11 @@ pub enum Error {
     /// attempt would touch storage forever without progress.
     #[error("composed transaction precondition refused again with no external change")]
     PreconditionUnchanged,
+    /// A redelivered input was undecided again, with nothing published
+    /// between. No later event is owed to the actor: retaining the input
+    /// would leave it idle with work unconsumed.
+    #[error("handler failure undecided again on redelivery: {0}")]
+    UndecidedUnchanged(GuestError),
     /// The actor is paused; queued work remains unconsumed.
     #[error("actor is paused")]
     Paused,
@@ -205,6 +210,7 @@ impl Error {
             | Self::Escrow(_)
             | Self::Settlement { .. }
             | Self::PreconditionUnchanged
+            | Self::UndecidedUnchanged(_)
             | Self::InvocationFailed { .. }
             | Self::Deleted
             | Self::AdmissionClosed(_)
@@ -230,6 +236,7 @@ impl Error {
             Self::Conflict => "conflict",
             Self::PreconditionChanged(_) => "precondition_changed",
             Self::PreconditionUnchanged => "precondition_unchanged",
+            Self::UndecidedUnchanged(_) => "undecided_unchanged",
             Self::Paused => "paused",
             Self::Handler(_) => "handler",
             Self::InvocationFailed { .. } => "invocation_failed",
