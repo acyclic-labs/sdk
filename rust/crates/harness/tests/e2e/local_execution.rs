@@ -19,6 +19,8 @@ use acyclic_harness::{
 use serde_json::Value;
 use std::sync::Arc;
 
+/// Each harness future is boxed: their nested layouts otherwise exceed the
+/// compiler's query depth when composed into this driver's one future.
 pub(super) async fn run(case: LocalCase) -> TestResult {
     case.validate()?;
     let steps = case.turns.len();
@@ -27,22 +29,23 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     std::fs::create_dir(&directory)?;
     let state = temporary.path().join("state");
     let (host, volume, workspace, reader, _authority) =
-        local_workspace::seed(&directory, &case.seed).await?;
+        Box::pin(local_workspace::seed(&directory, &case.seed)).await?;
     let provider = Arc::new(ScriptedModelProvider::new([]));
     let home = temporary.path().join("home");
     seed_home(&home, &case.home)?;
-    let harness = Arc::new(open_harness(&directory, &home, &state, &volume, &provider).await?);
+    let harness =
+        Arc::new(Box::pin(open_harness(&directory, &home, &state, &volume, &provider)).await?);
     let base = host.resolve(&workspace, None).await?.generation;
     let references = seed_references(&case, &volume, &base)?;
     let turns = crate::local_case::bind_seed_files(case.turns, &references)?;
     provider.extend(turns);
-    let outcome = prompt_settled(&harness, "scenario", &case.prompt).await;
+    let outcome = Box::pin(prompt_settled(&harness, "scenario", &case.prompt)).await;
     let committed_failure = matches!(&outcome, Ok(PromptOutcome::Failed(_)));
     let entry = verify_outcome(&case.expect, outcome)?;
     if committed_failure {
         // Replay after failure is committed: the reply is the original failed
         // entry, visible without model redispatch.
-        let replay = prompt_settled(&harness, "scenario", &case.prompt).await;
+        let replay = Box::pin(prompt_settled(&harness, "scenario", &case.prompt)).await;
         verify_outcome(&case.expect, replay)?;
     }
     if provider.remaining() != 0 {
@@ -52,7 +55,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     verify_model_requests(&case.expect, &requests, steps)?;
     if let Some(expected) = &case.expect.diffs {
         let current = host.resolve(&workspace, None).await?.generation;
-        verify_diffs(
+        Box::pin(verify_diffs(
             &volume,
             base,
             current,
@@ -60,16 +63,22 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
             &case.expect.files,
             &reader,
             expected,
-        )
+        ))
         .await?;
     }
-    verify_prompt(&harness, &requests, entry, &case.prompt).await?;
+    Box::pin(verify_prompt(&harness, &requests, entry, &case.prompt)).await?;
     // Fs::local reuses live roots. Release every holder before a cold reopen.
     drop(harness);
     drop(provider);
     drop(reader);
     drop(host);
-    verify_cold_files(&directory, &volume, &workspace, &case.expect.files).await
+    Box::pin(verify_cold_files(
+        &directory,
+        &volume,
+        &workspace,
+        &case.expect.files,
+    ))
+    .await
 }
 
 fn check_requests(
