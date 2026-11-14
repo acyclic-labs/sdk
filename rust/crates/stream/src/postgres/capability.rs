@@ -15,7 +15,7 @@ use futures::FutureExt as _;
 fn database() -> Result<String, String> {
     std::env::var("STORAGE_POSTGRES_URL").map_err(|error| {
         format!(
-            "the postgres suite requires STORAGE_POSTGRES_URL ({error});              run it through scripts/backends/storage-conformance.sh"
+            "the postgres suite requires STORAGE_POSTGRES_URL ({error}); run it through scripts/backends/storage-conformance.sh"
         )
     })
 }
