@@ -4,10 +4,11 @@ fn parse_string(value: &Value) -> Result<&str, StreamError> {
 fn parse_u64(value: &Value) -> Result<u64, StreamError> {
     parse_string(value)?
         .parse()
-        .map_err(|_| StreamError::Unavailable)
+        .map_err(|error| StreamError::Unavailable.with_source(error))
 }
 fn parse_path(value: &Value) -> Result<StreamPath, StreamError> {
-    StreamPath::new(parse_string(value)?).map_err(|_| StreamError::Unavailable)
+    StreamPath::new(parse_string(value)?)
+        .map_err(|error| StreamError::Unavailable.with_source(error))
 }
 fn parse_bytes(value: &Value) -> Result<Bytes, StreamError> {
     base64::Engine::decode(
@@ -15,14 +16,14 @@ fn parse_bytes(value: &Value) -> Result<Bytes, StreamError> {
         parse_string(value)?,
     )
     .map(Bytes::from)
-    .map_err(|_| StreamError::Unavailable)
+    .map_err(|error| StreamError::Unavailable.with_source(error))
 }
 fn parse_id(value: &Value) -> Result<CommitId, StreamError> {
     Ok(CommitId::from_bytes(
         parse_bytes(value)?
             .as_ref()
             .try_into()
-            .map_err(|_| StreamError::Unavailable)?,
+            .map_err(|error| StreamError::Unavailable.with_source(error))?,
     ))
 }
 // An envelope's records belong to the mutation's path, which spells none.
@@ -60,7 +61,7 @@ fn parse_record(value: &Value, owner: &StreamPath) -> Result<Record, StreamError
             })
             .collect::<Result<Vec<_>, StreamError>>()?,
     )
-    .map_err(|_| StreamError::Unavailable)?;
+    .map_err(|error| StreamError::Unavailable.with_source(error))?;
     if bytes.len().saturating_add(headers.payload_bytes()) > MAX_RECORD_BYTES {
         return Err(StreamError::Unavailable);
     }

@@ -37,9 +37,9 @@ impl HttpStream {
                     .as_ref()
                     .ok_or(StreamError::AccessDenied)?
                     .to_str()
-                    .map_err(|_| StreamError::Unavailable)?
+                    .map_err(|error| StreamError::Unavailable.with_source(error))?
                     .parse()
-                    .map_err(|_| StreamError::Unavailable)?;
+                    .map_err(|error| StreamError::Unavailable.with_source(error))?;
                 crate::grpc::Client::from_channel(channel, authorization)
             };
             Ok(client
