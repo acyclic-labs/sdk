@@ -282,13 +282,16 @@ pub fn tracks_revisions(follow: &wire::SessionFollow) -> bool {
 }
 
 /// Decodes the optional exclusive end of a bounded follow (the session read).
-/// Only an ALL follow of a `streams:/` resource can be bounded: LATEST conflates
-/// away the positions a bound counts, and product resources own their cursors.
+/// ALL stream and filesystem-change follows retain original sequence positions.
+/// LATEST conflates away the positions a bound counts. Filesystem reads keep
+/// their owning provider's cut, independently of the client's Streams floor.
 pub fn follow_bound(follow: &wire::SessionFollow) -> Result<Option<u64>, StreamError> {
     if follow.until.is_none() && follow.key.is_none() {
         return Ok(None);
     }
-    if follow.delivery != wire::SessionDelivery::All as i32 || !tracks_revisions(follow) {
+    if follow.delivery != wire::SessionDelivery::All as i32
+        || !(tracks_revisions(follow) || follow.resource.starts_with("fs:/"))
+    {
         return Err(StreamError::InvalidArgument);
     }
     Ok(follow.until)

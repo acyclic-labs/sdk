@@ -149,6 +149,7 @@ struct FollowSpec<'a> {
     delivery: wire::SessionDelivery,
     credit: bool,
     broken: bool,
+    until: Option<u64>,
 }
 impl Default for FollowSpec<'_> {
     fn default() -> Self {
@@ -159,6 +160,7 @@ impl Default for FollowSpec<'_> {
             delivery: wire::SessionDelivery::All,
             credit: true,
             broken: false,
+            until: None,
         }
     }
 }
@@ -221,6 +223,7 @@ impl Connection {
             delivery,
             credit,
             broken,
+            until,
         } = spec;
         let resource = acyclic_fs::session::resource(volume, path)?;
         let granted_resource = acyclic_fs::session::resource(volume, granted_path)?;
@@ -288,7 +291,7 @@ impl Connection {
                             resource,
                             delivery: delivery as i32,
                             preceding_commit_id: anchor,
-                            until: None,
+                            until,
                             at_least: Default::default(),
                         },
                     )),
@@ -356,6 +359,98 @@ fn closed(frame: wire::SessionFrame) -> bool {
 fn changes(record: &wire::Record) -> Result<wire::ChangeRecord> {
     Ok(acyclic_stream::decode_changes(record.value.as_ref())?)
 }
+
+#[tokio::test]
+async fn finite_filesystem_queries_keep_their_bound_and_original_opening_tail() -> Result {
+    use acyclic_stream::StreamProviderExt as _;
+    let (fs, workspace, streams) = fixture().await?;
+    let volume = workspace.id().volume_id();
+    let source = acyclic_fs::session::changes_path(&fs, volume)?;
+    let from = streams.tail(source.clone()).await?;
+    workspace.write_text("/selected", "original").await?;
+    let selected_end = streams.tail(source.clone()).await?;
+    workspace
+        .write_text("/already-later", "outside explicit bound")
+        .await?;
+
+    for (case, (until, filtered)) in [
+        (0, false),
+        (from, false),
+        (selected_end, false),
+        (u64::MAX, false),
+        (u64::MAX, true),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let opening_tail = streams.tail(source.clone()).await?;
+        let end = until.min(opening_tail);
+        let mut connection = Connection::open_filtered(
+            fs.clone(),
+            streams.clone(),
+            volume,
+            from,
+            Bytes::new(),
+            FollowSpec {
+                until: Some(until),
+                filter: filtered.then(|| wire::SessionFilter {
+                    keys: vec![wire::KeyRange {
+                        start: Bytes::from_static(b"unselected/"),
+                        end: Bytes::from_static(b"unselected0"),
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .await?;
+        assert!(matches!(
+            connection.next().await?.body,
+            Some(Body::Opened(_))
+        ));
+        // Both an already committed suffix and a later publication must remain
+        // outside this query. The finite producer's end is a source event.
+        workspace
+            .write_text(&format!("/after-open-{case}"), "next query only")
+            .await?;
+        connection.grant(1)?;
+        let mut next = from;
+        loop {
+            match connection.next().await?.body {
+                Some(Body::Data(data)) => {
+                    assert!(
+                        !filtered,
+                        "finite query disclosed an unselected publication"
+                    );
+                    let Some(wire::session_data::Item::Record(record)) = data.item else {
+                        return Err("filesystem query returned a non-record".into());
+                    };
+                    assert!(
+                        record.sequence < end,
+                        "finite filesystem query exceeded its original bound"
+                    );
+                    assert_eq!(record.sequence, next);
+                    next += 1;
+                }
+                Some(Body::Watermark(_)) => {}
+                Some(Body::Closed(close)) => {
+                    assert_eq!(close.code, acyclic_stream::wire_codec::session::END_CODE);
+                    if !filtered {
+                        assert_eq!(
+                            next,
+                            end.max(from),
+                            "finite filesystem query ended before its selected prefix"
+                        );
+                    }
+                    break;
+                }
+                frame => return Err(format!("unexpected finite query frame: {frame:?}").into()),
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn resume_exactly_once_through_ordinary_session() -> Result {
     let (fs, workspace, streams) = fixture().await?;
@@ -486,6 +581,7 @@ async fn policy_change_between_prepare_and_open_fails_closed() -> Result {
         engine::ResourceFollowRequest {
             resource,
             from: 0,
+            until: None,
             preceding: None,
             filter: Default::default(),
             authorization: context,
