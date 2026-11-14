@@ -338,12 +338,12 @@ impl MemoryStream {
         state.payload_bytes = state.payload_bytes.saturating_sub(held.payload_bytes);
         state.path_bytes = next.bytes();
         let previous = std::mem::replace(&mut state.paths, next);
-        for signals in notify {
-            signals.changed.send_replace(0);
-            crate::follow_index::FollowIndex::created(&signals.follows, 0);
-        }
         drop(state);
         drop(_publication);
+        for signals in notify {
+            let _ = signals.changed.notify();
+            crate::follow_index::FollowIndex::created(&signals.follows);
+        }
         drop(previous);
         // Facts are already invisible. Retire one bounded pair of index
         // entries per lock hold, dropping payloads outside every store lock.
