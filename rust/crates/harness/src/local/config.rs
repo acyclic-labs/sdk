@@ -107,7 +107,7 @@ pub struct LocalHarnessConfig {
     pub(crate) settings: Option<crate::native_settings::SettingsConfig>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) mcp_limits: crate::mcp::McpClientLimits,
-    pub(super) clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+    pub(super) clock: Arc<dyn acyclic_actors::local::Clock>,
     #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) environment_platform: crate::native_environment::PlatformPolicy,
     #[cfg(any(test, not(target_arch = "wasm32")))]
@@ -305,7 +305,7 @@ impl LocalHarnessConfig {
             settings: None,
             #[cfg(not(target_arch = "wasm32"))]
             mcp_limits: crate::mcp::McpClientLimits::default(),
-            clock: Arc::new(acyclic_stream::SystemUnixMillisClock),
+            clock: Arc::new(acyclic_actors::local::SystemClock),
             #[cfg(any(test, not(target_arch = "wasm32")))]
             environment_platform: crate::native_environment::PlatformPolicy::Native,
             #[cfg(any(test, not(target_arch = "wasm32")))]
@@ -630,9 +630,9 @@ impl LocalHarnessConfig {
         self.mcp_limits = limits;
         self
     }
-    /// Selects the clock used by durable admission and leases.
+    /// Selects the one clock used by actor alarms, durable admission and leases.
     #[must_use]
-    pub fn clock(mut self, clock: Arc<dyn acyclic_stream::UnixMillisClock>) -> Self {
+    pub fn clock(mut self, clock: Arc<dyn acyclic_actors::local::Clock>) -> Self {
         self.clock = clock;
         self
     }

@@ -16,7 +16,7 @@ use crate::{
     },
     model::ModelContent,
 };
-use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
+use acyclic_actors::{addressing::ActorReference, domain::ActorLimits};
 use acyclic_auth::{authority::PolicyDecision, contract::Principal};
 use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
 use acyclic_harness_client::AgentCommand;
@@ -636,7 +636,7 @@ impl LocalHarness {
         Ok(CompletionTarget {
             scope: crate::runtime::RuntimeScope::new(authority.grants, Default::default())?,
             owner: super::workspace::owner::AgentOwner,
-            clock: Arc::clone(&self.clock),
+            clock: self.clock.clone(),
             workspace,
             signed,
             verifier,
@@ -762,7 +762,7 @@ impl LocalHarness {
                 let (tools, writer) = workspace
                     .executor(
                         (project, &self.files, self.limits.file_bytes),
-                        Arc::clone(&self.clock),
+                        self.clock.clone(),
                         scope,
                         &verifier,
                         None,
@@ -922,7 +922,7 @@ impl LocalHarness {
                     history_turns: HISTORY_TURNS,
                 },
                 actors: ActorLimits::default(),
-                clock: Arc::new(SystemClock),
+                clock: self.clock.clone(),
                 approval_policy: self.preset.approval_policy.clone(),
             },
         )
@@ -993,7 +993,7 @@ impl LocalHarness {
                 history_turns: HISTORY_TURNS,
             },
             actors: ActorLimits::default(),
-            clock: Arc::new(SystemClock),
+            clock: self.clock.clone(),
             approval_policy: self.preset.approval_policy.clone(),
         };
         let configure = |turns: LocalTurns| {
@@ -1019,7 +1019,7 @@ impl LocalHarness {
         let caller = self.admission.caller(
             &super::Custody {
                 issuer: &authority,
-                clock: &self.clock,
+                clock: self.clock.as_ref(),
             },
             &self.signed,
         )?;

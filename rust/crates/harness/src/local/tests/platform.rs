@@ -142,6 +142,7 @@ impl Mode {
                 },
             ),
             Execution {
+                clock: Arc::new(acyclic_actors::local::SystemClock),
                 models: None,
                 model: (model()?, provider),
                 limits: Default::default(),

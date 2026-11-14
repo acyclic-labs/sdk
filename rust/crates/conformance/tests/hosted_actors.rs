@@ -209,6 +209,7 @@ fn composition_at(
             },
         ),
         Execution {
+            clock: Arc::new(acyclic_actors::local::SystemClock),
             models: None,
             model: (
                 acyclic_harness_core::model::Model::new(

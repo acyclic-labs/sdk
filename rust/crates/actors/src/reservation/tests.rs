@@ -5,6 +5,7 @@ use crate::{
     hosting::Host,
     local::{Clock, PreparedPublish, RuntimeLimits, Store, SystemClock},
 };
+use acyclic_stream::UnixMillisClock as _;
 use acyclic_stream::{IdempotencyKey, MemoryStream, StreamPath};
 use std::sync::Arc;
 

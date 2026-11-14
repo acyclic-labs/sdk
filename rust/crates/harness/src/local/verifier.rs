@@ -12,7 +12,6 @@ use crate::{
 };
 use acyclic_stream::UnixMillisClock;
 use futures::future::{self, BoxFuture};
-use std::sync::Arc;
 
 /// The credential a server publishes for its clients: what
 /// `ACYCLIC_API_KEY` holds, and the principal it authenticates.
@@ -48,7 +47,7 @@ pub struct Custody<'a> {
     /// under it.
     pub issuer: &'a AuthorityRoot,
     /// The host's clock, for credential time checks.
-    pub clock: &'a Arc<dyn UnixMillisClock>,
+    pub clock: &'a dyn UnixMillisClock,
 }
 
 impl Custody<'_> {

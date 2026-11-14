@@ -494,12 +494,12 @@ impl LocalHarness {
                         selected,
                         server.resource(),
                         &server.session_resource(),
-                        Arc::clone(&self.clock),
+                        self.clock.clone(),
                     )
                     .await
             } else {
                 bound
-                    .client_credential(server.root(), server.resource(), Arc::clone(&self.clock))
+                    .client_credential(server.root(), server.resource(), self.clock.clone())
                     .await
             }
             .map_err(storage)?;

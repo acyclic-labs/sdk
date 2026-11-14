@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::UnixMillisClock as _;
 use std::task::Wake;
 
 #[derive(Default)]

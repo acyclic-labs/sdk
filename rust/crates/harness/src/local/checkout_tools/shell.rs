@@ -39,7 +39,7 @@ impl CheckoutTools {
         let preparation_spill = spill_root.clone();
         let preparation_control = control.clone();
         let environment = self.environment.clone();
-        let clock = Arc::clone(&self.clock);
+        let clock = self.clock.clone();
         let ((invocation, cancellation), (state, files, claims)) =
             native_process::prepare_with_custody((state, files, claims), move |_| {
                 preparation_control.check().map_err(Error::process_io)?;

@@ -345,7 +345,7 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
             crate::local::checkout_tools::CheckoutTools::new(
                 Arc::clone(selected),
                 &harness.project,
-                Arc::clone(&harness.clock),
+                harness.clock.clone(),
                 &signed,
                 &harness.verifier,
                 None,
