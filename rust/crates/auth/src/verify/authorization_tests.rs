@@ -57,7 +57,15 @@ fn billed_owner_intersection_visits_each_grant_linearly() {
                     .collect();
                 grants.push(execution("workers/b".into()));
                 let bytes = signed::root(|block| {
-                    block.certificates.as_mut().unwrap().keys[0].key.grants = GrantSet {
+                    block
+                        .certificates
+                        .as_mut()
+                        .unwrap()
+                        .keys
+                        .first_mut()
+                        .expect("signed certificate")
+                        .key
+                        .grants = GrantSet {
                         grants: grants.clone(),
                     };
                     block.caveats = (0..repetitions)
@@ -102,10 +110,8 @@ fn billed_owner_intersection_visits_each_grant_linearly() {
     }
 }
 
-#[test]
-fn current_authorization_reuses_admission_and_preserves_every_request_dependency() {
-    let mut trust = signed::Snapshot::default();
-    let capability = verify(&signed::root(|_| {}), &trust, signed::NOW)
+fn current_authorization_fixture(trust: &signed::Snapshot) -> VerifiedCapability {
+    verify(&signed::root(|_| {}), trust, signed::NOW)
         .unwrap()
         .attenuate(
             vec![
@@ -150,7 +156,13 @@ fn current_authorization_reuses_admission_and_preserves_every_request_dependency
             ],
             &[8; 32],
         )
-        .unwrap();
+        .unwrap()
+}
+
+#[test]
+fn current_authorization_reuses_admission_and_preserves_every_request_dependency() {
+    let mut trust = signed::Snapshot::default();
+    let capability = current_authorization_fixture(&trust);
     let attributes = RecordAttributes::try_new(vec![Attribute {
         name: "version".into(),
         value: b"v1".to_vec(),
@@ -242,13 +254,22 @@ fn current_authorization_reuses_admission_and_preserves_every_request_dependency
             "{case}"
         );
     }
+    assert_admission_work(&capability, &trust, &request());
+    assert_current_owner_dependencies(&mut trust, &capability, &request());
+}
+
+fn assert_admission_work(
+    capability: &VerifiedCapability,
+    trust: &signed::Snapshot,
+    request: &Request<'_>,
+) {
     for count in [1, 100, 1000] {
         let ((), work) = observe(
             || (),
             |()| {
                 for _ in 0..count {
                     capability
-                        .authorize(&trust, &request(), PolicyDecision::Allow, Scope::Exact)
+                        .authorize(trust, request, PolicyDecision::Allow, Scope::Exact)
                         .unwrap();
                 }
             },
@@ -261,13 +282,27 @@ fn current_authorization_reuses_admission_and_preserves_every_request_dependency
             || (),
             |()| {
                 for _ in 0..count {
-                    former(&request(), PolicyDecision::Allow, Scope::Exact, &trust).unwrap();
+                    capability.check(trust, request.now_unix_seconds).unwrap();
+                    permits(
+                        &capability.blocks,
+                        request,
+                        PolicyDecision::Allow,
+                        Scope::Exact,
+                    )
+                    .unwrap();
                 }
             },
         );
         let old: Vec<StructuralAdmission> = old;
         assert_eq!(old.len(), count);
     }
+}
+
+fn assert_current_owner_dependencies(
+    trust: &mut signed::Snapshot,
+    capability: &VerifiedCapability,
+    request: &Request<'_>,
+) {
     // Retaining the immutable admitted chain must never retain Allow across
     // changes in its original owner, issuer epoch or any revocation dependency.
     for change in [
@@ -279,7 +314,9 @@ fn current_authorization_reuses_admission_and_preserves_every_request_dependency
         "unavailable",
     ] {
         match change {
-            "block" => trust.revoked_blocks.push(capability.block_ids()[0]),
+            "block" => trust
+                .revoked_blocks
+                .push(*capability.block_ids().first().expect("signed root block")),
             "key" => trust.revoked_keys.push("key".into()),
             "epoch" => trust.minimum_epoch = 2,
             "environment" => trust.environments.clear(),
@@ -288,7 +325,7 @@ fn current_authorization_reuses_admission_and_preserves_every_request_dependency
             _ => unreachable!(),
         }
         let error = capability
-            .authorize(&trust, &request(), PolicyDecision::Allow, Scope::Exact)
+            .authorize(trust, request, PolicyDecision::Allow, Scope::Exact)
             .unwrap_err();
         assert_eq!(
             error.denial_cause(),
@@ -303,12 +340,12 @@ fn current_authorization_reuses_admission_and_preserves_every_request_dependency
         assert_eq!(
             permits_current(
                 &capability.blocks,
-                &request(),
+                request,
                 PolicyDecision::Allow,
                 Scope::Exact
             ),
             Ok(())
         );
-        trust = signed::Snapshot::default();
+        *trust = signed::Snapshot::default();
     }
 }

@@ -111,7 +111,11 @@ fn reanchor_during_account_verification_cannot_publish_the_old_proof() {
         }));
     });
     assert_eq!(
-        trust.apply_account("account", &world.genesis[0], NOW),
+        trust.apply_account(
+            "account",
+            world.genesis.first().expect("original genesis record"),
+            NOW
+        ),
         Err(VerifyError::Unavailable)
     );
     assert!(
@@ -127,7 +131,11 @@ fn reanchor_during_account_verification_cannot_publish_the_old_proof() {
     );
     reset.send_replace(AnchorKeys::new(world.issuer.anchor()));
     assert_eq!(
-        trust.apply_account("account", &world.genesis[0], NOW),
+        trust.apply_account(
+            "account",
+            world.genesis.first().expect("original genesis record"),
+            NOW
+        ),
         Ok(Applied::Changed)
     );
 }
@@ -184,7 +192,10 @@ fn credential(world: &World, trust: &Follower, index: u8) -> (Vec<u8>, BlockId) 
         .signer
         .mint(vec![], key(100 + index), trust, NOW)
         .unwrap();
-    (capability.encode().to_vec(), capability.block_ids()[0])
+    (
+        capability.encode().to_vec(),
+        *capability.block_ids().first().expect("signed root block"),
+    )
 }
 
 #[test]
@@ -218,7 +229,11 @@ fn exported_snapshot_preserves_historical_verification_floor() {
     let delta = world.root.revoke(&[([91; 32], NOW + 2)], NOW + 2).unwrap();
     trust.apply(&delta, NOW + 2).unwrap();
     check(NOW + 2);
-    let TrustRecordKind::Revocation(mut signed) = decode(&world.genesis[1]).unwrap().record else {
+    let TrustRecordKind::Revocation(mut signed) =
+        decode(world.genesis.get(1).expect("original revocation record"))
+            .unwrap()
+            .record
+    else {
         panic!("genesis did not contain a revocation checkpoint");
     };
     let RevocationPublication::Checkpoint(checkpoint) = &mut signed.publication else {
@@ -348,21 +363,21 @@ fn swap_precedes_wake_and_lost_follow_fences() {
     );
 }
 
+use std::{
+    sync::atomic::AtomicUsize,
+    task::{Context, Poll},
+};
+
+#[derive(Default)]
+struct Wakes(AtomicUsize);
+impl futures::task::ArcWake for Wakes {
+    fn wake_by_ref(owner: &Arc<Self>) {
+        owner.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 #[test]
 fn account_events_preserve_exact_dependencies_without_unrelated_wakes() {
-    use std::{
-        sync::atomic::AtomicUsize,
-        task::{Context, Poll},
-    };
-
-    #[derive(Default)]
-    struct Wakes(AtomicUsize);
-    impl futures::task::ArcWake for Wakes {
-        fn wake_by_ref(owner: &Arc<Self>) {
-            owner.0.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
     let mut world = world();
     let trust = follower(&world);
     let (mut second, genesis) = world.issuer.genesis("second", key(4), NOW).unwrap();
@@ -403,7 +418,13 @@ fn account_events_preserve_exact_dependencies_without_unrelated_wakes() {
     );
     let unscoped = trust.changed();
     let record = second
-        .revoke(&[(token.block_ids()[0], NOW + 10_000)], NOW)
+        .revoke(
+            &[(
+                *token.block_ids().first().expect("signed root block"),
+                NOW + 10_000,
+            )],
+            NOW,
+        )
         .unwrap();
     assert_eq!(trust.apply(&record, NOW), Ok(Applied::Changed));
     assert_eq!(first_wakes.0.load(Ordering::Relaxed), 0);
@@ -452,6 +473,29 @@ fn account_events_preserve_exact_dependencies_without_unrelated_wakes() {
     assert_eq!(first.check(&trust, NOW), Err(VerifyError::Revoked));
     assert!((&mut other_event).now_or_never().is_none());
 
+    observe_clock_and_global(
+        world,
+        trust,
+        first,
+        other,
+        second,
+        (first_wakes, other_wakes),
+        other_event,
+    );
+}
+
+fn observe_clock_and_global(
+    world: World,
+    trust: Follower,
+    first: verify::TrustEvidence,
+    other: verify::TrustEvidence,
+    mut second: AccountRoot,
+    wakes: (Arc<Wakes>, Arc<Wakes>),
+    other_event: crate::trust::Changed,
+) {
+    let (first_wakes, other_wakes) = wakes;
+    let first_waker = futures::task::waker_ref(&first_wakes);
+    let other_waker = futures::task::waker_ref(&other_wakes);
     // Advancing the original protected clock is a genuine global dependency.
     let time_changed = first.changed(&trust);
     let clock_record = second.revoke(&[([88; 32], NOW + 10_000)], NOW + 1).unwrap();
@@ -510,6 +554,16 @@ fn account_events_preserve_exact_dependencies_without_unrelated_wakes() {
     drop(unchanged_time);
     let other_event = other.changed(&trust);
 
+    assert_global_transitions(&world, trust, &first, &other, other_event);
+}
+
+fn assert_global_transitions(
+    world: &World,
+    trust: Follower,
+    first: &verify::TrustEvidence,
+    other: &verify::TrustEvidence,
+    other_event: crate::trust::Changed,
+) {
     let rotated = first.changed(&trust);
     let mut frontier = EnvironmentFrontier::genesis("test", AnchorKeys::new(world.issuer.anchor()));
     let successor = Issuer::new("test", key(7));
@@ -660,7 +714,10 @@ fn a_root_alone_narrows_but_never_rotates() {
     let mut world = self::world();
     let trust = follower(&world);
     let (bytes, _) = credential(&world, &trust, 0);
-    let raised = world.root.raise_minimum_epoch(2, NOW).unwrap();
+    let raised = world
+        .root
+        .raise_minimum_epoch(2, NOW)
+        .map_err(|error| error.to_string())?;
     assert!(verify::verify(&bytes, &trust, NOW).is_ok());
     trust.apply(&raised, NOW).unwrap();
     assert!(verify::verify(&bytes, &trust, NOW).is_err());
@@ -696,7 +753,7 @@ fn replay_restores_custody_and_refuses_gaps_foreign_signers_and_rollback() {
     let mut restored = replay(&stream, 2).unwrap();
     assert_eq!(restored.minimum_key_epoch(), 3);
     let trust = follower(&world);
-    for record in &stream[2..] {
+    for record in stream.iter().skip(2) {
         trust.apply(record, NOW).unwrap();
     }
     let next = restored.revoke(&[([8; 32], NOW + 50)], NOW).unwrap();
@@ -782,7 +839,15 @@ fn a_public_frontier_rotates_a_root_the_issuer_never_holds() {
     };
     assert_eq!(signed.snapshot.revoked_key_ids, retained_keys);
     assert_eq!(signed.snapshot.revocations.len(), 1);
-    assert_eq!(signed.snapshot.revocations[0].id, [90; 32]);
+    assert_eq!(
+        signed
+            .snapshot
+            .revocations
+            .first()
+            .expect("published revocation")
+            .id,
+        [90; 32]
+    );
     // A signed successor cannot forget any retained key, even when the
     // checkpoint contains many other revocations. Refusal leaves it usable.
     let forgotten = resign(&rotated, 1, |snapshot| {
@@ -793,7 +858,18 @@ fn a_public_frontier_rotates_a_root_the_issuer_never_holds() {
         Err(VerifyError::Trust)
     );
     frontier.apply(&rotated, &anchor, NOW).unwrap();
-    let trust = follower(&world);
+    assert_customer_custody(&world, &anchor, &frontier, retained, rotated, &customer);
+}
+
+fn assert_customer_custody(
+    world: &World,
+    anchor: &[BlockId],
+    frontier: &KeyringFrontier,
+    retained: Vec<u8>,
+    rotated: Vec<u8>,
+    customer: &SigningKey,
+) {
+    let trust = follower(world);
     trust.apply(&retained, NOW).unwrap();
     trust.apply(&rotated, NOW).unwrap();
     assert_eq!(
@@ -814,7 +890,7 @@ fn a_public_frontier_rotates_a_root_the_issuer_never_holds() {
     let mut stream = world.genesis.clone();
     stream.push(retained);
     stream.push(rotated);
-    let mut root = AccountRoot::resume("account", key(6), &anchor, &slices(&stream)).unwrap();
+    let mut root = AccountRoot::resume("account", key(6), anchor, &slices(&stream)).unwrap();
     assert_eq!(frontier.root(), Some(customer.verifying_key().to_bytes()));
     let birth = world
         .issuer
@@ -824,7 +900,7 @@ fn a_public_frontier_rotates_a_root_the_issuer_never_holds() {
     let signer =
         CertifiedSigner::new(root.certify(&birth, certification(&leaf)).unwrap(), leaf).unwrap();
     let capability = signer.mint(vec![], key(100), &trust, NOW).unwrap();
-    let block = capability.block_ids()[0];
+    let block = *capability.block_ids().first().expect("signed root block");
     assert!(verify::verify(&capability.encode(), &trust, NOW).is_ok());
     trust
         .apply(&root.revoke(&[(block, NOW + 50)], NOW).unwrap(), NOW)
@@ -927,9 +1003,7 @@ fn environment_rotation_replays_and_refuses_retired_signers() {
         .environment_keyring(&mut frontier.clone(), &successor.anchor(), NOW + 1)
         .unwrap();
     let anchored = AnchorKeys::new(issuer.anchor());
-    assert!(
-        EnvironmentFrontier::resume("test", anchored.clone(), &[&first, &third], NOW + 1).is_err()
-    );
+    assert!(EnvironmentFrontier::resume("test", anchored, &[&first, &third], NOW + 1).is_err());
     let foreign = AnchorKeys::new(vec![key(7).verifying_key().to_bytes()]);
     assert!(EnvironmentFrontier::resume("test", foreign, &[&first], NOW + 1).is_err());
     let (_, genesis) = issuer.genesis("account", key(2), NOW).unwrap();
@@ -937,7 +1011,7 @@ fn environment_rotation_replays_and_refuses_retired_signers() {
         EnvironmentFrontier::resume(
             "test",
             AnchorKeys::new(issuer.anchor()),
-            &[&genesis[0]],
+            &[genesis.first().expect("original genesis record")],
             NOW + 1
         )
         .is_err()
@@ -1010,7 +1084,13 @@ fn account_publication_does_not_hold_global_storage_or_accept_a_retired_signer()
         .unwrap();
     let account = trust.find_account("account").unwrap().unwrap();
     let revoked = other
-        .revoke(&[(token.block_ids()[0], NOW + 10_000)], NOW)
+        .revoke(
+            &[(
+                *token.block_ids().first().expect("signed root block"),
+                NOW + 10_000,
+            )],
+            NOW,
+        )
         .unwrap();
     let successor = Issuer::new("test", key(5));
     let mut environment =
@@ -1096,7 +1176,10 @@ fn forged_records_are_refused() {
     let trust = Follower::new("test", AnchorKeys::fixed(world.issuer.anchor()));
     let forger = Issuer::new("test", key(9));
     let (_, forged) = forger.genesis("account", key(2), NOW).unwrap();
-    assert_eq!(trust.apply(&forged[0], NOW), Err(VerifyError::Signature));
+    assert_eq!(
+        trust.apply(forged.first().expect("forged record"), NOW),
+        Err(VerifyError::Signature)
+    );
     assert_eq!(trust.apply(b"\xff", NOW), Err(VerifyError::Malformed));
 }
 
@@ -1109,7 +1192,10 @@ fn forwarding_appends_one_audience_block_offline() {
     let forwarded = verify::verify(&hop, &trust, NOW).unwrap();
     assert!(forwarded.is_sealed());
     assert_eq!(forwarded.block_ids().len(), 2);
-    assert_eq!(forwarded.block_ids()[0], capability.block_ids()[0]);
+    assert_eq!(
+        *forwarded.block_ids().first().expect("forwarded root block"),
+        *capability.block_ids().first().expect("signed root block")
+    );
     // The holder keeps its append authority for the next hop; a sealed hop
     // cannot be forwarded again.
     assert!(capability.forward("streams:/a/c", &[51; 32]).is_ok());
@@ -1141,7 +1227,7 @@ fn allowances_verify_offline_against_environment_keys() {
     let verified = verify::verify(&capability.encode(), &trust, NOW).unwrap();
     assert_eq!(verified.effective().expires_at_unix_seconds(), NOW + 100);
     // Negative controls: a forged signature and another account refuse.
-    let mut forged = allowance.clone();
+    let mut forged = allowance;
     forged.allowance.spend_micros = 5_000;
     let foreign = world
         .issuer
@@ -1173,6 +1259,53 @@ impl Schedule {
 
 /// One simulated follow over a lossy transport. `eager` is the negative
 /// control: it resumes on reconnect before catching up to the observed tail.
+fn append_scheduled_revocation(
+    root: &mut AccountRoot,
+    stream: &mut Vec<Vec<u8>>,
+    revoked_at: &mut [Option<usize>; 4],
+    floor_at: &mut Option<usize>,
+    schedule: &mut Schedule,
+    credentials: &[(Vec<u8>, BlockId)],
+) -> Result<(), String> {
+    match schedule.next(8) {
+        // An unrelated key revocation changes trust but no verdict.
+        0 => stream.push(
+            root.revoke_keys(&[("retired", NOW + 50)], NOW)
+                .map_err(|error| error.to_string())?,
+        ),
+        1 if floor_at.is_none() => {
+            *floor_at = Some(stream.len());
+            stream.push(
+                root.raise_minimum_epoch(2, NOW)
+                    .map_err(|error| error.to_string())?,
+            );
+        }
+        _ => {
+            let index = usize::try_from(schedule.next(4)).map_err(|error| error.to_string())?;
+            if revoked_at
+                .get(index)
+                .ok_or("credential revocation slot absent")?
+                .is_none()
+            {
+                *revoked_at
+                    .get_mut(index)
+                    .ok_or("credential revocation slot absent")? = Some(stream.len());
+                stream.push(
+                    root.revoke(
+                        &[(
+                            credentials.get(index).ok_or("credential absent")?.1,
+                            NOW + 10_000,
+                        )],
+                        NOW,
+                    )
+                    .map_err(|error| error.to_string())?,
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn simulate(
     world: &World,
     credentials: &[(Vec<u8>, BlockId)],
@@ -1180,7 +1313,10 @@ fn simulate(
     eager: bool,
 ) -> Result<(), String> {
     let trust = Follower::new("test", AnchorKeys::fixed(world.issuer.anchor()));
-    let (mut root, mut stream) = world.issuer.genesis("account", key(2), NOW).unwrap();
+    let (mut root, mut stream) = world
+        .issuer
+        .genesis("account", key(2), NOW)
+        .map_err(|error| error.to_string())?;
     // Stream index of each credential's revocation, and of the epoch floor
     // that refuses every credential, once appended.
     let mut revoked_at = [None::<usize>; 4];
@@ -1189,26 +1325,16 @@ fn simulate(
     let (mut next, mut tail, mut connected, mut changed) = (0, 0, false, 0);
     for _ in 0..400 {
         match schedule.next(6) {
-            0 => match schedule.next(8) {
-                // An unrelated key revocation changes trust but no verdict.
-                0 => stream.push(root.revoke_keys(&[("retired", NOW + 50)], NOW).unwrap()),
-                1 if floor_at.is_none() => {
-                    floor_at = Some(stream.len());
-                    stream.push(root.raise_minimum_epoch(2, NOW).unwrap());
-                }
-                _ => {
-                    let index = schedule.next(4) as usize;
-                    if revoked_at[index].is_none() {
-                        revoked_at[index] = Some(stream.len());
-                        stream.push(
-                            root.revoke(&[(credentials[index].1, NOW + 10_000)], NOW)
-                                .unwrap(),
-                        );
-                    }
-                }
-            },
+            0 => append_scheduled_revocation(
+                &mut root,
+                &mut stream,
+                &mut revoked_at,
+                &mut floor_at,
+                &mut schedule,
+                credentials,
+            )?,
             1 | 2 if connected && next < stream.len() => {
-                match trust.apply(&stream[next], NOW) {
+                match trust.apply(stream.get(next).ok_or("record absent")?, NOW) {
                     Ok(Applied::Changed) => changed += 1,
                     Ok(Applied::Duplicate) => {}
                     Err(error) => return Err(format!("record {next} refused: {error}")),
@@ -1227,27 +1353,32 @@ fn simulate(
                 connected = true;
                 tail = stream.len();
                 // A reconnect may redeliver up to two applied records.
-                next = next.saturating_sub(schedule.next(3) as usize);
+                next = next.saturating_sub(
+                    usize::try_from(schedule.next(3)).map_err(|error| error.to_string())?,
+                );
                 if eager || next >= tail {
                     trust.resume();
                     trust.serve("account");
                 }
             }
             _ => {
-                let index = schedule.next(4) as usize;
-                let result = verify::verify(&credentials[index].0, &trust, NOW);
+                let index = usize::try_from(schedule.next(4)).map_err(|error| error.to_string())?;
+                let result = verify::verify(
+                    &credentials.get(index).ok_or("credential absent")?.0,
+                    &trust,
+                    NOW,
+                );
                 let open = trust.check_open().is_ok();
                 if !open && !matches!(result, Err(VerifyError::Unavailable)) {
                     return Err("fenced trust admitted or refused as a verdict".into());
                 }
                 // Serving trust must include everything up to the tail
                 // observed at the last (re)connect: no stale admission.
-                let revoked_before = |bound: usize| {
-                    revoked_at[index]
-                        .into_iter()
-                        .chain(floor_at)
-                        .any(|at| at < bound)
-                };
+                let revoked = *revoked_at
+                    .get(index)
+                    .ok_or("credential revocation slot absent")?;
+                let revoked_before =
+                    |bound: usize| revoked.into_iter().chain(floor_at).any(|at| at < bound);
                 let stale = revoked_before(tail);
                 if open && stale && result.is_ok() {
                     return Err(format!("credential {index} admitted under stale trust"));
@@ -1260,9 +1391,29 @@ fn simulate(
             }
         }
     }
+    finish_simulation(
+        world,
+        &trust,
+        &stream,
+        (next, changed),
+        (revoked_at, floor_at),
+        credentials,
+    )
+}
+
+fn finish_simulation(
+    world: &World,
+    trust: &Follower,
+    stream: &[Vec<u8>],
+    progress: (usize, usize),
+    revoked: ([Option<usize>; 4], Option<usize>),
+    credentials: &[(Vec<u8>, BlockId)],
+) -> Result<(), String> {
+    let (next, mut changed) = progress;
+    let (revoked_at, floor_at) = revoked;
     // Nothing is lost: reconnect and drain; every record changed trust once.
     trust.fence(FenceCause::LostFollow);
-    for record in &stream[next..] {
+    for record in stream.iter().skip(next) {
         if trust.apply(record, NOW) == Ok(Applied::Changed) {
             changed += 1;
         }
@@ -1277,14 +1428,19 @@ fn simulate(
     }
     for (index, at) in revoked_at.iter().enumerate() {
         if (at.is_some() || floor_at.is_some())
-            && verify::verify(&credentials[index].0, &trust, NOW).is_ok()
+            && verify::verify(
+                &credentials.get(index).ok_or("credential absent")?.0,
+                trust,
+                NOW,
+            )
+            .is_ok()
         {
             return Err(format!("credential {index} survived its revocation"));
         }
     }
     // Replay restores custody exactly: its next record extends the Stream.
     let mut restored =
-        AccountRoot::resume("account", key(2), &world.issuer.anchor(), &slices(&stream))
+        AccountRoot::resume("account", key(2), &world.issuer.anchor(), &slices(stream))
             .map_err(|error| format!("replay refused: {error}"))?;
     let next = restored
         .revoke_keys(&[("probe", NOW + 50)], NOW)
@@ -1357,13 +1513,20 @@ fn a_refused_account_reads_as_refused_until_its_retained_record_applies() {
     trust.resume();
     // Key B is not yet an environment key, so its account genesis refuses.
     let (_, genesis) = global.genesis("account", key(2), NOW).unwrap();
-    assert!(trust.apply(&genesis[0], NOW).is_err());
+    assert!(
+        trust
+            .apply(genesis.first().expect("original genesis record"), NOW)
+            .is_err()
+    );
     trust.refuse("account");
     assert_eq!(trust.account("account").err(), Some(VerifyError::Refused));
     let second = issuer
         .environment_keyring(
             &mut frontier,
-            &[issuer.anchor()[0], global.anchor()[0]],
+            &[
+                *issuer.anchor().first().expect("issuer anchor"),
+                *global.anchor().first().expect("global anchor"),
+            ],
             NOW,
         )
         .unwrap();
@@ -1464,7 +1627,10 @@ fn a_removed_allowance_signer_refuses_cached_admission() {
     let trust = follower(&world);
     let second = Issuer::new("test", key(9));
     let mut frontier = EnvironmentFrontier::genesis("test", AnchorKeys::new(world.issuer.anchor()));
-    let both = [world.issuer.anchor()[0], second.anchor()[0]];
+    let both = [
+        *world.issuer.anchor().first().expect("issuer anchor"),
+        *second.anchor().first().expect("second anchor"),
+    ];
     let record = world
         .issuer
         .environment_keyring(&mut frontier, &both, NOW)
@@ -1498,7 +1664,7 @@ fn a_removed_allowance_signer_refuses_cached_admission() {
         .unwrap();
     assert!(appended.check(&trust, NOW).is_ok());
     let mut forged = second.allowance("account", 250, NOW + 50, vec![]).unwrap();
-    forged.signature[0] ^= 1;
+    *forged.signature.first_mut().expect("signed signature") ^= 1;
     for allowance in [
         forged,
         second.allowance("foreign", 250, NOW + 50, vec![]).unwrap(),
@@ -1576,7 +1742,10 @@ fn anchor_rotation_authenticates_new_keys_and_retires_old_after_overlap() {
     );
     // A cold follower serves the anchor: the old key only inside its window.
     let keys = cold.environment_keys("test", NOW + 99).unwrap();
-    assert!(keys.contains(&new.anchor()[0]) && keys.contains(&old.anchor()[0]));
+    assert!(
+        keys.contains(new.anchor().first().expect("new anchor"))
+            && keys.contains(old.anchor().first().expect("old anchor"))
+    );
     assert_eq!(
         Follower::new("test", anchor.clone()).apply(&by_old, NOW + 99),
         Ok(Applied::Changed)
@@ -1785,11 +1954,11 @@ proptest::proptest! {
             snapshot = snapshot.rotate(subset(*mask), NOW + index as u64 * 10, *overlap);
         }
         let named = subset(named);
-        let record = environment_keyring_by(&Issuer::new("test", pool[signer].clone()), &named);
+        let record = environment_keyring_by(&Issuer::new("test", pool.get(signer).expect("selected signer").clone()), &named);
         let now = NOW + at;
         let valid = snapshot.at(now);
         let expected = named.iter().all(|key| valid.contains(key))
-            || valid.contains(&pool[signer].verifying_key().to_bytes());
+            || valid.contains(&pool.get(signer).expect("selected signer").verifying_key().to_bytes());
 
         let (owner, anchor) = tokio::sync::watch::channel(snapshot);
         let trust = Follower::new("test", anchor);
@@ -1823,7 +1992,10 @@ fn an_account_keyring_publishes_only_under_the_keys_that_authenticated_it() {
     };
     // Control: with no interleaving, the expanded anchor authenticates B.
     let (_owner, trust) = follower();
-    assert_eq!(trust.apply(&genesis[0], NOW), Ok(Applied::Changed));
+    assert_eq!(
+        trust.apply(genesis.first().expect("original genesis record"), NOW),
+        Ok(Applied::Changed)
+    );
 
     let (_owner, trust) = follower();
     let verifying = Arc::clone(&trust);
@@ -1835,10 +2007,17 @@ fn an_account_keyring_publishes_only_under_the_keys_that_authenticated_it() {
             assert_eq!(verifying.environment_initialized(), Ok(true));
         }));
     });
-    assert_eq!(trust.apply(&genesis[0], NOW), Err(VerifyError::Unavailable));
+    assert_eq!(
+        trust.apply(genesis.first().expect("original genesis record"), NOW),
+        Err(VerifyError::Unavailable)
+    );
     VERIFYING_KEYRING.with(|slot| assert!(slot.borrow().is_none()));
     // B is no longer trusted: the root it signed never installs.
-    assert!(trust.apply(&genesis[0], NOW).is_err());
+    assert!(
+        trust
+            .apply(genesis.first().expect("original genesis record"), NOW)
+            .is_err()
+    );
     assert!(trust.snapshot("account", NOW).is_err());
 }
 
@@ -1870,7 +2049,11 @@ fn environment_publication_cannot_replace_a_newly_proven_position() {
     assert_eq!(&*current.keys, a.anchor());
     drop(current);
     let (_, rejected) = b.genesis("excluded", key(23), NOW).unwrap();
-    assert!(trust.apply(&rejected[0], NOW).is_err());
+    assert!(
+        trust
+            .apply(rejected.first().expect("rejected record"), NOW)
+            .is_err()
+    );
 }
 
 #[test]

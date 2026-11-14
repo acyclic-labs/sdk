@@ -32,28 +32,24 @@ fn check_reanchor(bytes: &[u8]) -> Result<(), String> {
         let established = recovering
             .environment_initialized()
             .map_err(|error| error.to_string())?;
-        let accepted = recovering.environment_keys("test", 100).unwrap().to_vec();
+        let accepted = recovering
+            .environment_keys("test", 100)
+            .map_err(|error| error.to_string())?
+            .to_vec();
         owner.send_replace(AnchorKeys::new(keys));
-        if established && *recovering.environment_keys("test", 100).unwrap() != accepted {
+        if established
+            && *recovering
+                .environment_keys("test", 100)
+                .map_err(|error| error.to_string())?
+                != accepted
+        {
             return Err("anchor publication replaced an authenticated signed frontier".into());
         }
     }
     Ok(())
 }
 
-pub fn check(bytes: &[u8]) {
-    let issuer = Issuer::new("test", SigningKey::from_bytes(&[1; 32]));
-    let anchor = issuer.anchor();
-    let (owner, watched) = tokio::sync::watch::channel(AnchorKeys::new(anchor.clone()));
-    let follower = Follower::new("test", watched);
-    let (mut root, genesis) = issuer
-        .genesis("account", SigningKey::from_bytes(&[2; 32]), 100)
-        .unwrap();
-    for record in &genesis {
-        assert_eq!(follower.apply(record, 100), Ok(Applied::Changed));
-    }
-    follower.resume();
-    follower.serve("account");
+fn check_export(follower: &Follower, owner: &tokio::sync::watch::Sender<AnchorKeys>, bytes: &[u8]) {
     // Export through the original follower and canonical serde decoder. Input
     // chooses overlap and time; no token supplies its own trusted anchor.
     let overlap = u64::from(bytes.first().copied().unwrap_or_default()) + 1;
@@ -76,15 +72,31 @@ pub fn check(bytes: &[u8]) {
     assert!(serde_json::from_value::<acyclic_auth::trust::Snapshot>(omitted).is_err());
     // Arbitrary serialized snapshots exercise the same deployed ingress, not
     // a parallel format parser or hand-written wire fixture.
-    if let Ok(decoded) = serde_json::from_slice::<acyclic_auth::trust::Snapshot>(bytes) {
-        if let Some(until) = decoded.environment_keys_valid_until {
-            assert_eq!(
-                decoded.environment_keys(&decoded.environment, until).err(),
-                Some(VerifyError::Unavailable)
-            );
-        }
+    if let Ok(decoded) = serde_json::from_slice::<acyclic_auth::trust::Snapshot>(bytes)
+        && let Some(until) = decoded.environment_keys_valid_until
+    {
+        assert_eq!(
+            decoded.environment_keys(&decoded.environment, until).err(),
+            Some(VerifyError::Unavailable)
+        );
     }
-    let mut accepted = genesis.clone();
+}
+
+pub fn check(bytes: &[u8]) {
+    let issuer = Issuer::new("test", SigningKey::from_bytes(&[1; 32]));
+    let anchor = issuer.anchor();
+    let (owner, watched) = tokio::sync::watch::channel(AnchorKeys::new(anchor.clone()));
+    let follower = Follower::new("test", watched);
+    let (mut root, genesis) = issuer
+        .genesis("account", SigningKey::from_bytes(&[2; 32]), 100)
+        .unwrap();
+    for record in &genesis {
+        assert_eq!(follower.apply(record, 100), Ok(Applied::Changed));
+    }
+    follower.resume();
+    follower.serve("account");
+    check_export(&follower, &owner, bytes);
+    let mut accepted = genesis;
     let mut environment_changed = false;
     let mut served_floor = 1;
     // A signed wire record may itself contain the sequence separator.

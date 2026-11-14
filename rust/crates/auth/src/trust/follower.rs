@@ -444,7 +444,7 @@ impl Follower {
     }
 
     /// Original environment-record failure behind the retryable refusal fence.
-    /// This is a diagnostic, never an AccessDenied verdict on a caller.
+    /// This is a diagnostic, never an `AccessDenied` verdict on a caller.
     pub fn environment_refusal(&self) -> Option<VerifyError> {
         self.environment_refusal
             .read()
