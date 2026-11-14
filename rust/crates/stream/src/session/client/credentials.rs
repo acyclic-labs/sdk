@@ -90,18 +90,19 @@ impl Drop for Owner {
 impl Client {
     /// Retain the original slot owner until renewal is dispatched. An owned
     /// slot cannot pass through explicit registration or be reused meanwhile.
-    pub(super) fn renew_owned_credential(
+    pub(super) fn renew_credential(
         &self,
         slot: u32,
         credential: Bytes,
-    ) -> Result<Option<oneshot::Receiver<Result<(), StreamError>>>, StreamError> {
-        let Some(owner) = self
+    ) -> Result<oneshot::Receiver<Result<(), StreamError>>, StreamError> {
+        if slot as usize >= Limits::default().channels {
+            return Err(StreamError::Capacity);
+        }
+        let owner = self
             .credential_owner
             .as_ref()
             .filter(|owner| owner.slot == slot)
-        else {
-            return Ok(None);
-        };
+            .cloned();
         let value = frame(
             0,
             0,
@@ -117,12 +118,13 @@ impl Client {
         self.pool
             .commands
             .try_send(Command::RenewCredential {
-                owner: owner.clone(),
+                slot,
+                owner,
                 credential,
                 sent,
             })
             .map_err(queue_error)?;
-        Ok(Some(result))
+        Ok(result)
     }
 
     /// Enroll a credential on this pool for the lifetime of the returned client
@@ -174,15 +176,25 @@ pub(super) fn queue_error<T>(error: mpsc::error::TrySendError<T>) -> StreamError
 impl Pool {
     pub(super) fn renew_credential(
         &mut self,
-        owner: Arc<Owner>,
+        slot: u32,
+        owner: Option<Arc<Owner>>,
         credential: Bytes,
         sent: oneshot::Sender<Result<(), StreamError>>,
     ) -> Result<(), StreamError> {
-        let result = if self.credential_slots.owned(owner.slot) {
-            self.install_credential(owner.slot, credential)
+        let owned = self.credential_slots.owned(slot);
+        let admitted = match &owner {
+            Some(owner) => owned && owner.slot == slot,
+            None => !owned,
+        };
+        let empty = credential.is_empty();
+        let result = if admitted {
+            self.install_credential(slot, credential)
         } else {
             Err(StreamError::AccessDenied)
         };
+        if result.is_ok() && owner.is_none() {
+            self.credential_slots.available(slot, empty);
+        }
         // A command-local refusal must not fail unrelated channels. A failed
         // physical send still fences the pool, as enrollment does.
         let failure = result
