@@ -216,7 +216,7 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
         .await?;
     let parent = root_span.id();
     let root_span = root_span.into_owned();
-    let cause = acyclic_stream::RetainedRecord {
+    let failure_record = acyclic_stream::RetainedRecord {
         commit_id: receipt.call().terminal.commit_id,
         path: receipt.call().log.clone(),
         sequence: receipt.call().terminal.sequence,
@@ -234,7 +234,7 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
     let _terminal = root_span.finish_submitted(
         None,
         acyclic_stream::trace::Outcome::Failed {
-            cause: cause.clone(),
+            cause: failure_record.clone(),
         },
     )?;
     let mut query = acyclic_stream::trace::TraceQuery::new(
@@ -275,7 +275,7 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
                         assert_eq!(
                             result,
                             acyclic_stream::trace::Outcome::Failed {
-                                cause: cause.clone()
+                                cause: failure_record.clone()
                             }
                         );
                         assert!(children.insert(start.name, (id, start.parent)).is_none());
