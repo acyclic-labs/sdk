@@ -341,12 +341,12 @@ impl TurnExecutors for StockExecutors {
                     "review source is not a direct child".into(),
                 ));
             }
-            let (model, provider) = self.selected(agent)?;
+            let binding = self.selected(agent)?;
             crate::approvals::review_model(
                 execution,
                 request.1,
                 principal,
-                (&model, &provider),
+                (&binding.0, &binding.1),
                 Some(policy),
                 Some(request.0),
                 self.limits,
@@ -354,7 +354,6 @@ impl TurnExecutors for StockExecutors {
             .await
         })
     }
-
 
     fn question_plugin(&self) -> bool {
         self.question_plugin
