@@ -107,10 +107,17 @@ async fn concurrent_model_writes_settle_project_and_home_payloads() -> Result<()
                         ]);
                         barrier.wait().await;
                         let started = std::time::Instant::now();
-                        let settled = writer.observed.send(&call, "publish the file").await?;
-                        let elapsed = started.elapsed();
-                        assert_eq!(settled.outcome, crate::agent::TurnOutcome::Completed);
-                        Ok::<_, Error>((elapsed, call, content))
+                        let conversation = Arc::clone(&writer.observed.conversation);
+                        let inbox = conversation.send(&call, "publish the file").await?;
+                        let (settled, completed) = tokio::join!(
+                            async {
+                                let settled = writer.observed.settled(inbox).await?;
+                                assert_eq!(settled.outcome, crate::agent::TurnOutcome::Completed);
+                                Ok::<_, Error>(started.elapsed())
+                            },
+                            tool_completed_at(&conversation, inbox, &call, started),
+                        );
+                        Ok::<_, Error>((settled?, completed?, call, content))
                     }
                 },
             ))
@@ -119,14 +126,18 @@ async fn concurrent_model_writes_settle_project_and_home_payloads() -> Result<()
             .collect::<Result<Vec<_>>>()?;
             let mut elapsed = results.iter().map(|result| result.0).collect::<Vec<_>>();
             elapsed.sort_unstable();
+            let mut completed = results.iter().map(|result| result.1).collect::<Vec<_>>();
+            completed.sort_unstable();
             eprintln!(
-                "TOOL_TURN_LATENCY volume={} writers={count} p50_us={} max_us={}",
+                "TOOL_TURN_LATENCY volume={} writers={count} p50_us={} max_us={} tool_completed_observed_p50_us={} tool_completed_observed_max_us={}",
                 if prefix.is_empty() { "project" } else { "home" },
                 elapsed[elapsed.len() / 2].as_micros(),
-                elapsed.last().expect("writers").as_micros()
+                elapsed.last().expect("writers").as_micros(),
+                completed[completed.len() / 2].as_micros(),
+                completed.last().expect("writers").as_micros()
             );
             // Inspect committed payloads only after every writer has settled.
-            for (index, (writer, (_, call, content))) in
+            for (index, (writer, (_, _, call, content))) in
                 writers[..count].iter().zip(results).enumerate()
             {
                 assert_eq!(
@@ -182,6 +193,35 @@ async fn concurrent_model_writes_settle_project_and_home_payloads() -> Result<()
             .await?;
     }
     Ok(())
+}
+
+async fn tool_completed_at(
+    conversation: &Conversation,
+    inbox: u64,
+    call: &str,
+    started: std::time::Instant,
+) -> Result<std::time::Duration> {
+    let mut after = 0;
+    loop {
+        let query = conversation.execution_page(inbox, after, true).await?;
+        let settled = query.settled;
+        let page = query
+            .page
+            .filter(|_| query.input == inbox)
+            .ok_or_else(|| Error::Conflict("original tool journal is absent".into()))?;
+        for record in page.items {
+            if matches!(record.event, crate::executor::ExecutionEvent::ToolCompleted { ref call_id, .. } if call_id == call)
+            {
+                return Ok(started.elapsed());
+            }
+        }
+        if settled || page.end <= after {
+            return Err(Error::Conflict(
+                "tool journal ended before completion".into(),
+            ));
+        }
+        after = page.end;
+    }
 }
 
 fn returned_path(provider: &ScriptedModelProvider, call: &str) -> Result<String> {
