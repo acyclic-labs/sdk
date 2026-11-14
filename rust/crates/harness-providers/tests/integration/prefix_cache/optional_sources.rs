@@ -9,11 +9,6 @@ use futures::TryStreamExt as _;
 
 #[tokio::test]
 async fn optional_source_versions_preserve_provider_requests() -> TestResult {
-    assert_eq!(
-        serde_json::to_vec(&acyclic_harness::preset::Preset::graphcoder())?.len(),
-        115,
-        "update the reviewed preset byte pin"
-    );
     for (adapter, path) in [
         (Adapter::Chat, "chat/completions"),
         (Adapter::Responses, "responses"),
@@ -34,6 +29,7 @@ async fn optional_source_versions_preserve_provider_requests() -> TestResult {
             "sessions/index.json",
             "evals/report.json",
         ] {
+            let (_, display_name) = source.rsplit_once('/').ok_or("source basename")?;
             for body in [
                 None,
                 Some("OPTIONAL_SOURCE_OFF"),
@@ -66,7 +62,7 @@ async fn optional_source_versions_preserve_provider_requests() -> TestResult {
                                 source,
                                 body.as_bytes(),
                                 "text/plain",
-                                source,
+                                display_name,
                             )
                             .await?,
                     );

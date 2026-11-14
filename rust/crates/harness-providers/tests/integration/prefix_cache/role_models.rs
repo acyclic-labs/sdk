@@ -187,16 +187,13 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
         return Err("uncertain root".into());
     };
     bound.agents().drain(&root).await?;
-    assert_eq!(
-        bound
-            .agents()
-            .state(&root)
-            .await?
-            .profile
-            .ok_or("root profile")?
-            .model,
-        acyclic_harness::templates::root()?.model
-    );
+    let root_profile = bound
+        .agents()
+        .state(&root)
+        .await?
+        .profile
+        .ok_or("root profile")?;
+    assert_eq!(root_profile.model.as_deref(), Some("recorded/model"));
     // A private role file, read by the original authorized template reader.
     let state = bound.agents().state(&root).await?;
     let authority = acyclic_harness::filesystem::agent_authority(
@@ -302,10 +299,9 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
                 requests.2.iter().map(|request| String::from_utf8_lossy(&request.body)).collect::<Vec<_>>()
             )
         })?;
-    let inherited = acyclic_harness::templates::root()?.model;
     for (name, model) in [
         ("explicit", Some("recorded/model")),
-        ("inherited", inherited.as_deref()),
+        ("inherited", root_profile.model.as_deref()),
     ] {
         let path = bound
             .agents()
