@@ -857,6 +857,7 @@ async fn a_routed_refusal_replays_the_same_request_on_the_next_member() -> TestR
         current: AtomicUsize,
         replay: bool,
         refused: std::sync::Mutex<Vec<usize>>,
+        served: std::sync::Mutex<Vec<usize>>,
     }
     impl HomeRoute for Members {
         fn current(&self) -> RoutedChannel {
@@ -879,12 +880,19 @@ async fn a_routed_refusal_replays_the_same_request_on_the_next_member() -> TestR
             }
             Box::pin(std::future::ready(self.replay))
         }
+        fn served(&self, member: usize) {
+            self.served
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(member);
+        }
     }
     for replay in [true, false] {
         let route = Arc::new(Members {
             current: AtomicUsize::new(0),
             replay,
             refused: std::sync::Mutex::new(Vec::new()),
+            served: std::sync::Mutex::new(Vec::new()),
         });
         let connect: ChannelConnector =
             Arc::new(|_| Box::pin(async { Err(StreamError::Unavailable.into()) }));
@@ -921,6 +929,14 @@ async fn a_routed_refusal_replays_the_same_request_on_the_next_member() -> TestR
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
             vec![0]
+        );
+        let served = if replay { vec![1] } else { vec![] };
+        assert_eq!(
+            *route
+                .served
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            served
         );
     }
     Ok(())
