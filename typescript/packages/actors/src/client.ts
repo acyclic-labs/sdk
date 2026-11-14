@@ -343,6 +343,11 @@ interface GuestDelivery {
 interface WasmActorsModule extends ActorsNominalBinding {
   readonly decodeDelivery: (bytes: Uint8Array) => GuestDelivery;
   readonly encodeTransition: (codecName: string, codecVersion: string, checkpoint: Uint8Array, response: Uint8Array | null) => Uint8Array;
+  readonly decodeInvokeRequest: (bytes: Uint8Array) => { readonly method: string; readonly url: string;
+    readonly headers: readonly (readonly [string, string])[]; readonly body: Uint8Array } | null;
+  readonly encodeInvokeResponse: (status: number, names: string[], values: string[], body: Uint8Array) => Uint8Array;
+  readonly encodeManifest: (code: Uint8Array, codecName: string, codecVersion: string, subscriptions: string[],
+    handlerTimeoutMillis?: bigint, memoryBytes?: bigint, checkpointBytes?: bigint) => Uint8Array;
   readonly validateDeploymentBinding: (name: string, capability: string, resource: string, account: Uint8Array, namespace: string | undefined, worker: string | undefined, stateTransaction: boolean, guestAdmission: string | undefined) => void;
   readonly default: (input?: unknown) => Promise<unknown>;
   readonly ActorsClient: { connect(endpoint: string, token: string, signal?: unknown): Promise<unknown> };

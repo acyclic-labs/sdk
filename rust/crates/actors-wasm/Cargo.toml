@@ -19,6 +19,7 @@ test = false
 acyclic-actors = { version = "=0.2.0", path = "../actors", default-features = false }
 acyclic-contract-derive = { path = "../contract-derive", version = "=0.2.0" }
 js-sys.workspace = true
+prost.workspace = true
 serde-wasm-bindgen.workspace = true
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true

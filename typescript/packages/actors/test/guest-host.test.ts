@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { Buffer } from "node:buffer";
 import { readFileSync } from "node:fs";
-import { GuestActivation } from "../src/guest-host.js";
+import { GuestActivation, definitionHandler } from "../src/guest-host.js";
+import { verifyDefinitionHost } from "../src/definition-conformance.js";
 import { defineActor, GUEST_ABI_VERSION, type GuestContext, type GuestEvent } from "../src/guest.js";
 
 async function json(response: Awaited<ReturnType<GuestActivation<unknown, unknown>["fetch"]>>) {
@@ -198,4 +199,30 @@ test("onRecord refuses a transition when reply materialization revokes ownership
   await expect(activation.onRecord(Uint8Array.from(shared.delivery), cancellation.signal))
     .rejects.toThrow("ownership revoked");
   await expect(activation.checkpoint()).rejects.toMatchObject({ code: "unavailable" });
+});
+test("definitionHandler serves a namespace of one public ActorDefinition through the core's Handler ABI", async () => {
+  const counter = { name: "counter", version: "1" };
+  const record = recordingActor(counter);
+  const shared = JSON.parse(readFileSync(new URL("../../../../rust/crates/actors/tests/fixtures/guest-record.json", import.meta.url), "utf8"));
+  const records = definitionHandler(record.actor, { code: new Uint8Array(32).fill(7), subscriptions: ["inbox"] }, {});
+  // Each delivery restores its actor from the checkpoint it carries; a retry is the same answer.
+  expect(await records.onRecord(Uint8Array.from(shared.delivery))).toEqual(Uint8Array.from(shared.transition));
+  expect(await records.onRecord(Uint8Array.from(shared.delivery))).toEqual(Uint8Array.from(shared.transition));
+  expect(record.restores()).toBe(2);
+  // The manifest is the deployment's code and subscriptions with the definition's codec.
+  const manifest = await records.manifest();
+  expect(new TextDecoder("latin1").decode(manifest)).toContain("counter");
+  await expect(definitionHandler(record.actor, { code: new Uint8Array(31), subscriptions: [] }, {}).manifest()).rejects.toThrow();
+});
+
+test("the SDK backend passes the ActorDefinition conformance; a host without the wrapper fails it", async () => {
+  await verifyDefinitionHost(({ actor }, deployment) => ({ code: deployment.code, ...definitionHandler(actor, deployment, {}) }));
+  // A manifest naming another code digest is not the deployment's manifest.
+  await expect(verifyDefinitionHost(({ actor }, deployment) => ({ code: new Uint8Array(32),
+    ...definitionHandler(actor, deployment, {}) }))).rejects.toThrow("strict-wire manifest");
+  // Negative control (#9432's shape): a host that runs the raw module as the Handler ABI.
+  await expect(verifyDefinitionHost(module => module as never)).rejects.toThrow("does not expose the Handler ABI");
+  const { actor } = recordingActor({ name: "counter", version: "1" });
+  expect(() => definitionHandler({ ...actor, abiVersion: GUEST_ABI_VERSION + 1 }, { code: new Uint8Array(32), subscriptions: [] }, {}))
+    .toThrow("unsupported guest ABI");
 });
