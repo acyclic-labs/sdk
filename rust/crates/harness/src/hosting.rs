@@ -95,21 +95,17 @@ pub trait Platform: ProviderPlatform + 'static {
         })
     }
 
-    /// Integrate a root through the platform's existing filesystem merge.
-    /// The directory credential and current policy were checked first.
+    /// Integrate a fork through the shared admitted volume merge. Native hosts
+    /// may wrap this operation with checkout capture and publication.
     fn merge_session<'a>(
         &'a self,
         agent: &'a AgentPath,
         operation: crate::OperationId,
+        merge: BoxProviderFuture<'a, crate::Result<Option<String>>>,
     ) -> BoxProviderFuture<'a, crate::Result<Option<String>>> {
         let _ = (agent, operation);
-        Box::pin(async {
-            Err(crate::Error::Unsupported(
-                "session merge is unavailable".into(),
-            ))
-        })
+        merge
     }
-
     /// The current policy for `principal` issuing `command`.
     fn policy<'a>(
         &'a self,
@@ -662,6 +658,11 @@ where
                     .merge_session(
                         self.within_tree(agent)?,
                         crate::OperationId::from_bytes(operation),
+                        Box::pin(self.bound.merge_session(
+                            agent,
+                            &agent.parent().unwrap_or_else(|| self.root.clone()),
+                            crate::OperationId::from_bytes(operation),
+                        )),
                     )
                     .await
                     .map_err(|error| Error::Turn(Box::new(error)))?;
