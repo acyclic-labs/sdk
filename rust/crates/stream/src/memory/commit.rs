@@ -543,7 +543,6 @@ impl MemoryStream {
         >,
         StreamError,
     > {
-        let scope = state.ephemeral.commit_scope(&state.paths, request)?;
         if let Some((replayed, result, index)) =
             self.replay_in(state, request.idempotency_key.as_bytes())?
         {
@@ -555,10 +554,14 @@ impl MemoryStream {
             };
             let (receipt, mut claim) = self.replayed(request, result, self.revisions.at(index))?;
             let envelope = self.selected_envelope(result, accepted, &mut claim)?;
-            return Ok(Decision::Returned((
-                commit_projection(CommitOutcome::Committed(receipt), envelope)?,
-                claim,
-            )));
+            let scope = self.commit_scope(state, request, &receipt.skipped)?;
+            return Ok(Decision::Returned {
+                result: (
+                    commit_projection(CommitOutcome::Committed(receipt), envelope)?,
+                    claim,
+                ),
+                ephemeral: matches!(scope, Scope::Ephemeral(_)),
+            });
         }
         let deadline = deadline
             .into_iter()
@@ -572,12 +575,6 @@ impl MemoryStream {
             }
         };
         check_deadline()?;
-        let durable = matches!(scope, Scope::Durable);
-        let mut probes = if durable {
-            self.replay_insertion_probes(request.idempotency_key.as_bytes())?
-        } else {
-            ReplayProbes::default()
-        };
         let (conflicts, output_claim) =
             self.vector(crate::preparation::hard_conditions(request))?;
         // The receipt carries the skipped soft effects, so their claim joins
@@ -592,6 +589,8 @@ impl MemoryStream {
         if !conflicts.is_empty() {
             check_deadline()?;
             let result = CommitOutcome::Conflict(conflicts);
+            #[cfg(all(loom, not(target_arch = "wasm32")))]
+            let mut probes = self.replay_insertion_probes(request.idempotency_key.as_bytes())?;
             // Old behaviour, for negative controls only: the conflict spends the key.
             #[cfg(all(loom, not(target_arch = "wasm32")))]
             if crate::verification::fault_is(crate::verification::Fault::RetainConflictKey) {
@@ -618,9 +617,19 @@ impl MemoryStream {
             } else {
                 crate::WriteOutcome::Commit(result)
             };
-            return Ok(Decision::Returned((result, output_claim)));
+            return Ok(Decision::Returned {
+                result: (result, output_claim),
+                ephemeral: false,
+            });
         }
         drop((conflicts, output_claim));
+        let scope = self.commit_scope(state, request, &skipped)?;
+        let durable = matches!(scope, Scope::Durable);
+        let mut probes = if durable {
+            self.replay_insertion_probes(request.idempotency_key.as_bytes())?
+        } else {
+            ReplayProbes::default()
+        };
         // Planning views the applied mutations in canonical order through one
         // admitted vector of references; no request vector is copied.
         let (applied, applied_claim) =
@@ -673,6 +682,7 @@ impl MemoryStream {
             &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
         )?;
         Ok(Decision::Accepted {
+            ephemeral: matches!(scope, Scope::Ephemeral(_)),
             bytes,
             install: move |state: &mut State, durable: bool, at_millis| {
                 if !durable {
@@ -703,6 +713,65 @@ impl MemoryStream {
                 Ok((commit_projection(outcome, envelope)?, allocation))
             },
         })
+    }
+
+    /// Scope follows the selected effects, never a skipped mutation. Durable
+    /// replay must also skip any omitted effect that observed a lease: the
+    /// command journal cannot reconstruct an incarnation-only observation.
+    fn commit_scope(
+        &self,
+        state: &State,
+        request: &CommitRequest,
+        skipped: &[u32],
+    ) -> Result<Scope, StreamError> {
+        let applied = crate::preparation::settled_effects(request, skipped)
+            .filter_map(|(omitted, effect)| (!omitted).then_some(effect));
+        let scope = state.ephemeral.scope(
+            &state.paths,
+            applied
+                .clone()
+                .flat_map(|effect| effect.mutations.iter().map(CommitMutation::path)),
+            applied.flat_map(|effect| {
+                effect.conditions.iter().map(CommitCondition::path).chain(
+                    effect
+                        .mutations
+                        .iter()
+                        .filter_map(|mutation| match mutation {
+                            CommitMutation::Fork { source, .. } => Some(source),
+                            CommitMutation::Append { .. } => None,
+                        }),
+                )
+            }),
+        )?;
+        if matches!(scope, Scope::Durable) {
+            for (_, effect) in
+                crate::preparation::settled_effects(request, skipped).filter(|(omitted, effect)| {
+                    *omitted
+                        && effect.conditions.iter().any(|condition| {
+                            state.ephemeral.root_of(condition.path().as_str()).is_some()
+                        })
+                })
+            {
+                let mut replay_skips = false;
+                for condition in &effect.conditions {
+                    let conflict = if state.ephemeral.root_of(condition.path().as_str()).is_some() {
+                        crate::preparation::condition_conflict(condition, None, || {
+                            Err(StreamError::InvalidResponse)
+                        })?
+                    } else {
+                        self.condition_conflict(state, condition)?
+                    };
+                    if conflict.is_some() {
+                        replay_skips = true;
+                        break;
+                    }
+                }
+                if !replay_skips {
+                    return Err(StreamError::InvalidArgument);
+                }
+            }
+        }
+        Ok(scope)
     }
 
     fn selected_envelope(
