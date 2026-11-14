@@ -601,6 +601,7 @@ fn lazy_source_error_code(source: &acyclic_fs::LazyWorkspaceError) -> ErrorCode 
     use acyclic_fs::LazyWorkspaceError as Lazy;
     match source {
         Lazy::WorkspaceCause(source) => Error::workspace_error_code(source),
+        Lazy::StatePublication(source) => stream_state_error_code(source),
         Lazy::Filesystem(source) => filesystem_error_code(source),
         Lazy::NotFound => ErrorCode::NotFound,
         Lazy::NamespacePath(source) => namespace_path_error_code(source),
@@ -696,19 +697,7 @@ impl Error {
             WorkspaceError::AccessDenied => ErrorCode::Unauthorized,
             WorkspaceError::Filesystem(source) => filesystem_error_code(source),
             WorkspaceError::NamespacePath(source) => namespace_path_error_code(source),
-            WorkspaceError::GitCompat(source) => match source.as_ref() {
-                acyclic_fs::StreamGitCompatStoreError::Authority(
-                    acyclic_fs::AuthorityStoreError::Missing,
-                ) => ErrorCode::NotFound,
-                acyclic_fs::StreamGitCompatStoreError::Authority(
-                    acyclic_fs::AuthorityStoreError::Cancelled,
-                ) => ErrorCode::Cancelled,
-                acyclic_fs::StreamGitCompatStoreError::Unknown { .. } => ErrorCode::Indeterminate,
-                acyclic_fs::StreamGitCompatStoreError::Incompatible => ErrorCode::Conflict,
-                acyclic_fs::StreamGitCompatStoreError::Authority(_)
-                | acyclic_fs::StreamGitCompatStoreError::Stream(_)
-                | acyclic_fs::StreamGitCompatStoreError::Codec(_) => ErrorCode::Storage,
-            },
+            WorkspaceError::GitCompat(source) => stream_state_error_code(source),
             WorkspaceError::NotFound => ErrorCode::NotFound,
             WorkspaceError::RetentionConflict
             | WorkspaceError::StaleGeneration
@@ -1720,6 +1709,22 @@ impl From<acyclic_stream::StreamError> for Error {
 
 /// Harness result type.
 pub type Result<T> = std::result::Result<T, Error>;
+
+fn stream_state_error_code(source: &acyclic_fs::StreamStateStoreError) -> ErrorCode {
+    match source {
+        acyclic_fs::StreamStateStoreError::Authority(acyclic_fs::AuthorityStoreError::Missing) => {
+            ErrorCode::NotFound
+        }
+        acyclic_fs::StreamStateStoreError::Authority(
+            acyclic_fs::AuthorityStoreError::Cancelled,
+        ) => ErrorCode::Cancelled,
+        acyclic_fs::StreamStateStoreError::Unknown { .. } => ErrorCode::Indeterminate,
+        acyclic_fs::StreamStateStoreError::Incompatible => ErrorCode::Conflict,
+        acyclic_fs::StreamStateStoreError::Authority(_)
+        | acyclic_fs::StreamStateStoreError::Stream(_)
+        | acyclic_fs::StreamStateStoreError::Codec(_) => ErrorCode::Storage,
+    }
+}
 
 #[cfg(test)]
 mod cleanup_tests {

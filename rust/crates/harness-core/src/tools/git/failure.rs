@@ -20,15 +20,13 @@ pub enum Failure {
     Join(acyclic_fs::DrivenJoinError),
     /// Durable provider-backed refs and outcomes.
     #[error(transparent)]
-    StreamState(acyclic_fs::StreamGitCompatStoreError),
+    StreamState(acyclic_fs::StreamStateStoreError),
     /// Provider-backed ancestry admission.
     #[error(transparent)]
-    StreamLineage(WorkspaceLineageError<acyclic_fs::StreamGitCompatStoreError>),
+    StreamLineage(WorkspaceLineageError<acyclic_fs::StreamStateStoreError>),
     /// Provider-backed tree authentication.
     #[error(transparent)]
-    StreamCaptureAuthentication(
-        GitCaptureAuthenticationError<acyclic_fs::StreamGitCompatStoreError>,
-    ),
+    StreamCaptureAuthentication(GitCaptureAuthenticationError<acyclic_fs::StreamStateStoreError>),
     /// Workspace merge-driver configuration failure.
     #[error(transparent)]
     Policy(#[from] acyclic_fs::DriverRegistrationError),

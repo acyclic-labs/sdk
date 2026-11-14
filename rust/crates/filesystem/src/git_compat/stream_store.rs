@@ -1,12 +1,13 @@
 //! Compatibility state and lineage on the filesystem's original Streams provider.
 use super::*;
+use crate::StreamStateStoreError;
 use crate::distributed::state_record::{CompanionKind, StateRecord};
 use crate::distributed::{AuthorityProvider, AuthorizedObservation};
 use crate::{
-    AuthorityStoreError, AuthorityWork, FilesystemCommit, FilesystemCommitOutcome,
-    StreamAuthorityStore, WorkspaceLineageRecord, WorkspaceLineageStore,
+    AuthorityWork, FilesystemCommit, StreamAuthorityStore, WorkspaceLineageRecord,
+    WorkspaceLineageStore,
 };
-use acyclic_stream::{CommitCondition, CommitEffect, CommitRequest, StreamPath};
+use acyclic_stream::StreamPath;
 
 /// Durable command state shared by hosts using the same filesystem provider.
 /// Each lookup reads one stream head and its last record, independent of history.
@@ -27,47 +28,6 @@ impl<P: ?Sized> StreamGitCompatStore<P> {
     #[must_use]
     pub const fn new(authority: StreamAuthorityStore<P>) -> Self {
         Self { authority }
-    }
-}
-
-/// Original storage and codec failures of stream-backed command state.
-#[derive(Error)]
-pub enum StreamGitCompatStoreError {
-    /// The provider failed or could not resolve an exact append.
-    #[error(transparent)]
-    Authority(#[from] AuthorityStoreError),
-    /// The stream primitive rejected a path or request.
-    #[error(transparent)]
-    Stream(#[from] acyclic_stream::StreamError),
-    /// The existing compatibility codec refused state.
-    #[error(transparent)]
-    Codec(#[from] serde_json::Error),
-    /// An unresolved publication retains its exact request and custody.
-    #[error("stream-backed command publication remains unresolved: {error}")]
-    Unknown {
-        /// Returns the original sealed publication without reconstruction or
-        /// re-fencing. Erase its custody graph at the error boundary so other
-        /// workspace failures do not expand it during auto-trait checking.
-        #[cfg(not(target_arch = "wasm32"))]
-        commit: Box<dyn FnOnce() -> FilesystemCommit + Send + Sync>,
-        /// The browser retains the same owner on its original event loop.
-        #[cfg(target_arch = "wasm32")]
-        commit: Box<dyn FnOnce() -> FilesystemCommit>,
-        /// Original submission failure.
-        #[source]
-        error: AuthorityStoreError,
-    },
-    /// A record cannot represent this workspace or revision.
-    #[error("incompatible stream-backed command state")]
-    Incompatible,
-}
-
-impl std::fmt::Debug for StreamGitCompatStoreError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("StreamGitCompatStoreError")
-            .field("cause", &format_args!("{self}"))
-            .finish_non_exhaustive()
     }
 }
 
@@ -94,11 +54,11 @@ pub struct GitCompatCas<'a> {
 impl<P: AuthorityProvider + ?Sized> StreamGitCompatStore<P> {
     /// Original repository-state stream, including checkout selection changes.
     /// This identity grants no authority; capture its tail before reading state.
-    pub fn changes_path(id: WorkspaceId) -> Result<StreamPath, StreamGitCompatStoreError> {
+    pub fn changes_path(id: WorkspaceId) -> Result<StreamPath, StreamStateStoreError> {
         Self::path(id, "refs")
     }
 
-    fn path(id: WorkspaceId, family: &str) -> Result<StreamPath, StreamGitCompatStoreError> {
+    fn path(id: WorkspaceId, family: &str) -> Result<StreamPath, StreamStateStoreError> {
         Ok(StreamPath::new(format!(
             "fs/git-state-v1/{}/{family}",
             hex::encode(id.into_bytes())
@@ -110,7 +70,7 @@ impl<P: AuthorityProvider + ?Sized> StreamGitCompatStore<P> {
         id: WorkspaceId,
         family: &str,
         work: &mut AuthorityWork<'_>,
-    ) -> Result<(Option<Envelope<T>>, AuthorizedObservation), StreamGitCompatStoreError> {
+    ) -> Result<(Option<Envelope<T>>, AuthorizedObservation), StreamStateStoreError> {
         let observed = self
             .authority
             .observe_record(Self::path(id, family)?, work)
@@ -124,11 +84,11 @@ impl<P: AuthorityProvider + ?Sized> StreamGitCompatStore<P> {
                     payload,
                 } = recorded.state
                 else {
-                    return Err(StreamGitCompatStoreError::Incompatible);
+                    return Err(StreamStateStoreError::Incompatible);
                 };
                 let envelope: Envelope<T> = serde_json::from_slice(&payload)?;
                 if envelope.version != 1 || envelope.workspace != id || envelope.revision == 0 {
-                    return Err(StreamGitCompatStoreError::Incompatible);
+                    return Err(StreamStateStoreError::Incompatible);
                 }
                 Some(envelope)
             }
@@ -143,7 +103,7 @@ impl<P: AuthorityProvider + ?Sized> StreamGitCompatStore<P> {
         expected: u64,
         replacement: Option<&T>,
         work: &mut AuthorityWork<'_>,
-    ) -> Result<Option<(AuthorizedObservation, Vec<u8>)>, StreamGitCompatStoreError> {
+    ) -> Result<Option<(AuthorizedObservation, Vec<u8>)>, StreamStateStoreError> {
         let (current, observation) = self.read::<T>(id, family, work).await?;
         // A tombstone is logically absent, but its exact physical head still
         // fences recreation. Old creates can never overwrite a later history.
@@ -157,7 +117,7 @@ impl<P: AuthorityProvider + ?Sized> StreamGitCompatStore<P> {
         }
         let revision = expected
             .checked_add(1)
-            .ok_or(StreamGitCompatStoreError::Incompatible)?;
+            .ok_or(StreamStateStoreError::Incompatible)?;
         let payload = serde_json::to_vec(&Envelope {
             version: 1,
             workspace: id,
@@ -173,7 +133,7 @@ impl<P: AuthorityProvider + ?Sized> StreamGitCompatStore<P> {
         change: &GitCompatCas<'_>,
         commit: &mut FilesystemCommit,
         work: &mut AuthorityWork<'_>,
-    ) -> Result<bool, StreamGitCompatStoreError> {
+    ) -> Result<bool, StreamStateStoreError> {
         validate_replacement(change.expected, change.replacement)?;
         if change.replacement.is_none() && change.expected == 0 {
             return Ok(false);
@@ -209,7 +169,7 @@ impl<P: AuthorityProvider + ?Sized> StreamGitCompatStore<P> {
         family: &str,
         expected: u64,
         replacement: Option<T>,
-    ) -> Result<bool, StreamGitCompatStoreError> {
+    ) -> Result<bool, StreamStateStoreError> {
         let cancellation = CancellationToken::new();
         let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let Some((observation, payload)) = self
@@ -218,76 +178,23 @@ impl<P: AuthorityProvider + ?Sized> StreamGitCompatStore<P> {
         else {
             return Ok(false);
         };
-        let mut hash = blake3::Hasher::new();
-        hash.update(b"acyclic-fs-stream-git-state-v1\0");
-        let (path, sequence) = match observation.condition() {
-            CommitCondition::Absent { path } => {
-                hash.update(&[0]);
-                hash.update(path.as_str().as_bytes());
-                (path.clone(), 0)
-            }
-            CommitCondition::Head {
-                path,
-                expected,
-                commit_id,
-            } => {
-                hash.update(&[1]);
-                hash.update(path.as_str().as_bytes());
-                hash.update(&expected.to_le_bytes());
-                hash.update(commit_id.as_bytes());
-                (path.clone(), *expected)
-            }
-            _ => return Err(StreamGitCompatStoreError::Incompatible),
-        };
-        hash.update(&payload);
-        let key = acyclic_stream::IdempotencyKey::new(bytes::Bytes::copy_from_slice(
-            hash.finalize().as_bytes(),
-        ))?;
-        let record = StateRecord::Companion {
-            kind: CompanionKind::GitRefs,
-            payload: payload.into(),
-        };
-        let mut commit = FilesystemCommit::new(CommitRequest {
-            idempotency_key: key.clone(),
-            effects: vec![CommitEffect::hard(Vec::new(), Vec::new())],
-            deadline_unix_millis: None,
-        });
-        self.authority.contribute_record(
-            &mut commit,
-            &observation,
-            &record,
-            crate::PublicationHold::none(),
-            &mut work,
-        )?;
         self.authority
-            .seal_observed(&mut commit, &[], None, &mut work)?;
-        match self.authority.submit(commit, &mut work).await? {
-            FilesystemCommitOutcome::Committed(_) => Ok(true),
-            FilesystemCommitOutcome::Rejected(_) => Ok(false),
-            FilesystemCommitOutcome::Unknown { commit, error } => {
-                // One exact-position observation resolves a lost reply. Failure
-                // stays an error; no retry at a newer head or polling is allowed.
-                match self
-                    .authority
-                    .reconcile_record(path, sequence, &key, &record, &mut work)
-                    .await
-                {
-                    Ok(_) => {
-                        drop(commit);
-                        Ok(true)
-                    }
-                    Err(_) => Err(StreamGitCompatStoreError::Unknown {
-                        commit: Box::new(move || commit),
-                        error,
-                    }),
-                }
-            }
-        }
+            .publish_companion(
+                &observation,
+                &[],
+                StateRecord::Companion {
+                    kind: CompanionKind::GitRefs,
+                    payload: payload.into(),
+                },
+                crate::PublicationHold::none(),
+                &mut work,
+            )
+            .await
     }
 }
 
 impl<P: AuthorityProvider + ?Sized> GitCompatStore for StreamGitCompatStore<P> {
-    type Error = StreamGitCompatStoreError;
+    type Error = StreamStateStoreError;
     async fn load(&self, id: WorkspaceId) -> Result<Option<GitCompatState>, Self::Error> {
         let cancellation = CancellationToken::new();
         let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
@@ -330,7 +237,7 @@ impl<P: AuthorityProvider + ?Sized> GitCompatStore for StreamGitCompatStore<P> {
 mod tests;
 
 impl<P: AuthorityProvider + ?Sized> WorkspaceLineageStore for StreamGitCompatStore<P> {
-    type Error = StreamGitCompatStoreError;
+    type Error = StreamStateStoreError;
     async fn load(&self, id: WorkspaceId) -> Result<Option<WorkspaceLineageRecord>, Self::Error> {
         let cancellation = CancellationToken::new();
         let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
@@ -369,15 +276,15 @@ impl<P: AuthorityProvider + ?Sized> WorkspaceLineageStore for StreamGitCompatSto
 fn validate_replacement(
     expected: u64,
     replacement: Option<&GitCompatState>,
-) -> Result<(), StreamGitCompatStoreError> {
+) -> Result<(), StreamStateStoreError> {
     if let Some(replacement) = replacement
         && (replacement.version != STATE_VERSION
             || replacement.revision
                 != expected
                     .checked_add(1)
-                    .ok_or(StreamGitCompatStoreError::Incompatible)?)
+                    .ok_or(StreamStateStoreError::Incompatible)?)
     {
-        return Err(StreamGitCompatStoreError::Incompatible);
+        return Err(StreamStateStoreError::Incompatible);
     }
     Ok(())
 }
