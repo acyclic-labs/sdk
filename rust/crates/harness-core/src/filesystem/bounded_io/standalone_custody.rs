@@ -18,7 +18,10 @@ impl StandaloneCustody {
     /// Accepts scratch that a completed native producer already charged to
     /// this shared ledger. Resumption cannot discover it from a byte delta:
     /// the suspended ledger sees the producer's writes before it resumes.
-    pub(super) fn adopt_returned(&self, bytes: u64) -> Result<()> {
+    pub(super) fn adopt_returned(
+        &self,
+        bytes: u64,
+    ) -> std::result::Result<(), acyclic_fs::FsError> {
         let state = self
             .work
             .lock()
