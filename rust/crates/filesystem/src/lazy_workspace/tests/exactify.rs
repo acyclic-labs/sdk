@@ -18,7 +18,8 @@ async fn fork_base_refines_only_deletions_added_after_its_cut() {
             .unwrap();
     }
     root.remove("/file-000", None, accounting!()).await.unwrap();
-    let (child, cut) = root
+    let cut = root.snapshot(accounting!()).await.unwrap();
+    let (child, _) = root
         .fork(
             "child",
             IdempotencyKey::new(),
@@ -100,7 +101,8 @@ async fn unchanged_fork_base_skips_inherited_observations_but_keeps_source_delet
                 .await
                 .unwrap();
         }
-        let (child, cut) = root
+        let cut = root.snapshot(accounting!()).await.unwrap();
+        let (child, _) = root
             .fork(
                 "child",
                 IdempotencyKey::new(),
