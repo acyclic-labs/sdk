@@ -219,9 +219,10 @@ async fn native_publication_projection_keeps_exact_frame_funding() -> MemoryResu
         assert_eq!(output.value(), &selected);
         drop(output);
         lookup_meter.assert_refunded();
+        let trace_tail = trace.tail().await?;
         for (path, before) in [
             (path("native/projection")?, 0),
-            (trace.path().clone(), u64::MAX),
+            (trace.path().clone(), trace_tail),
         ] {
             let output = root
                 .within(provider.native_latest_before(
