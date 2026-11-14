@@ -68,7 +68,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemNativeSources<A, O> 
         let mut attached = directory.attachment.lock().await;
         if attached.is_none() {
             let native = workspace
-                .attach_directory(&directory.path, SourceOptions::default())
+                .open_directory(&directory.path, SourceOptions::default())
                 .await
                 .map_err(status)?;
             let source = native

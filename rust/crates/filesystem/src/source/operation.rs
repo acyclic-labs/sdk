@@ -30,7 +30,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> BoundSource<'_, A, O> {
         if session.mode == SourceMode::Pinned {
             return Err(SourceError::Pinned);
         }
+        let initial = session.state
+            == SourceState::NeedsRescan(WatchInvalidationReason::InitialSnapshotRequired);
         begin_source_operation(session, key, SourceOperation::Reconcile).await?;
+        if initial {
+            return rescan_session(session, key, SourceOperation::Reconcile, SourceState::Clean)
+                .await;
+        }
         let maximum_paths = session.capture.maximum_paths.unwrap_or(1024);
         let batch = session
             .watcher

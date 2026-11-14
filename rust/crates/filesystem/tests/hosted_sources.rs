@@ -2,8 +2,9 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use acyclic_fs::{
-    CancellationToken, FilesystemNativeSources, FilesystemWireLimits, FilesystemWireService, Fs,
-    IdempotencyKey, ReconcileOutcome, SourceError, SourceOptions, SourceState, WorkBudget,
+    CancellationToken, FilesystemNativeSources, FilesystemSourceProvider, FilesystemWireLimits,
+    FilesystemWireService, Fs, IdempotencyKey, ReconcileOutcome, SourceError, SourceOptions,
+    SourceState, WorkBudget,
 };
 use acyclic_fs_wire::wire::filesystem::v2 as wire;
 use std::{collections::BTreeMap, sync::Arc};
@@ -119,7 +120,8 @@ async fn native_source_rpcs_keep_read_only_observation_lazy_and_capture_replay_a
         "observed".to_owned(),
         directory.clone(),
     )]))?);
-    let service = FilesystemWireService::new(Fs::memory(), FilesystemWireLimits::default())?
+    let filesystem = Fs::memory();
+    let service = FilesystemWireService::new(filesystem.clone(), FilesystemWireLimits::default())?
         .with_source_provider(provider);
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
     let endpoint = format!("http://{}", listener.local_addr()?);
@@ -171,6 +173,7 @@ async fn native_source_rpcs_keep_read_only_observation_lazy_and_capture_replay_a
             .await?
             .into_inner();
         assert_eq!(reconciled.state, wire::SourceState::Clean as i32);
+        let original_reconcile = reconciled.clone();
         let generation = reconciled
             .generation
             .ok_or("reconciled generation missing")?;
@@ -192,6 +195,7 @@ async fn native_source_rpcs_keep_read_only_observation_lazy_and_capture_replay_a
         };
         let rescanned = client.rescan_source(request.clone()).await?.into_inner();
         assert_eq!(rescanned.state, wire::SourceState::Clean as i32);
+        let original_rescan = rescanned.clone();
         let generation = rescanned.generation.ok_or("rescanned generation missing")?;
         std::fs::write(directory.join("value"), b"third")?;
         let replayed = client.rescan_source(request).await?.into_inner();
@@ -214,6 +218,7 @@ async fn native_source_rpcs_keep_read_only_observation_lazy_and_capture_replay_a
             .await?
             .into_inner();
         assert_eq!(sealed.state, wire::SourceState::Sealed as i32);
+        let original_seal = sealed.clone();
         let generation = sealed.generation.ok_or("sealed generation missing")?;
         std::fs::write(directory.join("value"), b"later")?;
         let read = client
@@ -234,6 +239,50 @@ async fn native_source_rpcs_keep_read_only_observation_lazy_and_capture_replay_a
             .into_inner();
         assert_eq!(state.state, wire::SourceState::Sealed as i32);
         assert_eq!(state.generation, Some(generation));
+        let admitted = filesystem
+            .open_workspace("observed", WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
+        let before = admitted
+            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map_err(|failure| failure.error)?
+            .value
+            .id();
+        for (key, expected) in [
+            (2, original_reconcile),
+            (3, original_rescan),
+            (4, original_seal),
+        ] {
+            // Each fresh provider has no retained watcher or in-memory retry state.
+            let restarted = FilesystemNativeSources::new(BTreeMap::from([(
+                "observed".to_owned(),
+                directory.clone(),
+            )]))?;
+            let operation = IdempotencyKey::from_bytes([key; 16]);
+            let replayed = match key {
+                2 => restarted.reconcile(&admitted, operation).await?,
+                3 => restarted.rescan(&admitted, operation).await?,
+                _ => restarted.seal(&admitted, operation).await?,
+            };
+            assert_eq!(
+                replayed.generation_id.map(|id| id.to_bytes().to_vec()),
+                expected
+                    .generation
+                    .map(|generation| generation.generation_id)
+            );
+            let after = admitted
+                .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await
+                .map_err(|failure| failure.error)?
+                .value
+                .id();
+            assert_eq!(
+                after, before,
+                "source retry must not capture later native bytes"
+            );
+        }
         drop(client);
         Ok::<_, Box<dyn std::error::Error>>(())
     }

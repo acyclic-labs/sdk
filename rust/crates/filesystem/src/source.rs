@@ -620,6 +620,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         path: impl AsRef<Path>,
         options: SourceOptions,
     ) -> Result<Workspace<A, O>, SourceError> {
+        let workspace = self.open_directory(path, options).await?;
+        let source = workspace
+            .source()
+            .ok_or_else(|| SourceError::Engine("native source attachment missing".to_owned()))?;
+        if !matches!(source.rescan().await?, ReconcileOutcome::Clean(_)) {
+            return Err(SourceError::Engine(
+                "initial source baseline did not become clean".to_owned(),
+            ));
+        }
+        Ok(workspace)
+    }
+
+    pub(crate) async fn open_directory(
+        &self,
+        path: impl AsRef<Path>,
+        options: SourceOptions,
+    ) -> Result<Workspace<A, O>, SourceError> {
         options.validate()?;
         let mut workspace = self.clone();
         workspace.source = None;
@@ -697,11 +714,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                 authority_head,
             })),
         };
-        if !matches!(source.rescan().await?, ReconcileOutcome::Clean(_)) {
-            return Err(SourceError::Engine(
-                "initial source baseline did not become clean".to_owned(),
-            ));
-        }
         Ok(Workspace {
             source: Some(source),
             ..workspace
@@ -756,6 +768,7 @@ async fn attach_source_authority<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         {
             return Err(SourceError::BindingMismatch);
         }
+        return Ok(head);
     }
     append_source_fact(
         workspace,
