@@ -229,7 +229,7 @@ fn parse_unified_patch(bytes: &[u8]) -> Result<Vec<UnifiedPatch<'_>>, GitPatchEr
                 line.starts_with([' ', '+'])
                     || (line.starts_with('-')
                         && !line.starts_with("--- ")
-                        && line.trim_end() != "--")
+                        && line.trim_end_matches(['\r', '\n']) != "-- ")
             }) {
                 return Err(GitPatchError::Invalid(
                     "hunk is longer than its header".to_owned(),
