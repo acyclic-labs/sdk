@@ -490,16 +490,32 @@ async fn shared_output_window_starts_and_compacts_from_observed_responses() -> R
 
 #[tokio::test]
 async fn rejected_manager_rewrites_preserve_history_and_never_dispatch_the_worker() -> Result<()> {
-    for reply in [
-        "not a rewrite",
-        r#"{"version":2,"drop_through":2,"summary":"wrong version"}"#,
-        r#"{"version":1,"drop_through":0,"summary":"empty range"}"#,
-        r#"{"version":1,"drop_through":3,"summary":"unseen source"}"#,
-        r#"{"version":1,"drop_through":1,"summary":"insufficient rewrite"}"#,
+    for (reply, admitted) in [
+        ("not a rewrite", false),
+        (
+            r#"{"version":2,"drop_through":2,"summary":"wrong version"}"#,
+            false,
+        ),
+        (
+            r#"{"version":1,"drop_through":0,"summary":"empty range"}"#,
+            false,
+        ),
+        (
+            r#"{"version":1,"drop_through":3,"summary":"unseen source"}"#,
+            false,
+        ),
+        (
+            r#"{"version":1,"drop_through":1,"summary":"valid partial rewrite"}"#,
+            true,
+        ),
     ] {
         let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
         let journal = storage.journal();
-        let (provider, _) = counted_model(32_768, None, [ScriptedTurn::Text(reply.into())], []);
+        let mut script = vec![ScriptedTurn::Text(reply.into())];
+        if admitted {
+            script.push(ScriptedTurn::Text("verified answer".into()));
+        }
+        let (provider, _) = counted_model(32_768, None, script, []);
         let source = crate::context::Context {
             messages: vec![
                 ModelMessage {
@@ -531,28 +547,45 @@ async fn rejected_manager_rewrites_preserve_history_and_never_dispatch_the_worke
             max_steps: None,
         };
         for _ in 0..2 {
-            assert!(
-                matches!(
-                    executor
-                        .execute_progress(input.clone(), journal.as_ref())
-                        .await?,
-                    ExecutionProgress::PreDispatchFailed(_)
-                ),
-                "manager response {reply} must not authorize an unchecked worker request"
-            );
+            // The summary provider has already dispatched. A malformed reply
+            // is an ordinary error, never proof that no provider attempt began.
+            match (
+                admitted,
+                executor
+                    .execute_progress(input.clone(), journal.as_ref())
+                    .await,
+            ) {
+                (false, Err(Error::Invalid(_))) => {}
+                (true, Ok(ExecutionProgress::Ready(output))) => {
+                    assert_eq!(output.text, "verified answer");
+                }
+                (_, Err(error)) => return Err(error),
+                _ => panic!("manager response {reply} produced an incorrect dispatch outcome"),
+            }
         }
         let requests = provider.requests();
-        assert_eq!(requests.len(), 1, "replay must not call the manager again");
+        assert_eq!(
+            requests.len(),
+            if admitted { 2 } else { 1 },
+            "replay dispatches nothing"
+        );
         assert!(
             requests[0].summary,
             "a rejected rewrite must never dispatch the worker"
         );
+        if admitted {
+            assert!(
+                !requests[1].summary,
+                "a valid partial rewrite admits the worker"
+            );
+        }
         let records = journal.replay(input.operation_id, 0, 128, None)?.await?;
-        assert!(
+        assert_eq!(
             records
                 .iter()
-                .all(|record| !matches!(record.event, ExecutionEvent::ContextCompacted { .. })),
-            "a rejected rewrite must not replace its source history"
+                .any(|record| matches!(record.event, ExecutionEvent::ContextCompacted { .. })),
+            admitted,
+            "only a valid rewrite may replace its source history"
         );
     }
     Ok(())
