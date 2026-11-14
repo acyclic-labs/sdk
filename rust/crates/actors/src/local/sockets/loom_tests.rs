@@ -2,10 +2,16 @@
 //! using Stream's instrumented locks, including recovery racing a live closer.
 use super::*;
 use acyclic_stream::runtime::PlatformExecutor;
-use acyclic_stream::{MemoryStream, Record};
-use loom::future::block_on;
+use acyclic_stream::{BoxProviderFuture, MemoryStream, Record};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+// Match the runtime's erased delivery boundary. A concrete boxed future can
+// still inline its nested poll frames into the simulator's small coroutine.
+#[inline(never)]
+fn block_on<T>(future: BoxProviderFuture<'_, T>) -> T {
+    loom::future::block_on(future)
+}
 
 async fn records(provider: &MemoryStream, path: &StreamPath) -> Result<Vec<Record>> {
     Ok(provider
