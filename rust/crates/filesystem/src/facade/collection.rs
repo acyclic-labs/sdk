@@ -1,5 +1,7 @@
 #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
 use super::*;
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_stream::StreamProviderExt as _;
 
 /// Bounded reclamation result for the canonical local Stream/Objects composition.
 #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
