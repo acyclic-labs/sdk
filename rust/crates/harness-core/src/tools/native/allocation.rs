@@ -45,7 +45,6 @@ pub fn check(input: &[u8]) {
 }
 
 fn check_value(arguments: Value) {
-    use futures::FutureExt as _;
     let mut invocation = ToolInvocation {
         operation_id: crate::OperationId::from_bytes([7; 16]),
         call_id: "native-call".into(),
@@ -132,16 +131,14 @@ fn check_value(arguments: Value) {
                 .cancellation(&invocation, None, Some(&denied))
                 .is_err()
         );
-        let replay = tool
-            .executor
-            .authorize_replay(None, &invocation, Some(&denied))
-            .unwrap();
+        let replay_io = crate::filesystem::PreparationIo::from_native_work(&denied).unwrap();
+        let result = crate::tool::ToolResult { value: Value::Null };
         assert!(
-            replay
-                .now_or_never()
-                .expect("credit refusal is synchronous")
+            tool.executor
+                .authorize_replay(None, &invocation, &result, Some(&replay_io))
                 .is_err()
         );
+        drop(replay_io);
         assert_eq!(denied.live_allocation_bytes(), denied_baseline);
         cancellation.cancel();
         assert_eq!(
