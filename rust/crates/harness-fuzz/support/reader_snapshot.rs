@@ -40,6 +40,7 @@ fn inherited() -> RecordCache {
     assert!(cache.insert_listing(
         &parent(),
         0,
+        1,
         Listing {
             after: None,
             next: Some(child()),
@@ -119,7 +120,9 @@ fn check_with(
                     if cache.record(&child(), 1).map(AsRef::as_ref) != Some(BODY) {
                         return Err("writer lost inherited original row");
                     }
-                    let listing = cache.listing(&parent(), 0).ok_or("writer lost listing")?;
+                    let listing = cache
+                        .listing(&parent(), 0, 1)
+                        .ok_or("writer lost listing")?;
                     if listing.children.as_slice() != [child()]
                         || listing.fresh
                         || listing.version.is_some()
