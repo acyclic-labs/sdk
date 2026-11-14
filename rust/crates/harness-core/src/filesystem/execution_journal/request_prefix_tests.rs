@@ -40,7 +40,7 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    FilesystemExecutionJournal::new(
+    let reopened = FilesystemExecutionJournal::new(
         Arc::clone(&journal.stream),
         Arc::clone(&journal.host),
         crate::filesystem::FilesystemJournalBinding {
@@ -49,7 +49,11 @@ where
             scope: &journal.scope,
             io: None,
         },
-    )
+    )?;
+    Ok(match &journal.traces {
+        Some((traces, owner)) => reopened.with_trace_interest(traces.clone(), owner.clone()),
+        None => reopened,
+    })
 }
 
 fn executor() -> Result<(StockExecutor, Arc<ScriptedModelProvider>)> {
@@ -78,16 +82,39 @@ fn executor() -> Result<(StockExecutor, Arc<ScriptedModelProvider>)> {
     Ok((executor, provider))
 }
 
-fn staged_bytes(seen: &crate::obs::capture::Seen) -> u64 {
-    seen.lock()
-        .unwrap()
-        .iter()
-        .filter_map(|(span, field, value)| {
-            (*span == "acyclic.harness.journal.stage" && *field == "bytes")
-                .then(|| value.parse::<u64>().ok())
-                .flatten()
-        })
-        .sum()
+async fn staged_bytes(
+    trace: &acyclic_stream::Stream<acyclic_stream::MemoryStream>,
+    from: u64,
+) -> Result<u64> {
+    let through = trace.tail().await?;
+    let count = u32::try_from(through - from)
+        .map_err(|_| Error::Invalid("trace read exceeds its count representation".into()))?;
+    if count == 0 {
+        return Ok(0);
+    }
+    let mut query = acyclic_stream::trace::TraceQuery::new(
+        trace.read(from, count).await?,
+        Default::default(),
+    );
+    let mut total = 0_u64;
+    while let Some(observation) = query
+        .next()
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?
+    {
+        if let acyclic_stream::trace::Observation::Completed {
+            start, bytes, result, ..
+        } = observation
+            && start.name == "harness.private_stage"
+        {
+            assert_eq!(result, acyclic_stream::trace::Outcome::Succeeded);
+            let bytes = bytes.ok_or_else(|| Error::Invalid("staged byte count absent".into()))?;
+            total = total
+                .checked_add(bytes)
+                .ok_or_else(|| Error::Invalid("staged byte count overflow".into()))?;
+        }
+    }
+    Ok(total)
 }
 
 #[tokio::test]
@@ -99,12 +126,20 @@ async fn first_step_reuses_preceding_turn_and_writes_only_appended_content() -> 
         .await
         .map_err(|error| failed(&error))?;
     let stream = Arc::new(acyclic_stream::MemoryStream::default());
+    let trace = acyclic_stream::Stream::new(Arc::clone(&stream), "traces/request-prefix")?;
+    let traces = acyclic_stream::trace::Registry::new(Arc::clone(&stream));
+    let owner = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([71; 16]));
+    let _interest = traces.subscribe(
+        acyclic_stream::StreamPath::new(owner.as_str())?,
+        trace.path().clone(),
+    )?;
     let filesystem = acyclic_fs::Fs::new(
         acyclic_fs::MemoryAuthorityBackend::new(stream.clone()),
         acyclic_fs::LogicalObjectStore::new(Arc::new(objects)),
         acyclic_fs::EmbeddedCapabilities::MEMORY,
     );
     let (mut journal, _issuer) = test_support::journal_with_backends(stream, filesystem).await?;
+    journal = journal.with_trace_interest(traces, owner);
     let (executor, provider) = executor()?;
     let log_length = || {
         std::fs::metadata(directory.path().join("log"))
@@ -140,7 +175,7 @@ async fn first_step_reuses_preceding_turn_and_writes_only_appended_content() -> 
             crate::contract::canonical_json_bytes(&selected.messages.get(history..).unwrap())?
                 .len();
         let before = log_length()?;
-        let (seen, capture) = crate::obs::capture::install();
+        let trace_before = trace.tail().await?;
         journal = reopen(&journal)?
             .with_preceding_turn(Some(preceding))
             .await?
@@ -148,8 +183,7 @@ async fn first_step_reuses_preceding_turn_and_writes_only_appended_content() -> 
         let current = input(OperationId::new(), &selected);
         let output = executor.execute(current.clone(), &journal).await?;
         let written = log_length()? - before;
-        drop(capture);
-        let payload = staged_bytes(&seen);
+        let payload = staged_bytes(&trace, trace_before).await?;
         let baseline = *first_payload.get_or_insert(payload);
         first_log_write.get_or_insert(written);
         // The journal boundary counts original staged payloads. The physical
@@ -178,14 +212,13 @@ async fn first_step_reuses_preceding_turn_and_writes_only_appended_content() -> 
             selected.messages[0].content = ModelContent::Text("changed prefix".repeat(400));
             journal = journal.with_bound_selection(selected.clone());
             let before = log_length()?;
-            let (seen, capture) = crate::obs::capture::install();
+            let trace_before = trace.tail().await?;
             let changed = OperationId::new();
             executor
                 .execute(input(changed, &selected), &journal)
                 .await?;
-            drop(capture);
             assert!(
-                staged_bytes(&seen) > 2 * baseline,
+                staged_bytes(&trace, trace_before).await? > 2 * baseline,
                 "a changed prefix must persist its replacement content"
             );
             assert!(
