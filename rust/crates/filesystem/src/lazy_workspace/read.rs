@@ -270,16 +270,12 @@ impl<
         let stat = lookup.stat();
         let range = match stat.kind {
             SourceNodeKind::RegularFile => {
-                let mut range = range.unwrap_or(crate::ByteRange {
+                let range = range.unwrap_or(crate::ByteRange {
                     offset: 0,
                     length: stat
                         .logical_bytes
                         .ok_or(LazyWorkspaceError::NotRegularFile)?,
                 });
-                if let Some(length) = stat.logical_bytes {
-                    range.offset = range.offset.min(length);
-                    range.length = range.length.min(length - range.offset);
-                }
                 if maximum.is_some_and(|maximum| range.length > maximum) {
                     return Err(LazyWorkspaceError::TooLarge);
                 }
