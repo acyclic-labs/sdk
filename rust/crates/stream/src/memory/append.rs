@@ -35,7 +35,10 @@ impl MemoryStream {
         let digest = self.append_request_digest(request)?;
         let scope = state.ephemeral.append_scope(&state.paths, request)?;
         if let Some(result) = self.replay_append(state, &request.idempotency_key, digest)? {
-            return Ok(Decision::Returned((result, Default::default())));
+            return Ok(Decision::Returned {
+                result: (result, Default::default()),
+                ephemeral: matches!(scope, Scope::Ephemeral(_)),
+            });
         }
         let durable = matches!(scope, Scope::Durable);
         let mut probes = if durable {
@@ -46,7 +49,10 @@ impl MemoryStream {
         let start = state.paths.get(&request.path).map_or(0, |path| path.tail);
         if request.if_tail.is_some_and(|expected| expected != start) {
             let result = AppendOutcome::TailConflict { actual_tail: start };
-            return Ok(Decision::Returned((result, Default::default())));
+            return Ok(Decision::Returned {
+                result: (result, Default::default()),
+                ephemeral: matches!(scope, Scope::Ephemeral(_)),
+            });
         }
         // The write's own authority time; the installed rule decides with it
         // before any reservation.
@@ -101,6 +107,7 @@ impl MemoryStream {
             &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
         )?;
         Ok(Decision::Accepted {
+            ephemeral: matches!(scope, Scope::Ephemeral(_)),
             bytes,
             install: move |state: &mut State, _durable, at_millis| {
                 #[cfg(not(target_arch = "wasm32"))]

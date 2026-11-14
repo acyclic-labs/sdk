@@ -78,7 +78,7 @@ impl Ephemeral {
     /// lease, so ownership always extends from a path the lease already
     /// holds. A fresh path needs a present parent, or one this write creates,
     /// so adoption never takes a shared ancestor. A write publishing into no
-    /// lease is durable and may name no ephemeral path at all, since replay
+    /// lease is durable and its selected effects may name no ephemeral path, since replay
     /// could never re-evaluate it. Anything else is refused.
     fn scope<'a>(
         &self,
@@ -140,24 +140,6 @@ impl Ephemeral {
         self.scope(paths, [&request.destination], [&request.source])
     }
 
-    fn commit_scope(
-        &self,
-        paths: &Namespace,
-        request: &CommitRequest,
-    ) -> Result<Scope, StreamError> {
-        self.scope(
-            paths,
-            request.mutations().map(CommitMutation::path),
-            request
-                .conditions()
-                .map(CommitCondition::path)
-                .chain(request.mutations().filter_map(|mutation| match mutation {
-                    CommitMutation::Fork { source, .. } => Some(source),
-                    CommitMutation::Append { .. } => None,
-                })),
-        )
-    }
-
     /// Records the topmost path `published` created, absent from `previous`,
     /// as owned by `scope`'s lease unless that lease already owns it.
     fn adopt(&mut self, scope: &Scope, previous: &Namespace, published: &StreamPath) {
@@ -177,20 +159,6 @@ impl Ephemeral {
         lease.adopted.push(top.clone());
         self.owned.insert(top, root.clone());
     }
-    fn write_scope(
-        &self,
-        paths: &Namespace,
-        command: &crate::WriteRequest,
-    ) -> Result<Scope, StreamError> {
-        match command {
-            crate::WriteRequest::Append(request) => self.append_scope(paths, request),
-            crate::WriteRequest::Fork(request) => self.fork_scope(paths, request),
-            crate::WriteRequest::Commit(request) | crate::WriteRequest::CommitAccepted(request) => {
-                self.commit_scope(paths, request)
-            }
-        }
-    }
-
     /// `paths` without any owned subtree: exactly the durable namespace.
     fn without(&self, paths: &Namespace) -> Namespace {
         let mut durable = paths.clone();

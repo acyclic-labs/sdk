@@ -214,3 +214,179 @@ async fn dropping_a_lease_removes_its_subtree_and_wakes_its_followers() -> Resul
     assert_eq!(provider.tail(source).await?, 1);
     Ok(())
 }
+
+/// Skipped mutations cannot adopt a durable sibling or suppress its journal.
+/// Retrying and replaying retain the original selection, even after the lease
+/// condition changes; genuinely selected lease writes still remain ephemeral.
+#[tokio::test]
+async fn skipped_effects_do_not_change_the_selected_publication_scope() -> Result {
+    for soft_first in [false, true] {
+        for release_first in [false, true] {
+            let directory = tempfile::tempdir()?;
+            let limits = LocalStreamLimits::default();
+            let provider = LocalStream::open(directory.path(), limits).await?;
+            let base = StreamPath::new("kept/base")?;
+            let kept = StreamPath::new("kept/selected")?;
+            let unsafe_path = StreamPath::new("kept/unsafe")?;
+            let root = StreamPath::new("scratch")?;
+            let omitted = StreamPath::new("scratch/omitted")?;
+            provider.append(append(&base, 0)?).await?;
+            let mut lease = Some(provider.lease_ephemeral(root.clone()).await?);
+            let before = frames(&provider)?;
+            let soft = CommitEffect::soft(
+                vec![CommitCondition::Tail {
+                    path: root.clone(),
+                    expected: 1,
+                }],
+                vec![CommitMutation::Append {
+                    path: omitted.clone(),
+                    records: vec![Bytes::from_static(b"omitted").into()],
+                }],
+            );
+            let hard = CommitEffect::hard(
+                vec![CommitCondition::Absent { path: kept.clone() }],
+                vec![CommitMutation::Append {
+                    path: kept.clone(),
+                    records: vec![Bytes::from_static(b"durable").into()],
+                }],
+            );
+            let request = CommitRequest {
+                deadline_unix_millis: None,
+                effects: if soft_first {
+                    vec![soft, hard]
+                } else {
+                    vec![hard, soft]
+                },
+                idempotency_key: IdempotencyKey::unique(),
+            };
+            let CommitOutcome::Committed(receipt) = provider.commit(request.clone()).await? else {
+                return Err("selected durable effect was refused".into());
+            };
+            assert_eq!(receipt.skipped, [if soft_first { 0 } else { 1 }]);
+            assert_eq!(
+                frames(&provider)?.0,
+                before.0 + 1,
+                "selected durable write must be journalled"
+            );
+            assert_eq!(provider.tail(kept.clone()).await?, 1);
+            assert_eq!(
+                provider.tail(omitted.clone()).await,
+                Err(StreamError::NotFound)
+            );
+
+            // The skipped condition now passes, but an exact retry still owns
+            // the original selected effects and its original durable receipt.
+            provider.append(append(&root, 0)?).await?;
+            let CommitOutcome::Committed(retry) = provider.commit(request.clone()).await? else {
+                return Err("selected retry conflicted".into());
+            };
+            assert_eq!(retry.commit_id, receipt.commit_id);
+            assert_eq!(retry.skipped, receipt.skipped);
+            assert_eq!(
+                provider.tail(omitted.clone()).await,
+                Err(StreamError::NotFound)
+            );
+            assert_eq!(
+                frames(&provider)?.0,
+                before.0 + 1,
+                "retry emits no new frame"
+            );
+
+            // A skipped observation that would become true after losing the
+            // lease cannot be represented by the command journal. Refuse it
+            // before any effect, rather than acknowledge an unreplayable write.
+            let unsafe_request = CommitRequest {
+                deadline_unix_millis: None,
+                effects: vec![
+                    CommitEffect::soft(
+                        vec![CommitCondition::Tail {
+                            path: root.clone(),
+                            expected: 0,
+                        }],
+                        vec![CommitMutation::Append {
+                            path: omitted.clone(),
+                            records: vec![Bytes::from_static(b"unstable").into()],
+                        }],
+                    ),
+                    CommitEffect::hard(
+                        Vec::new(),
+                        vec![CommitMutation::Append {
+                            path: unsafe_path.clone(),
+                            records: vec![Bytes::from_static(b"must not publish").into()],
+                        }],
+                    ),
+                ],
+                idempotency_key: IdempotencyKey::unique(),
+            };
+            assert_eq!(
+                provider.commit(unsafe_request).await,
+                Err(StreamError::InvalidArgument)
+            );
+            assert_eq!(
+                provider.tail(unsafe_path.clone()).await,
+                Err(StreamError::NotFound)
+            );
+            assert_eq!(frames(&provider)?.0, before.0 + 1);
+
+            // Conversely, an omitted mutation of an existing durable path must
+            // not reject or durably record a genuinely ephemeral publication.
+            let CommitOutcome::Committed(selected) = provider
+                .commit(CommitRequest {
+                    deadline_unix_millis: None,
+                    effects: vec![
+                        CommitEffect::soft(
+                            vec![CommitCondition::Tail {
+                                path: base.clone(),
+                                expected: 2,
+                            }],
+                            vec![CommitMutation::Append {
+                                path: base.clone(),
+                                records: vec![Bytes::from_static(b"omitted durable").into()],
+                            }],
+                        ),
+                        CommitEffect::hard(
+                            Vec::new(),
+                            vec![CommitMutation::Append {
+                                path: root.clone(),
+                                records: vec![Bytes::from_static(b"ephemeral").into()],
+                            }],
+                        ),
+                    ],
+                    idempotency_key: IdempotencyKey::unique(),
+                })
+                .await?
+            else {
+                return Err("selected ephemeral effect was refused".into());
+            };
+            assert_eq!(selected.skipped, [0]);
+            assert_eq!(provider.tail(root.clone()).await?, 2);
+            assert_eq!(provider.tail(base.clone()).await?, 1);
+            assert_eq!(
+                frames(&provider)?.0,
+                before.0 + 1,
+                "selected lease write has no frame"
+            );
+            if release_first {
+                lease.take().ok_or("missing lease")?.settle().await?;
+                assert_eq!(provider.tail(kept.clone()).await?, 1);
+            }
+            drop(provider);
+            let reopened = LocalStream::open(directory.path(), limits).await?;
+            assert_eq!(reopened.tail(kept.clone()).await?, 1);
+            assert_eq!(reopened.tail(base).await?, 1);
+            assert_eq!(reopened.tail(root).await, Err(StreamError::NotFound));
+            assert_eq!(reopened.tail(omitted).await, Err(StreamError::NotFound));
+            assert_eq!(reopened.tail(unsafe_path).await, Err(StreamError::NotFound));
+            let CommitOutcome::Committed(replayed) = reopened.commit(request).await? else {
+                return Err("reopened retry conflicted".into());
+            };
+            assert_eq!(replayed.commit_id, receipt.commit_id);
+            assert_eq!(replayed.skipped, receipt.skipped);
+            if let Some(lease) = lease {
+                lease.settle().await?;
+            }
+            assert_eq!(reopened.tail(kept).await?, 1);
+        }
+    }
+    Ok(())
+}

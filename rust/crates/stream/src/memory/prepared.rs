@@ -509,6 +509,7 @@ impl PreparedCommit {
             )?;
             let mut persist = std::pin::pin!(persist);
             Decision::Accepted {
+                ephemeral: false,
                 bytes,
                 install: |state: &mut State, _durable, at_millis| {
                     publication.bind_acceptance(state, at_millis)?;
@@ -523,7 +524,7 @@ impl PreparedCommit {
                     )
                 },
             }
-            .durable(&self.provider, state, false, persist.as_mut())
+            .durable(&self.provider, state, persist.as_mut())
             .await
         }
         .await;
