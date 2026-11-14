@@ -7,17 +7,21 @@ use std::{fmt, ops::Range, time::Duration};
 ///
 /// # Panics
 ///
-/// Panics when either variable is set but malformed, so a typo never silently
-/// runs the default range instead of the requested one.
+/// Panics when either variable is set but malformed, selects no seed, or
+/// names `u64::MAX`, so a typo never silently runs the wrong range or none.
 #[must_use]
 pub fn seeds(default: Range<u64>) -> Range<u64> {
     if let Ok(seed) = std::env::var("DST_SEED") {
         let seed: u64 = seed.parse().expect("DST_SEED=<u64>");
-        return seed..seed + 1;
+        return seed..seed.checked_add(1).expect("DST_SEED below u64::MAX");
     }
     if let Ok(range) = std::env::var("DST_SEEDS") {
         let (start, end) = range.split_once("..").expect("DST_SEEDS=<start>..<end>");
-        return start.parse().expect("DST_SEEDS start")..end.parse().expect("DST_SEEDS end");
+        let seeds: Range<u64> =
+            start.parse().expect("DST_SEEDS start")..end.parse().expect("DST_SEEDS end");
+        // An empty range would pass without running a single world.
+        assert!(seeds.start < seeds.end, "DST_SEEDS={range} selects no seed");
+        return seeds;
     }
     default
 }
