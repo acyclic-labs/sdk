@@ -358,9 +358,10 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
         (trace, root.into_owned(), parent)
     };
     #[cfg(feature = "serde")]
-    assert!(futures::poll!(root.within(source.next())).is_pending());
+    let mut pending = Box::pin(root.within(next(&mut source)));
     #[cfg(not(feature = "serde"))]
-    assert!(futures::poll!(source.next()).is_pending());
+    let mut pending = Box::pin(next(&mut source));
+    assert!(futures::poll!(&mut pending).is_pending());
     provider
         .append(AppendRequest {
             path,
@@ -369,21 +370,18 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
             idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
-    #[cfg(feature = "serde")]
-    assert_eq!(root.within(next(&mut source)).await?.sequence, 5);
-    #[cfg(not(feature = "serde"))]
-    assert_eq!(next(&mut source).await?.sequence, 5);
+    assert_eq!(pending.await?.sequence, 5);
     #[cfg(feature = "serde")]
     {
         use crate::trace::{Mechanism, Observation, Outcome, TraceQuery};
+        let terminal = root.finish_submitted(None, Outcome::Succeeded)?;
+        let _receipt = terminal.result().await?;
         let mut query = TraceQuery::new(
-            trace.follow(0, Default::default()).await?,
+            trace.read(0, u32::try_from(trace.tail().await?)?).await?,
             Default::default(),
         );
-        loop {
-            let Some(event) = query.next().await? else {
-                return Err("diagnostic source ended".into());
-            };
+        let mut settled = 0;
+        while let Some(event) = query.next().await? {
             if let Observation::Completed {
                 start,
                 bytes,
@@ -400,10 +398,10 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
                 );
                 assert_eq!(result, Outcome::Succeeded);
                 assert_eq!(bytes, Some(0));
-                break;
+                settled += 1;
             }
         }
-        root.finish_submitted(None, Outcome::Succeeded)?;
+        assert_eq!(settled, 1, "original delivery wait did not settle");
     }
     drop(source);
     assert_eq!(client.pool.active.load(super::super::Ordering::Acquire), 0);
