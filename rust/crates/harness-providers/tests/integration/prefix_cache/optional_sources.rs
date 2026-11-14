@@ -82,6 +82,7 @@ async fn optional_source_versions_preserve_provider_requests() -> TestResult {
                 let (_, stage) = ContextManifest::bind(
                     reference,
                     bindings.reader.as_ref(),
+                    bindings.writer.as_deref(),
                     tools,
                     Limits::default(),
                 )
