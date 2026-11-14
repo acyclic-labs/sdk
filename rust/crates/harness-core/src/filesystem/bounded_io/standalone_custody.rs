@@ -15,6 +15,28 @@ pub struct StandaloneCustody {
 }
 
 impl StandaloneCustody {
+    /// Accepts scratch that a completed native producer already charged to
+    /// this shared ledger. Resumption cannot discover it from a byte delta:
+    /// the suspended ledger sees the producer's writes before it resumes.
+    pub(super) fn adopt_returned(&self, bytes: u64) -> Result<()> {
+        let state = self
+            .work
+            .lock()
+            .map_err(|_| acyclic_fs::FsError::PendingMutationAllocationFailed)?;
+        let ledger = state
+            .1
+            .as_ref()
+            .map_err(|error| acyclic_fs::FsError::from(*error))?;
+        let retained = self
+            .bytes
+            .load(Ordering::Relaxed)
+            .checked_add(bytes)
+            .filter(|total| *total <= ledger.scratch_bytes())
+            .ok_or(acyclic_fs::WorkError::Overflow)?;
+        self.bytes.store(retained, Ordering::Relaxed);
+        Ok(())
+    }
+
     // Claims and transfers use the same ledger lock. The ledger's live total
     // stays unchanged while its ownership moves between distinct scopes.
     pub(super) fn transfer_to(

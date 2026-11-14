@@ -568,6 +568,29 @@ impl PreparationIo {
         }
         Ok(reservation)
     }
+    /// Receives the output returned by `NativeAccounting::return_allocation`
+    /// after its original caller has resumed. The producer's custody moves;
+    /// its bytes are never claimed or admitted a second time.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn hold_returned_allocation(
+        &self,
+        allocation: KernelOwnedAllocation,
+        bytes: u64,
+    ) -> Result<DecodeReservation<'_>> {
+        match (self, allocation) {
+            (Self::Native { .. }, KernelOwnedAllocation::NativeOriginal(allocation)) => {
+                if allocation.bytes() != bytes {
+                    return Err(self.invalid("returned output differs from its original custody"));
+                }
+                self.hold_native_custody(allocation)
+            }
+            (Self::Owned { custody, .. }, KernelOwnedAllocation::Standalone) => {
+                custody.adopt_returned(bytes)?;
+                self.guard_owned(bytes)
+            }
+            _ => Err(self.invalid("returned output belongs to another accounting owner")),
+        }
+    }
     /// Keeps an incoming original-ledger allocation with its owned value,
     /// without merging it into the longer-lived preparation.
     #[cfg(not(target_arch = "wasm32"))]
