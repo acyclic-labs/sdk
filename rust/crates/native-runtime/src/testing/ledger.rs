@@ -398,6 +398,24 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_calls_never_satisfy_a_budget() {
+        let ((), ledger) = world(async {
+            tokio::select! {
+                biased;
+                () = operation("pending", std::future::pending::<()>()) => {}
+                () = std::future::ready(()) => {}
+            }
+        });
+        let report = ledger
+            .check(&[Budget::Count("pending", Cost::Fsync, 0)])
+            .expect_err("a cancelled call is unmeasured");
+        assert!(
+            report.contains("operation pending never completed"),
+            "{report}"
+        );
+    }
+
+    #[test]
     fn durable_flushes_are_charged_at_the_core_fault_site() {
         let file = tempfile::tempfile().expect("file");
         let (result, ledger) = world(operation("flush", async { crate::flush_file_all(&file) }));
