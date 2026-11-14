@@ -773,6 +773,127 @@ mod indexed_trace_tests {
     use std::sync::Arc;
 
     #[tokio::test]
+    async fn forking_a_trace_ancestor_never_admits_its_own_observation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (source_name, trace_suffix, excluded, inherits) in [
+            ("agents/worker", "trace", None, true),
+            ("agents/worker", "trace", Some("trace"), false),
+            ("agents/worker", "trace", Some("trac"), true),
+            (
+                "agents/worker",
+                "diagnostics/trace",
+                Some("diagnostics"),
+                false,
+            ),
+            (
+                "agents/worker",
+                "diagnostics/trace",
+                Some("diagnostics/trace"),
+                false,
+            ),
+            (
+                "agents/worker",
+                "diagnostics/trace",
+                Some("diagnostics/trac"),
+                true,
+            ),
+            ("agents/worker", "diagnostics/trace", Some("data"), true),
+            ("agents/work", "trace", None, false),
+        ] {
+            for family in 0..3 {
+                let provider = Arc::new(MemoryStream::default());
+                let source = Stream::new(provider.clone(), source_name)?;
+                source
+                    .append(
+                        AppendRecord::from(OwnedBytes::from_static(b"original")),
+                        IdempotencyKey::unique(),
+                    )
+                    .await?;
+                let trace = Stream::new(provider.clone(), format!("agents/worker/{trace_suffix}"))?;
+                let recorder = Arc::new(Recorder::new(trace.clone(), [61; 16]));
+                let root = recorder
+                    .start("request", Mechanism::ToolCall, None, None)
+                    .await?
+                    .into_owned();
+                let original = trace.head().await?;
+                let exclude = excluded
+                    .map(RelativePath::new)
+                    .transpose()?
+                    .into_iter()
+                    .collect();
+                let destination = StreamPath::new("copies/result")?;
+                if family == 0 {
+                    let receipt = root
+                        .within(provider.fork(ForkRequest {
+                            source: source.path().clone(),
+                            destination: destination.clone(),
+                            at_tail: Some(1),
+                            exclude,
+                            idempotency_key: IdempotencyKey::unique(),
+                        }))
+                        .await?;
+                    assert_eq!(receipt.tail, 1);
+                } else {
+                    let request = CommitRequest {
+                        deadline_unix_millis: None,
+                        effects: vec![CommitEffect::hard(
+                            Vec::new(),
+                            vec![CommitMutation::Fork {
+                                source: source.path().clone(),
+                                destination: destination.clone(),
+                                at_tail: 1,
+                                exclude,
+                                records: Vec::new(),
+                            }],
+                        )],
+                        idempotency_key: IdempotencyKey::unique(),
+                    };
+                    if family == 1 {
+                        assert!(matches!(
+                            root.within(provider.commit(request)).await?,
+                            CommitOutcome::Committed(_)
+                        ));
+                    } else {
+                        assert!(matches!(
+                            root.within(provider.commit_accepted(request)).await?,
+                            AcceptedCommitOutcome::Committed { .. }
+                        ));
+                    }
+                }
+                // Admission assigns the original identity synchronously, so a
+                // checkpoint detects even an unretained diagnostic append. No
+                // scheduling race or readiness probe is needed to count work.
+                let checkpoint = recorder
+                    .start("checkpoint", Mechanism::ToolCall, None, None)
+                    .await?;
+                assert_eq!(
+                    checkpoint.id().sequence - root.id().sequence,
+                    if inherits { 1 } else { 2 },
+                    "fork observation admission must respect inherited exclusions"
+                );
+                let copied = StreamPath::new(format!("{destination}/{trace_suffix}"))?;
+                if inherits {
+                    let inherited = provider.head(copied).await?;
+                    assert_eq!(
+                        inherited.tail, original.tail,
+                        "fork copied its own observation"
+                    );
+                    assert_eq!(inherited.last, original.last);
+                } else {
+                    assert_eq!(provider.tail(copied).await, Err(StreamError::NotFound));
+                }
+                checkpoint.finish(None, Outcome::Succeeded).await?;
+                let completion = root.finish_submitted(None, Outcome::Succeeded)?;
+                assert!(matches!(
+                    completion.result().await?,
+                    Ok(AppendOutcome::Committed(_))
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn indexed_lookup_preserves_original_record_cut_and_owner()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = Arc::new(MemoryStream::default());

@@ -468,8 +468,10 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
     ) -> impl std::future::Future<Output = Result<ForkReceipt, StreamError>> + ProviderTask {
         async move {
             #[cfg(feature = "serde")]
-            let diagnostic = crate::trace::is_source(&request.source)
-                || crate::trace::is_source(&request.destination);
+            let diagnostic = crate::trace::source_matches(|source| {
+                source == &request.destination
+                    || source.inherited_by(&request.source, &request.exclude)
+            });
             let work = async move {
                 match self.write(WriteRequest::Fork(request)).await? {
                     WriteOutcome::Fork(outcome) => Ok(outcome),
@@ -745,7 +747,7 @@ async fn named_head<P: StreamProvider + ?Sized>(
 
 #[cfg(feature = "serde")]
 fn diagnostic_commit(request: &CommitRequest) -> bool {
-    crate::trace::any_source(
+    crate::trace::source_matches(|source| {
         request
             .conditions()
             .filter(|condition| {
@@ -754,12 +756,17 @@ fn diagnostic_commit(request: &CommitRequest) -> bool {
                     CommitCondition::Tail { .. } | CommitCondition::Head { .. }
                 )
             })
-            .map(CommitCondition::path)
-            .chain(request.mutations().flat_map(|mutation| {
-                std::iter::once(mutation.path()).chain(match mutation {
-                    CommitMutation::Fork { source, .. } => Some(source),
-                    CommitMutation::Append { .. } => None,
-                })
-            })),
-    )
+            .any(|condition| condition.path() == source)
+            || request.mutations().any(|mutation| {
+                mutation.path() == source
+                    || match mutation {
+                        CommitMutation::Fork {
+                            source: inherited,
+                            exclude,
+                            ..
+                        } => source.inherited_by(inherited, exclude),
+                        CommitMutation::Append { .. } => false,
+                    }
+            })
+    })
 }

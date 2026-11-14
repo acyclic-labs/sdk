@@ -215,24 +215,40 @@ impl StreamPath {
 
     /// Shares this path or a complete ancestor; rejects partial segments.
     pub(crate) fn ancestor(&self, ancestor: &str) -> Option<Self> {
-        let path = self.as_str();
-        if ancestor.is_empty()
-            || ancestor.len() > path.len()
-            || (!std::ptr::eq(path.as_ptr(), ancestor.as_ptr()) && !path.starts_with(ancestor))
-            || path
-                .as_bytes()
-                .get(ancestor.len())
-                .is_some_and(|byte| *byte != b'/')
-        {
-            return None;
-        }
+        relative_suffix(self.as_str(), ancestor)?;
         Some(self.prefix(ancestor.len()))
+    }
+
+    /// Whether a subtree fork includes this path after its relative exclusions.
+    #[cfg(feature = "serde")]
+    pub(crate) fn inherited_by(&self, source: &Self, exclude: &[crate::RelativePath]) -> bool {
+        relative_suffix(self.as_str(), source.as_str()).is_some_and(|relative| {
+            !exclude
+                .iter()
+                .any(|excluded| relative_suffix(relative, excluded.as_str()).is_some())
+        })
     }
 
     /// Immediate parent, if any.
     #[must_use]
     pub fn parent(&self) -> Option<Self> {
         self.as_str().rfind('/').map(|index| self.prefix(index))
+    }
+}
+
+// Borrow canonical path components without allocating another path or matcher.
+fn relative_suffix<'a>(path: &'a str, ancestor: &str) -> Option<&'a str> {
+    if ancestor.is_empty()
+        || ancestor.len() > path.len()
+        || (!std::ptr::eq(path.as_ptr(), ancestor.as_ptr()) && !path.starts_with(ancestor))
+    {
+        return None;
+    }
+    let suffix = path.get(ancestor.len()..)?;
+    if suffix.is_empty() {
+        Some(suffix)
+    } else {
+        suffix.strip_prefix('/')
     }
 }
 
