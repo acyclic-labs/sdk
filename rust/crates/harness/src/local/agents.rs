@@ -251,6 +251,31 @@ impl LocalUser {
 struct LocalContext(Weak<LocalHarness>);
 
 impl TurnContext for LocalContext {
+    fn prepare_invocation<'a>(
+        &'a self,
+        (executor, _): (StockExecutor, crate::conversation::Limits),
+        agent: &'a AgentState,
+        operation: OperationId,
+        authority: &'a TurnAuthority,
+    ) -> BoxProviderFuture<'a, Result<StockExecutor>> {
+        Box::pin(async move {
+            let local = self
+                .0
+                .upgrade()
+                .ok_or_else(|| Error::Unsupported("local harness is closed".into()))?;
+            let bindings = local
+                .turn_bindings(
+                    agent,
+                    &authority.issuer,
+                    &authority.scope,
+                    &authority.content,
+                )
+                .await?;
+            let (executor, _) =
+                Tasks::bind(&bindings.harness, executor, agent, operation, authority)?;
+            Ok(executor)
+        })
+    }
     #[cfg(not(target_arch = "wasm32"))]
     fn configure_steps(
         &self,
@@ -323,25 +348,6 @@ impl TurnContext for LocalContext {
                     journal_content.writer.clone(),
                 )
                 .await?;
-            #[cfg(not(target_arch = "wasm32"))]
-            let executor = match executor.tool_binding(crate::tools::shell::PLATFORM.name)? {
-                Some(shell) => {
-                    executor.with_tool_source(Arc::new(crate::plugins::ProgramFiles::new(
-                        crate::filesystem::FilesystemContentVerifier::new(
-                            local.files.clone(),
-                            &bindings.context.verifier,
-                            &bindings.context.scope,
-                            local.limits.file_bytes,
-                            None,
-                        )?,
-                        bindings.context.scratch.clone(),
-                        (*local.harness.issuer_configuration()).clone(),
-                        shell,
-                        local.limits.file_bytes,
-                    )))
-                }
-                None => executor,
-            };
             // Before the turn's first request: the step-0 boundary appends
             // what changed since the epoch froze.
             let through = local

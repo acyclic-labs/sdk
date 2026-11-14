@@ -48,6 +48,18 @@ pub trait TurnContext: acyclic_stream::ProviderPlatform + 'static {
         authority: &'a TurnAuthority,
     ) -> BoxProviderFuture<'a, Result<StockExecutor>>;
 
+    /// Bind tools and task custody for a source event, without manufacturing a
+    /// model prompt or executing session/prompt lifecycle hooks.
+    fn prepare_invocation<'a>(
+        &'a self,
+        _composed: (StockExecutor, Limits),
+        _agent: &'a AgentState,
+        _operation: OperationId,
+        _authority: &'a TurnAuthority,
+    ) -> BoxProviderFuture<'a, Result<StockExecutor>> {
+        Box::pin(async { Err(Error::Unsupported("host call context is not bound".into())) })
+    }
+
     /// Installs a per-step source after canonical turn composition and before
     /// the initial model's native presentation.
     /// The source captures canonical tools before native presentation, so a
@@ -108,11 +120,42 @@ impl Tasks {
         let executor = executor
             .with_tool_authority(context.scope().clone(), authority.approval.clone())?
             .with_task_context(&context, turn)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let executor = match (
+            executor.tool_binding(crate::tools::shell::PLATFORM.name)?,
+            agent
+                .volumes
+                .iter()
+                .find(|volume| volume.role == crate::agent::WorkspaceRole::Home),
+        ) {
+            (Some(shell), Some(home)) => {
+                let programs = Arc::new(crate::plugins::ProgramFiles::new(
+                    Arc::clone(&authority.content.reader),
+                    home.volume()?.clone(),
+                    harness.issuer_configuration().clone(),
+                    shell,
+                    context.scope().limits().file_bytes,
+                ));
+                executor.with_programs(programs)
+            }
+            _ => executor,
+        };
         Ok((executor, context))
     }
 }
 
 impl TurnContext for Tasks {
+    fn prepare_invocation<'a>(
+        &'a self,
+        (executor, _): (StockExecutor, Limits),
+        agent: &'a AgentState,
+        operation: OperationId,
+        authority: &'a TurnAuthority,
+    ) -> BoxProviderFuture<'a, Result<StockExecutor>> {
+        Box::pin(async move {
+            Self::bind(&self.0, executor, agent, operation, authority).map(|(executor, _)| executor)
+        })
+    }
     fn park<'a>(
         &'a self,
         agent: &'a AgentState,
@@ -155,10 +198,20 @@ impl TurnContext for Tasks {
 impl TurnContext for Grants {
     fn prepare<'a>(
         &'a self,
-        (executor, limits): (StockExecutor, Limits),
+        composed: (StockExecutor, Limits),
         agent: &'a AgentState,
         turn: OperationId,
         _: &'a ModelContent,
+        authority: &'a TurnAuthority,
+    ) -> BoxProviderFuture<'a, Result<StockExecutor>> {
+        self.prepare_invocation(composed, agent, turn, authority)
+    }
+
+    fn prepare_invocation<'a>(
+        &'a self,
+        (executor, limits): (StockExecutor, Limits),
+        agent: &'a AgentState,
+        turn: OperationId,
         authority: &'a TurnAuthority,
     ) -> BoxProviderFuture<'a, Result<StockExecutor>> {
         Box::pin(async move {
@@ -403,9 +456,34 @@ impl TurnExecutors for StockExecutors {
         input: &'a ModelContent,
         authority: &'a TurnAuthority,
     ) -> BoxProviderFuture<'a, Result<Arc<dyn Executor>>> {
+        self.compose(agent, turn, Some(input), authority)
+    }
+
+    fn invocation_executor<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        operation: OperationId,
+        authority: &'a TurnAuthority,
+    ) -> BoxProviderFuture<'a, Result<Arc<dyn Executor>>> {
+        self.compose(agent, operation, None, authority)
+    }
+}
+
+impl StockExecutors {
+    fn compose<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        turn: OperationId,
+        input: Option<&'a ModelContent>,
+        authority: &'a TurnAuthority,
+    ) -> BoxProviderFuture<'a, Result<Arc<dyn Executor>>> {
         Box::pin(async move {
             let binding = self.selected(agent)?;
-            let native = binding.native_tools()?;
+            let native = if input.is_some() {
+                binding.native_tools()?
+            } else {
+                None
+            };
             let directive = match (self.templates, &agent.profile) {
                 (true, Some(creation)) => Some(
                     crate::templates::directive(creation, authority.content.reader.as_ref())
@@ -466,10 +544,18 @@ impl TurnExecutors for StockExecutors {
                 Some(sampling) => Self::sample(executor, sampling)?,
                 None => executor,
             };
-            let executor = self
-                .context
-                .prepare((executor, self.limits), agent, turn, input, authority)
-                .await?;
+            let executor = match input {
+                Some(input) => {
+                    self.context
+                        .prepare((executor, self.limits), agent, turn, input, authority)
+                        .await?
+                }
+                None => {
+                    self.context
+                        .prepare_invocation((executor, self.limits), agent, turn, authority)
+                        .await?
+                }
+            };
             #[cfg(not(target_arch = "wasm32"))]
             let executor = {
                 let plugins = match &self.plugins {
@@ -480,7 +566,11 @@ impl TurnExecutors for StockExecutors {
             };
             // Context preparation may set the final output bound or an explicit
             // policy. Derive automatic budgets only after both are known.
-            let executor = executor.with_automatic_compaction()?;
+            let executor = if input.is_some() {
+                executor.with_automatic_compaction()?
+            } else {
+                executor
+            };
 
             let executor = if question_allowed {
                 executor
@@ -493,12 +583,16 @@ impl TurnExecutors for StockExecutors {
                         Some(allowed) => executor.with_tool_ceiling(allowed)?,
                         None => executor,
                     };
-                    executor.with_context_stage(Arc::new(crate::context::SourceStage::new(
-                        "template",
-                        directive.digest,
-                        directive.context,
-                        crate::context::ContextPlacement::Prepend,
-                    )))?
+                    if input.is_some() {
+                        executor.with_context_stage(Arc::new(crate::context::SourceStage::new(
+                            "template",
+                            directive.digest,
+                            directive.context,
+                            crate::context::ContextPlacement::Prepend,
+                        )))?
+                    } else {
+                        executor
+                    }
                 }
                 None => executor,
             };
@@ -506,6 +600,7 @@ impl TurnExecutors for StockExecutors {
                 .profile
                 .as_ref()
                 .and_then(|profile| profile.continuation.as_ref())
+                .filter(|_| input.is_some())
                 .filter(|_| agent.conversation_tail == agent.conversation_base)
                 .and_then(|continuation| continuation.override_item.as_ref());
             let executor = match intervention {
@@ -527,7 +622,11 @@ impl TurnExecutors for StockExecutors {
                 }
                 None => executor,
             };
-            let executor = self.context.configure_steps(executor, agent, authority)?;
+            let executor = if input.is_some() {
+                self.context.configure_steps(executor, agent, authority)?
+            } else {
+                executor
+            };
             // Native declarations run the final canonical revisions and ceiling.
             let executor = match &native {
                 Some(native) => executor.with_native_tools(native)?,

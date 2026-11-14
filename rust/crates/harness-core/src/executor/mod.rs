@@ -681,6 +681,13 @@ impl ExecutionProgress<TurnOutput> {
 
 /// Complete replaceable turn loop. Implementations may own every policy decision.
 pub trait Executor: acyclic_stream::ProviderPlatform {
+    /// Original file-program reader bound with this executor's task and shell.
+    /// The reader grants no execution authority; every selected hook still
+    /// enters `settle_invocation` with its original journal and operation.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn programs(&self) -> Option<&crate::plugins::ProgramFiles> {
+        None
+    }
     /// Settles one immutable host-selected tool binding without a model request.
     /// Implementations must retain the ordinary admission, approval, effect
     /// ownership and replay checks. A loop without this capability refuses
@@ -793,6 +800,8 @@ pub struct StockExecutor {
     provider: Arc<dyn ModelProvider>,
     context: ContextPipeline,
     tools: ToolRegistry,
+    #[cfg(not(target_arch = "wasm32"))]
+    programs: Option<Arc<crate::plugins::ProgramFiles>>,
     epoch_tools: Option<Arc<Vec<crate::tool::ToolDefinition>>>,
     #[cfg(not(target_arch = "wasm32"))]
     hooks: Option<Arc<crate::hooks::BoundHooks>>,
