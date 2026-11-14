@@ -140,8 +140,11 @@ impl PromptHistory {
                     page,
                 },
             };
-            let AgentReply::Children { mut items, next } =
-                self.connection.execute(&command).await?
+            let AgentReply::Children {
+                mut items,
+                next,
+                partial: None,
+            } = self.connection.execute(&command).await?
             else {
                 return Err(unexpected());
             };
