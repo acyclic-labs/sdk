@@ -1,0 +1,12 @@
+diff --git a/rust/crates/stream/src/demand.rs b/rust/crates/stream/src/demand.rs
+--- a/rust/crates/stream/src/demand.rs
++++ b/rust/crates/stream/src/demand.rs
+@@ -47,7 +47,7 @@
+             .offset
+             .checked_add(u64::from(page.consumed))
+             .ok_or(StreamError::InvalidResponse)?;
+-        self.remaining -= page.consumed;
++        self.remaining -= bound;
+         self.version = Some(page.hierarchy_version);
+         if page.next_after.is_none() {
+             self.remaining = 0;

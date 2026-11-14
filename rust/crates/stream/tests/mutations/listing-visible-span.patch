@@ -1,0 +1,11 @@
+diff --git a/rust/crates/stream/src/session/pages.rs b/rust/crates/stream/src/session/pages.rs
+--- a/rust/crates/stream/src/session/pages.rs
++++ b/rust/crates/stream/src/session/pages.rs
+@@ -80,6 +80,7 @@
+             children.push(child);
+         }
+         page.children = children;
++        page.consumed = page.children.len() as u32;
+         Ok(page)
+     }
+ }
