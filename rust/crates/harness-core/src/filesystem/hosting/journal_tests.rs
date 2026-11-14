@@ -232,7 +232,7 @@ async fn waking_notices_steer_without_granting_their_journal_files() -> TestResu
     let ModelContent::Part(ModelContentPart::Notices { notices }) = &message.content else {
         return Err("waking notice was not decoded".into());
     };
-    assert_eq!(notices.as_slice(), &[notice]);
+    assert_eq!(notices.as_slice(), std::slice::from_ref(&notice));
     boundary.admitted(operation, 1).await?;
 
     // A child's settlement notice lives in the child's journal, which no
