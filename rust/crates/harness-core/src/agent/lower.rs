@@ -309,14 +309,11 @@ pub(super) fn lower_routed(
                 }
                 builder.recipient(to.path())?;
                 let routed = routing.filter(|(_, _, remote)| remote.contains(to));
-                let mut outbox = None;
-                let mut destination = None;
                 if let Some((routing, within, _)) = routed {
                     let admission = peer
                         .as_ref()
                         .ok_or(Error::Record("remote send has no peer admission"))?;
-                    let envelope = super::PeerRoute::prepare(
-                        routing.node.clone(),
+                    builder.contribute(routing.publication(
                         super::handler::Agents::<dyn crate::store::JournalProvider>::actor(
                             within,
                             &path.id(),
@@ -324,20 +321,8 @@ pub(super) fn lower_routed(
                         to.actor(within)?,
                         record,
                         admission,
-                    )?;
-                    let target = routing.paths.outbox(&routing.node).map_err(Error::Stream)?;
-                    destination = Some(envelope.to.clone());
-                    let record = envelope
-                        .outbox_record(&routing.paths)
-                        .map_err(super::routing::error)?;
-                    let intent = record
-                        .headers
-                        .keys()
-                        .first()
-                        .ok_or(Error::Record("routed publication has no original key"))?
-                        .clone();
-                    builder.append(target.clone(), record);
-                    outbox = Some((target, intent));
+                    )?)?;
+                    continue;
                 }
                 if let InboxRecord::Message(message) | InboxRecord::FollowUp(message) = record
                     && message.from == sender
@@ -346,35 +331,13 @@ pub(super) fn lower_routed(
                     builder.condition(CommitCondition::Absent {
                         path: marker.clone(),
                     })?;
-                    let mut marker_record: AppendRecord = super::sent::SentRecord {
-                        to: match destination {
-                            Some(actor) => super::AgentAddress::qualified(actor)?,
-                            None => to.clone(),
-                        },
+                    let marker_record: AppendRecord = super::sent::SentRecord {
+                        to: to.clone(),
                         id: message.id.clone(),
                     }
                     .encode()?
                     .into();
-                    if let Some((outbox, intent)) = &outbox {
-                        marker_record.headers = acyclic_stream::RecordHeaders::new(
-                            Vec::new(),
-                            vec![
-                                acyclic_stream::Attribute {
-                                    name: super::routing::OUTBOX.into(),
-                                    value: outbox.as_str().as_bytes().to_vec().into(),
-                                },
-                                acyclic_stream::Attribute {
-                                    name: super::routing::SOURCE_INTENT.into(),
-                                    value: intent.clone(),
-                                },
-                            ],
-                        )
-                        .map_err(Error::Stream)?;
-                    }
                     builder.append(marker, marker_record);
-                }
-                if outbox.is_some() {
-                    continue;
                 }
                 if let Some(admission) = peer {
                     peer_guards

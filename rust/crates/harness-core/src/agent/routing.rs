@@ -92,6 +92,74 @@ fn is_message(envelope: &route::Envelope) -> Result<bool, Error> {
 }
 
 impl Routing {
+    /// Prepare one durable sender-local publication for an admitted peer send.
+    /// Commit this hard contribution with the sender's original intent, alongside
+    /// its journal effect when there is one. The outbox and receipt must never
+    /// be published separately. Preparation performs no IO or authorization.
+    pub fn publication(
+        &self,
+        sender: ActorReference,
+        to: ActorReference,
+        input: &super::InboxRecord,
+        admission: &PeerAdmission,
+    ) -> Result<acyclic_stream::CommitEffect, Error> {
+        use acyclic_stream::{
+            AppendRecord, Attribute, CommitCondition, CommitEffect, CommitMutation, RecordHeaders,
+        };
+        let envelope = PeerRoute::prepare(self.node.clone(), sender, to, input, admission)?;
+        let (super::InboxRecord::Message(message) | super::InboxRecord::FollowUp(message)) = input
+        else {
+            unreachable!()
+        };
+        let super::Sender::Agent { path } = &message.from else {
+            unreachable!()
+        };
+        let marker = path.sent_message(&message.id)?;
+        let outbox = self.paths.outbox(&self.node).map_err(Error::Stream)?;
+        let record = envelope.outbox_record(&self.paths).map_err(error)?;
+        let intent = record
+            .headers
+            .keys()
+            .first()
+            .ok_or(Error::Record("routed publication has no original key"))?
+            .clone();
+        let mut receipt: AppendRecord = super::sent::SentRecord {
+            to: super::AgentAddress::qualified(envelope.to)?,
+            id: message.id.clone(),
+        }
+        .encode()?
+        .into();
+        receipt.headers = RecordHeaders::new(
+            Vec::new(),
+            vec![
+                Attribute {
+                    name: OUTBOX.into(),
+                    value: outbox.as_str().as_bytes().to_vec().into(),
+                },
+                Attribute {
+                    name: SOURCE_INTENT.into(),
+                    value: intent,
+                },
+            ],
+        )
+        .map_err(Error::Stream)?;
+        Ok(CommitEffect::hard(
+            vec![CommitCondition::Absent {
+                path: marker.clone(),
+            }],
+            vec![
+                CommitMutation::Append {
+                    path: outbox,
+                    records: vec![record],
+                },
+                CommitMutation::Append {
+                    path: marker,
+                    records: vec![receipt],
+                },
+            ],
+        ))
+    }
+
     /// Drive one accepted link using this node's agent journal and inbox writer.
     /// The connection owner supplies its authenticated account provider and
     /// credential-selecting publication callbacks. Dropping this future drops

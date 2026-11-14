@@ -140,6 +140,50 @@ async fn qualified_senders_keep_distinct_intents_and_reply_destinations()
             "selection must not read another node's private membership or transcript"
         );
         let target = crate::agent::AgentAddress::qualified(original.to.clone())?;
+        // A prepared client command has no model turn. It must still publish
+        // the identical outbox and owned receipt in one durable local commit.
+        let external = MemoryStream::default();
+        let contribution =
+            sending.publication(source.clone(), original.to.clone(), &input, &admission)?;
+        let prepared = CommitRequest {
+            deadline_unix_millis: None,
+            idempotency_key: crate::agent::intent_key("prepared-message", &[])?,
+            effects: vec![contribution.clone()],
+        };
+        let accepted = external.commit(prepared.clone()).await?;
+        assert!(matches!(&accepted, CommitOutcome::Committed(_)));
+        assert_eq!(external.commit(prepared).await?, accepted);
+        let external_send = crate::agent::sent(&external, &sender, &message.id)
+            .await?
+            .ok_or("prepared command lost its durable send")?;
+        assert_eq!(external_send.to, target);
+        assert!(matches!(
+            external_send.delivery,
+            crate::agent::SentDelivery::Pending { from: 0, .. }
+        ));
+        // A receipt that merely points to an earlier outbox append cannot
+        // establish ownership. Removing atomic publication must be detected.
+        let split = MemoryStream::default();
+        for (part, mutation) in contribution.mutations.into_iter().enumerate() {
+            assert!(matches!(
+                split
+                    .commit(CommitRequest {
+                        deadline_unix_millis: None,
+                        idempotency_key: crate::agent::intent_key(
+                            "split-publication",
+                            &[&part.to_string()]
+                        )?,
+                        effects: vec![CommitEffect::hard(Vec::new(), vec![mutation])],
+                    })
+                    .await?,
+                CommitOutcome::Committed(_)
+            ));
+        }
+        assert!(
+            crate::agent::sent(&split, &sender, &message.id)
+                .await
+                .is_err()
+        );
         let effect = crate::agent::TurnEffect::Send {
             to: target.clone(),
             peer: Some(admission.clone()),
