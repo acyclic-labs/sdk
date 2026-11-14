@@ -15,6 +15,25 @@ struct Decision {
 
 impl PreparationRecord for Decision {}
 
+/// A bounded rejection reason that never copies the reply: serde's data
+/// errors quote field names and values, so only the category and position
+/// are kept.
+fn decode_rejection(error: &serde_json::Error) -> String {
+    let kind = match error.classify() {
+        serde_json::error::Category::Syntax => "it is not valid JSON",
+        serde_json::error::Category::Eof => "it ends before one complete JSON object",
+        serde_json::error::Category::Data => {
+            "a field is missing, unknown, duplicated or of the wrong type"
+        }
+        serde_json::error::Category::Io => "it could not be read",
+    };
+    format!(
+        "{kind} (line {}, column {}); escape every control character inside strings",
+        error.line(),
+        error.column()
+    )
+}
+
 /// The reason a re-asked review's previous decision was rejected.
 struct Rejection<'r>(Option<&'r str>);
 
@@ -536,7 +555,7 @@ impl<'a> StockExecution<'a> {
                     .reject_decision(
                         journal,
                         (input.operation_id, step),
-                        format!("it is not one JSON object of the required shape ({error})"),
+                        decode_rejection(&error),
                         rejected.is_some(),
                         capacity,
                     )

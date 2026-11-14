@@ -653,6 +653,9 @@ async fn defective_context_decisions_reask_once_then_keep_history() -> Result<()
         raw_newline.to_owned(),
         String::new(),
         "not JSON".to_owned(),
+        json!({"version":1,"summary":"x","review_at_input_tokens":500,"quoted_field_name":true})
+            .to_string(),
+        json!({"version":"quoted_value","summary":"x","review_at_input_tokens":500}).to_string(),
         json!({"version":2,"summary":"replacement","review_at_input_tokens":500}).to_string(),
         json!({"version":1,"summary":"","review_at_input_tokens":500}).to_string(),
         json!({"version":1,"summary":null,"review_at_input_tokens":250}).to_string(),
@@ -766,6 +769,7 @@ async fn defective_context_decisions_reask_once_then_keep_history() -> Result<()
                 assert!(rejected.iter().all(|record| matches!(
                     &record.event,
                     ExecutionEvent::ModelRejected { reason, .. } if !reason.is_empty()
+                        && !reason.contains("quoted_")
                 )));
             }
             let ask = provider.request(1).unwrap();
