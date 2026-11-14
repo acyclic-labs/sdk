@@ -97,7 +97,7 @@ fn generated_typescript_variant_fields_match_rust_serde_fixtures() {
     let bisect = json!({"active": true, "good": commit.id, "bad": null, "current": commit.id, "remaining": 1, "first_bad": null});
     let lazy = json!({
         "kind": "lazy", "id": vec![1; 32], "workspace_id": vec![2; 16], "authored_generation": generation(3),
-        "source": {"identity": vec![4; 16], "epoch": 7}, "overlay": vec![5; 32], "shadows": vec![6; 32],
+        "source": {"identity": vec![4; 16], "epoch": 7, "components": [0, 7, 8]}, "overlay": vec![5; 32], "shadows": vec![6; 32],
     });
     let lazy: GitTreeRef = serde_json::from_value(lazy).expect("lazy tree");
     let lazy = serde_json::to_value(lazy).unwrap();
@@ -125,6 +125,16 @@ fn generated_typescript_variant_fields_match_rust_serde_fixtures() {
             .find(|(candidate, _)| *candidate == name)
             .unwrap();
         assert_nested_typescript_projection(name, declaration, &value);
+        if name == "GitLazySource" {
+            let missing = declaration.replace(" readonly components: Uint8Array;", "");
+            assert!(
+                std::panic::catch_unwind(|| {
+                    assert_nested_typescript_projection(name, &missing, &value);
+                })
+                .is_err(),
+                "an omitted source cut must fail the same schema check"
+            );
+        }
     }
 
     let actions = wire_values::<GitFilesystemAction>(
