@@ -37,7 +37,9 @@ impl Handler for OwnedGated {
     ) -> GuestFuture<'a, Transition> {
         if self.refused.lock().unwrap().contains(&delivery.actor) {
             return Box::pin(async {
-                Err(crate::guest::GuestError::Handler("definitive refusal".into()))
+                Err(crate::guest::GuestError::Handler(
+                    "definitive refusal".into(),
+                ))
             });
         }
         self.gated.on_record(delivery, checkpoint, cancellation)
@@ -204,7 +206,9 @@ async fn unavailability_observers_survive_hibernation_and_cancelled_attempts() -
 
     runtime.host(address.clone())?;
     let slot = runtime.slot(&address).ok_or("missing retained slot")?;
-    let work = runtime.ready[0].take().ok_or("missing original delivery work")?;
+    let work = runtime.ready[0]
+        .take()
+        .ok_or("missing original delivery work")?;
     assert!(runtime.release(&address));
     runtime.deliver(&address, &slot, Some(work)).await?;
     let shard = store.scheduling_shard(&address);
