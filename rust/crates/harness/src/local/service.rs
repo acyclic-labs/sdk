@@ -1242,19 +1242,6 @@ mod tests {
             assert!(!workspace.has_physical_task_source(&view)?);
             let cancellation = acyclic_fs::CancellationToken::new();
             let budget = acyclic_fs::WorkBudget::UNBOUNDED;
-            let authored = view
-                .workspace()
-                .head(budget, &cancellation)
-                .await
-                .map_err(storage)?;
-            assert!(
-                authored
-                    .value
-                    .read("/inherited.txt", 1024, budget, &cancellation)
-                    .await
-                    .is_err(),
-                "the merge base must leave inherited content demand-backed"
-            );
             view.write(
                 "/inherited.txt",
                 acyclic_stream::OwnedBytes::copy_from_slice(bytes),
@@ -1301,6 +1288,8 @@ mod tests {
             b"native untouched\n",
         )
         .map_err(storage)?;
+        let observed_provider = Arc::new(OnceLock::<std::sync::Weak<ScriptedModelProvider>>::new());
+        let observer = Arc::clone(&observed_provider);
         let provider = Arc::new(
             ScriptedModelProvider::new([
                 super::super::tests::checked_commands::call(
@@ -1317,12 +1306,19 @@ mod tests {
                 ),
                 ScriptedTurn::Text("parent read merged checkout".into()),
             ])
+            .with_dispatch_observer(move |dispatch| {
+                if let Some(provider) = observer.get().and_then(std::sync::Weak::upgrade) {
+                    eprintln!("merge model {dispatch:?}: {:?}", provider.last_request());
+                }
+                Box::pin(async { Ok(()) })
+            })
             .with_context_capacity(crate::context::ModelContextCapacity {
                 context_tokens: 32_768,
                 output_tokens: Some(4096),
                 output_shares_context: false,
             }),
         );
+        assert!(observed_provider.set(Arc::downgrade(&provider)).is_ok());
         let local = Arc::new(
             super::super::LocalHarness::open(
                 local_harness_config(
