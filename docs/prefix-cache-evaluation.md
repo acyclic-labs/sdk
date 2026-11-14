@@ -18,8 +18,9 @@ checks exact isolated request identities and bytes. The paired guards extend it
 to growing conversations: each execution-only preset input (UI, approvals,
 configuration, sessions, evaluations, GOAL, plans and hooks), project instructions,
 environment facts, skill catalogues, selected skill bodies and MCP tool listings
-is selected, edited and removed
-while its original context epoch remains pinned. Source changes append notices;
+is selected, edited and removed while its original context epoch remains pinned.
+MCP listings use the production catalogue's selected-schema projection.
+Source changes append notices;
 they do not replace earlier requests. Every case also encodes a rewritten system
 instruction and requires both prefix comparison and cache-read checks to reject
 it. Execution-only inputs must have zero success/token/cache-read deltas.

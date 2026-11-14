@@ -80,19 +80,36 @@ async fn manifest(
     feature: Feature,
     version: u8,
 ) -> TestResult<(ContextManifest, ToolRegistry)> {
-    let tools = acyclic_harness::tools::registry(
-        &[],
-        |_| false,
-        if matches!(feature, Feature::Mcp) && version != 0 {
-            vec![super::super::providers::echo_tool(if version == 1 {
-                "mcp.before"
-            } else {
-                "mcp.after"
-            })]
-        } else {
-            Vec::new()
-        },
-    )?;
+    let mut extra = Vec::new();
+    if matches!(feature, Feature::Mcp) && version != 0 {
+        use acyclic_harness::mcp::{
+            McpCatalog, McpDiscoveryPolicy, McpSchemaExposure, McpToolDefinition,
+        };
+        let catalog = McpCatalog {
+            server: "fixture".into(),
+            revision: version.to_string(),
+            schema_exposure: McpSchemaExposure::Eager,
+            discovery: McpDiscoveryPolicy::Disabled,
+            projection_schema: acyclic_harness::tool::json_projection_schema(
+                json!({"type":"object"}),
+            ),
+            tools: vec![McpToolDefinition {
+                name: "inspect".into(),
+                title: None,
+                description: format!("Inspect revision {version}"),
+                input_schema: json!({"type":"object"}),
+                output_schema: None,
+            }],
+        };
+        // Only provider-facing listing projection is under test; the tool is
+        // never called. Use the production catalogue's exact selected schemas.
+        for definition in catalog.model_definitions(None, None)? {
+            let mut tool = super::super::providers::echo_tool(&definition.name);
+            tool.definition = definition;
+            extra.push(tool);
+        }
+    }
+    let tools = acyclic_harness::tools::registry(&[], |_| false, extra)?;
     let mut manifest = ContextManifest::new(Default::default(), Vec::new(), &tools)?;
     manifest
         .conventions
@@ -220,7 +237,11 @@ async fn evaluate(
         .into_iter()
         .enumerate()
     {
-        let (live, _) = manifest(&storage, feature, version).await?;
+        let live = if turn == 0 {
+            initial.clone()
+        } else {
+            manifest(&storage, feature, version).await?.0
+        };
         if enabled && turn > 0 {
             assert_ne!(initial.encode(limits)?, live.encode(limits)?);
         }
