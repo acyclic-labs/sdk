@@ -432,6 +432,22 @@ async fn forwarded_owned_credential_renewal_keeps_sibling_channels_live() -> Tes
         channel.outbound.next().await.transpose()?.as_deref(),
         Some(&b"hello"[..])
     );
+    // Knowing an owned slot number is not custody of its enrollment. Refuse
+    // only this forwarding channel, while its actual owner and sibling live.
+    let mut borrowed = client
+        .actor_socket(Bytes::from_static(b"open"), slot)
+        .await?
+        .into_channel();
+    assert_eq!(
+        borrowed.outbound.next().await.transpose()?.as_deref(),
+        Some(&b"hello"[..])
+    );
+    borrowed.inbound.replace_credential(credential.clone())?;
+    assert_eq!(
+        borrowed.outbound.next().await,
+        Some(Err(StreamError::AccessDenied))
+    );
+    drop(borrowed);
     channel.inbound.replace_credential(credential)?;
     channel.inbound.receive(Bytes::from_static(b"renewed"))?;
     assert_eq!(

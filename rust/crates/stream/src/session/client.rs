@@ -230,7 +230,8 @@ enum Command {
         slot: u32,
     },
     RenewCredential {
-        owner: Arc<credentials::Owner>,
+        slot: u32,
+        owner: Option<Arc<credentials::Owner>>,
         credential: Bytes,
         sent: oneshot::Sender<Result<(), StreamError>>,
     },
