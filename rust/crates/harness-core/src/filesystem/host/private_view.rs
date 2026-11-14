@@ -478,7 +478,7 @@ impl acyclic_fs::demand::SourceChangeSink for PrivateSignal {
         _: &[acyclic_fs::demand::SourceChange],
         ctx: &mut KernelAccounting<'_>,
     ) -> std::result::Result<(), acyclic_fs::demand::DemandError> {
-        ctx.check()?;
+        ctx.charge(acyclic_fs::WorkCounters::UNCHARGED)?;
         self.sender.send_replace(true);
         Ok(())
     }
