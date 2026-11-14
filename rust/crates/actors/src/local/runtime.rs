@@ -1489,7 +1489,16 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             async {
                 // Duplicate events for one actor wait outside global admission. Only
                 // an actor that can make progress may occupy an active delivery slot.
-                let mut inner = slot.inner.lock().await;
+                let mut inner = acyclic_stream::trace::observe_guard(
+                    acyclic_stream::trace::Request {
+                        name: "actors.delivery_lock",
+                        mechanism: acyclic_stream::trace::Mechanism::Lock,
+                        parent: None,
+                        guarantee: Some("exclusive_actor_delivery_and_settlement"),
+                    },
+                    slot.inner.lock(),
+                )
+                .await;
                 // The delivery starts once it owns the actor: a waiter owns
                 // nothing and settles nothing. From here it counts in flight
                 // in the shared ready index, whichever consumer started it,

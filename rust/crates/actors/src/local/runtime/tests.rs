@@ -698,7 +698,56 @@ async fn a_deleted_actor_is_terminal_and_leaves_no_orphans() -> TestResult {
         Arc::new(SystemClock),
     );
     runtime.track(actor.clone())?;
-    runtime.drain_actor(&actor).await?;
+    use acyclic_stream::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
+    let trace = acyclic_stream::Stream::new(provider.clone(), "agents/deleted/trace")?;
+    let recorder = Arc::new(Recorder::new(trace.clone(), [81; 16]));
+    let owner = recorder
+        .start(
+            "original_delivery",
+            Mechanism::ActorDelivery,
+            None,
+            Some("original_actor_request"),
+        )
+        .await?
+        .into_owned();
+    let parent = owner.id();
+    owner.within(runtime.drain_actor(&actor)).await?;
+    let receipt = owner.finish_submitted(None, Outcome::Succeeded)?;
+    assert!(matches!(
+        receipt.result().await?,
+        Ok(acyclic_stream::AppendOutcome::Committed(_))
+    ));
+    let mut query = TraceQuery::new(
+        trace.read(0, u32::try_from(trace.tail().await?)?).await?,
+        Default::default(),
+    );
+    let mut locks = 0;
+    while let Some(observation) = query.next().await? {
+        if let Observation::Completed {
+            start,
+            bytes,
+            result,
+            ..
+        } = observation
+        {
+            if start.name == "actors.delivery_lock" {
+                assert_eq!(start.parent, Some(parent));
+                assert_eq!(start.mechanism, Mechanism::Lock);
+                assert_eq!(
+                    start.guarantee.as_deref(),
+                    Some("exclusive_actor_delivery_and_settlement")
+                );
+                assert_eq!(bytes, Some(0));
+                assert_eq!(result, Outcome::Succeeded);
+                locks += 1;
+            }
+        }
+    }
+    assert!(
+        locks > 0,
+        "actor delivery lock lost its original owner or settlement"
+    );
+
     let live = store.load(&actor).await?;
     assert!(
         live.state()
