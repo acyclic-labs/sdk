@@ -55,7 +55,7 @@ impl KeyTree {
         records: &Arc<RecordBatch>,
         work: &mut impl acyclic_collections::IndexWork<Error = StreamError, Allocation = Allocation>,
     ) -> Result<Self, StreamError> {
-        let (mut tree, extends) = self.base(records.start);
+        let (mut tree, extends) = self.base(&records.origin, records.start);
         let mut changed = false;
         for (index, record) in records.values.iter().enumerate() {
             for key in record.headers.keys() {
@@ -68,7 +68,7 @@ impl KeyTree {
                 changed = true;
             }
         }
-        self.publish(records.start, extends, changed, tree, work)
+        self.publish(&records.origin, records.start, extends, changed, tree, work)
     }
 
     #[cfg(test)]

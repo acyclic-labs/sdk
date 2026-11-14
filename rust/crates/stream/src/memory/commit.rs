@@ -218,7 +218,8 @@ impl MemoryStream {
         let lineage = original.map_or_else(RangeLineage::default, |path| path.ranges.clone());
         let mut keys = original.map_or_else(KeyTree::default, |path| path.keys.clone());
         let tail = original.map_or(0, |path| path.tail);
-        let (mut index, extends) = lineage.base(tail);
+        let target = crate::request::fact_path(fact);
+        let (mut index, extends) = lineage.base(target, tail);
         let mut changed = false;
         if let Some(History::Batch { records, .. }) =
             original.and_then(|path| path.history.as_deref())
@@ -235,6 +236,7 @@ impl MemoryStream {
             // A fork's index is cut after insertion, so the sealed batch keeps
             // the fork's exclusive bound; it never extends the source lineage.
             Some(before) if changed => lineage.publish(
+                target,
                 before,
                 false,
                 true,
@@ -242,7 +244,14 @@ impl MemoryStream {
                 &mut HistoryIndexWork(self),
             )?,
             Some(before) => lineage.cap(before),
-            None => lineage.publish(tail, extends, changed, index, &mut HistoryIndexWork(self))?,
+            None => lineage.publish(
+                target,
+                tail,
+                extends,
+                changed,
+                index,
+                &mut HistoryIndexWork(self),
+            )?,
         };
         if let Some(before) = before {
             keys = keys.cap(before);

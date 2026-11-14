@@ -292,6 +292,95 @@ async fn releasing_a_history_pin_returns_superseded_range_funding() -> TestResul
     Ok(())
 }
 
+#[tokio::test]
+async fn one_commit_extends_both_holders_of_an_inherited_lineage() -> TestResult<()> {
+    let provider = MemoryStream::default();
+    let keyed = |value: &'static [u8]| -> Result<crate::AppendRecord, StreamError> {
+        Ok(crate::AppendRecord {
+            value: Bytes::from_static(value),
+            headers: crate::RecordHeaders::new(vec![Bytes::from_static(b"selected")], Vec::new())?,
+        })
+    };
+    let source = path("inherited/source")?;
+    let child = path("inherited/source/child")?;
+    let copy = path("inherited/copy/child")?;
+    append_batch(&provider, &source, vec![Bytes::from_static(b"root")]).await?;
+    // Two keyed batches give the child a key lineage and a sealed-range one.
+    for value in [b"first".as_slice(), b"second"] {
+        provider
+            .append(AppendRequest {
+                path: child.clone(),
+                records: vec![keyed(value)?],
+                if_tail: None,
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+    }
+    // The subtree fork copies the child's view, so both children hold the
+    // newest view of the same two lineages.
+    provider
+        .fork(ForkRequest {
+            source: source.clone(),
+            destination: path("inherited/copy")?,
+            at_tail: None,
+            exclude: Vec::new(),
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
+    let outcome = provider
+        .commit(CommitRequest {
+            deadline_unix_millis: None,
+            effects: vec![crate::CommitEffect::hard(
+                Vec::new(),
+                vec![
+                    CommitMutation::Append {
+                        path: child.clone(),
+                        records: vec![keyed(b"source-third")?],
+                    },
+                    CommitMutation::Append {
+                        path: copy.clone(),
+                        records: vec![keyed(b"copy-third")?],
+                    },
+                ],
+            )],
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
+    assert!(matches!(outcome, CommitOutcome::Committed(_)));
+    for (path, third) in [(&child, "source-third"), (&copy, "copy-third")] {
+        let expected = [
+            Bytes::from_static(b"first"),
+            Bytes::from_static(b"second"),
+            Bytes::from_static(third.as_bytes()),
+        ];
+        assert_records(&provider, path, &expected).await?;
+        let selected = provider
+            .read(ReadRequest {
+                path: path.clone(),
+                from: 0,
+                limit: 3,
+                at_least: Default::default(),
+                key: Some(crate::ReadKeySeek::exact(
+                    Bytes::from_static(b"selected"),
+                    u64::MAX,
+                )),
+            })
+            .await?
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(
+            selected
+                .iter()
+                .map(|record| record.value.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+    Ok(())
+}
+
 async fn assert_records(
     provider: &MemoryStream,
     path: &StreamPath,

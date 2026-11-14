@@ -38,6 +38,12 @@ impl<I> Default for IndexLineage<I> {
 
 struct Lineage<I> {
     newest: crate::query_sync::SyncMutex<Newest<I>>,
+    // The one path that extends this lineage in place. A subtree fork copies
+    // its descendants' views, so several paths can hold the newest view; each
+    // other path starts its own lineage when it first changes. One commit
+    // names a path at most once, so it never plans two extensions of one
+    // lineage.
+    owner: StreamPath,
     _allocation: Allocation,
 }
 
@@ -82,27 +88,30 @@ impl<I: LineageIndex> IndexLineage<I> {
             .cut(self.before.map_or(tail, |before| before.min(tail)))
     }
 
-    /// The index an extension by the version at `tail` starts from, and
-    /// whether that version is the lineage's newest.
-    fn base(&self, tail: u64) -> (I, bool) {
+    /// The index an extension of `path`'s version at `tail` starts from, and
+    /// whether that version is the newest view of a lineage `path` owns.
+    fn base(&self, path: &StreamPath, tail: u64) -> (I, bool) {
         match &self.shared {
-            Some(shared) if self.before.is_none() => shared.with(|newest| {
-                if newest.generation == self.generation {
-                    (newest.index.clone(), true)
-                } else {
-                    (newest.index.cut(tail), false)
-                }
-            }),
+            Some(shared) if self.before.is_none() && shared.owner == *path => {
+                shared.with(|newest| {
+                    if newest.generation == self.generation {
+                        (newest.index.clone(), true)
+                    } else {
+                        (newest.index.cut(tail), false)
+                    }
+                })
+            }
             _ => (self.pin(tail), false),
         }
     }
 
-    /// Publishes `index`, built from [`Self::base`] at `tail`. The newest view
-    /// plans to replace the lineage's index when its write is accepted; any
-    /// other view keeps its cut when nothing changed and otherwise starts a
-    /// new lineage.
+    /// Publishes `path`'s `index`, built from [`Self::base`] at `tail`. The
+    /// newest view plans to replace the lineage's index when its write is
+    /// accepted; any other view keeps its cut when nothing changed and
+    /// otherwise starts a new lineage that `path` owns.
     fn publish(
         &self,
+        path: &StreamPath,
         tail: u64,
         extends: bool,
         changed: bool,
@@ -128,6 +137,7 @@ impl<I: LineageIndex> IndexLineage<I> {
                     index,
                     generation: 0,
                 }),
+                owner: path.clone(),
                 _allocation: allocation,
             })),
             generation: 0,
@@ -142,8 +152,10 @@ impl<I: LineageIndex> IndexLineage<I> {
         let (Some(shared), Some(index)) = (&self.shared, self.pending.take()) else {
             return Ok(());
         };
-        // The publication owner excludes every other write from planning to
-        // acceptance, so the lineage is still at the planned generation.
+        // Only the owning path extends a lineage, one commit names that path
+        // once, and the publication owner excludes every other write from
+        // planning to acceptance, so the lineage is still at the planned
+        // generation.
         let _superseded = shared
             .with(|newest| {
                 (newest.generation == self.generation).then(|| {
