@@ -100,10 +100,7 @@ async fn checkpoint_refuses_wrong_prefix_length_and_cancelled_original() -> Resu
     let cancellation = CancellationToken::new();
     let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let mut ctx = KernelAccounting::NativeOriginal {
-        work: &original,
-        cancellation: &cancellation,
-    };
+    let mut ctx = KernelAccounting::native(&original, &cancellation);
     let store = objects();
     let checkpoint = FoldCheckpoint {
         version: 1,
@@ -187,10 +184,7 @@ async fn cold_fold_crosses_the_stream_request_page_boundary() -> Result {
     let cancellation = CancellationToken::new();
     let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let mut ctx = KernelAccounting::NativeOriginal {
-        work: &original,
-        cancellation: &cancellation,
-    };
+    let mut ctx = KernelAccounting::native(&original, &cancellation);
     let streams = Arc::new(MemoryStream::default());
     let path = StreamPath::new("usage/cold")?;
     let count = acyclic_stream::MAX_ITEMS as u64 + 1;
@@ -257,10 +251,7 @@ async fn checkpoint_catalog_reopens_nearest_prefix_and_reads_only_new_events() -
     let cancellation = CancellationToken::new();
     let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let mut ctx = KernelAccounting::NativeOriginal {
-        work: &original,
-        cancellation: &cancellation,
-    };
+    let mut ctx = KernelAccounting::native(&original, &cancellation);
     let streams = Arc::new(MemoryStream::default());
     let objects = Arc::new(objects());
     let path = StreamPath::new("usage/first")?;

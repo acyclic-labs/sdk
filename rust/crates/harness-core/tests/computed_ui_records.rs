@@ -119,10 +119,7 @@ async fn computed_role_reads_the_agents_own_adoption_after_its_fork_origin() -> 
     let cancellation = CancellationToken::new();
     let native = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let mut ctx = KernelAccounting::NativeOriginal {
-        work: &native,
-        cancellation: &cancellation,
-    };
+    let mut ctx = KernelAccounting::native(&native, &cancellation);
     let path = namespace("/role");
     for (agent, expected) in [(parent, "orchestrator"), (child, "worker")] {
         let source = StreamUiProvider::new(
@@ -245,10 +242,7 @@ async fn stream_ui_open_pins_real_turn_files_across_later_publications() -> Resu
     let cancellation = CancellationToken::new();
     let native = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let mut ctx = KernelAccounting::NativeOriginal {
-        work: &native,
-        cancellation: &cancellation,
-    };
+    let mut ctx = KernelAccounting::native(&native, &cancellation);
     let frozen = source.reference(&mut ctx).await?;
     let path = namespace("/turns/0.md");
     let node = source
@@ -468,10 +462,7 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
     let cancellation = CancellationToken::new();
     let native = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let mut ctx = KernelAccounting::NativeOriginal {
-        work: &native,
-        cancellation: &cancellation,
-    };
+    let mut ctx = KernelAccounting::native(&native, &cancellation);
     let workspace = fs
         .open_workspace(
             &storage.volume().storage_name(&mut None)?,
@@ -1097,10 +1088,7 @@ async fn computed_ui_watch_delivers_real_publications_and_physically_stops() -> 
         "opening invalidates previously observed diagnostic descendants"
     );
     sink.changes.lock().unwrap().clear();
-    let mut ctx = KernelAccounting::NativeOriginal {
-        work: &native,
-        cancellation: &cancellation,
-    };
+    let mut ctx = KernelAccounting::native(&native, &cancellation);
     assert_eq!(watch.fence(&mut ctx)?, SourceFence::Unconfirmed);
     assert!(watch.is_exact());
     streams
@@ -1211,10 +1199,7 @@ async fn native_status_projection_preserves_original_credit_and_cancellation() -
         .ok_or("record")?;
     let decoded = StatusRecord::decode_accounted(
         &record.value,
-        &mut KernelAccounting::NativeOriginal {
-            work: &owner.work,
-            cancellation: &cancellation,
-        },
+        &mut KernelAccounting::native(&owner.work, &cancellation),
     )?;
     assert_eq!(*decoded, expected);
     owner.restore(&mut caller)?;
@@ -1331,10 +1316,7 @@ async fn stream_ui_chunks_large_child_pages_at_one_exact_cut() -> Result {
     let cancellation = CancellationToken::new();
     let native = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let mut ctx = KernelAccounting::NativeOriginal {
-        work: &native,
-        cancellation: &cancellation,
-    };
+    let mut ctx = KernelAccounting::native(&native, &cancellation);
     let empty_reference = provider.reference(&mut ctx).await?;
     let first_path = namespace("/children/pages/0.md");
     let empty = provider
@@ -1439,10 +1421,7 @@ async fn stream_ui_uses_frozen_inputs_and_direct_child_navigation() -> Result {
     let cancellation = CancellationToken::new();
     let native = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let mut ctx = KernelAccounting::NativeOriginal {
-        work: &native,
-        cancellation: &cancellation,
-    };
+    let mut ctx = KernelAccounting::native(&native, &cancellation);
     let frozen = source.reference(&mut ctx).await?;
     streams
         .append(AppendRequest {
@@ -1643,10 +1622,7 @@ async fn computed_diagnostic_navigation_pages_root_and_preserves_utf8_and_frozen
     let cancellation = CancellationToken::new();
     let native = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let mut ctx = KernelAccounting::NativeOriginal {
-        work: &native,
-        cancellation: &cancellation,
-    };
+    let mut ctx = KernelAccounting::native(&native, &cancellation);
     let frozen = source.reference(&mut ctx).await?;
     let mut cursor = None;
     let mut names = Vec::new();

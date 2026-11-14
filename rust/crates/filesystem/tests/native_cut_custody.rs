@@ -81,8 +81,5 @@ async fn decoded_cut_credit_survives_a_cursor_clone_on_another_meter()
 }
 
 fn accounting(work: &NativeMaterializationWork) -> KernelAccounting<'_> {
-    KernelAccounting::NativeOriginal {
-        work,
-        cancellation: work.cancellation(),
-    }
+    KernelAccounting::native(work, work.cancellation())
 }

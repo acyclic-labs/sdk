@@ -83,10 +83,7 @@ fn seeded_continuations_preserve_scalar_and_composite_cuts() {
             {
                 decoded = true;
                 cursor
-                    .retire(&mut KernelAccounting::NativeOriginal {
-                        work: &work,
-                        cancellation: &cancellation,
-                    })
+                    .retire(&mut KernelAccounting::native(&work, &cancellation))
                     .unwrap();
             }
         }
