@@ -11,7 +11,7 @@ use acyclic_harness_client::{AgentCommand, AgentPageRequest, AgentReply, ReadTar
 #[tokio::test]
 async fn private_view_search_uses_the_real_session_content_adapter() -> Result<()> {
     use crate::model::{ModelContentPart, ModelEvent, ToolCall, ToolResultContent};
-    use crate::test_support::ScriptedEvent;
+    use crate::test_support::{ScriptedEvent, ScriptedTurn};
 
     let directory = tempfile::tempdir().map_err(agent)?;
     let project = volume(directory.path()).await?;
