@@ -814,6 +814,56 @@ mod indexed_trace_tests {
             .await?
             .into_owned();
         let parent = root.id();
+        let trace_head = provider.head(trace.path().clone()).await?;
+        assert_eq!(trace_head.tail, 1);
+        let trace_record = trace_head.last.as_ref().ok_or("trace root missing")?;
+        for accepted in [false, true] {
+            let path = StreamPath::new(if accepted {
+                "guarded/accepted"
+            } else {
+                "guarded/commit"
+            })?;
+            let condition = if accepted {
+                CommitCondition::Head {
+                    path: trace.path().clone(),
+                    expected: 1,
+                    commit_id: trace_record.commit_id,
+                }
+            } else {
+                CommitCondition::Tail {
+                    path: trace.path().clone(),
+                    expected: 1,
+                }
+            };
+            let request = CommitRequest {
+                deadline_unix_millis: None,
+                effects: vec![CommitEffect::hard(
+                    vec![condition],
+                    vec![CommitMutation::Append {
+                        path: path.clone(),
+                        records: vec![AppendRecord::new(OwnedBytes::from_static(b"guarded"))?],
+                    }],
+                )],
+                idempotency_key: IdempotencyKey::unique(),
+            };
+            if accepted {
+                assert!(matches!(
+                    root.within(provider.commit_accepted(request)).await?,
+                    AcceptedCommitOutcome::Committed { .. }
+                ));
+            } else {
+                assert!(matches!(
+                    root.within(provider.commit(request)).await?,
+                    CommitOutcome::Committed(_)
+                ));
+            }
+            assert_eq!(provider.tail(path).await?, 1);
+            assert_eq!(
+                provider.tail(trace.path().clone()).await?,
+                1,
+                "observation must not change the state guarded by the original commit"
+            );
+        }
         for name in ["agents/worker/data/a", "agents/worker/data/b"] {
             Stream::new(provider.clone(), name)?
                 .append(

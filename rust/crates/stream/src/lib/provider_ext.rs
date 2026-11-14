@@ -469,7 +469,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
         async move {
             #[cfg(feature = "serde")]
             let diagnostic = crate::trace::is_source(&request.source)
-                && crate::trace::is_source(&request.destination);
+                || crate::trace::is_source(&request.destination);
             let work = async move {
                 match self.write(WriteRequest::Fork(request)).await? {
                     WriteOutcome::Fork(outcome) => Ok(outcome),
@@ -745,12 +745,21 @@ async fn named_head<P: StreamProvider + ?Sized>(
 
 #[cfg(feature = "serde")]
 fn diagnostic_commit(request: &CommitRequest) -> bool {
-    crate::trace::all_sources(request.conditions().map(CommitCondition::path).chain(
-        request.mutations().flat_map(|mutation| {
-            std::iter::once(mutation.path()).chain(match mutation {
-                CommitMutation::Fork { source, .. } => Some(source),
-                CommitMutation::Append { .. } => None,
+    crate::trace::any_source(
+        request
+            .conditions()
+            .filter(|condition| {
+                matches!(
+                    condition,
+                    CommitCondition::Tail { .. } | CommitCondition::Head { .. }
+                )
             })
-        }),
-    ))
+            .map(CommitCondition::path)
+            .chain(request.mutations().flat_map(|mutation| {
+                std::iter::once(mutation.path()).chain(match mutation {
+                    CommitMutation::Fork { source, .. } => Some(source),
+                    CommitMutation::Append { .. } => None,
+                })
+            })),
+    )
 }
