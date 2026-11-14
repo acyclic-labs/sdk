@@ -17,20 +17,24 @@ trap cleanup EXIT
 run_case() {
     local directory=$1 test=$2 expected=$3 revision=$4 log=$5
     local result=0
+    # Compile, then run the one test under the suite's 10 s per-test limit.
     (
         cd "$directory"
-        cargo test --locked --all-features -p acyclic-actors --lib "$test" -- --nocapture
+        cargo test --locked --all-features -p acyclic-actors --lib --no-run 2>&1 | tee "$log.build"
+        binary=$(grep -oE '\(/[^)]*/acyclic_actors-[0-9a-f]+\)' "$log.build" | tail -1 | tr -d '()')
+        cd rust/crates/actors
+        timeout --signal=KILL 10 "$binary" "$test" --nocapture
     ) >"$log" 2>&1 || result=$?
     cat "$log"
     if [[ "$expected" == pass ]]; then
         if [[ "$result" != 0 ]]; then return 1; fi
-        rg -q 'test result: ok\. 1 passed; 0 failed' "$log"
+        grep -qE 'test result: ok\. 1 passed; 0 failed' "$log"
     else
         # Compiler failures, infrastructure exits and zero-test filters prove
         # nothing. Require this specific seeded test to have executed and failed.
         if [[ "$result" == 0 ]]; then return 1; fi
-        rg -q 'test result: FAILED\. 0 passed; 1 failed' "$log"
-        rg -q 'failed at seed [0-9]+; reproduce with DST_SEED=' "$log"
+        grep -qE 'test result: FAILED\. 0 passed; 1 failed' "$log"
+        grep -qE 'failed at seed [0-9]+; reproduce with DST_SEED=' "$log"
     fi
     printf 'ACTORS_HISTORY revision=%s overlay=%s test=%s expected=%s exit=%s\n' \
         "$revision" "$source_sha" "$test" "$expected" "$result"
@@ -60,7 +64,7 @@ cp "$source_root/$runtime/tests/simulation/composition.rs" \
     "$scratch/$shard_before/$runtime/tests/historical_composition.rs"
 printf '\nmod historical_composition;\n' >> "$scratch/$shard_before/$runtime/tests.rs"
 run_case "$scratch/$shard_before" "$shard_test" fail "$shard_before" "$scratch/shard-before.log"
-rg -q 'composition changed the actor publication' "$scratch/shard-before.log"
+grep -qE 'composition changed the actor publication' "$scratch/shard-before.log"
 
 node --input-type=module - "$source_root" "$scratch/$custody_before" <<'JS'
 import fs from 'node:fs';
