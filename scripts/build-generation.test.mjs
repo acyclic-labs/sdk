@@ -7,7 +7,7 @@ import { runInNewContext } from "node:vm";
 import test from "node:test";
 import fc from "fast-check";
 import { packageClosure } from "./package-closure.mjs";
-import { contractModules } from "./generate-contracts.mjs";
+import { contractModules, keepsGenerator } from "./generate-contracts.mjs";
 import { createNativeProducer } from "./build-native-family.mjs";
 import { nativeFamily } from "./native-family.mjs";
 import ts from "typescript-parser";
@@ -165,4 +165,15 @@ test("native source roots cover the generators' transitive script imports", () =
     changed.set("scripts/package-closure.mjs", 'const name = "../unattested-generator-helper.mjs"; await import(name);');
     assert.throws(() => check(["scripts"], generators, changed), /uncovered computed import/);
   }
+});
+
+test("a selected generation emits actors N-API declarations only for a native build", async () => {
+  const actors = await import("./actors-napi-types.mjs"), stream = await import("./stream-napi-types.mjs");
+  const families = [...packageClosure(process.cwd(), "actors")];
+  assert.ok(contractModules(families).includes("actors-napi-types.mjs"), "the native build still attests the module");
+  assert.equal(keepsGenerator(actors, families, false), false, "a WASM build of actors never compiles the N-API crate");
+  assert.equal(keepsGenerator(actors, families, true), true);
+  assert.equal(keepsGenerator(actors, [], false), true, "full generation keeps every output");
+  // Stream's TypeScript imports its declarations as types, so every selection keeps them.
+  assert.equal(keepsGenerator(stream, ["stream"], false), true);
 });

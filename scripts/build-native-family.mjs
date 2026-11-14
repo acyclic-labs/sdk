@@ -1062,9 +1062,9 @@ async function build(options) {
   // Every family enters through the same admission boundary. In particular,
   // rejected arguments cannot launch a generator (and therefore Cargo).
   try {
-    execFileSync(process.execPath, [resolve(root, "scripts/generate.mjs"), family.key], { stdio: "inherit" });
+    execFileSync(process.execPath, [resolve(root, "scripts/generate.mjs"), family.key, "--native"], { stdio: "inherit" });
   } catch (cause) {
-    throw new Error(`step=native-generation; recovery=node scripts/generate.mjs ${family.key}`, { cause });
+    throw new Error(`step=native-generation; recovery=node scripts/generate.mjs ${family.key} --native`, { cause });
   }
   assertCleanSource();
   assertCurrentNativeFamily();

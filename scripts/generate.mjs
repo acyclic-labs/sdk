@@ -7,8 +7,10 @@ import { generateFiles } from "./generated-bindings.mjs";
 import { generateNativeFamilies } from "./native-family.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const check = process.argv[2] === "check";
-const selected = process.argv[check ? 3 : 2];
+const native = process.argv.includes("--native");
+const args = process.argv.slice(2).filter(arg => arg !== "--native");
+const check = args[0] === "check";
+const selected = args[check ? 1 : 0];
 const packages = packageClosure(root, selected);
 
 function run(command, args) {
@@ -31,5 +33,5 @@ if (packages.has("workers")) {
     destination, join(root, "rust/crates/manifest/fuzz/corpus/manifest_json/valid.json"), "production", "agent"]), [], check);
 }
 // Full generation includes Rust-only contracts, including harness fixtures.
-run(process.execPath, [join(root, "scripts/generate-contracts.mjs"), check ? "check" : "write", ...(selected ? packages : [])]);
+run(process.execPath, [join(root, "scripts/generate-contracts.mjs"), check ? "check" : "write", ...(selected ? packages : []), ...(native ? ["--native"] : [])]);
 if (check) run(process.execPath, [join(root, "scripts/check-generated.mjs"), "--no-compile"]);
