@@ -32,12 +32,61 @@ impl DecodeWork for OriginalDecodeWork<'_, '_> {
     }
 }
 
+/// A serde projection failure, preserving the original accounting error.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum MetadataDecodeError {
+pub enum MetadataDecodeError<E = serde_json::Error> {
+    /// Work, cancellation or allocation admission failed.
     #[error(transparent)]
     Work(#[from] crate::FsError),
+    /// The selected input does not encode the requested value.
     #[error(transparent)]
-    Codec(#[from] serde_json::Error),
+    Codec(E),
+}
+
+impl KernelAccounting<'_> {
+    /// Runs a serde decoder through the one funded destination visitor.
+    /// The codec supplies its own admitted scratch and checks its input's end;
+    /// the returned value keeps the original destination allocation credit.
+    /// This consumes exactly one value, not necessarily the entire input. Use
+    /// `decode_json` for a complete JSON document; streaming codecs must check
+    /// their own end after the value (serde's generic trait has no end method).
+    pub fn deserialize<'de, T, D>(
+        &mut self,
+        deserializer: D,
+    ) -> Result<Retained<T>, MetadataDecodeError<D::Error>>
+    where
+        T: serde::Deserialize<'de>,
+        D: serde::Deserializer<'de>,
+    {
+        self.check()?;
+        let work = OriginalDecodeWork(RefCell::new(self));
+        let decode = MaterializationDecode {
+            work: &work,
+            allocation: RefCell::new(work.claim(0, 0)?),
+            failure: RefCell::new(None),
+        };
+        let result = T::deserialize(Funded {
+            inner: deserializer,
+            decode: &decode,
+            kind: DecodeKind::Borrowed,
+        });
+        if let Some(error) = decode.failure.borrow_mut().take() {
+            return Err(error.into());
+        }
+        let value = result.map_err(MetadataDecodeError::Codec)?;
+        Ok(decode.allocation.into_inner().into_value(value))
+    }
+
+    /// Decodes JSON with the shared funded visitor. The returned value retains
+    /// its admitted allocation credit on this caller's original ledger.
+    /// Unselected fields are parsed without materializing their strings or
+    /// collections.
+    pub fn decode_json<T: serde::de::DeserializeOwned>(
+        &mut self,
+        input: &[u8],
+    ) -> Result<Retained<T>, MetadataDecodeError> {
+        from_slice(input, self)
+    }
 }
 
 /// Retains decoded metadata on the caller's original allocation ledger.
@@ -52,23 +101,8 @@ pub(crate) fn from_slice<T: serde::de::DeserializeOwned>(
         .map_err(crate::FsError::from)?
         .max(8);
     let _scratch = RetainedAllocation::claim(scratch_bytes, 1, accounting)?;
-    let work = OriginalDecodeWork(RefCell::new(accounting));
-    let decode = MaterializationDecode {
-        work: &work,
-        allocation: RefCell::new(work.claim(0, 0)?),
-        failure: RefCell::new(None),
-    };
     let mut deserializer = serde_json::Deserializer::from_slice(input);
-    let result = T::deserialize(Funded {
-        inner: &mut deserializer,
-        decode: &decode,
-        kind: DecodeKind::Borrowed,
-    })
-    .and_then(|value| deserializer.end().map(|()| value));
-    drop(deserializer);
-    if let Some(error) = decode.failure.borrow_mut().take() {
-        return Err(error.into());
-    }
-    let value = result?;
-    Ok(decode.allocation.into_inner().into_value(value))
+    let value = accounting.deserialize(&mut deserializer)?;
+    deserializer.end().map_err(MetadataDecodeError::Codec)?;
+    Ok(value)
 }

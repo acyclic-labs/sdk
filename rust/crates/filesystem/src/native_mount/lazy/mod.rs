@@ -85,7 +85,7 @@ struct SourceChangeRecorder<A: 'static, O: 'static, D, S> {
     constructor_inputs: Mutex<Option<SourceConstructorInputs<A, O, D, S>>>,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 struct SelectedImportProof {
     destination: crate::LazySnapshotRef,
     source: crate::LazySnapshotRef,

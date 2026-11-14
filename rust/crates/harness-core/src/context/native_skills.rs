@@ -394,7 +394,7 @@ impl NativeSkills {
             &related
         };
         Ok(Some(
-            view.read_file_at_snapshot(record.cut, record.file_id, maximum, &mut accounting)
+            view.read_file_at_snapshot(&record.cut, record.file_id, maximum, &mut accounting)
                 .await?
                 .bytes,
         ))
@@ -424,7 +424,7 @@ impl NativeSkills {
             std::borrow::Cow::Borrowed(&record.root),
             config.profile,
             config.limits,
-            Some(record.reference),
+            Some(record.reference.clone()),
             None,
             work,
             cancellation,
@@ -445,7 +445,7 @@ impl NativeSkills {
         )?;
         let chunk = source
             .read_range(
-                record.reference,
+                record.reference.clone(),
                 &path,
                 record.node.version,
                 0,
@@ -494,7 +494,7 @@ impl NativeSkills {
                 std::borrow::Cow::Borrowed(root),
                 config.profile,
                 config.limits,
-                Some(cut.source),
+                Some(cut.source.clone()),
                 None,
                 &work,
                 &cancellation,
@@ -507,7 +507,7 @@ impl NativeSkills {
                 root,
                 directory: LazyDiscovery {
                     view,
-                    cut,
+                    cut: cut.clone(),
                     work: &work,
                 },
                 native,
@@ -717,7 +717,7 @@ impl SkillReader for ProjectCatalog<'_> {
             let (lookup, _, allocation) = self
                 .directory
                 .view
-                .lookup_at_snapshot(*cut, &path, &mut accounting)
+                .lookup_at_snapshot(cut, &path, &mut accounting)
                 .await?;
             let lookup =
                 lookup.ok_or_else(|| Error::NotFound("discovered skill disappeared".into()))?;
@@ -741,7 +741,7 @@ impl SkillReader for ProjectCatalog<'_> {
                     &self.sources.journal,
                     RetainedSource::Shadow(Box::new(ShadowSource {
                         volume: self.sources.journal.clone(),
-                        cut: *cut,
+                        cut: cut.clone(),
                         file_id: record.file_id,
                     })),
                 )?,
@@ -753,7 +753,7 @@ impl SkillReader for ProjectCatalog<'_> {
                 .directory
                 .view
                 .read_at_snapshot(
-                    *cut,
+                    cut,
                     &path,
                     Some(acyclic_fs::ByteRange {
                         offset: 0,
@@ -773,7 +773,7 @@ impl SkillReader for ProjectCatalog<'_> {
                         cancellation: work.cancellation(),
                     };
                     let (chunk, _) = view
-                        .read_at_snapshot(*cut, path, Some(range), range.length, &mut accounting)
+                        .read_at_snapshot(cut, path, Some(range), range.length, &mut accounting)
                         .await?;
                     Ok(crate::layers::MarkerChunk {
                         bytes: chunk.bytes,
@@ -808,7 +808,7 @@ impl DiscoverySource for UserCatalogSource<'_> {
         maximum: u32,
     ) -> BoxProviderFuture<'a, Result<Option<DiscoveryPage<SourceReference, Self::Cursor>>>> {
         Box::pin(async move {
-            let reference = revision.copied().unwrap_or_else(|| self.source.reference());
+            let reference = revision.cloned().unwrap_or_else(|| self.source.reference());
             let cancellation = self.work.cancellation();
             let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
             let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
@@ -828,7 +828,14 @@ impl DiscoverySource for UserCatalogSource<'_> {
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let selected = self
                 .source
-                .list_page(reference, &path, cursor, maximum, self.work, cancellation)
+                .list_page(
+                    reference.clone(),
+                    &path,
+                    cursor,
+                    maximum,
+                    self.work,
+                    cancellation,
+                )
                 .await;
             let mut page = match selected {
                 Ok(page) => page,
@@ -892,7 +899,7 @@ impl SkillReader for UserCatalogSource<'_> {
             )?;
             let node = self
                 .source
-                .lookup(*reference, &parsed, self.work, cancellation)
+                .lookup(reference.clone(), &parsed, self.work, cancellation)
                 .await
                 .map_err(storage)?
                 .ok_or_else(|| Error::NotFound("discovered skill disappeared".into()))?;
@@ -905,7 +912,7 @@ impl SkillReader for UserCatalogSource<'_> {
             let prefix = self
                 .source
                 .read_range(
-                    *reference,
+                    reference.clone(),
                     &parsed,
                     node.version,
                     0,
@@ -922,7 +929,7 @@ impl SkillReader for UserCatalogSource<'_> {
                 crate::layers::off_from_prefix(&prefix.bytes, length, work, |range| async move {
                     let chunk = source
                         .read_range(
-                            *reference,
+                            reference.clone(),
                             parsed,
                             node.version,
                             range.offset,

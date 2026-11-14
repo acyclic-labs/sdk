@@ -185,6 +185,7 @@ pub async fn tail_response<P: crate::StreamProvider + ?Sized>(
         .then_some(request.durable_through)
         .flatten();
     let observation = crate::HeadsRequest {
+        at: None,
         retained: Default::default(),
         durable_through: through,
         projection,

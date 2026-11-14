@@ -239,6 +239,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         };
         loop {
             let request = ChildrenPageRequest {
+                offset: 0,
                 tail_stream: None,
                 parent: Some(parent.clone()),
                 after,
@@ -407,6 +408,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         after: Option<StreamPath>,
     ) -> Result<(Vec<ActorReference>, Option<StreamPath>), Error> {
         let request = ChildrenPageRequest {
+            offset: 0,
             tail_stream: None,
             parent: Some(self.interests_path(shard)?),
             after,

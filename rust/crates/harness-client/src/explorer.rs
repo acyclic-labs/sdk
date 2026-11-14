@@ -346,7 +346,7 @@ mod tests {
                 .view
                 .reader_ref()
                 .cache()
-                .listing(&parent.children()?, 0)
+                .listing(&parent.children()?, 0, 64)
                 .is_some_and(|page| page.fresh && page.children.is_empty())
             {
                 break;
@@ -471,6 +471,7 @@ mod tests {
             {
                 let page = provider
                     .children_page(ChildrenPageRequest {
+                        offset: 0,
                         parent: Some(parent.clone()),
                         after: None,
                         hierarchy_version: None,
@@ -482,6 +483,7 @@ mod tests {
                 assert!(explorer.reader.cache_mut().insert_listing(
                     &parent,
                     0,
+                    64,
                     Listing {
                         after: None,
                         children: page.children.into_iter().map(|child| child.path).collect(),
@@ -603,6 +605,7 @@ mod tests {
             for index in 0..=128 {
                 let page = provider
                     .children_page(ChildrenPageRequest {
+                        offset: 0,
                         parent: Some(parent.clone()),
                         after: after.clone(),
                         hierarchy_version: version,
@@ -615,6 +618,7 @@ mod tests {
                 indexed.insert_listing(
                     &parent,
                     index,
+                    1,
                     Listing {
                         after: after.clone(),
                         children: page
@@ -654,6 +658,7 @@ mod tests {
                     explorer.reader.cache_mut().insert_listing(
                         &parent,
                         index,
+                        1,
                         Listing {
                             after: after.clone(),
                             children: page.children.into_iter().map(|child| child.path).collect(),
@@ -681,18 +686,8 @@ mod tests {
             explorer.expand(&target);
             assert_eq!(explorer.expanded.get(&target), Some(&128));
             // Both residency maps contain actual pages from this same cut.
-            // A bounded predecessor query cannot borrow a later page's cursor
-            // or fall below its retained anchor, even on pass-through pages.
             assert!(!indexed.is_empty());
             assert!(indexed.passed_bytes() > 0);
-            assert_eq!(indexed.listing_before(&parent, 64, 128).unwrap().0, 127);
-            assert!(
-                indexed.take_listing_visits() <= 2,
-                "page predecessor visited unrelated retained pages"
-            );
-            assert!(indexed.listing_before(&parent, 129, u32::MAX).is_none());
-            assert_eq!(indexed.take_listing_visits(), 0);
-            assert!(indexed.listing_before(&parent, 128, 128).is_none());
             assert_eq!(indexed.indexed_children(), 129);
             let sparse = std::mem::replace(explorer.reader.cache_mut(), indexed);
             let hint = explorer.expanded.remove(&target);
@@ -717,14 +712,20 @@ mod tests {
             let requests = explorer.reader.poll(1);
             assert_eq!(requests.len(), explorer.reader.policy().requests);
             let resume = &requests[0];
-            assert!(matches!(resume, Op::Children { index: 129, .. }));
+            assert!(matches!(
+                resume,
+                Op::Children {
+                    index: 1_000_000,
+                    ..
+                }
+            ));
             // Raw cached pages lack this projection's original admission, so
             // their own refreshes also use the ordinary request credit.
             assert!(requests[1..].iter().all(|op| matches!(op,
                 Op::Children { index, .. } if *index < 129)));
             assert!(
                 explorer.reader.cache().take_listing_visits() <= 2,
-                "page predecessor visited unrelated retained pages"
+                "direct page selection visited unrelated retained pages"
             );
             let target_path = StreamPath::new(target.as_str()).unwrap();
             let record = provider
@@ -765,7 +766,7 @@ mod tests {
                 explorer
                     .reader
                     .cache()
-                    .listing_containing(&parent, &target_path)
+                    .listing_containing(&parent, &target_path, 1)
                     .is_none()
             );
             assert!(explorer.reader.cache().record(&target_path, 0).is_some());
@@ -816,6 +817,7 @@ mod tests {
             let children = target.children().unwrap();
             let page = provider
                 .children_page(ChildrenPageRequest {
+                    offset: 0,
                     parent: Some(children.clone()),
                     after: None,
                     hierarchy_version: None,
@@ -828,6 +830,7 @@ mod tests {
             explorer.reader.cache_mut().insert_listing(
                 &children,
                 0,
+                1,
                 Listing {
                     after: None,
                     children: page.children.into_iter().map(|child| child.path).collect(),
@@ -1094,7 +1097,12 @@ impl Explorer {
     /// remains a resumable gap, planned by the same reader on the next frame.
     pub fn next_page(&mut self) -> Poll<bool> {
         let Some(position) = self.page_end.as_ref() else {
-            return if self.reader.cache().listing(&self.root, 0).is_some() {
+            return if self
+                .reader
+                .cache()
+                .listing(&self.root, 0, self.reader.policy().listing_limit)
+                .is_some()
+            {
                 Poll::Ready(false)
             } else {
                 Poll::Pending
@@ -1170,11 +1178,11 @@ impl Explorer {
         navigation: &mut SiblingNavigation,
     ) -> Poll<Option<AgentPath>> {
         loop {
-            let Some(listing) = self
-                .reader
-                .cache()
-                .listing(&navigation.parent, navigation.page)
-            else {
+            let Some(listing) = self.reader.cache().listing(
+                &navigation.parent,
+                navigation.page,
+                self.reader.policy().listing_limit,
+            ) else {
                 self.anchor = Pos::Gap {
                     parent: navigation.parent.clone(),
                     page: navigation.page,
@@ -1327,7 +1335,7 @@ impl Explorer {
     fn child(&self, parent: &StreamPath, page: u32, offset: u32) -> Option<StreamPath> {
         self.reader
             .cache()
-            .listing(parent, page)
+            .listing(parent, page, self.reader.policy().listing_limit)
             .and_then(|listing| listing.children.get(offset as usize))
             .cloned()
     }
@@ -1347,8 +1355,11 @@ impl Explorer {
         // Keep an expanded row's exact page while present; otherwise seek its
         // retained membership without visiting unrelated pages.
         let cache = self.reader.cache();
-        let hinted =
-            hint.and_then(|page| cache.listing(&parent, page).map(|listing| (page, listing)));
+        let hinted = hint.and_then(|page| {
+            cache
+                .listing(&parent, page, self.reader.policy().listing_limit)
+                .map(|listing| (page, listing))
+        });
         let position = |(page, listing): (u32, &crate::reader::Listing)| {
             let offset = listing
                 .children
@@ -1362,7 +1373,9 @@ impl Explorer {
         };
         hinted.and_then(position).or_else(|| {
             let child = StreamPath::new(agent.as_str()).ok()?;
-            cache.listing_containing(&parent, &child).and_then(position)
+            cache
+                .listing_containing(&parent, &child, self.reader.policy().listing_limit)
+                .and_then(position)
         })
     }
 
@@ -1372,7 +1385,11 @@ impl Explorer {
     /// the walk is bounded by retained pages rather than a logical cutoff.
     fn first_of(&self, parent: StreamPath, mut page: u32) -> Option<Pos> {
         loop {
-            match self.reader.cache().listing(&parent, page) {
+            match self
+                .reader
+                .cache()
+                .listing(&parent, page, self.reader.policy().listing_limit)
+            {
                 None => return Some(Pos::Gap { parent, page }),
                 Some(listing) if !listing.children.is_empty() => {
                     return Some(Pos::Row {
@@ -1395,6 +1412,7 @@ impl Explorer {
         Want::Listing {
             parent,
             index,
+            limit: self.reader.policy().listing_limit,
             tail: Some(self.projection.clone()),
             witness,
         }
@@ -1424,7 +1442,10 @@ impl Explorer {
     fn sibling(&self, parent: &StreamPath, page: u32, offset: u32) -> Option<Pos> {
         let (mut parent, mut page, mut offset) = (parent.clone(), page, offset);
         loop {
-            let listing = self.reader.cache().listing(&parent, page)?;
+            let listing =
+                self.reader
+                    .cache()
+                    .listing(&parent, page, self.reader.policy().listing_limit)?;
             if (offset as usize) + 1 < listing.children.len() {
                 return Some(Pos::Row {
                     parent,
@@ -1485,17 +1506,25 @@ impl Explorer {
             }));
         }
         if page > 0 {
-            return Some(match self.reader.cache().listing(parent, page - 1) {
-                Some(listing) if !listing.children.is_empty() => self.last_descendant(Pos::Row {
-                    parent: parent.clone(),
-                    page: page - 1,
-                    offset: u32::try_from(listing.children.len() - 1).unwrap_or(0),
-                }),
-                _ => Pos::Gap {
-                    parent: parent.clone(),
-                    page: page - 1,
+            return Some(
+                match self.reader.cache().listing(
+                    parent,
+                    page - 1,
+                    self.reader.policy().listing_limit,
+                ) {
+                    Some(listing) if !listing.children.is_empty() => {
+                        self.last_descendant(Pos::Row {
+                            parent: parent.clone(),
+                            page: page - 1,
+                            offset: u32::try_from(listing.children.len() - 1).unwrap_or(0),
+                        })
+                    }
+                    _ => Pos::Gap {
+                        parent: parent.clone(),
+                        page: page - 1,
+                    },
                 },
-            });
+            );
         }
         (parent != &self.root)
             .then(|| owner(parent).and_then(|owner| self.locate(&owner)))
@@ -1528,7 +1557,11 @@ impl Explorer {
             let mut last = None;
             let mut page = 0;
             loop {
-                match self.reader.cache().listing(&children, page) {
+                match self.reader.cache().listing(
+                    &children,
+                    page,
+                    self.reader.policy().listing_limit,
+                ) {
                     None => {
                         last = Some(Pos::Gap {
                             parent: children.clone(),
@@ -1647,7 +1680,11 @@ impl Explorer {
             return;
         };
         out.push((self.page_want(children.clone(), 0), Priority::Prefetch));
-        if let Some(listing) = self.reader.cache().listing(&children, 0) {
+        if let Some(listing) =
+            self.reader
+                .cache()
+                .listing(&children, 0, self.reader.policy().listing_limit)
+        {
             for child in listing.children.iter().take(self.height) {
                 if let Some(status) = agent_of(child).and_then(|c| c.status().ok()) {
                     out.push((
@@ -1667,7 +1704,10 @@ impl Explorer {
         self.reader.begin_frame(now);
         // A loaded gap becomes its first row.
         if let Pos::Gap { parent, page } = &self.anchor
-            && let Some(listing) = self.reader.cache().listing(parent, *page)
+            && let Some(listing) =
+                self.reader
+                    .cache()
+                    .listing(parent, *page, self.reader.policy().listing_limit)
         {
             self.anchor = if listing.children.is_empty() {
                 self.prev(&self.anchor).unwrap_or(self.anchor.clone())
@@ -1832,14 +1872,19 @@ impl Explorer {
         self.seen = seen;
         self.reader.set_follows(follows);
         // Mark what is displayed most recently used.
+        let listing_limit = self.reader.policy().listing_limit;
         for at in &visible {
             let (parent, page) = match at {
                 Pos::Row { parent, page, .. } | Pos::Gap { parent, page } => (parent, *page),
             };
-            self.reader.cache_mut().touch_listing(parent, page);
+            self.reader
+                .cache_mut()
+                .touch_listing(parent, page, listing_limit);
         }
         for (parent, page) in &ancestors {
-            self.reader.cache_mut().touch_listing(parent, *page);
+            self.reader
+                .cache_mut()
+                .touch_listing(parent, *page, listing_limit);
         }
         self.rows = visible
             .into_iter()

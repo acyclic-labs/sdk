@@ -138,7 +138,7 @@ impl Diagnostic {
 pub const QUERY_PREFIX: &str = ".volumes/system/diagnostics/";
 
 /// One bounded UTF-8 interval of the original diagnostic.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiagnosticRead {
     /// Original bytes selected, before any presentation encoding.
     pub text: String,

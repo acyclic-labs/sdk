@@ -20,6 +20,29 @@ struct State {
 }
 
 impl State {
+    // Publication order is already the retained inventory's order. Seek that
+    // owner directly instead of replaying history or registering request pins.
+    fn namespace_at<E>(
+        &self,
+        index: u64,
+        mut examine: impl FnMut() -> Result<(), E>,
+    ) -> Result<Option<&NamespaceCut>, E> {
+        let (mut low, mut high) = (0, self.retained.len());
+        while low < high {
+            examine()?;
+            let middle = low + (high - low) / 2;
+            if self.retained[middle].index <= index {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        Ok(low
+            .checked_sub(1)
+            .and_then(|at| self.retained.get(at))
+            .filter(|fact| fact.index == index)
+            .and_then(|fact| fact.namespace.get()))
+    }
     /// The tail of `path`; `None` when it does not exist. Every planner reads
     /// presence and tails through this one lookup.
     fn tail(&self, path: &StreamPath) -> Option<u64> {

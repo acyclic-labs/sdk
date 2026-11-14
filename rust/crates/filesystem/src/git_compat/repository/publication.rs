@@ -13,7 +13,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
     ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
         let tree = GitTreeRef::exact(self.workspace_id, generation);
         let commit = GitCommit::new(
-            tree,
+            tree.clone(),
             tree,
             None,
             tracked_paths,
@@ -37,13 +37,13 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         if publication.workspace_tree.workspace_id() != current.workspace_id {
             return Err(GitCompatError::WorkspaceMismatch);
         }
-        let previous = head.and_then(|id| state.commits.get(&id).map(|commit| commit.tree));
-        if previous == Some(publication.tree) {
+        let previous = head.and_then(|id| state.commits.get(&id).map(|commit| &commit.tree));
+        if previous == Some(&publication.tree) {
             return Ok(GitCommandOutput::NoOp);
         }
         if !capture_proof_valid(
-            publication.tree,
-            publication.workspace_tree,
+            &publication.tree,
+            &publication.workspace_tree,
             publication.capture_proof.as_ref(),
             previous,
         ) {

@@ -199,7 +199,7 @@ impl Client {
                 .map_err(|source| StreamError::InvalidResponse.with_source(source))?,
         )?;
         view.validate_for(&request)?;
-        self.revisions.observe(&view.snapshot);
+        self.revisions.observe(&view.applied);
         Ok(view)
     }
 

@@ -2,8 +2,130 @@ use super::*;
 use crate::{HeadProjection, HeadsRequest, RevisionCut};
 use futures::FutureExt as _;
 
+#[tokio::test]
+async fn native_indexed_children_share_the_head_cut_and_original_output_owner()
+-> Result<(), Box<dyn std::error::Error>> {
+    for local in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let provider: Arc<dyn crate::NativeStreamProvider> = if local {
+            Arc::new(LocalStream::open(directory.path(), LocalStreamLimits::default()).await?)
+        } else {
+            Arc::new(MemoryStream::default())
+        };
+        for path in [
+            "native/source",
+            "native/source/kids/a/status",
+            "native/source/kids/b/status",
+            "native/source/kids/c/status",
+        ] {
+            provider.append(keyed_append(path, 0)?).await?;
+        }
+        provider
+            .fork(ForkRequest {
+                source: StreamPath::new("native/source")?,
+                destination: StreamPath::new("native/child")?,
+                at_tail: Some(0),
+                exclude: Vec::new(),
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+        let mut selected = request(&["native/child"])?;
+        selected.children = Some(crate::ChildrenPageRequest {
+            offset: 1,
+            parent: Some(StreamPath::new("native/child/kids")?),
+            after: None,
+            hierarchy_version: None,
+            limit: 1,
+            tail_stream: Some(StreamPath::new("status")?),
+        });
+        selected.limit = 2;
+        let meter = Arc::new(Meter::default());
+        let future = provider.native_heads(selected.clone(), meter.original());
+        let mut result = None;
+        let physical = acyclic_test_support::measure(|| result = future.now_or_never());
+        let output = result.ok_or("native child capture unexpectedly parked")???;
+        let expected = provider.heads(selected.clone()).await?;
+        output.value().validate_for(&selected)?;
+        assert_eq!(output.value(), &expected);
+        // The provider frame was admitted before the measurement. Every
+        // physical allocation during capture belongs to the same original.
+        assert_eq!(
+            physical.count_total + 1,
+            meter.allocations.load(Ordering::SeqCst)
+        );
+        let page = output.value().children.as_ref().ok_or("missing page")?;
+        assert_eq!(page.children.len(), 1);
+        let child = &page.children[0];
+        assert_eq!(child.path.as_str(), "native/child/kids/b");
+        assert_eq!(page.next_after.as_ref(), Some(&child.path));
+        assert_eq!(child.tail, Some(1));
+        assert_eq!(
+            child
+                .origin
+                .as_ref()
+                .ok_or("missing inherited origin")?
+                .source
+                .as_str(),
+            "native/source/kids/b"
+        );
+        let record = child
+            .tail_record
+            .as_ref()
+            .ok_or("missing projected record")?;
+        assert_eq!(record.origin.as_str(), "native/source/kids/b/status");
+        assert_eq!(
+            meter.read.load(Ordering::SeqCst),
+            record.payload_bytes() as u64
+        );
+        let alias = child.path.clone();
+        drop(output);
+        assert!(
+            meter.held.load(Ordering::SeqCst) > 0,
+            "path alias lost its original allocation owner"
+        );
+        drop(alias);
+        meter.assert_refunded();
+
+        selected.at = Some(expected.snapshot.clone());
+        provider
+            .append(keyed_append("native/child/kids/aa/status", 0)?)
+            .await?;
+        let historical_meter = Arc::new(Meter::default());
+        let historical = provider
+            .native_heads(selected.clone(), historical_meter.original())
+            .await??;
+        historical.value().validate_for(&selected)?;
+        assert_eq!(historical.value().snapshot, expected.snapshot);
+        assert!(historical.value().applied.index > expected.snapshot.index);
+        assert_eq!(historical.value().children, expected.children);
+        assert_eq!(historical.value().heads, expected.heads);
+        drop(historical);
+        historical_meter.assert_refunded();
+
+        let denied = Arc::new(Meter::default());
+        let future = provider.native_heads(selected.clone(), denied.original());
+        denied.deny_allocation.store(true, Ordering::SeqCst);
+        let failure = future.await.err().ok_or("unfunded child page escaped")?;
+        assert_original_denial(&failure, "allocation");
+        assert_eq!(denied.allocations.load(Ordering::SeqCst), 1);
+        denied.assert_refunded();
+
+        let mut invalid = selected;
+        invalid.children.as_mut().ok_or("selection")?.after =
+            Some(StreamPath::new("other/parent/item")?);
+        let before = Arc::new(Meter::default());
+        assert!(matches!(
+            provider.native_heads(invalid, before.original()).await?,
+            Err(StreamError::InvalidArgument)
+        ));
+        assert_eq!(before.allocations.load(Ordering::SeqCst), 0);
+    }
+    Ok(())
+}
+
 fn request(paths: &[&str]) -> Result<HeadsRequest, StreamError> {
     Ok(HeadsRequest {
+        at: None,
         paths: paths
             .iter()
             .map(StreamPath::new)
@@ -90,7 +212,15 @@ async fn coherent_native_heads_keep_original_credit_and_leave_future_cut_append_
                 .await??;
             output.value().validate_for(&selected)?;
             assert_eq!(output.value(), &original);
-            assert_eq!(meter.examined.load(Ordering::SeqCst), paths.len() as u64);
+            // One selection plus its namespace components. Resolving the
+            // covering fork is charged on this original too; it must not scan
+            // records or unrelated paths to discover the input revision.
+            let examined = meter.examined.load(Ordering::SeqCst);
+            let bound = paths
+                .iter()
+                .map(|path| 1 + path.split('/').count() as u64)
+                .sum::<u64>();
+            assert!(examined >= paths.len() as u64 && examined <= bound);
             assert_eq!(
                 meter.allocations.load(Ordering::SeqCst),
                 if paths.len() == 1 { 1 } else { 2 }

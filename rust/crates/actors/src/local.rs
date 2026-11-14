@@ -983,6 +983,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             .map(|actor| self.path(actor))
             .collect::<Result<acyclic_stream::HeadSet<_>, _>>()?;
         let request = acyclic_stream::HeadsRequest {
+            at: None,
             retained: Default::default(),
             durable_through: None,
             projection: acyclic_stream::HeadProjection::History,

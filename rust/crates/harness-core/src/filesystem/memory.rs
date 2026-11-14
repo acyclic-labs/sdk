@@ -183,7 +183,7 @@ impl<
             hook_names: &[],
             definition: ToolDefinition {
                 name: "acyclic.list_files".into(),
-                revision: "2".into(),
+                revision: "3".into(),
                 description: "List one bounded, generation-pinned page of the agent-private volume"
                     .into(),
                 input_schema: json!({
@@ -191,7 +191,7 @@ impl<
                     "properties": {
                         "path": {"type": "string"},
                         "expected_generation": {"type": ["object", "null"]},
-                        "after": {"type": ["string", "null"]},
+                        "after": {"type": ["array", "null"], "items": {"type":"integer", "minimum":0, "maximum":255}},
                         "maximum_entries": {"type": "integer", "minimum": 1, "maximum": u32::MAX}
                     },
                     "required": ["path", "maximum_entries"],
@@ -202,10 +202,9 @@ impl<
                     "properties": {
                         "generation": {"type": "object"},
                         "entries": {"type": "array", "items": {"type": "object"}},
-                        "has_more": {"type": "boolean"},
-                        "next_after": {"type": ["string", "null"]}
+                        "next": {"type": ["array", "null"], "items":{"type":"integer","minimum":0,"maximum":255}}
                     },
-                    "required": ["generation", "entries", "has_more", "next_after"],
+                    "required": ["generation", "entries", "next"],
                     "additionalProperties": false
                 }),
                 projection_schema: crate::tool::json_projection_schema(json!({
@@ -213,10 +212,9 @@ impl<
                     "properties": {
                         "generation": {"type": "object"},
                         "entries": {"type": "array", "items": {"type": "object"}},
-                        "has_more": {"type": "boolean"},
-                        "next_after": {"type": ["string", "null"]}
+                        "next": {"type": ["array", "null"], "items":{"type":"integer","minimum":0,"maximum":255}}
                     },
-                    "required": ["generation", "entries", "has_more", "next_after"],
+                    "required": ["generation", "entries", "next"],
                     "additionalProperties": false
                 })),
             },
@@ -473,9 +471,9 @@ impl<
         &self,
         path: &str,
         expected_generation: Option<&GenerationRef>,
-        after: Option<&LogicalName>,
+        after: Option<&[u8]>,
         maximum_entries: u32,
-    ) -> Result<(GenerationRef, DirectoryPage)> {
+    ) -> Result<crate::conversation::PrivateDirectoryPage> {
         self.content_verifier
             .list_private_directory(
                 &self.volume,
@@ -533,9 +531,9 @@ impl<
         granted_prefix: &str,
         path: &str,
         expected_generation: Option<&GenerationRef>,
-        after: Option<&LogicalName>,
+        after: Option<&[u8]>,
         maximum_entries: u32,
-    ) -> Result<(GenerationRef, DirectoryPage)> {
+    ) -> Result<crate::conversation::PrivateDirectoryPage> {
         self.delegated_reader(scope)?
             .list_private_directory(
                 &self.volume,

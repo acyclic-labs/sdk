@@ -48,7 +48,14 @@ where
     }
     let mut accounting = crate::kernel::KernelAccounting::native(work, cancellation);
     let source = lazy
-        .source_lookup(lazy.source_reference(), path, &mut accounting)
+        .source_lookup(
+            &lazy
+                .source_reference(&mut accounting)
+                .await
+                .map_err(lazy_error)?,
+            path,
+            &mut accounting,
+        )
         .await
         .map_err(lazy_error)?;
     let changed = lazy
@@ -77,7 +84,14 @@ where
     if stamp != candidate.stamp {
         // Accept a hint only after revalidating the exact imported source version.
         let current = lazy
-            .source_lookup(lazy.source_reference(), path, &mut accounting)
+            .source_lookup(
+                &lazy
+                    .source_reference(&mut accounting)
+                    .await
+                    .map_err(lazy_error)?,
+                path,
+                &mut accounting,
+            )
             .await
             .map_err(lazy_error)?;
         if source

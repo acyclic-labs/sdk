@@ -117,13 +117,14 @@ where
             .map_err(lazy_error)?
         {
             let input = plan
-                .input_digest(destination, &mut accounting)
+                .input_digest(&destination, &mut accounting)
                 .map_err(lazy_error)?;
             let remembered = self
                 .removals
                 .lock()
                 .map_err(|_| MountSourceError::Stale)?
-                .publication;
+                .publication
+                .clone();
             self.replay_selected_publication(
                 operation,
                 generation,

@@ -27,6 +27,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
             return Err(violated!());
         };
         let request = crate::HeadsRequest {
+            at: None,
             retained: [
                 crate::RetainedRecord {
                     commit_id: receipt.commit_id,
@@ -57,6 +58,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
                 .into_iter()
                 .collect(),
             children: Some(ChildrenPageRequest {
+                offset: 0,
                 parent: Some(path("coherent")?),
                 tail_stream: Some(path("state")?),
                 after: None,
@@ -252,11 +254,13 @@ pub(super) async fn selected_child_tails<P: StreamProvider + ?Sized>(
         return Err(violated!());
     };
     let request = crate::HeadsRequest {
+        at: None,
         retained: Default::default(),
         durable_through: None,
         projection: Default::default(),
         paths: selected.into_iter().collect(),
         children: Some(ChildrenPageRequest {
+            offset: 0,
             parent: Some(path("selected-children")?),
             tail_stream: Some(path("state")?),
             after: None,

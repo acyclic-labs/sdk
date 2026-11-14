@@ -13,7 +13,25 @@ pub struct SourceCursor {
 }
 
 impl SourceCursor {
-    pub(crate) fn detached(source: SourceReference, token: u64) -> Self {
+    pub(super) fn routed(
+        mut self,
+        source: &SourceReference,
+        ctx: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<Self, DemandError> {
+        self.source = SourceReference::pair(source.identity, source, &self.source, ctx)?;
+        Ok(self)
+    }
+    pub(super) fn unroute(mut self, source: &SourceReference) -> Result<Self, DemandError> {
+        let (parent, child) = self.source.paired().map_err(|_| DemandError::StaleCursor)?;
+        if parent != *source {
+            return Err(DemandError::StaleCursor);
+        }
+        self.source = child;
+        Ok(self)
+    }
+    /// A provider continuation with its complete immutable paging metadata.
+    /// Compositions bind it to their query without replacing this reference.
+    pub fn detached(source: SourceReference, token: u64) -> Self {
         Self {
             source,
             token,
@@ -29,6 +47,7 @@ impl SourceCursor {
             SourceReference {
                 identity: [0; 16],
                 epoch: 0,
+                components: acyclic_stream::OwnedBytes::new(),
             },
             token,
         )
@@ -37,6 +56,11 @@ impl SourceCursor {
     /// Position from a continuation already checked by `Computed`.
     pub fn offset(&self) -> u64 {
         self.token
+    }
+
+    /// Provider metadata from a continuation already checked by its composition.
+    pub fn reference(&self) -> &SourceReference {
+        &self.source
     }
 }
 

@@ -30,19 +30,24 @@ impl<
             // replacement for an authored deletion that still masks them.
             _ if self.tombstoned(cut.overlay, root, ctx).await? => None,
             _ => self
-                .source_lookup(cut.source, root, ctx)
+                .source_lookup(&cut.source, root, ctx)
                 .await?
-                .map(|node| (cut.source, node)),
+                .map(|node| (cut.source.clone(), node)),
         };
-        let state = LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
-        let (paths, _) = self.enumerate_paths(root, cut, &state, ctx).await?;
+        let state = LazyWorkspaceState::new(
+            cut.workspace_id,
+            cut.source.clone(),
+            cut.overlay,
+            cut.shadows,
+        );
+        let (paths, _) = self.enumerate_paths(root, &cut, &state, ctx).await?;
         let start = crate::Generation {
             workspace: self.workspace.clone(),
             id: cut.authored_generation,
             publication_closure: None,
         };
         let (generation, overlay) = self
-            .exactify_into(root, cut, paths, start, permit, ctx)
+            .exactify_into(root, &cut, paths, start, permit, ctx)
             .await?;
         if let Some((source, node)) = observation {
             let state = self.state(ctx).await?;
@@ -78,13 +83,14 @@ impl<
     /// source-derived identity that materializing any view of the cut binds,
     /// which is what a merge base of two such views needs.
     ///
-    /// A cut leaves unobserved files live, so the source as it is now is not
-    /// the cut's content: an in-place edit after the fork would read as the
-    /// base and erase itself from a merge. Only the witness's observation
-    /// pins what the forked side started from. A path it never observed, or
-    /// whose source has since changed version, has no recoverable base, and
-    /// the result is `None`. Reads stay pinned to the observed version, so a
-    /// change racing this call fails it rather than supplying a base.
+    /// A provider may be unable to retain historical bytes, so the source as
+    /// it is now is not the cut's content: an in-place edit after the fork
+    /// would read as the base and erase itself from a merge. The witness's
+    /// observation pins what the forked side started from. A path it never
+    /// observed, or whose observed version is no longer available, has no
+    /// recoverable base, and the result is `None`. Reads stay pinned to the
+    /// observed version, so a change racing this call fails it rather than
+    /// supplying a base.
     ///
     /// The scratch fork is named by the pinned cut and path set, so a retry
     /// resumes it and a different observation never reuses it.
@@ -95,12 +101,12 @@ impl<
         witness: &Self,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<crate::Generation<A, O>>, LazyWorkspaceError> {
-        self.validate_snapshot(cut, ctx).await?;
+        self.validate_snapshot(&cut, ctx).await?;
         let witnessed = witness.state(ctx).await?;
-        if witnessed.fork_origin.map(|origin| origin.snapshot) != Some(cut) {
+        if witnessed.fork_origin.map(|origin| origin.snapshot) != Some(cut.clone()) {
             return Ok(None);
         }
-        let live = self.source.reference();
+        let live = self.source_reference(ctx).await?;
         let mut overlay = cut.overlay;
         for path in paths {
             let Some(LazyOverlayChange::Observe { source, node, .. }) =
@@ -110,7 +116,7 @@ impl<
             };
             if node.kind != SourceNodeKind::RegularFile
                 || self
-                    .source_lookup(live, path, ctx)
+                    .source_lookup(&live, path, ctx)
                     .await?
                     .is_none_or(|current| {
                         current.version != node.version
@@ -132,7 +138,7 @@ impl<
                 )
                 .await?;
         }
-        self.exactify_cut_overlay(cut, paths, overlay, ctx)
+        self.exactify_cut_overlay(&cut, paths, overlay, ctx)
             .await
             .map(Some)
     }
@@ -148,9 +154,9 @@ impl<
         witness: &Self,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
-        self.validate_snapshot(cut, ctx).await?;
+        self.validate_snapshot(&cut, ctx).await?;
         let witnessed = witness.state(ctx).await?;
-        if witnessed.fork_origin.map(|origin| origin.snapshot) != Some(cut) {
+        if witnessed.fork_origin.map(|origin| origin.snapshot) != Some(cut.clone()) {
             return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
         }
         let authored = accounted!(ctx, |work, cancel| self.workspace.generation(
@@ -159,7 +165,7 @@ impl<
             cancel
         ))?;
         let tombstones = witness.source_tombstones_owned(usize::MAX, ctx).await?;
-        let deleted_paths = match self.deleted_base_paths(cut, &tombstones.value, ctx).await {
+        let deleted_paths = match self.deleted_base_paths(&cut, &tombstones.value, ctx).await {
             Ok(paths) => paths,
             Err(error) => {
                 tombstones.retire(ctx)?;
@@ -187,11 +193,11 @@ impl<
                     Err(LazyWorkspaceError::WorkspaceCause(error)) if error.is_absent() => {}
                     Err(error) => return Err(error),
                 }
-                let live = self.source.reference();
+                let live = self.source_reference(ctx).await?;
                 let observation = match witness.overlay_fact(witnessed.overlay, path, ctx).await? {
                     Some(LazyOverlayChange::Observe { source, node, .. }) => {
                         if self
-                            .source_lookup(live, path, ctx)
+                            .source_lookup(&live, path, ctx)
                             .await?
                             .is_none_or(|current| {
                                 current.version != node.version
@@ -210,7 +216,7 @@ impl<
                         removed: Some(version),
                     }) => {
                         let node = self
-                            .source_lookup(live, path, ctx)
+                            .source_lookup(&live, path, ctx)
                             .await?
                             .filter(|node| node.version == version)
                             .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
@@ -228,7 +234,7 @@ impl<
                         .is_ok() =>
                     {
                         let node = self
-                            .source_lookup(live, path, ctx)
+                            .source_lookup(&live, path, ctx)
                             .await?
                             .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
                         Some(LazyOverlayChange::Observe {
@@ -251,7 +257,7 @@ impl<
             if selected.value.is_empty() {
                 return Ok(authored);
             }
-            self.exactify_cut_overlay(cut, &selected.value, overlay, ctx)
+            self.exactify_cut_overlay(&cut, &selected.value, overlay, ctx)
                 .await
         }
         .await;
@@ -265,17 +271,22 @@ impl<
     /// authored replacement. Reuse the shared paged, accounted subtree walk.
     async fn deleted_base_paths(
         &self,
-        cut: LazySnapshotRef,
+        cut: &LazySnapshotRef,
         tombstones: &[(String, SourceVersion)],
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Owned<Vec<String>>, LazyWorkspaceError> {
-        let state = LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
+        let state = LazyWorkspaceState::new(
+            cut.workspace_id,
+            cut.source.clone(),
+            cut.overlay,
+            cut.shadows,
+        );
         let mut paths = Owned::allocate(0, ctx)?;
         let result = async {
             let mut expanded: Option<&str> = None;
             for (path, version) in tombstones {
                 if self
-                    .saved_source_subtree(cut.overlay, cut.source, path, ctx)
+                    .saved_source_subtree(cut.overlay, &cut.source, path, ctx)
                     .await?
                 {
                     continue;
@@ -287,7 +298,7 @@ impl<
                     continue;
                 }
                 let Some(node) = self
-                    .source_lookup(self.source.reference(), path, ctx)
+                    .source_lookup(&self.source_reference(ctx).await?, path, ctx)
                     .await?
                 else {
                     continue;
@@ -325,7 +336,7 @@ impl<
     pub(super) async fn saved_source_subtree(
         &self,
         overlay: LazyOverlayId,
-        source: SourceReference,
+        source: &SourceReference,
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<bool, LazyWorkspaceError> {
@@ -334,7 +345,7 @@ impl<
             if matches!(
                 self.overlay_fact(overlay, path, ctx).await?,
                 Some(LazyOverlayChange::Observe { source: saved, complete: true, .. })
-                    if saved == source
+                    if &saved == source
             ) {
                 return Ok(true);
             }
@@ -347,7 +358,7 @@ impl<
 
     async fn exactify_cut_overlay(
         &self,
-        cut: LazySnapshotRef,
+        cut: &LazySnapshotRef,
         paths: &[String],
         overlay: LazyOverlayId,
         ctx: &mut KernelAccounting<'_>,
@@ -355,7 +366,7 @@ impl<
         let pinned = LazySnapshotRef::new(
             cut.workspace_id,
             cut.authored_generation,
-            cut.source,
+            cut.source.clone(),
             overlay,
             cut.shadows,
         );
@@ -407,7 +418,7 @@ impl<
         let head = accounted!(ctx, |work, cancel| fork.head(work, cancel))?;
         self.exactify_into(
             "/",
-            pinned,
+            &pinned,
             owned,
             head,
             crate::PublicationPermit::Unrestricted,
@@ -422,13 +433,18 @@ impl<
     pub(super) async fn exactify_into(
         &self,
         root: &str,
-        cut: LazySnapshotRef,
+        cut: &LazySnapshotRef,
         mut paths: Owned<Vec<String>>,
         start: crate::Generation<A, O>,
         permit: crate::PublicationPermit,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(crate::Generation<A, O>, LazyOverlayId), LazyWorkspaceError> {
-        let state = LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
+        let state = LazyWorkspaceState::new(
+            cut.workspace_id,
+            cut.source.clone(),
+            cut.overlay,
+            cut.shadows,
+        );
         let workspace = &start.workspace;
         paths
             .value
@@ -479,7 +495,6 @@ impl<
                         .inspect_unauthored(
                             &mut transaction.checkout,
                             path,
-                            Some(cut),
                             InspectBasis {
                                 state: Some(&state),
                                 retain_pinned_observation: true,
@@ -563,7 +578,7 @@ impl<
     pub(super) async fn enumerate_paths(
         &self,
         root: &str,
-        cut: LazySnapshotRef,
+        cut: &LazySnapshotRef,
         state: &LazyWorkspaceState,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Owned<Vec<String>>, bool), LazyWorkspaceError> {
@@ -583,7 +598,6 @@ impl<
                 .inspect_unauthored(
                     &mut checkout.value,
                     paths.value.first().ok_or(LazyWorkspaceError::Concurrent)?,
-                    Some(cut),
                     InspectBasis {
                         state: Some(state),
                         retain_pinned_observation: true,
@@ -649,7 +663,7 @@ impl<
                                 }
                                 let index = paths.value.len();
                                 crate::Transaction::<A, O>::push_mutation(&mut paths, path, ctx)?;
-                                if entry.kind == SourceNodeKind::Directory {
+                                if entry.node.is_directory() {
                                     directories.ensure_for_push(usize::MAX, ctx)?;
                                     directories.value.push(index);
                                 }

@@ -100,6 +100,7 @@ async fn publication_uses_only_required_sql_observations()
     assert!(matches!(
         provider
             .heads(HeadsRequest {
+                at: None,
                 retained: Default::default(),
                 durable_through: None,
                 projection: HeadProjection::History,
@@ -128,6 +129,7 @@ async fn publication_uses_only_required_sql_observations()
     let envelope = provider.read_commit(receipt.commit_id).await?;
     assert!(envelope.committed_at_micros > 0);
     let retained = HeadsRequest {
+        at: None,
         retained: [crate::RetainedRecord {
             commit_id: receipt.commit_id,
             path: original.path.clone(),
@@ -765,6 +767,7 @@ fn refresh_producer_retirement_ends_public_waits()
                     Box::pin(
                         provider
                             .heads(HeadsRequest {
+                                at: None,
                                 retained: Default::default(),
                                 durable_through: None,
                                 projection: HeadProjection::Tail,
