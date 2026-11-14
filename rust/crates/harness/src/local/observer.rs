@@ -480,6 +480,7 @@ mod tests {
         model::ModelEvent,
         test_support::{ScriptedEvent, ScriptedTurn},
     };
+    use acyclic_harness_client::AgentRecord as _;
     use std::sync::Arc;
 
     #[tokio::test]
@@ -504,167 +505,190 @@ mod tests {
             .await?,
         );
         harness.agents().await?;
-        let connection = harness.connect().await?;
-        let conversation = Conversation::open(connection.clone());
-        let mut original = conversation.observe(Some(0)).await?;
-        let input = conversation.send("first", "first question").await?;
-        let old = loop {
-            if let Event::Turn { entry, .. } = original.next().await?
-                && entry.inbox == input
-            {
-                break entry;
-            }
-        };
-        let (agents, root) = harness.agents().await?;
-        let state = agents.state(root).await.map_err(storage)?;
-        let old_owner = crate::agent::turn_id(&state, &old.input).map_err(storage)?;
+        let completion = harness
+            .agents
+            .get()
+            .expect("hosted agents")
+            .runtime
+            .completion();
+        let run = async {
+            let connection = harness.connect().await?;
+            let conversation = Conversation::open(connection.clone());
+            let mut original = conversation.observe(Some(0)).await?;
+            let input = conversation.send("first", "first question").await?;
+            eprintln!("observer regression: waiting for the original settled turn");
+            let old = loop {
+                if let Event::Turn { entry, .. } = original.next().await?
+                    && entry.inbox == input
+                {
+                    break entry;
+                }
+            };
+            let (agents, root) = harness.agents().await?;
+            let state = agents.state(root).await.map_err(storage)?;
+            let old_owner = crate::agent::turn_id(&state, &old.input).map_err(storage)?;
+            eprintln!("observer regression: draining the original opening cuts");
 
-        // Actual model files and actor records are replayed through the served
-        // session. The fixed opening cut bounds this drain even if appends follow.
-        let projection = acyclic_harness_client::EventProjection::new("observation".into());
-        let mut replay = Observer::opening(
-            &connection,
-            AgentSelection::new(root.clone(), 0, 0),
-            Some(&projection),
-        )?;
-        let mut drain = EventDrain::new(replay.sources().into_iter().map(|source| (source, 0)));
-        replay.absorb().await?;
-        while !drain.complete() {
-            let (event, delivery) = replay.next_projected().await?;
-            event?;
-            drain.accepted(&delivery);
+            // Actual model files and actor records are replayed through the served
+            // session. The fixed opening cut bounds this drain even if appends follow.
+            let projection = acyclic_harness_client::EventProjection::new("observation".into());
+            let mut replay = Observer::opening(
+                &connection,
+                AgentSelection::new(root.clone(), 0, 0),
+                Some(&projection),
+            )?;
+            let mut drain = EventDrain::new(replay.sources().into_iter().map(|source| (source, 0)));
             replay.absorb().await?;
-        }
-        assert!(replay.output_selection.is_none());
-        assert_eq!(replay.live().1, "");
-        let stale = StatusRecord {
-            output_owner: Some(old_owner),
-            cancelled_input: None,
-            child_settlement: None,
-            child_wakes: None,
-            phase: Phase::Running,
-            cursor: input + 1,
-            conversation: 0,
-        };
-        // Deterministically place the original running status after settlement,
-        // then reconsider the actual cached file records as delayed backfill.
-        assert!(
-            replay
-                .apply(
-                    AgentEvent::Status {
-                        agent: root.clone(),
-                        status: stale.clone(),
-                    },
-                    Some(1)
-                )?
-                .is_none()
-        );
-        replay.tail.select(0);
-        replay.absorb().await?;
-        assert_eq!(replay.live().1, "");
+            while !drain.complete() {
+                let (event, delivery) = replay.next_projected().await?;
+                event?;
+                drain.accepted(&delivery);
+                replay.absorb().await?;
+            }
+            assert!(replay.output_selection.is_none());
+            assert_eq!(replay.live().1, "");
+            let stale = StatusRecord {
+                output_owner: Some(old_owner),
+                cancelled_input: None,
+                child_settlement: None,
+                child_wakes: None,
+                phase: Phase::Running,
+                cursor: input + 1,
+                conversation: 0,
+            };
+            // Deterministically place the original running status after settlement,
+            // then reconsider the actual cached file records as delayed backfill.
+            assert!(
+                replay
+                    .apply(
+                        AgentEvent::Status {
+                            agent: root.clone(),
+                            status: stale.clone(),
+                        },
+                        Some(1)
+                    )?
+                    .is_none()
+            );
+            replay.tail.select(0);
+            replay.absorb().await?;
+            assert_eq!(replay.live().1, "");
 
-        let second = conversation.send("second", "second question").await?;
-        let mut current = conversation.observe(Some(1)).await?;
-        let old_prefix = format!("tools/.model/{}/", hex::encode(old_owner.into_bytes()));
-        loop {
-            current.next().await?;
-            current.absorb().await?;
-            assert_ne!(current.live().1, "old answer");
-            let mut fresh_file = false;
-            for record in current
-                .client
-                .resource_view(&current.resource)
-                .map_err(storage)?
-                .records()
-            {
-                let changes = acyclic_stream::decode_changes(&record.value).map_err(storage)?;
-                fresh_file |= changes.entries.iter().any(|entry| {
-                    std::str::from_utf8(&entry.key).is_ok_and(|path| {
-                        path.starts_with("tools/.model/")
-                            && !path.starts_with(&old_prefix)
-                            && path.contains("/reply/")
-                    })
-                });
+            let second = conversation.send("second", "second question").await?;
+            let mut current = conversation.observe(Some(1)).await?;
+            eprintln!("observer regression: waiting for the newer turn's model file");
+            let old_prefix = format!("tools/.model/{}/", hex::encode(old_owner.into_bytes()));
+            loop {
+                current.next().await?;
+                current.absorb().await?;
+                assert_ne!(current.live().1, "old answer");
+                let mut fresh_file = false;
+                for record in current
+                    .client
+                    .resource_view(&current.resource)
+                    .map_err(storage)?
+                    .records()
+                {
+                    let changes = acyclic_stream::decode_changes(&record.value).map_err(storage)?;
+                    fresh_file |= changes.entries.iter().any(|entry| {
+                        std::str::from_utf8(&entry.key).is_ok_and(|path| {
+                            path.starts_with("tools/.model/")
+                                && !path.starts_with(&old_prefix)
+                                && path.contains("/reply/")
+                        })
+                    });
+                }
+                if fresh_file {
+                    break;
+                }
             }
-            if fresh_file {
-                break;
-            }
-        }
-        let state = agents.state(root).await.map_err(storage)?;
-        let owner = state
-            .turn
-            .as_ref()
-            .and_then(|turn| turn.output_owner)
-            .ok_or_else(|| Error::Invalid("running model has no retained output owner".into()))?;
-        assert_ne!(owner, old_owner);
-        // Check the actual committed status once a real model file exists. A
-        // missing same-phase owner publication fails here instead of waiting
-        // forever for a display notification that can never arrive.
-        let status_path = root.status().map_err(storage)?;
-        let mut statuses =
-            acyclic_stream::Stream::new(Arc::clone(agents.provider()), status_path.as_str())
-                .map_err(storage)?
-                .replay(state.status_tail - 1)
-                .until(state.status_tail);
-        let status = statuses
-            .next_page()
-            .await
-            .map_err(storage)?
-            .and_then(|page| page.into_iter().next())
-            .ok_or_else(|| Error::Invalid("model output has no original status record".into()))?;
-        assert_eq!(
-            StatusRecord::decode(&status.value)
-                .map_err(storage)?
-                .output_owner,
-            Some(owner)
-        );
-        while current.live().1 != "fresh answer" {
-            current.next().await?;
-            current.absorb().await?;
-            assert_ne!(current.live().1, "old answer");
-        }
-        assert_eq!(
-            current
-                .output_selection
+            let state = agents.state(root).await.map_err(storage)?;
+            let owner = state
+                .turn
                 .as_ref()
-                .map(|selection| selection.owner),
-            Some(owner)
-        );
-        assert_eq!(current.live().0, LiveKind::Answer);
-        // A newer owner can arrive before an older settled conversation record.
-        // That older record must not clear the genuine newer display.
-        current.apply(
-            AgentEvent::Conversation {
-                agent: root.clone(),
-                sequence: 0,
-                entry: old,
-            },
-            Some(1),
-        )?;
-        assert_eq!(current.live().1, "fresh answer");
-        assert!(
-            current
-                .apply(
-                    AgentEvent::Status {
-                        agent: root.clone(),
-                        status: stale,
-                    },
-                    Some(1)
-                )?
-                .is_none()
-        );
-        assert_eq!(current.live().1, "fresh answer");
-        conversation.cancel_input(second).await?;
-        loop {
-            if let Event::Turn { entry, .. } = current.next().await?
-                && entry.inbox == second
-            {
-                break;
+                .and_then(|turn| turn.output_owner)
+                .ok_or_else(|| {
+                    Error::Invalid("running model has no retained output owner".into())
+                })?;
+            assert_ne!(owner, old_owner);
+            // Check the actual committed status once a real model file exists. A
+            // missing same-phase owner publication fails here instead of waiting
+            // forever for a display notification that can never arrive.
+            let status_path = root.status().map_err(storage)?;
+            let mut statuses =
+                acyclic_stream::Stream::new(Arc::clone(agents.provider()), status_path.as_str())
+                    .map_err(storage)?
+                    .replay(state.status_tail - 1)
+                    .until(state.status_tail);
+            let status = statuses
+                .next_page()
+                .await
+                .map_err(storage)?
+                .and_then(|page| page.into_iter().next())
+                .ok_or_else(|| {
+                    Error::Invalid("model output has no original status record".into())
+                })?;
+            assert_eq!(
+                StatusRecord::decode(&status.value)
+                    .map_err(storage)?
+                    .output_owner,
+                Some(owner)
+            );
+            while current.live().1 != "fresh answer" {
+                current.next().await?;
+                current.absorb().await?;
+                assert_ne!(current.live().1, "old answer");
             }
+            assert_eq!(
+                current
+                    .output_selection
+                    .as_ref()
+                    .map(|selection| selection.owner),
+                Some(owner)
+            );
+            assert_eq!(current.live().0, LiveKind::Answer);
+            // A newer owner can arrive before an older settled conversation record.
+            // That older record must not clear the genuine newer display.
+            current.apply(
+                AgentEvent::Conversation {
+                    agent: root.clone(),
+                    sequence: 0,
+                    entry: old,
+                },
+                Some(1),
+            )?;
+            assert_eq!(current.live().1, "fresh answer");
+            assert!(
+                current
+                    .apply(
+                        AgentEvent::Status {
+                            agent: root.clone(),
+                            status: stale,
+                        },
+                        Some(1)
+                    )?
+                    .is_none()
+            );
+            assert_eq!(current.live().1, "fresh answer");
+            conversation.cancel_input(second).await?;
+            eprintln!("observer regression: waiting for cancellation settlement");
+            loop {
+                if let Event::Turn { entry, .. } = current.next().await?
+                    && entry.inbox == second
+                {
+                    break;
+                }
+            }
+            current.tail.select(0);
+            current.absorb().await?;
+            assert_eq!(current.live().1, "");
+            Ok(())
+        };
+        // The served stream cannot publish another turn after its original
+        // runtime has ended. Retain that terminal event instead of hanging on
+        // a follow whose producer has already failed.
+        tokio::select! {
+            result = run => result,
+            failure = completion => Err(Error::Conflict(format!("observer runtime ended: {failure:?}"))),
         }
-        current.tail.select(0);
-        current.absorb().await?;
-        assert_eq!(current.live().1, "");
-        Ok(())
     }
 }
