@@ -250,7 +250,7 @@ impl Platform {
 async fn summaries_remain_readable(mode: Mode) -> Result<()> {
     let provider = Arc::new(
         ScriptedModelProvider::new(
-            ["FIRST", "none", "SUMMARY", "AFTER", "none"]
+            ["FIRST", "none", "SUMMARY", "none", "AFTER", "none"]
                 .map(|text| ScriptedTurn::Text(text.into())),
         )
         .with_context_capacity(capacity())
@@ -278,10 +278,10 @@ async fn summaries_remain_readable(mode: Mode) -> Result<()> {
     );
     let after = client.send("after", "use the retained fact").await?;
     assert!(after.outcome.is_completed(), "{:?}", after.outcome);
-    assert_eq!(provider.request_count(), 5);
+    assert_eq!(provider.request_count(), 6);
     assert_eq!(provider.remaining(), 0);
     let request = provider
-        .request(3)
+        .request(4)
         .ok_or_else(|| Error::NotFound("request after compaction".into()))?;
     let text = platform.request_text(&request).await?;
     assert!(text.contains("SUMMARY"), "{text}");
@@ -290,22 +290,27 @@ async fn summaries_remain_readable(mode: Mode) -> Result<()> {
     platform.close().await
 }
 
-#[tokio::test]
-async fn local_summaries_remain_readable() -> Result<()> {
-    summaries_remain_readable(Mode::Local).await
+async fn dispatched_before_settlement(
+    client: &mut ObservedConversation,
+    requests: &mut tokio::sync::mpsc::Receiver<()>,
+    inbox: u64,
+) -> Result<()> {
+    tokio::select! {
+        request = requests.recv() => request.ok_or_else(|| Error::Storage("model dispatch producer closed".into()))?,
+        settled = client.settled(inbox) => {
+            let entry = settled?;
+            return Err(Error::Conflict(format!("held turn settled before model dispatch: {:?}", entry.outcome)));
+        }
+    }
+    Ok(())
 }
 
-#[tokio::test]
-async fn hosted_summaries_remain_readable() -> Result<()> {
-    summaries_remain_readable(Mode::Hosted).await
-}
-
-async fn cancelled_input_remains_in_context(mode: Mode) -> Result<()> {
-    let (dispatched, mut requests) = tokio::sync::mpsc::channel(1);
+fn pending_turn(reply: &str) -> (Arc<ScriptedModelProvider>, tokio::sync::mpsc::Receiver<()>) {
+    let (dispatched, requests) = tokio::sync::mpsc::channel(1);
     let provider = Arc::new(
         ScriptedModelProvider::new([
             ScriptedTurn::Events(vec![crate::test_support::ScriptedEvent::Pending {}]),
-            ScriptedTurn::Text("AFTER_REPLY".into()),
+            ScriptedTurn::Text(reply.into()),
             ScriptedTurn::Text("none".into()),
         ])
         .with_context_capacity(capacity())
@@ -315,17 +320,16 @@ async fn cancelled_input_remains_in_context(mode: Mode) -> Result<()> {
             Box::pin(async { Ok(()) })
         }),
     );
+    (provider, requests)
+}
+
+async fn cancelled_input_remains_in_context(mode: Mode) -> Result<()> {
+    let (provider, mut requests) = pending_turn("AFTER_REPLY");
     let platform = mode.open(provider.clone()).await?;
     let conversation = Conversation::open(platform.connection.clone());
     let mut client = ObservedConversation::observe(conversation, None).await?;
     let inbox = client.conversation.send("held", "CANCELLED_PROMPT").await?;
-    tokio::select! {
-        request = requests.recv() => request.ok_or_else(|| Error::Storage("model dispatch producer closed".into()))?,
-        settled = client.settled(inbox) => {
-            let entry = settled?;
-            return Err(Error::Conflict(format!("held turn settled before model dispatch: {:?}", entry.outcome)));
-        }
-    }
+    dispatched_before_settlement(&mut client, &mut requests, inbox).await?;
     assert_eq!(client.conversation.cancel().await?, Some(inbox));
     let (sequence, entry) = client.settled_at(inbox).await?;
     assert_eq!(entry.outcome, crate::agent::TurnOutcome::Cancelled);
@@ -333,7 +337,10 @@ async fn cancelled_input_remains_in_context(mode: Mode) -> Result<()> {
     let prompt = client.conversation.turn(sequence, &entry).await?.prompt;
     assert_eq!(prompt.as_deref(), Some("CANCELLED_PROMPT"));
     assert_eq!(provider.request_count(), 1);
-    client.send("after", "AFTER_PROMPT").await?;
+    let after = client.send("after", "AFTER_PROMPT").await?;
+    assert!(after.outcome.is_completed(), "{:?}", after.outcome);
+    assert_eq!(provider.request_count(), 3);
+    assert_eq!(provider.remaining(), 0);
     let request = provider
         .request(1)
         .ok_or_else(|| Error::NotFound("request after cancellation".into()))?;
@@ -343,14 +350,34 @@ async fn cancelled_input_remains_in_context(mode: Mode) -> Result<()> {
     platform.close().await
 }
 
-#[tokio::test]
-async fn local_cancelled_input_remains_in_context() -> Result<()> {
-    cancelled_input_remains_in_context(Mode::Local).await
-}
-
-#[tokio::test]
-async fn hosted_cancelled_input_remains_in_context() -> Result<()> {
-    cancelled_input_remains_in_context(Mode::Hosted).await
+async fn cancelling_current_input_preserves_a_newer_queued_prompt(mode: Mode) -> Result<()> {
+    let (provider, mut requests) = pending_turn("queued prompt survived");
+    let platform = mode.open(provider.clone()).await?;
+    let conversation = Conversation::open(platform.connection.clone());
+    let mut observed = ObservedConversation::observe(conversation, None).await?;
+    let client = observed.conversation.clone();
+    let running = client.send("running-input", "hold this turn").await?;
+    dispatched_before_settlement(&mut observed, &mut requests, running).await?;
+    let queued = client
+        .send("queued-input", "answer the next prompt")
+        .await?;
+    assert!(queued > running);
+    assert_eq!(client.cancel().await?, Some(running));
+    assert_eq!(
+        observed.settled(running).await?.outcome,
+        crate::agent::TurnOutcome::Cancelled
+    );
+    let (sequence, next) = observed.settled_at(queued).await?;
+    assert_eq!(next.outcome, crate::agent::TurnOutcome::Completed);
+    assert_eq!(
+        client.output_text_at(sequence, &next).await?,
+        "queued prompt survived"
+    );
+    assert_eq!(provider.request_count(), 3);
+    assert_eq!(provider.remaining(), 0);
+    drop(client);
+    drop(observed);
+    platform.close().await
 }
 
 struct RewriteModel {
@@ -467,12 +494,30 @@ async fn in_turn_summary_remains_readable(mode: Mode) -> Result<()> {
     platform.close().await
 }
 
-#[tokio::test]
-async fn local_in_turn_summary_remains_readable() -> Result<()> {
-    in_turn_summary_remains_readable(Mode::Local).await
+// Register a vector once; every registration emits both deployment tests.
+macro_rules! dual_mode {
+    ($($vector:ident),+ $(,)?) => {
+        mod cases {
+            $(
+                mod $vector {
+                    #[tokio::test]
+                    async fn local() -> crate::Result<()> {
+                        super::super::$vector(super::super::Mode::Local).await
+                    }
+
+                    #[tokio::test]
+                    async fn hosted() -> crate::Result<()> {
+                        super::super::$vector(super::super::Mode::Hosted).await
+                    }
+                }
+            )+
+        }
+    };
 }
 
-#[tokio::test]
-async fn hosted_in_turn_summary_remains_readable() -> Result<()> {
-    in_turn_summary_remains_readable(Mode::Hosted).await
+dual_mode! {
+    summaries_remain_readable,
+    cancelled_input_remains_in_context,
+    cancelling_current_input_preserves_a_newer_queued_prompt,
+    in_turn_summary_remains_readable,
 }
