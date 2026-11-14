@@ -301,9 +301,8 @@ where
     if journal.phase == MaterializationPhase::Preparing && journal.preimages.is_empty() {
         before_effect().await?;
         materializer.verify_effect_context(&journal).await?;
-        let completion = materializer.store.prepare_action(journal).await?;
-        let identity = materializer.backend.reset_target_directory("").await?;
-        journal = completion.await?;
+        let (identity, completed) = materializer.reset_preparation_target(journal).await?;
+        journal = completed;
         let (_storage, selections) = install_selections(&journal, work)?;
         if !selections.is_empty() {
             let (destination, _allocation) = materializer.backend.work.path(
@@ -335,6 +334,19 @@ where
         }
     }
     Ok(journal)
+}
+
+impl JournaledMaterializer<crate::LocalCoreStateStore, Arc<NativeTreeMaterializationBackend>> {
+    /// Resets only this operation's staging under its original journal record.
+    pub(crate) async fn reset_preparation_target(
+        &self,
+        journal: MaterializationJournal,
+    ) -> Result<(crate::NativeRootIdentity, MaterializationJournal), NativeWorkspacePublicationError>
+    {
+        let completion = self.store.prepare_action(journal).await?;
+        let identity = self.backend.reset_target_directory("").await?;
+        Ok((identity, completion.await?))
+    }
 }
 
 fn publication_root_identity(

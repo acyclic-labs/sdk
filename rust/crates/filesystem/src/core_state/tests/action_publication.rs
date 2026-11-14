@@ -4,6 +4,121 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const CHILD: &str = "core_state::tests::action_publication::action_write_child";
 const OPERATION: OperationId = OperationId::from_bytes([0x99; 16]);
 
+#[tokio::test]
+async fn cancelled_directory_reset_retains_original_journal_until_native_completion() -> TestResult
+{
+    use crate::materializer::{JournaledMaterializer, MaterializationBackend};
+    use acyclic_native_runtime::testing::Schedule;
+
+    crate::initialize_test_native_io();
+    let directory = tempfile::tempdir()?;
+    let root = directory.path().join("checkout");
+    let operation = directory.path().join("operation");
+    std::fs::create_dir(&root)?;
+    std::fs::write(root.join("authored"), b"keep")?;
+    std::fs::create_dir_all(operation.join("target/stale"))?;
+    std::fs::create_dir(operation.join("backup"))?;
+    std::fs::write(operation.join("target/stale/file"), b"partial staging")?;
+    let cancellation = crate::CancellationToken::new();
+    let work = crate::NativeMaterializationWork::new(native::finite_budget(), &cancellation)
+        .map_err(|(error, _)| error)?;
+    let (root, mut allocation) = work.path(&root, None)?;
+    let (operation, mut operation_allocation) = work.path(&operation, None)?;
+    allocation.absorb(&mut operation_allocation)?;
+    let admission = crate::NativeTreeMaterializationBackend::admission().await?;
+    let backend = crate::NativeTreeMaterializationBackend::new(
+        root.clone(),
+        operation,
+        allocation,
+        work.clone(),
+        admission,
+    )?;
+    let store = LocalCoreStateStore::new(directory.path().join("state")).materialization(work);
+    let mut journal = materialization_journal(OPERATION);
+    journal.root_identity = backend.allocation_identity();
+    journal.preparation_identity = backend.preparation_identity();
+    journal.phase = crate::MaterializationPhase::Preparing;
+    journal
+        .plan
+        .edits
+        .push(crate::MaterializationEdit::Install {
+            path: "file.txt".into(),
+            image: vec![1],
+        });
+    assert!(
+        MaterializationJournalStore::compare_and_swap(&store, OPERATION, 0, journal)
+            .await?
+            .0
+    );
+    let journal = MaterializationJournalStore::load(&store, OPERATION)
+        .await?
+        .ok_or("missing original journal")?;
+    let revision = journal.revision;
+    let lock_path = {
+        let namespace = store.namespace()?;
+        namespace
+            .record(MATERIALIZATION_FAMILY, &OPERATION.into_bytes())?
+            .lock
+    };
+    let materializer = JournaledMaterializer::new(store, backend);
+    let (schedule, mut events) = Schedule::seeded(73);
+    let mut original = Box::pin(schedule.scope(materializer.reset_preparation_target(journal)));
+    let mut resetting = false;
+    let submitted = loop {
+        tokio::select! {
+            result = &mut original => panic!("reset completed before its accepted effect: {result:?}"),
+            event = events.recv() => {
+                let event = event.ok_or("lost native boundary")?;
+                if event.name == "materialization:reset" {
+                    resetting = true;
+                } else if resetting && event.name == "native:submitted" {
+                    break event;
+                }
+                event.release();
+            }
+        }
+    };
+    // Lose the handler's observation while its original native effect is
+    // accepted but has not run. Redelivery must not acquire the same record.
+    drop(original);
+    let lock = OpenOptions::new().read(true).write(true).open(&lock_path)?;
+    let replay = FileLock::try_acquire(lock, FileLockMode::Exclusive);
+    let excluded = matches!(&replay, Err(error) if error.kind() == std::io::ErrorKind::WouldBlock);
+    drop(replay);
+    submitted.release();
+    loop {
+        tokio::select! {
+            () = schedule.drained() => break,
+            event = events.recv() => event.ok_or("lost native completion")?.release(),
+        }
+    }
+    assert!(
+        excluded,
+        "redelivery acquired the journal before the original effect completed"
+    );
+    let journal = MaterializationJournalStore::load(materializer.store(), OPERATION)
+        .await?
+        .ok_or("lost original journal")?;
+    assert_eq!(
+        journal.revision, revision,
+        "cancelled observer acknowledged the effect"
+    );
+    let (_, completed) = materializer.reset_preparation_target(journal).await?;
+    assert_eq!(completed.revision, revision + 1);
+    assert_eq!(std::fs::read(root.join("authored"))?, b"keep");
+    assert_eq!(
+        std::fs::read_dir(
+            materializer
+                .backend()
+                .operation_directory_path()
+                .join("target")
+        )?
+        .count(),
+        0
+    );
+    Ok(())
+}
+
 async fn seed(root: &Path) -> TestResult {
     std::fs::create_dir_all(root)?;
     let cancellation = crate::CancellationToken::new();

@@ -60,6 +60,8 @@ impl NativeTreeMaterializationBackend {
         {
             return Err(NativeTreeMaterializationError::ExternalMutation);
         }
+        #[cfg(any(test, feature = "test-support"))]
+        acyclic_native_runtime::testing::boundary("materialization:reset").await;
         let (path, allocation) = self.work.copy_bytes(path.as_bytes())?;
         let backend = self.clone();
         acyclic_native_runtime::run_blocking_io(

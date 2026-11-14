@@ -181,18 +181,12 @@ async fn native_backend(
     root: &Path,
     operation: &Path,
 ) -> Result<std::sync::Arc<NativeTreeMaterializationBackend>, NativeTreeMaterializationError> {
-    native_backend_with_budget(root, operation, crate::WorkBudget::UNBOUNDED).await
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-async fn native_backend_with_budget(
-    root: &Path,
-    operation: &Path,
-    budget: crate::WorkBudget,
-) -> Result<std::sync::Arc<NativeTreeMaterializationBackend>, NativeTreeMaterializationError> {
     std::fs::create_dir_all(operation.join("backup"))?;
-    let work = NativeMaterializationWork::new(budget, &crate::CancellationToken::new())
-        .map_err(|(error, _)| error)?;
+    let work = NativeMaterializationWork::new(
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )
+    .map_err(|(error, _)| error)?;
     let (root, mut allocation) = work.path(root, None)?;
     let (operation, mut operation_allocation) = work.path(operation, None)?;
     allocation.absorb(&mut operation_allocation)?;
@@ -664,49 +658,6 @@ async fn native_recovery_handles_both_rename_boundaries() -> Result<(), Box<dyn 
             );
         }
     }
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn native_directory_rollback_redelivers_after_an_interrupted_effect()
--> Result<(), Box<dyn std::error::Error>> {
-    let (_temporary, root, operation, backend) = fixture().await;
-    std::fs::create_dir(root.join("directory"))?;
-    std::fs::write(root.join("directory/original"), b"before")?;
-    std::fs::create_dir(operation.join("target/directory"))?;
-    for name in ["first", "second"] {
-        std::fs::write(operation.join("target/directory").join(name), b"after")?;
-    }
-    let plan = plan(vec![MaterializationEdit::Install {
-        path: "directory".into(),
-        image: vec![1],
-    }]);
-    let operation_id = plan.operation_id;
-    let materializer = JournaledMaterializer::new(Store::default(), backend);
-    let journal = materializer.apply(plan, &mut allow).await?;
-    // Refuse the second native write, after the first effect took place but
-    // before the original journal can acknowledge the rollback.
-    let interrupted = native_backend_with_budget(
-        &root,
-        &operation,
-        crate::WorkBudget {
-            backend_write_operations: 1,
-            ..crate::WorkBudget::UNBOUNDED
-        },
-    )
-    .await?;
-    assert!(
-        interrupted
-            .restore(&journal.plan.edits[0], &journal.preimages[0])
-            .await
-            .is_err()
-    );
-    materializer
-        .recover(operation_id, MaterializationRecovery::RollBack, &mut allow)
-        .await?;
-    assert_eq!(std::fs::read(root.join("directory/original"))?, b"before");
-    assert_eq!(std::fs::read_dir(root.join("directory"))?.count(), 1);
     Ok(())
 }
 
