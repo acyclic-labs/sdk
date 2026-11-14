@@ -415,6 +415,7 @@ impl Default for AccountEntry {
     }
 }
 
+#[derive(Clone, Copy)]
 enum Target<'a> {
     Environment,
     Account(&'a str),
@@ -689,8 +690,7 @@ impl Follower {
         };
         match &result {
             Ok((Applied::Changed, _)) if release => account.poisoned = false,
-            Ok((Applied::Changed, _)) => {}
-            Ok((Applied::Duplicate, _)) => {}
+            Ok((Applied::Changed | Applied::Duplicate, _)) => {}
             Err(_) => account.poisoned = true,
         }
         result

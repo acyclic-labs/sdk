@@ -161,8 +161,10 @@ impl Context {
             // Compare in u128 first: even an unrepresentably large duration
             // cannot overflow, refuse a valid original budget or extend it.
             let remaining = deadline.saturating_sub(now);
-            if timeout.as_millis() < u128::from(remaining) {
-                deadline = now + timeout.as_millis() as u64;
+            if let Ok(millis) = u64::try_from(timeout.as_millis())
+                && millis < remaining
+            {
+                deadline = now + millis;
             }
         }
         if deadline <= now {
