@@ -19,7 +19,7 @@ use std::{
 
 fn revision(value: u64) -> CredentialRevision {
     let mut bytes = [0; 32];
-    for chunk in bytes.chunks_exact_mut(8) {
+    for chunk in bytes.as_chunks_mut::<8>().0 {
         chunk.copy_from_slice(&value.to_le_bytes());
     }
     CredentialRevision::from(bytes)
