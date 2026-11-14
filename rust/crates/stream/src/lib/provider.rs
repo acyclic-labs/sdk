@@ -108,10 +108,14 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     /// `inspect_idempotency` and `read_commit` return the original result, and
     /// a different request cannot spend the same key in another lease or in
     /// durable storage. Releasing the lease forgets its results and keys;
-    /// durable receipts remain available. A write that publishes durably may
-    /// name no owned path at all, so it is refused
-    /// with `InvalidArgument`, as is one that also writes an existing durable
-    /// path or another lease's; a fresh path without a parent is `NotFound`.
+    /// durable receipts remain available. Scope follows the effects actually
+    /// selected by the conditional decision; skipped mutations adopt nothing.
+    /// A durable write's selected effects may observe no owned path. A skipped
+    /// effect observing a lease must also remain skipped without that lease,
+    /// so durable replay selects the same effects; otherwise the write is
+    /// refused with `InvalidArgument` before publication. A leased write that
+    /// also selects an existing durable path or another lease's is likewise
+    /// refused; a fresh path without a parent is `NotFound`.
     /// Dropping or settling the lease removes every subtree it owns, and
     /// their followers then observe `NotFound`; process death removes them
     /// too. Providers that cannot hold one in process report `Unsupported`.
