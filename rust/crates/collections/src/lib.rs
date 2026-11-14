@@ -137,6 +137,14 @@ impl<V, A, const N: usize> Entry<V, A, N> {
     }
 }
 
+impl<V, A, const N: usize> FixedIndex<V, A, N> {
+    /// Whether the index holds no entry.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.root.is_none()
+    }
+}
+
 impl<V, A, const N: usize> Default for FixedIndex<V, A, N> {
     fn default() -> Self {
         Self { root: None }

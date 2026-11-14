@@ -125,8 +125,11 @@ fn notification(broken: bool) {
             // Catch inside the guard's scope so the deliberate assertion cannot
             // poison the mutex and abort later subscription cleanup.
             let violation = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                for wake in std::mem::take(&mut state.waiters).into_values() {
-                    wake.wake();
+                let mut waiters = std::mem::take(&mut state.waiters);
+                for entry in waiters.extract_all().into_entries(|_| {}) {
+                    if let (_, Some(wake), ()) = entry.into_parts() {
+                        wake.wake();
+                    }
                 }
             }));
             drop(state);
