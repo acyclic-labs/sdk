@@ -318,10 +318,12 @@ async fn restoring_generation_and_context_cut_is_atomic() -> Result<(), Box<dyn 
             permit: crate::PublicationPermit::Unrestricted,
         }];
         #[cfg(not(target_arch = "wasm32"))]
+        let cancel = CancellationToken::new();
+        #[cfg(not(target_arch = "wasm32"))]
+        let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
+            .map_err(|(error, _)| error)?;
+        #[cfg(not(target_arch = "wasm32"))]
         {
-            let cancel = CancellationToken::new();
-            let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
-                .map_err(|(error, _)| error)?;
             let (generations, allocation) = fs
                 .prepare_restore_many(&restores, &mut commit, &work, &cancel)
                 .await?;
@@ -341,6 +343,9 @@ async fn restoring_generation_and_context_cut_is_atomic() -> Result<(), Box<dyn 
         if concurrent {
             workspace.write_text("/plan.md", "user edit").await?;
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        let outcome = fs.submit_commit(commit, &work, &cancel).await?.value;
+        #[cfg(target_arch = "wasm32")]
         let outcome = unbounded!(fs, submit_commit(commit))?;
         if attempt == 3 {
             assert!(matches!(outcome, FilesystemCommitOutcome::Committed(_)));
@@ -410,10 +415,12 @@ async fn transaction_candidates_and_caller_controls_publish_atomically()
             permit: crate::PublicationPermit::Unrestricted,
         }];
         #[cfg(not(target_arch = "wasm32"))]
+        let cancel = CancellationToken::new();
+        #[cfg(not(target_arch = "wasm32"))]
+        let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
+            .map_err(|(error, _)| error)?;
+        #[cfg(not(target_arch = "wasm32"))]
         {
-            let cancel = CancellationToken::new();
-            let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
-                .map_err(|(error, _)| error)?;
             let (generations, allocation) = fs
                 .prepare_transaction_many(&specs, &mut commit, &work, &cancel)
                 .await?;
@@ -432,6 +439,9 @@ async fn transaction_candidates_and_caller_controls_publish_atomically()
             workspace.write_text("/unrelated", "owner edit").await?;
         }
         let replay = commit.request().clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        let outcome = fs.submit_commit(commit, &work, &cancel).await?.value;
+        #[cfg(target_arch = "wasm32")]
         let outcome = unbounded!(fs, submit_commit(commit))?;
         if attempt == 3 {
             assert!(matches!(outcome, FilesystemCommitOutcome::Committed(_)));
