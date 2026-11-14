@@ -49,11 +49,11 @@ fn workspace_code(error: &WorkspaceError) -> Code {
         E::Engine(_) => Code::Internal,
         E::Filesystem(error) => filesystem_code(error),
         E::GitCompat(error) => match error.as_ref() {
-            crate::StreamGitCompatStoreError::Authority(error)
-            | crate::StreamGitCompatStoreError::Unknown { error, .. } => authority_code(error),
-            crate::StreamGitCompatStoreError::Stream(error) => stream_code(error),
-            crate::StreamGitCompatStoreError::Codec(_) => Code::DataLoss,
-            crate::StreamGitCompatStoreError::Incompatible => Code::FailedPrecondition,
+            crate::StreamStateStoreError::Authority(error)
+            | crate::StreamStateStoreError::Unknown { error, .. } => authority_code(error),
+            crate::StreamStateStoreError::Stream(error) => stream_code(error),
+            crate::StreamStateStoreError::Codec(_) => Code::DataLoss,
+            crate::StreamStateStoreError::Incompatible => Code::FailedPrecondition,
         },
     }
 }

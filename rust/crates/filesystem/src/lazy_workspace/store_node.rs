@@ -1,7 +1,12 @@
 use super::*;
 
-pub(crate) trait MemoryLazyNode: Serialize + Eq + Clone {
+pub(crate) trait MemoryLazyNode: Serialize + Eq + Clone + Send + Sync {
     fn owned_bytes(&self) -> u64;
+    fn retain_decoded(
+        &mut self,
+        allocation: &mut KernelOwnedAllocation,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError>;
     fn copy(
         &self,
         accounting: &mut KernelAccounting<'_>,
@@ -32,6 +37,20 @@ pub(crate) trait MemoryLazyNode: Serialize + Eq + Clone {
 }
 
 impl MemoryLazyNode for LazyOverlay {
+    fn retain_decoded(
+        &mut self,
+        allocation: &mut KernelOwnedAllocation,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        if let Self::Node {
+            change: LazyOverlayChange::Observe { source, .. },
+            ..
+        } = self
+        {
+            source.retain_decoded(allocation, ctx)?;
+        }
+        Ok(())
+    }
     fn owned_bytes(&self) -> u64 {
         match self {
             Self::Empty => 0,
@@ -41,6 +60,20 @@ impl MemoryLazyNode for LazyOverlay {
 }
 
 impl MemoryLazyNode for LazyShadow {
+    fn retain_decoded(
+        &mut self,
+        allocation: &mut KernelOwnedAllocation,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        if let Self::Node {
+            observed: Some(observed),
+            ..
+        } = self
+        {
+            observed.source.retain_decoded(allocation, ctx)?;
+        }
+        Ok(())
+    }
     fn owned_bytes(&self) -> u64 {
         match self {
             Self::Empty => 0,

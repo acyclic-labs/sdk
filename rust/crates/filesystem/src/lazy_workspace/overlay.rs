@@ -336,8 +336,7 @@ impl<
             right: root,
         };
         let result = treap::insert_shadow(&self.store, root, (node, guard), ctx).await;
-        drop(hold);
-        result
+        result.map_err(|error| error.retain_publication_hold(hold))
     }
 
     pub(super) async fn retain_source_before_image(

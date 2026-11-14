@@ -71,6 +71,13 @@ pub(super) fn mount_code(error: &crate::native_mount::MountSourceError) -> Code 
         E::Engine(_) | E::NativeRecordContextTransaction(_, _) => Code::Internal,
         E::Filesystem(error) => filesystem_code(error),
         E::WorkspaceCause(error) => workspace_code(error),
+        E::StatePublication(error) => match error.as_ref() {
+            crate::StreamStateStoreError::Authority(error)
+            | crate::StreamStateStoreError::Unknown { error, .. } => authority_code(error),
+            crate::StreamStateStoreError::Stream(error) => stream_code(error),
+            crate::StreamStateStoreError::Codec(_) => Code::DataLoss,
+            crate::StreamStateStoreError::Incompatible => Code::FailedPrecondition,
+        },
         E::NamespacePath(error) => namespace_code(error),
         E::Io(error, _) => io_code(error),
         E::Indeterminate | E::ServicesNotInitialized => Code::Unavailable,

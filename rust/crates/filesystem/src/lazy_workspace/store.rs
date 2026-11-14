@@ -177,6 +177,22 @@ impl LazyWorkspaceStore for MemoryLazyWorkspaceStore {
         }
         ctx.charge(lazy_store_write_work())?;
         let mut stored = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        let current = position(&stored.workspaces, &id, ctx)?
+            .ok()
+            .and_then(|i| stored.workspaces.value.get(i))
+            .map(|(_, state)| state);
+        let parent = match &state.fork_origin {
+            Some(origin) if current.is_none_or(|state| state.fork_origin.is_none()) => {
+                position(&stored.workspaces, &origin.snapshot.workspace_id, ctx)?
+                    .ok()
+                    .and_then(|i| stored.workspaces.value.get(i))
+                    .map(|(_, state)| state)
+            }
+            _ => None,
+        };
+        if !state.accepts_fork_transition(current, parent) {
+            return Ok(false);
+        }
         match position(&stored.workspaces, &id, ctx)? {
             Ok(i) => {
                 let (_, workspace) = stored

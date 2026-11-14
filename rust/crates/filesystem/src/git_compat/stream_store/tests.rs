@@ -83,7 +83,7 @@ async fn malformed_record_refuses_instead_of_becoming_absent()
     ));
     assert!(matches!(
         GitCompatStore::load(&store, id).await,
-        Err(StreamGitCompatStoreError::Codec(_))
+        Err(StreamStateStoreError::Codec(_))
     ));
     assert!(
         GitCompatStore::compare_and_swap(&store, id, 0, state(id, 1, "overwrite"))

@@ -180,8 +180,11 @@ mod state;
 pub use state::{AuthorizedObservation, ObservedRecord, RecordAllocation, RecordReceipt};
 mod state_publication;
 pub use state_publication::StatePublicationOutcome;
+mod companion;
 mod placement;
+mod state_error;
 pub mod state_record;
+pub use state_error::StreamStateStoreError;
 #[cfg(test)]
 mod state_tests;
 pub use placement::AuthorityPlacement;
