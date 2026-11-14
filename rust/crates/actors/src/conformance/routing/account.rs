@@ -1,4 +1,4 @@
-//! Signed admission uses the backend's real authority and running receiver.
+//! Signed account admission shares the backend's provider and running receiver.
 use super::*;
 use crate::route::{Admission, AdmissionPolicy};
 use acyclic_auth::contract::{
@@ -195,6 +195,15 @@ pub async fn credited_delivery<T: Backend + ?Sized>(target: &T, run: &str) -> Re
     client
         .register_credential(2, credential(&receiver.actor, &source, true))
         .map_err(Error::from)?;
+    let other_namespace = ActorReference::new(
+        sender.actor.account().as_bytes(),
+        b"another-namespace",
+        sender.actor.id().as_bytes(),
+    )
+    .map_err(violation)?;
+    client
+        .register_credential(3, credential(&other_namespace, &source, true))
+        .map_err(Error::from)?;
     let mut message = Envelope {
         source,
         sender: sender.actor.clone(),
@@ -211,13 +220,20 @@ pub async fn credited_delivery<T: Backend + ?Sized>(target: &T, run: &str) -> Re
             )],
         },
     };
-    for slot in [1, 2] {
+    for slot in [1, 2, 3] {
         require(
             matches!(crate::route::admit(&client, slot, &message, 4096).await,
             Err(crate::route::Error::Stream(error)) if error.category() == StreamError::AccessDenied),
             "missing or substituted sender authority admitted a relay",
         )?;
     }
+    let mut forged_source = message.clone();
+    forged_source.source = destination.clone();
+    require(
+        matches!(crate::route::admit(&client, 0, &forged_source, 4096).await,
+            Err(crate::route::Error::Stream(error)) if error.category() == StreamError::AccessDenied),
+        "source credential routed under another node's scope",
+    )?;
     require(
         policy.prepared.load(Ordering::SeqCst) == 0,
         "denied authority reached storage reservation",
