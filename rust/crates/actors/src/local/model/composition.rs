@@ -71,12 +71,15 @@ impl Composition for Participant {
                     .filter(|effect| !effect.soft)
                     .flat_map(|effect| &mut effect.mutations)
                     .find_map(|mutation| match mutation {
-                        CommitMutation::Append { path, records }
-                            if (self.activation_edit == 5
-                                && path.as_str().starts_with("participant/actors/"))
-                                || (self.activation_edit != 5 && path == &root) =>
-                        {
-                            Some(records)
+                        CommitMutation::Append { path, records } => {
+                            let relative = path
+                                .as_str()
+                                .strip_prefix(root.as_str())?
+                                .strip_prefix('/')?;
+                            let activation = super::super::scheduling::wake_log(relative);
+                            ((self.activation_edit == 5 && !relative.contains('/'))
+                                || (self.activation_edit != 5 && activation))
+                                .then_some(records)
                         }
                         _ => None,
                     })
@@ -1124,6 +1127,8 @@ async fn composition_extends_activation_prefix_but_cannot_rewrite_it_or_grow_act
         let counts = Arc::new(Counts::default());
         let (store, actor) = placed(provider.clone(), counts.clone()).await?;
         let before = store.load(&actor).await?;
+        let activation = store.scheduling_path(store.scheduling_shard(&actor))?;
+        let activation_tail = provider.tail(activation.clone()).await?;
         let mut transition = transition(false)?;
         transition.effects.push(store.activation(&actor)?);
         transition
@@ -1147,7 +1152,7 @@ async fn composition_extends_activation_prefix_but_cannot_rewrite_it_or_grow_act
             .await;
         if mode == 3 {
             result?;
-            assert_eq!(provider.tail(store.root().clone()).await?, 3);
+            assert_eq!(provider.tail(activation).await?, activation_tail + 2);
             assert_eq!(
                 store
                     .load(&actor)
@@ -1166,7 +1171,7 @@ async fn composition_extends_activation_prefix_but_cannot_rewrite_it_or_grow_act
                 calls,
                 "tampering reached the provider"
             );
-            assert_eq!(provider.tail(store.root().clone()).await?, 1);
+            assert_eq!(provider.tail(activation).await?, activation_tail);
             assert_eq!(store.load(&actor).await?.tail, before.tail);
         }
     }
