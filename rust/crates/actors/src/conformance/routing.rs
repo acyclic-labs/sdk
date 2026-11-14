@@ -110,6 +110,34 @@ pub async fn replayed_delivery<T: Backend + ?Sized>(target: &T, run: &str) -> Re
     )?;
     target.restart().await?;
     sender.expect(&["r0", "r1"]).await?;
+    // The lost response must not let a restarted sender replace the admitted
+    // bytes under the original intent. The unchanged retry below is the
+    // positive control and must still reach the real receiver exactly once.
+    let mut changed = messages[0].clone();
+    let CommitMutation::Append { records, .. } = &mut changed.request.effects[0].mutations[0]
+    else {
+        return Err(violation("route fixture has no inbox append"));
+    };
+    records[0].value = "changed input".into();
+    require(
+        matches!(
+            changed
+                .publish_relay(provider.as_ref(), &paths, &destination, Vec::new())
+                .await,
+            Err(crate::route::Error::Stream(
+                StreamError::IdempotencyMismatch
+            ))
+        ),
+        "restart allowed changed bytes under an admitted intent",
+    )?;
+    require(
+        provider
+            .tail(paths.relay(&destination).map_err(Error::from)?)
+            .await
+            .map_err(Error::from)?
+            == 1,
+        "a changed retry appended a relay record",
+    )?;
     let forward = crate::route::forward(
         provider.as_ref(),
         &paths,
