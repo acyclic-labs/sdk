@@ -151,6 +151,7 @@ pub struct Requests(Arc<std::sync::Mutex<Bindings>>);
 struct Bindings {
     next: u64,
     live: std::collections::HashMap<u64, (ActorReference, u64)>,
+    state: std::collections::HashMap<u64, super::ActorStateHost>,
 }
 /// One open binding; dropping it closes the request.
 #[derive(Debug)]
@@ -167,7 +168,9 @@ impl Request {
 }
 impl Drop for Request {
     fn drop(&mut self) {
-        self.requests.bindings().live.remove(&self.id.0);
+        let mut bindings = self.requests.bindings();
+        bindings.live.remove(&self.id.0);
+        bindings.state.remove(&self.id.0);
     }
 }
 impl Requests {
@@ -188,6 +191,22 @@ impl Requests {
             requests: self.clone(),
         }
     }
+    /// Native state of this live request, when its manifest declares it.
+    pub fn state(&self, request: RequestId) -> Result<super::ActorStateHost, GuestError> {
+        self.bindings()
+            .state
+            .get(&request.0)
+            .cloned()
+            .ok_or(GuestError::Revoked)
+    }
+
+    pub(crate) fn bind_state(&self, request: RequestId, state: super::ActorStateHost) {
+        let mut bindings = self.bindings();
+        if bindings.live.contains_key(&request.0) {
+            bindings.state.insert(request.0, state);
+        }
+    }
+
     /// The actor and epoch a live request is bound to; a closed or unknown
     /// request is refused.
     pub fn admit(&self, request: RequestId) -> Result<(ActorReference, u64), GuestError> {

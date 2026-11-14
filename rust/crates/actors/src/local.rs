@@ -338,6 +338,7 @@ impl State {
 const DELETED: u64 = u64::MAX;
 
 /// Immutable exact-cut token. Publication compares both tail and commit anchor.
+#[derive(Clone)]
 pub struct Snapshot {
     path: StreamPath,
     tail: u64,
