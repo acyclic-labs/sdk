@@ -248,7 +248,7 @@ async fn reported_usage_preserves_compaction_pressure_without_a_count_endpoint()
         provider.capacity = acyclic_harness_core::context::ModelContextCapacity {
             context_tokens: 4096,
             output_tokens: Some(4096),
-            output_shares_context: false,
+            output_shares_context: true,
         };
         let (prepared, _) = request(&provider)?;
         let mut long = prepared.request().clone();

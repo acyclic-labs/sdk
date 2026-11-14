@@ -109,6 +109,7 @@ fn profile(family: &str, output_tokens: Option<u32>) -> Result<ModelProfile> {
         ModelContextCapacity {
             context_tokens: 1_000,
             output_tokens,
+            output_shares_context: false,
         },
         "renderer-v1",
     )

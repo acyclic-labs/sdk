@@ -25,72 +25,100 @@ impl CapacityCompaction {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Option<(usize, usize)>> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let mut through = requested_cut;
-        if let Some(maximum) = maximum_messages {
-            let recent_messages = maximum.checked_sub(1).ok_or_else(|| {
-                compaction_error(
-                    quota.work(),
-                    "compaction requires a summary message allowance",
-                )
-            })?;
-            through = through.max(context.messages.len().saturating_sub(recent_messages));
-        }
-        if through == 0 || through >= context.messages.len() {
+        let Some((through, mandatory)) =
+            complete_cut(context, maximum_messages, requested_cut, &mut quota)?
+        else {
             return Ok(None);
-        }
-        let groups = exchange_groups(context, &mut quota)?;
-        for group in groups.iter().rev() {
-            compaction_step(&mut quota)?;
-            if group.size > 0 && group.root < through && through <= group.end {
-                through = group.root;
-            }
-        }
-        let selected = mandatory_selection(context, context.messages.len(), &groups, &mut quota)?;
-        let mut mandatory = context.messages.len();
-        let mut end = 0;
-        let mut cut = None;
-        // At a complete boundary, each component is entirely before or after
-        // the cut. Retire its size once, at its last member, unless it contains
-        // irreducible content. No candidate needs another dependency walk.
-        for (position, group) in groups
-            .iter()
-            .take(context.messages.len().saturating_sub(1))
-            .enumerate()
-        {
-            compaction_step(&mut quota)?;
-            let component = &groups[group.root];
-            end = end.max(component.end);
-            if component.retained_through == position && !selected[group.root] {
-                mandatory -= component.size;
-            }
-            if component.end == position {
-                for source in component.sources() {
-                    compaction_step(&mut quota)?;
-                    if groups[source].retained_through == position && !selected[source] {
-                        mandatory -= groups[source].size;
-                    }
-                }
-            }
-            if end <= position
-                && position + 1 >= through
-                && maximum_messages.is_none_or(|maximum| mandatory < maximum)
-            {
-                cut = Some(position + 1);
-                break;
-            }
-        }
-        let Some(through) = cut else { return Ok(None) };
+        };
         let maximum = mandatory.checked_add(1).ok_or_else(|| {
             compaction_error(quota.work(), "compaction projection count overflows")
         })?;
-        retire_vector(groups, &mut quota)?;
-        retire_vector(selected, &mut quota)?;
         if maximum > context.messages.len() || maximum_messages.is_some_and(|limit| maximum > limit)
         {
             return Ok(None);
         }
         Ok(Some((through, maximum)))
     }
+
+    /// The first complete dependency boundary at or after `requested_cut`.
+    /// A manager window may end there even when a projection cut at the same
+    /// boundary would evict nothing, such as one leading system message.
+    pub(crate) fn window_boundary(
+        &self,
+        context: &Context,
+        requested_cut: usize,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Option<usize>> {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        Ok(complete_cut(context, None, requested_cut, &mut quota)?.map(|(through, _)| through))
+    }
+}
+
+/// The first complete cut at or after `requested_cut`, with the number of
+/// messages its projection retains besides the summary.
+fn complete_cut(
+    context: &Context,
+    maximum_messages: Option<usize>,
+    requested_cut: usize,
+    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+) -> Result<Option<(usize, usize)>> {
+    let mut through = requested_cut;
+    if let Some(maximum) = maximum_messages {
+        let recent_messages = maximum.checked_sub(1).ok_or_else(|| {
+            compaction_error(
+                quota.work(),
+                "compaction requires a summary message allowance",
+            )
+        })?;
+        through = through.max(context.messages.len().saturating_sub(recent_messages));
+    }
+    if through == 0 || through >= context.messages.len() {
+        return Ok(None);
+    }
+    let groups = exchange_groups(context, quota)?;
+    for group in groups.iter().rev() {
+        compaction_step(quota)?;
+        if group.size > 0 && group.root < through && through <= group.end {
+            through = group.root;
+        }
+    }
+    let selected = mandatory_selection(context, context.messages.len(), &groups, quota)?;
+    let mut mandatory = context.messages.len();
+    let mut end = 0;
+    let mut cut = None;
+    // At a complete boundary, each component is entirely before or after
+    // the cut. Retire its size once, at its last member, unless it contains
+    // irreducible content. No candidate needs another dependency walk.
+    for (position, group) in groups
+        .iter()
+        .take(context.messages.len().saturating_sub(1))
+        .enumerate()
+    {
+        compaction_step(quota)?;
+        let component = &groups[group.root];
+        end = end.max(component.end);
+        if component.retained_through == position && !selected[group.root] {
+            mandatory -= component.size;
+        }
+        if component.end == position {
+            for source in component.sources() {
+                compaction_step(quota)?;
+                if groups[source].retained_through == position && !selected[source] {
+                    mandatory -= groups[source].size;
+                }
+            }
+        }
+        if end <= position
+            && position + 1 >= through
+            && maximum_messages.is_none_or(|maximum| mandatory < maximum)
+        {
+            cut = Some(position + 1);
+            break;
+        }
+    }
+    retire_vector(groups, quota)?;
+    retire_vector(selected, quota)?;
+    Ok(cut.map(|through| (through, mandatory)))
 }
 
 pub(in crate::context) fn mandatory_flags(
