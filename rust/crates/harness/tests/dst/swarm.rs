@@ -200,6 +200,14 @@ fn respond(plan: &[Step], request: &ModelRequest) -> Result<ScriptedTurn> {
             arguments,
         )))
     };
+    if std::env::var_os("DST_SWARM_TRACE").is_some() {
+        eprintln!(
+            "swarm-trace {node} step {step} of {}: {:?} ({} messages, brief at {briefed})",
+            agent_steps(plan, &node).len(),
+            agent_steps(plan, &node).get(step),
+            request.messages.len()
+        );
+    }
     let mut events = match agent_steps(plan, &node).get(step) {
         None => return Ok(ScriptedTurn::Text(format!("{node} settled"))),
         Some(Action::Spawn(names)) => names
