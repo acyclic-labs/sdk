@@ -7,10 +7,20 @@ set -euo pipefail
 
 source_root=$(git rev-parse --show-toplevel)
 source_sha=$(git rev-parse HEAD)
+testing=rust/crates/native-runtime/src/testing
+runtime=rust/crates/actors/src/local/runtime
+# Checking out other revisions in place would overwrite local work, so a
+# dirty checkout is refused before anything changes.
+if [[ -n "$(git -C "$source_root" status --porcelain --untracked-files=all)" ]]; then
+    echo "qualify-actors-history: refusing a checkout with local changes" >&2
+    exit 1
+fi
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/actors-history.XXXXXX")
+# The tree was clean, so restoring the source revision touches only what this
+# script changed; the one file it adds outside the source revision is removed.
 restore() {
     git -C "$source_root" checkout -q -f "$source_sha"
-    git -C "$source_root" clean -q -f -- rust/crates/actors/src rust/crates/native-runtime/src
+    rm -f "$source_root/$runtime/tests/historical_composition.rs"
     rm -rf "$scratch"
 }
 trap restore EXIT
@@ -48,8 +58,6 @@ run_case "$shard_test" pass "$scratch/shard-fixed.log"
 run_case "$custody_test" pass "$scratch/custody-fixed.log"
 
 # The overlay sources, taken from the source revision before any checkout.
-testing=rust/crates/native-runtime/src/testing
-runtime=rust/crates/actors/src/local/runtime
 mkdir "$scratch/overlay"
 cp "$testing/sweep.rs" "$scratch/overlay/sweep.rs"
 cp "$runtime/tests/simulation/composition.rs" "$scratch/overlay/composition.rs"
