@@ -155,6 +155,7 @@ impl TurnAdmission {
 /// Attestation is deferred until execution needs a signed scope. Every
 /// read of a turn and its [`AgentAuthority`] require one.
 pub(super) struct AdmittedAgent<'v> {
+    path: &'v AgentPath,
     issuer: RuntimeAuthority,
     owner: crate::AgentId,
     volumes: &'v [WorkspaceEntry],
@@ -170,7 +171,7 @@ impl<'v> AdmittedAgent<'v> {
     pub(super) fn verify(
         issuer: &RuntimeAuthority,
         admission: &'v TurnAdmission,
-        path: &AgentPath,
+        path: &'v AgentPath,
         volumes: &'v [WorkspaceEntry],
     ) -> Result<Self> {
         let owner = crate::AgentId::from_bytes(path.id_bytes());
@@ -235,6 +236,7 @@ impl<'v> AdmittedAgent<'v> {
             }
         }
         Ok(Self {
+            path,
             issuer,
             owner,
             volumes,
@@ -1158,14 +1160,8 @@ where
         Bindings<A, O>,
         Arc<AgentInternalFiles<A, O>>,
     )> {
-        self.journal(
-            (self.admit(agent)?, &agent.path),
-            agent.policy.as_slice(),
-            &[],
-            None,
-            None,
-        )
-        .await
+        self.journal(self.admit(agent)?, agent.policy.as_slice(), &[], None, None)
+            .await
     }
 
     /// Opens journal queries through this agent's original journal grant.
@@ -1314,7 +1310,7 @@ where
     /// version.
     async fn journal(
         &self,
-        (admitted, trace_owner): (AdmittedAgent<'_>, &AgentPath),
+        admitted: AdmittedAgent<'_>,
         external: &[FileRef],
         retained: &[FileRef],
         context: Option<&mut TurnContext<'_>>,
@@ -1409,7 +1405,7 @@ where
         .with_input_verifier(reader.clone())
         .with_clock(self.clock.clone());
         if let Some(traces) = &self.traces {
-            journal = journal.with_trace_interest(traces.clone(), trace_owner.clone());
+            journal = journal.with_trace_interest(traces.clone(), admitted.path.clone());
         }
         let internal = self.internal_files(
             &storage.volume,
@@ -2465,7 +2461,7 @@ where
                     .collect();
                 let (journal, bindings, files) = self
                     .journal(
-                        (admitted, &agent.path),
+                        admitted,
                         &external,
                         &retained,
                         Some(&mut context),
