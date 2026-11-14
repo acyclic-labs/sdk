@@ -1,7 +1,10 @@
-#[cfg(not(loom))]
-compile_error!(
-    r#"STEP_FAILED publication-models: Loom synchronization is disabled; recovery: RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream-publication-models --features model-checking --test publication"#
-);
+//! Loom models of stream publication. They exist only under `cfg(loom)`,
+//! which `scripts/loom-rustc.sh` sets for `model-checking` builds:
+//! `RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p
+//! acyclic-stream-publication-models --features model-checking --test publication`.
+//! Without it the features stay additive and this target is empty; the
+//! `conditional-watch-parity` proof's mutations fail if the models never run.
+#![cfg(loom)]
 
 mod error {
     use thiserror::Error;
