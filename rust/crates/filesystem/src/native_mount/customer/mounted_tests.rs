@@ -276,8 +276,7 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     assert!(published.operation().is_some());
     assert!(published.is_lazy());
     assert_eq!(published.workspace_id(), lazy.workspace().id());
-    // The original fixture requested an exact 32-byte range from a ten-byte
-    // file. A bounded whole-file read preserves the intended EOF semantics.
+    // Exact ranges reject EOF overruns; the bounded whole-file read still succeeds.
     assert!(matches!(
         lazy.read_range("/authored.txt", 0, 32, &mut accounting())
             .await,

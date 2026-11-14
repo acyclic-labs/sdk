@@ -119,6 +119,23 @@ async fn observation_and_transient_inspection_pin_their_versions() {
             .as_slice(),
         b"fte"
     );
+    let (page, length) = root
+        .read_page("/file.txt", 1, 32, accounting!())
+        .await
+        .unwrap();
+    assert_eq!(page.bytes.as_slice(), b"fter");
+    assert_eq!(length, 5);
+    let reads = source.counts.ranges.load(Ordering::Relaxed);
+    for (offset, length) in [(0, 6), (6, 0), (u64::MAX, 2)] {
+        assert!(matches!(
+            root.read_range("/file.txt", offset, length, accounting!())
+                .await,
+            Err(LazyWorkspaceError::Filesystem(crate::FsError::FileRead(
+                crate::kernel::FileRangeReadError::InvalidRange
+            )))
+        ));
+    }
+    assert_eq!(source.counts.ranges.load(Ordering::Relaxed), reads);
     let first = root.snapshot(accounting!()).await.unwrap();
     root.stat("/file.txt", accounting!()).await.unwrap();
     assert_eq!(first, root.snapshot(accounting!()).await.unwrap());
