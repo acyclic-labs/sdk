@@ -150,11 +150,32 @@ fn measured_shared_admission_charges_its_claim_check() -> Result<(), Box<dyn std
     child.terminate_descendants()?;
     child.wait(Duration::from_secs(5))?;
     let probed = measured_admission_reads(&root);
-    // One probe while the owner's process lock remains, three once another
-    // process's sweep has removed it.
+    // Physical record reads and seeks are distinct from the claim protocol's
+    // logical record/probe observations.
     assert!(
-        probed > free && probed - free < acyclic_native_runtime::StoreClaim::CHECK_READ_OPERATIONS,
+        probed > free,
         "free admission {free} reads, after a dead owner {probed}"
     );
+    // The allowance that admitted an empty record cannot hide the additional
+    // physical work needed to validate and probe a dead owner's record.
+    let cancellation = crate::CancellationToken::new();
+    let budget = crate::WorkBudget {
+        backend_read_operations: free,
+        ..native::finite_budget()
+    };
+    let work =
+        crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(cause, _)| cause)?;
+    let refused = LocalCoreStateStore::new(&root)
+        .materialization(work.clone())
+        .namespace()
+        .err()
+        .ok_or("dead-owner inspection escaped the original read allowance")?;
+    assert!(matches!(
+        refused,
+        LocalCoreStateStoreError::LazyWork(crate::LazyWorkspaceError::Demand(
+            crate::DemandError::Work(crate::WorkError::BudgetExceeded { .. })
+        ))
+    ));
+    work.receipt().verify(budget)?;
     Ok(())
 }

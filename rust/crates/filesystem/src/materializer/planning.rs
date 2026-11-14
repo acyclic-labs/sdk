@@ -169,6 +169,28 @@ async fn generation_edit<A: crate::AsyncAuthorityStore, O: crate::AsyncObjectSto
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
+    #[allow(unsafe_code)]
+    fn checkout_accesses(path: &Path) -> std::io::Result<std::fs::File> {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        use std::os::unix::ffi::OsStrExt;
+        let path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+        // SAFETY: inotify_init1 takes flags and returns a fresh owned descriptor.
+        let descriptor = unsafe { libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK) };
+        if descriptor < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: the successful syscall transferred this descriptor to us.
+        let events = unsafe { std::fs::File::from_raw_fd(descriptor) };
+        // SAFETY: path is terminated and both it and the descriptor remain live.
+        let watch =
+            unsafe { libc::inotify_add_watch(events.as_raw_fd(), path.as_ptr(), libc::IN_ACCESS) };
+        if watch < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(events)
+    }
+
     #[tokio::test]
     async fn merge_publication_touches_only_changed_files() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -268,6 +290,15 @@ mod tests {
                         )?)?)
                     })
                     .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+                #[cfg(target_os = "linux")]
+                let mut accesses = {
+                    let mut events = checkout_accesses(&root.join("directory"))?;
+                    // Negative control proves that cached file data still emits
+                    // the physical access event this independent oracle observes.
+                    std::fs::read(root.join("directory/file-000"))?;
+                    assert!(std::io::Read::read(&mut events, &mut [0; 4096])? > 0);
+                    events
+                };
                 let receipt = super::super::publication::publish_native_generation_transition(
                     &before,
                     &after,
@@ -289,6 +320,16 @@ mod tests {
                 )
                 .await
                 .map_err(|(cause, _)| cause)?;
+                #[cfg(target_os = "linux")]
+                if !changed {
+                    assert!(
+                        matches!(
+                            std::io::Read::read(&mut accesses, &mut [0; 4096]),
+                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+                        ),
+                        "an unchanged publication accessed checkout content"
+                    );
+                }
                 let writes = work.state.lock().write_probe.take().unwrap().writes;
                 let plan = &receipt.value.plan;
                 let mut rewritten = 0;
@@ -320,6 +361,10 @@ mod tests {
                 } else {
                     assert!(plan.edits.is_empty());
                     assert_eq!(receipt.work.materializations, 0);
+                    // Linux also reads mount topology to prove that recovery
+                    // cannot cross a nested mount. The access oracle above
+                    // distinguishes that required control I/O from file reads.
+                    #[cfg(not(target_os = "linux"))]
                     assert_eq!(receipt.work.source_bytes_read, 0);
                     assert_eq!(receipt.work.object_bytes_written, 0);
                     // The crash-cut probe includes lock releases and directory
@@ -338,7 +383,8 @@ mod tests {
                             .exists()
                     );
                     eprintln!(
-                        "merge_publication files={count} changed=0 rewritten=0 journal_records=0 materializations=0 write_class_operations={writes} read=0 written=0"
+                        "merge_publication files={count} changed=0 rewritten=0 journal_records=0 materializations=0 write_class_operations={writes} source_read={} checkout_accesses=0 written=0",
+                        receipt.work.source_bytes_read
                     );
                 }
             }

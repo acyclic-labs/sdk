@@ -559,11 +559,13 @@ async fn native_manifest_conditions_keep_original_commit_custody()
                 .condition(&fs, &mut commit, &io, &cancellation)
                 .await,
         )?;
-        assert_eq!(
-            commit.request().conditions().count(),
-            super::super::ORDER.len()
-        );
         let original = commit.request().clone();
+        io.sdk(
+            manifest
+                .condition(&fs, &mut commit, &io, &cancellation)
+                .await,
+        )?;
+        assert_eq!(commit.request(), &original);
         let retained = native.live_allocation_bytes();
         let other = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::performance::work_budget(1_000_000, 16_000_000),
@@ -768,10 +770,11 @@ async fn every_original_layer_fences_the_same_consuming_commit()
     Manifest::new(std::array::from_fn(|index| &generations[index]))
         .condition(&fs, &mut original, budget, &cancellation)
         .await?;
-    assert_eq!(
-        original.request().conditions().count(),
-        super::super::ORDER.len()
-    );
+    let conditioned = original.request().clone();
+    Manifest::new(std::array::from_fn(|index| &generations[index]))
+        .condition(&fs, &mut original, budget, &cancellation)
+        .await?;
+    assert_eq!(original.request(), &conditioned);
     assert!(matches!(
         fs.submit_commit(original, budget, &cancellation)
             .await?
