@@ -338,13 +338,16 @@ async fn isolation<P: StreamProvider + ?Sized>(
     }
     let first = path("ephemeral/a-visible")?;
     let last = path("ephemeral/z-visible")?;
-    for target in [&first, &last] {
+    for (target, retry) in [
+        (&first, b"ephemeral/a-visible"),
+        (&last, b"ephemeral/z-visible"),
+    ] {
         provider
             .append(AppendRequest {
                 path: target.clone(),
                 records: vec![Bytes::from_static(b"public").into()],
                 if_tail: Some(0),
-                idempotency_key: key(target.as_str().as_bytes())?,
+                idempotency_key: key(retry)?,
             })
             .await?;
     }
