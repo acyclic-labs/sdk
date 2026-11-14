@@ -114,7 +114,20 @@ fn round_trip(frame: &wire::SessionFrame) -> Result<wire::SessionFrame, prost::D
 
 #[test]
 fn malformed_peer_protobuf_is_a_terminal_response_error() {
-    assert_eq!(decode_frame(&[255]), Err(StreamError::InvalidResponse));
+    let malformed = [255];
+    let original = wire::SessionFrame::decode(malformed.as_slice()).unwrap_err();
+    let error = decode_frame(&malformed).unwrap_err();
+    assert_eq!(error.category(), StreamError::InvalidResponse);
+    let mut source = std::error::Error::source(&error);
+    let mut retained = None;
+    while let Some(cause) = source {
+        if let Some(decode) = cause.downcast_ref::<prost::DecodeError>() {
+            retained = Some(decode);
+            break;
+        }
+        source = cause.source();
+    }
+    assert_eq!(retained, Some(&original));
     let frame = wire::SessionFrame {
         channel_id: 1,
         generation: 1,

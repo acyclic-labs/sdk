@@ -147,7 +147,8 @@ pub fn decode_frame(bytes: &[u8]) -> Result<wire::SessionFrame, StreamError> {
     if bytes.len() > crate::MAX_COMMAND_BYTES {
         return Err(StreamError::LimitExceeded);
     }
-    wire::SessionFrame::decode(bytes).map_err(|_| StreamError::InvalidResponse)
+    wire::SessionFrame::decode(bytes)
+        .map_err(|source| StreamError::InvalidResponse.with_source(source))
 }
 
 /// Validates a logical Streams follow without creating transport state.
