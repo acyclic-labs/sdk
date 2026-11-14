@@ -140,6 +140,8 @@ impl<'a> StockExecution<'a> {
     ) -> StockExecution<'b> {
         StockExecution {
             stock: self.stock,
+            selected: self.selected.clone(),
+            configuration: self.configuration,
             context: self.context,
             io,
             summary: None,
