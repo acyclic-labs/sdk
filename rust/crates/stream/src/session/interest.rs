@@ -270,7 +270,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     Ok(binding) => binding,
                     Err(reason) => return Ok(Admission::Denied(identity, reason)),
                 };
-                let opened = match prepared.open(context) {
+                let opened = match prepared.open(&context) {
                     Ok(opened) => opened,
                     Err(error) => return Ok(Admission::Failed(identity, error)),
                 };

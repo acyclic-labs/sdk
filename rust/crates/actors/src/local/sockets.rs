@@ -30,7 +30,7 @@ use crate::sockets::{SocketFrame, SocketInput, SocketOpen, input_record, open_in
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::runtime::Executor;
 use acyclic_stream::session::{
-    CallAuthorization, PreparedSocketOpen, SocketChannel, SocketInbound, SocketProvider,
+    PreparedSocketOpen, SocketAuthorization, SocketChannel, SocketInbound, SocketProvider,
 };
 use acyclic_stream::{
     AppendRecord, BoxProviderFuture, BoxProviderStream, CommitCondition, CommitEffect,
@@ -1615,22 +1615,14 @@ impl<P: StreamProvider + ?Sized + 'static> PreparedSocketOpen for PreparedOpen<P
 
     fn open(
         self: Box<Self>,
-        authorization: CallAuthorization,
+        authorization: &dyn SocketAuthorization,
     ) -> Result<SocketChannel, StreamError> {
         let Self {
             host,
             open,
             resource,
         } = *self;
-        let attributes = acyclic_auth::contract::RecordAttributes::try_new(Vec::new())
-            .map_err(|_| StreamError::InvalidArgument)?;
-        authorization.authorize_in_account(
-            open.actor.account().as_bytes(),
-            &resource,
-            &[],
-            &attributes,
-            acyclic_auth::authority::PolicyDecision::Allow,
-        )?;
+        authorization.authorize_socket(open.actor.account().as_bytes(), &resource)?;
         let shared = &host.shared;
         let connection = shared.connection_id(&open.actor);
         let (outbound, frames) = mpsc::channel(acyclic_stream::MAX_ITEMS);
