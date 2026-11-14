@@ -165,8 +165,10 @@ export class GuestActivation<State, Bindings> {
         // An InvokeActor input is the definition's fetch; its reply is the
         // canonical InvokeActorResponse the front door returns to the caller.
         const { method, url, headers, body } = invocation;
-        const request = new Request(url, { method, headers: headers.map(([name, value]) => [name, value]),
-          body: method === "GET" || method === "HEAD" ? undefined : body, signal });
+        const init: RequestInit = { method, headers: headers.map(([name, value]) => [name, value]) };
+        if (method !== "GET" && method !== "HEAD") init.body = Uint8Array.from(body);
+        if (signal !== undefined) init.signal = signal;
+        const request = new Request(url, init);
         reply = await invokeResponse(wasm, await this.fetch(request, context), signal);
       } else {
         const result = await this.event(event, context);

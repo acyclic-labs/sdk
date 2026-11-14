@@ -29,7 +29,7 @@ export function conformanceDefinition(): { actor: ActorDefinition<{ bytes: Uint8
         return { type: "reply", payload: Uint8Array.of(count, 0xff) };
       },
       checkpoint(state) {
-        let bytes = new Uint8Array();
+        let bytes: Uint8Array = new Uint8Array();
         state.with(value => { bytes = value.bytes; return undefined; });
         return { codec: counter, bytes };
       },
