@@ -317,7 +317,9 @@ async fn forged_header_is_not_publication_evidence() -> TestResult {
 async fn first_generation_seek_retains_identity_prefix_and_original_funding() -> TestResult {
     crate::initialize_test_native_io();
     first_occurrence(MemoryAuthorityStore::default(), false).await?;
+    let (schedule, _events) = acyclic_native_runtime::testing::Schedule::new();
     let simulated = crate::Simulation::wrap(
+        &schedule,
         MemoryAuthorityStore::default(),
         MemoryObjectStore::default(),
     );
@@ -328,6 +330,7 @@ async fn first_generation_seek_retains_identity_prefix_and_original_funding() ->
     )
     .await?;
     let simulated = crate::Simulation::wrap(
+        &schedule,
         StreamAuthorityStore::new(Arc::new(acyclic_stream::MemoryStream::default())),
         MemoryObjectStore::default(),
     );

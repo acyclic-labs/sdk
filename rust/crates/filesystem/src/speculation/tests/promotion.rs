@@ -1,7 +1,7 @@
 use super::*;
 use crate::foundation::Digest;
 use crate::memory::{MemoryAuthorityStore, MemoryObjectStore};
-use crate::simulation::{Simulation, SimulationFault, SimulationOperation};
+use crate::simulation::{Simulation, SimulationFault, sites};
 use crate::storage::{
     ObjectKind, ObjectReadRequest, ObjectReadRetention, ObjectStoreError, object_digest,
 };
@@ -713,12 +713,12 @@ async fn simulated_remote_promotion_fails_exactly_and_retries_idempotently()
         &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
     )
     .await?;
-    let source_simulation = Simulation::wrap(MemoryAuthorityStore::default(), source_inner);
-    let destination_simulation = Simulation::default();
-    destination_simulation.schedule_next(
-        SimulationOperation::ObjectPut,
-        SimulationFault::PartitionBefore,
-    )?;
+    let (unfaulted, _source_events) = acyclic_native_runtime::testing::Schedule::new();
+    let source_simulation =
+        Simulation::wrap(&unfaulted, MemoryAuthorityStore::default(), source_inner);
+    let (schedule, _events) = acyclic_native_runtime::testing::Schedule::new();
+    let destination_simulation = Simulation::new(&schedule);
+    schedule.inject_next(sites::OBJECT_PUT, SimulationFault::PartitionBefore);
     let (_, source) = source_simulation.stores();
     let (_, destination) = destination_simulation.stores();
     let mut engine = PromotionSpeculator::new(

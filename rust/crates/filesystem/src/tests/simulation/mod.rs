@@ -1,5 +1,6 @@
 use super::*;
 use crate::foundation::Digest;
+use crate::kernel::allocation::KernelAccounting;
 use crate::storage::{AuthorityResult, FenceOutcome, ObjectKind};
 use crate::{
     AuthorityFailure, AuthorityWork, CancellationToken, ObjectResult, WorkBudget, WorkError,
@@ -12,7 +13,8 @@ const B: WorkBudget = WorkBudget::UNBOUNDED;
 async fn simulation_owned_group_dispatch_preserves_fault_interception()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::kernel::allocation::retained::Retained;
-    let simulation = Simulation::default();
+    let (schedule, _events) = Schedule::new();
+    let simulation = crate::Simulation::new(&schedule);
     let (authority, _) = simulation.stores();
     let authority = Arc::new(authority);
     let cancel = CancellationToken::new();
@@ -22,11 +24,7 @@ async fn simulation_owned_group_dispatch_preserves_fault_interception()
         .create_authority(id, Epoch::GENESIS, &mut work, None::<&mut ()>)
         .await
         .map_err(|error| error.into_error(std::convert::identity))?;
-    simulation.schedule(ScheduledSimulationFault {
-        operation: SimulationOperation::AuthorityAppend,
-        occurrence: 1,
-        fault: SimulationFault::RejectBefore,
-    })?;
+    schedule.inject(sites::AUTHORITY_APPEND, 0, SimulationFault::RejectBefore);
     let mut accounting = KernelAccounting::standalone(B, &cancel);
     let mut requests =
         crate::kernel::Owned::<Vec<crate::GuardedAppend>>::allocate(1, &mut accounting)?;
@@ -141,21 +139,18 @@ fn assert_authority_before_work<T>(
 async fn exercise_authority_before_work(
     fault: Option<SimulationFault>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let simulation = Simulation::default();
+    let (schedule, _events) = Schedule::new();
+    let simulation = crate::Simulation::new(&schedule);
     if let Some(fault) = fault {
-        for operation in [
-            SimulationOperation::AuthorityCreate,
-            SimulationOperation::AuthorityHead,
-            SimulationOperation::AuthorityAppend,
-            SimulationOperation::AuthorityReplay,
-            SimulationOperation::AuthorityFence,
-            SimulationOperation::AuthorityFindOperation,
+        for site in [
+            sites::AUTHORITY_CREATE,
+            sites::AUTHORITY_HEAD,
+            sites::AUTHORITY_APPEND,
+            sites::AUTHORITY_REPLAY,
+            sites::AUTHORITY_FENCE,
+            sites::AUTHORITY_FIND_OPERATION,
         ] {
-            simulation.schedule(ScheduledSimulationFault {
-                operation,
-                occurrence: 1,
-                fault,
-            })?;
+            schedule.inject(site, 0, fault);
         }
     }
     let (authority, _) = simulation.stores();
@@ -226,7 +221,7 @@ async fn exercise_authority_before_work(
         .await,
         cancelled,
     )?;
-    assert!(simulation.trace()?.is_empty() == cancelled);
+    assert!(schedule.site_calls().is_empty() == cancelled);
     Ok(())
 }
 
@@ -258,19 +253,16 @@ fn assert_object_before_work<T>(
 async fn exercise_object_before_work(
     fault: Option<SimulationFault>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let simulation = Simulation::default();
+    let (schedule, _events) = Schedule::new();
+    let simulation = crate::Simulation::new(&schedule);
     if let Some(fault) = fault {
-        for operation in [
-            SimulationOperation::ObjectPut,
-            SimulationOperation::ObjectRead,
-            SimulationOperation::ObjectReadMany,
-            SimulationOperation::ObjectContains,
+        for site in [
+            sites::OBJECT_PUT,
+            sites::OBJECT_READ,
+            sites::OBJECT_READ_MANY,
+            sites::OBJECT_CONTAINS,
         ] {
-            simulation.schedule(ScheduledSimulationFault {
-                operation,
-                occurrence: 1,
-                fault,
-            })?;
+            schedule.inject(site, 0, fault);
         }
     }
     let (_, objects) = simulation.stores();
@@ -300,7 +292,7 @@ async fn exercise_object_before_work(
         (work!(objects, contains(object_id), B, &cancellation)).await,
         cancelled,
     )?;
-    assert!(simulation.trace()?.is_empty() == cancelled);
+    assert!(schedule.site_calls().is_empty() == cancelled);
     Ok(())
 }
 

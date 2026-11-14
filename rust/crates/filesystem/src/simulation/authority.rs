@@ -1,22 +1,12 @@
 use super::*;
 
 fn select_authority_fault(
-    state: &Mutex<State>,
-    operation: SimulationOperation,
+    schedule: &Schedule,
+    site: &'static str,
     work: &mut crate::AuthorityWork<'_>,
 ) -> Result<Option<SimulationFault>, AuthorityStoreError> {
     work.check()?;
-    let mut state = state
-        .lock()
-        .map_err(|_| AuthorityStoreError::CorruptStatic("simulation state is poisoned"))?;
-    if work.is_native() {
-        state
-            .prepare_trace(&mut work.accounting())
-            .map_err(crate::async_storage::authority_error)?;
-    }
-    let fault = state
-        .intercept(operation)
-        .map_err(AuthorityStoreError::RejectedStatic)?;
+    let fault = intercept(schedule, site);
     match fault {
         Some(SimulationFault::RejectBefore) => {
             Err(AuthorityStoreError::RejectedStatic("scheduled rejection"))
@@ -44,11 +34,7 @@ impl<A: AsyncAuthorityStore + 'static> AsyncAuthorityStore for SimulatedStore<A>
         &self,
         group: crate::OwnedAuthorityGroup<G>,
     ) -> Option<crate::OwnedAuthorityTask> {
-        group.bind(Self {
-            state: Arc::clone(&self.state),
-            inner: Arc::clone(&self.inner),
-            paused: Arc::clone(&self.paused),
-        })
+        group.bind(self.clone())
     }
 
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
@@ -78,8 +64,7 @@ impl<A: AsyncAuthorityStore + 'static> AsyncAuthorityStore for SimulatedStore<A>
         work: &mut crate::AuthorityWork<'_>,
         guard: Option<&mut G>,
     ) -> Result<crate::AppendGroupOutcome, crate::AuthorityError<G::Error>> {
-        let fault =
-            select_authority_fault(&self.state, SimulationOperation::AuthorityAppend, work)?;
+        let fault = select_authority_fault(&self.schedule, sites::AUTHORITY_APPEND, work)?;
         if let Some(first) = requests.first()
             && matches!(fault, Some(SimulationFault::FenceBeforeAuthorityAppend))
         {
@@ -106,12 +91,10 @@ impl<A: AsyncAuthorityStore + 'static> AsyncAuthorityStore for SimulatedStore<A>
         work: &mut crate::AuthorityWork<'_>,
         guard: Option<&mut G>,
     ) -> Result<bool, crate::AuthorityError<G::Error>> {
-        #[cfg(not(target_arch = "wasm32"))]
         if work.is_native() && guard.is_some() {
             return Err(AuthorityStoreError::NativeOriginalUnsupported.into());
         }
-        let fault =
-            select_authority_fault(&self.state, SimulationOperation::AuthorityCreate, work)?;
+        let fault = select_authority_fault(&self.schedule, sites::AUTHORITY_CREATE, work)?;
         let value = self
             .inner
             .create_first_record(authority, commit, work, guard)
@@ -130,8 +113,7 @@ impl<A: AsyncAuthorityStore + 'static> AsyncAuthorityStore for SimulatedStore<A>
         work: &mut crate::AuthorityWork<'_>,
         guard: Option<&mut G>,
     ) -> Result<AppendOutcome, crate::AuthorityError<G::Error>> {
-        let fault =
-            select_authority_fault(&self.state, SimulationOperation::AuthorityAppend, work)?;
+        let fault = select_authority_fault(&self.schedule, sites::AUTHORITY_APPEND, work)?;
         if matches!(fault, Some(SimulationFault::FenceBeforeAuthorityAppend)) {
             self.inner
                 .fence(request.authority_id, request.expected, work)
@@ -155,12 +137,11 @@ impl<A: AsyncAuthorityStore + 'static> AsyncAuthorityStore for SimulatedStore<A>
         work: &mut crate::AuthorityWork<'_>,
         mut guard: Option<&mut G>,
     ) -> Result<CreateAuthorityOutcome, crate::AuthorityError<G::Error>> {
-        #[cfg(not(target_arch = "wasm32"))]
         if work.is_native() {
             return Err(AuthorityStoreError::NativeOriginalUnsupported.into());
         }
         crate::async_storage::seal(guard.as_deref_mut(), work).await?;
-        select_authority_fault(&self.state, SimulationOperation::AuthorityCreate, work)?;
+        select_authority_fault(&self.schedule, sites::AUTHORITY_CREATE, work)?;
         let value = self
             .inner
             .create_authority(authority, epoch, work, None::<&mut ()>)
@@ -182,12 +163,11 @@ impl<A: AsyncAuthorityStore + 'static> AsyncAuthorityStore for SimulatedStore<A>
         work: &mut crate::AuthorityWork<'_>,
         mut guard: Option<&mut G>,
     ) -> Result<CreateAuthorityOutcome, crate::AuthorityError<G::Error>> {
-        #[cfg(not(target_arch = "wasm32"))]
         if work.is_native() {
             return Err(AuthorityStoreError::NativeOriginalUnsupported.into());
         }
         crate::async_storage::seal(guard.as_deref_mut(), work).await?;
-        select_authority_fault(&self.state, SimulationOperation::AuthorityCreate, work)?;
+        select_authority_fault(&self.schedule, sites::AUTHORITY_CREATE, work)?;
         let value = self
             .inner
             .fork_authority(source, destination, operation, work, None::<&mut ()>)
@@ -208,11 +188,10 @@ impl<A: AsyncAuthorityStore + 'static> AsyncAuthorityStore for SimulatedStore<A>
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<Option<PublicationReservation>, AuthorityStoreError> {
         work.check()?;
-        #[cfg(not(target_arch = "wasm32"))]
         if work.is_native() {
             return Err(AuthorityStoreError::NativeOriginalUnsupported);
         }
-        select_authority_fault(&self.state, SimulationOperation::AuthorityReservation, work)?;
+        select_authority_fault(&self.schedule, sites::AUTHORITY_RESERVATION, work)?;
         self.inner
             .publication_reservation(authority, operation, work)
             .await
@@ -226,12 +205,10 @@ impl<A: AsyncAuthorityStore + 'static> AsyncAuthorityStore for SimulatedStore<A>
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<ReservationOutcome, AuthorityStoreError> {
         work.check()?;
-        #[cfg(not(target_arch = "wasm32"))]
         if work.is_native() {
             return Err(AuthorityStoreError::NativeOriginalUnsupported);
         }
-        let fault =
-            select_authority_fault(&self.state, SimulationOperation::AuthorityReserve, work)?;
+        let fault = select_authority_fault(&self.schedule, sites::AUTHORITY_RESERVE, work)?;
         let value = self
             .inner
             .reserve_publication(authority, expected, operation, work)
@@ -252,12 +229,10 @@ impl<A: AsyncAuthorityStore + 'static> AsyncAuthorityStore for SimulatedStore<A>
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<(), AuthorityStoreError> {
         work.check()?;
-        #[cfg(not(target_arch = "wasm32"))]
         if work.is_native() {
             return Err(AuthorityStoreError::NativeOriginalUnsupported);
         }
-        let fault =
-            select_authority_fault(&self.state, SimulationOperation::AuthorityRelease, work)?;
+        let fault = select_authority_fault(&self.schedule, sites::AUTHORITY_RELEASE, work)?;
         self.inner.release_publication(reservation, work).await?;
         if matches!(fault, Some(SimulationFault::AmbiguousAuthorityAppend)) {
             return Err(lost_authority_acknowledgement("release-publication"));
@@ -270,7 +245,7 @@ impl<A: AsyncAuthorityStore + 'static> AsyncAuthorityStore for SimulatedStore<A>
         authority: AuthorityId,
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<Head, AuthorityStoreError> {
-        let fault = select_authority_fault(&self.state, SimulationOperation::AuthorityHead, work)?;
+        let fault = select_authority_fault(&self.schedule, sites::AUTHORITY_HEAD, work)?;
         if let Some(SimulationFault::StaleAuthorityHead(head)) = fault {
             if !work.is_native() {
                 let delta = WorkCounters {
@@ -291,7 +266,7 @@ impl<A: AsyncAuthorityStore + 'static> AsyncAuthorityStore for SimulatedStore<A>
         expected: Head,
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<crate::FenceOutcome, AuthorityStoreError> {
-        select_authority_fault(&self.state, SimulationOperation::AuthorityFence, work)?;
+        select_authority_fault(&self.schedule, sites::AUTHORITY_FENCE, work)?;
         self.inner.fence(authority, expected, work).await
     }
 
@@ -301,11 +276,7 @@ impl<A: AsyncAuthorityStore + 'static> AsyncAuthorityStore for SimulatedStore<A>
         operation: OperationId,
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<Option<DurableCommit>, AuthorityStoreError> {
-        select_authority_fault(
-            &self.state,
-            SimulationOperation::AuthorityFindOperation,
-            work,
-        )?;
+        select_authority_fault(&self.schedule, sites::AUTHORITY_FIND_OPERATION, work)?;
         self.inner.find_operation(authority, operation, work).await
     }
 
@@ -328,10 +299,8 @@ impl<A: AsyncAuthorityStore + 'static> AsyncAuthorityStore for SimulatedStore<A>
         limit: ReplayLimit,
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<(Vec<DurableCommit>, crate::AuthorityAllocation), AuthorityStoreError> {
-        let fault =
-            select_authority_fault(&self.state, SimulationOperation::AuthorityReplay, work)?;
+        let fault = select_authority_fault(&self.schedule, sites::AUTHORITY_REPLAY, work)?;
         let (mut records, allocation) = self.inner.replay(authority, after, limit, work).await?;
-        #[cfg(not(target_arch = "wasm32"))]
         let mut allocation = allocation;
         if matches!(fault, Some(SimulationFault::DuplicateAuthorityReplay)) && !records.is_empty() {
             let growth = records.len() == records.capacity();
@@ -363,7 +332,6 @@ impl<A: AsyncAuthorityStore + 'static> AsyncAuthorityStore for SimulatedStore<A>
                     drop(replacement);
                     return Err(error);
                 }
-                #[cfg(not(target_arch = "wasm32"))]
                 if let (
                     Some(held),
                     crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(new),

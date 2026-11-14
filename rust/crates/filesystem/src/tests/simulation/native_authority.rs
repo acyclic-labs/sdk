@@ -3,17 +3,18 @@ use super::*;
 #[tokio::test]
 async fn reservation_ack_loss_and_query_partition_preserve_actual_reservation()
 -> Result<(), Box<dyn std::error::Error>> {
-    let simulation = Simulation::default();
+    let (schedule, _events) = Schedule::new();
+    let simulation = crate::Simulation::new(&schedule);
     let (authority, _) = simulation.stores();
     let cancel = CancellationToken::new();
     let id = AuthorityId::from_bytes([0xc1; 16]);
     let operation = OperationId::from_bytes([0xc2; 16]);
     work!(authority, create_authority(id, Epoch::GENESIS), B, &cancel).await?;
     let head = work!(authority, head(id), B, &cancel).await?.value;
-    simulation.schedule_next(
-        SimulationOperation::AuthorityReserve,
+    schedule.inject_next(
+        sites::AUTHORITY_RESERVE,
         SimulationFault::AmbiguousAuthorityAppend,
-    )?;
+    );
     assert!(matches!(
         authority
             .reserve_publication(id, head, operation, &mut AuthorityWork::new(B, &cancel))
@@ -27,10 +28,10 @@ async fn reservation_ack_loss_and_query_partition_preserve_actual_reservation()
     assert_eq!(reservation.authority_id, id);
     assert_eq!(reservation.operation_id, operation);
     assert_eq!(reservation.expected, head);
-    simulation.schedule_next(
-        SimulationOperation::AuthorityReservation,
+    schedule.inject_next(
+        sites::AUTHORITY_RESERVATION,
         SimulationFault::PartitionBefore,
-    )?;
+    );
     let mut read_work = AuthorityWork::new(B, &cancel);
     assert!(matches!(
         authority
@@ -39,10 +40,10 @@ async fn reservation_ack_loss_and_query_partition_preserve_actual_reservation()
         Err(AuthorityStoreError::RejectedStatic(_))
     ));
     assert_eq!(read_work.spent(), WorkCounters::UNCHARGED);
-    simulation.schedule_next(
-        SimulationOperation::AuthorityRelease,
+    schedule.inject_next(
+        sites::AUTHORITY_RELEASE,
         SimulationFault::AmbiguousAuthorityAppend,
-    )?;
+    );
     assert!(matches!(
         authority
             .release_publication(reservation, &mut AuthorityWork::new(B, &cancel))
@@ -58,15 +59,16 @@ async fn reservation_ack_loss_and_query_partition_preserve_actual_reservation()
             .await?
             .is_none()
     );
-    let trace = simulation.trace()?;
-    assert!(trace.iter().any(
-        |entry| entry.operation == SimulationOperation::AuthorityReservation
-            && entry.fault == Some(SimulationFault::PartitionBefore)
-    ));
+    assert!(
+        schedule
+            .site_calls()
+            .iter()
+            .any(|call| call.site == sites::AUTHORITY_RESERVATION
+                && call.fault() == Some(&SimulationFault::PartitionBefore))
+    );
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn budget() -> WorkBudget {
     WorkBudget {
         authority_records_read: 1_024,
@@ -87,12 +89,13 @@ fn budget() -> WorkBudget {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn opaque_native_reads_and_mutations_never_fall_back_to_ordinary_io_or_owner()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::{NativeAuthorityGuard, NativeMaterializationWork};
+    let (schedule, _events) = Schedule::new();
     let simulation = Simulation::wrap(
+        &schedule,
         crate::facade::test_authority::OpaqueAuthority::default(),
         (),
     );
@@ -151,7 +154,7 @@ async fn opaque_native_reads_and_mutations_never_fall_back_to_ordinary_io_or_own
         SimulationFault::RejectBefore,
         SimulationFault::PartitionBefore,
     ] {
-        simulation.schedule_next(SimulationOperation::AuthorityCreate, fault)?;
+        schedule.inject_next(sites::AUTHORITY_CREATE, fault);
         assert!(matches!(
             authority
                 .create_first_record(id, proposed.clone(), &mut context, None::<&mut ()>)
@@ -160,7 +163,7 @@ async fn opaque_native_reads_and_mutations_never_fall_back_to_ordinary_io_or_own
             Err(AuthorityStoreError::RejectedStatic(_))
         ));
         for guarded in [false, true] {
-            simulation.schedule_next(SimulationOperation::AuthorityAppend, fault)?;
+            schedule.inject_next(sites::AUTHORITY_APPEND, fault);
             let result = if guarded {
                 authority
                     .compare_and_append(append.clone(), &mut context, Some(&mut forbidden))

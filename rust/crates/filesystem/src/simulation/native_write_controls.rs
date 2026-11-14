@@ -26,32 +26,15 @@ fn budget() -> WorkBudget {
 }
 
 #[tokio::test]
-async fn native_read_trace_denial_and_cancellation_precede_interceptor_and_backend() {
+async fn native_read_cancellation_precedes_interceptor_and_backend() {
     let (memory, object) = seeded_object().await;
-    let simulation = Simulation::wrap(reference_backends().0, memory);
+    let (schedule, _events) = Schedule::new();
+    let simulation = Simulation::wrap(&schedule, reference_backends().0, memory);
     let (_, store) = simulation.stores();
     let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(
-        WorkBudget {
-            allocation_operations: 1,
-            ..budget()
-        },
-        &cancellation,
-    )
-    .expect("only actual accounting constructor");
+    let work = NativeMaterializationWork::new(budget(), &cancellation)
+        .expect("only actual accounting constructor");
     let before = work.receipt();
-    assert!(
-        (store
-            .read(
-                object.object_id(),
-                4,
-                &mut crate::AuthorityWork::native(&work, &cancellation)
-            )
-            .await)
-            .is_err()
-    );
-    assert_eq!(work.receipt(), before);
-    assert!(simulation.trace().expect("trace").is_empty());
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     assert!(matches!(
@@ -65,18 +48,15 @@ async fn native_read_trace_denial_and_cancellation_precede_interceptor_and_backe
         Err(ObjectStoreError::Cancelled)
     ));
     assert_eq!(work.receipt(), before);
+    assert!(schedule.site_calls().is_empty());
 }
 
 #[tokio::test]
 async fn native_read_partial_copy_keeps_original_capacity_until_last_byte_alias() {
     let (memory, object) = seeded_object().await;
-    let simulation = Simulation::wrap(reference_backends().0, memory);
-    simulation
-        .schedule_next(
-            SimulationOperation::ObjectRead,
-            SimulationFault::PartialObjectRead,
-        )
-        .expect("partial fault");
+    let (schedule, _events) = Schedule::new();
+    let simulation = Simulation::wrap(&schedule, reference_backends().0, memory);
+    schedule.inject_next(sites::OBJECT_READ, SimulationFault::PartialObjectRead);
     let (_, store) = simulation.stores();
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(budget(), &cancellation).expect("original meter");
@@ -104,13 +84,9 @@ async fn native_read_partial_copy_keeps_original_capacity_until_last_byte_alias(
 #[tokio::test]
 async fn native_read_batch_preserves_one_real_memory_frontier_with_fault_custody() {
     let (memory, object) = seeded_object().await;
-    let simulation = Simulation::wrap(reference_backends().0, memory);
-    simulation
-        .schedule_next(
-            SimulationOperation::ObjectReadMany,
-            SimulationFault::CorruptObjectRead,
-        )
-        .expect("batch fault");
+    let (schedule, _events) = Schedule::new();
+    let simulation = Simulation::wrap(&schedule, reference_backends().0, memory);
+    schedule.inject_next(sites::OBJECT_READ_MANY, SimulationFault::CorruptObjectRead);
     let (_, store) = simulation.stores();
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(budget(), &cancellation).expect("original meter");
@@ -159,13 +135,9 @@ async fn native_delayed_visibility_preserves_intrinsic_alias_custody() {
     let alias = object.bytes().clone();
     let payload_live = work.live_allocation_bytes();
     let hashed = work.receipt().bytes_hashed;
-    let simulation = Simulation::default();
-    simulation
-        .schedule_next(
-            SimulationOperation::ObjectPut,
-            SimulationFault::DelayObjectVisibility,
-        )
-        .expect("delay schedule");
+    let (schedule, _events) = Schedule::new();
+    let simulation = crate::Simulation::new(&schedule);
+    schedule.inject_next(sites::OBJECT_PUT, SimulationFault::DelayObjectVisibility);
     let (_, store) = simulation.stores();
     (store
         .put_hashed(
@@ -203,61 +175,12 @@ async fn native_delayed_visibility_preserves_intrinsic_alias_custody() {
 }
 
 #[tokio::test]
-async fn native_put_trace_denial_precedes_interceptor_and_provider_effects() {
-    let cancellation = CancellationToken::new();
-    let mut denied = budget();
-    denied.allocation_operations = 1;
-    let work = NativeMaterializationWork::new(denied, &cancellation).expect("ledger only");
-    let simulation = Simulation::default();
-    simulation
-        .schedule_next(
-            SimulationOperation::ObjectPut,
-            SimulationFault::DelayObjectVisibility,
-        )
-        .expect("delay schedule");
-    let (_, store) = simulation.stores();
-    let object = HashedObject::new(ObjectKind::TreePage, OwnedBytes::from_static(b"body"));
-    let before = work.receipt();
-    assert!(
-        (store
-            .put(
-                object.object_id(),
-                object.bytes().clone(),
-                &mut crate::AuthorityWork::native(&work, &cancellation)
-            )
-            .await)
-            .is_err()
-    );
-    assert_eq!(work.receipt(), before);
-    let state = simulation.state.lock().expect("state");
-    assert!(state.trace.is_empty());
-    assert!(state.occurrences.iter().all(|occurrence| *occurrence == 0));
-    assert!(state.pending_objects.is_empty());
-    assert_eq!(state.faults.len(), 1);
-    drop(state);
-    assert!(
-        (store
-            .put_hashed(
-                object,
-                &mut crate::AuthorityWork::native(&work, &cancellation)
-            )
-            .await)
-            .is_err()
-    );
-    assert_eq!(work.receipt(), before);
-}
-
-#[tokio::test]
 async fn native_scheduled_rejection_does_not_hash_or_write_payload() {
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(budget(), &cancellation).expect("original ledger");
-    let simulation = Simulation::default();
-    simulation
-        .schedule_next(
-            SimulationOperation::ObjectPut,
-            SimulationFault::RejectBefore,
-        )
-        .expect("rejection schedule");
+    let (schedule, _events) = Schedule::new();
+    let simulation = crate::Simulation::new(&schedule);
+    schedule.inject_next(sites::OBJECT_PUT, SimulationFault::RejectBefore);
     let (_, store) = simulation.stores();
     let object = HashedObject::new(ObjectKind::TreePage, OwnedBytes::from_static(b"body"));
     assert!(matches!(
@@ -290,7 +213,8 @@ async fn native_write_hooks_preserve_original_cancellation_before_effects() {
         .expect("original ledger");
     original.cancel();
     let before = work.receipt();
-    let simulation = Simulation::default();
+    let (schedule, _events) = Schedule::new();
+    let simulation = crate::Simulation::new(&schedule);
     let (_, store) = simulation.stores();
     let object = crate::storage::HashedObject::new(
         crate::storage::ObjectKind::TreePage,
@@ -345,7 +269,13 @@ async fn native_write_hooks_preserve_original_cancellation_before_effects() {
             .is_err()
     );
     assert_eq!(work.receipt(), before);
-    let state = simulation.state.lock().expect("state");
-    assert!(state.trace.is_empty());
-    assert!(state.pending_objects.is_empty());
+    assert!(schedule.site_calls().is_empty());
+    assert!(
+        simulation
+            .state
+            .lock()
+            .expect("state")
+            .pending_objects
+            .is_empty()
+    );
 }

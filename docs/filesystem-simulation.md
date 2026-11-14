@@ -6,6 +6,15 @@ Objects implementations. Entropy, owned-task scheduling and boundary events
 come from `acyclic_native_runtime::testing::Schedule`; there is no subsystem
 clock, scheduler, fault injector or random generator.
 
+Storage faults use the same Schedule. `acyclic_fs::simulation` wraps an
+authority and an object store so that each operation is a logical site
+(`simulation::sites`). A test plans a `SimulationFault` with
+`Schedule::inject(site, ordinal, fault)` or `Schedule::inject_next`. The
+schedule counts calls, records `Schedule::site_calls` and holds a paused call
+at a `Boundary` that the driver releases or drops. The wrapper only defines
+what each fault does to a call. A fault planned at a site that cannot apply
+it fails the call, so a plan cannot silently inject nothing.
+
 The oracle is an independent map of acknowledged file contents. After every
 operation, both the current workspace and its independently reopened immutable
 generation must agree with it. The obligations are:
