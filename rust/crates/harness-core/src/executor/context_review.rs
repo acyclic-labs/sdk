@@ -146,9 +146,8 @@ impl<'a> StockExecution<'a> {
         }
         let usage = ModelTokenUsage::reported(metadata);
         let Some(input_tokens) = self
-            .stock
-            .provider
-            .reported_input_tokens(&self.stock.model, metadata)?
+            .selected_provider()
+            .reported_input_tokens(self.selected_model(), metadata)?
         else {
             return Ok(());
         };

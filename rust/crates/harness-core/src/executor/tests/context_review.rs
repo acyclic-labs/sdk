@@ -339,9 +339,25 @@ async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixe
     Ok(())
 }
 
+// The original stock contract is deliberately unusable once a step selected
+// another provider. This makes accidental fallback fail before dispatch.
+struct UnusedStockProvider;
+impl ModelProvider for UnusedStockProvider {
+    fn reported_input_tokens(&self, _: &Model, _: &Value) -> Result<Option<u64>> {
+        panic!("review usage must belong to the selected step provider");
+    }
+
+    fn generate<'a>(
+        &'a self,
+        _: &'a crate::model::PreparedModelRequest,
+        _: crate::model::ModelDispatch,
+    ) -> crate::model::ModelStream<'a> {
+        panic!("selected step dispatch must not fall back to stock");
+    }
+}
 #[tokio::test]
 async fn reviews_bound_complete_groups_without_stopping_a_fitting_worker() -> Result<()> {
-    for partitioned in [true, false] {
+    for (partitioned, selected_step) in [(true, false), (false, false), (true, true), (false, true)] {
         let overflowed = Arc::new(AtomicUsize::new(0));
         let seen = overflowed.clone();
         let response = || {
@@ -372,7 +388,7 @@ async fn reviews_bound_complete_groups_without_stopping_a_fitting_worker() -> Re
                     fixture_token_count(request)
                 }),
         );
-        let stock = StockExecutor::new(
+        let mut stock = StockExecutor::new(
             Model::new("fixture".into(), "selected".into(), "1".into())?,
             provider.clone(),
             ContextPipeline::default(),
@@ -403,7 +419,16 @@ async fn reviews_bound_complete_groups_without_stopping_a_fitting_worker() -> Re
                 content: ModelContent::Text("b".repeat(64)),
             });
         }
-        let execution = StockExecution::ordinary(&stock);
+        let selected = if selected_step {
+            let binding = stock.step_template();
+            stock.model = Model::new("unused".into(), "stock".into(), "1".into())?;
+            stock.provider = Arc::new(UnusedStockProvider);
+            Some(Arc::new(binding))
+        } else {
+            None
+        };
+        let mut execution = StockExecution::ordinary(&stock);
+        execution.selected = selected.clone();
         let worker = async {
             let events = execution.model_step(journal, &input, 0, &prior).await?;
             assert_eq!(
@@ -452,7 +477,8 @@ async fn reviews_bound_complete_groups_without_stopping_a_fitting_worker() -> Re
             .with_context_review(journal, &input, worker)
             .await?;
         let paid = provider.request_count();
-        let reopened = StockExecution::ordinary(&stock);
+        let mut reopened = StockExecution::ordinary(&stock);
+        reopened.selected = selected;
         let replay = async {
             let events = reopened.model_step(journal, &input, 0, &prior).await?;
             reopened
