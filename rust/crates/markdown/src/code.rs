@@ -82,6 +82,8 @@ fn tone(stack: &ScopeStack) -> Style {
 #[derive(Clone)]
 pub struct CodeLine(Arc<Node>);
 
+type StyledSpans = Arc<[(Range<usize>, Style)]>;
+
 struct Node {
     fingerprint: u64,
     cache: Weak<Mutex<HashMap<u64, Weak<Node>>>>,
@@ -89,7 +91,7 @@ struct Node {
     previous: Option<Arc<Node>>,
     text: Arc<str>,
     parsed: OnceLock<Parsed>,
-    styles: Mutex<BTreeMap<(usize, usize), Arc<[(Range<usize>, Style)]>>>,
+    styles: Mutex<BTreeMap<(usize, usize), StyledSpans>>,
 }
 struct Parsed {
     state: ParseState,
