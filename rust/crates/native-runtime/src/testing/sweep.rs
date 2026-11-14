@@ -23,7 +23,7 @@ pub fn seeds(default: Range<u64>) -> Range<u64> {
 }
 
 /// The first failing seed of a sweep and the world's own minimal trace.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct Failure {
     /// Sweep name, as the test reports it.
     pub sweep: &'static str,
@@ -40,6 +40,14 @@ impl fmt::Display for Failure {
             "DST {} failed at seed {}; reproduce with DST_SEED={}\n{}",
             self.sweep, self.seed, self.seed, self.report
         )
+    }
+}
+
+// A test returning `Err` prints `Debug`; it must still name the seed and the
+// `DST_SEED` reproduction rather than a struct dump.
+impl fmt::Debug for Failure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
     }
 }
 
@@ -163,6 +171,6 @@ mod tests {
             (failure.seed, failure.report.as_str()),
             (5, "invariant broken at 5")
         );
-        assert!(failure.to_string().contains("DST_SEED=5"));
+        assert!(format!("{failure:?}").contains("DST_SEED=5"));
     }
 }
