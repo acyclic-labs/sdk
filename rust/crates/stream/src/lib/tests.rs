@@ -844,10 +844,15 @@ mod indexed_trace_tests {
         let commit = CommitRequest {
             deadline_unix_millis: None,
             effects: vec![CommitEffect::hard(
-                vec![CommitCondition::Tail {
-                    path: child.path().clone(),
-                    expected: 3,
-                }],
+                vec![
+                    CommitCondition::Present {
+                        path: trace.path().clone(),
+                    },
+                    CommitCondition::Tail {
+                        path: child.path().clone(),
+                        expected: 3,
+                    },
+                ],
                 vec![CommitMutation::Append {
                     path: child.path().clone(),
                     records: vec![AppendRecord::new(OwnedBytes::from_static(b"commit"))?],
@@ -859,6 +864,27 @@ mod indexed_trace_tests {
         assert!(matches!(committed, CommitOutcome::Committed(_)));
         assert_eq!(root.within(provider.commit(commit)).await?, committed);
         assert_eq!(child.tail().await?, 4);
+        let diagnostic_commit = CommitRequest {
+            deadline_unix_millis: None,
+            effects: vec![CommitEffect::hard(
+                vec![CommitCondition::Tail {
+                    path: trace.path().clone(),
+                    expected: u64::MAX,
+                }],
+                vec![CommitMutation::Append {
+                    path: trace.path().clone(),
+                    records: vec![AppendRecord::new(OwnedBytes::from_static(
+                        b"never-published",
+                    ))?],
+                }],
+            )],
+            idempotency_key: IdempotencyKey::unique(),
+        };
+        assert!(matches!(
+            root.within(provider.commit(diagnostic_commit)).await?,
+            CommitOutcome::Conflict(_)
+        ));
+
         let accepted_request = CommitRequest {
             deadline_unix_millis: None,
             effects: vec![CommitEffect::hard(
