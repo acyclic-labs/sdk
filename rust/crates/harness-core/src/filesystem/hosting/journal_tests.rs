@@ -785,6 +785,7 @@ async fn settled_arrivals_and_archive_do_not_end_a_retained_inbox_cut_early() ->
 #[tokio::test]
 async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     use crate::client_files::{ClientFileChange, FileRoot};
+    use crate::executor::{ExecutionEvent, ExecutionJournal};
     use acyclic_stream::StreamProviderExt as _;
     let (bound, agent) = binding().await?;
     let root = FileRoot::Private {};
@@ -884,6 +885,363 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
             .ok_or("changed file missing")?
             .text,
         "after"
+    );
+
+    // Default trace windows use this same authenticated file wait and original
+    // source follow, including when the trace stream does not exist yet.
+    let trace_path = "live/agents/self/trace/0/1.json".to_owned();
+    let paths = vec![trace_path.clone()];
+    let journal = bound.turns().query_journal(&state).await?;
+    let operation = OperationId::from_bytes([74; 16]);
+    let event = ExecutionEvent::Started {
+        request_digest: [75; 32],
+    };
+    journal.append(operation, "start", &event, None)?.await?;
+    assert_eq!(
+        journal.replay(operation, 0, 1, None)?.await?[0].event,
+        event
+    );
+    let before = bound.files(&agent, root, &paths, None).await?;
+    assert!(before.files[&trace_path].is_none());
+    assert!(
+        bound.trace_recorder(&agent)?.is_none(),
+        "snapshot read admitted a follower"
+    );
+    let waiting = bound.files(&agent, root, &paths, Some(&before.cut));
+    futures::pin_mut!(waiting);
+    assert!(futures::poll!(waiting.as_mut()).is_pending());
+    let recorder = bound
+        .trace_recorder(&agent)?
+        .ok_or("live wait did not admit trace interest")?;
+    // An original filesystem event can require another snapshot without
+    // changing this view. Demand must survive that entire continuation.
+    let mut transaction = workspace
+        .begin_transaction(
+            acyclic_fs::IdempotencyKey::from_bytes([76; 16]),
+            budget,
+            &cancellation,
+        )
+        .await?
+        .value;
+    transaction
+        .commit(
+            None,
+            acyclic_fs::PublicationPermit::Unrestricted,
+            budget,
+            &cancellation,
+            |_| async {
+                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
+                    acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                    },
+                )
+            },
+        )
+        .await?;
+    assert!(futures::poll!(waiting.as_mut()).is_pending());
+    assert!(Arc::ptr_eq(
+        &recorder,
+        &bound
+            .trace_recorder(&agent)?
+            .ok_or("continuation lost trace demand")?
+    ));
+    let mut other = Box::pin(bound.files(&agent, root, &paths, Some(&before.cut)));
+    assert!(futures::poll!(other.as_mut()).is_pending());
+    assert!(Arc::ptr_eq(
+        &recorder,
+        &bound
+            .trace_recorder(&agent)?
+            .ok_or("shared recorder missing")?
+    ));
+    let source = crate::client_files::trace::source(&agent)?;
+    // The ordinary journal request now selects the host's original demand;
+    // callers never construct a recorder or choose a diagnostic stream.
+    let page = journal.replay(operation, 0, 1, None)?.await?;
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0].event, event);
+    let changed = waiting.await?;
+    assert_eq!(changed.cut.queries[&source], 2);
+    let file = changed.files[&trace_path]
+        .as_ref()
+        .ok_or("trace file missing")?;
+    assert!(
+        matches!(&file.source, crate::client_files::FileSource::Query { input, .. }
+        if input.stream == source && input.sequence == 0)
+    );
+    let value: serde_json::Value = serde_json::from_str(&file.text)?;
+    assert_eq!(value["activeSpans"], 1);
+    assert_eq!(value["missingGuarantees"], 0);
+    assert_eq!(value["coveredThrough"], 1);
+    let traces = acyclic_stream::Stream::new(bound.agents.provider().clone(), source.as_str())?;
+    let mut query =
+        acyclic_stream::trace::TraceQuery::new(traces.read(0, 2).await?, Default::default());
+    query.next().await?;
+    assert!(
+        matches!(query.next().await?, Some(acyclic_stream::trace::Observation::Completed {
+        start, bytes: None, ..
+    }) if start.name == "harness.execution_replay_page"
+        && start.guarantee.as_deref() == Some("authenticated_execution_prefix"))
+    );
+    let staged = journal
+        .stage(operation, "trace-content", b"raw", "text/plain", None)?
+        .await?;
+    assert_eq!(journal.load(&staged, None)?.await?.as_ref(), b"raw");
+    assert_eq!(
+        journal
+            .load_range(
+                &staged,
+                acyclic_fs::ByteRange {
+                    offset: 1,
+                    length: 2
+                },
+                None
+            )?
+            .await?
+            .as_ref(),
+        b"aw"
+    );
+    let mut storage =
+        acyclic_stream::trace::TraceQuery::new(traces.read(2, 6).await?, Default::default());
+    for (name, guarantee, expected_bytes) in [
+        (
+            "harness.private_stage",
+            "authenticated_private_publication",
+            3,
+        ),
+        ("harness.private_load", "authenticated_immutable_content", 3),
+        (
+            "harness.private_load_range",
+            "authenticated_immutable_range",
+            2,
+        ),
+    ] {
+        storage.next().await?;
+        assert!(
+            matches!(storage.next().await?, Some(acyclic_stream::trace::Observation::Completed {
+            start, bytes: Some(bytes), ..
+        }) if start.name == name && start.guarantee.as_deref() == Some(guarantee) && bytes == expected_bytes)
+        );
+    }
+    let prepared = crate::model::PreparedModelRequest::prepare(
+        crate::model::ModelRequest {
+            summary: true,
+            compose_tools: false,
+            model: crate::model::Model::new("test".into(), "trace".into(), "1".into())?,
+            messages: vec![crate::model::ModelMessage {
+                role: crate::model::ModelRole::User,
+                content: crate::model::ModelContent::Text("original request".into()),
+            }],
+            tools: Vec::new(),
+            sampling: Default::default(),
+        },
+        Default::default(),
+        None,
+    )?;
+    journal
+        .stage_prepared_model_request(operation, "trace-request", &prepared, None, None)?
+        .ok_or("original request admission unavailable")?
+        .await?;
+    let admitted_through = traces.tail().await?;
+    let mut admission = acyclic_stream::trace::TraceQuery::new(
+        traces.read(8, u32::try_from(admitted_through - 8)?).await?,
+        Default::default(),
+    );
+    let Some(acyclic_stream::trace::Observation::Started { id: parent, .. }) =
+        admission.next().await?
+    else {
+        return Err("request admission span missing".into());
+    };
+    let mut children = 0;
+    while let Some(event) = admission.next().await? {
+        if let acyclic_stream::trace::Observation::Completed { id, start, .. } = event {
+            if id == parent {
+                assert_eq!(start.name, "harness.request_admission");
+                assert_eq!(start.guarantee.as_deref(), Some("attested_request_prefix"));
+            } else {
+                assert_eq!(start.parent, Some(parent));
+                children += 1;
+            }
+        }
+    }
+    assert!(
+        children > 0,
+        "canonical admission bypassed the original private publisher"
+    );
+    assert_eq!(admission.active().len(), 0);
+    journal.append(operation, "start", &event, None)?.await?;
+    assert!(
+        !journal
+            .append_if_tail(operation, 0, "refused", &event, None)?
+            .await?
+    );
+    let mut publications = acyclic_stream::trace::TraceQuery::new(
+        traces.follow(admitted_through, Default::default()).await?,
+        Default::default(),
+    );
+    let mut seen = std::collections::BTreeSet::new();
+    while seen.len() < 2 {
+        let Some(acyclic_stream::trace::Observation::Completed { start, .. }) =
+            publications.next().await?
+        else {
+            continue;
+        };
+        let guarantee = match start.name.as_str() {
+            "harness.journal_append" => "idempotent_journal_publication",
+            "harness.journal_append_if_tail" => "atomic_journal_precondition_result",
+            _ => continue,
+        };
+        assert_eq!(start.guarantee.as_deref(), Some(guarantee));
+        seen.insert(start.name);
+    }
+    let checks_from = traces.tail().await?;
+    assert!(
+        !journal
+            .authenticate_publication(operation, &staged, None)?
+            .await?
+    );
+    assert!(!journal.authenticate_summary(&staged, None)?.await?);
+    let mut checks = acyclic_stream::trace::TraceQuery::new(
+        traces.read(checks_from, 4).await?,
+        Default::default(),
+    );
+    for (name, guarantee) in [
+        (
+            "harness.authenticate_publication",
+            "original_publication_identity",
+        ),
+        (
+            "harness.authenticate_summary",
+            "authenticated_summary_provenance",
+        ),
+    ] {
+        checks.next().await?;
+        assert!(matches!(checks.next().await?,
+            Some(acyclic_stream::trace::Observation::Completed { start, bytes: None, .. })
+            if start.name == name && start.mechanism == acyclic_stream::trace::Mechanism::AuthCheck
+                && start.guarantee.as_deref() == Some(guarantee)));
+    }
+    let settlement_from = traces.tail().await?;
+    let absent = crate::executor::ToolSettlementQuery {
+        turn: operation,
+        step: 0,
+        call_id: "trace-absent",
+        effect: crate::tool::ToolInvocation::model_call_operation(
+            operation,
+            0,
+            "trace-absent",
+            None,
+        )?,
+    };
+    assert!(journal.tool_settlement(absent, None)?.await?.is_none());
+    let mut settlement = acyclic_stream::trace::TraceQuery::new(
+        traces.follow(settlement_from, Default::default()).await?,
+        Default::default(),
+    );
+    settlement.next().await?;
+    assert!(matches!(settlement.next().await?,
+        Some(acyclic_stream::trace::Observation::Completed { start, result: acyclic_stream::trace::Outcome::Unsettled, .. })
+        if start.name == "harness.tool_settlement"
+            && start.guarantee.as_deref() == Some("authenticated_tool_terminal_cut")));
+    assert_eq!(
+        settlement.totals()[&acyclic_stream::trace::Mechanism::AuthCheck].unsettled,
+        1
+    );
+    let invocation_from = traces.tail().await?;
+    let recording = journal
+        .trace_request(acyclic_stream::trace::Request {
+            name: "harness.tool_invocation",
+            mechanism: acyclic_stream::trace::Mechanism::ToolCall,
+            parent: None,
+            guarantee: Some("journaled_tool_effect_settlement"),
+        })
+        .ok_or("followed executor trace admission missing")?
+        .await?;
+    assert_eq!(
+        recording
+            .within(journal.load(&staged, None)?)
+            .await?
+            .as_ref(),
+        b"raw"
+    );
+    let _terminal = recording.finish_submitted(None, acyclic_stream::trace::Outcome::Succeeded)?;
+    let mut invocation = acyclic_stream::trace::TraceQuery::new(
+        traces.follow(invocation_from, Default::default()).await?,
+        Default::default(),
+    );
+    let Some(acyclic_stream::trace::Observation::Started { id: parent, .. }) =
+        invocation.next().await?
+    else {
+        return Err("executor parent span missing".into());
+    };
+    invocation.next().await?;
+    assert!(
+        matches!(invocation.next().await?, Some(acyclic_stream::trace::Observation::Completed { start, .. })
+        if start.name == "harness.private_load" && start.parent == Some(parent))
+    );
+    assert!(
+        matches!(invocation.next().await?, Some(acyclic_stream::trace::Observation::Completed { start, .. })
+        if start.name == "harness.tool_invocation" && start.parent.is_none())
+    );
+    assert!(journal.replay(operation, 0, 0, None)?.await.is_err());
+    let through = traces.tail().await?;
+    let mut failed = acyclic_stream::trace::TraceQuery::new(
+        traces.read(0, u32::try_from(through)?).await?,
+        Default::default(),
+    );
+    while failed.next().await?.is_some() {}
+    assert_eq!(
+        failed.active().len(),
+        1,
+        "unretained failure fabricated settlement"
+    );
+    assert!(
+        bound.trace_recorder(&agent)?.is_some(),
+        "second wait lost its lease"
+    );
+    drop(other);
+    assert!(
+        bound.trace_recorder(&agent)?.is_none(),
+        "last wait retained producer admission"
+    );
+    assert_eq!(
+        journal.replay(operation, 0, 1, None)?.await?[0].event,
+        event
+    );
+    assert!(
+        journal
+            .trace_request(acyclic_stream::trace::Request {
+                name: "harness.tool_invocation",
+                mechanism: acyclic_stream::trace::Mechanism::ToolCall,
+                parent: None,
+                guarantee: Some("journaled_tool_effect_settlement"),
+            })
+            .is_none()
+    );
+    assert!(journal.tool_settlement(absent, None)?.await?.is_none());
+    let unfollowed = journal
+        .stage(operation, "unfollowed", b"quiet", "text/plain", None)?
+        .await?;
+    assert_eq!(journal.load(&unfollowed, None)?.await?.as_ref(), b"quiet");
+    journal.append(operation, "start", &event, None)?.await?;
+    assert_eq!(
+        journal
+            .load_range(
+                &unfollowed,
+                acyclic_fs::ByteRange {
+                    offset: 1,
+                    length: 2
+                },
+                None
+            )?
+            .await?
+            .as_ref(),
+        b"ui"
+    );
+    assert_eq!(
+        traces.tail().await?,
+        through,
+        "unfollowed request appended diagnostics"
     );
     Ok(())
 }

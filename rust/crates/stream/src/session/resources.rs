@@ -44,10 +44,31 @@ impl ResourceAuthorization {
     }
     /// The channel's current credential; `renew` replaces it in place.
     pub(super) fn current(&self) -> Result<Arc<VerifiedCapability>, StreamError> {
-        self.capability
-            .lock()
-            .map(|capability| Arc::clone(&capability))
-            .map_err(|_| StreamError::AccessDenied)
+        let work = || {
+            self.capability
+                .lock()
+                .map(|capability| Arc::clone(&capability))
+                .map_err(|_| StreamError::AccessDenied)
+        };
+        #[cfg(feature = "serde")]
+        {
+            crate::trace::observe_sync(
+                crate::trace::Request {
+                    name: "stream.credential_snapshot",
+                    mechanism: crate::trace::Mechanism::Lock,
+                    parent: None,
+                    guarantee: Some("atomic_credential_snapshot_against_renewal"),
+                },
+                work,
+                |result| {
+                    result
+                        .is_ok()
+                        .then_some((Some(0), crate::trace::Outcome::Succeeded, None))
+                },
+            )
+        }
+        #[cfg(not(feature = "serde"))]
+        work()
     }
     /// Issuer-attested structured identity, including delegation lineage.
     pub fn principal(&self) -> Result<Principal, StreamError> {
@@ -55,10 +76,31 @@ impl ResourceAuthorization {
     }
     /// Current trusted runtime clock for the volume policy's time conditions.
     pub fn now_unix_seconds(&self) -> Result<u64, StreamError> {
-        self.authority
-            .snapshot()
-            .map(|snapshot| snapshot.now_unix_seconds)
-            .map_err(|_| StreamError::AccessDenied)
+        let work = || {
+            self.authority
+                .snapshot()
+                .map(|snapshot| snapshot.now_unix_seconds)
+                .map_err(|source| StreamError::AccessDenied.with_source(source))
+        };
+        #[cfg(feature = "serde")]
+        {
+            crate::trace::observe_sync(
+                crate::trace::Request {
+                    name: "stream.resource_policy_clock",
+                    mechanism: crate::trace::Mechanism::ProviderCall,
+                    parent: None,
+                    guarantee: Some("authenticated_trust_snapshot_with_monotonic_protected_time"),
+                },
+                work,
+                |result| {
+                    result
+                        .is_ok()
+                        .then_some((Some(0), crate::trace::Outcome::Succeeded, None))
+                },
+            )
+        }
+        #[cfg(not(feature = "serde"))]
+        work()
     }
     /// Checks every capability ancestor, audience, holder, expiry and full path,
     /// intersecting the owning volume's policy. Headers belong to this entry.
@@ -128,7 +170,7 @@ impl ResourceAuthorization {
         let snapshot = self
             .authority
             .snapshot()
-            .map_err(|_| StreamError::AccessDenied)?;
+            .map_err(|source| StreamError::AccessDenied.with_source(source))?;
         let capability = self.current()?;
         if let Some(account) = account {
             let certified = capability
@@ -162,9 +204,30 @@ impl ResourceAuthorization {
             memory_bytes: 0,
         };
         let authorize = |request: &Request<'_>, policy, scope| {
-            capability
-                .authorize(snapshot.trust.as_ref(), request, policy, scope)
-                .map_err(|_| StreamError::AccessDenied)
+            let work = || {
+                capability
+                    .authorize(snapshot.trust.as_ref(), request, policy, scope)
+                    .map_err(|source| StreamError::AccessDenied.with_source(source))
+            };
+            #[cfg(feature = "serde")]
+            {
+                crate::trace::observe_sync(
+                    crate::trace::Request {
+                        name: "stream.resource_authorize",
+                        mechanism: crate::trace::Mechanism::AuthCheck,
+                        parent: None,
+                        guarantee: Some("current_trust_entry_facts_and_owner_policy"),
+                    },
+                    work,
+                    |result| {
+                        result
+                            .is_ok()
+                            .then_some((Some(0), crate::trace::Outcome::Succeeded, None))
+                    },
+                )
+            }
+            #[cfg(not(feature = "serde"))]
+            work()
         };
         if let Some((resource, action)) = &self.call {
             // The call grant remains necessary after suspension or renewal.
@@ -272,35 +335,67 @@ impl ResourceAuthorization {
     }
     /// Waits on the runtime clock without polling, independently of data credit.
     pub async fn expires_at(&self, unix_seconds: u64) -> Result<(), StreamError> {
-        self.authority
-            .state
-            .expires_at(unix_seconds)
-            .await
-            .map_err(|_| StreamError::Unavailable)
+        let work = self.authority.state.expires_at(unix_seconds);
+        #[cfg(feature = "serde")]
+        let result = crate::trace::observe(
+            crate::trace::Request {
+                name: "stream.resource_expiry",
+                mechanism: crate::trace::Mechanism::Wait,
+                parent: None,
+                guarantee: Some("protected_clock_reached_credential_expiry"),
+            },
+            work,
+            |_| Some(0),
+        )
+        .await;
+        #[cfg(not(feature = "serde"))]
+        let result = work.await;
+        result.map_err(|source| StreamError::Unavailable.with_source(source))
     }
     pub(super) fn renew(&self, next: Arc<VerifiedCapability>) -> Result<(), authority::Rejection> {
-        let mut current = self
-            .capability
-            .lock()
-            .map_err(|_| authority::Rejection::Forbidden)?;
-        // Queued entries were authorized under this certified account, grants
-        // and identity. A matching principal does not bind the same account.
-        // A changed ceiling closes the channel so replay uses the new scope.
-        let (held, renewed) = (current.effective(), next.effective());
-        let account = current
-            .account_id()
-            .map_err(|_| authority::Rejection::Forbidden)?;
-        let next_account = next
-            .account_id()
-            .map_err(|_| authority::Rejection::Forbidden)?;
-        if account != next_account
-            || held.principal() != renewed.principal()
-            || !held.grants().eq(renewed.grants())
+        let work = || {
+            let mut current = self
+                .capability
+                .lock()
+                .map_err(|_| authority::Rejection::Forbidden)?;
+            // Queued entries were authorized under this certified account, grants
+            // and identity. A matching principal does not bind the same account.
+            // A changed ceiling closes the channel so replay uses the new scope.
+            let (held, renewed) = (current.effective(), next.effective());
+            let account = current
+                .account_id()
+                .map_err(|_| authority::Rejection::Forbidden)?;
+            let next_account = next
+                .account_id()
+                .map_err(|_| authority::Rejection::Forbidden)?;
+            if account != next_account
+                || held.principal() != renewed.principal()
+                || !held.grants().eq(renewed.grants())
+            {
+                return Err(authority::Rejection::Forbidden);
+            }
+            *current = next;
+            Ok(())
+        };
+        #[cfg(feature = "serde")]
         {
-            return Err(authority::Rejection::Forbidden);
+            crate::trace::observe_sync(
+                crate::trace::Request {
+                    name: "stream.credential_renewal",
+                    mechanism: crate::trace::Mechanism::Lock,
+                    parent: None,
+                    guarantee: Some("atomic_renewal_preserves_account_principal_and_grants"),
+                },
+                work,
+                |result| {
+                    result
+                        .is_ok()
+                        .then_some((Some(0), crate::trace::Outcome::Succeeded, None))
+                },
+            )
         }
-        *current = next;
-        Ok(())
+        #[cfg(not(feature = "serde"))]
+        work()
     }
 }
 

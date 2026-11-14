@@ -46,55 +46,132 @@ async fn cancelled_local_read_records_error_and_closes_origin_parent()
     Ok(())
 }
 
+#[cfg(feature = "serde")]
 #[tokio::test]
-async fn local_append_emits_its_span() -> Result<(), Box<dyn std::error::Error>> {
-    use tracing_subscriber::layer::SubscriberExt as _;
-    let captured = acyclic_grpc_observability::tests::Capture::default();
-    let capture = captured.clone();
-    let _default =
-        tracing::subscriber::set_default(tracing_subscriber::Registry::default().with(capture));
-    let directory = tempfile::tempdir()?;
-    let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
-    provider
-        .append(AppendRequest {
+async fn local_append_retains_original_flush_guarantee() -> Result<(), Box<dyn std::error::Error>> {
+    use crate::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
+    for durability in [LocalDurability::FullFlush, LocalDurability::Barrier] {
+        let directory = tempfile::tempdir()?;
+        let provider = LocalStream::open(
+            directory.path(),
+            LocalStreamLimits {
+                durability,
+                ..LocalStreamLimits::default()
+            },
+        )
+        .await?;
+        let trace = crate::Stream::new(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("owner/trace")?,
+        )?;
+        let recorder = Arc::new(Recorder::new(trace.clone(), [31; 16]));
+        let root = recorder
+            .start(
+                "append_owner",
+                Mechanism::Commit,
+                None,
+                Some("durable_append"),
+            )
+            .await?;
+        let parent = root.id();
+        let root = root.into_owned();
+        root.within(provider.append(AppendRequest {
             path: StreamPath::new("traced/path")?,
             records: vec![
-                (Bytes::from_static(b"body")).into(),
-                (Bytes::from_static(b"more")).into(),
+                Bytes::from_static(b"body").into(),
+                Bytes::from_static(b"more").into(),
             ],
             if_tail: None,
             idempotency_key: crate::IdempotencyKey::unique(),
-        })
+        }))
         .await?;
-    let append = captured.fields("acyclic.stream.append");
-    for (field, value) in [
-        ("items", "2"),
-        ("bytes", "8"),
-        ("rev", "2"),
-        ("outcome", "ok"),
-    ] {
-        assert_eq!(append.get(field).ok_or("missing span field")?, value);
-    }
-    assert_eq!(
-        captured
-            .fields("acyclic.stream.open")
-            .get("outcome")
-            .ok_or("missing span field")?,
-        "ok"
-    );
-    let evidence = captured.0.lock().unwrap();
-    assert!(evidence.events.iter().any(|(_, fields)| {
-        fields
-            .iter()
-            .any(|(_, field, value)| field == "fsyncs" && value == "1")
-    }));
-    for span in &evidence.spans {
-        for field in &span.declared_fields {
-            assert!(!["path", "token", "content", "body", "authorization"].contains(field));
+        assert!(
+            provider.inner.visibility.try_write().is_ok(),
+            "visibility guard survived original append"
+        );
+        assert!(
+            provider.inner.publication.try_write().is_ok(),
+            "publication guard survived original append"
+        );
+        let mut query = TraceQuery::new(
+            trace.follow(0, Default::default()).await?,
+            Default::default(),
+        );
+        let mut flush = None;
+        let mut wait = None;
+        let mut locks = std::collections::BTreeSet::new();
+        while flush.is_none() || wait.is_none() || locks.len() != 2 {
+            if let Some(Observation::Completed {
+                id,
+                start,
+                result,
+                bytes,
+                ..
+            }) = query.next().await?
+            {
+                assert_eq!(result, Outcome::Succeeded);
+                match start.name.as_str() {
+                    "stream.journal_flush" => {
+                        assert_eq!(start.mechanism, Mechanism::Fsync);
+                        assert_eq!(
+                            start.guarantee.as_deref(),
+                            Some(match durability {
+                                LocalDurability::FullFlush => "journal_cut_device_flushed",
+                                LocalDurability::Barrier => "journal_cut_writes_ordered",
+                            })
+                        );
+                        assert_eq!(
+                            bytes, None,
+                            "file length is not the number of bytes flushed"
+                        );
+                        assert!(flush.replace(start).is_none());
+                    }
+                    "stream.journal_cut_wait" => {
+                        assert_eq!(start.parent, Some(parent));
+                        assert_eq!(start.mechanism, Mechanism::Wait);
+                        assert_eq!(
+                            start.guarantee.as_deref(),
+                            Some(match durability {
+                                LocalDurability::FullFlush =>
+                                    "requested_journal_cut_device_flushed",
+                                LocalDurability::Barrier => "requested_journal_cut_writes_ordered",
+                            })
+                        );
+                        assert_eq!(bytes, Some(0));
+                        assert!(wait.replace(id).is_none());
+                    }
+                    "stream.visibility_lock" | "stream.publication_lock" => {
+                        assert_eq!(start.parent, Some(parent));
+                        assert_eq!(start.mechanism, Mechanism::Lock);
+                        assert_eq!(
+                            start.guarantee.as_deref(),
+                            Some(if start.name == "stream.visibility_lock" {
+                                "serialized_mutation_snapshot_and_compaction_cut"
+                            } else {
+                                "accepted_reads_exclude_incomplete_journal_frames"
+                            })
+                        );
+                        assert_eq!(bytes, Some(0));
+                        assert!(locks.insert(start.name));
+                    }
+                    _ => return Err("unexpected local publication span".into()),
+                }
+            }
         }
-        for value in span.fields.values() {
-            assert!(!value.contains("traced"));
-        }
+        assert_eq!(flush.ok_or("missing physical flush")?.parent, wait);
+        root.finish_submitted(None, Outcome::Succeeded)?
+            .result()
+            .await?
+            .as_ref()
+            .map_err(Clone::clone)?;
+        assert_eq!(
+            query
+                .totals()
+                .get(&Mechanism::Fsync)
+                .ok_or("missing flush")?
+                .completed,
+            1
+        );
     }
     Ok(())
 }

@@ -100,6 +100,21 @@ fn original_reader_pages_and_follow_drive_one_source_bound_projection() {
             commit
         );
 
+        // A selected suffix must expose its cut and cannot claim paired history.
+        let mut suffix = File::new(&mut reader, stream.path().clone(), 1, BTreeMap::new()).unwrap();
+        assert_eq!(suffix.advance(&reader, page).unwrap(), 1);
+        let suffix_value = suffix.value(&reader).unwrap();
+        assert_eq!(
+            (suffix_value.covered_from, suffix_value.covered_through),
+            (1, 2)
+        );
+        assert!(suffix_value.caught_up);
+        assert_eq!(suffix_value.unpaired_finishes, 1);
+        assert!(suffix_value.mechanisms.is_empty());
+        let encoded = serde_json::to_value(&suffix_value).unwrap();
+        assert_eq!(encoded["coveredFrom"], 1);
+        assert_eq!(encoded["coveredThrough"], 2);
+
         stream
             .append(
                 b"not JSON".to_vec(),

@@ -657,7 +657,16 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         self.require_operation(operation, io)?;
-        self.approvals(io)?.verify(id, operation, digest).await
+        self.observe_claim(
+            acyclic_stream::trace::Request {
+                name: "harness.verify_tool_approval",
+                mechanism: acyclic_stream::trace::Mechanism::AuthCheck,
+                parent: None,
+                guarantee: Some("bound_tool_approval"),
+            },
+            async { self.approvals(io)?.verify(id, operation, digest).await },
+        )
+        .await
     }
 }
 

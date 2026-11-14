@@ -543,33 +543,63 @@ impl<'io> StockExecution<'io> {
                     }
                     None => {}
                 }
-                match self
-                    .execute_tool_invocation(
-                        journal,
-                        (operation_id, step),
-                        crate::tool::RecordedInvocation {
-                            invocation: &invocation,
-                            metadata,
-                            target: if started {
-                                None // Reconciliation does not publish another start.
-                            } else {
-                                target
-                                    .map(|target| stock_string_copy(&target.name, self.io))
-                                    .transpose()?
-                            },
-                            filesystem: if started || target.is_some() {
-                                None
-                            } else {
-                                self.filesystem_binding(&invocation)
-                            },
+                let trace = match journal.trace_request(acyclic_stream::trace::Request {
+                    name: "harness.tool_invocation",
+                    mechanism: acyclic_stream::trace::Mechanism::ToolCall,
+                    parent: None,
+                    guarantee: Some("journaled_tool_effect_settlement"),
+                }) {
+                    Some(admission) => admission.await.ok(),
+                    None => None,
+                };
+                let execution = self.execute_tool_invocation(
+                    journal,
+                    (operation_id, step),
+                    crate::tool::RecordedInvocation {
+                        invocation: &invocation,
+                        metadata,
+                        target: if started {
+                            None // Reconciliation does not publish another start.
+                        } else {
+                            target
+                                .map(|target| stock_string_copy(&target.name, self.io))
+                                .transpose()?
                         },
-                        tool,
-                        &mut context,
-                        started,
-                        _hook_context,
-                    )
-                    .await?
+                        filesystem: if started || target.is_some() {
+                            None
+                        } else {
+                            self.filesystem_binding(&invocation)
+                        },
+                    },
+                    tool,
+                    &mut context,
+                    started,
+                    _hook_context,
+                );
+                let outcome = match &trace {
+                    Some(recording) => recording.within(execution).await,
+                    None => execution.await,
+                };
+                #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+                if let Some(recording) = trace
+                    && let Ok(value) = &outcome
                 {
+                    let result = match value {
+                        ToolInvocationOutcome::Settled(_, Some(_)) => {
+                            acyclic_stream::trace::Outcome::Succeeded
+                        }
+                        ToolInvocationOutcome::Interrupted => {
+                            acyclic_stream::trace::Outcome::Cancelled
+                        }
+                        ToolInvocationOutcome::Settled(_, None)
+                        | ToolInvocationOutcome::Pending(_)
+                        | ToolInvocationOutcome::Controlled(_) => {
+                            acyclic_stream::trace::Outcome::Unsettled
+                        }
+                    };
+                    let _completion = recording.finish_submitted(None, result);
+                }
+                match outcome? {
                     ToolInvocationOutcome::Settled(content, receipt) => (content, receipt),
                     ToolInvocationOutcome::Controlled(control) => {
                         return Ok(ExecutionProgress::Controlled(control));

@@ -7,9 +7,31 @@
 use crate::RetainedRecord;
 
 #[cfg(feature = "serde")]
+mod context;
+#[cfg(feature = "serde")]
+pub(crate) use context::{inherit, is_source, records};
+#[cfg(feature = "serde")]
+pub use context::{observe, observe_outcome, observe_sync, observe_value};
+#[cfg(feature = "serde")]
+mod interest;
+#[cfg(feature = "serde")]
+mod owned;
+#[cfg(feature = "serde")]
+mod recorder;
+#[cfg(feature = "serde")]
+pub use interest::{Lease, Registry};
+#[cfg(feature = "serde")]
+pub use owned::OwnedRecording;
+#[cfg(feature = "serde")]
+pub use recorder::{Observed, Recorder, Recording, Request, Settlement};
+
+#[cfg(feature = "serde")]
 mod query;
 #[cfg(feature = "serde")]
-pub use query::{ActiveSpan, MechanismTotals, Observation, QueryError, QueryViolation, TraceQuery};
+pub use query::{
+    ActiveSpan, ComparisonTotals, MechanismTotals, Observation, QueryError, QuerySnapshot,
+    QueryViolation, TraceQuery,
+};
 
 /// Identity assigned by one process, also identifying its monotonic clock domain.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -70,12 +92,57 @@ pub enum Outcome {
     Unsettled,
 }
 
+/// What two original integrity digests describe. Producers use the canonical
+/// request/output descriptors already owned by the request path, never secrets
+/// or a second serialization of model content.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum ComparisonKind {
+    /// Complete request identity, including its operation and bound inputs.
+    Request,
+    /// Complete output identity in the same comparison domain.
+    Output,
+    /// Expected reusable prefix versus the actually selected prefix.
+    CachePrefix,
+}
+
+/// Original comparison inputs, sufficient to compute equality without keeping
+/// another completed-call index. The preceding publication may be outside the
+/// selected query window; its identity is explicit rather than reconstructed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Comparison {
+    /// Typed comparison domain; unlike digests from unlike domains never join.
+    pub kind: ComparisonKind,
+    /// Original publication owning the preceding descriptor or expected prefix.
+    pub previous: RetainedRecord,
+    /// Integrity digest from that original descriptor.
+    pub previous_digest: [u8; 32],
+    /// Integrity digest from the current original descriptor.
+    pub current_digest: [u8; 32],
+}
+
 /// One span delta. Monotonic timestamps are relative to `id.process`'s origin;
 /// timestamps in distinct process domains do not establish elapsed time or order.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "event", rename_all = "snake_case"))]
 pub enum SpanEvent {
+    /// Coverage lost to publication backpressure, observed by a later terminal.
+    Coverage {
+        /// Reporting span and producer incarnation.
+        id: SpanId,
+        /// Cumulative suppressed starts in this producer; never sum repeated reports.
+        suppressed: u64,
+    },
+    /// Original request-path comparison; it neither starts nor settles work.
+    Compared {
+        /// Owning span, without reconstructing its parent or clock.
+        id: SpanId,
+        /// Original descriptor evidence and comparison domain.
+        comparison: Comparison,
+    },
     /// Original admission of named work.
     Started {
         /// Identity and monotonic clock domain.
@@ -140,7 +207,7 @@ mod tests {
     #[tokio::test]
     async fn span_deltas_page_and_retain_original_failure_evidence()
     -> Result<(), Box<dyn std::error::Error>> {
-        let provider = MemoryStream::default();
+        let provider = std::sync::Arc::new(MemoryStream::default());
         let path = StreamPath::new("agents/worker/trace")?;
         let evidence = StreamPath::new("agents/worker/errors")?;
         let AppendOutcome::Committed(publication) = provider
@@ -159,55 +226,66 @@ mod tests {
             path: evidence,
             sequence: 0,
         };
-        let id = SpanId {
-            process: [1; 16],
-            sequence: 0,
-        };
-        let events = [
-            TraceRecord::V1(SpanEvent::Started {
-                id,
-                parent: None,
-                name: "stream.read".into(),
-                mechanism: Mechanism::Io,
-                at_ns: 10,
-                guarantee: Some("read_committed_prefix".into()),
-            }),
-            TraceRecord::V1(SpanEvent::Finished {
-                id,
-                at_ns: 20,
-                bytes: Some(64),
-                result: Outcome::Failed {
+        let recorder = std::sync::Arc::new(Recorder::new(
+            crate::Stream::new(provider.clone(), path.as_str())?,
+            [1; 16],
+        ));
+        let admitted = recorder
+            .start(
+                "stream.read",
+                Mechanism::Io,
+                None,
+                Some("read_committed_prefix"),
+            )
+            .await?;
+        let id = admitted.id();
+        let mut events = Vec::new();
+        // The real producer publishes its admission before any settlement exists.
+        let mut page = provider
+            .read(ReadRequest {
+                key: None,
+                path: path.clone(),
+                from: 0,
+                limit: 1,
+                at_least: Default::default(),
+            })
+            .await?;
+        let record = page.next().await.ok_or("missing original start")??;
+        assert_eq!(record.commit_id, admitted.start().await?.commit_id);
+        events.push(serde_json::from_slice::<TraceRecord>(
+            record.value.as_slice(),
+        )?);
+        assert!(matches!(&events[0], TraceRecord::V1(SpanEvent::Started {
+            id: observed, parent: None, mechanism: Mechanism::Io, guarantee: Some(guarantee), ..
+        }) if *observed == id && guarantee == "read_committed_prefix"));
+        assert!(page.next().await.is_none());
+        let terminal = admitted
+            .finish(
+                Some(64),
+                Outcome::Failed {
                     cause: cause.clone(),
                 },
-            }),
-        ];
-        for (at, event) in events.iter().enumerate() {
-            // An unfinished start is independently readable before its finish exists.
-            let outcome = provider
-                .append(AppendRequest {
-                    path: path.clone(),
-                    records: vec![crate::OwnedBytes::from(serde_json::to_vec(event)?).into()],
-                    if_tail: Some(at as u64),
-                    idempotency_key: IdempotencyKey::unique(),
-                })
-                .await?;
-            assert!(matches!(outcome, AppendOutcome::Committed(_)));
-            let mut page = provider
-                .read(ReadRequest {
-                    key: None,
-                    path: path.clone(),
-                    from: at as u64,
-                    limit: 1,
-                    at_least: Default::default(),
-                })
-                .await?;
-            let record = page.next().await.ok_or("missing span delta")??;
-            assert_eq!(
-                serde_json::from_slice::<TraceRecord>(record.value.as_slice())?,
-                *event
-            );
-            assert!(page.next().await.is_none());
-        }
+            )
+            .await?;
+        let mut page = provider
+            .read(ReadRequest {
+                key: None,
+                path: path.clone(),
+                from: 1,
+                limit: 1,
+                at_least: Default::default(),
+            })
+            .await?;
+        let record = page.next().await.ok_or("missing original finish")??;
+        assert_eq!(record.commit_id, terminal.commit_id);
+        events.push(serde_json::from_slice::<TraceRecord>(
+            record.value.as_slice(),
+        )?);
+        assert!(matches!(&events[1], TraceRecord::V1(SpanEvent::Finished {
+            id: observed, bytes: Some(64), result: Outcome::Failed { cause: original }, ..
+        }) if *observed == id && original == &cause));
+        assert!(page.next().await.is_none());
+
         let mut original = provider
             .read(ReadRequest {
                 key: None,

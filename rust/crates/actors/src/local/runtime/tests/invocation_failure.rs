@@ -193,7 +193,33 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
         snapshot.state().ok_or("missing original state")?.alarm()
     );
     let reopened = Store::new(Arc::clone(&provider), root()?);
-    match reopened.invoke(&invocation).await {
+    // Only diagnostic readiness is controlled: this real MemoryStream completes
+    // admission inline, while the actor journal/receipt remain on the original
+    // durable provider. A settled actor retry must not race diagnostic storage.
+    let traces = acyclic_stream::Stream::new(
+        Arc::new(MemoryStream::default()),
+        format!("{}/trace", invocation.caller().as_str()),
+    )?;
+    let recorder = Arc::new(acyclic_stream::trace::Recorder::new(
+        traces.clone(),
+        [21; 16],
+    ));
+    let root_span = recorder
+        .start(
+            "caller.failure",
+            acyclic_stream::trace::Mechanism::ActorDelivery,
+            None,
+            Some("original_actor_failure"),
+        )
+        .await?;
+    let parent = root_span.id();
+    let root_span = root_span.into_owned();
+    let cause = acyclic_stream::RetainedRecord {
+        commit_id: receipt.call().terminal.commit_id,
+        path: receipt.call().log.clone(),
+        sequence: receipt.call().terminal.sequence,
+    };
+    match root_span.within(reopened.invoke(&invocation)).await {
         Err(Error::InvocationFailed {
             source: repeated,
             receipt: original,
@@ -202,6 +228,48 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
             assert_eq!(original, receipt);
         }
         _ => return Err("reconciliation did not retain the original failure".into()),
+    }
+    let _terminal = root_span.finish_submitted(
+        None,
+        acyclic_stream::trace::Outcome::Failed {
+            cause: cause.clone(),
+        },
+    )?;
+    let mut query = acyclic_stream::trace::TraceQuery::new(
+        traces.follow(0, Default::default()).await?,
+        Default::default(),
+    );
+    let mut children = std::collections::BTreeSet::new();
+    let mut root_finished = false;
+    while !root_finished || children.len() != 3 {
+        match query.next().await? {
+            Some(acyclic_stream::trace::Observation::Completed {
+                id, start, result, ..
+            }) => {
+                if id == parent {
+                    root_finished = true;
+                    continue;
+                }
+                match start.name.as_str() {
+                    "actors.invoke" | "actors.wait_invocation" => {
+                        assert_eq!(
+                            result,
+                            acyclic_stream::trace::Outcome::Failed {
+                                cause: cause.clone()
+                            }
+                        );
+                        assert!(children.insert(start.name));
+                    }
+                    "actors.enqueue_invoke" => {
+                        assert_eq!(result, acyclic_stream::trace::Outcome::Succeeded);
+                        assert!(children.insert(start.name));
+                    }
+                    _ => {}
+                }
+            }
+            None => return Err("original actor failure trace ended".into()),
+            _ => {}
+        }
     }
     runtime.drain_actor(&address).await?;
     assert_eq!(

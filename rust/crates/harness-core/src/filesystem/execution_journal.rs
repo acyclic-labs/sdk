@@ -2,7 +2,6 @@
 
 use super::bounded_io::{PreparationIo, PreparationRecord};
 use super::{FilesystemHost, InternalContentClass};
-use crate::obs::{obs_span, traced};
 use crate::{
     Error, IdempotencyKey, InteractionId, OperationId, Result,
     conversation::{
@@ -98,6 +97,7 @@ mod test_support;
 #[cfg(test)]
 mod tests;
 mod tool_settlement;
+mod trace;
 mod traits;
 use summary::*;
 use summary_cache::SummaryCache;
@@ -118,6 +118,7 @@ pub(crate) const MAXIMUM_PAYLOAD_BYTES: u64 = crate::conversation::MAX_EXACT_JS_
 pub struct FilesystemExecutionJournal<P: ?Sized, A: 'static, O: 'static> {
     cache_identity: crate::executor::ExecutionJournalCacheId,
     stream: Arc<P>,
+    traces: Option<(acyclic_stream::trace::Registry<P>, crate::agent::AgentPath)>,
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
     verifier: AuthorityVerifier,

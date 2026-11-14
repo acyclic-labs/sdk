@@ -17,7 +17,8 @@ struct State<T, H, I> {
 }
 
 /// The sole producer disappeared before publishing its result.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("operation producer dropped before publishing its result")]
 pub struct ProducerDropped;
 
 /// Retains one producer's exact result and original funding.

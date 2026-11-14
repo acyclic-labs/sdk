@@ -8,6 +8,10 @@ use crate::change::{
 use crate::query_sync::{Arc, SyncMutex as Mutex};
 use std::collections::{BTreeMap, btree_map::Entry};
 
+#[derive(Debug, thiserror::Error)]
+#[error("stream subscription count exceeds its representation")]
+struct SubscriptionOverflow;
+
 struct Registration<V> {
     value: V,
     count: usize,
@@ -54,7 +58,10 @@ impl<K: Ord + Clone, V: Clone> Interests<K, V> {
                 }),
                 Entry::Occupied(entry) => entry.into_mut(),
             };
-            entry.count = entry.count.checked_add(1).ok_or(StreamError::Capacity)?;
+            entry.count = entry
+                .count
+                .checked_add(1)
+                .ok_or_else(|| StreamError::Capacity.with_source(SubscriptionOverflow))?;
             entry.value.clone()
         };
         let interest = Interest {
@@ -84,7 +91,10 @@ impl<K: Ord + Clone, V: Clone> Interests<K, V> {
         };
         Ok(interest)
     }
-    pub(crate) fn get(&self, key: &K) -> Result<Option<V>, StreamError> {
+    pub(crate) fn get<Q: Ord + ?Sized>(&self, key: &Q) -> Result<Option<V>, StreamError>
+    where
+        K: std::borrow::Borrow<Q>,
+    {
         Ok(self
             .entries
             .lock()?

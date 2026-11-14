@@ -318,45 +318,54 @@ where
         io: Option<&'a PreparationIo>,
         project: impl FnOnce(AppendObservation) -> Result<T> + acyclic_stream::ProviderTask + 'a,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, T>> {
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-                let local = PreparationIo::from_native_work(work)?;
-                let result = self
-                    .append_contributed(
+        crate::conversation::BoundedContentFuture::new(io, || {
+            self.observe_claim(
+                acyclic_stream::trace::Request {
+                    name: if expected_tail.is_some() {
+                        "harness.journal_append_if_tail"
+                    } else {
+                        "harness.journal_append"
+                    },
+                    mechanism: acyclic_stream::trace::Mechanism::Commit,
+                    parent: None,
+                    guarantee: Some(if expected_tail.is_some() {
+                        "atomic_journal_precondition_result"
+                    } else {
+                        "idempotent_journal_publication"
+                    }),
+                },
+                async move {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+                        let local = PreparationIo::from_native_work(work)?;
+                        let result = self
+                            .append_contributed(
+                                operation,
+                                expected_tail,
+                                key,
+                                event,
+                                contributions,
+                                confirmation,
+                                Some(&local),
+                            )
+                            .await;
+                        let retained = local.owned_bytes()?;
+                        drop(local.into_native_custody(retained)?);
+                        return result.and_then(project);
+                    }
+                    self.append_contributed(
                         operation,
                         expected_tail,
                         key,
                         event,
                         contributions,
                         confirmation,
-                        Some(&local),
+                        io,
                     )
-                    .await;
-                let retained = local.owned_bytes()?;
-                drop(local.into_native_custody(retained)?);
-                return result.and_then(project);
-            }
-            let span = match expected_tail {
-                Some(rev) => {
-                    crate::obs::obs_span!("acyclic.harness.journal.append_if_tail", rev = rev)
-                }
-                None => crate::obs::obs_span!("acyclic.harness.journal.append"),
-            };
-            crate::obs::traced_future(
-                span,
-                self.append_contributed(
-                    operation,
-                    expected_tail,
-                    key,
-                    event,
-                    contributions,
-                    confirmation,
-                    io,
-                ),
+                    .await
+                    .and_then(project)
+                },
             )
-            .await
-            .and_then(project)
         })
     }
 
@@ -532,7 +541,6 @@ where
                 }
                 return Ok(AppendObservation {
                     accepted,
-                    #[cfg(feature = "research")]
                     sequence: accepted.then_some(*sequence),
                 });
             }
@@ -588,7 +596,6 @@ where
                 drop(retry_hold);
                 return Ok(AppendObservation {
                     accepted: true,
-                    #[cfg(feature = "research")]
                     sequence: Some(sequence),
                 });
             }
@@ -606,7 +613,6 @@ use crate::executor::stock_boundary;
 
 pub(super) struct AppendObservation {
     pub(super) accepted: bool,
-    #[cfg(feature = "research")]
     pub(super) sequence: Option<u64>,
 }
 
@@ -614,7 +620,6 @@ impl AppendObservation {
     fn refused() -> Self {
         Self {
             accepted: false,
-            #[cfg(feature = "research")]
             sequence: None,
         }
     }

@@ -9,6 +9,17 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    /// Host-only demand custody, bound to the original admitted agent. It is
+    /// independent of lifecycle event publication and grants no authority.
+    pub(in crate::filesystem) fn with_trace_interest(
+        mut self,
+        traces: acyclic_stream::trace::Registry<P>,
+        owner: crate::agent::AgentPath,
+    ) -> Self {
+        self.traces = Some((traces, owner));
+        self
+    }
+
     fn invalidate_execution_caches(&mut self) {
         self.cache_identity = Default::default();
         *self.verified.get_mut() = SummaryCache::default();
@@ -171,6 +182,7 @@ where
         Ok(Self {
             cache_identity: Default::default(),
             stream,
+            traces: None,
             host,
             volume,
             verifier,

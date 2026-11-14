@@ -61,6 +61,26 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn trace_request(
+        &self,
+        request: acyclic_stream::trace::Request,
+    ) -> Option<acyclic_stream::BoxProviderFuture<'_, Result<acyclic_stream::trace::OwnedRecording>>>
+    {
+        let (traces, owner) = self.traces.as_ref()?;
+        let recorder = traces.recorder(owner.as_str()).ok()??;
+        Some(Box::pin(async move {
+            recorder
+                .start(
+                    request.name,
+                    request.mechanism,
+                    request.parent,
+                    request.guarantee,
+                )
+                .await
+                .map(acyclic_stream::trace::Recording::into_owned)
+                .map_err(Error::from)
+        }))
+    }
     fn output_content(
         &self,
         operation: OperationId,
@@ -385,7 +405,22 @@ where
         crate::conversation::BoundedContentFuture<'a, Option<crate::executor::ToolSettlement>>,
     > {
         crate::conversation::BoundedContentFuture::new(io, || {
-            self.observe_tool_settlement(query, io)
+            self.observe_handoff(
+                acyclic_stream::trace::Request {
+                    name: "harness.tool_settlement",
+                    mechanism: acyclic_stream::trace::Mechanism::AuthCheck,
+                    parent: None,
+                    guarantee: Some("authenticated_tool_terminal_cut"),
+                },
+                self.observe_tool_settlement(query, io),
+                |settlement| {
+                    if settlement.is_some() {
+                        acyclic_stream::trace::Outcome::Succeeded
+                    } else {
+                        acyclic_stream::trace::Outcome::Unsettled
+                    }
+                },
+            )
         })
     }
 
@@ -408,18 +443,8 @@ where
         #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
         acyclic_differential::record(ExecutionReplayObservation::Requested);
         if io.is_none() {
-            return crate::conversation::BoundedContentFuture::new(None, || async move {
-                let span = obs_span!(
-                    "acyclic.harness.journal.replay",
-                    rev = after,
-                    items = crate::obs::Empty
-                );
-                crate::obs::traced_future(span, async move {
-                    let records = self.records(operation, after, maximum, None).await?;
-                    crate::obs::obs_record!("items" = records.len());
-                    Ok(records)
-                })
-                .await
+            return crate::conversation::BoundedContentFuture::new(None, || {
+                self.records(operation, after, maximum, None)
             });
         }
         crate::conversation::BoundedContentFuture::new(io, || async move {
@@ -441,19 +466,17 @@ where
         reference: &'a FileRef,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
-        if io.is_none() {
-            return crate::conversation::BoundedContentFuture::new(None, || async move {
-                let span = obs_span!("acyclic.harness.journal.load", bytes = crate::obs::Empty);
-                crate::obs::traced_future(span, async move {
-                    let bytes = self.load_content(reference, None).await?;
-                    crate::obs::obs_record!("bytes" = bytes.len());
-                    Ok(bytes)
-                })
-                .await
-            });
-        }
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            self.load_content(reference, io).await
+        crate::conversation::BoundedContentFuture::new(io, || {
+            self.observe_request(
+                acyclic_stream::trace::Request {
+                    name: "harness.private_load",
+                    mechanism: acyclic_stream::trace::Mechanism::Io,
+                    parent: None,
+                    guarantee: Some("authenticated_immutable_content"),
+                },
+                self.load_content(reference, io),
+                |bytes| u64::try_from(bytes.len()).ok(),
+            )
         })
     }
 
@@ -463,33 +486,44 @@ where
         range: acyclic_fs::ByteRange,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            if reference.volume() != &self.volume {
-                return Err(canonical_boundary(
-                    io,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "journal content belongs to another private volume",
-                ));
-            }
-            let grant = crate::executor::with_history_io(io, |work| {
-                ContentGrant::verify(
-                    &self.verifier,
-                    &self.scope,
-                    &self.volume,
-                    VolumeOperation::Read,
-                    work,
-                )
-            })?;
-            let grant_hold = io
-                .map(|io| io.guard_owned(grant.logical_owned_bytes()?))
-                .transpose()?;
-            let result = self
-                .host
-                .read_content_range(reference, &grant, range, io)
-                .await;
-            drop(grant);
-            drop(grant_hold);
-            result
+        crate::conversation::BoundedContentFuture::new(io, || {
+            self.observe_request(
+                acyclic_stream::trace::Request {
+                    name: "harness.private_load_range",
+                    mechanism: acyclic_stream::trace::Mechanism::Io,
+                    parent: None,
+                    guarantee: Some("authenticated_immutable_range"),
+                },
+                async move {
+                    if reference.volume() != &self.volume {
+                        return Err(canonical_boundary(
+                            io,
+                            crate::wire::ErrorCode::Unauthorized,
+                            "journal content belongs to another private volume",
+                        ));
+                    }
+                    let grant = crate::executor::with_history_io(io, |work| {
+                        ContentGrant::verify(
+                            &self.verifier,
+                            &self.scope,
+                            &self.volume,
+                            VolumeOperation::Read,
+                            work,
+                        )
+                    })?;
+                    let grant_hold = io
+                        .map(|io| io.guard_owned(grant.logical_owned_bytes()?))
+                        .transpose()?;
+                    let result = self
+                        .host
+                        .read_content_range(reference, &grant, range, io)
+                        .await;
+                    drop(grant);
+                    drop(grant_hold);
+                    result
+                },
+                |bytes| u64::try_from(bytes.len()).ok(),
+            )
         })
     }
 
@@ -508,6 +542,47 @@ where
         Some(self)
     }
 
+    fn append_retained_if_tail<'a>(
+        &'a self,
+        operation: OperationId,
+        expected_tail: u64,
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a PreparationIo>,
+    ) -> Option<Result<crate::executor::RetainedExecutionFuture<'a>>> {
+        Some(crate::conversation::BoundedContentFuture::new(
+            io,
+            || async move {
+                let path = crate::executor::with_history_io(io, |work| {
+                    crate::distributed::execution_path(operation, work)
+                })?;
+                let mut commit = None;
+                let sequence = self
+                    .append_projected(
+                        operation,
+                        Some(expected_tail),
+                        key,
+                        event,
+                        &[],
+                        Some(&mut commit),
+                        io,
+                        |receipt| Ok(receipt.sequence),
+                    )?
+                    .await?;
+                let Some(sequence) = sequence else {
+                    return Ok(None);
+                };
+                let commit_id = commit.ok_or(Error::Indeterminate(operation))?;
+                Ok(Some(acyclic_stream::RetainedRecord {
+                    commit_id,
+                    path,
+                    sequence: sequence
+                        .checked_sub(1)
+                        .ok_or(Error::Indeterminate(operation))?,
+                }))
+            },
+        ))
+    }
     fn append_if_tail<'a>(
         &'a self,
         operation: OperationId,
@@ -596,14 +671,23 @@ where
             return Ok(None);
         }
         crate::conversation::BoundedContentFuture::new(io, || {
-            crate::executor::transcript::stage_attested_request(
-                self,
-                operation,
-                key,
-                prepared,
-                previous.or(self.preceding_request.as_ref()),
-                &self.verifier,
-                io,
+            self.observe_request(
+                acyclic_stream::trace::Request {
+                    name: "harness.request_admission",
+                    mechanism: acyclic_stream::trace::Mechanism::AuthCheck,
+                    parent: None,
+                    guarantee: Some("attested_request_prefix"),
+                },
+                crate::executor::transcript::stage_attested_request(
+                    self,
+                    operation,
+                    key,
+                    prepared,
+                    previous.or(self.preceding_request.as_ref()),
+                    &self.verifier,
+                    io,
+                ),
+                |_| None,
             )
         })
         .map(Some)
@@ -617,20 +701,17 @@ where
         media: &'static str,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
-        if io.is_none() {
-            return crate::conversation::BoundedContentFuture::new(None, || {
-                // Construct one storage payload, but acquire its tracing
-                // parent only when polling begins. No forwarding coroutine
-                // duplicates that payload or needs a second allocation.
-                crate::obs::traced_on_poll(
-                    move || obs_span!("acyclic.harness.journal.stage", bytes = bytes.len()),
-                    self.stage_with_io(operation, key, bytes, media, None),
-                )
-            });
-        }
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            let span = obs_span!("acyclic.harness.journal.stage", bytes = bytes.len());
-            traced(span, self.stage_with_io(operation, key, bytes, media, io)).await
+        crate::conversation::BoundedContentFuture::new(io, || {
+            self.observe_request(
+                acyclic_stream::trace::Request {
+                    name: "harness.private_stage",
+                    mechanism: acyclic_stream::trace::Mechanism::Commit,
+                    parent: None,
+                    guarantee: Some("authenticated_private_publication"),
+                },
+                self.stage_with_io(operation, key, bytes, media, io),
+                |_| u64::try_from(bytes.len()).ok(),
+            )
         })
     }
 
@@ -667,7 +748,16 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
         crate::conversation::BoundedContentFuture::new(io, || {
-            self.authenticate_publication_with_io(operation, file, io)
+            self.observe_request(
+                acyclic_stream::trace::Request {
+                    name: "harness.authenticate_publication",
+                    mechanism: acyclic_stream::trace::Mechanism::AuthCheck,
+                    parent: None,
+                    guarantee: Some("original_publication_identity"),
+                },
+                self.authenticate_publication_with_io(operation, file, io),
+                |_| None,
+            )
         })
     }
 
@@ -677,7 +767,16 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
         crate::conversation::BoundedContentFuture::new(io, || {
-            self.authenticate_summary_with_io(file, io)
+            self.observe_request(
+                acyclic_stream::trace::Request {
+                    name: "harness.authenticate_summary",
+                    mechanism: acyclic_stream::trace::Mechanism::AuthCheck,
+                    parent: None,
+                    guarantee: Some("authenticated_summary_provenance"),
+                },
+                self.authenticate_summary_with_io(file, io),
+                |_| None,
+            )
         })
     }
 
@@ -688,7 +787,16 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         crate::conversation::BoundedContentFuture::new(io, || {
-            self.verify_selected_context_with_io(operation, selected, io)
+            self.observe_request(
+                acyclic_stream::trace::Request {
+                    name: "harness.verify_selected_context",
+                    mechanism: acyclic_stream::trace::Mechanism::AuthCheck,
+                    parent: None,
+                    guarantee: Some("authenticated_selected_context"),
+                },
+                self.verify_selected_context_with_io(operation, selected, io),
+                |_| None,
+            )
         })
     }
 
@@ -723,7 +831,22 @@ where
             )));
         }
         Some(crate::conversation::BoundedContentFuture::new(io, || {
-            approvals.ready(operation)
+            self.observe_handoff(
+                acyclic_stream::trace::Request {
+                    name: "harness.tool_effect_barrier",
+                    mechanism: acyclic_stream::trace::Mechanism::Wait,
+                    parent: None,
+                    guarantee: Some("prior_tool_effect_publication"),
+                },
+                approvals.ready(operation),
+                |ready| {
+                    if *ready {
+                        acyclic_stream::trace::Outcome::Succeeded
+                    } else {
+                        acyclic_stream::trace::Outcome::Unsettled
+                    }
+                },
+            )
         }))
     }
 

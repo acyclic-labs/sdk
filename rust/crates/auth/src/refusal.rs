@@ -292,34 +292,67 @@ impl Refusal {
         }
     }
 
-    /// The status to emit: a refusal's original parts verbatim, else
-    /// `canonical`, which carries the refusal's cause.
+    /// The status whose body already carries its attribution. Original parts
+    /// remain verbatim; otherwise no metadata encoding is necessary.
     #[must_use]
-    pub fn encode(refusal: Option<&Self>, canonical: Canonical<'_>) -> Parts {
+    pub fn encode_embedded(refusal: Option<&Self>, canonical: Canonical<'_>) -> Parts {
         refusal.and_then(Self::original).map_or_else(
-            || {
-                let mut metadata = HeaderMap::new();
-                if let Some(cause) = refusal
-                    .and_then(Self::cause)
-                    .filter(|_| !canonical.cause_is_embedded)
-                {
-                    let bytes = serde_json::to_vec(cause).expect("cause contains only strings");
-                    let value = base64::engine::general_purpose::STANDARD.encode(bytes);
-                    metadata.insert(
-                        CAUSE_METADATA,
-                        value.parse().expect("base64 is a header value"),
-                    );
-                }
-                Parts {
-                    code: canonical.code,
-                    message: canonical.message.to_owned(),
-                    details: Bytes::copy_from_slice(canonical.details),
-                    metadata,
-                }
+            || Parts {
+                code: canonical.code,
+                message: canonical.message.to_owned(),
+                details: Bytes::copy_from_slice(canonical.details),
+                metadata: HeaderMap::new(),
             },
             Parts::clone,
         )
     }
+
+    /// Emit original parts verbatim, or encode attribution in metadata when
+    /// the canonical body does not carry it. Encoding failures retain both
+    /// the original refusal and the exact serialization/header cause.
+    pub fn encode(
+        refusal: Option<&Self>,
+        canonical: Canonical<'_>,
+    ) -> Result<Parts, EncodeFailure> {
+        let mut parts = Self::encode_embedded(refusal, canonical);
+        if let Some(refusal) = refusal.filter(|refusal| refusal.original().is_none())
+            && let Some(cause) = refusal.cause().filter(|_| !canonical.cause_is_embedded)
+        {
+            let encode = || -> Result<http::HeaderValue, EncodeError> {
+                let bytes = serde_json::to_vec(cause)?;
+                let value = base64::engine::general_purpose::STANDARD.encode(bytes);
+                Ok(value.parse()?)
+            };
+            let value = encode().map_err(|source| EncodeFailure {
+                refusal: refusal.clone(),
+                source,
+            })?;
+            parts.metadata.insert(CAUSE_METADATA, value);
+        }
+        Ok(parts)
+    }
+}
+
+/// A refused status could not encode its diagnostic attribution.
+#[derive(Debug, thiserror::Error)]
+#[error("refusal attribution encoding failed: {source}")]
+pub struct EncodeFailure {
+    /// Original refusal, retained without formatting or replacing it.
+    pub refusal: Refusal,
+    /// Original encoding failure.
+    #[source]
+    pub source: EncodeError,
+}
+
+/// The original fallible operation in refusal encoding.
+#[derive(Debug, thiserror::Error)]
+pub enum EncodeError {
+    /// Original JSON encoder failure.
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+    /// Original HTTP metadata validation failure.
+    #[error(transparent)]
+    Header(#[from] http::header::InvalidHeaderValue),
 }
 
 fn reported_cause(metadata: &HeaderMap) -> Option<Cause> {
