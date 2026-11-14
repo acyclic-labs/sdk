@@ -49,7 +49,7 @@ impl Directory {
         };
         let mut effects = Vec::new();
         for index in 0..count {
-            let row = SessionRow::new(this.nodes[(index % 3) as usize].clone(), profile());
+            let row = SessionRow::new(this.nodes[(index % 3) as usize].clone(), profile(), [7; 32]);
             let path = SessionPublication::row_path(&actor(index + 1)?)?;
             let mut effect = row.effect(path.clone())?;
             if removed {
@@ -73,7 +73,7 @@ impl Directory {
         publish(
             this.provider.as_ref(),
             vec![
-                SessionRow::new(this.nodes[0].clone(), profile())
+                SessionRow::new(this.nodes[0].clone(), profile(), [7; 32])
                     .effect(SessionPublication::row_path(&this.requester)?)?,
             ],
         )
@@ -289,7 +289,7 @@ async fn account_pages_exclude_only_the_fully_qualified_requester() -> TestResul
     publish(
         directory.provider.as_ref(),
         vec![
-            SessionRow::new(directory.nodes[1].clone(), profile())
+            SessionRow::new(directory.nodes[1].clone(), profile(), [7; 32])
                 .effect(SessionPublication::row_path(&other)?)?,
         ],
     )
@@ -303,7 +303,7 @@ async fn account_pages_exclude_only_the_fully_qualified_requester() -> TestResul
     publish(
         directory.provider.as_ref(),
         vec![
-            SessionRow::new(directory.nodes[0].clone(), profile())
+            SessionRow::new(directory.nodes[0].clone(), profile(), [7; 32])
                 .effect(SessionPublication::row_path(&actor(1)?)?)?,
         ],
     )
@@ -366,9 +366,14 @@ async fn filtered_account_pages_keep_confidential_progress_without_presence_read
     publish(
         directory.provider.as_ref(),
         vec![
-            row.changed(Some(profile()))?
-                .ok_or("rejoin missing")?
-                .effect(scanned)?,
+            row.changed_membership(
+                Some(profile()),
+                crate::agent::PeerMembership {
+                    epoch: Some([8; 32]),
+                },
+            )?
+            .ok_or("rejoin missing")?
+            .effect(scanned)?,
         ],
     )
     .await?;
@@ -379,7 +384,7 @@ async fn filtered_account_pages_keep_confidential_progress_without_presence_read
     publish(
         directory.provider.as_ref(),
         vec![
-            SessionRow::new(directory.nodes[0].clone(), profile())
+            SessionRow::new(directory.nodes[0].clone(), profile(), [7; 32])
                 .changed(None)?
                 .ok_or("requester removal missing")?
                 .effect(path)?,
@@ -480,7 +485,7 @@ async fn account_pages_reject_inherited_session_and_presence_records() -> TestRe
             .await
             .is_err()
         );
-        let row = SessionRow::new(directory.nodes[0].clone(), profile());
+        let row = SessionRow::new(directory.nodes[0].clone(), profile(), [7; 32]);
         let original = StreamPath::new("other-row")?;
         let destination = SessionPublication::row_path(&actor(9)?)?;
         publish(
@@ -511,7 +516,7 @@ async fn account_pages_reject_inherited_session_and_presence_records() -> TestRe
             .last
             .ok_or("inherited row missing")?;
         assert_eq!(
-            SessionRow::decode(&inherited.value)?,
+            SessionRow::decode(&inherited)?,
             row,
             "the inherited head must otherwise be a valid live row"
         );

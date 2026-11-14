@@ -1,5 +1,5 @@
 //! Public session metadata, projected without private control or file authority.
-use super::{Error, Phase, WorkspaceEntry, WorkspaceRole};
+use super::{Error, PeerMembership, Phase, WorkspaceEntry, WorkspaceRole};
 use acyclic_actors::route::NodeId;
 use serde::{Deserialize, Serialize};
 
@@ -95,7 +95,12 @@ pub struct SessionRow {
     pub profile: Option<SessionProfile>,
     /// One-based publication revision; unchanged metadata spends no revision.
     pub rev: u64,
+    /// Public identity of the active membership interval. Stored in a versioned
+    /// record header, separately from the six public display fields.
+    pub membership: PeerMembership,
 }
+
+const MEMBERSHIP: &str = "acyclic.harness.session-membership.v1";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -137,7 +142,7 @@ impl SessionRow {
         tail: u64,
         record: &acyclic_stream::Record,
     ) -> Result<Self, Error> {
-        let row = Self::decode(&record.value)?;
+        let row = Self::decode(record)?;
         if record.origin != *path || record.sequence.checked_add(1) != Some(tail) || row.rev != tail
         {
             return Err(Error::Record("session row provenance or revision differs"));
@@ -146,16 +151,31 @@ impl SessionRow {
     }
 
     /// Initial membership row, joined to the original root creation.
-    pub fn new(node: NodeId, profile: SessionProfile) -> Self {
+    pub fn new(node: NodeId, profile: SessionProfile, epoch: [u8; 32]) -> Self {
         Self {
             node,
             profile: Some(profile),
             rev: 1,
+            membership: PeerMembership { epoch: Some(epoch) },
         }
     }
 
     /// Decode one committed row. Other versions are refused, never migrated.
-    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+    pub fn decode(record: &acyclic_stream::Record) -> Result<Self, Error> {
+        let epoch = record
+            .headers
+            .attributes()
+            .iter()
+            .find(|attribute| attribute.name == MEMBERSHIP)
+            .map(|attribute| {
+                <[u8; 32]>::try_from(attribute.value.as_ref())
+                    .map_err(|_| Error::Record("invalid session membership epoch"))
+            })
+            .transpose()?;
+        Self::decode_value(&record.value, epoch)
+    }
+
+    fn decode_value(bytes: &[u8], epoch: Option<[u8; 32]>) -> Result<Self, Error> {
         let wire: RowWire =
             serde_json::from_slice(bytes).map_err(|_| Error::Record("invalid session row"))?;
         if wire.version != 1 || wire.rev == 0 {
@@ -179,10 +199,14 @@ impl SessionRow {
             (true, None, None, None, None) => None,
             _ => return Err(Error::Record("inconsistent session removal")),
         };
+        if profile.is_some() != epoch.is_some() {
+            return Err(Error::Record("session membership and metadata differ"));
+        }
         Ok(Self {
             node: NodeId::new(&wire.node).map_err(|_| Error::Record("invalid session node"))?,
             profile,
             rev: wire.rev,
+            membership: PeerMembership { epoch },
         })
     }
 
@@ -190,7 +214,25 @@ impl SessionRow {
     /// stays fixed, and no stream observation, task or timer is created here.
     /// `None` removes membership and discards the previous public metadata.
     pub fn changed(&self, profile: Option<SessionProfile>) -> Result<Option<Self>, Error> {
-        if self.profile == profile {
+        let epoch = if profile.is_some() {
+            self.membership.epoch
+        } else {
+            None
+        };
+        self.changed_membership(profile, PeerMembership { epoch })
+    }
+
+    /// Publish a user-selected membership interval with its display projection.
+    /// Rejoining must supply the newly created interval, never revive the old one.
+    pub fn changed_membership(
+        &self,
+        profile: Option<SessionProfile>,
+        membership: PeerMembership,
+    ) -> Result<Option<Self>, Error> {
+        if profile.is_some() != membership.enabled() {
+            return Err(Error::Record("session membership and metadata differ"));
+        }
+        if self.profile == profile && self.membership == membership {
             return Ok(None);
         }
         let rev = self
@@ -201,6 +243,7 @@ impl SessionRow {
             node: self.node.clone(),
             profile,
             rev,
+            membership,
         }))
     }
 
@@ -218,7 +261,20 @@ impl SessionRow {
             .ok_or(Error::Record("invalid session row revision"))?;
         let bytes =
             serde_json::to_vec(self).map_err(|_| Error::Record("session row cannot encode"))?;
-        let record = AppendRecord::latest(bytes, "session", false).map_err(Error::Stream)?;
+        if self.profile.is_some() != self.membership.enabled() {
+            return Err(Error::Record("session membership and metadata differ"));
+        }
+        let mut record = AppendRecord::latest(bytes, "session", false).map_err(Error::Stream)?;
+        if let Some(epoch) = self.membership.epoch {
+            record.headers = acyclic_stream::RecordHeaders::new(
+                record.headers.keys().to_vec(),
+                vec![acyclic_stream::Attribute {
+                    name: MEMBERSHIP.into(),
+                    value: acyclic_stream::OwnedBytes::copy_from_slice(&epoch),
+                }],
+            )
+            .map_err(Error::Stream)?;
+        }
         Ok(CommitEffect::hard(
             vec![CommitCondition::Tail {
                 path: path.clone(),

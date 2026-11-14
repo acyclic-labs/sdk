@@ -602,7 +602,7 @@ async fn session_profiles_publish_only_public_metadata_changes() -> Result {
     let profile = SessionProfile::project(&phase, "Review".into(), table.entries(), "é中 tail", 4);
     let provider = MemoryStream::default();
     let path = StreamPath::new("registry/account/sessions/root")?;
-    let mut row = SessionRow::new(NodeId::new(b"owner")?, profile.clone());
+    let mut row = SessionRow::new(NodeId::new(b"owner")?, profile.clone(), [7; 32]);
     let request = CommitRequest {
         deadline_unix_millis: None,
         idempotency_key: intent_key("initial-session-row", &[])?,
@@ -699,7 +699,16 @@ async fn session_profiles_publish_only_public_metadata_changes() -> Result {
         ));
         let head = provider.head(path.clone()).await?;
         let record = head.last.ok_or("session row missing")?;
-        assert_eq!(SessionRow::decode(&record.value)?, next);
+        assert_eq!(SessionRow::decode(&record)?, next);
+        assert_eq!(
+            next.membership, row.membership,
+            "display changes must preserve the user's active interval"
+        );
+        // Removing only the public interval is an actual malformed live row,
+        // even though all display metadata and its original commit remain.
+        let mut missing_epoch = record.clone();
+        missing_epoch.headers = acyclic_stream::RecordHeaders::default();
+        assert!(SessionRow::decode(&missing_epoch).is_err());
         assert_eq!(head.tail, next.rev);
         row = next;
     }
@@ -718,7 +727,8 @@ async fn session_profiles_publish_only_public_metadata_changes() -> Result {
     assert!(removed.changed(None)?.is_none());
     let head = provider.head(path.clone()).await?;
     let record = head.last.ok_or("removal missing")?;
-    assert_eq!(SessionRow::decode(&record.value)?, removed);
+    assert_eq!(SessionRow::decode(&record)?, removed);
+    assert!(!removed.membership.enabled());
     assert_eq!(head.tail, removed.rev);
     let encoded: serde_json::Value = serde_json::from_slice(&record.value)?;
     for field in ["phase", "title", "workspaces", "goal_preview"] {
@@ -731,7 +741,9 @@ async fn session_profiles_publish_only_public_metadata_changes() -> Result {
     ] {
         let mut invalid = encoded.clone();
         invalid[field] = value;
-        assert!(SessionRow::decode(&serde_json::to_vec(&invalid)?).is_err());
+        let mut invalid_record = record.clone();
+        invalid_record.value = serde_json::to_vec(&invalid)?.into();
+        assert!(SessionRow::decode(&invalid_record).is_err());
     }
     let late = row
         .changed(Some(profile.clone()))?
@@ -746,7 +758,16 @@ async fn session_profiles_publish_only_public_metadata_changes() -> Result {
             .await?,
         CommitOutcome::Conflict(_)
     ));
-    let rejoined = removed.changed(Some(profile))?.ok_or("missing rejoin")?;
+    assert!(removed.changed(Some(profile.clone())).is_err());
+    let rejoined = removed
+        .changed_membership(
+            Some(profile),
+            PeerMembership {
+                epoch: Some([8; 32]),
+            },
+        )?
+        .ok_or("missing rejoin")?;
+    assert_ne!(rejoined.membership, row.membership);
     assert!(matches!(
         provider
             .commit(CommitRequest {

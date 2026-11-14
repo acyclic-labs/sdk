@@ -23,7 +23,7 @@ async fn account_peer_command_preserves_qualified_identity_credit_and_authority(
         "Public goal",
         64,
     );
-    let row = crate::agent::SessionRow::new(node, profile.clone());
+    let row = crate::agent::SessionRow::new(node, profile.clone(), [7; 32]);
     let id = AgentId::from_bytes([2; 16]);
     let peers = [
         ActorReference::new(b"account", b"agents", id.as_str().as_bytes())?,

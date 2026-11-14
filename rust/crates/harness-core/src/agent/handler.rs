@@ -407,7 +407,13 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
             if let Some(profile) = presence {
                 let row = super::SessionPublication {
                     actor,
-                    row: super::SessionRow::new(routing.node.clone(), profile),
+                    row: super::SessionRow::new(
+                        routing.node.clone(),
+                        profile,
+                        super::PeerMembership::for_intent(&created.request.idempotency_key)?
+                            .epoch
+                            .ok_or(Error::Record("root membership is disabled"))?,
+                    ),
                     intent: created.request.idempotency_key.clone(),
                 };
                 for effect in row.effects(&routing.paths)? {

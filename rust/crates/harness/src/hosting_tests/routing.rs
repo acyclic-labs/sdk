@@ -319,6 +319,10 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
                     "",
                     0,
                 ),
+                crate::agent::initial_peer_membership(stream.as_ref(), server.root())
+                    .await?
+                    .epoch
+                    .ok_or("root membership missing")?,
             ),
             intent: root_registration.intent.clone(),
         };
@@ -482,7 +486,7 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
         let head = stream.head(removed.path()?).await?;
         assert_eq!(head.tail, 3, "retry resurrected a removed row");
         assert_eq!(
-            crate::agent::SessionRow::decode(&head.last.ok_or("removed row missing")?.value)?,
+            crate::agent::SessionRow::decode(&head.last.ok_or("removed row missing")?)?,
             removed.row
         );
         assert_eq!(
@@ -522,6 +526,7 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
                     "Public task preview",
                     16,
                 ),
+                [7; 32],
             ),
             intent: registration.intent.clone(),
         };
@@ -568,7 +573,7 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
                     .last
                     .ok_or(StreamError::InvalidResponse)?;
                 assert_eq!(
-                    crate::agent::SessionRow::decode(&row.value)
+                    crate::agent::SessionRow::decode(&row)
                         .map_err(|_| route::Error::InvalidRecord)?,
                     source_row.row
                 );

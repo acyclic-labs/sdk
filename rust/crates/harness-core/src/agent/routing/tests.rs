@@ -104,12 +104,12 @@ async fn account_membership_uses_one_fenced_view_for_both_roots()
         let publications = [
             SessionPublication {
                 actor: envelope.sender.clone(),
-                row: SessionRow::new(envelope.source.clone(), profile.clone()),
+                row: SessionRow::new(envelope.source.clone(), profile.clone(), [7; 32]),
                 intent: crate::agent::intent_key("sender-row", &[])?,
             },
             SessionPublication {
                 actor: envelope.to.clone(),
-                row: SessionRow::new(destination.node.clone(), profile),
+                row: SessionRow::new(destination.node.clone(), profile, [7; 32]),
                 intent: crate::agent::intent_key("recipient-row", &[])?,
             },
         ];

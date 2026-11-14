@@ -65,7 +65,7 @@ async fn unchanged_membership_fences_a_concurrent_opposite_decision()
             .await?
             .last
             .ok_or("row missing")?;
-        let row = SessionRow::decode(&record.value)?;
+        let row = SessionRow::decode(&record)?;
         let member = provider
             .head(root.peer_membership()?)
             .await?
@@ -116,7 +116,7 @@ async fn rejoining_requires_original_display_metadata() -> Result<(), Box<dyn st
             "Original goal",
             64,
         );
-        let row = SessionRow::new(NodeId::new(b"node")?, profile.clone());
+        let row = SessionRow::new(NodeId::new(b"node")?, profile.clone(), [7; 32]);
         let mut effects = vec![row.effect(original.clone())?];
         if inherited {
             effects.push(acyclic_stream::CommitEffect::hard(
@@ -147,7 +147,7 @@ async fn rejoining_requires_original_display_metadata() -> Result<(), Box<dyn st
             .record_at(path.clone(), 0)
             .await?
             .ok_or("row missing")?;
-        assert_eq!(SessionRow::decode(&preceding.value)?, row);
+        assert_eq!(SessionRow::decode(&preceding)?, row);
         assert!(matches!(
             provider
                 .commit(CommitRequest {
@@ -185,9 +185,14 @@ async fn rejoining_requires_original_display_metadata() -> Result<(), Box<dyn st
         } else {
             result?;
             assert_eq!(head.tail, 3);
-            let current = SessionRow::decode(&head.last.ok_or("rejoined row missing")?.value)?;
+            let current = SessionRow::decode(&head.last.ok_or("rejoined row missing")?)?;
             assert_eq!(current.profile, Some(profile));
-            assert!(PeerMembership::decode(&member.value)?.enabled());
+            let membership = PeerMembership::decode(&member.value)?;
+            assert!(membership.enabled());
+            assert_eq!(
+                current.membership, membership,
+                "the public interval must be the one committed by this user control"
+            );
         }
     }
     Ok(())

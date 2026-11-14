@@ -230,7 +230,7 @@ async fn public_metadata_changes_share_the_original_actor_commit()
             );
             if index == 1 && publish {
                 let record = row.last.ok_or("row missing")?;
-                let profile = SessionRow::decode(&record.value)?
+                let profile = SessionRow::decode(&record)?
                     .profile
                     .ok_or("profile missing")?;
                 assert_eq!(profile.workspaces, vec![entry]);
@@ -261,9 +261,7 @@ async fn public_metadata_changes_share_the_original_actor_commit()
         .await?;
         host.drain(&root).await?;
         let row = provider.head(row_path).await?.last.ok_or("row missing")?;
-        let profile = SessionRow::decode(&row.value)?
-            .profile
-            .ok_or("profile missing")?;
+        let profile = SessionRow::decode(&row)?.profile.ok_or("profile missing")?;
         assert_eq!(
             profile.phase,
             if publish {
@@ -322,7 +320,7 @@ async fn public_metadata_changes_share_the_original_actor_commit()
             "phase updates cannot republish an opted-out root"
         );
         assert!(
-            SessionRow::decode(&after.last.ok_or("removal missing")?.value)?
+            SessionRow::decode(&after.last.ok_or("removal missing")?)?
                 .profile
                 .is_none()
         );

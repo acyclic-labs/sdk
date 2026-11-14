@@ -42,6 +42,8 @@ struct Invocation {
     intent: Bytes,
     #[prost(string, tag = "6")]
     domain: String,
+    #[prost(bytes = "bytes", optional, tag = "7")]
+    epoch: Option<Bytes>,
 }
 
 /// One owning-node metadata publication under its original source intent.
@@ -152,6 +154,11 @@ impl SessionPublication {
                 .into(),
             intent: Bytes::copy_from_slice(self.intent.as_bytes()),
             domain: PROTOCOL.into(),
+            epoch: self
+                .row
+                .membership
+                .epoch
+                .map(|epoch| Bytes::copy_from_slice(&epoch)),
         }
         .encode_to_vec()
         .into())
@@ -256,7 +263,16 @@ impl<P: StreamProvider + ?Sized> CallProvider for SessionRegistry<P> {
             let publication = SessionPublication {
                 actor: ActorReference::decode(&wire.actor)
                     .map_err(|_| StreamError::InvalidArgument)?,
-                row: SessionRow::decode(&wire.row).map_err(|_| StreamError::InvalidArgument)?,
+                row: SessionRow::decode_value(
+                    &wire.row,
+                    wire.epoch
+                        .map(|epoch| {
+                            <[u8; 32]>::try_from(epoch.as_ref())
+                                .map_err(|_| StreamError::InvalidArgument)
+                        })
+                        .transpose()?,
+                )
+                .map_err(|_| StreamError::InvalidArgument)?,
                 intent: IdempotencyKey::new(wire.intent.to_vec())?,
             };
             if publication.actor.account() != &account

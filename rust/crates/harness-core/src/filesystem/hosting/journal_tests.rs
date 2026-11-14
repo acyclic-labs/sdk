@@ -559,7 +559,7 @@ async fn title_events_publish_once_without_losing_file_controls() -> TestResult 
         assert_eq!(head.tail, initial + if index == 2 { 2 } else { 1 });
         let row = head.last.ok_or("metadata row missing")?;
         assert_eq!(
-            SessionRow::decode(&row.value)?
+            SessionRow::decode(&row)?
                 .profile
                 .ok_or("metadata removed")?
                 .title,
@@ -630,7 +630,7 @@ async fn title_events_publish_once_without_losing_file_controls() -> TestResult 
     let head = provider.head(row_path).await?;
     assert_eq!(head.tail, initial + 3);
     assert!(
-        SessionRow::decode(&head.last.ok_or("metadata row missing")?.value)?
+        SessionRow::decode(&head.last.ok_or("metadata row missing")?)?
             .profile
             .ok_or("metadata removed")?
             .title
@@ -698,7 +698,7 @@ async fn goal_events_use_only_home_and_publish_bounded_utf8_changes() -> TestRes
             initial + 1,
             "changes after the preview must publish no row"
         );
-        let profile = SessionRow::decode(&head.last.ok_or("goal row missing")?.value)?
+        let profile = SessionRow::decode(&head.last.ok_or("goal row missing")?)?
             .profile
             .ok_or("goal row removed")?;
         assert_eq!(profile.goal_preview, prefix);
@@ -753,7 +753,7 @@ async fn goal_events_use_only_home_and_publish_bounded_utf8_changes() -> TestRes
     let head = provider.head(path).await?;
     assert_eq!(head.tail, initial + 2);
     assert!(
-        SessionRow::decode(&head.last.ok_or("goal row missing")?.value)?
+        SessionRow::decode(&head.last.ok_or("goal row missing")?)?
             .profile
             .ok_or("goal row removed")?
             .goal_preview
@@ -821,7 +821,7 @@ async fn metadata_bootstrap_skips_history_and_rejoin_reads_current_files() -> Te
         "bootstrap replayed historical display values"
     );
     assert_eq!(
-        SessionRow::decode(&head.last.ok_or("metadata missing")?.value)?
+        SessionRow::decode(&head.last.ok_or("metadata missing")?)?
             .profile
             .ok_or("metadata removed")?
             .title,
@@ -878,7 +878,7 @@ async fn metadata_bootstrap_skips_history_and_rejoin_reads_current_files() -> Te
     runtime.drain_actor(&control).await?;
     let head = provider.head(path.clone()).await?;
     assert_eq!(head.tail, rejoined + 1);
-    let profile = SessionRow::decode(&head.last.ok_or("metadata missing")?.value)?
+    let profile = SessionRow::decode(&head.last.ok_or("metadata missing")?)?
         .profile
         .ok_or("metadata removed")?;
     assert_eq!(profile.title, "edited while off");

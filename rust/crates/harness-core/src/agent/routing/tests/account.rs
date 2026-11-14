@@ -139,7 +139,7 @@ async fn signed_account_admission_preserves_membership_and_original_outcomes()
     ] {
         let publication = SessionPublication {
             actor: actor.clone(),
-            row: SessionRow::new(location.clone(), profile.clone()),
+            row: SessionRow::new(location.clone(), profile.clone(), [7; 32]),
             intent: acyclic_stream::IdempotencyKey::new(actor.encode())?,
         };
         let mut effects = vec![

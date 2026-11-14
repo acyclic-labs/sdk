@@ -218,7 +218,7 @@ async fn authenticated_peer_delivery_pins_attribution_opt_out_and_exact_retry() 
         .await?
         .last
         .ok_or("row removal missing")?;
-    let removed_row = SessionRow::decode(&removed.value)?;
+    let removed_row = SessionRow::decode(&removed)?;
     assert!(removed_row.profile.is_none());
     let membership = stream
         .head(recipient.peer_membership()?)
@@ -295,7 +295,7 @@ async fn authenticated_peer_delivery_pins_attribution_opt_out_and_exact_retry() 
         .await?
         .last
         .ok_or("rejoin missing")?;
-    let rejoined_row = SessionRow::decode(&rejoined.value)?;
+    let rejoined_row = SessionRow::decode(&rejoined)?;
     assert!(rejoined_row.profile.is_some());
     assert_eq!(rejoined_row.rev, removed_row.rev + 1);
     assert_eq!(
@@ -338,7 +338,7 @@ async fn authenticated_peer_delivery_pins_attribution_opt_out_and_exact_retry() 
         .await?
         .last
         .ok_or("archive row missing")?;
-    let archived_row = SessionRow::decode(&archived.value)?;
+    let archived_row = SessionRow::decode(&archived)?;
     assert!(archived_row.profile.is_none());
     assert_eq!(archived_row.rev, rejoined_row.rev + 1);
     let closed = stream

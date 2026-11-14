@@ -76,7 +76,7 @@ async fn configured_account_directory_supplies_qualified_peers_and_preserves_opt
         effects.push(
             SessionPublication {
                 actor,
-                row: SessionRow::new(node.clone(), profile.clone()),
+                row: SessionRow::new(node.clone(), profile.clone(), [7; 32]),
                 intent: acyclic_stream::IdempotencyKey::new(b"directory-row".to_vec())
                     .map_err(agent)?,
             }

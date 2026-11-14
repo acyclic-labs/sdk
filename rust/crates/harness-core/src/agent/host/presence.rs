@@ -116,6 +116,25 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             .as_ref()
             .ok_or(Error::Record("root has no routing context"))?;
         let actor = self.actor(root)?;
+        // Read the membership selected by this same control, not a later head.
+        // The public row and its interval must share the original publication.
+        let membership_path = root.peer_membership()?;
+        let membership = base
+            .effects
+            .iter()
+            .flat_map(|effect| &effect.mutations)
+            .find_map(|mutation| match mutation {
+                CommitMutation::Append { path, records } if path == &membership_path => {
+                    records.first()
+                }
+                _ => None,
+            })
+            .ok_or(Error::Record("control has no membership publication"))?;
+        use crate::agent::AgentRecord as _;
+        let membership = crate::agent::PeerMembership::decode(&membership.value)?;
+        if membership.enabled() != enabled {
+            return Err(Error::Record("control membership differs"));
+        }
         let (current, row_guard) =
             SessionPublication::observe(self.provider.as_ref(), &actor, &routing.node).await?;
         let mut guard = None;
@@ -161,8 +180,14 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             let profile =
                 SessionProfile::project(&state.phase, title, &state.volumes, &goal, goal.len());
             match current {
-                Some(row) => row.changed(Some(profile))?,
-                None => Some(SessionRow::new(routing.node.clone(), profile)),
+                Some(row) => row.changed_membership(Some(profile), membership)?,
+                None => Some(SessionRow::new(
+                    routing.node.clone(),
+                    profile,
+                    membership
+                        .epoch
+                        .ok_or(Error::Record("enabled control has no epoch"))?,
+                )),
             }
         };
         let mut joined = PreparedPublish::foreign(base.idempotency_key.clone());
