@@ -644,17 +644,17 @@ mod tests {
         let facts = crate::local::context::environment::gather(
             selected.native_cwd()?,
             0,
-            "fixture",
             &crate::native_environment::PlatformPolicy::Fixture {
                 os: "fixture".into(),
                 shell: "fixture".into(),
             },
         )?;
         assert_eq!(
-            std::fs::canonicalize(facts.cwd.as_ref().expect("selected native cwd"))
+            std::fs::canonicalize(selected.native_cwd()?.expect("selected native cwd"))
                 .map_err(storage)?,
             std::fs::canonicalize(directory.path().join("selected")).map_err(storage)?
         );
+        assert_eq!(facts.cwd.as_deref(), Some("."));
         assert_ne!(selected.native_cwd()?, Some(workspace.path.as_path()));
         Ok(())
     }
