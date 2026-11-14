@@ -163,10 +163,8 @@ async fn resumed_pages_project_the_terminal_without_its_prefix() -> Result<()> {
         completed_at: None,
         latency_ns: None,
         provider_request_id: None,
-        #[cfg(feature = "research")]
         system_fingerprint: None,
         ttft_ns: None,
-        #[cfg(feature = "research")]
         cache: None,
         abandoned: Default::default(),
     };

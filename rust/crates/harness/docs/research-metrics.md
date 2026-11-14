@@ -170,10 +170,11 @@ Gaps, repeated pages, foreign bindings and failed writes prevent successful
 finish. It performs no flush or publication itself. A short source page is an
 incomplete pinned prefix, never evidence of completion.
 
-`read_set::project` maps each receipt into the existing edges table, and PROV
-exports the original turn's `prov:used` relation to that generation. Shell,
-context, hook, search and failed-read coverage remains unknown. These functions
-reuse committed results and add no work to execution or read operations.
+`acyclic_harness_metrics::read_observation` maps each receipt into the existing
+edges table, and PROV exports the original turn's `prov:used` relation to that
+generation. Shell, context, hook, search and failed-read coverage remains
+unknown. These functions reuse committed results and add no work to execution
+or read operations.
 
 `executor::read_set::source` exposes the same artifact as a pull-based
 `ContentSource`, retaining one encoded page and source page. Cursor records
