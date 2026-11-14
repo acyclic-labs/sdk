@@ -262,9 +262,17 @@ fn cell_path(agent: &AgentPath, run: OperationId, key: &[u8; 32]) -> Result<Stre
 fn signal_key_text(
     run: OperationId,
     kind: Kind,
-) -> arrayvec::ArrayString<{ 5 + 36 + 19 + 15 + 5 }> {
+) -> arrayvec::ArrayString<
+    {
+        "runs/".len()
+            + 36
+            + "/status/supervision/".len()
+            + Kind::ValidationLoop.name().len()
+            + ".json".len()
+    },
+> {
     use std::fmt::Write as _;
-    // Fixed schema: prefix, canonical UUID, namespace, longest Kind, suffix.
+    // Derive literal segment sizes: prefix, UUID, namespace, longest Kind, suffix.
     // No user-provided component or variable-size history occupies this buffer.
     let mut text = arrayvec::ArrayString::new();
     write!(text, "runs/{run}/status/supervision/{}.json", kind.name())

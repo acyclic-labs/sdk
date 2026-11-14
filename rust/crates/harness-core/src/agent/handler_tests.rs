@@ -252,6 +252,10 @@ async fn ancestor_pause_parks_on_its_original_publication_and_resume_survives_ha
         if resume_before_park {
             let store = crate::agent::actor_store(&provider)?;
             let snapshot = store.load(&actor).await?;
+            let snapshot = store
+                .claim(&snapshot, 1, acyclic_stream::IdempotencyKey::unique())
+                .await?;
+            let epoch = snapshot.state().ok_or("actor state missing")?.epoch();
             let record = provider
                 .read(ReadRequest {
                     path: path.inbox()?,
@@ -267,7 +271,7 @@ async fn ancestor_pause_parks_on_its_original_publication_and_resume_survives_ha
             let delivery = Delivery {
                 request: acyclic_actors::guest::RequestId::new(1),
                 actor: actor.clone(),
-                epoch: 0,
+                epoch,
                 now_unix_ms: 100,
                 trigger: Trigger::Record {
                     subscription: INBOX.into(),
@@ -306,7 +310,7 @@ async fn ancestor_pause_parks_on_its_original_publication_and_resume_survives_ha
             store
                 .publish(
                     &snapshot,
-                    0,
+                    epoch,
                     &delivery.trigger,
                     Some(&record),
                     transition,
@@ -353,7 +357,7 @@ async fn ancestor_pause_parks_on_its_original_publication_and_resume_survives_ha
                 Delivery {
                     request: acyclic_actors::guest::RequestId::new(2),
                     actor: actor.clone(),
-                    epoch: 0,
+                    epoch: original.epoch(),
                     now_unix_ms: 100,
                     trigger: Trigger::Record {
                         subscription: ADMISSION_SUBSCRIPTION.into(),
