@@ -195,30 +195,22 @@ async fn source_before_images_collection<S: LazyWorkspaceStore>(
             root.stage_into_checkout(&mut checkout, "/file", id, original.len() as u64, &mut ctx)
                 .await?
         );
-        // This real unpublished payload gives collection reclaimable work.
-        // Neither it nor the source copy-up becomes an authored generation.
-        let orphan = root.namespace_path("/orphan", &mut ctx)?;
-        let mut mutations = Owned::allocate(1, &mut ctx)?;
-        mutations.value.push(AuthoredMutation::CreateFile {
-            file_id: None,
-            path: orphan.value,
-            bytes: acyclic_stream::OwnedBytes::from(vec![0x6e; 65_537]),
-            metadata: FileMetadata::default(),
-        });
-        let KernelOwnedAllocation::NativeOriginal(slots) = &mutations.allocation else {
-            unreachable!("native input retains its original slots")
-        };
-        let output = checkout
-            .apply_borrowed_authored_transaction_with_native_work(
-                &mutations.value,
-                slots,
-                &work,
-                &cancellation,
-            )
-            .await?;
-        drop(output);
-        mutations.retire(&mut ctx)?;
-        crate::kernel::retire_allocation(orphan.allocation, orphan.bytes, &mut ctx)?;
+        // Private candidates need never reach durable storage. A separately
+        // published, then deleted workspace gives collection real garbage,
+        // while the source copy-up remains outside authored generations.
+        {
+            let orphan = fs
+                .create_workspace("discarded", WorkBudget::UNBOUNDED, &cancellation)
+                .await?
+                .value;
+            orphan
+                .write("/orphan", Bytes::from(vec![0x6e; 65_537]))
+                .await?;
+            assert_eq!(
+                orphan.delete(IdempotencyKey::new()).await?,
+                crate::WorkspaceDelete::Deleted
+            );
+        }
         drop(checkout);
         cut = root.snapshot(&mut ctx).await?;
         assert!(
@@ -257,7 +249,7 @@ async fn source_before_images_collection<S: LazyWorkspaceStore>(
         .await?;
     assert!(
         collected.removed > 0,
-        "collection did not reclaim the unpublished control"
+        "collection did not reclaim the deleted workspace control"
     );
     let read = root
         .read_at_snapshot(&cut, "/file", None, None, &mut ctx)
