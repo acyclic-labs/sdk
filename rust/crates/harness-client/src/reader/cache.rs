@@ -654,7 +654,7 @@ impl RecordCache {
         self.meta
             .get(stream)
             .and_then(|meta| meta.custody.as_ref())
-            .is_some_and(|current| custody.ptr_eq(&std::sync::Arc::downgrade(current)))
+            .is_some_and(|current| std::ptr::eq(custody.as_ptr(), std::sync::Arc::as_ptr(current)))
     }
 
     fn meta_mut(&mut self, stream: &StreamPath) -> &mut Meta {
