@@ -2241,7 +2241,7 @@ async fn merge_continue_reexamines_a_resolution_whose_conflicted_identity_is_gon
             Ok(_) => return Err("a marker-bearing resolution continued".into()),
             Err(error) => error.to_string(),
         };
-        assert!(error.contains("conflict markers"), "{error}");
+        assert!(error.starts_with("merge conflict: /notes.txt."), "{error}");
     }
     write_text(&main, "/notes.txt", b"topic\n").await?;
     let GitCommandOutput::Committed(merge) =
