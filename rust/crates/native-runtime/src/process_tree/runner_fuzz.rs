@@ -117,7 +117,11 @@ pub fn fuzz_runner_request(input: &[u8]) -> Result<(), &'static str> {
 
 fn fields(spec: &request::Spec, received: &request::Received, bytes: &[u8]) -> Check {
     let flags = *bytes.get(3).ok_or("decoded request has no flags")?;
-    require(flags & !63 == 0, "unknown request flags accepted")?;
+    require(flags & !127 == 0, "unknown request flags accepted")?;
+    require(
+        flags & 64 == 0 || flags & 16 != 0,
+        "owner exit event has no release action",
+    )?;
     require(flags & 9 != 9, "a boundary selected a second cwd")?;
     require(
         flags & 24 != 24,
@@ -128,7 +132,11 @@ fn fields(spec: &request::Spec, received: &request::Received, bytes: &[u8]) -> C
         .ok_or("decoded request has no stream slots")?;
     let sent = slots.iter().filter(|&&slot| slot == 1).count();
     require(
-        received.count == 3 + sent + 2 * usize::from(flags & 8 != 0) + usize::from(flags & 16 != 0),
+        received.count
+            == 3 + sent
+                + 2 * usize::from(flags & 8 != 0)
+                + usize::from(flags & 16 != 0)
+                + usize::from(flags & 64 != 0),
         "descriptor roles did not consume every original descriptor",
     )?;
     require(
@@ -197,6 +205,11 @@ fn fields(spec: &request::Spec, received: &request::Received, bytes: &[u8]) -> C
     require(
         spec.activity == (flags & 16 != 0).then_some(descriptor),
         "activity descriptor changed",
+    )?;
+    descriptor += i32::from(flags & 16 != 0);
+    require(
+        spec.owner_exit == (flags & 64 != 0).then_some(descriptor),
+        "owner exit descriptor changed",
     )
 }
 
