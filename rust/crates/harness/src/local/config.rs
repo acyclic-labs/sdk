@@ -66,6 +66,7 @@ impl WorkspaceMounting {
 /// Durable local composition with a required model binding.
 pub struct LocalHarnessConfig {
     pub(super) routing: Option<crate::agent::Routing>,
+    pub(super) peer_directory: Option<Arc<crate::hosting::PeerDirectory>>,
     pub(super) topology: Option<crate::topology::Topology>,
     pub(super) home_files: std::collections::BTreeMap<String, acyclic_stream::OwnedBytes>,
     pub(super) system_files: std::collections::BTreeMap<String, acyclic_stream::OwnedBytes>,
@@ -272,6 +273,7 @@ impl LocalHarnessConfig {
     fn configuration(workspace: PathBuf, model: Option<(Model, Arc<dyn ModelProvider>)>) -> Self {
         Self {
             routing: None,
+            peer_directory: None,
             topology: None,
             home_files: Default::default(),
             system_files: Default::default(),
@@ -560,6 +562,24 @@ impl LocalHarnessConfig {
     /// this configuration contains no credential or network location.
     #[must_use]
     pub fn routing(mut self, routing: crate::agent::Routing) -> Self {
+        self.routing = Some(routing);
+        self.peer_directory = None;
+        self
+    }
+
+    /// Bind this node and its account directory through the host's existing
+    /// authenticated provider. The host owns the accepted NodeLink and drives
+    /// its pumps; neither credentials nor connection state enter session rows.
+    #[must_use]
+    pub fn account_routing(
+        mut self,
+        routing: crate::agent::Routing,
+        account: Arc<dyn acyclic_stream::StreamProvider>,
+    ) -> Self {
+        self.peer_directory = Some(Arc::new(crate::hosting::PeerDirectory {
+            provider: account,
+            paths: routing.paths.clone(),
+        }));
         self.routing = Some(routing);
         self
     }

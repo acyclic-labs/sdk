@@ -15,6 +15,110 @@ use std::{path::Path, sync::Arc};
 
 mod workspace_files;
 
+#[tokio::test]
+async fn configured_account_directory_supplies_qualified_peers_and_preserves_opt_out() -> Result<()>
+{
+    use crate::agent::{SessionPhase, SessionProfile, SessionPublication, SessionRow};
+    use crate::client::{AgentPageRequest, SessionsScope};
+    use crate::local::sessions::{self, Filter};
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let account = Arc::new(acyclic_stream::MemoryStream::default());
+    let node = acyclic_actors::route::NodeId::new(b"local-node").map_err(agent)?;
+    let harness = Arc::new(
+        super::open_scripted(
+            volume_config(
+                directory.path(),
+                volume(directory.path()).await?,
+                super::scripted([]),
+            )?
+            .without_default_tools()
+            .account_routing(
+                crate::agent::Routing {
+                    paths: acyclic_actors::route::Paths::new(
+                        StreamPath::new("account/routing").map_err(agent)?,
+                    ),
+                    node: node.clone(),
+                },
+                account.clone(),
+            ),
+        )
+        .await?,
+    );
+    let client = harness.connect().await?;
+    let requester = harness
+        .bound()?
+        .agents()
+        .actor(client.root())
+        .map_err(agent)?;
+    let remote_id = crate::agent::AgentId::from_bytes([17; 16]);
+    let remote = acyclic_actors::addressing::ActorReference::new(
+        requester.account().as_bytes(),
+        b"remote-sessions",
+        remote_id.as_str().as_bytes(),
+    )
+    .map_err(agent)?;
+    let profile = SessionProfile {
+        phase: SessionPhase::Running,
+        title: "Account title".into(),
+        workspaces: Vec::new(),
+        goal_preview: "Shared public goal".into(),
+    };
+    let mut effects = Vec::new();
+    for actor in [requester, remote.clone()] {
+        effects.push(
+            SessionPublication {
+                actor,
+                row: SessionRow::new(node.clone(), profile.clone()),
+                intent: acyclic_stream::IdempotencyKey::new(b"directory-row".to_vec())
+                    .map_err(agent)?,
+            }
+            .effect()
+            .map_err(agent)?,
+        );
+    }
+    assert!(matches!(
+        account
+            .commit(acyclic_stream::CommitRequest {
+                deadline_unix_millis: None,
+                idempotency_key: acyclic_stream::IdempotencyKey::new(b"directory-cut".to_vec())
+                    .map_err(agent)?,
+                effects,
+            })
+            .await
+            .map_err(agent)?,
+        acyclic_stream::CommitOutcome::Committed(_)
+    ));
+    let peers = sessions::page_scoped(
+        &client,
+        AgentPageRequest::default(),
+        &Filter::default(),
+        SessionsScope::Peers,
+    )
+    .await?;
+    assert_eq!(peers.items.len(), 1);
+    assert!(peers.partial.is_none());
+    let peer = peers.items[0]
+        .peer
+        .as_ref()
+        .ok_or_else(|| Error::Invalid("qualified peer missing".into()))?;
+    assert_eq!(peer.actor().map_err(agent)?, remote);
+    assert_eq!(peer.profile, profile);
+    assert!(!peer.online);
+    sessions::set_peers(&client, "requester-off", false).await?;
+    // A stale enabled account row cannot override the user's local opt-out.
+    assert!(
+        sessions::page_scoped(
+            &client,
+            AgentPageRequest::default(),
+            &Filter::default(),
+            SessionsScope::Peers,
+        )
+        .await
+        .is_err()
+    );
+    Ok(())
+}
+
 /// The root conversation `harness` serves to its own in-process session.
 async fn conversation(harness: &Arc<LocalHarness>) -> Result<Arc<Conversation>> {
     Ok(Conversation::open(harness.connect().await?))

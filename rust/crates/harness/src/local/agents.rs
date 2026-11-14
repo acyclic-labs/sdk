@@ -59,6 +59,7 @@ impl Hosted {
 struct LocalUser {
     sessions: bool,
     harness: Weak<LocalHarness>,
+    peer_directory: Option<Arc<crate::hosting::PeerDirectory>>,
 }
 
 impl LocalUser {
@@ -70,6 +71,10 @@ impl LocalUser {
 }
 
 impl crate::hosting::Platform for LocalUser {
+    fn peer_directory(&self) -> Option<&crate::hosting::PeerDirectory> {
+        self.peer_directory.as_deref()
+    }
+
     fn compaction_disabled(&self) -> bool {
         self.harness().is_ok_and(|local| {
             matches!(
@@ -1050,6 +1055,7 @@ impl LocalHarness {
         let platform: Arc<dyn crate::hosting::Platform> = Arc::new(LocalUser {
             sessions: bound.admit_sessions().is_ok(),
             harness: Arc::downgrade(self),
+            peer_directory: self.peer_directory.clone(),
         });
         // A reopened root keeps the policy it was created with: the agent
         // model has no policy-update record, and replaying a creation with

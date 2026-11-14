@@ -758,6 +758,7 @@ impl Opening {
             mcp_diagnostics: self.diagnostics,
             goal_continuations: self.config.goal_continuations,
             routing: self.config.routing,
+            peer_directory: self.config.peer_directory,
             #[cfg(any(test, not(target_arch = "wasm32")))]
             workspace,
             told: std::sync::Mutex::default(),
