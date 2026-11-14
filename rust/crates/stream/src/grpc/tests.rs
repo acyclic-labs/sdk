@@ -955,3 +955,164 @@ proptest::proptest! {
         }
     }
 }
+
+#[cfg(feature = "serde")]
+#[tokio::test]
+async fn server_read_custody_settles_only_at_original_body_eof() -> TestResult {
+    use crate::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
+    use futures::TryStreamExt as _;
+    let provider = Arc::new(MemoryStream::default());
+    let path = StreamPath::new("server-custody/original")?;
+    provider
+        .append(AppendRequest {
+            path: path.clone(),
+            records: vec![
+                OwnedBytes::from_static(b"first").into(),
+                OwnedBytes::from_static(b"second").into(),
+            ],
+            if_tail: None,
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
+    let service = Service::new(provider);
+    let read = |from| {
+        Request::new(wire::ReadRequest {
+            path: path.to_string(),
+            from,
+            limit: 2,
+            ..Default::default()
+        })
+    };
+    let original = service
+        .read(read(0))
+        .await?
+        .into_inner()
+        .try_collect::<Vec<_>>()
+        .await?;
+    let trace = crate::Stream::new(
+        Arc::new(MemoryStream::default()),
+        "agents/grpc-server/trace",
+    )?;
+    assert!(matches!(trace.tail().await, Err(StreamError::NotFound)));
+    let recorder = Arc::new(Recorder::new(trace.clone(), [99; 16]));
+    let root = recorder
+        .start("owner", Mechanism::ToolCall, None, Some("original_request"))
+        .await?
+        .into_owned();
+    let parent = root.id();
+    let mut cancelled = root.within(service.read(read(0))).await?.into_inner();
+    let mut query = TraceQuery::new(
+        trace.follow(0, Default::default()).await?,
+        Default::default(),
+    );
+    loop {
+        if let Observation::Started { id, .. } =
+            query.next().await?.ok_or("missing retained read start")?
+        {
+            if id != parent {
+                let active = query
+                    .active()
+                    .find_map(|(key, span)| (*key == id).then_some(span))
+                    .ok_or("read settled at headers")?;
+                assert_eq!(active.name, "stream.grpc.serve.read");
+                assert_eq!(active.parent, Some(parent));
+                break;
+            }
+        }
+    }
+    let before = trace.tail().await?;
+    assert_eq!(
+        cancelled.next().await.transpose()?.as_ref(),
+        original.first()
+    );
+    assert_eq!(
+        trace.tail().await?,
+        before,
+        "headers or one frame falsely settled the body"
+    );
+    drop(cancelled);
+    let completed = root
+        .within(service.read(read(0)))
+        .await?
+        .into_inner()
+        .try_collect::<Vec<_>>()
+        .await?;
+    assert_eq!(
+        completed, original,
+        "observation changed original revision or record frames"
+    );
+    let empty = root
+        .within(service.read(read(2)))
+        .await?
+        .into_inner()
+        .try_collect::<Vec<_>>()
+        .await?;
+    assert_eq!(empty.len(), 1);
+    assert!(
+        empty
+            .first()
+            .is_some_and(|frame| frame.records.is_empty() && frame.applied.is_some())
+    );
+    assert!(
+        root.within(service.read(Request::new(wire::ReadRequest {
+            path: "server-custody/missing".into(),
+            limit: 2,
+            ..Default::default()
+        })))
+        .await
+        .is_err()
+    );
+    let tail = root
+        .within(service.tail(Request::new(wire::TailRequest {
+            path: path.to_string(),
+            ..Default::default()
+        })))
+        .await?
+        .into_inner();
+    assert_eq!(tail.tail, 2);
+    let _completion = root.finish_submitted(None, Outcome::Succeeded)?;
+    let mut terminals = 0;
+    let mut complete_reads = 0;
+    let mut incomplete_reads = 0;
+    let mut unary = 0;
+    while terminals < 6 {
+        if let Some(Observation::Completed {
+            id,
+            start,
+            bytes,
+            result,
+            ..
+        }) = query.next().await?
+        {
+            terminals += 1;
+            if id == parent {
+                assert_eq!(result, Outcome::Succeeded);
+                continue;
+            }
+            assert_eq!(start.parent, Some(parent));
+            assert_eq!(start.mechanism, Mechanism::ProviderCall);
+            assert_eq!(bytes, None);
+            if start.name == "stream.grpc.serve.read" {
+                assert_eq!(
+                    start.guarantee.as_deref(),
+                    Some("original_finite_read_cut_delivered_through_body_eof")
+                );
+                match result {
+                    Outcome::Succeeded => complete_reads += 1,
+                    Outcome::Unsettled => incomplete_reads += 1,
+                    _ => return Err("original read has an invented terminal cause".into()),
+                }
+            } else {
+                assert_eq!(start.name, "stream.grpc.serve.tail");
+                assert_eq!(
+                    start.guarantee.as_deref(),
+                    Some("original_provider_result_encoded_for_rpc")
+                );
+                assert_eq!(result, Outcome::Succeeded);
+                unary += 1;
+            }
+        }
+    }
+    assert_eq!((complete_reads, incomplete_reads, unary), (2, 2, 1));
+    Ok(())
+}

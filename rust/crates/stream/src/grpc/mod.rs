@@ -1,6 +1,6 @@
 //! Authenticated gRPC adapter for the canonical Stream provider contract.
 
-use std::{future::Future, pin::Pin, sync::Arc, task::Poll, time::Duration};
+use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
 pub use acyclic_auth::credential::{CredentialError, CredentialProvider};
 use async_trait::async_trait;
@@ -13,10 +13,8 @@ use tonic::{
     metadata::{Ascii, MetadataKey, MetadataMap, MetadataValue},
     transport::{Channel, Endpoint},
 };
-use tracing::field::Empty;
 
 use crate::StreamProviderExt as _;
-use crate::obs;
 use crate::wire_codec::{
     append_from_wire, append_outcome_from_wire, append_outcome_to_wire, commit_from_wire,
     commit_id, commit_to_wire, envelope_from_wire, envelope_to_wire, fork_receipt_to_wire,
@@ -615,55 +613,6 @@ fn io_interruption(error: &(dyn std::error::Error + 'static)) -> Option<bool> {
 }
 
 pub(crate) use crate::wire_codec::status;
-
-/// Records one operation's terminal result exactly once; dropping it unfinished records `cancelled`.
-struct Completion {
-    span: obs::OperationSpan,
-    finished: bool,
-}
-
-impl Completion {
-    fn new(span: tracing::Span) -> Self {
-        Self {
-            span: obs::OperationSpan::new(span),
-            finished: false,
-        }
-    }
-
-    fn finish(&mut self, kind: Option<&'static str>, code: Option<Code>) {
-        if std::mem::replace(&mut self.finished, true) {
-            return;
-        }
-        match kind {
-            Some(kind) => obs::failed(&self.span, kind),
-            None => {
-                self.span.record("outcome", "ok");
-            }
-        }
-        if let Some(code) = code {
-            self.span.record("rpc.code", code as u64);
-        }
-    }
-
-    fn ok(&mut self) {
-        self.finish(None, Some(Code::Ok));
-    }
-
-    fn status(&mut self, error: &Status) {
-        let kind = if error.code() == Code::Cancelled {
-            "cancelled"
-        } else {
-            crate::wire_codec::status::category(error).code()
-        };
-        self.finish(Some(kind), Some(error.code()));
-    }
-}
-
-impl Drop for Completion {
-    fn drop(&mut self) {
-        self.finish(Some("cancelled"), None);
-    }
-}
 
 /// Custody of the shared recording through semantic decoding. Dropping an
 /// undecoded response preserves its original Unsettled terminal.
