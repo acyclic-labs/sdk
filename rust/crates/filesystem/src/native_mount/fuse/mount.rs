@@ -19,6 +19,8 @@ mod reply_check;
 #[cfg(test)]
 mod tests;
 
+const KERNEL_UNMOUNT_ARGUMENTS: &[&str] = &["-i", "-c", "-f", "-l", "--"];
+
 // These controls are owned by the existing FuseSessionState lock. A received
 // device is published there before helper completion or the FUSE handshake.
 #[derive(Default)]
@@ -72,7 +74,7 @@ impl Mount {
         // still borrows it while waiting for a request's directory lock.
         self.arm_exit_action(
             c"/bin/umount",
-            &["-i", "-c", "-f", "-l", "--"],
+            KERNEL_UNMOUNT_ARGUMENTS,
             path,
             fence,
             work,
@@ -109,7 +111,7 @@ impl Mount {
             *device = Some(Device::InProcess(file));
             self.arm_exit_action(
                 c"/bin/umount",
-                &["-i", "-c", "-f", "-l", "--"],
+                KERNEL_UNMOUNT_ARGUMENTS,
                 path,
                 fence,
                 work,
@@ -136,7 +138,7 @@ impl Mount {
                 // Follow owner death before any kernel callback is admitted.
                 self.arm_exit_action(
                     c"/bin/umount",
-                    &["-i", "-c", "-f", "-l", "--"],
+                    KERNEL_UNMOUNT_ARGUMENTS,
                     path,
                     fence,
                     work,
