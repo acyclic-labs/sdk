@@ -9,15 +9,15 @@ use acyclic_auth::{
 use acyclic_stream::UnixMillisClock;
 use acyclic_stream::session::{Authority, AuthorityState, TrustSnapshot};
 
-/// A read-only observation of one agent or its hosted tree's streams,
-/// immutable diagnostic pages and tool output, under one credential.
+/// A read-only observation of an agent's admitted streams or file subtree,
+/// under one credential and its original trust lifetime.
 pub struct AgentObservation {
-    /// The `fs:/` resource of [`TOOL_OUTPUT`]; a turn's output is under
-    /// `{resource}/{turn}`.
+    /// Admitted `fs:/` root. Agent enrollment selects [`TOOL_OUTPUT`]; source
+    /// enrollment selects its independently verified directory.
     pub resource: String,
-    /// Sealed credential to follow the agent's inbox, conversation and status and to
-    /// list and read under `resource`, bound to the agent's audience; it lives
-    /// no longer than the agent's scope and is revoked with it.
+    /// Sealed credential for the enrolling method's selected observations,
+    /// bound to the agent's audience. It lives no longer than the original
+    /// scope and is revoked with it.
     pub credential: Vec<u8>,
     /// Session authority admitting `credential` under the agent's audience.
     pub authority: Arc<Authority>,
@@ -54,6 +54,95 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             None,
         )
         .await
+    }
+
+    /// Source-event enrollment observes one directory under the original
+    /// agent scope. It grants metadata listing alone, without actor invocation
+    /// or permission to read any additional file body.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn directory_observation(
+        &self,
+        authority: &AgentAuthority<'_>,
+        agent: &crate::agent::AgentPath,
+        volume: &VolumeRef,
+        prefix: &str,
+        clock: Arc<dyn UnixMillisClock>,
+    ) -> Result<AgentObservation> {
+        if authority.scope.agent() != Some(crate::AgentId::from_bytes(agent.id_bytes())) {
+            return Err(Error::Unauthorized(
+                "a directory observation derives from its original agent scope".into(),
+            ));
+        }
+        let issuer = authority
+            .issuer
+            .native()
+            .ok_or_else(|| Error::Invalid("source enrollment requires native custody".into()))?;
+        let resource = self
+            .observation_directory_resource(authority, volume, prefix)
+            .await?;
+        let (credential, principal) = issuer.resource_credential(
+            &authority.scope,
+            &[(&resource, true, &["fs/list"])],
+            issuer.audience_resource()?,
+            seconds(clock.as_ref()),
+        )?;
+        Ok(AgentObservation {
+            resource,
+            credential,
+            principal,
+            authority: Arc::new(session_authority(issuer, clock)?),
+        })
+    }
+
+    async fn observation_directory_resource(
+        &self,
+        authority: &AgentAuthority<'_>,
+        volume: &VolumeRef,
+        prefix: &str,
+    ) -> Result<String> {
+        ContentGrant::verify_directory_read(
+            &authority.verifier,
+            &authority.scope,
+            volume,
+            prefix,
+            &mut None,
+        )?;
+        let reference = super::bounded_io::content_workspace(&self.provider, volume, None)?;
+        let workspace = self.open(&reference, None).await?;
+        // Prove the complete subtree under a structured scope before deriving
+        // a resource credential. The derived grant cannot widen that scope.
+        if let Some(label) =
+            crate::core::filesystem_scope_label(authority.scope.capabilities(), &mut None)?
+        {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let io = PreparationIo::from_budget(
+                acyclic_fs::performance::BOUNDARY_BUDGET,
+                &cancellation,
+            )?;
+            let view = super::access::access_view(
+                &workspace,
+                &authority.scope,
+                None,
+                super::access::capability_payload(Some(label), VolumeOperation::Read, &io)?,
+                None,
+                &io,
+            )
+            .await?;
+            if !view.0.allows_subtree(
+                prefix,
+                &[
+                    acyclic_fs::access::Action::List,
+                    acyclic_fs::access::Action::Read,
+                ],
+                super::access::access_now()?,
+            ) {
+                return Err(Error::Unauthorized(
+                    "an observation needs list and read on its complete directory".into(),
+                ));
+            }
+        }
+        acyclic_fs::session::resource(workspace.id().volume_id(), prefix)
+            .map_err(|error| Error::Invalid(format!("directory observation resource: {error}")))
     }
 
     /// Host-authorized directory observation. Only a platform owning all roots
@@ -115,52 +204,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     "an observation derives from the agent's own scope".into(),
                 ));
             }
-            ContentGrant::verify_directory_read(
-                &authority.verifier,
-                &authority.scope,
-                volume,
-                TOOL_OUTPUT,
-                &mut None,
-            )?;
-            let reference = super::bounded_io::content_workspace(&self.provider, volume, None)?;
-            let workspace = self.open(&reference, None).await?;
-            // A structured filesystem scope is only enforced by its compiled
-            // view, so prove it before minting: the derived credential may never
-            // reach a path or action the parent cannot. The parent must list and
-            // read all of `tools/`; the rest of the volume does not matter.
-            if let Some(label) =
-                crate::core::filesystem_scope_label(authority.scope.capabilities(), &mut None)?
-            {
-                let cancellation = acyclic_fs::CancellationToken::new();
-                let io = PreparationIo::from_budget(
-                    acyclic_fs::performance::BOUNDARY_BUDGET,
-                    &cancellation,
-                )?;
-                let view = super::access::access_view(
-                    &workspace,
-                    &authority.scope,
-                    None,
-                    super::access::capability_payload(Some(label), VolumeOperation::Read, &io)?,
-                    None,
-                    &io,
-                )
+            let resource = self
+                .observation_directory_resource(authority, volume, TOOL_OUTPUT)
                 .await?;
-                if !view.0.allows_subtree(
-                    TOOL_OUTPUT,
-                    &[
-                        acyclic_fs::access::Action::List,
-                        acyclic_fs::access::Action::Read,
-                    ],
-                    super::access::access_now()?,
-                ) {
-                    return Err(Error::Unauthorized(
-                        "an observation needs list and read on all of the tool output".into(),
-                    ));
-                }
-            }
-            let resource =
-                acyclic_fs::session::resource(workspace.id().volume_id(), TOOL_OUTPUT)
-                    .map_err(|error| Error::Invalid(format!("tool output resource: {error}")))?;
             let stream = |path: std::result::Result<
                 acyclic_stream::StreamPath,
                 crate::agent::Error,

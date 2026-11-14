@@ -13,6 +13,108 @@ type Binding = Bound<MemoryStream, acyclic_fs::LogicalObjectStore<acyclic_object
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
+async fn source_file_sessions_project_only_the_admitted_directory() -> TestResult {
+    use acyclic_stream::{FollowFilter, StreamProviderExt as _, wire};
+    use futures::TryStreamExt as _;
+
+    let (bound, root) = binding().await?;
+    let state = bound.agents().state(&root).await?;
+    let private = state
+        .volumes
+        .iter()
+        .find(|entry| entry.role == crate::agent::WorkspaceRole::Private)
+        .ok_or("missing private binding")?
+        .volume()?;
+    let name = private.storage_name(&mut None)?;
+    let workspace = bound
+        .volumes
+        .filesystem
+        .open_workspace(&name, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
+    let config = workspace.volume_config();
+    let source =
+        acyclic_fs::session::changes_path(&bound.volumes.filesystem, workspace.id().volume_id())?;
+    let from = bound.agents().provider().tail(source.clone()).await?;
+    bound
+        .volumes
+        .apply(
+            &workspace_ref(private.provider().clone(), &name)?,
+            None,
+            &[
+                WorkspaceMutation::CreateDirectory {
+                    path: "/watched".into(),
+                },
+                WorkspaceMutation::CreateDirectory {
+                    path: "/outside".into(),
+                },
+                WorkspaceMutation::PutFile {
+                    path: "/watched/allowed".into(),
+                    bytes: b"selected".to_vec().into(),
+                },
+                WorkspaceMutation::PutFile {
+                    path: "/outside/secret".into(),
+                    bytes: b"unselected".to_vec().into(),
+                },
+            ],
+            &crate::IdempotencyKey::new("source-directory-publication")?,
+        )
+        .await?;
+    let end = bound.agents().provider().tail(source).await?;
+    let (client, resource) = bound
+        .turns()
+        .file_source_session(&state, private, "watched")
+        .await?;
+    let follow = |resource| wire::SessionFollow {
+        resource,
+        delivery: wire::SessionDelivery::All as i32,
+        until: Some(end),
+        ..Default::default()
+    };
+    let selected = acyclic_fs::kernel::NamespacePath::from_text_in_profile(
+        "/watched",
+        config.profile,
+        config.limits,
+    )?;
+    let mut records = client
+        .follow_data(follow(resource), from, FollowFilter::default())
+        .await?;
+    let mut seen = false;
+    while let Some(data) = records.try_next().await? {
+        let Some(wire::session_data::Item::Record(record)) = data.item else {
+            return Err("source file session returned another payload kind".into());
+        };
+        assert!(record.sequence >= from && record.sequence < end);
+        let changes = acyclic_stream::decode_changes(&record.value)?;
+        for entry in changes.entries {
+            let fact = acyclic_fs::PublicationEntry::from_parts(
+                &entry.key,
+                &entry.operation,
+                &entry.metadata,
+                config,
+            )?;
+            assert!(
+                fact.path.components().starts_with(selected.components()),
+                "a combined publication disclosed a path outside the admitted directory"
+            );
+            seen = true;
+        }
+    }
+    assert!(
+        seen,
+        "the selected directory's original publication was lost"
+    );
+    let outside = acyclic_fs::session::resource(workspace.id().volume_id(), "outside")?;
+    assert!(matches!(
+        client.follow_data(follow(outside), from, FollowFilter::default()).await,
+        Err(error) if error.category() == acyclic_stream::StreamError::AccessDenied
+    ));
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
 async fn source_streams_use_the_original_agent_observation_boundary() -> TestResult {
     use acyclic_stream::{AppendRequest, FollowRequest, IdempotencyKey, StreamProviderExt as _};
     use futures::TryStreamExt as _;

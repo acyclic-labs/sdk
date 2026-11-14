@@ -71,7 +71,7 @@ where
         &self,
         agent: &AgentState,
     ) -> Result<acyclic_stream::session::Client> {
-        let (journal, authority) = self.journal_authority(agent).await?;
+        let (journal, authority) = self.source_authority(agent).await?;
         let observation = self
             .host
             .agent_observation(
@@ -89,6 +89,51 @@ where
         );
         client.register_credential(1, observation.credential.into())?;
         Ok(client.select_credential(1))
+    }
+
+    /// Observe file publications through the filesystem's existing resource
+    /// projection and policy fence. The directory grant is checked before
+    /// enrollment; finite event reads retain the original source sequence.
+    pub(in crate::filesystem) async fn file_source_session(
+        &self,
+        agent: &AgentState,
+        volume: &VolumeRef,
+        prefix: &str,
+    ) -> Result<(acyclic_stream::session::Client, String)> {
+        let (_, authority) = self.source_authority(agent).await?;
+        let observation = self
+            .host
+            .directory_observation(
+                &authority,
+                &agent.path,
+                volume,
+                prefix,
+                Arc::new(super::super::hosting::ObservationClock(self.clock.clone())),
+            )
+            .await?;
+        let changes = acyclic_fs::session::ChangeProvider::new(
+            self.host.filesystem.clone(),
+            self.stream.clone(),
+        )?;
+        let client = acyclic_stream::session::Client::in_process_with_resources(
+            self.stream.clone(),
+            observation.authority,
+            Arc::new(changes),
+            Arc::new(acyclic_stream::runtime::PlatformExecutor),
+        );
+        client.register_credential(1, observation.credential.into())?;
+        Ok((client.select_credential(1), observation.resource))
+    }
+
+    async fn source_authority<'a>(
+        &'a self,
+        agent: &'a AgentState,
+    ) -> Result<(VolumeRef, AgentAuthority<'a>)> {
+        // Journal policy installation uses host custody. Its broader storage
+        // scope must never become the credential of an authored source hook.
+        let (journal, _) = self.journal_authority(agent).await?;
+        let authority = self.admit(agent)?.authority(&[], None).await?;
+        Ok((journal, authority))
     }
 
     async fn invocation_authority(
