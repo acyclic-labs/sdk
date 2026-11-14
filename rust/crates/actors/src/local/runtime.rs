@@ -2078,11 +2078,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         id: &str,
         path: &StreamPath,
         cursor: u64,
-        key: Option<bytes::Bytes>,
+        filter: Option<acyclic_stream::FollowFilter>,
     ) -> Result<bool, Error> {
         let mut request = acyclic_stream::FollowRequest::new(path.clone(), cursor);
-        if let Some(key) = key {
-            request.filter = acyclic_stream::FollowFilter::exact_key(key)?;
+        if let Some(filter) = filter {
+            request.filter = filter;
         }
         match self.store.provider().follow(request).await {
             Ok(follow) => {
@@ -2166,20 +2166,32 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         if subscription.paused {
             return Ok(None);
         }
-        let key = self.handler.subscription_key(id, state.checkpoint())?;
-        let records = self
-            .store
-            .provider()
-            .read(acyclic_stream::ReadRequest {
-                key: key
-                    .clone()
-                    .map(|key| acyclic_stream::ReadKeySeek::exact(key, u64::MAX)),
-                path: subscription.path.clone(),
-                from: subscription.cursor,
-                limit: 1,
-                at_least: Default::default(),
-            })
-            .await;
+        let filter = indexed_filter(self.handler.as_ref(), id, state.checkpoint())?;
+        let records = if let Some(filter) = &filter {
+            let mut request =
+                acyclic_stream::FollowRequest::new(subscription.path.clone(), subscription.cursor);
+            request.filter = filter.clone();
+            // The stream primitive clamps this finite follow to the opening
+            // tail. Selection is in source sequence order and emits each
+            // record once, regardless of the number/order of matching keys.
+            request.until = Some(u64::MAX);
+            self.store
+                .provider()
+                .follow(request)
+                .await
+                .map(acyclic_stream::records_only)
+        } else {
+            self.store
+                .provider()
+                .read(acyclic_stream::ReadRequest {
+                    key: None,
+                    path: subscription.path.clone(),
+                    from: subscription.cursor,
+                    limit: 1,
+                    at_least: Default::default(),
+                })
+                .await
+        };
         let mut records = match records {
             Ok(records) => records,
             Err(error) if error.category() == StreamError::NotFound => return Ok(None),
@@ -2189,16 +2201,24 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             return Ok(None);
         };
         if record.sequence < subscription.cursor
-            || (key.is_none() && record.sequence != subscription.cursor)
+            || (filter.is_none() && record.sequence != subscription.cursor)
         {
             return Err(Error::Invalid("subscription skipped a record"));
         }
-        let trigger = match key {
-            Some(key) => Trigger::KeyedRecord {
+        let trigger = match filter {
+            Some(filter) => Trigger::KeyedRecord {
                 subscription: id.to_owned(),
                 from: subscription.cursor,
                 sequence: record.sequence,
-                key,
+                key: record
+                    .headers
+                    .keys()
+                    .first()
+                    .filter(|_| filter.matches(&record.headers))
+                    .map(|key| bytes::Bytes::copy_from_slice(key))
+                    .ok_or(Error::Invalid(
+                        "indexed subscription returned an unselected record",
+                    ))?,
             },
             None => Trigger::Record {
                 subscription: id.to_owned(),
@@ -2207,6 +2227,18 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         };
         Ok(Some((trigger, record)))
     }
+}
+
+fn indexed_filter(
+    handler: &dyn Handler,
+    id: &str,
+    checkpoint: Option<&crate::guest::Checkpoint>,
+) -> Result<Option<acyclic_stream::FollowFilter>, Error> {
+    let filter = handler.subscription_filter(id, checkpoint)?;
+    if filter.as_ref().is_some_and(|filter| !filter.requires_key()) {
+        return Err(Error::Invalid("subscription filter requires an index key"));
+    }
+    Ok(filter)
 }
 
 /// Delivery and control settle the same retained request before changing its

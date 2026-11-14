@@ -144,12 +144,12 @@ impl Handler for FencedHandler {
         self.package.handler.ordered_subscriptions()
     }
 
-    fn subscription_key(
+    fn subscription_filter(
         &self,
         id: &str,
         checkpoint: Option<&Checkpoint>,
-    ) -> Result<Option<bytes::Bytes>, GuestError> {
-        self.package.handler.subscription_key(id, checkpoint)
+    ) -> Result<Option<acyclic_stream::FollowFilter>, GuestError> {
+        self.package.handler.subscription_filter(id, checkpoint)
     }
 
     fn revalidate_foreign_conflicts(&self, actor: &crate::addressing::ActorReference) -> bool {

@@ -41,6 +41,12 @@ impl FollowFilter {
         })
     }
 
+    /// Whether selection requires an authenticated record index key. Such a
+    /// selection cannot match an unkeyed record, including with attribute clauses.
+    pub fn requires_key(&self) -> bool {
+        self.ranges().is_some()
+    }
+
     fn clauses(&self) -> &[Clause] {
         self.0.as_deref().map_or(&[], Vec::as_slice)
     }

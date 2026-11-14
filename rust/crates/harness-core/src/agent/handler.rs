@@ -1014,11 +1014,11 @@ where
             .is_some_and(|companions| companions.revalidate_foreign_conflicts(actor))
     }
 
-    fn subscription_key(
+    fn subscription_filter(
         &self,
         id: &str,
         checkpoint: Option<&Checkpoint>,
-    ) -> Result<Option<bytes::Bytes>, GuestError> {
+    ) -> Result<Option<acyclic_stream::FollowFilter>, GuestError> {
         match &self.agents.companions {
             Some(companions)
                 if companions
@@ -1027,7 +1027,7 @@ where
                     .iter()
                     .any(|declared| declared == id) =>
             {
-                companions.subscription_key(id, checkpoint)
+                companions.subscription_filter(id, checkpoint)
             }
             _ => Ok(None),
         }

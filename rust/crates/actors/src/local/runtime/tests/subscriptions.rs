@@ -486,12 +486,15 @@ impl Handler for ApprovalPause {
     fn manifest(&self) -> &Manifest {
         self.0.manifest()
     }
-    fn subscription_key(
+    fn subscription_filter(
         &self,
         id: &str,
         _: Option<&Checkpoint>,
-    ) -> Result<Option<Bytes>, crate::guest::GuestError> {
-        Ok((self.3 && id == "source").then(|| Bytes::from_static(b"selected")))
+    ) -> Result<Option<acyclic_stream::FollowFilter>, crate::guest::GuestError> {
+        (self.3 && id == "source")
+            .then(|| acyclic_stream::FollowFilter::exact_key(Bytes::from_static(b"selected")))
+            .transpose()
+            .map_err(|error| crate::guest::GuestError::Decode(error.to_string()))
     }
     fn on_record<'a>(
         &'a self,
