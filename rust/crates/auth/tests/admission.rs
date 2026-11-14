@@ -1,6 +1,5 @@
 //! Trusted runtime admission receipts and adversarial historical replay.
-#[path = "common/signed.rs"]
-mod signed;
+use crate::signed;
 use acyclic_auth::{
     admission::RuntimeAdmission,
     authority::{self, PolicyDecision},

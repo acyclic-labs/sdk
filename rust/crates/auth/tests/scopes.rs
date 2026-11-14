@@ -1,6 +1,5 @@
 //! Deferred admission cannot replace exact record checks or current authority.
-#[path = "common/signed.rs"]
-mod signed;
+use crate::signed;
 use acyclic_auth::{
     authority::{PolicyDecision, Scope, Target},
     contract::{Attribute, Caveat, CaveatKind, Pin, PinValue, RecordAttributes},

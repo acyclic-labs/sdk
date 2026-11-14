@@ -3,12 +3,8 @@ use super::*;
 use crate::{authority::*, testing as signed};
 use acyclic_test_support::differential::observe;
 
-#[test]
-fn billed_owner_intersection_visits_each_grant_linearly() {
-    use ed25519_dalek::Signer;
-    use prost::Message;
-
-    let execution = |owner: String| Grant {
+fn execution(owner: String) -> Grant {
+    Grant {
         kind: GrantKind::Execution(ExecutionGrant {
             grant: ResourceGrant {
                 resource: ResourcePattern {
@@ -24,7 +20,14 @@ fn billed_owner_intersection_visits_each_grant_linearly() {
             max_concurrency: None,
             reserved_capacity_units: None,
         }),
-    };
+    }
+}
+
+#[test]
+fn billed_owner_intersection_visits_each_grant_linearly() {
+    use ed25519_dalek::Signer;
+    use prost::Message;
+
     let mut allowance = SignedAllowance {
         allowance: Allowance {
             account_id: "account".into(),

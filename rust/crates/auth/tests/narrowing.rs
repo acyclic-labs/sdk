@@ -1,7 +1,6 @@
 //! Appended blocks only narrow: typed grant values and allowance products;
 //! an allowance restricts each action by what the action catalog says it bills.
-#[path = "common/mod.rs"]
-mod common;
+use crate::signed::claims as common;
 use acyclic_auth::{authority::*, contract::*};
 use common::*;
 
