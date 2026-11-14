@@ -1116,6 +1116,7 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
         .stage(operation, "trace-content", b"raw", "text/plain", None)?
         .await?;
     assert_eq!(journal.load(&staged, None)?.await?.as_ref(), b"raw");
+    journal.verify_input_file(&staged, None)?.await?;
     assert_eq!(
         journal
             .load_range(
@@ -1180,15 +1181,24 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
                 "harness.private_stage" => (Some(3), "authenticated_private_publication"),
                 "harness.private_load" => (Some(3), "authenticated_immutable_content"),
                 "harness.private_load_range" => (Some(2), "authenticated_immutable_range"),
+                "harness.verify_input_file" => (None, "authenticated_original_input_file"),
                 _ => continue,
             };
             assert_eq!(start.parent, None);
+            assert_eq!(
+                start.mechanism,
+                match start.name.as_str() {
+                    "harness.private_stage" => acyclic_stream::trace::Mechanism::Commit,
+                    "harness.verify_input_file" => acyclic_stream::trace::Mechanism::AuthCheck,
+                    _ => acyclic_stream::trace::Mechanism::Io,
+                }
+            );
             assert_eq!(start.guarantee.as_deref(), Some(expected.1));
             assert_eq!(bytes, expected.0);
             assert_eq!(result, acyclic_stream::trace::Outcome::Succeeded);
             assert!(original.insert(start.name, ()).is_none());
         }
     }
-    assert_eq!(original.len(), 4);
+    assert_eq!(original.len(), 5);
     Ok(())
 }

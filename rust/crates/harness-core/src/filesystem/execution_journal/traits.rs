@@ -696,7 +696,16 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         crate::conversation::BoundedContentFuture::new(io, || {
-            self.verify_input_file_with_io(reference, io)
+            self.observe_request(
+                acyclic_stream::trace::Request {
+                    name: "harness.verify_input_file",
+                    mechanism: acyclic_stream::trace::Mechanism::AuthCheck,
+                    parent: None,
+                    guarantee: Some("authenticated_original_input_file"),
+                },
+                self.verify_input_file_with_io(reference, io),
+                |_| None,
+            )
         })
     }
 
