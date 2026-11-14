@@ -8,6 +8,49 @@ type Journal = FilesystemExecutionJournal<
     acyclic_fs::MemoryObjectBackend,
 >;
 
+#[test]
+fn journal_stream_boundary_retains_original_io_cause_and_classification()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    use std::error::Error as _;
+    let directory = tempfile::tempdir()?;
+    for (code, category) in [
+        (
+            crate::wire::ErrorCode::Invalid,
+            StreamError::InvalidResponse,
+        ),
+        (crate::wire::ErrorCode::Storage, StreamError::Unavailable),
+    ] {
+        let original = std::fs::read(directory.path().join("missing")).unwrap_err();
+        let retained = category.with_source(original);
+        let error = Journal::journal_read_stream_error(None, code, retained.clone());
+        assert_eq!(error.code(), code);
+        assert_eq!(error.uncertain(), code == crate::wire::ErrorCode::Storage);
+        assert_eq!(
+            error.leaves_effect_uncertain(),
+            code == crate::wire::ErrorCode::Storage
+        );
+        assert!(!error.is_native_failure());
+        let stream = error
+            .source()
+            .and_then(|source| source.downcast_ref::<StreamError>())
+            .ok_or("journal boundary discarded the original Stream error")?;
+        assert_eq!(
+            stream, &retained,
+            "journal boundary replaced source identity"
+        );
+        let mut source = stream.source();
+        loop {
+            let cause = source.ok_or("journal boundary discarded the original IO error")?;
+            if let Some(original) = cause.downcast_ref::<std::io::Error>() {
+                assert_eq!(original.kind(), std::io::ErrorKind::NotFound);
+                break;
+            }
+            source = cause.source();
+        }
+    }
+    Ok(())
+}
+
 async fn journal() -> Result<(Journal, AuthorityRoot)> {
     let provider = ProviderRef::new("replay".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;

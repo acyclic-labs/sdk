@@ -63,20 +63,17 @@ where
         source: StreamError,
     ) -> Error {
         #[cfg(not(target_arch = "wasm32"))]
-        if _native_io
+        let native = _native_io
             .and_then(PreparationIo::original_native_work)
-            .is_some()
-        {
-            return Error::NativeStream {
-                code,
-                source,
-                custody: None,
-            };
-        }
-        if code == crate::wire::ErrorCode::Invalid {
-            Error::Invalid(source.to_string())
-        } else {
-            Error::Storage(source.to_string())
+            .is_some();
+        #[cfg(target_arch = "wasm32")]
+        let native = false;
+        Error::StreamFailure {
+            code,
+            source,
+            native,
+            #[cfg(not(target_arch = "wasm32"))]
+            custody: None,
         }
     }
 
