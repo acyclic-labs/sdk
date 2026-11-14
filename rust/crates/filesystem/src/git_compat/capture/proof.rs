@@ -100,3 +100,18 @@ pub enum GitCaptureAuthenticationError<E: std::error::Error + 'static> {
     #[error(transparent)]
     Lineage(#[from] crate::WorkspaceLineageError<E>),
 }
+
+impl<E: std::error::Error + 'static> GitCaptureAuthenticationError<E> {
+    /// The same failure with its lineage store cause converted.
+    pub fn map_store<F: std::error::Error + 'static>(
+        self,
+        convert: impl FnOnce(E) -> F,
+    ) -> GitCaptureAuthenticationError<F> {
+        match self {
+            Self::Capture(error) => GitCaptureAuthenticationError::Capture(error),
+            Self::Lineage(error) => {
+                GitCaptureAuthenticationError::Lineage(error.map_store(convert))
+            }
+        }
+    }
+}

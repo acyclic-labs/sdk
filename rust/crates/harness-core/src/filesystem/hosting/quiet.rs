@@ -182,10 +182,10 @@ pub(super) fn create<P: AuthorityProvider + ?Sized>(
                     escrow: None,
                 },
             )
-            .map_err(|error| Error::Actor(Box::new(error)))?,
+            .map_err(|error| Error::Actor(Box::new(error.into_cause())))?,
         store
             .activation(&actor)
-            .map_err(|error| Error::Actor(Box::new(error)))?,
+            .map_err(|error| Error::Actor(Box::new(error.into_cause())))?,
     ])
 }
 
@@ -334,7 +334,7 @@ pub(super) async fn transition<P: AuthorityProvider + ?Sized>(
                 let observed = store
                     .load(&target)
                     .await
-                    .map_err(|error| Error::Actor(Box::new(error)))?;
+                    .map_err(|error| Error::Actor(Box::new(error.into_cause())))?;
                 let target_state = observed.state().ok_or(Error::NoSuchAgent)?;
                 let intent: IntentId = format!("quiet-{}-{deadline_ms}", state.call).try_into()?;
                 let key = crate::agent::intent_key(
@@ -348,12 +348,12 @@ pub(super) async fn transition<P: AuthorityProvider + ?Sized>(
                         state.action == Action::Pause,
                         key,
                     )
-                    .map_err(|error| Error::Actor(Box::new(error)))?;
+                    .map_err(|error| Error::Actor(Box::new(error.into_cause())))?;
                 effects.extend(
                     store
                         .export_prepared(prepared)
                         .await
-                        .map_err(|error| Error::Actor(Box::new(error)))?
+                        .map_err(|error| Error::Actor(Box::new(error.into_cause())))?
                         .effects,
                 );
                 if state.action == Action::Stop {

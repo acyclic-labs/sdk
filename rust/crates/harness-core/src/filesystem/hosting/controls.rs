@@ -297,7 +297,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                     .store
                     .load(&target)
                     .await
-                    .map_err(|error| Error::Actor(Box::new(error)))?;
+                    .map_err(|error| Error::Actor(Box::new(error.into_cause())))?;
                 let target_state = observed.state().ok_or(Error::NoSuchAgent)?;
                 let by = Sender::Host {
                     host: "harness".into(),
@@ -342,11 +342,11 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                     )?;
                     let prepared = store
                         .prepare_paused(&observed, target_state.epoch(), !stopping && paused, key)
-                        .map_err(|error| Error::Actor(Box::new(error)))?;
+                        .map_err(|error| Error::Actor(Box::new(error.into_cause())))?;
                     let request = store
                         .export_prepared(prepared)
                         .await
-                        .map_err(|error| Error::Actor(Box::new(error)))?;
+                        .map_err(|error| Error::Actor(Box::new(error.into_cause())))?;
                     effects.extend(request.effects);
                     if stopping {
                         effects.extend(crate::agent::archive(&state.agent, &by, &intent)?.effects);
@@ -439,7 +439,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                         effects.push(
                             self.store
                                 .activation(&target)
-                                .map_err(|error| Error::Actor(Box::new(error)))?,
+                                .map_err(|error| Error::Actor(Box::new(error.into_cause())))?,
                         );
                     }
                     Ok(Some(generation.clone()))
@@ -669,10 +669,10 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
                         escrow: None,
                     },
                 )
-                .map_err(|error| Error::Actor(Box::new(error)))?,
+                .map_err(|error| Error::Actor(Box::new(error.into_cause())))?,
             self.store
                 .activation(&actor)
-                .map_err(|error| Error::Actor(Box::new(error)))?,
+                .map_err(|error| Error::Actor(Box::new(error.into_cause())))?,
         ])
     }
 }
