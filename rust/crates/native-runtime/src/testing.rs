@@ -18,6 +18,13 @@
 //!   ([`Schedule::set_process_provider`]), never spawned.
 //! - **Boundaries**: each owned operation pauses at a [`Boundary`] the driver
 //!   releases, so a driver chooses interleavings at real submission points.
+//! - **Costs**: production marks each hot-path cost with
+//!   [`crate::cost::charge`] (round trips, fsyncs, journal hops and appends,
+//!   quorum reads, leader hops, locks, copies, auth checks); durable flushes
+//!   are charged at the fault sites. [`ledger::operation`] attributes them,
+//!   with simulated-time latency, to a named operation, and
+//!   [`Schedule::ledger`] returns exact per-operation counts that tests hold
+//!   to [`ledger::Budget`]s and compare with [`ledger::Ledger::diff`].
 //! - **Sweeps**: [`sweep::sweep`] runs one world per seed and reports the
 //!   first failing seed with `DST_SEED=<n>` to reproduce it
 //!   ([`sweep::seeds`]; `DST_SEEDS=<a>..<b>` for deep sweeps), and
@@ -44,13 +51,15 @@ mod executor;
 pub use executor::{AbortHandle, TaskHandle};
 mod durability;
 pub use durability::{
-    DurableFault, DurableWrite, InjectedStorageFault, durable_operation, durable_write,
+    DurableFault, DurableWrite, InjectedStorageFault, durable_flush, durable_operation,
+    durable_write,
 };
 pub(crate) mod host;
 pub(crate) use host::Pool as HostPool;
 pub use host::blocking_on;
 mod process;
 pub use process::{ProcessCapture, capture_process};
+pub mod ledger;
 mod metadata;
 pub mod snapshot;
 pub mod sweep;
@@ -138,6 +147,9 @@ struct Inner {
     state: Mutex<State>,
     entropy: Option<Arc<entropy::Source>>,
     executor: Option<Arc<executor::Executor>>,
+    // Its own lock: a call records when its last holder drops, which can be
+    // anywhere, including while `state` is held.
+    ledger: Arc<Mutex<ledger::Ledger>>,
 }
 
 impl Inner {
@@ -182,6 +194,8 @@ pub(crate) struct Context {
     // Never nested with the schedule-state lock; cloned before sends/callbacks.
     detail: Arc<Mutex<Arc<str>>>,
     host: Option<Arc<host::Host>>,
+    // The innermost open cost-ledger operation; spawned work inherits it.
+    operation: Option<Arc<ledger::Call>>,
 }
 
 pub(crate) struct Active(pub(crate) Context, bool);
@@ -224,6 +238,7 @@ impl Schedule {
         let inner = Arc::new(Inner {
             events,
             state: Mutex::new(State::default()),
+            ledger: Arc::default(),
             entropy: seed
                 .filter(|_| entropy)
                 .map(|seed| Arc::new(entropy::Source::new(seed))),
@@ -262,6 +277,7 @@ impl Schedule {
                 owned: false,
                 detail: Arc::new(Mutex::new(Arc::from(""))),
                 host: None,
+                operation: None,
             }),
             future,
         );
@@ -362,6 +378,8 @@ impl Context {
                 owned: true,
                 detail: Arc::new(Mutex::new(lock(&self.detail).clone())),
                 host: self.host.clone(),
+                // Work dispatched inside an operation is charged to it.
+                operation: self.operation.clone(),
             },
             native,
         )

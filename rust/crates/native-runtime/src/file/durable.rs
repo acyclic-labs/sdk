@@ -47,7 +47,7 @@ pub(crate) fn flush_cached_data(file: &File, state: &super::FlushState) -> io::R
 
 fn flush_data_with(run: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
     #[cfg(feature = "test-support")]
-    return testing::durable_operation("file:sync_data", run);
+    return testing::durable_flush("file:sync_data", run);
     #[cfg(not(feature = "test-support"))]
     run()
 }
@@ -55,7 +55,7 @@ fn flush_data_with(run: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
 /// Retains the caller's original data-and-metadata flush policy.
 pub fn flush_file_all(file: &File) -> io::Result<()> {
     #[cfg(feature = "test-support")]
-    return testing::durable_operation("file:sync_all", || flush_file_policy(file, false));
+    return testing::durable_flush("file:sync_all", || flush_file_policy(file, false));
     #[cfg(not(feature = "test-support"))]
     flush_file_policy(file, false)
 }
