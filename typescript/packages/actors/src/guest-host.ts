@@ -3,6 +3,7 @@ import { ActorReference } from "@acyclic-labs/auth/addressing";
 import { ActorActivation } from "./activation.js";
 import { GUEST_ABI_VERSION } from "./generated/guest.js";
 import { loadWasmModule } from "./client.js";
+import { openGuestResponse } from "./fetch-response.js";
 import type { ActorDefinition, ActorRuntime, Checkpoint, CodecIdentity, GuestContext, GuestFetchResponse, GuestEvent, GuestEventResult, GuestState } from "./generated/guest.js";
 
 const encoder = new TextEncoder();
@@ -48,6 +49,30 @@ function retryKey(deliveryId: string, effect: string): string {
 function checkpointCopy(value: Checkpoint): Checkpoint {
   if (!(value.bytes instanceof Uint8Array)) throw new TypeError("checkpoint bytes must be Uint8Array");
   return { codec: { ...value.codec }, bytes: new Uint8Array(value.bytes) };
+}
+
+type GuestWasm = Awaited<ReturnType<typeof loadWasmModule>>;
+type GuestDelivery = ReturnType<GuestWasm["decodeDelivery"]>;
+
+/** Read one complete fetch response into its canonical InvokeActorResponse. A
+ * reply is one committed value, so a response with trailers is refused rather
+ * than silently losing them. */
+async function invokeResponse(wasm: GuestWasm, response: GuestFetchResponse, signal?: AbortSignal): Promise<Uint8Array> {
+  const opened = openGuestResponse(response, signal);
+  try {
+    const chunks: Uint8Array[] = [];
+    for await (const frame of opened.frames) {
+      if ("data" in frame) chunks.push(frame.data);
+      else if ([...frame.trailers].length !== 0) throw new Error("an invocation reply cannot carry trailers");
+    }
+    const body = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.length, 0));
+    chunks.reduce((offset, chunk) => { body.set(chunk, offset); return offset + chunk.length; }, 0);
+    const headers = [...opened.headers];
+    return wasm.encodeInvokeResponse(opened.status, headers.map(([name]) => name), headers.map(([, value]) => value), body);
+  } catch (error) {
+    opened.close();
+    throw error;
+  }
 }
 
 /** One lazy activation of the SDK's typed guest hooks, on local or hosted JavaScript.
@@ -107,7 +132,11 @@ export class GuestActivation<State, Bindings> {
    */
   async onRecord(bytes: Uint8Array, signal?: AbortSignal): Promise<Uint8Array> {
     const wasm = await loadWasmModule();
-    const { actor, trigger, nowUnixMs, checkpoint } = wasm.decodeDelivery(bytes);
+    return this.deliver(wasm, wasm.decodeDelivery(bytes), signal);
+  }
+  /** {@link onRecord} over a delivery the caller already decoded with `wasm`. */
+  async deliver(wasm: GuestWasm, delivery: GuestDelivery, signal?: AbortSignal): Promise<Uint8Array> {
+    const { actor, trigger, nowUnixMs, checkpoint } = delivery;
     if (this.#reference === null || !this.#reference.equals(ActorReference.decode(actor)))
       throw new Error("delivery actor differs from activation");
     if (this.#basis === undefined || !sameCheckpoint(this.#basis, checkpoint))
@@ -124,13 +153,25 @@ export class GuestActivation<State, Bindings> {
         value: btoa(Array.from(trigger.record.value, byte => String.fromCharCode(byte)).join("")),
         commitId: Array.from(trigger.record.commitId, byte => byte.toString(16).padStart(2, "0")).join(""),
       };
-      const result = await this.event(event, {
+      const context: GuestContext<Bindings> = {
         ...this.#context, deliveryId, admittedIdentity: null, clock: () => nowUnixMs,
         retryKey: effect => retryKey(deliveryId, effect),
-      });
-      if (result !== null && result.type !== "reply") throw new Error("socket result outside a socket delivery");
+      };
+      let reply: Uint8Array | null;
+      if (trigger.type === "record" && trigger.invocation !== null) {
+        // An InvokeActor input is the definition's fetch; its reply is the
+        // canonical InvokeActorResponse the front door returns to the caller.
+        const { method, url, headers, body } = trigger.invocation;
+        const request = new Request(url, { method, headers: headers.map(([name, value]) => [name, value]),
+          body: method === "GET" || method === "HEAD" ? undefined : body, signal });
+        reply = await invokeResponse(wasm, await this.fetch(request, context), signal);
+      } else {
+        const result = await this.event(event, context);
+        if (result !== null && result.type !== "reply") throw new Error("socket result outside a socket delivery");
+        reply = result?.payload ?? null;
+      }
       const next = await this.checkpoint();
-      const encoded = wasm.encodeTransition(next.codec.name, next.codec.version, next.bytes, result?.payload ?? null);
+      const encoded = wasm.encodeTransition(next.codec.name, next.codec.version, next.bytes, reply);
       signal?.throwIfAborted();
       this.#basis = next;
       return encoded;
@@ -143,4 +184,48 @@ export class GuestActivation<State, Bindings> {
   }
   /** Original host authority/cancellation permanently discards this heap. */
   fence(): void { this.#activation.fence(); }
+}
+
+/** Deployment facts a namespace package's manifest states. The host admitted
+ * them with the deployment; the definition supplies only its codec. */
+export interface DefinitionDeployment {
+  /** Admitted code SHA-256 of this artifact. */
+  readonly code: Uint8Array;
+  /** Declared subscription ids; each actor binds its own path when created. */
+  readonly subscriptions: readonly string[];
+  readonly limits?: { readonly handlerTimeoutMillis?: bigint; readonly memoryBytes?: bigint; readonly checkpointBytes?: bigint };
+}
+
+/** The SDK Handler ABI a host core runs, for a whole namespace of one public
+ * ActorDefinition. Each delivery restores its actor from the checkpoint the
+ * delivery carries, so no actor's state or activation outlives its delivery
+ * and a host retry needs no heap-side reconciliation. */
+export function definitionHandler<State, Bindings>(definition: ActorDefinition<State, Bindings>,
+  deployment: DefinitionDeployment, env: Bindings): {
+  manifest(): Promise<Uint8Array>;
+  onRecord(bytes: Uint8Array, signal?: AbortSignal): Promise<Uint8Array>;
+} {
+  if (definition.abiVersion !== GUEST_ABI_VERSION) throw new Error("unsupported guest ABI");
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  return {
+    async manifest() {
+      const wasm = await loadWasmModule();
+      const { identity } = definition.codec;
+      const { limits } = deployment;
+      return wasm.encodeManifest(Uint8Array.from(deployment.code), identity.name, identity.version,
+        [...deployment.subscriptions], limits?.handlerTimeoutMillis, limits?.memoryBytes, limits?.checkpointBytes);
+    },
+    async onRecord(bytes, signal) {
+      const wasm = await loadWasmModule();
+      const delivery = wasm.decodeDelivery(bytes);
+      const actor = ActorReference.decode(delivery.actor);
+      const context: GuestContext<Bindings> = {
+        env, clock: () => delivery.nowUnixMs, deliveryId: null, admittedIdentity: null,
+        actor: { id: decoder.decode(actor.id), account: Array.from(actor.account),
+          namespace: decoder.decode(actor.namespace), class: null },
+        retryKey() { throw Object.assign(new Error("missing delivery identity"), { type: "missingIdentity" as const }); },
+      };
+      return new GuestActivation(definition, delivery.checkpoint, context).deliver(wasm, delivery, signal);
+    },
+  };
 }
