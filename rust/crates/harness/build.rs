@@ -9,10 +9,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         serde_json::from_slice(include_bytes!("src/client/commands.json"))?;
     let mut names = name_index::NameIndex::default();
     for command in commands {
-        let name = command["name"]
-            .as_str()
+        let name = command
+            .get("name")
+            .and_then(serde_json::Value::as_str)
             .ok_or("built-in command name must be a string")?;
-        let aliases = command["aliases"].as_array().into_iter().flatten();
+        let aliases = command
+            .get("aliases")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten();
         for label in std::iter::once(Ok(name)).chain(aliases.map(|alias| {
             alias
                 .as_str()

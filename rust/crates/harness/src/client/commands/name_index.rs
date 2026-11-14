@@ -26,22 +26,30 @@ impl NameIndex {
         let mut node = 0;
         for byte in name.bytes().map(|byte| byte.to_ascii_lowercase()) {
             step();
-            node = match self.nodes[node].edges.get(&byte) {
-                Some(&next) => next,
-                None => {
-                    let next = self.nodes.len();
-                    self.nodes.push(Node::default());
-                    self.nodes[node].edges.insert(byte, next);
-                    next
-                }
+            let current = self.nodes.get(node).ok_or("command index node absent")?;
+            node = if let Some(&next) = current.edges.get(&byte) {
+                next
+            } else {
+                let next = self.nodes.len();
+                self.nodes.push(Node::default());
+                self.nodes
+                    .get_mut(node)
+                    .ok_or("command index node absent")?
+                    .edges
+                    .insert(byte, next);
+                next
             };
         }
-        if let Some(owner) = &self.nodes[node].canonical {
+        let current = self
+            .nodes
+            .get_mut(node)
+            .ok_or("command index node absent")?;
+        if let Some(owner) = &current.canonical {
             return Err(format!(
                 "duplicate command or alias {name:?}: already registered by {owner:?}"
             ));
         }
-        self.nodes[node].canonical = Some(canonical.into());
+        current.canonical = Some(canonical.into());
         Ok(())
     }
 
@@ -49,9 +57,9 @@ impl NameIndex {
         let mut node = 0;
         for byte in name.bytes().map(|byte| byte.to_ascii_lowercase()) {
             step();
-            node = *self.nodes[node].edges.get(&byte)?;
+            node = *self.nodes.get(node)?.edges.get(&byte)?;
         }
-        self.nodes[node].canonical.as_deref()
+        self.nodes.get(node)?.canonical.as_deref()
     }
 }
 
