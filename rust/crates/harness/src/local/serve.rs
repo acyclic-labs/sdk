@@ -19,7 +19,7 @@ impl Composition for LocalHarnessConfig {
         verifier: &Arc<dyn Verifier>,
     ) -> BoxProviderFuture<'static, Result<Hosted<LocalStream, LocalObjectBackend, Self::Owner>>>
     {
-        let config = self.served(Arc::clone(verifier));
+        let config = self.admitted(Arc::clone(verifier));
         Box::pin(async move {
             let local = Arc::new(LocalHarness::open(config).await?);
             local.agents().await?;

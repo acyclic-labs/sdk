@@ -375,10 +375,9 @@ where
         Self::new(authority, admission, placement, turns)
     }
 
-    /// [`Self::admitted`] over the host's own composed `volumes`, as
-    /// [`Self::local_host`] is to [`Self::local_root`]: a self-hosted
-    /// endpoint serves its harness's agents to its verified caller exactly as
-    /// a managed host does. `configure` sets the host's turn options.
+    /// [`Self::admitted`] over the host's own composed `volumes`. Embedded and
+    /// served agents share this constructor; only caller verification differs.
+    /// `configure` sets the host's turn options.
     ///
     /// # Errors
     /// As [`Self::admitted`].
@@ -415,31 +414,6 @@ where
         turns: Turns,
     ) -> Result<Self, Error> {
         Self::new(issuer.into(), TurnAdmission::LocalRoot, placement, turns)
-    }
-
-    /// The self-host enrollment over the host's own composed `volumes`, as
-    /// [`Self::local_root`]: the local harness, whose volumes carry its native
-    /// state, serves through the same binding. `configure` sets the host's
-    /// turn options (approval models, goals, system prompt).
-    ///
-    /// # Errors
-    /// As [`Self::admitted`].
-    pub fn local_host(
-        issuer: AuthorityRoot,
-        volumes: Arc<FilesystemHost<StreamAuthorityStore<P>, O>>,
-        within: ActorReference,
-        turns: Turns,
-        cuts: Option<Arc<dyn super::VolumeResources>>,
-        configure: impl FnOnce(Turner<P, O>) -> Turner<P, O>,
-    ) -> Result<Self, Error> {
-        Self::on(
-            issuer.into(),
-            TurnAdmission::LocalRoot,
-            volumes,
-            within,
-            (turns, cuts),
-            configure,
-        )
     }
 
     fn new(

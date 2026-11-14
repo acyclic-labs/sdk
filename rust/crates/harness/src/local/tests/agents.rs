@@ -1765,7 +1765,7 @@ async fn a_shell_call_stages_its_output_on_the_journal_volume() -> Result<()> {
         crate::test_support::ScriptedTurn::Text("done".into()),
     ]);
     let mut config = super::checkout_config(directory.path(), (super::model()?, provider.clone()))?;
-    config.served = Some(admission.clone());
+    config.admission = admission.clone();
     let harness = Arc::new(super::open_scripted(config).await?);
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
