@@ -4,12 +4,10 @@ use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage, MessageDescriptor};
 
 fn pool() -> Result<&'static DescriptorPool, Error> {
-    static POOL: std::sync::OnceLock<Result<DescriptorPool, Error>> = std::sync::OnceLock::new();
-    POOL.get_or_init(|| {
-        DescriptorPool::decode(FILE_DESCRIPTOR_SET).map_err(|_| wire::ErrorCode::Unavailable.into())
-    })
-    .as_ref()
-    .map_err(Clone::clone)
+    static POOL: std::sync::OnceLock<Option<DescriptorPool>> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| DescriptorPool::decode(FILE_DESCRIPTOR_SET).ok())
+        .as_ref()
+        .ok_or_else(|| wire::ErrorCode::Unavailable.into())
 }
 /// Encodes generated binary wire bytes through the canonical descriptor JSON mapping.
 pub fn encode_binary(name: &str, bytes: &[u8], maximum: Option<usize>) -> Result<Vec<u8>, Error> {
