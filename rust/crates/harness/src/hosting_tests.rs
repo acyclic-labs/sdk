@@ -308,7 +308,11 @@ fn serving_reply_codec_preserves_invalid_refusals_and_complete_large_results() -
         return Err("valid large binding reply was refused".into());
     };
     let (decoded_binding, tools) = acyclic_harness_client::AgentBinding::from_reply(&decoded)?;
-    assert_eq!(decoded_binding.binding_bytes(), binding.encode_to_vec());
+    let routed = decoded_binding.routed(&binding.url, &bind_call.invocation().body)?;
+    let mut decoded_route = wire::InvokeActorRequest::decode(routed)?;
+    decoded_route.body.clear();
+    decoded_route.invocation_order = None;
+    assert_eq!(decoded_route, binding);
     let Ok(AgentReply::Bound {
         tools: expected, ..
     }) = &large

@@ -45,7 +45,7 @@ async fn directory_byte_credit_resumes_exact_prefixes_and_rechecks_authority() -
         .map(|name| crate::client_files::ClientFileChange {
             path: format!("ui/{name}"),
             expected: None,
-            text: "original".into(),
+            text: Some("original".into()),
         })
         .collect();
     server
@@ -124,7 +124,7 @@ async fn directory_byte_credit_resumes_exact_prefixes_and_rechecks_authority() -
                     &[crate::client_files::ClientFileChange {
                         path: "ui/later".into(),
                         expected: None,
-                        text: "outside the cut".into(),
+                        text: Some("outside the cut".into()),
                     }],
                 )
                 .await?;

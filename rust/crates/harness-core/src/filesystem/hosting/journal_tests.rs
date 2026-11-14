@@ -104,7 +104,7 @@ async fn admitted_readers_bind_evaluation_directories_and_reopen_original_privat
             &[ClientFileChange {
                 path: "ui/title".into(),
                 expected: None,
-                text: "original authored title".into(),
+                text: Some("original authored title".into()),
             }],
         )
         .await?;
@@ -135,7 +135,7 @@ async fn admitted_readers_bind_evaluation_directories_and_reopen_original_privat
             &[ClientFileChange {
                 path: "ui/title".into(),
                 expected: None,
-                text: "later authored title".into(),
+                text: Some("later authored title".into()),
             }],
         )
         .await?;
@@ -181,7 +181,7 @@ async fn partial_private_pages_resume_the_original_cut_without_skipping_retained
     let files = ["a", "b", "c"].map(|name| ClientFileChange {
         path: format!("ui/{name}"),
         expected: None,
-        text: format!("original {name}"),
+        text: Some(format!("original {name}")),
     });
     bound
         .publish_agent_files(&root, OperationId::new(), &files)
@@ -211,7 +211,7 @@ async fn partial_private_pages_resume_the_original_cut_without_skipping_retained
             &[ClientFileChange {
                 path: "ui/later".into(),
                 expected: None,
-                text: "outside the selected cut".into(),
+                text: Some("outside the selected cut".into()),
             }],
         )
         .await?;
