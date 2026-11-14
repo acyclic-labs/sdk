@@ -1148,14 +1148,16 @@ mod tests {
 
     #[test]
     fn client_cannot_assert_a_principal() {
-        let command = br#"{"kind":"cancel","agent":"harness/agents/00000000000000000000000000000001","id":"cancel-1","principal":"administrator"}"#;
+        let admitted = br#"{"kind":"cancel","input":0,"conversation":0,"agent":"harness/agents/00000000000000000000000000000001","id":"cancel-1"}"#;
+        assert!(PreparedCommand::decode(admitted).is_ok());
+        let command = br#"{"kind":"cancel","input":0,"conversation":0,"agent":"harness/agents/00000000000000000000000000000001","id":"cancel-1","principal":"administrator"}"#;
         assert!(PreparedCommand::decode(command).is_err());
     }
 
     #[test]
     fn admitted_encoded_body_is_not_reconstructed() -> Result<(), Box<dyn std::error::Error>> {
         let original = concat!(
-            "{ \"kind\" : \"cancel\", ",
+            "{ \"kind\" : \"cancel\", \"input\" : 0, \"conversation\" : 0, ",
             "\"agent\" : \"harness/agents/00000000000000000000000000000001\", ",
             "\"id\" : \"cancel-1\" }"
         )
