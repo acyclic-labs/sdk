@@ -1,7 +1,7 @@
 //! Original completion requests retire on acknowledgement or caller loss.
 use super::*;
 
-pub(super) type Completion = tokio::sync::oneshot::Sender<Result<(), Arc<Error>>>;
+pub(super) type Completion = tokio::sync::oneshot::Sender<Result<(), Arc<Cause>>>;
 
 struct Pending(Completion);
 
@@ -45,7 +45,7 @@ impl Completions {
         }
     }
 
-    pub(super) fn finish(&mut self, failure: Option<&Arc<Error>>) {
+    pub(super) fn finish(&mut self, failure: Option<&Arc<Cause>>) {
         if let Some(pending) = self.0.take() {
             for Pending(completion) in pending {
                 let result = failure.map_or(Ok(()), |error| Err(Arc::clone(error)));

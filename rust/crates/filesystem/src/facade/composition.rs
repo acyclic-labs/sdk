@@ -269,7 +269,9 @@ where
                     .contribute_cas(change, guard.commit(), &mut authority)
                     .await;
                 finish_authority_work(authority)?;
-                if !contributed.map_err(|error| WorkspaceError::GitCompat(Box::new(error)))? {
+                if !contributed
+                    .map_err(|error| WorkspaceError::GitCompat(Box::new(error.into_cause())))?
+                {
                     return Err(WorkspaceError::StaleGeneration);
                 }
             }

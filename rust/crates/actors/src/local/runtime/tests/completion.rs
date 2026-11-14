@@ -268,8 +268,12 @@ async fn completion_joins_discovery_delivery_and_producer_lifetime() -> TestResu
     let source = std::error::Error::source(&refused)
         .ok_or("completion discarded its original actor failure")?;
     let original = source
-        .downcast_ref::<Error>()
-        .or_else(|| source.downcast_ref::<Arc<Error>>().map(Arc::as_ref))
+        .downcast_ref::<crate::local::Cause>()
+        .or_else(|| {
+            source
+                .downcast_ref::<Arc<crate::local::Cause>>()
+                .map(Arc::as_ref)
+        })
         .ok_or("completion replaced its typed actor failure")?;
     assert!(matches!(original, Error::Handler(_)));
     if let Error::CompletionFailed(retained) = &refused {

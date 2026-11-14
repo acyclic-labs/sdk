@@ -4,11 +4,11 @@ import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { assertByteSnapshotBoundary as check, checkByteSnapshotBoundary } from "./wasm-source-policy.mjs";
 import { packageClosure, workspaceManifests } from "./package-closure.mjs";
+import { wasmPackages } from "./wasm-selections.mjs";
 
 const source = readFileSync("scripts/build-wasm-groups.mjs", "utf8").replace(/^import .*;\r?\n/, "");
 const build = readFileSync("scripts/build-wasm.mjs", "utf8");
-const inventory = build.slice(build.indexOf("const packages = {"), build.indexOf("const [packageArgument"));
-const names = [...inventory.matchAll(/^  ([a-z]+): \{/gm)].map(match => match[1]);
+const names = Object.keys(wasmPackages);
 
 test("every standalone project compilation prepares its complete WASM closure", () => {
   const packages = workspaceManifests(process.cwd());
@@ -65,13 +65,19 @@ test("every standalone project compilation prepares its complete WASM closure", 
 
 test("standalone package WASM targets follow references while groups keep exclusive targets", () => {
   const selection = build.slice(build.indexOf("const grouped ="), build.indexOf("if (!grouped)"));
+  // A fixed reference graph: the live graph's closure is the first test's
+  // subject, so this one checks only how the build selects from a closure.
+  const graph = {
+    filesystem: ["core", "auth", "filesystem"],
+    workers: ["core", "auth", "actors", "objects", "workers"],
+  };
   const targets = (name, grouped) => Array.from(runInNewContext(`${selection}\ntargets`, {
-    packageArgument: name, packageClosure, root: process.cwd(),
+    packageArgument: name, packageClosure: (_root, selected) => new Set(graph[selected]), root: process.cwd(),
     packages: Object.fromEntries(names.map(name => [name, {}])),
     process: { env: grouped ? { ACYCLIC_WASM_GROUPS_PREPARED: "1" } : {} },
   }));
-  assert.deepEqual(targets("filesystem", false), ["auth", "actors", "filesystem"]);
-  assert.deepEqual(targets("harness", false), ["auth", "actors", "machines", "objects", "harness"]);
+  assert.deepEqual(targets("filesystem", false), ["auth", "filesystem"]);
+  assert.deepEqual(targets("manifest", false), ["auth", "actors", "objects", "manifest"]);
   for (const name of names) assert.deepEqual(targets(name, true), [name]);
 });
 

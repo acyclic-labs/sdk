@@ -929,5 +929,5 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
 }
 
 fn actor_error(error: acyclic_actors::local::Error) -> Error {
-    Error::Actor(Box::new(error))
+    Error::Actor(Box::new(error.into_cause()))
 }
