@@ -467,6 +467,16 @@ where
     }
 
     fn command_resource(&self, command: &AgentCommand) -> String {
+        // Append-message authority belongs to the sending session. Naming a
+        // peer as recipient never acquires control over its session directory.
+        let authority_agent = match command {
+            AgentCommand::PreparePeer { sender, .. }
+            | AgentCommand::Prompt {
+                peer: Some((sender, _)),
+                ..
+            } => Some(sender),
+            _ => command.agent(),
+        };
         if matches!(
             command,
             AgentCommand::Sessions {
@@ -486,13 +496,7 @@ where
                 | AgentCommand::SelectSession { .. }
                 | AgentCommand::LatestSession {}
         ) || matches!(command, AgentCommand::MergeSession { agent, .. } if agent.parent().is_none())
-            || matches!(command,
-                AgentCommand::PreparePeer { sender, .. }
-                | AgentCommand::Prompt { peer: Some((sender, _)), .. }
-                if !self.root.contains(sender))
-            || command
-                .agent()
-                .is_some_and(|agent| !self.root.contains(agent))
+            || authority_agent.is_some_and(|agent| !self.root.contains(agent))
         {
             self.session_resource()
         } else {
@@ -848,7 +852,6 @@ where
                 Ok(AgentReply::Root { agent })
             }
             AgentCommand::PreparePeer { agent, sender } => {
-                let agent = self.within_tree(agent)?;
                 let sender = self.within_tree(sender)?;
                 let state = agents.state(sender).await?;
                 let Some(profile) = state.profile else {
@@ -1122,8 +1125,19 @@ where
                 body,
                 peer: Some((source, admission)),
             } => {
-                let agent = self.within_tree(agent)?;
+                let agent = if admission.is_none() {
+                    self.within_tree(agent)?
+                } else {
+                    agent
+                };
                 let source = self.within_tree(source)?;
+                if admission.is_some()
+                    && (source.depth() != 0 || agent.depth() != 0 || source == agent)
+                {
+                    return Err(Error::Record(
+                        "peer messages require distinct root sessions",
+                    ));
+                }
                 if admission.is_none()
                     && (source.depth() != 0 || source == agent || !source.contains(agent))
                 {

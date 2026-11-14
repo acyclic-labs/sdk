@@ -134,7 +134,8 @@ async fn authenticated_peer_delivery_pins_attribution_opt_out_and_exact_retry() 
         ));
     }
     assert_eq!(stream.tail(recipient.inbox()?).await?, 1);
-    // A sender's tree credential must not silently acquire directory access.
+    // A sender's tree credential admits its own attributed peer input without
+    // acquiring control over either the directory or the recipient session.
     client.register_credential(0, credential(server.resource()))?;
     assert!(!matches!(
         call(
@@ -148,15 +149,39 @@ async fn authenticated_peer_delivery_pins_attribution_opt_out_and_exact_retry() 
         .await,
         Ok(Ok(_))
     ));
-    assert!(!matches!(
-        call(&client, "agents", &command).await,
-        Ok(Ok(_))
+    assert!(matches!(
+        call(&client, "agents", &prepare).await??,
+        AgentReply::PeerAdmission { admission: Some(_) }
     ));
-    assert_eq!(stream.tail(recipient.inbox()?).await?, 1);
-    client.register_credential(
-        0,
-        credentials(&[server.resource(), &server.session_resource()]),
-    )?;
+    for forbidden in [
+        AgentCommand::Prompt {
+            agent: recipient.clone(),
+            id: IntentId::try_from("foreign-user-input")?,
+            body: ModelContent::Text("Unattributed input".into()),
+            peer: None,
+        },
+        AgentCommand::Archive {
+            agent: recipient.clone(),
+            id: IntentId::try_from("foreign-archive")?,
+        },
+        AgentCommand::SetPeerMembership {
+            agent: recipient.clone(),
+            id: IntentId::try_from("foreign-opt-out")?,
+            enabled: false,
+        },
+        AgentCommand::AgentFiles {
+            agent: recipient.clone(),
+            paths: vec!["ui/title".into()],
+            after: None,
+        },
+    ] {
+        assert!(!matches!(
+            call(&client, "agents", &forbidden).await,
+            Ok(Ok(_))
+        ));
+    }
+    // Independent directory serving is not needed by the append-only path.
+    owner.sessions.store(false, Ordering::SeqCst);
     let first = call(&client, "agents", &command).await??;
     let after_local_work = stream.head(outbox.clone()).await?;
     assert_eq!(

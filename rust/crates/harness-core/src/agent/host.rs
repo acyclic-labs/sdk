@@ -780,6 +780,9 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         message: &super::Message,
         admission: &super::PeerAdmission,
     ) -> Result<Delivered, Error> {
+        if from.depth() != 0 || to.depth() != 0 {
+            return Err(Error::Record("peer messages require root sessions"));
+        }
         let sender = Sender::Agent { path: from.clone() };
         if message.from != sender {
             return Err(Error::Record(
