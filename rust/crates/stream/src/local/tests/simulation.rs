@@ -24,7 +24,6 @@ fn append(path: &str, tail: usize, value: Vec<u8>) -> Result<AppendRequest> {
 async fn records(provider: &LocalStream, path: &str) -> Result<Vec<Vec<u8>>> {
     let mut stream = provider
         .read(ReadRequest {
-            key: None,
             path: StreamPath::new(path)?,
             from: 0,
             limit: u32::MAX,
