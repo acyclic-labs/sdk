@@ -260,6 +260,27 @@ mod uncertain_tests {
 
     #[test]
     fn store_uncertainty_survives_every_wrapper() {
+        use std::error::Error as _;
+        for category in StreamError::ALL {
+            let error = crate::Error::from(
+                category
+                    .clone()
+                    .with_source("invalid".parse::<u64>().unwrap_err()),
+            );
+            assert_eq!(error.code(), crate::wire::ErrorCode::Storage);
+            assert_eq!(error.uncertain(), category.uncertain());
+            assert_eq!(error.leaves_outcome_uncertain(), category.uncertain());
+            let mut source = error.source();
+            let mut original = false;
+            while let Some(cause) = source {
+                original |= cause.downcast_ref::<std::num::ParseIntError>().is_some();
+                source = cause.source();
+            }
+            assert!(
+                original,
+                "harness conversion discarded the original typed cause"
+            );
+        }
         for undecided in [StreamError::Unavailable, StreamError::DeadlineElapsed] {
             assert!(Error::Stream(undecided.clone()).uncertain());
             assert!(Error::Turn(Box::new(crate::Error::from(undecided.clone()))).uncertain());

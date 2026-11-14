@@ -78,7 +78,7 @@ impl LocalStream {
                         if !replay && let Err(error) = before().await {
                             return Ok(Err(error));
                         }
-                        let visibility = stream.inner.visibility.write().await;
+                        let visibility = stream.inner.visibility_write().await;
                         if let (Some(cut), Some(reads)) = (cut, &reads) {
                             let drift = match provider.guard_cut(&request, reads).await {
                                 Ok(now) if now == cut => None,
@@ -91,7 +91,7 @@ impl LocalStream {
                                     .map(|result| result.map_err(E::from));
                             }
                         }
-                        let publication = stream.inner.publication.write().await;
+                        let publication = stream.inner.publication_write().await;
                         let mut result = async {
                             stream.check_available()?;
                             let command = if accepted {

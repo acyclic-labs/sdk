@@ -68,7 +68,7 @@ impl LocalStream {
         self.check_available()?;
         let mut failed = self.inner.failed.subscribe();
         let installation = std::pin::pin!(async {
-            let _visibility = self.inner.visibility.write().await;
+            let _visibility = self.inner.visibility_write().await;
             self.check_available()?;
             if self.inner.persistence_cut.get().is_some() {
                 return Err(StreamError::AlreadyExists);
