@@ -428,6 +428,42 @@ async fn finite_drain_shares_admission_and_retains_cancelled_inputs() -> TestRes
                 .available_permits(),
             active
         );
+
+        // Closed runtime credit is permanent; retrying cannot reopen it. The
+        // original acquisition error settles availability without consuming input.
+        let address = spawn_with(&store, "closed-admission", &[b"emit"]).await?;
+        runtime.host(address.clone())?;
+        let failed = runtime.unavailable(&address)?;
+        runtime.admission[0]
+            .as_ref()
+            .expect("reserved work credit")
+            .close();
+        let error = runtime
+            .drain_actor(&address)
+            .await
+            .expect_err("closed credit admitted work");
+        assert!(matches!(error, Error::AdmissionClosed(_)));
+        assert!(!error.retryable());
+        assert!(
+            std::error::Error::source(&error)
+                .and_then(|source| source.downcast_ref::<tokio::sync::AcquireError>())
+                .is_some()
+        );
+        assert!(
+            failed
+                .await
+                .to_string()
+                .contains("runtime admission is closed")
+        );
+        assert_eq!(
+            store
+                .load(&address)
+                .await?
+                .state()
+                .and_then(|state| state.cursor("inbox")),
+            Some(0),
+            "closed admission consumed retained input"
+        );
     }
     Ok(())
 }
