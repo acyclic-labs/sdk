@@ -245,7 +245,7 @@ impl History {
 
     pub fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<Reply, String>> {
         loop {
-            let Some(next) = self.pending.front() else {
+            let Some(next) = self.pending.pop_front() else {
                 return Poll::Pending;
             };
             let selected = if next.previous {
@@ -256,7 +256,6 @@ impl History {
                     .and_then(|cursor| (0..cursor).rev().find(|index| self.matches(*index)))
             };
             if selected.is_some() || !next.previous || self.ended {
-                let next = self.pending.pop_front().expect("selected request");
                 let before = self.cursor;
                 let text = match selected {
                     Some(index) => {
@@ -280,27 +279,22 @@ impl History {
                     before,
                 }));
             }
+            self.pending.push_front(next);
             if let Some(error) = &self.failure {
                 self.pending.clear();
                 return Poll::Ready(Err(error.clone()));
             }
-            if self.loading.is_none() {
+            let loading = self.loading.get_or_insert_with(|| {
                 let source = self.source.take();
                 let conversation = Arc::clone(&self.conversation);
-                self.loading = Some(Box::pin(async move {
+                Box::pin(async move {
                     let mut source = source
                         .unwrap_or_else(|| PromptHistory::new(conversation.connection().clone()));
                     let text = source.next().await?;
                     Ok((source, text))
-                }));
-            }
-            match self
-                .loading
-                .as_mut()
-                .expect("query started")
-                .as_mut()
-                .poll(cx)
-            {
+                })
+            });
+            match loading.as_mut().poll(cx) {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(result) => {
                     self.loading = None;
