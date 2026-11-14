@@ -808,11 +808,20 @@ async fn selected_subscription_failures_retain_resource_and_original_cause()
         let expected = if resource_only {
             client.session.clear()?;
             let resource = "fs:/tools/output".to_owned();
-            let mut request = subscription(&conversation, Default::default(), 1, false);
-            let Some(wire::session_subscription::Kind::Follow(follow)) = &mut request.kind else {
-                return Err("missing resource follow".into());
+            // Filesystem resources own their cursors and do not support the
+            // conversation stream's wait-for-creation option.
+            let request = wire::SessionSubscription {
+                credential: 1,
+                resume: Some(Default::default()),
+                kind: Some(wire::session_subscription::Kind::Follow(
+                    wire::SessionFollow {
+                        resource: resource.clone(),
+                        delivery: wire::SessionDelivery::All as i32,
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
             };
-            follow.resource = resource.clone();
             client.open_resource(request)?;
             vec![resource]
         } else {
