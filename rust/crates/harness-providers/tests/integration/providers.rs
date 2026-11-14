@@ -1,3 +1,6 @@
+#[path = "../../src/fixtures/output.rs"]
+mod output;
+
 use super::{
     TestResult, local_workspace, matchers,
     provider_case::ProviderCase,
@@ -86,7 +89,7 @@ pub(super) async fn parsed(case: &ProviderCase, transport: Arc<Recorded>) -> Tes
             step: u32::try_from(step)?,
             request_digest: request.request_digest(),
         };
-        let events: Vec<_> = super::provider_output::without_request_traces(
+        let events: Vec<_> = output::without_request_traces(
             provider.generate(&request, dispatch),
             |event| event,
         )
