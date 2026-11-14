@@ -1,0 +1,15 @@
+[package]
+name = "acyclic-test-runner"
+description = "Runs each libtest case in its own process under a time limit, for Bazel test actions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+wait-timeout = "0.2.1"
+
+[lints]
+workspace = true

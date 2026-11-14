@@ -1596,6 +1596,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-test-runner"
+version = "0.2.0"
+dependencies = [
+ "wait-timeout",
+]
+
+[[package]]
 name = "acyclic-test-support"
 version = "0.2.0"
 dependencies = [

@@ -1,0 +1,14 @@
+module(name = "acyclic_sdk")
+
+bazel_dep(name = "rules_rust", version = "0.75.0")
+bazel_dep(name = "toolchains_llvm", version = "1.13.0")
+
+# Pinned C/C++ toolchain for build scripts, -sys crates and linking.
+llvm = use_extension("@toolchains_llvm//toolchain/extensions:llvm.bzl", "llvm")
+llvm.toolchain(llvm_version = "22.1.8")
+use_repo(llvm, "llvm_toolchain")
+
+register_toolchains("@llvm_toolchain//:all")
+
+# The Rust toolchain, rustc flags and crate universe, generated from the Cargo configuration.
+include("//:cargo.MODULE.bazel")

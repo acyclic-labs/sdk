@@ -5,7 +5,6 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-publish.workspace = true
 description = "Caller-funded bounded collections shared by Acyclic primitives"
 
 [dev-dependencies]

@@ -1,0 +1,5 @@
+ignore_directories([
+    "**/node_modules",
+    "target",
+    "target-*",
+])
