@@ -83,6 +83,29 @@ fn actor_call_chunks_preserve_order_total_and_finite_fragment_work() {
         actor_call_sequence(0, &[], &data).is_err(),
         "small nonterminal fragments must not amplify work"
     );
+    for after in [
+        None,
+        Some(wire::SessionCursor {
+            next: 1,
+            opaque: Bytes::new(),
+        }),
+        Some(wire::SessionCursor {
+            next: 1,
+            opaque: 0_u64.to_le_bytes().to_vec().into(),
+        }),
+    ] {
+        data.after = after;
+        let error = actor_call_total(&data).expect_err("invalid original reply cursor accepted");
+        assert_eq!(error.category(), StreamError::InvalidResponse);
+        let mut cause = std::error::Error::source(&error);
+        let mut original = false;
+        while let Some(source) = cause {
+            original |=
+                source.is::<ReplyCursorFailure>() || source.is::<std::array::TryFromSliceError>();
+            cause = source.source();
+        }
+        assert!(original, "reply cursor discarded its original parser cause");
+    }
 }
 
 fn round_trip(frame: &wire::SessionFrame) -> Result<wire::SessionFrame, prost::DecodeError> {

@@ -70,16 +70,26 @@ pub fn actor_call_total(data: &wire::SessionData) -> Result<usize, StreamError> 
     let opaque = &data
         .after
         .as_ref()
-        .ok_or(StreamError::InvalidResponse)?
+        .ok_or_else(|| StreamError::InvalidResponse.with_source(ReplyCursorFailure::Missing))?
         .opaque;
     let bytes: [u8; 8] = opaque
         .as_ref()
         .try_into()
-        .map_err(|_| StreamError::InvalidResponse)?;
-    usize::try_from(u64::from_le_bytes(bytes))
-        .ok()
-        .filter(|total| *total > 0)
-        .ok_or(StreamError::InvalidResponse)
+        .map_err(|source| StreamError::InvalidResponse.with_source(source))?;
+    let total = usize::try_from(u64::from_le_bytes(bytes))
+        .map_err(|source| StreamError::InvalidResponse.with_source(source))?;
+    if total == 0 {
+        return Err(StreamError::InvalidResponse.with_source(ReplyCursorFailure::Empty));
+    }
+    Ok(total)
+}
+
+#[derive(Debug, thiserror::Error)]
+enum ReplyCursorFailure {
+    #[error("original finite reply has no cursor")]
+    Missing,
+    #[error("original finite reply advertises an empty total")]
+    Empty,
 }
 
 /// Admit one ordered, bounded fragment without returning credit or advancing

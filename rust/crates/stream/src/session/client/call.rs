@@ -170,7 +170,8 @@ impl Client {
             )
             .await?;
         let page = wire_codec::children_page_from_response(
-            wire::ChildrenPageResponse::decode(reply).map_err(|_| StreamError::InvalidResponse)?,
+            wire::ChildrenPageResponse::decode(reply)
+                .map_err(|source| StreamError::InvalidResponse.with_source(source))?,
         )?;
         page.validate_for(&request)?;
         Ok(page)
@@ -194,7 +195,8 @@ impl Client {
             )
             .await?;
         let view = wire_codec::heads_from_response(
-            wire::HeadsResponse::decode(reply).map_err(|_| StreamError::InvalidResponse)?,
+            wire::HeadsResponse::decode(reply)
+                .map_err(|source| StreamError::InvalidResponse.with_source(source))?,
         )?;
         view.validate_for(&request)?;
         self.revisions.observe(&view.snapshot);
