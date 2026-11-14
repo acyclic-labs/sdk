@@ -262,15 +262,7 @@ fn start_inner(
         std::env::vars_os().collect()
     };
     let environment = environment(command, &inherited);
-    // Which standard streams the owner has open, decided before this
-    // function allocates a descriptor that could take a closed one's number.
-    // The custody directory was opened by the caller, so its number is
-    // excluded too.
-    let open_streams = [0, 1, 2].map(|fd: RawFd| {
-        // SAFETY: F_GETFD only reads this process's descriptor flags.
-        Some(fd) != directory.map(|file| file.as_raw_fd())
-            && unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0
-    });
+    let open_streams = open_standard_streams(directory);
     let (reply, reply_end) = pipe()?;
     let report = command.boundary.as_ref().map(|_| pipe()).transpose()?;
     // Granted launches reuse this original descriptor role for the held cwd.
@@ -366,6 +358,16 @@ fn start_inner(
     admitted_child(&replied, ours, report, activity.is_none())
 }
 
+// Determine inherited standard streams before allocating any new descriptors.
+// The caller's custody directory may itself occupy a closed standard slot.
+fn open_standard_streams(directory: Option<&File>) -> [bool; 3] {
+    [0, 1, 2].map(|fd: RawFd| {
+        // SAFETY: F_GETFD reads descriptor flags without dereferencing memory or
+        // changing descriptor ownership; a closed descriptor simply returns -1.
+        Some(fd) != directory.map(AsRawFd::as_raw_fd)
+            && unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0
+    })
+}
 #[cfg(feature = "test-support")]
 fn capture_request(command: &ProcessCommand, count: usize, message: &[u8]) -> io::Result<()> {
     if command.env.clear

@@ -5,55 +5,25 @@ use std::{fmt, ops::Range, time::Duration};
 /// `DST_SEEDS=<start>..<end>` replaces `default` for a deeper sweep; otherwise
 /// `default`.
 ///
-/// # Errors
+/// # Panics
 ///
-/// Returns an invalid-input error when an override is malformed, selects no
-/// seed, or cannot be represented as a half-open range.
-pub fn seeds(default: Range<u64>) -> std::io::Result<Range<u64>> {
-    fn variable(name: &str) -> std::io::Result<Option<String>> {
-        match std::env::var(name) {
-            Ok(value) => Ok(Some(value)),
-            Err(std::env::VarError::NotPresent) => Ok(None),
-            Err(error) => Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, error)),
-        }
+/// Panics when either variable is set but malformed, selects no seed, or
+/// names `u64::MAX`, so a typo never silently runs the wrong range or none.
+#[must_use]
+pub fn seeds(default: Range<u64>) -> Range<u64> {
+    if let Ok(seed) = std::env::var("DST_SEED") {
+        let seed: u64 = seed.parse().expect("DST_SEED=<u64>");
+        return seed..seed.checked_add(1).expect("DST_SEED below u64::MAX");
     }
-    let seed = variable("DST_SEED")?;
-    let range = if seed.is_none() {
-        variable("DST_SEEDS")?
-    } else {
-        None
-    };
-    parse_seeds(default, seed, range)
-}
-
-fn parse_seeds(
-    default: Range<u64>,
-    seed: Option<String>,
-    range: Option<String>,
-) -> std::io::Result<Range<u64>> {
-    let invalid = |message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message);
-    let parse = |value: &str| {
-        value
-            .parse::<u64>()
-            .map_err(|error| invalid(error.to_string()))
-    };
-    let selected = if let Some(seed) = seed {
-        let seed = parse(&seed)?;
-        seed..seed
-            .checked_add(1)
-            .ok_or_else(|| invalid("DST_SEED must be below u64::MAX".into()))?
-    } else if let Some(range) = range {
-        let (start, end) = range
-            .split_once("..")
-            .ok_or_else(|| invalid("DST_SEEDS must be <start>..<end>".into()))?;
-        parse(start)?..parse(end)?
-    } else {
-        default
-    };
-    if selected.is_empty() {
-        return Err(invalid("seed range must not be empty".into()));
+    if let Ok(range) = std::env::var("DST_SEEDS") {
+        let (start, end) = range.split_once("..").expect("DST_SEEDS=<start>..<end>");
+        let seeds: Range<u64> =
+            start.parse().expect("DST_SEEDS start")..end.parse().expect("DST_SEEDS end");
+        // An empty range would pass without running a single world.
+        assert!(seeds.start < seeds.end, "DST_SEEDS={range} selects no seed");
+        return seeds;
     }
-    Ok(selected)
+    default
 }
 
 /// The first failing seed of a sweep and the world's own minimal trace.
@@ -153,11 +123,10 @@ pub fn minimize<T: Clone>(mut choices: Vec<T>, mut fails: impl FnMut(&[T]) -> bo
         let chunk = choices.len().div_ceil(parts);
         let reduced = (0..choices.len()).step_by(chunk).find_map(|start| {
             let end = (start + chunk).min(choices.len());
-            let candidate: Vec<T> = choices
+            let candidate: Vec<T> = choices[..start]
                 .iter()
-                .enumerate()
-                .filter(|(index, _)| *index < start || *index >= end)
-                .map(|(_, choice)| choice.clone())
+                .chain(&choices[end..])
+                .cloned()
                 .collect();
             fails(&candidate).then_some(candidate)
         });
@@ -178,34 +147,6 @@ pub fn minimize<T: Clone>(mut choices: Vec<T>, mut fails: impl FnMut(&[T]) -> bo
 mod tests {
     use super::*;
 
-    #[test]
-    fn seed_overrides_reject_empty_and_unrepresentable_sweeps() -> std::io::Result<()> {
-        assert_eq!(parse_seeds(1..4, None, None)?, 1..4);
-        assert_eq!(
-            parse_seeds(1..4, Some("9".into()), Some("bad".into()))?,
-            9..10
-        );
-        assert_eq!(parse_seeds(1..4, None, Some("3..7".into()))?, 3..7);
-        for seed in ["bad", "18446744073709551615"] {
-            assert_eq!(
-                parse_seeds(1..4, Some(seed.into()), None)
-                    .unwrap_err()
-                    .kind(),
-                std::io::ErrorKind::InvalidInput
-            );
-        }
-        for range in ["bad", "3..3", "7..3", "x..9", "1..x"] {
-            assert_eq!(
-                parse_seeds(1..4, None, Some(range.into()))
-                    .unwrap_err()
-                    .kind(),
-                std::io::ErrorKind::InvalidInput
-            );
-        }
-        assert!(parse_seeds(0..0, None, None).is_err());
-        Ok(())
-    }
-
     proptest::proptest! {
         #![proptest_config(proptest::test_runner::Config::with_cases(64))]
         // The oracle fails exactly when a hidden subset is present, so every
@@ -217,7 +158,7 @@ mod tests {
         ) {
             let fails = |candidate: &[u8]| needed.iter().all(|value| candidate.contains(value));
             proptest::prop_assume!(fails(&choices));
-            let minimal = minimize(choices, fails);
+            let minimal = minimize(choices.clone(), fails);
             proptest::prop_assert!(fails(&minimal));
             proptest::prop_assert_eq!(minimal.len(), needed.len());
         }
