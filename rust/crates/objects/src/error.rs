@@ -16,6 +16,8 @@ pub(crate) const OWNED: &[&str] = &[REVISION, MINIMUM_REVISION];
 pub struct Error {
     /// Public semantic category, suitable for programmatic handling.
     pub code: wire::ErrorCode,
+    /// Original shared stream or framing failure, retained without reclassification.
+    pub source: Option<acyclic_stream::StreamError>,
     /// Original local stop, when the caller's operation budget ended. Neither
     /// cancellation nor expiry proves that a remote mutation did not commit.
     pub stopped: Option<acyclic_auth::operation::Stopped>,
@@ -106,6 +108,7 @@ impl Error {
     pub fn caused(code: wire::ErrorCode, cause: acyclic_auth::refusal::Cause) -> Self {
         Self {
             code,
+            source: None,
             stopped: None,
             refusal: Some(acyclic_auth::refusal::Refusal::caused(cause)),
         }
@@ -117,6 +120,7 @@ impl Error {
         let code = wire::ErrorCode::try_from(detail.code).ok()?;
         (code != wire::ErrorCode::Unspecified).then(|| Self {
             code,
+            source: None,
             stopped: None,
             refusal: acyclic_auth::refusal::Cause::reported(
                 detail.component,
@@ -143,6 +147,9 @@ impl std::fmt::Display for Error {
 }
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if let Some(source) = &self.source {
+            return Some(source);
+        }
         match &self.stopped {
             Some(stopped) => Some(stopped),
             None => self
@@ -155,6 +162,7 @@ impl From<wire::ErrorCode> for Error {
     fn from(code: wire::ErrorCode) -> Self {
         Self {
             code,
+            source: None,
             stopped: None,
             refusal: None,
         }
@@ -167,6 +175,7 @@ impl From<acyclic_auth::operation::Stopped> for Error {
                 acyclic_auth::operation::Stopped::Deadline => wire::ErrorCode::DeadlineElapsed,
                 acyclic_auth::operation::Stopped::Cancelled => wire::ErrorCode::OutcomeUnknown,
             },
+            source: None,
             stopped: Some(stopped),
             refusal: None,
         }

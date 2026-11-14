@@ -287,7 +287,11 @@ pub fn session_frames(bytes: &[u8]) {
     for grpc in [false, true] {
         let whole = framed(bytes, grpc, bytes.len().max(1));
         for chunk in [1, 2, 5, 10, 127] {
-            assert_eq!(framed(bytes, grpc, chunk), whole);
+            match (framed(bytes, grpc, chunk), &whole) {
+                (Ok(frames), Ok(expected)) => assert_eq!(&frames, expected),
+                (Err(error), Err(expected)) => assert_eq!(error.category(), expected.category()),
+                _ => panic!("session framing outcome changed with transport chunking"),
+            }
         }
     }
 }
@@ -1457,5 +1461,12 @@ fn historical_invocations_are_typed_format_refusals() {
             Invocation::decode(&malformed),
             Err(GuestError::UnsupportedFormat)
         );
+    }
+}
+
+#[test]
+fn session_framing_failures_are_independent_of_cause_identity() {
+    for bytes in [&[0x80][..], &[0x80, 0][..], &[1][..], &[2, 0, 0, 0, 0][..]] {
+        session_frames(bytes);
     }
 }
