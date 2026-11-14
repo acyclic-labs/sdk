@@ -139,16 +139,12 @@ async fn dependent_resources_keep_original_call_grants_and_live_trust() -> TestR
         ),
         Err(StreamError::AccessDenied)
     );
-    assert_eq!(
-        dependency.authorize(
-            "fs:/volume/visible/file",
-            &[],
-            &attributes,
-            PolicyDecision::Deny,
-        ),
-        Err(StreamError::AccessDenied),
-        "dependent disclosure ignored the owner's current policy"
-    );
+    crate::session::authority::tests::assert_verifier_denial(dependency.authorize(
+        "fs:/volume/visible/file",
+        &[],
+        &attributes,
+        PolicyDecision::Deny,
+    ));
     #[cfg(feature = "test-support")]
     for path in [
         b"".as_slice(),
@@ -215,16 +211,12 @@ async fn dependent_resources_keep_original_call_grants_and_live_trust() -> TestR
         },
         "fs/list",
     )?;
-    assert_eq!(
-        listed.authorize(
-            "fs:/volume/visible",
-            &[],
-            &attributes,
-            PolicyDecision::Allow
-        ),
-        Err(StreamError::AccessDenied),
-        "dependent action was replaced by the host's broader authority"
-    );
+    crate::session::authority::tests::assert_verifier_denial(listed.authorize(
+        "fs:/volume/visible",
+        &[],
+        &attributes,
+        PolicyDecision::Allow,
+    ));
     // A second admitted call is an ordered protocol barrier after renewal.
     // The first provider is still suspended on its original result event.
     let previous = dependency.current()?;
@@ -269,16 +261,12 @@ async fn dependent_resources_keep_original_call_grants_and_live_trust() -> TestR
     let mut revoked = core::pin::pin!(revoked);
     let (_authorization, _producer) = calls.recv().await.ok_or("third call did not dispatch")?;
     state.publish(acyclic_auth::testing::Snapshot::default(), u64::MAX);
-    assert_eq!(
-        dependency.authorize(
-            "fs:/volume/visible/file",
-            &[],
-            &attributes,
-            PolicyDecision::Allow,
-        ),
-        Err(StreamError::AccessDenied),
-        "dependent disclosure used a stale trust snapshot"
-    );
+    crate::session::authority::tests::assert_verifier_denial(dependency.authorize(
+        "fs:/volume/visible/file",
+        &[],
+        &attributes,
+        PolicyDecision::Allow,
+    ));
     assert_reply_failure(revoked.next().await, StreamError::AccessDenied);
     Ok(())
 }
