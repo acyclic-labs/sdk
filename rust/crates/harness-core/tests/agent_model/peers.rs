@@ -47,6 +47,7 @@ async fn membership_epochs_close_atomically_and_cannot_be_revived() -> Result {
         Ok(request)
     };
     let held = guarded(original, "held")?;
+    let unchanged_interval = guarded(original, "unchanged-interval")?;
     submit(
         &provider,
         set_peer_membership(&provider, &recipient, &user(), &intent("same-on"), true).await?,
@@ -59,6 +60,11 @@ async fn membership_epochs_close_atomically_and_cannot_be_revived() -> Result {
         .ok_or("membership missing")?;
     assert_eq!(PeerMembership::decode(&same.value)?.epoch, Some(epoch));
     assert_eq!(provider.tail(recipient.peer_epoch(&epoch)?).await?, 1);
+    assert!(
+        matches!(provider.commit(unchanged_interval).await?,
+        CommitOutcome::Committed(receipt) if receipt.skipped.is_empty()),
+        "a duplicate opt-in must not invalidate an already prepared send"
+    );
 
     submit(
         &provider,
@@ -82,7 +88,7 @@ async fn membership_epochs_close_atomically_and_cannot_be_revived() -> Result {
     );
     let refused = provider.commit(held.clone()).await?;
     assert!(matches!(&refused, CommitOutcome::Committed(receipt) if receipt.skipped == [0]));
-    assert_eq!(provider.tail(recipient.inbox()?).await?, 1);
+    assert_eq!(provider.tail(recipient.inbox()?).await?, 2);
 
     submit(
         &provider,
@@ -119,7 +125,7 @@ async fn membership_epochs_close_atomically_and_cannot_be_revived() -> Result {
         matches!(provider.commit(guarded(renewed, "current-epoch")?).await?,
         CommitOutcome::Committed(receipt) if receipt.skipped.is_empty())
     );
-    assert_eq!(provider.tail(recipient.inbox()?).await?, 2);
+    assert_eq!(provider.tail(recipient.inbox()?).await?, 3);
 
     // Negative control: deleting only revocation admits the stale epoch.
     let mut bypass = guarded(original, "without-revocation")?;
@@ -129,7 +135,7 @@ async fn membership_epochs_close_atomically_and_cannot_be_revived() -> Result {
         .retain(|condition| condition.path() != &revocation);
     assert!(matches!(provider.commit(bypass).await?,
         CommitOutcome::Committed(receipt) if receipt.skipped.is_empty()));
-    assert_eq!(provider.tail(recipient.inbox()?).await?, 3);
+    assert_eq!(provider.tail(recipient.inbox()?).await?, 4);
     submit(&provider, archive(&recipient, &user(), &intent("archive"))?).await?;
     assert!(
         matches!(provider.commit(guarded(renewed, "after-archive")?).await?,

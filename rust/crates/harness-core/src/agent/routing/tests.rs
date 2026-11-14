@@ -398,7 +398,7 @@ async fn absent_refusal_fences_creation_of_a_disabled_recipient()
     let refusal = peer.absent_request(&routing, &receipt, peer.delivery_request(&receipt)?)?;
 
     // Creation wins after the missing-witness read but before the conditional
-    // refusal. The adversarial future head now matches, but it is disabled.
+    // refusal. The new disabled root has no interval matching this request.
     assert!(matches!(
         destination.commit(created.request).await?,
         CommitOutcome::Committed(_)

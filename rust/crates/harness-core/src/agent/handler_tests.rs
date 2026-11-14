@@ -188,6 +188,22 @@ async fn public_metadata_changes_share_the_original_actor_commit()
         host.drain(&root).await?;
         let row_path = SessionPublication::row_path(&host.actor(&root)?)?;
         let initial_tail = provider.tail(row_path.clone()).await?;
+        let initial_row = provider
+            .record_at(row_path.clone(), 0)
+            .await?
+            .ok_or("initial row missing")?;
+        let initial_member = provider
+            .record_at(root.peer_membership()?, 0)
+            .await?
+            .ok_or("initial membership missing")?;
+        assert_eq!(
+            SessionRow::decode(&initial_row)?.membership,
+            crate::agent::PeerMembership::decode(&initial_member.value)?
+        );
+        assert_eq!(
+            initial_row.commit_id, initial_member.commit_id,
+            "public membership must share the original root creation"
+        );
         for (index, mut entry) in [hidden, user].into_iter().enumerate() {
             let op = if index == 0 {
                 let previous = entry.id;
