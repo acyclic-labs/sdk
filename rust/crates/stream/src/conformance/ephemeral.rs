@@ -1,5 +1,11 @@
 use super::*;
 
+#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn private_namespace_pages_preserve_public_ranks() -> Result<(), Failure> {
+    verify(&crate::MemoryStream::default()).await
+}
+
 /// A leased subtree, and every path a commit into it creates and so adopts,
 /// is written and observed like any other while held, is never listed,
 /// inherited or named by a durable write, and is gone once its lease is
