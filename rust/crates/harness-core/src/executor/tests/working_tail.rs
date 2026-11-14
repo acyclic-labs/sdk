@@ -20,6 +20,7 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
         )],
         [],
     );
+    let (unselected, unselected_probes) = counted_model(49_152, None, [], []);
     let instruction = ModelContent::Text("fresh stage instruction".into());
     let stage = crate::context::Context {
         messages: vec![ModelMessage {
@@ -30,7 +31,7 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
     };
     let executor = StockExecutor::new(
         Model::new("synthetic".into(), "counter".into(), "1".into())?,
-        provider.clone(),
+        unselected,
         ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
             "instructions",
             "1",
@@ -62,13 +63,23 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
             content: ModelContent::Text("r".repeat(15_000)),
         },
     ];
-    let execution = StockExecution::ordinary(&executor);
+    let selected = StockExecutor::new(
+        Model::new("synthetic".into(), "selected".into(), "1".into())?,
+        provider.clone(),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    )
+    .into_step_binding(None)?;
+    let mut execution = StockExecution::ordinary(&executor);
+    execution.selected = Some(selected);
     execution.ensure_started(&journal, &input).await?;
     let compacted = execution
         .prepared_response(&journal, &input, 1, &prior, None)
         .await?;
     assert!(compacted.bytes().len() < 17_000);
     assert_eq!(provider.request_count(), 1);
+    assert_eq!(provider.request(0).unwrap().model.name, "selected");
+    assert_eq!(unselected_probes.load(Ordering::SeqCst), 0);
     let replacement = Arc::new(
         StockExecutor::new(
             Model::new("synthetic".into(), "replacement".into(), "1".into())?,
