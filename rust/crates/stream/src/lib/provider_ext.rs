@@ -453,22 +453,45 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
     ) -> impl std::future::Future<Output = Result<Option<DurableReceipt>, StreamError>> + ProviderTask
     {
         async move {
-            let request = HeadsRequest {
-                at: None,
-                retained: Default::default(),
-                durable_through: Some(through),
-                projection: HeadProjection::Watermarks,
-                paths: [path.clone()].into(),
-                children: None,
-                limit: 1,
-                at_least: Default::default(),
+            #[cfg(feature = "serde")]
+            let diagnostic = crate::trace::is_source(&path);
+            let work = async move {
+                let request = HeadsRequest {
+                    at: None,
+                    retained: Default::default(),
+                    durable_through: Some(through),
+                    projection: HeadProjection::Watermarks,
+                    paths: [path.clone()].into(),
+                    children: None,
+                    limit: 1,
+                    at_least: Default::default(),
+                };
+                let mut view = self.heads(request.clone()).await?;
+                view.validate_for(&request)?;
+                let head = view.heads.pop().flatten().ok_or(StreamError::NotFound)?;
+                Ok(head
+                    .retained_through
+                    .map(|through| DurableReceipt { path, through }))
             };
-            let mut view = self.heads(request.clone()).await?;
-            view.validate_for(&request)?;
-            let head = view.heads.pop().flatten().ok_or(StreamError::NotFound)?;
-            Ok(head
-                .retained_through
-                .map(|through| DurableReceipt { path, through }))
+            #[cfg(feature = "serde")]
+            if !diagnostic {
+                return crate::trace::observe_outcome(
+                    crate::trace::Request {
+                        name: "stream.durable_receipt",
+                        mechanism: crate::trace::Mechanism::ProviderCall,
+                        parent: None,
+                        guarantee: Some("original_irreversible_prefix_confirmation"),
+                    },
+                    work,
+                    |result| match result {
+                        Ok(Some(_)) => Some((None, crate::trace::Outcome::Succeeded)),
+                        Ok(None) => Some((None, crate::trace::Outcome::Unsettled)),
+                        Err(_) => None,
+                    },
+                )
+                .await;
+            }
+            work.await
         }
     }
 

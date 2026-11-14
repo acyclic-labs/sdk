@@ -822,6 +822,20 @@ mod indexed_trace_tests {
                 )
                 .await?;
         }
+        let receipt = provider.durable_receipt(data.path().clone(), 1).await?;
+        assert!(receipt.is_some());
+        assert_eq!(
+            root.within(provider.durable_receipt(data.path().clone(), 1))
+                .await?,
+            receipt
+        );
+        assert!(
+            root.within(provider.durable_receipt(data.path().clone(), 2))
+                .await?
+                .is_none()
+        );
+        root.within(provider.durable_receipt(trace.path().clone(), 1))
+            .await?;
         let visibility_cut = RevisionCut::of(provider.wait_applied(&Default::default()).await?);
         let applied = root.within(provider.wait_applied(&visibility_cut)).await?;
         assert!(visibility_cut.proven_by(Some(&applied)));
@@ -911,10 +925,11 @@ mod indexed_trace_tests {
         let mut completed = 0;
         let mut fence = false;
         let mut applied_wait = false;
+        let mut receipt_outcomes = Vec::new();
         let mut request = false;
         let mut indexed_bytes = Vec::new();
         let mut projections = std::collections::BTreeMap::new();
-        while completed < 11 {
+        while completed < 13 {
             let Some(observation) = query.next().await? else {
                 return Err("trace ended before original request hops settled".into());
             };
@@ -927,6 +942,17 @@ mod indexed_trace_tests {
             } = observation
             {
                 completed += 1;
+                if start.name == "stream.durable_receipt" {
+                    assert_eq!(start.parent, Some(parent));
+                    assert_eq!(start.mechanism, Mechanism::ProviderCall);
+                    assert_eq!(
+                        start.guarantee.as_deref(),
+                        Some("original_irreversible_prefix_confirmation")
+                    );
+                    assert_eq!(bytes, None);
+                    receipt_outcomes.push(result);
+                    continue;
+                }
                 assert_eq!(result, Outcome::Succeeded);
                 if id == parent {
                     assert!(!request);
@@ -982,6 +1008,21 @@ mod indexed_trace_tests {
             }
         }
         assert!(fence && request && applied_wait);
+        assert_eq!(receipt_outcomes.len(), 2);
+        assert_eq!(
+            receipt_outcomes
+                .iter()
+                .filter(|outcome| **outcome == Outcome::Succeeded)
+                .count(),
+            1
+        );
+        assert_eq!(
+            receipt_outcomes
+                .iter()
+                .filter(|outcome| **outcome == Outcome::Unsettled)
+                .count(),
+            1
+        );
         indexed_bytes.sort();
         assert_eq!(indexed_bytes, [Some(0), Some(8)]);
         assert_eq!(projections["stream.children_page"], 2);
@@ -990,7 +1031,7 @@ mod indexed_trace_tests {
         assert_eq!(projections["stream.watermarks"], 1);
         assert_eq!(
             trace.tail().await?,
-            22,
+            26,
             "zero cuts and diagnostic reads must not emit provider work"
         );
         assert_eq!(
@@ -1005,7 +1046,7 @@ mod indexed_trace_tests {
         );
         assert_eq!(
             trace.tail().await?,
-            22,
+            26,
             "the request owner must not leak into unrelated work"
         );
         Ok(())
