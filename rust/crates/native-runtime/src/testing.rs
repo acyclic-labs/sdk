@@ -1,4 +1,31 @@
-//! Explicit, scoped barriers at real owned-task and native-job boundaries.
+//! The SDK's one deterministic simulation (DST) core. Every subsystem
+//! simulator (Streams, Actors, Objects, filesystem, harness swarms) runs its
+//! real production code inside these seams instead of a parallel runtime:
+//!
+//! - **Runtime and executor**: [`seeded_runtime`] seeds Tokio's `select!`
+//!   order; [`Schedule::seeded`] polls owned tasks ([`spawn`]) in a seeded
+//!   order and records the poll trace ([`Schedule::polls`]).
+//! - **Entropy**: [`fill_seeded`] serves ids and random choices from the seed.
+//! - **Clock**: simulated wall time and alarms under `tokio::time::pause`
+//!   ([`CapturedClock`], [`unix_millis`]); actors' `SystemClock` and
+//!   [`crate::WallAlarm`] ride it.
+//! - **Faults**: every durable file operation is a fault site
+//!   ([`durable_write`], [`durable_operation`]); [`Schedule::cut_at`] and
+//!   [`Schedule::cut_next`] inject a [`DurableFault`] (crash before or after,
+//!   torn, disk full, or a non-crashing `Interrupted` refusal), latched as
+//!   [`Schedule::storage_fault`] so the driver drops the world as a crash and
+//!   reopens it from disk. OS processes are scripted
+//!   ([`Schedule::set_process_provider`]), never spawned.
+//! - **Boundaries**: each owned operation pauses at a [`Boundary`] the driver
+//!   releases, so a driver chooses interleavings at real submission points.
+//! - **Sweeps**: [`sweep::sweep`] runs one world per seed and reports the
+//!   first failing seed with `DST_SEED=<n>` to reproduce it
+//!   ([`sweep::seeds`]; `DST_SEEDS=<a>..<b>` for deep sweeps), and
+//!   [`sweep::minimize`] shrinks a failing choice list to a minimal trace.
+//!
+//! A simulator owns only its scenario and invariants: build the world from
+//! the seed inside `seeded_runtime(seed)` + `Schedule::seeded(seed).scope(..)`,
+//! check invariants, and return the trace as the failure report.
 use std::{
     future::Future,
     sync::{Arc, PoisonError},
@@ -26,6 +53,7 @@ mod process;
 pub use process::{ProcessCapture, capture_process};
 mod metadata;
 pub mod snapshot;
+pub mod sweep;
 pub use metadata::{NativeMetadataInput, NativeTimes, capture_native_times};
 #[cfg(test)]
 #[cfg(loom)]
