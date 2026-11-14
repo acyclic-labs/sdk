@@ -580,6 +580,7 @@ mod tests {
                 acyclic_harness::context::ModelContextCapacity {
                     context_tokens: 32_768,
                     output_tokens: Some(4096),
+                    output_shares_context: false,
                 },
             ),
         );

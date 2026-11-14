@@ -265,12 +265,10 @@ impl Sidebar {
         if self.failure.is_some() {
             return true;
         }
-        if let Some(listing) = self
-            .source
-            .view
-            .reader_ref()
+        let reader = self.source.view.reader_ref();
+        if let Some(listing) = reader
             .cache()
-            .listing(self.source.view.root(), 0)
+            .listing(self.source.view.root(), 0, reader.policy().listing_limit)
             .filter(|listing| listing.fresh)
         {
             return !listing.children.is_empty() || listing.next.is_some();

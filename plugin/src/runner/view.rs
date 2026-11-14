@@ -2021,6 +2021,7 @@ mod tests {
             .with_context_capacity(ModelContextCapacity {
                 context_tokens: 32_768,
                 output_tokens: Some(4096),
+                output_shares_context: false,
             })
             .with_dispatch_observer(move |_| {
                 if let Some(entered) = gate.lock().unwrap().take() {
@@ -2215,6 +2216,7 @@ mod tests {
             .with_context_capacity(ModelContextCapacity {
                 context_tokens: 32_768,
                 output_tokens: Some(4096),
+                output_shares_context: false,
             }),
         );
         let harness = Arc::new(
@@ -2606,6 +2608,7 @@ mod tests {
                                 acyclic_harness::context::ModelContextCapacity {
                                     context_tokens: 32_768,
                                     output_tokens: Some(4096),
+                                    output_shares_context: false,
                                 },
                             ),
                         ),

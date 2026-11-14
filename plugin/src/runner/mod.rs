@@ -1106,12 +1106,14 @@ async fn connected(
         {
             let mut output =
                 headless::Output::new(acyclic_native_runtime::InheritedOutput::stdout()?);
+            let root: acyclic_harness::client::AgentReply =
+                acyclic_harness::client::AgentReply::Root {
+                    agent: connection.root().clone(),
+                };
             headless::write_event(
                 &mut output,
                 OperationId::from_bytes(connection.root().id_bytes()),
-                &acyclic_harness::client::AgentReply::Root {
-                    agent: connection.root().clone(),
-                },
+                &root,
             )
             .await?;
             return Ok(());

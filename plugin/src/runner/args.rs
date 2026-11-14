@@ -576,10 +576,10 @@ pub struct Page {
     #[arg(long)]
     pub cursor: Option<String>,
     /// Entries per page; this chunks discovery and never limits session count.
-    #[arg(long, default_value_t = AgentPageRequest::default().items())]
+    #[arg(long, default_value_t = <AgentPageRequest>::default().items())]
     pub page_size: u32,
     /// Encoded reply credit; increase it if one row and its continuation cannot fit.
-    #[arg(long, default_value_t = AgentPageRequest::default().bytes())]
+    #[arg(long, default_value_t = <AgentPageRequest>::default().bytes())]
     pub page_bytes: u32,
 }
 
