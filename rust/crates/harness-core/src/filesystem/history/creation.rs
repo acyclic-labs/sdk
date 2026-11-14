@@ -7,7 +7,7 @@ mod tests;
 pub(in crate::filesystem) async fn capture_creation<P, O>(
     fs: &Fs<StreamAuthorityStore<P>, O>,
     agent: &AgentPath,
-    prepared: &[acyclic_fs::CreatedGeneration],
+    prepared: impl Iterator<Item = (acyclic_fs::WorkspaceId, acyclic_fs::GenerationId)> + Clone,
     cuts: Option<&dyn super::super::VolumeResources>,
     commit: &mut FilesystemCommit,
 ) -> Result<(), GuestError>
@@ -93,17 +93,17 @@ where
         };
         let name = volume.storage_name(&mut None).map_err(guest)?;
         let workspace = fs.workspace_id(&name).map_err(guest)?;
-        if let Some(original) = prepared
-            .iter()
-            .find(|original| original.workspace == workspace)
+        if let Some((_, generation)) = prepared
+            .clone()
+            .find(|(original, _)| *original == workspace)
         {
             // A prepared creation/fork retains its immutable original generation;
             // its containing transaction still owns all publication custody.
             volumes.push(SavedVolume {
                 binding: binding.clone(),
-                generation: original.generation,
+                generation,
                 retained_workspace: name,
-                retained_generation: original.generation,
+                retained_generation: generation,
             });
         } else {
             let source = fs

@@ -57,7 +57,16 @@ async fn prepare(
         )
         .await?
         .value;
-    capture_creation(fs, agent, &original, None, &mut commit).await?;
+    capture_creation(
+        fs,
+        agent,
+        original
+            .iter()
+            .map(|original| (original.workspace, original.generation)),
+        None,
+        &mut commit,
+    )
+    .await?;
     Ok(commit)
 }
 

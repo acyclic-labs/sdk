@@ -699,7 +699,7 @@ where
                 .await
                 .map_err(|error| error.with_context("capturing turn volume history"))?;
         }
-        let mut prepared = fs
+        let prepared = fs
             .prepare_fork_many(&forks, &mut commit, WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map_err(|failure| {
@@ -755,12 +755,18 @@ where
                 )
                 .map_err(crate::Error::guest)?;
         }
-        prepared.extend(created);
         for agent in &self.journals {
             super::history::capture_creation(
                 fs,
                 agent,
-                &prepared,
+                prepared
+                    .iter()
+                    .map(|original| (original.workspace, original.generation))
+                    .chain(
+                        created
+                            .iter()
+                            .map(|original| (original.workspace, original.generation)),
+                    ),
                 self.cuts.as_deref(),
                 &mut commit,
             )
