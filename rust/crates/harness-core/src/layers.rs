@@ -21,9 +21,11 @@ pub const PARENT: &str = "parent";
 /// independent of the number of agents, files or generations in their volumes.
 pub const ORDER: [&str; 6] = [SEED, USER_ORG, SCOPE, TEMPLATE, PARENT, HOME];
 
+mod content_cut;
 #[cfg(not(target_arch = "wasm32"))]
 mod content_tree;
 mod manifest;
+pub use content_cut::{ContentCut, ContentSources, RetainedContentCut};
 #[cfg(not(target_arch = "wasm32"))]
 pub use content_tree::ContentTree;
 #[cfg(not(target_arch = "wasm32"))]
