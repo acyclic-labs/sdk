@@ -72,7 +72,7 @@ async fn alarm_producer_loss_terminates_the_original_authorized_session() {
         use crate::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
         use std::error::Error as _;
         let state = State::new();
-        let auth = authority(state.clone());
+        let auth = Arc::new(authority(state.clone()));
         let mut slots = Slots::default();
         auth.register(&mut slots, 0, &fs_token("fs:/volume", |_| {}), 1)
             .unwrap();
