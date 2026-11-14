@@ -717,7 +717,7 @@ impl AgentTool {
             }
             sent_results.push(json!({
                 "id": reply.message.id.as_str(),
-                "agent": reply.message.to.as_str(),
+                "agent": reply.message.to,
                 "delivery": reply.message.delivery,
                 "reply": reply.status,
             }));

@@ -116,6 +116,60 @@ async fn qualified_senders_keep_distinct_intents_and_reply_destinations()
         super::notices::PeerResultRoute::parse(&result)?
             .verify_original(&account, &routing.paths)
             .await?;
+        let source_store = MemoryStream::default();
+        let root = create_root_with_peer(
+            &IntentId::try_from("source")?,
+            ForkAdopted {
+                agent: sender.id(),
+                parent: None,
+                profile: None,
+                forked_at: 0,
+                conversation_tail: 0,
+                checkpoint: None,
+                volumes: Vec::new(),
+                brief: None,
+                policy: None,
+            },
+            true,
+        )?;
+        assert!(matches!(
+            source_store.commit(root.request).await?,
+            CommitOutcome::Committed(_)
+        ));
+        assert!(matches!(
+            source_store.commit(result.request.clone()).await?,
+            CommitOutcome::Committed(_)
+        ));
+        let terminal = source_store
+            .record_at(sender.inbox()?, 1)
+            .await?
+            .ok_or("terminal missing")?;
+        let watch = crate::agent::Watch::PeerReply {
+            sender: sender.clone(),
+            peer: crate::agent::AgentAddress::qualified(envelope.to.clone())?,
+            id: peer.id().clone(),
+            from: 1,
+        };
+        let crate::agent::Watch::PeerReply { peer: expected, .. } =
+            crate::agent::Watch::decode_subscription(&watch.subscription()?)?
+        else {
+            return Err("watch changed kind".into());
+        };
+        assert_eq!(
+            super::notices::matches(&terminal, &sender, peer.id(), &expected)?,
+            Some(crate::agent::SentReplyStatus::Answered { sequence: 0 })
+        );
+        // The same plain root ID in another namespace cannot satisfy this
+        // persisted watch, even though its message ID and peer path match.
+        let lookalike = crate::agent::AgentAddress::qualified(ActorReference::new(
+            b"account",
+            b"unrelated",
+            envelope.to.id().as_bytes(),
+        )?)?;
+        assert_eq!(
+            super::notices::matches(&terminal, &sender, peer.id(), &lookalike)?,
+            None
+        );
         if let Some(first) = &first_key {
             assert_ne!(&request.idempotency_key, first);
             // Negative control: restoring the unqualified collision rejects

@@ -21,7 +21,7 @@ pub enum Watch {
         /// Sender that owns the original send, never the remote recipient.
         sender: super::AgentPath,
         /// Original peer selected by the sender's immutable send marker.
-        peer: super::AgentPath,
+        peer: super::AgentAddress,
         /// Original caller message identity.
         id: super::IntentId,
         /// First inbox record outside the observed result cut.
@@ -78,7 +78,7 @@ impl Watch {
     pub(crate) fn path(&self) -> Result<StreamPath, Error> {
         match self {
             Self::Record { path, .. } => Ok(path.clone()),
-            Self::Reply(reply) => reply.to.status(),
+            Self::Reply(reply) => reply.to.path().status(),
             Self::PeerReply { sender, .. } => sender.inbox(),
         }
     }

@@ -1864,6 +1864,15 @@ async fn remote_send_recovers_original_admission_from_its_source_publication() -
                 sent(&local, &sender, &intent(name))
                     .await?
                     .ok_or("receipt missing")?
+                    .to
+                    .qualified_actor(),
+                Some(&envelope.to),
+                "source recovery must retain the original qualified recipient"
+            );
+            assert_eq!(
+                sent(&local, &sender, &intent(name))
+                    .await?
+                    .ok_or("receipt missing")?
                     .delivery,
                 SentDelivery::Pending {
                     source: routing.paths.outbox_cursor(&routing.node)?,

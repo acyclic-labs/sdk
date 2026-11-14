@@ -1,7 +1,9 @@
 //! A message's original delivery receipt, selected through its sender's intent.
 //! The marker and inbox effect share one publication; recovery reads that exact
 //! immutable envelope, never a current inbox tail or a conversation scan.
-use super::{AgentPath, AgentRecord, Delivered, Error, InboxRecord, IntentId, Sender};
+use super::{
+    AgentAddress, AgentPath, AgentRecord, Delivered, Error, InboxRecord, IntentId, Sender,
+};
 use acyclic_actors::route::{self, Routed};
 use acyclic_stream::{CommittedMutation, StreamError, StreamProviderExt as _};
 use futures::TryStreamExt as _;
@@ -64,7 +66,7 @@ impl Serialize for SentDelivery {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SentRecord {
-    pub to: AgentPath,
+    pub to: AgentAddress,
     pub id: IntentId,
 }
 
@@ -74,7 +76,7 @@ impl AgentRecord for SentRecord {}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SentMessage {
     /// Exact recipient, including when its closed inbox skipped the effect.
-    pub to: AgentPath,
+    pub to: AgentAddress,
     /// Original caller-owned message identity.
     pub id: IntentId,
     /// The original outcome, or its source-admission event position.
@@ -101,7 +103,7 @@ pub enum SentReplyStatus {
 #[serde(deny_unknown_fields)]
 pub struct ReplyWatch {
     /// Original recipient from the sender's immutable receipt.
-    pub to: AgentPath,
+    pub to: AgentAddress,
     /// Original send intent, never an arbitrary recipient input.
     pub id: IntentId,
     /// Original accepted inbox sequence.
@@ -154,9 +156,9 @@ pub async fn sent_reply<P: crate::store::JournalProvider + ?Sized + 'static>(
             }));
         }
     };
-    let actor = super::handler::Agents::<P>::actor(within, &message.to.id())?;
+    let actor = message.to.actor(within)?;
     let agents = super::handler::Agents::new(super::actor_store(provider)?);
-    let (mut head, cursor) = agents.head(&actor, &message.to).await?;
+    let (mut head, cursor) = agents.head(&actor, message.to.path()).await?;
     let state = &mut head.state;
     let reply = super::reply(provider.as_ref(), state, cursor, id, inbox).await?;
     let (status, watch) = match reply {
@@ -223,7 +225,7 @@ pub async fn sent<P: crate::store::JournalProvider + ?Sized>(
     if envelope.commit_id != record.commit_id {
         return Err(Error::Record("send receipt publication differs"));
     }
-    let inbox = marker.to.inbox()?;
+    let inbox = marker.to.path().inbox()?;
     let mut delivery = Delivered::Closed;
     for mutation in envelope.mutations {
         let CommittedMutation::Append(append) = mutation else {
@@ -339,7 +341,8 @@ async fn original_routed<P: crate::store::JournalProvider + ?Sized>(
         let peer = super::PeerRoute::parse(&envelope)?;
         if envelope.source != node
             || peer.sender() != sender
-            || peer.recipient() != &marker.to
+            || peer.recipient() != marker.to.path()
+            || marker.to.qualified_actor() != Some(&envelope.to)
             || peer.id() != &marker.id
         {
             return Err(Error::Record("send source intent differs"));

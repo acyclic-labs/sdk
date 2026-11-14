@@ -305,6 +305,7 @@ pub(super) fn lower_routed(
                 builder.recipient(to)?;
                 let routed = routing.filter(|(_, _, remote)| remote.contains(to));
                 let mut outbox = None;
+                let mut destination = None;
                 if let Some((routing, within, _)) = routed {
                     if path.depth() != 0 || to.depth() != 0 {
                         return Err(Error::Record("peer routing requires member roots"));
@@ -340,6 +341,7 @@ pub(super) fn lower_routed(
                         admission,
                     )?;
                     let target = routing.paths.outbox(&routing.node).map_err(Error::Stream)?;
+                    destination = Some(envelope.to.clone());
                     let record = envelope
                         .outbox_record(&routing.paths)
                         .map_err(super::routing::error)?;
@@ -360,7 +362,10 @@ pub(super) fn lower_routed(
                         path: marker.clone(),
                     })?;
                     let mut marker_record: AppendRecord = super::sent::SentRecord {
-                        to: to.clone(),
+                        to: match destination {
+                            Some(actor) => super::AgentAddress::qualified(actor)?,
+                            None => to.clone().into(),
+                        },
                         id: message.id.clone(),
                     }
                     .encode()?

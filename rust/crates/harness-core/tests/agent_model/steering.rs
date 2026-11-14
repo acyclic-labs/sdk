@@ -93,7 +93,7 @@ async fn steering_review_sends_skip_closed_recipients() -> Result {
         assert_eq!(
             sent(&stream, &sender, &expected.id).await?,
             Some(SentMessage {
-                to: recipient.clone(),
+                to: recipient.clone().into(),
                 id: expected.id.clone(),
                 delivery: SentDelivery::Complete(acyclic_actors::route::Routed::Delivered(
                     acyclic_actors::route::Delivered { inbox: 1 }
@@ -137,7 +137,7 @@ async fn steering_review_sends_skip_closed_recipients() -> Result {
         assert_eq!(
             sent(&stream, &sender, &intent("late")).await?,
             Some(SentMessage {
-                to: recipient.clone(),
+                to: recipient.clone().into(),
                 id: intent("late"),
                 delivery: SentDelivery::Complete(acyclic_actors::route::Routed::Rejected(
                     acyclic_actors::route::Rejection::Closed

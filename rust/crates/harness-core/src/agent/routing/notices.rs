@@ -100,6 +100,10 @@ impl ResultRecord {
             .map(route::RelayReceipt::attribute)
             .into_iter()
             .collect::<Vec<_>>();
+        attributes.push(acyclic_stream::Attribute {
+            name: super::SENDER.into(),
+            value: sender.encode().into(),
+        });
         attributes.extend(
             record
                 .headers
@@ -416,7 +420,9 @@ impl<'a> PeerResultRoute<'a> {
         let sent = crate::agent::sent(host.provider().as_ref(), &self.target, &self.result.id)
             .await?
             .ok_or(Error::Record("result has no owned send"))?;
-        if sent.to != self.result.peer {
+        if sent.to.path() != &self.result.peer
+            || sent.to.qualified_actor() != Some(&self.envelope.sender)
+        {
             return Err(Error::Record("result recipient differs"));
         }
         host.deliver(&self.target, self.envelope.request.clone())
@@ -428,7 +434,7 @@ pub(in crate::agent) fn matches(
     record: &acyclic_stream::Record,
     sender: &AgentPath,
     id: &IntentId,
-    peer: &AgentPath,
+    peer: &crate::agent::AgentAddress,
 ) -> Result<Option<SentReplyStatus>, Error> {
     if record.headers.keys().is_empty() {
         return Ok(None);
@@ -462,14 +468,31 @@ pub(in crate::agent) fn matches(
     {
         return Err(Error::Record("invalid terminal peer result"));
     }
-    Ok((result.id == *id && result.peer == *peer).then_some(result.status))
+    let source = record
+        .headers
+        .attributes()
+        .iter()
+        .find(|attribute| attribute.name == super::SENDER)
+        .ok_or(Error::Record("peer result has no qualified source"))?;
+    let source = acyclic_actors::addressing::ActorReference::decode(source.value)
+        .map_err(|_| Error::Record("peer result source is invalid"))?;
+    if source.id() != result.peer.id().as_str() {
+        return Err(Error::Record("peer result source attribution differs"));
+    }
+    let expected = peer
+        .qualified_actor()
+        .ok_or(Error::Record("routed reply target is unqualified"))?;
+    Ok(
+        (result.id == *id && &result.peer == peer.path() && expected == &source)
+            .then_some(result.status),
+    )
 }
 
 pub(in crate::agent) async fn observe<P: StreamProvider + ?Sized>(
     provider: &P,
     sender: &AgentPath,
     id: &IntentId,
-    peer: &AgentPath,
+    peer: &crate::agent::AgentAddress,
 ) -> Result<(SentReplyStatus, Option<Watch>), Error> {
     let path = sender.inbox()?;
     let mut records = provider

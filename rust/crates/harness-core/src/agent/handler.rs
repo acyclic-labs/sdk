@@ -765,8 +765,8 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                     }
                     super::Watch::Reply(watch) => {
                         super::StatusRecord::decode(&record.value)?;
-                        let actor = Agents::<P>::actor(&delivery.actor, &watch.to.id())?;
-                        let (mut head, cursor) = self.agents.head(&actor, &watch.to).await?;
+                        let actor = watch.to.actor(&delivery.actor)?;
+                        let (mut head, cursor) = self.agents.head(&actor, watch.to.path()).await?;
                         matches!(
                             super::reply(
                                 self.agents.store.provider().as_ref(),
