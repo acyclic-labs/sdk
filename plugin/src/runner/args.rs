@@ -60,6 +60,7 @@ pub struct Args {
     /// Internal detached owner, started through the shared readiness protocol.
     #[arg(long, hide = true)]
     pub local_service: bool,
+    /// Request readiness signalling for a detached local-service invocation.
     #[arg(long, hide = true, requires = "local_service")]
     pub signal_ready: bool,
     /// Select the shipped agent preset; configuration remains ordinary files.
@@ -522,7 +523,10 @@ pub enum Command {
         json: bool,
     },
     /// Attach the terminal to an existing canonical agent path.
-    Attach { path: String },
+    Attach {
+        /// Canonical path of the existing agent to attach to.
+        path: String,
+    },
     /// Execute through the same conversation driver used by prompt mode.
     Exec {
         /// One task; omitted reads JSONL requests from stdin.
@@ -545,11 +549,20 @@ pub enum Command {
     Inspect(Inspect),
     /// Create a session and optionally author its title.
     #[command(name = "new")]
-    NewSession { title: Option<String> },
+    NewSession {
+        /// Initial session title; omitted leaves the title unset.
+        title: Option<String>,
+    },
     /// Rename the selected session by conditionally writing ui/title.
-    Rename { title: String },
+    Rename {
+        /// Replacement title for the selected session.
+        title: String,
+    },
     /// Give the selected session a stable alias for -r NAME.
-    Name { name: String },
+    Name {
+        /// Stable alias used to select this session.
+        name: String,
+    },
     /// Freeze the selected session and release its owned resources.
     Archive,
     /// Read one immutable page of the selected session's saved turns.
