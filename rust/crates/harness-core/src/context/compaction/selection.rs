@@ -26,7 +26,7 @@ impl CapacityCompaction {
     ) -> Result<Option<(usize, usize)>> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let Some((through, mandatory)) =
-            complete_cut(context, maximum_messages, requested_cut, &mut quota)?
+            complete_cut(context, maximum_messages, requested_cut, true, &mut quota)?
         else {
             return Ok(None);
         };
@@ -50,7 +50,10 @@ impl CapacityCompaction {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Option<usize>> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        Ok(complete_cut(context, None, requested_cut, &mut quota)?.map(|(through, _)| through))
+        Ok(
+            complete_cut(context, None, requested_cut, false, &mut quota)?
+                .map(|(through, _)| through),
+        )
     }
 }
 
@@ -60,6 +63,7 @@ fn complete_cut(
     context: &Context,
     maximum_messages: Option<usize>,
     requested_cut: usize,
+    require_eviction: bool,
     quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<Option<(usize, usize)>> {
     let mut through = requested_cut;
@@ -110,6 +114,7 @@ fn complete_cut(
         }
         if end <= position
             && position + 1 >= through
+            && (!require_eviction || mandatory < context.messages.len())
             && maximum_messages.is_none_or(|maximum| mandatory < maximum)
         {
             cut = Some(position + 1);
