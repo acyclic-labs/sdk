@@ -167,7 +167,7 @@ async fn seed(
     agent: &AgentState,
 ) -> Result<(PreparedModelRequest, serde_json::Value)> {
     let (journal, bindings, _files) = host
-        .journal(host.admit(agent)?, &[], &[], None, None)
+        .journal((host.admit(agent)?, &agent.path), &[], &[], None, None)
         .await?;
     let (body, _hold) = bindings
         .content
@@ -338,7 +338,7 @@ async fn inherited_turns_keep_the_original_receiver_authority() -> Result<()> {
     ];
     for (sequence, (owner, sender, _)) in cases.iter().enumerate() {
         let (_, bindings, _) = host
-            .journal(host.admit(owner)?, &[], &[], None, None)
+            .journal((host.admit(owner)?, &owner.path), &[], &[], None, None)
             .await?;
         let (body, _) = bindings
             .content

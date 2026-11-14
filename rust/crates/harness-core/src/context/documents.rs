@@ -63,6 +63,11 @@ pub async fn capture_working_documents(
                 match entry.kind {
                     PrivateDirectoryEntryKind::Directory => directories.push(path),
                     PrivateDirectoryEntryKind::File => capture.file(&path).await?,
+                    _ => {
+                        return Err(Error::Invalid(
+                            "working document has an unsupported node kind".into(),
+                        ));
+                    }
                 }
             }
             after = page.next.map(|cursor| (cursor, hold));
