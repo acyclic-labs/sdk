@@ -69,6 +69,32 @@ pub enum StreamError {
 
 impl PartialEq for StreamError {
     fn eq(&self, other: &Self) -> bool {
+        let wrapped = |error: &Self| matches!(error, Self::Caused(_) | Self::Refused(_));
+        if wrapped(self) && wrapped(other) {
+            if let Some(path) = std::env::var_os("STREAM_EQ_AUDIT") {
+                use std::io::Write as _;
+                let trace = std::backtrace::Backtrace::force_capture().to_string();
+                let site = trace
+                    .lines()
+                    .filter(|line| line.contains("at ./rust/") || line.contains("at /work/src/rust/") || line.contains(" at rust/"))
+                    .find(|line| !line.contains("lib/error.rs"))
+                    .unwrap_or("unknown")
+                    .trim()
+                    .to_owned();
+                let symbol = trace
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| line.contains(": acyclic_") || line.contains(": <acyclic_"))
+                    .find(|line| !line.contains("StreamError") && !line.contains("PartialEq"))
+                    .unwrap_or("unknown")
+                    .to_owned();
+                let site = format!("{site} | {symbol}");
+                let structural = format!("{self:?}") == format!("{other:?}");
+                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                    let _ = writeln!(file, "EQ_AUDIT {site} codes_equal={} debug_equal={structural}", self.code() == other.code());
+                }
+            }
+        }
         self.code() == other.code()
     }
 }
