@@ -251,7 +251,11 @@ impl Session {
             let input = self.input.as_ref().ok_or(Errno(sys::EINVAL))?;
             let output = self.output.as_ref().ok_or(Errno(sys::EINVAL))?;
             let complete = output.filled >= 4 && output.filled == frame_length(output);
-            let device_events = if input.filled == 0 && output.filled == 0 && !protocol.closed() {
+            let device_events = if input.filled == 0
+                && output.filled == 0
+                && !protocol.closed()
+                && self.requests.contains(&0)
+            {
                 sys::EPOLL_IN
             } else {
                 0
@@ -452,6 +456,7 @@ impl Session {
         if input.filled == 0
             && output.filled == 0
             && !protocol.closed()
+            && self.requests.contains(&0)
             && let Some(count) = read(self.device, input.slice(0, input.capacity))?
         {
             if count == 0 {
@@ -463,6 +468,17 @@ impl Session {
         if input.filled != 0 && !input.routed && output.filled == 0 {
             let request =
                 fuse_protocol::Request::parse(input.slice(0, input.filled)).map_err(Errno)?;
+            // Reading transfers a reply obligation from the kernel. Reserve
+            // its identity before choosing either local or backend delivery,
+            // so retirement can refuse every unpublished request.
+            if !matches!(request.opcode, 2 | 42) {
+                let credit = self
+                    .requests
+                    .iter_mut()
+                    .find(|slot| **slot == 0)
+                    .ok_or(Errno(sys::EINVAL))?;
+                *credit = request.unique;
+            }
             let prepared = if request.owner_allowed(sys::effective_user()) {
                 protocol.prepare(&request, output.slice(0, output.capacity))
             } else {
@@ -470,12 +486,6 @@ impl Session {
             };
             match prepared {
                 Ok(fuse_protocol::Prepared::Backend) => {
-                    if !matches!(request.opcode, 2 | 42) {
-                        let Some(credit) = self.requests.iter_mut().find(|slot| **slot == 0) else {
-                            return Ok(());
-                        };
-                        *credit = request.unique;
-                    }
                     input.routed = true;
                 }
                 Ok(fuse_protocol::Prepared::Reply { length, transition }) => {
