@@ -4,6 +4,7 @@ use acyclic_native_runtime::testing::{Schedule, fill_seeded, seeded_runtime};
 
 mod composition;
 mod local;
+mod undecided;
 
 async fn drive<T>(
     schedule: &Schedule,
