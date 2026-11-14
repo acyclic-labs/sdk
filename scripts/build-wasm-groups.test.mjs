@@ -7,6 +7,7 @@ import { packageClosure, workspaceManifests } from "./package-closure.mjs";
 import { wasmPackages } from "./wasm-selections.mjs";
 
 const source = readFileSync("scripts/build-wasm-groups.mjs", "utf8").replace(/^import .*;\r?\n/, "");
+const build = readFileSync("scripts/build-wasm.mjs", "utf8");
 const names = Object.keys(wasmPackages);
 
 test("every standalone project compilation prepares its complete WASM closure", () => {
