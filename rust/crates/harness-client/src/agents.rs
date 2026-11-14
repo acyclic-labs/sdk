@@ -108,10 +108,10 @@ pub enum AgentEvent {
 pub struct AgentSelection {
     /// Canonical agent identity.
     pub agent: AgentPath,
-    /// Complete exclusive conversation cursor for a newly selected agent.
-    pub conversation: wire::SessionCursor,
-    /// Complete exclusive status cursor for a newly selected agent.
-    pub status: wire::SessionCursor,
+    /// Complete exclusive conversation cursor, or no conversation interest.
+    pub conversation: Option<wire::SessionCursor>,
+    /// Complete exclusive status cursor, or no status interest.
+    pub status: Option<wire::SessionCursor>,
 }
 
 impl AgentSelection {
@@ -119,20 +119,36 @@ impl AgentSelection {
     pub fn new(agent: AgentPath, conversation_from: u64, status_from: u64) -> Self {
         Self {
             agent,
-            conversation: wire::SessionCursor {
+            conversation: Some(wire::SessionCursor {
                 next: conversation_from,
                 ..Default::default()
-            },
-            status: wire::SessionCursor {
+            }),
+            status: Some(wire::SessionCursor {
                 next: status_from,
                 ..Default::default()
-            },
+            }),
+        }
+    }
+
+    /// Follow only conversation records, without opening a status producer.
+    pub fn conversation_only(agent: AgentPath, from: u64) -> Self {
+        Self {
+            status: None,
+            ..Self::new(agent, from, 0)
+        }
+    }
+
+    /// Follow only status records, without opening a conversation producer.
+    pub fn status_only(agent: AgentPath, from: u64) -> Self {
+        Self {
+            conversation: None,
+            ..Self::new(agent, 0, from)
         }
     }
 }
 
 /// One shared fold for the focused agent and explicit visible agents. Each
-/// selected agent costs two logical follows on the caller's existing pool.
+/// selected source costs one logical follow on the caller's existing pool.
 pub struct AgentClient {
     session: WireSession,
     agent: AgentPath,
@@ -278,6 +294,7 @@ impl AgentClient {
                 ),
                 (true, selection.agent.status()?, selection.status),
             ] {
+                let Some(resume) = resume else { continue };
                 let mut request =
                     subscription(&path, resume, self.credential, is_status && !self.all);
                 if let Some(wire::session_subscription::Kind::Follow(follow)) = &mut request.kind {
@@ -334,10 +351,10 @@ impl AgentClient {
     }
 
     /// Borrow the exact shared display window, including its eviction edge.
-    pub fn conversation(&self) -> &StreamView {
+    pub fn conversation(&self) -> Result<&StreamView, AgentClientError> {
         self.session
             .view(&self.conversation)
-            .expect("selected conversation owns a view")
+            .ok_or_else(|| WireSessionError::NotRequested.into())
     }
 
     /// Decode only the displayed turn requested by the renderer. Reading a

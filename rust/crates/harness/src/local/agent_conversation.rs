@@ -1046,15 +1046,12 @@ impl Conversation {
         if from >= to {
             return Ok(entries);
         }
-        // The status follow starts at its tail: only the turns are read.
-        let (_, statuses, _) = self.settlement(false).await?;
         let mut turns = self
             .connection
             .controls
-            .observe(acyclic_harness_client::AgentSelection::new(
+            .observe(acyclic_harness_client::AgentSelection::conversation_only(
                 self.agent().clone(),
                 from,
-                statuses,
             ))
             .map_err(failed)?;
         loop {

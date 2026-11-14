@@ -104,8 +104,8 @@ impl Observer {
             connection,
             AgentSelection {
                 agent: agent.clone(),
-                conversation: cursor(agent.conversation().map_err(storage)?)?,
-                status: cursor(agent.status().map_err(storage)?)?,
+                conversation: Some(cursor(agent.conversation().map_err(storage)?)?),
+                status: Some(cursor(agent.status().map_err(storage)?)?),
             },
             Some(projection),
         )?;
@@ -129,7 +129,12 @@ impl Observer {
         projection: Option<&acyclic_harness_client::EventProjection>,
     ) -> Result<Self> {
         let agent = selection.agent.clone();
-        let from = selection.conversation.next;
+        let (Some(conversation), Some(_)) = (&selection.conversation, &selection.status) else {
+            return Err(Error::Invalid(
+                "an observer requires conversation and status cursors".into(),
+            ));
+        };
+        let from = conversation.next;
         let mut client = match projection {
             Some(_) => connection.controls.observe_all(selection),
             None => connection.controls.observe(selection),

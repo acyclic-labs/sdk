@@ -850,3 +850,78 @@ async fn selected_subscription_failures_retain_resource_and_original_cause()
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn source_selection_opens_only_requested_producers() -> Result<(), Box<dyn std::error::Error>>
+{
+    let memory = Arc::new(MemoryStream::default());
+    let agent = AgentPath::root(&AgentId::from_bytes([31; 16]));
+    let conversation = agent.conversation()?;
+    let status_path = agent.status()?;
+    append(
+        &memory,
+        conversation.clone(),
+        vec!["conversation record".into()],
+    )
+    .await?;
+    let published = StatusRecord {
+        cancelled_input: None,
+        child_settlement: None,
+        child_wakes: None,
+        phase: Phase::Running,
+        cursor: 1,
+        conversation: 1,
+    };
+    append(
+        &memory,
+        status_path.clone(),
+        vec![published.append_record()?],
+    )
+    .await?;
+    let pool = Client::with_transport(
+        Arc::new(Endpoint(memory)),
+        Arc::new(|_| Box::pin(async { Err(StreamError::Unavailable.into()) })),
+        Arc::new(PlatformExecutor),
+    );
+    pool.register_credential(0, session::testing::credential())?;
+    let conversation_resource = wire_codec::session::stream_resource(conversation.as_str());
+    let status_resource = wire_codec::session::stream_resource(status_path.as_str());
+    for selection in [
+        AgentSelection::conversation_only(agent.clone(), 0),
+        AgentSelection::status_only(agent.clone(), 0),
+        AgentSelection::new(agent.clone(), 0, 0),
+    ] {
+        let mut expected = BTreeSet::new();
+        if selection.conversation.is_some() {
+            expected.insert(conversation_resource.clone());
+        }
+        if selection.status.is_some() {
+            expected.insert(status_resource.clone());
+        }
+        let mut observer = AgentClient::observing(pool.clone(), selection, 0, false, None)?;
+        assert_eq!(observer.residency().0, expected.len());
+        assert_eq!(
+            observer.conversation().is_ok(),
+            expected.contains(&conversation_resource)
+        );
+        assert_eq!(
+            observer.current_status().is_ok(),
+            expected.contains(&status_resource)
+        );
+        let mut remaining = expected.clone();
+        while !remaining.is_empty() {
+            let delivery = poll_fn(|cx| observer.poll_delivery(cx)).await?;
+            assert!(expected.contains(&delivery.resource));
+            if matches!(
+                delivery.frame.body,
+                Some(wire::session_frame::Body::Data(_))
+            ) {
+                assert!(remaining.remove(&delivery.resource));
+            }
+        }
+        if expected.contains(&status_resource) {
+            assert_eq!(observer.current_status()?, Some(published.clone()));
+        }
+    }
+    Ok(())
+}
