@@ -34,6 +34,128 @@ struct CreditRace {
     cut: tokio::sync::Mutex<Option<CreditCut>>,
 }
 
+struct GuardPolicy {
+    peer: PeerGrant,
+    guard: StreamPath,
+    attempts: std::sync::atomic::AtomicUsize,
+    repair: bool,
+}
+
+impl AdmissionPolicy for GuardPolicy {
+    fn authorize(
+        &self,
+        authorization: &CallAuthorization,
+        message: &Envelope,
+    ) -> std::result::Result<(), StreamError> {
+        self.peer.authorize(authorization, message)
+    }
+
+    fn prepare<'a>(
+        &'a self,
+        _: &'a CallAuthorization,
+        _: &'a Envelope,
+        _: Option<&'a Placement>,
+    ) -> BoxProviderFuture<'a, std::result::Result<Admission, Error>> {
+        Box::pin(async move {
+            let attempt = self
+                .attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                + 1;
+            // A broken progress check fails this test finitely, at its third
+            // preparation, rather than issuing an unbounded storage loop.
+            if attempt > 2 {
+                return Err(Error::InvalidRecord);
+            }
+            Ok(Admission::Allow(vec![CommitEffect::hard(
+                vec![CommitCondition::Tail {
+                    path: self.guard.clone(),
+                    expected: u64::from(self.repair && attempt > 1),
+                }],
+                Vec::new(),
+            )]))
+        })
+    }
+}
+
+#[tokio::test]
+async fn account_admission_stops_unchanged_refusals_but_allows_recomputed_guards() -> Result {
+    for repair in [false, true] {
+        let provider = Arc::new(MemoryStream::default());
+        let paths = Paths::new(StreamPath::new("routing")?);
+        let source = NodeId::new(b"source")?;
+        let destination = NodeId::new(b"destination")?;
+        let sender = ActorReference::new(b"account", b"sessions", b"sender")?;
+        let recipient = ActorReference::new(b"account", b"sessions", b"recipient")?;
+        place(&provider, &paths, &sender, &source).await?;
+        place(&provider, &paths, &recipient, &destination).await?;
+        let guard = StreamPath::new("reservation")?;
+        provider
+            .append(acyclic_stream::AppendRequest {
+                path: guard.clone(),
+                records: vec!["funded".into()],
+                if_tail: Some(0),
+                idempotency_key: IdempotencyKey::new(b"fund-reservation".to_vec())?,
+            })
+            .await?;
+        let policy = Arc::new(GuardPolicy {
+            peer: PeerGrant {
+                paths: paths.clone(),
+                creation: tokio::sync::Mutex::new(None),
+                preparation_unavailable: false.into(),
+            },
+            guard,
+            attempts: 0.into(),
+            repair,
+        });
+        let service = Arc::new(AccountService::new(
+            AccountId::new(b"account")?,
+            provider.clone(),
+            paths.clone(),
+            policy.clone(),
+        ));
+        let client = Client::in_process_with_products(
+            provider.clone(),
+            acyclic_stream::session::testing::authority(),
+            None,
+            service,
+            None,
+            Arc::new(acyclic_stream::runtime::PlatformExecutor),
+            None,
+        );
+        client.register_credential(0, credential(&source, &sender, true)?)?;
+        let message = Envelope {
+            source,
+            sender,
+            to: recipient,
+            request: CommitRequest {
+                deadline_unix_millis: None,
+                idempotency_key: IdempotencyKey::new(b"guarded-input".to_vec())?,
+                effects: vec![CommitEffect::hard(
+                    Vec::new(),
+                    vec![CommitMutation::Append {
+                        path: StreamPath::new("recipient/inbox")?,
+                        records: vec!["input".into()],
+                    }],
+                )],
+            },
+        };
+        let result = admit(&client, 0, &message, 4096).await;
+        assert_eq!(policy.attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+        if repair {
+            assert!(matches!(result?, Routed::Relayed { relay_seq: 0, .. }));
+            assert_eq!(provider.tail(paths.relay(&destination)?).await?, 1);
+        } else {
+            assert!(matches!(result, Err(Error::Stream(error))
+                if error.category() == StreamError::InvalidResponse));
+            assert!(matches!(
+                provider.tail(paths.relay(&destination)?).await,
+                Err(StreamError::NotFound)
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl AdmissionPolicy for CreditRace {
     fn authorize(
         &self,

@@ -240,6 +240,23 @@ impl Error {
     }
 }
 
+/// Recompute after a conditional refusal only while its observations change.
+/// Empty sealing refusals carry no comparable external cut.
+pub(crate) fn observe_refusal(
+    previous: &mut Option<Vec<acyclic_stream::CommitConflict>>,
+    conflicts: Vec<acyclic_stream::CommitConflict>,
+) -> Result<(), Error> {
+    if conflicts.is_empty() {
+        *previous = None;
+        return Ok(());
+    }
+    if previous.take().is_some_and(|last| last == conflicts) {
+        return Err(Error::PreconditionUnchanged);
+    }
+    *previous = Some(conflicts);
+    Ok(())
+}
+
 /// Alarm identity and deadline are one durable value, including cleared alarms.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Alarm {

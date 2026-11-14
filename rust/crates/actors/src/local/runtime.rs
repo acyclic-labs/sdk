@@ -190,16 +190,7 @@ impl Inner {
     /// evidence of an external change: the identical refusal again means
     /// nothing changed, and the retry loop would never append or wait.
     fn refused(&mut self, conflicts: Vec<acyclic_stream::CommitConflict>) -> Result<(), Error> {
-        // Preparation changes carry no comparable source observation.
-        if conflicts.is_empty() {
-            self.refused = None;
-            return Ok(());
-        }
-        if self.refused.take().is_some_and(|last| last == conflicts) {
-            return Err(Error::PreconditionUnchanged);
-        }
-        self.refused = Some(conflicts);
-        Ok(())
+        super::observe_refusal(&mut self.refused, conflicts)
     }
 }
 

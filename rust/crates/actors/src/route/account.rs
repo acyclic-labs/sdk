@@ -233,6 +233,7 @@ impl<P: StreamProvider + ?Sized> CallProvider for AccountService<P> {
             if !sender.is_some_and(|placement| placement.node == message.source) {
                 return Err(StreamError::AccessDenied);
             }
+            let mut refused = None;
             let routed = loop {
                 if let Some(original) = message
                     .retained_admission(provider.as_ref(), &paths)
@@ -297,7 +298,11 @@ impl<P: StreamProvider + ?Sized> CallProvider for AccountService<P> {
                 match result {
                     // This is a new conditional-commit result, not a readiness
                     // probe or transport retry. Prepare a fresh guarded cut.
-                    Err(Error::Actor(crate::local::Error::PreconditionChanged(_))) => continue,
+                    Err(Error::Actor(crate::local::Error::PreconditionChanged(conflicts))) => {
+                        crate::local::observe_refusal(&mut refused, conflicts)
+                            .map_err(|error| stream_error(error.into()))?;
+                        continue;
+                    }
                     other => break other.map_err(stream_error)?,
                 }
             };
