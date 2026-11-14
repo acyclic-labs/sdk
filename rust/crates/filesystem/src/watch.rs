@@ -1603,6 +1603,8 @@ pub struct NativeWatch {
     // A terminal cause survives a refused housekeeping invocation.
     terminal_source_failure: Option<crate::demand::DemandError>,
     owner_allocation: Option<crate::NativeAllocation>,
+    #[cfg(test)]
+    before_fence: Option<Box<dyn FnOnce() + Send + Sync>>,
 }
 
 impl std::fmt::Debug for NativeWatch {
@@ -2275,6 +2277,8 @@ impl NativeWatch {
             _root_allocation: root_allocation,
             owner_allocation: None,
             terminal_source_failure: None,
+            #[cfg(test)]
+            before_fence: None,
         };
         if let NativeWatchDriver::StartupFailure(cause) = &watch.watcher {
             return Err(NativeWatchError::SourceStartupFailed {
@@ -3671,7 +3675,13 @@ impl NativeWatch {
 
     /// Waits for native delivery to settle. The next batch either contains
     /// the changes completed before this call or requires a rescan.
+    /// Async callers should use [`Self::fence_owned`] so a contended producer
+    /// never parks their executor thread.
     pub fn fence(&mut self) -> Result<(), NativeWatchError> {
+        #[cfg(test)]
+        if let Some(entered) = self.before_fence.take() {
+            entered();
+        }
         if let Some(work) = self.original_work.clone() {
             return self.fence_with_native_work(&work);
         }
@@ -3702,6 +3712,30 @@ impl NativeWatch {
             state.invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
         }
         Ok(())
+    }
+
+    /// Settles the same native fence on the shared I/O workers and returns the
+    /// original watch. Its original work funds the completion and wait state.
+    /// Cancellation withdraws observation only: accepted native work retains
+    /// the watch and its birth custody until the physical fence finishes.
+    pub async fn fence_owned(mut self) -> Result<Self, NativeWatchError> {
+        let work = self.original_work.clone();
+        let meter = work.as_ref().map(|work| (work.runtime_meter(), true));
+        let failure = |cause| match &work {
+            Some(work) => NativeWatchError::from(work.runtime_error(cause)),
+            None => NativeWatchError::Io(cause),
+        };
+        acyclic_native_runtime::run_blocking_io(
+            move || {
+                self.fence()?;
+                Ok(self)
+            },
+            meter,
+        )
+        .map_err(&failure)?
+        .offloaded()
+        .await
+        .map_err(failure)?
     }
 
     /// Registers an adapter watch on a fence home before a cookie is written
@@ -4819,6 +4853,10 @@ impl From<std::io::Error> for NativeWatchError {
         Self::Io(error)
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "watch/fence_tests.rs"]
+mod fence_tests;
 
 fn demand_watch_error(error: crate::demand::DemandError) -> NativeWatchError {
     match error {

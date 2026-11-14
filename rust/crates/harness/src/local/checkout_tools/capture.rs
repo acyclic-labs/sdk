@@ -369,10 +369,10 @@ where
         .await
         .map_err(storage)?
         .value;
-    publication_phase(
+    cursor = publication_phase(
         "capture-observe",
         converge::capture(
-            &mut cursor,
+            cursor,
             &mut checkout,
             physical,
             (options, policy),

@@ -536,9 +536,9 @@ async fn rescan_preserves_the_original_publication_fence() -> Result<()> {
         .id();
     assert_ne!(original, winner);
     std::fs::write(directory.path().join("marker"), b"after").map_err(storage)?;
-    let mut cursor = Cursor::initial(&tools.workspace)?;
-    converge::capture(
-        &mut cursor,
+    let cursor = Cursor::initial(&tools.workspace)?;
+    let _cursor = converge::capture(
+        cursor,
         &mut checkout,
         &tools.workspace,
         (&tools.capture_options, &tools.capture_policy),

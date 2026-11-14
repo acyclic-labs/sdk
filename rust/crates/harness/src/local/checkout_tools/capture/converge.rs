@@ -83,13 +83,13 @@ impl Cursor {
 
 #[inline(never)]
 pub(super) fn capture<'a>(
-    cursor: &'a mut Cursor,
+    mut cursor: Cursor,
     checkout: &'a mut Candidate,
     physical: &'a LocalWorkspace,
     configuration: (&'a CaptureOptions, &'a CapturePolicy),
     mut baseline: bool,
     cancellation: &'a CancellationToken,
-) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+) -> Result<crate::conversation::BoundedContentFuture<'a, Cursor>> {
     crate::conversation::BoundedContentFuture::new(None, || async move {
         let mut initial = cursor.initial.take();
         let optional_before_images = physical.import_source
@@ -101,7 +101,10 @@ pub(super) fn capture<'a>(
         }
         baseline |= matches!(initial, Some(WatchBatch::RescanRequired { .. }));
         if !baseline {
-            cursor.watcher.fence().map_err(storage)?;
+            cursor.watcher = publication_phase("capture-fence", async {
+                cursor.watcher.fence_owned().await.map_err(storage)
+            })
+            .await?;
             #[cfg(all(test, not(loom)))]
             cursor.inject("fence")?;
         }
@@ -132,7 +135,7 @@ pub(super) fn capture<'a>(
                     )?
                     .await?;
                 if !replay(
-                    cursor,
+                    &mut cursor,
                     checkout,
                     batch,
                     physical,
@@ -145,7 +148,7 @@ pub(super) fn capture<'a>(
                 }
             } else if let Some(batch) = initial.take()
                 && !replay(
-                    cursor,
+                    &mut cursor,
                     checkout,
                     batch,
                     physical,
@@ -157,8 +160,8 @@ pub(super) fn capture<'a>(
                 baseline = true;
                 continue;
             }
-            if drain(cursor, checkout, physical, configuration, cancellation)?.await? {
-                return Ok(());
+            if drain(&mut cursor, checkout, physical, configuration, cancellation)?.await? {
+                return Ok(cursor);
             }
             baseline = true;
         }
@@ -290,7 +293,7 @@ mod native_capture_storage_tests {
                 "capture",
                 retained(
                     |(cursor, checkout, physical, options, policy, cancellation): (
-                        &'static mut Cursor,
+                        Cursor,
                         &'static mut Candidate,
                         &'static LocalWorkspace,
                         &'static CaptureOptions,
