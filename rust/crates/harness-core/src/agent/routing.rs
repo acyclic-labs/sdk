@@ -41,6 +41,31 @@ fn account_error(error: Error) -> route::Error {
     }
 }
 
+fn inbox_append(
+    envelope: &route::Envelope,
+) -> Result<(&acyclic_stream::StreamPath, &acyclic_stream::AppendRecord), Error> {
+    let [effect] = envelope.request.effects.as_slice() else {
+        return Err(Error::Record("peer route is not one inbox effect"));
+    };
+    let [acyclic_stream::CommitMutation::Append { path, records }] = effect.mutations.as_slice()
+    else {
+        return Err(Error::Record("peer route is not one inbox append"));
+    };
+    let [record] = records.as_slice() else {
+        return Err(Error::Record("peer route is not one input"));
+    };
+    Ok((path, record))
+}
+
+fn is_message(envelope: &route::Envelope) -> Result<bool, Error> {
+    Ok(inbox_append(envelope)?
+        .1
+        .headers
+        .attributes()
+        .iter()
+        .any(|attribute| attribute.name == ADMISSION))
+}
+
 impl Routing {
     /// Drive one accepted link using this node's agent journal and inbox writer.
     /// The connection owner supplies its authenticated account provider and
@@ -105,22 +130,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> super::AgentHost<P> {
         routing: &Routing,
         record: &route::RelayRecord,
     ) -> Result<super::Delivered, Error> {
-        let [effect] = record.envelope.request.effects.as_slice() else {
-            return Err(Error::Record("peer route is not one inbox effect"));
-        };
-        let [acyclic_stream::CommitMutation::Append { records, .. }] = effect.mutations.as_slice()
-        else {
-            return Err(Error::Record("peer route is not one inbox append"));
-        };
-        let [input] = records.as_slice() else {
-            return Err(Error::Record("peer route is not one input"));
-        };
-        if input
-            .headers
-            .attributes()
-            .iter()
-            .any(|attribute| attribute.name == ADMISSION)
-        {
+        if is_message(&record.envelope)? {
             return PeerRoute::parse(&record.envelope)?
                 .deliver(self, routing, &record.receipt)
                 .await;
@@ -147,15 +157,7 @@ impl<'a> PeerRoute<'a> {
     pub fn parse(envelope: &'a route::Envelope) -> Result<Self, Error> {
         use super::{InboxRecord, Sender};
         use acyclic_stream::CommitMutation;
-        let [effect] = envelope.request.effects.as_slice() else {
-            return Err(Error::Record("peer route is not one inbox effect"));
-        };
-        let [CommitMutation::Append { path, records }] = effect.mutations.as_slice() else {
-            return Err(Error::Record("peer route is not one inbox append"));
-        };
-        let [record] = records.as_slice() else {
-            return Err(Error::Record("peer route is not one message"));
-        };
+        let (path, record) = inbox_append(envelope)?;
         let input = InboxRecord::decode(&record.value)?;
         let (InboxRecord::Message(message) | InboxRecord::FollowUp(message)) = &input else {
             return Err(Error::Record("peer route cannot carry control input"));

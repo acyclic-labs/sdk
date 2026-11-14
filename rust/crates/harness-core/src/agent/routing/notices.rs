@@ -118,15 +118,7 @@ impl ResultRecord {
     fn parse(
         envelope: &route::Envelope,
     ) -> Result<(Self, AgentPath, Option<route::RelayReceipt>), Error> {
-        let [effect] = envelope.request.effects.as_slice() else {
-            return Err(Error::Record("result has extra effects"));
-        };
-        let [CommitMutation::Append { records, .. }] = effect.mutations.as_slice() else {
-            return Err(Error::Record("result is not an inbox append"));
-        };
-        let [record] = records.as_slice() else {
-            return Err(Error::Record("result has extra input"));
-        };
+        let (_, record) = super::inbox_append(envelope)?;
         let InboxRecord::Notice {
             notice: NoticePayload::Quiet(notice),
             ..

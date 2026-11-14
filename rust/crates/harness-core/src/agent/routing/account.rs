@@ -93,12 +93,14 @@ enum AccountInput<'a> {
 
 impl<'a> AccountInput<'a> {
     fn parse(message: &'a route::Envelope) -> Result<Self, Error> {
-        // These strict canonical schemas are disjoint. Classification performs
-        // no authorization; both variants use the same funded host policy.
-        if let Ok(peer) = PeerRoute::parse(message) {
-            return Ok(Self::Message(peer));
+        // The versioned header selects one strict schema before decoding its
+        // body. Classification grants no authority and never retries a failed
+        // message validation as a terminal input.
+        if super::is_message(message)? {
+            PeerRoute::parse(message).map(Self::Message)
+        } else {
+            PeerResultRoute::parse(message).map(Self::Result)
         }
-        PeerResultRoute::parse(message).map(Self::Result)
     }
 }
 
