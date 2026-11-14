@@ -109,8 +109,13 @@ proptest! {
         let actual = record_anchor(&decoded);
         if next != 0 && decoded.opaque.len() != 32 {
             let error = actual.as_ref().unwrap_err();
-            prop_assert!(std::error::Error::source(error)
-                .is_some_and(|source| source.is::<std::array::TryFromSliceError>()));
+            let mut source = std::error::Error::source(error);
+            let mut retained = false;
+            while let Some(cause) = source {
+                retained |= cause.is::<std::array::TryFromSliceError>();
+                source = cause.source();
+            }
+            prop_assert!(retained, "snapshot anchor discarded its original parser cause");
         }
         if let Err(error) = &actual {
             prop_assert!(std::error::Error::source(error).is_some());
