@@ -208,6 +208,57 @@ mod tests {
     };
     use futures::StreamExt as _;
 
+    /// Observation holds the observed work once, beside a constant-size
+    /// admission and recording. Nesting adds that constant per layer rather
+    /// than multiplying the work, so traced futures stay small on any stack.
+    #[test]
+    fn observation_adds_a_constant_size_however_deeply_it_nests() {
+        const LAYER_BYTES: usize = 512;
+        fn work() -> impl std::future::Future<Output = Result<u8, ()>> {
+            async {
+                let held = std::hint::black_box([7u8; 4096]);
+                std::future::ready(()).await;
+                Ok(held[4095])
+            }
+        }
+        let request = |name| Request {
+            name,
+            mechanism: Mechanism::Wait,
+            parent: None,
+            guarantee: None,
+        };
+        let inner = std::mem::size_of_val(&work());
+        let once = std::mem::size_of_val(&observe(request("once"), work(), |_| None));
+        let twice = std::mem::size_of_val(&observe(
+            request("outer"),
+            observe(request("inner"), work(), |_| None),
+            |_| None,
+        ));
+        let guard = std::mem::size_of_val(&observe_guard(request("guard"), work()));
+        // A caller's admission may borrow and carry its own error type.
+        let borrowed = 7u8;
+        let admission: crate::BoxProviderFuture<'_, Result<OwnedRecording, u8>> =
+            Box::pin(async { Err(borrowed) });
+        let accompanied =
+            std::mem::size_of_val(&OwnedRecording::accompany(Some(admission), work()));
+        assert!(
+            accompanied <= inner + LAYER_BYTES,
+            "{accompanied} > {inner} + {LAYER_BYTES}"
+        );
+        assert!(
+            once <= inner + LAYER_BYTES,
+            "{once} > {inner} + {LAYER_BYTES}"
+        );
+        assert!(
+            twice <= inner + 2 * LAYER_BYTES,
+            "{twice} > {inner} + 2 * {LAYER_BYTES}"
+        );
+        assert!(
+            guard <= inner + LAYER_BYTES,
+            "{guard} > {inner} + {LAYER_BYTES}"
+        );
+    }
+
     #[tokio::test]
     async fn span_deltas_page_and_retain_original_failure_evidence()
     -> Result<(), Box<dyn std::error::Error>> {

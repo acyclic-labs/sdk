@@ -51,10 +51,13 @@ impl Drop for GuardRecording {
 /// Acquire the original guard under the current causal owner, and retain the
 /// same span through guard release. Without an admitted owner this performs no
 /// diagnostic allocation, clock read or IO. Dropped acquisition stays unsettled.
-pub async fn observe_guard<G>(request: Request, work: impl Future<Output = G>) -> ObservedGuard<G> {
-    let (value, recording) = OwnedRecording::accompany(super::context::child(request), work).await;
-    ObservedGuard {
+pub fn observe_guard<G>(
+    request: Request,
+    work: impl Future<Output = G>,
+) -> impl Future<Output = ObservedGuard<G>> {
+    use futures::FutureExt as _;
+    OwnedRecording::child(request, work).map(|(value, recording)| ObservedGuard {
         value,
         _recording: GuardRecording(recording),
-    }
+    })
 }
