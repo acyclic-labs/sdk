@@ -180,7 +180,6 @@ pub(super) fn completion(token: usize) -> Option<&'static Hub> {
 mod tests {
     use super::*;
     use std::sync::mpsc;
-    use std::time::Duration;
 
     #[test]
     fn startup_abort_releases_original_native_producers() -> io::Result<()> {
@@ -228,6 +227,7 @@ mod tests {
     fn original_producers_retire_independently_of_other_sources_and_history() -> io::Result<()> {
         use std::io::{Read as _, Write as _};
         use std::os::fd::AsFd as _;
+        use std::time::Duration;
 
         if crate::delivery::isolated()? {
             return Ok(());

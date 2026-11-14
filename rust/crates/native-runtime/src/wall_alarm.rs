@@ -315,17 +315,21 @@ mod platform {
         }
 
         pub(super) fn wait(&self, deadline: Option<u64>) -> io::Result<()> {
-            let value = deadline.map_or(
+            let value = if let Some(deadline) = deadline {
+                libc::timespec {
+                    tv_sec: (deadline / 1000)
+                        .try_into()
+                        .map_err(|_| io::ErrorKind::InvalidInput)?,
+                    tv_nsec: ((deadline % 1000) * 1_000_000)
+                        .try_into()
+                        .map_err(|_| io::ErrorKind::InvalidInput)?,
+                }
+            } else {
                 libc::timespec {
                     tv_sec: 0,
                     tv_nsec: 0,
-                },
-                |deadline| libc::timespec {
-                    tv_sec: libc::time_t::try_from(deadline / 1000).unwrap_or(libc::time_t::MAX),
-                    // Below one second, so it fits every `c_long`.
-                    tv_nsec: libc::c_long::try_from((deadline % 1000) * 1_000_000).unwrap_or(0),
-                },
-            );
+                }
+            };
             let setting = libc::itimerspec {
                 it_interval: libc::timespec {
                     tv_sec: 0,
