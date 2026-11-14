@@ -51,7 +51,8 @@ mod executor;
 pub use executor::{AbortHandle, TaskHandle};
 mod durability;
 pub use durability::{
-    DurableFault, DurableWrite, InjectedStorageFault, durable_operation, durable_write,
+    DurableFault, DurableWrite, InjectedStorageFault, durable_flush, durable_operation,
+    durable_write,
 };
 pub(crate) mod host;
 pub(crate) use host::Pool as HostPool;
@@ -138,7 +139,6 @@ struct State {
     writes: durability::Writes,
     process: Option<Arc<process::Provider>>,
     metadata: Option<Arc<metadata::Provider>>,
-    ledger: ledger::Ledger,
 }
 
 struct Inner {
@@ -147,6 +147,9 @@ struct Inner {
     state: Mutex<State>,
     entropy: Option<Arc<entropy::Source>>,
     executor: Option<Arc<executor::Executor>>,
+    // Its own lock: a call records when its last holder drops, which can be
+    // anywhere, including while `state` is held.
+    ledger: Arc<Mutex<ledger::Ledger>>,
 }
 
 impl Inner {
@@ -235,6 +238,7 @@ impl Schedule {
         let inner = Arc::new(Inner {
             events,
             state: Mutex::new(State::default()),
+            ledger: Arc::default(),
             entropy: seed
                 .filter(|_| entropy)
                 .map(|seed| Arc::new(entropy::Source::new(seed))),

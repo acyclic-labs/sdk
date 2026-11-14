@@ -1,23 +1,43 @@
 //! The deterministic cost ledger: exact hot-path counts per operation.
 //!
 //! [`operation`] opens a named operation for a future and every task it
-//! spawns through the simulation scope. Each [`crate::cost::charge`] while it
-//! runs counts against it and every enclosing operation. When it completes, its
-//! counts and its simulated-time latency join the scope's [`Ledger`], which
-//! keeps per-operation totals and the worst single call. Counts are exact and
-//! time is the paused Tokio clock, so the same seed yields the same ledger.
-//! Durable flushes are charged at the core's own fault sites.
+//! spawns through the simulation scope. Each [`crate::cost::charge`] made by
+//! it or by work it spawned counts against it and every enclosing operation,
+//! even after the operation's own future returns. Once the call and all that
+//! work have finished, its counts and its simulated-time latency join the
+//! scope's [`Ledger`], which keeps per-operation totals and the worst single
+//! call. Counts are exact and time is the paused Tokio clock, so the same seed
+//! yields the same ledger. Flushes are charged at [`super::durable_flush`].
 use super::*;
 use crate::cost::Cost;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::time::Duration;
 
-/// One open operation call. Charges walk its chain of enclosing calls.
+/// One operation call. Charges walk its chain of enclosing calls. Spawned work
+/// holds the call, so it records only when its last holder drops: a charge
+/// made after the operation's future returns still counts.
 pub(crate) struct Call {
     name: &'static str,
     parent: Option<Arc<Call>>,
     counts: Mutex<Counts>,
+    started: tokio::time::Instant,
+    // The operation's own latency, set when its future completes.
+    latency: Mutex<Option<Duration>>,
+    ledger: Arc<Mutex<Ledger>>,
+}
+
+impl Drop for Call {
+    fn drop(&mut self) {
+        let counts = std::mem::take(&mut *lock(&self.counts));
+        let latency = (*lock(&self.latency)).unwrap_or_else(|| self.started.elapsed());
+        let mut ledger = lock(&self.ledger);
+        let entry = ledger.operations.entry(self.name).or_default();
+        entry.calls += 1;
+        entry.total.sum(&counts);
+        entry.worst.max(&counts);
+        entry.latency = entry.latency.max(latency);
+    }
 }
 
 /// Exact counts of each cost, and the bytes those costs moved.
@@ -112,24 +132,25 @@ impl Ledger {
     pub fn check(&self, budgets: &[Budget]) -> Result<(), String> {
         let mut report = Vec::new();
         for budget in budgets {
-            let (name, observed, limit) = match *budget {
+            // The exceeded observation, compared exactly; `None` when unmeasured.
+            let (name, exceeded) = match *budget {
                 Budget::Count(name, cost, limit) => (
                     name,
-                    self.operation(name).map(|op| op.worst.count(cost)),
-                    limit,
+                    self.operation(name).map(|op| {
+                        let spent = op.worst.count(cost);
+                        (spent > limit).then(|| spent.to_string())
+                    }),
                 ),
                 Budget::Latency(name, limit) => (
                     name,
-                    self.operation(name).map(|op| millis(op.latency)),
-                    millis(limit),
+                    self.operation(name)
+                        .map(|op| (op.latency > limit).then(|| format!("{:?}", op.latency))),
                 ),
             };
-            match observed {
+            match exceeded {
                 None => report.push(format!("{budget:?}: operation {name} never completed")),
-                Some(observed) if observed > limit => {
-                    report.push(format!("{budget:?}: worst call spent {observed}"));
-                }
-                Some(_) => {}
+                Some(Some(spent)) => report.push(format!("{budget:?}: worst call spent {spent}")),
+                Some(None) => {}
             }
         }
         if report.is_empty() {
@@ -138,8 +159,9 @@ impl Ledger {
         Err(format!("{}\nledger:\n{self}", report.join("\n")))
     }
 
-    /// Every difference between two ledgers' named operation, worst call and
-    /// latency, as `cost: self -> other` lines; empty when equal. Compares one
+    /// Every difference between two ledgers' named operation, worst call
+    /// (counts and bytes) and latency, as `cost: self -> other` lines; empty
+    /// when equal. Compares one
     /// operation across two worlds, for example idle against busy neighbours.
     #[must_use]
     pub fn diff(&self, other: &Self, name: &str) -> String {
@@ -148,29 +170,32 @@ impl Ledger {
             self.operation(name).unwrap_or(&empty),
             other.operation(name).unwrap_or(&empty),
         );
-        let mut costs: Vec<Cost> = left.worst.costs.keys().copied().collect();
-        costs.extend(right.worst.costs.keys().copied());
-        costs.sort();
-        costs.dedup();
-        let mut diff: Vec<String> = costs
-            .into_iter()
-            .map(|cost| (cost, left.worst.count(cost), right.worst.count(cost)))
-            .filter(|(_, a, b)| a != b)
-            .map(|(cost, a, b)| format!("{name} {cost:?}: {a} -> {b}\n"))
-            .collect();
+        let changed = |unit: &str, a: &BTreeMap<Cost, u64>, b: &BTreeMap<Cost, u64>| {
+            let costs: std::collections::BTreeSet<Cost> =
+                a.keys().chain(b.keys()).copied().collect();
+            costs
+                .into_iter()
+                .map(|cost| {
+                    (
+                        cost,
+                        a.get(&cost).copied().unwrap_or(0),
+                        b.get(&cost).copied().unwrap_or(0),
+                    )
+                })
+                .filter(|(_, a, b)| a != b)
+                .map(|(cost, a, b)| format!("{name} {cost:?}{unit}: {a} -> {b}\n"))
+                .collect::<Vec<_>>()
+        };
+        let mut diff = changed("", &left.worst.costs, &right.worst.costs);
+        diff.extend(changed(" bytes", &left.worst.bytes, &right.worst.bytes));
         if left.latency != right.latency {
             diff.push(format!(
-                "{name} latency: {}ms -> {}ms\n",
-                millis(left.latency),
-                millis(right.latency)
+                "{name} latency: {:?} -> {:?}\n",
+                left.latency, right.latency
             ));
         }
         diff.concat()
     }
-}
-
-fn millis(duration: Duration) -> u64 {
-    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 impl fmt::Display for Ledger {
@@ -178,9 +203,8 @@ impl fmt::Display for Ledger {
         for (name, operation) in &self.operations {
             write!(
                 f,
-                "  {name}: calls={} worst_latency={}ms worst",
-                operation.calls,
-                millis(operation.latency)
+                "  {name}: calls={} worst_latency={:?} worst",
+                operation.calls, operation.latency
             )?;
             for (cost, count) in &operation.worst.costs {
                 write!(f, " {cost:?}={count}")?;
@@ -208,19 +232,15 @@ pub async fn operation<F: Future>(name: &'static str, future: F) -> F::Output {
         name,
         parent: context.operation.take(),
         counts: Mutex::new(Counts::default()),
+        started: tokio::time::Instant::now(),
+        latency: Mutex::new(None),
+        ledger: context.schedule.0.ledger.clone(),
     });
     context.operation = Some(call.clone());
-    let schedule = context.schedule.clone();
-    let started = tokio::time::Instant::now();
     let output = CURRENT.scope(Some(context), future).await;
-    let latency = started.elapsed();
-    let counts = std::mem::take(&mut *lock(&call.counts));
-    let mut state = schedule.0.state();
-    let entry = state.ledger.operations.entry(call.name).or_default();
-    entry.calls += 1;
-    entry.total.sum(&counts);
-    entry.worst.max(&counts);
-    entry.latency = entry.latency.max(latency);
+    *lock(&call.latency) = Some(call.started.elapsed());
+    // Records now, or when the last spawned holder drops.
+    drop(call);
     output
 }
 
@@ -230,11 +250,7 @@ pub(crate) fn charge(cost: Cost, bytes: u64) {
     };
     let mut call = context.operation.as_deref();
     if call.is_none() {
-        context
-            .schedule
-            .0
-            .state()
-            .ledger
+        lock(&context.schedule.0.ledger)
             .unattributed
             .add(cost, bytes);
     }
@@ -245,9 +261,10 @@ pub(crate) fn charge(cost: Cost, bytes: u64) {
 }
 
 impl Schedule {
-    /// Exact per-operation costs of every call completed in this scope.
+    /// Exact per-operation costs of every call in this scope that has
+    /// finished, together with all the work it spawned.
     pub fn ledger(&self) -> Ledger {
-        self.0.state().ledger.clone()
+        lock(&self.0.ledger).clone()
     }
 }
 
@@ -344,8 +361,40 @@ mod tests {
         assert!(report.contains("step: calls=1"), "{report}");
         let ((), cheaper) = world(operation("step", async {
             crate::cost::charge(Cost::JournalHop);
+            charge_bytes(Cost::Copy, 10);
         }));
-        assert_eq!(ledger.diff(&cheaper, "step"), "step JournalHop: 5 -> 1\n");
+        assert_eq!(
+            ledger.diff(&cheaper, "step"),
+            "step JournalHop: 5 -> 1\nstep Copy: 0 -> 1\nstep Copy bytes: 0 -> 10\n"
+        );
+        // Latency budgets compare exact durations, not whole milliseconds.
+        let ((), slow) = world(operation("step", async {
+            tokio::time::sleep(Duration::from_micros(1900)).await;
+        }));
+        assert!(
+            slow.check(&[Budget::Latency("step", Duration::from_millis(1))])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn work_spawned_by_an_operation_counts_after_the_operation_returns() {
+        let ((), ledger) = world(async {
+            let task = operation("detached", async {
+                spawn(async {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                    crate::cost::charge(Cost::Fsync);
+                })
+            })
+            .await;
+            task.await.ok();
+        });
+        let detached = ledger
+            .operation("detached")
+            .expect("recorded once its task finished");
+        assert_eq!((detached.calls, detached.worst.count(Cost::Fsync)), (1, 1));
+        // The operation's own future returned at once.
+        assert_eq!(detached.latency, Duration::ZERO);
     }
 
     #[test]

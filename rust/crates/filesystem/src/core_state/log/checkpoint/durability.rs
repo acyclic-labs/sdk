@@ -77,7 +77,7 @@ impl<'a> CheckpointDurability<'a> {
     ) -> Result<CheckpointDurable, LocalCoreStateStoreError> {
         #[cfg(target_os = "macos")]
         attempt(work, DURABILITY, || {
-            operation("file:sync_checkpoint_batch", || {
+            flush("file:sync_checkpoint_batch", || {
                 acyclic_native_runtime::sync_descriptor_once(std::os::fd::AsFd::as_fd(self.anchor))
             })
         })?;
@@ -96,13 +96,13 @@ impl<'a> CheckpointDurability<'a> {
         // volume, decide which device drain covers this actual write.
         if device(descriptor, work)? != self.device {
             return attempt(work, DURABILITY, || {
-                operation("file:sync_all", || {
+                flush("file:sync_all", || {
                     acyclic_native_runtime::sync_descriptor_once(descriptor.as_fd())
                 })
             });
         }
         attempt(work, DURABILITY, || {
-            operation("file:stage_checkpoint", || {
+            flush("file:stage_checkpoint", || {
                 rustix::fs::fsync(descriptor).map_err(std::io::Error::from)
             })
         })
@@ -152,13 +152,14 @@ fn attempt<T>(
     }
 }
 
+// Both checkpoint durability steps are flushes, charged as such in simulation.
 #[cfg(target_os = "macos")]
-fn operation<T>(
+fn flush<T>(
     name: &'static str,
     operation: impl FnOnce() -> std::io::Result<T>,
 ) -> std::io::Result<T> {
     #[cfg(any(test, feature = "test-support"))]
-    return acyclic_native_runtime::testing::durable_operation(name, operation);
+    return acyclic_native_runtime::testing::durable_flush(name, operation);
     #[cfg(not(any(test, feature = "test-support")))]
     {
         let _ = name;
