@@ -162,8 +162,22 @@
           }
         ]
       }
-    ]
+    ],
+    "jsonl": {
+      ".acyclic-sdk/detail/agents.jsonl": [
+        {
+          "parent": null
+        },
+        {
+          "role": "worker"
+        }
+      ]
+    }
   },
   "physical": true,
-  "adapter": "responses"
+  "adapter": "responses",
+  "extra_args": [
+    "--transcripts",
+    "{{workspace}}/.acyclic-sdk/detail"
+  ]
 }

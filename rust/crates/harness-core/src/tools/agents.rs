@@ -14,11 +14,11 @@
 //! [`crate::agent::settled`]); the original claim publishes that selection
 //! and each settled child's exact answer, without reading its status again.
 //!
-//! A child works on its own fork of its parent's project. Neither settling
-//! nor `wait` joins that fork into the parent: the parent merges it
-//! explicitly, as a reviewed step it can also skip, with the `fs` facade's
-//! `merge agents/<name>` (inspect with `diff`). `wait`
-//! names that branch for each settled child it was given by spawn name.
+//! A child works on its own fork of its parent's project. The local host
+//! hands the completed fork back through the shared workspace merge before
+//! publishing settlement. The parent's next workspace command applies any
+//! queued publication, including conflict markers. `wait` also names the
+//! branch for each settled child it was given by spawn name.
 
 use crate::agent::spawn_names::{spawn_intent, spawn_name};
 use crate::{
