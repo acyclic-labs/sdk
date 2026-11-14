@@ -837,7 +837,9 @@ mod indexed_trace_tests {
                     let request = CommitRequest {
                         deadline_unix_millis: None,
                         effects: vec![CommitEffect::hard(
-                            Vec::new(),
+                            vec![CommitCondition::Absent {
+                                path: destination.clone(),
+                            }],
                             vec![CommitMutation::Fork {
                                 source: source.path().clone(),
                                 destination: destination.clone(),
