@@ -20,6 +20,7 @@
     "files": { "sentinel.txt": "unchanged\n" },
     "results": {
       "program": {
+        "name": "code",
         "content": {
           "kind": "json",
           "value": {
