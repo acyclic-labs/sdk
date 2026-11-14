@@ -577,7 +577,10 @@ async fn rejected_manager_rewrites_preserve_history_and_never_dispatch_the_worke
             "a rejected rewrite must never dispatch the worker"
         );
         if admitted {
-            assert!(requests[1].summary, "a partial rewrite still needs capacity proof");
+            assert!(
+                requests[1].summary,
+                "a partial rewrite still needs capacity proof"
+            );
             assert!(
                 !requests[2].summary,
                 "the completed rewrite admits the worker"
@@ -1369,14 +1372,26 @@ impl ModelProvider for CeilingCounter {
 
 #[tokio::test]
 async fn response_reserve_requests_a_tighter_count_before_rewriting() -> Result<()> {
+    let verified_calls = Arc::new(AtomicUsize::new(0));
+    let observed = verified_calls.clone();
     let provider = Arc::new(CeilingCounter(
-        ScriptedModelProvider::new([ScriptedTurn::Text("answer".into())]).with_context_capacity(
-            crate::context::ModelContextCapacity {
+        ScriptedModelProvider::new([ScriptedTurn::Text("answer".into())])
+            .with_context_capacity(crate::context::ModelContextCapacity {
                 context_tokens: 65_536,
                 output_tokens: Some(8192),
                 output_shares_context: false,
-            },
-        ),
+            })
+            .with_token_counter(move |request| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                // The fixture provider reports this verified count. Its local
+                // serialized upper bound exceeds the reserved input window.
+                Ok(crate::context::ModelTokenCount {
+                    request_digest: request.request_digest(),
+                    input_tokens: 50_000,
+                    fixed_tokens: 0,
+                    message_tokens: vec![0; request.request().messages.len()],
+                })
+            }),
     ));
     let executor = StockExecutor::new(
         Model::new("fixture".into(), "ceiling-counter".into(), "1".into())?,
@@ -1419,6 +1434,11 @@ async fn response_reserve_requests_a_tighter_count_before_rewriting() -> Result<
         "an exact count fits; no manager call is needed"
     );
     assert!(!requests[0].summary);
+    assert_eq!(
+        verified_calls.load(Ordering::SeqCst),
+        1,
+        "replay reuses the verified count"
+    );
     let prepared =
         crate::model::PreparedModelRequest::prepare(requests[0].clone(), Limits::default(), None)?;
     assert!(
