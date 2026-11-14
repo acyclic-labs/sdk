@@ -150,15 +150,23 @@ pub fn workspace_grants(volume: &[u8]) -> Result<JsValue, JsValue> {
     Ok(grants.into())
 }
 
+/// The fixture's public trust, encoded from the one trust snapshot type so
+/// every field its decoder requires is constructed here.
 #[wasm_bindgen(js_name = hostFixtureTrust)]
-pub fn trust() -> String {
+pub fn trust() -> Result<String, JsValue> {
     let keys = acyclic_auth::testing::Snapshot::default();
-    serde_json::json!({
-        "environment": "test", "environment_keys": keys.environments,
-        "account": "account", "issuer_keys": keys.issuers, "minimum_key_epoch": 1,
-        "revoked_key_ids": [], "revoked_block_ids": [],
+    serde_json::to_string(&acyclic_auth::trust::Snapshot {
+        environment: "test".into(),
+        environment_keys: keys.environments,
+        environment_keys_valid_until: None,
+        account: "account".into(),
+        issuer_keys: keys.issuers,
+        minimum_key_epoch: 1,
+        not_before_unix_seconds: 0,
+        revoked_key_ids: Default::default(),
+        revoked_block_ids: Default::default(),
     })
-    .to_string()
+    .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
 #[wasm_bindgen(js_name = hostFixtureCredential)]
