@@ -266,8 +266,46 @@ pub trait TurnOutputs: acyclic_stream::ProviderPlatform {
     }
 }
 
+/// Completed control review, before any worker context is opened.
+pub struct OpenTriage {
+    /// One merged escalation; absent when every selected ask was resolved.
+    pub summary: Option<FileRef>,
+    /// Decision wakes published with the control's actor checkpoint.
+    pub outs: Vec<Out>,
+}
+
 /// Host binding of agent turns to an executor and journal.
 pub trait TurnHost: acyclic_stream::ProviderPlatform {
+    /// Freeze the original approval input page and its trusted policy before
+    /// inference. Unsupported hosts refuse without opening a worker executor.
+    fn select_approvals<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        inbox: u64,
+        cursor: u64,
+    ) -> BoxFuture<'a, crate::Result<super::ApprovalSelection>> {
+        let _ = (agent, inbox, cursor);
+        Box::pin(async {
+            Err(crate::Error::Unsupported(
+                "parent review is not bound".into(),
+            ))
+        })
+    }
+    /// Review only this frozen page outside worker context. Decisive results
+    /// retain their original decision owner; only escalation produces a summary.
+    fn triage<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        selection: &'a super::ApprovalSelection,
+    ) -> BoxFuture<'a, crate::Result<OpenTriage>> {
+        let _ = (agent, selection);
+        Box::pin(async {
+            Err(crate::Error::Unsupported(
+                "parent review is not bound".into(),
+            ))
+        })
+    }
+
     /// Saves workspace effects before a pending operation releases the delivery.
     /// Unlike settlement, this does not complete the turn or merge a child.
     /// Required, so no wrapping host can silently drop a save.
@@ -324,6 +362,22 @@ impl<H: TurnHost + ?Sized> TurnHost for Arc<H> {
     ) -> BoxFuture<'a, crate::Result<()>> {
         (**self).park(agent, operation)
     }
+    fn select_approvals<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        inbox: u64,
+        cursor: u64,
+    ) -> BoxFuture<'a, crate::Result<super::ApprovalSelection>> {
+        (**self).select_approvals(agent, inbox, cursor)
+    }
+    fn triage<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        selection: &'a super::ApprovalSelection,
+    ) -> BoxFuture<'a, crate::Result<OpenTriage>> {
+        (**self).triage(agent, selection)
+    }
+
     fn settle<'a>(
         &'a self,
         agent: &'a AgentState,
@@ -801,11 +855,11 @@ pub fn model_input(input: &TurnInput) -> Result<ModelContent, Error> {
                 _ => ModelContent::Part(event),
             }
         }
-        TurnInput::ApprovalRequested { child, id } => ModelContent::Part(notice(
-            child.as_str().to_owned(),
-            "approval.requested",
-            serde_json::json!({"id": id}),
-        )),
+        TurnInput::ApprovalRequested { .. } => {
+            return Err(Error::Record(
+                "approval requests require independent review",
+            ));
+        }
         TurnInput::Approval { id } => ModelContent::Part(notice(
             "approval".to_owned(),
             "approval.resolved",
@@ -1180,6 +1234,39 @@ async fn pending_spawns(agent: &AgentState, open: &OpenTurn) -> Result<Vec<Out>,
 }
 
 impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
+    fn review<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        cursor: u64,
+        cancellation: acyclic_actors::guest::CancellationToken,
+    ) -> super::ReviewFuture<'a> {
+        Box::pin(async move {
+            let pending = agent
+                .approval_control
+                .as_ref()
+                .ok_or(Error::Record("review has no original control"))?;
+            let result = if let Some(selected) = &pending.selected {
+                crate::core::until_turn_stopped(
+                    Some(cancellation),
+                    self.host.triage(agent, selected),
+                )
+                .await
+                .map(super::ReviewStep::Reviewed)
+            } else {
+                crate::core::until_turn_stopped(
+                    Some(cancellation),
+                    self.host.select_approvals(
+                        agent,
+                        pending.range.start,
+                        cursor.min(pending.range.end),
+                    ),
+                )
+                .await
+                .map(super::ReviewStep::Selected)
+            };
+            result.map_err(host_error)
+        })
+    }
     fn step<'a>(
         &'a self,
         agent: &'a AgentState,

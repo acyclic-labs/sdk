@@ -802,8 +802,7 @@ async fn a_full_window_overflows_into_the_inbox_and_never_drops_input() -> Resul
         checkpoint: Vec::new(),
     });
     let request = |n: u64| -> Result<InboxRecord> {
-        Ok(InboxRecord::ApprovalRequested(ApprovalRequested {
-            child: path.child(&id(2))?,
+        Ok(InboxRecord::Approval(Approval {
             id: intent(&format!("r{n}")),
         }))
     };
@@ -812,7 +811,7 @@ async fn a_full_window_overflows_into_the_inbox_and_never_drops_input() -> Resul
             .queued
             .iter()
             .filter_map(|queued| match &queued.input {
-                TurnInput::ApprovalRequested { id, .. } => Some(id.as_str().to_owned()),
+                TurnInput::Approval { id } => Some(id.as_str().to_owned()),
                 _ => None,
             })
             .collect()

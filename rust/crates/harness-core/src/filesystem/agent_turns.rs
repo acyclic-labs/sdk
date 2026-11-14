@@ -43,6 +43,7 @@ pub use crate::conversation::{PRIVATE_VOLUME, private_volume};
 #[cfg(test)]
 #[path = "agent_turns/admission_tests.rs"]
 mod admission_tests;
+mod approval_triage;
 
 /// The authority of one agent turn: the agent's conversation issuer, its scope
 /// over every bound volume, and the agent's content bound to that scope.
@@ -590,6 +591,28 @@ where
 /// and compaction, under the turn's [`TurnAuthority`]. It may stage files (a
 /// context manifest) through the authority's private writer.
 pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
+    /// Review an exact action with this agent's original model binding in a
+    /// fresh, tool-free context. The request source must be its direct child;
+    /// its path binds replay even when different children reuse a request id.
+    /// `policy` is trusted host-selected policy text,
+    /// never child request data. The caller retains its immutable source and
+    /// authenticates and publishes any resulting decision; a verdict grants
+    /// nothing by itself. Hosts without an independent reviewer refuse.
+    fn review<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        execution: (
+            &'a dyn crate::executor::ExecutionJournal,
+            Option<&'a crate::executor::PreparationIo>,
+        ),
+        request: (&'a AgentPath, &'a crate::approvals::ApprovalRequest<'a>),
+        principal: &'a str,
+        policy: &'a str,
+    ) -> BoxFuture<'a, Result<(crate::approvals::RuleVerdict, Option<String>)>> {
+        let _ = (agent, execution, request, principal, policy);
+        Box::pin(async { Err(Error::Unsupported("independent review is not bound".into())) })
+    }
+
     /// Default question plugin choice for a newly created root session.
     fn question_plugin(&self) -> bool {
         false
@@ -952,6 +975,136 @@ where
             id: request.clone(),
         });
         agents.send(agent, &from, &wake).await
+    }
+
+    /// Reviews a child's exact action with its retained parent's original model,
+    /// outside the worker context. The embedding selects an immutable policy
+    /// file on the parent's private volume; child data cannot supply policy.
+    /// An allow or deny uses the existing decision owner and original wake.
+    /// Ask returns only an escalation reason and grants no authority.
+    ///
+    /// Replaying the same source/request and policy reuses the original journaled
+    /// inference and repairs an interrupted decision/wake publication.
+    ///
+    /// # Errors
+    /// Foreign children, non-parent stages and foreign policy files refuse before
+    /// inference. Changed policy replay, storage and uncertain wake failures retain
+    /// their original errors rather than dispatching another review.
+    pub async fn review_child_approval(
+        &self,
+        agents: &crate::agent::AgentHost<P>,
+        parent: &AgentPath,
+        child: &AgentPath,
+        request: &crate::agent::IntentId,
+        policy: &FileRef,
+    ) -> std::result::Result<(crate::approvals::RuleVerdict, Option<String>), crate::agent::Error>
+    {
+        let fail = |error| crate::agent::Error::Turn(Box::new(error));
+        let parent = agents.state(parent).await?;
+        let child_state = agents.state(child).await?;
+        let (journal, _bindings, policy_bytes) = self
+            .parent_review_binding(&parent, Some(policy))
+            .await
+            .map_err(fail)?;
+        let policy_text = std::str::from_utf8(&policy_bytes)
+            .map_err(|_| fail(Error::Invalid("review policy is not UTF-8".into())))?;
+        let (verdict, reason, _) = self
+            .review_child_action(&parent, &child_state, request, &journal, policy_text)
+            .await
+            .map_err(fail)?;
+        let decision = match verdict {
+            crate::approvals::RuleVerdict::Allow => {
+                Some(crate::interaction::ApprovalVerdict::Approve)
+            }
+            crate::approvals::RuleVerdict::Deny => Some(crate::interaction::ApprovalVerdict::Deny),
+            crate::approvals::RuleVerdict::Ask => None,
+        };
+        if let Some(decision) = decision {
+            self.respond(
+                agents,
+                child,
+                request,
+                crate::approvals::ApprovalResponder::Parent(&parent.path.id()),
+                decision,
+                reason.clone(),
+            )
+            .await?;
+        }
+        Ok((verdict, reason))
+    }
+
+    async fn parent_review_binding(
+        &self,
+        parent: &AgentState,
+        policy: Option<&FileRef>,
+    ) -> Result<(
+        FilesystemExecutionJournal<P, A, O>,
+        Bindings<A, O>,
+        acyclic_stream::OwnedBytes,
+    )> {
+        if policy.is_some_and(|policy| {
+            policy.volume().class() != VolumeClass::AgentPrivate
+                || policy.volume().owner()
+                    != &VolumeOwner::Agent(crate::AgentId::from_bytes(parent.path.id_bytes()))
+        }) {
+            return Err(Error::Unauthorized(
+                "review policy is not private to the parent".into(),
+            ));
+        }
+        let retained = policy.map(std::slice::from_ref).unwrap_or(&[]);
+        let (journal, bindings, _) = self
+            .journal(self.admit(parent)?, &[], retained, None, None)
+            .await?;
+        let bytes = match policy {
+            Some(policy) => {
+                bindings
+                    .content
+                    .reader
+                    .read(policy, policy.descriptor().byte_length(), None, None)?
+                    .await?
+            }
+            None => Vec::new().into(),
+        };
+        Ok((journal, bindings, bytes))
+    }
+
+    async fn review_child_action(
+        &self,
+        parent: &AgentState,
+        child: &AgentState,
+        request: &crate::agent::IntentId,
+        journal: &dyn crate::executor::ExecutionJournal,
+        policy: &str,
+    ) -> Result<(crate::approvals::RuleVerdict, Option<String>, Vec<u8>)> {
+        if !child.path.is_child_of(&parent.path) || child.parent.as_ref() != Some(&parent.path) {
+            return Err(Error::Unauthorized(
+                "review source is not the retained direct child".into(),
+            ));
+        }
+        let (_, bindings, files) = self.approval_journal(child).await?;
+        let (child_policy, _) = self
+            .approvals(child, bindings.journal.reader.as_ref())
+            .await?;
+        let parent_id = parent.path.id();
+        let bytes = child_policy
+            .parent_request(files.as_ref(), request.as_str(), &parent_id)
+            .await?;
+        let view = crate::approvals::ApprovalRequest::new(
+            request.as_str(),
+            &bytes,
+            self.executors.content_limits().file_bytes,
+        )?;
+        let (verdict, reason) = self
+            .executors
+            .review(
+                parent,
+                (journal, None),
+                (&child.path, &view),
+                &format!("parent:{parent_id}"),
+                policy,
+            )
+            .await?;
+        Ok((verdict, reason, bytes))
     }
 
     /// Approval `id` of `agent` as `principal` already decided it, read from
@@ -2044,6 +2197,22 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn select_approvals<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        inbox: u64,
+        cursor: u64,
+    ) -> BoxFuture<'a, Result<crate::agent::ApprovalSelection>> {
+        Box::pin(self.select_approval_page(agent, inbox, cursor))
+    }
+    fn triage<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        selection: &'a crate::agent::ApprovalSelection,
+    ) -> BoxFuture<'a, Result<crate::agent::OpenTriage>> {
+        Box::pin(self.review_approval_page(agent, selection))
+    }
+
     fn settle<'a>(&'a self, agent: &'a AgentState, turn: OperationId) -> BoxFuture<'a, Result<()>> {
         self.executors.settle(agent, turn)
     }

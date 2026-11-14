@@ -2,6 +2,59 @@
 use super::*;
 
 #[tokio::test]
+async fn optional_planning_does_not_enter_worker_context() -> Result<()> {
+    let tools = crate::tool::ToolRegistry::default();
+    let payloads = TestPayloadStore::new()?;
+    let mut manifest = ContextManifest::new(DiscoveredContext::default(), Vec::new(), &tools)?;
+    manifest.environment = Some(EnvironmentFacts {
+        cwd: Some("/project".into()),
+        os: "test".into(),
+        shell: "sh".into(),
+        tool_path: None,
+        tooling: None,
+        current_date: "2026-01-01".into(),
+        timezone: "UTC".into(),
+    });
+    let reference = manifest
+        .publish(
+            &payloads,
+            crate::OperationId::new(),
+            "manifest.json",
+            payload_limits(),
+        )
+        .await?;
+    let (_, stage) =
+        ContextManifest::bind(reference, &payloads, tools.clone(), payload_limits()).await?;
+    let projected = ContextPipeline::new([stage])
+        .run(&input(), payload_limits(), None)
+        .await?;
+    let encoded = serde_json::to_string(&projected.messages)
+        .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+    assert!(
+        encoded.contains("/project"),
+        "environment projection was not exercised"
+    );
+    for noise in ["<model>", "git_status", "GOAL.md", "plans/"] {
+        assert!(!encoded.contains(noise), "worker context contains {noise}");
+    }
+    // Optional guidance has one source in the seed, available through ordinary
+    // skill discovery rather than an unconditional instruction frame.
+    let plans = crate::seed::file("skills/plans/SKILL.md").unwrap();
+    assert!(
+        std::str::from_utf8(plans)
+            .unwrap()
+            .contains("volume:///home/GOAL.md")
+    );
+    assert_eq!(
+        crate::seed::AGENT_PROMPT.len(),
+        1258,
+        "update the reviewed prompt byte pin"
+    );
+    assert!(!crate::seed::AGENT_PROMPT.contains("GOAL.md"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn configuration_files_preserve_cached_prompt_prefix() -> Result<()> {
     let tools = crate::tool::ToolRegistry::default();
     let manifest = ContextManifest::new(DiscoveredContext::default(), Vec::new(), &tools)?;

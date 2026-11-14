@@ -17,11 +17,13 @@ struct Review {
 }
 impl crate::filesystem::PreparationRecord for Review {}
 
-pub(super) async fn review_model(
+pub(crate) async fn review_model(
     execution: (&dyn ExecutionJournal, Option<&PreparationIo>),
     request: &ApprovalRequest<'_>,
     principal: &str,
     binding: (&Model, &Arc<dyn ModelProvider>),
+    policy: Option<&str>,
+    source: Option<&crate::agent::AgentPath>,
     limits: Limits,
 ) -> Result<(RuleVerdict, Option<String>)> {
     let (model, provider) = binding;
@@ -40,17 +42,33 @@ pub(super) async fn review_model(
         },
         io,
     )?;
+    if let Some(policy) = policy {
+        crate::executor::stock_vec_push(
+            &mut messages,
+            ModelMessage {
+                role: ModelRole::System,
+                content: ModelContent::Text(crate::executor::stock_string_copy(policy, io)?),
+            },
+            io,
+        )?;
+    }
     if let Some(update) = profile.and_then(|profile| profile.configuration_update(None)) {
         crate::executor::stock_vec_push(&mut messages, update, io)?;
     }
-    let source = Context {
+    let context = Context {
         messages,
         ..Context::default()
     };
     let pipeline = ContextPipeline::from_source(
-        source,
+        context,
         "approval-review",
-        crate::executor::stock_string_copy("1", io)?,
+        match policy {
+            Some(policy) => crate::executor::stock_string_copy(
+                blake3::hash(policy.as_bytes()).to_hex().as_str(),
+                io,
+            )?,
+            None => crate::executor::stock_string_copy("1", io)?,
+        },
         io,
     )?;
     let executor = StockExecutor::new(
@@ -64,6 +82,15 @@ pub(super) async fn review_model(
         crate::executor::preparation_format(format_args!("{}:{principal}", request.id()), work)
     })?;
     let identity = blake3::derive_key("acyclic.approver-model/v1", binding.as_bytes());
+    let identity = match source {
+        Some(source) => {
+            let mut hash = blake3::Hasher::new_derive_key("acyclic.approver-source/v1");
+            hash.update(&identity);
+            hash.update(source.as_str().as_bytes());
+            *hash.finalize().as_bytes()
+        }
+        None => identity,
+    };
     let operation = OperationId::from_bytes(
         *identity
             .first_chunk::<16>()
@@ -80,7 +107,20 @@ pub(super) async fn review_model(
     };
     drop(binding);
     let result = executor.infer(execution.0, &input, io).await?;
-    let review: Review = result.decode(limits, io)?;
+    let review: Review = match result.decode(limits, io) {
+        Ok(review) => review,
+        // The inference is already terminal and journaled. Replaying invalid
+        // decision text cannot repair it; let the original approval owner ask.
+        Err(Error::Invalid(_))
+        | Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid,
+            ..
+        }) => Review {
+            verdict: RuleVerdict::Ask,
+            reason: None,
+        },
+        Err(error) => return Err(error),
+    };
     drop(result);
     drop(input);
     drop(executor);
@@ -220,6 +260,8 @@ mod tests {
                     &request,
                     "reviewer",
                     (&model, &bound),
+                    None,
+                    None,
                     limits,
                 )
                 .await;
@@ -278,6 +320,8 @@ mod tests {
                     let hold = io.as_ref().map(|io| io.guard_owned(retained)).transpose()?;
                     drop(first);
                     drop(hold);
+                } else if case == 1 || case == 7 {
+                    assert_eq!(first?, (RuleVerdict::Ask, None));
                 } else if case == 2 {
                     assert_eq!(first?, (RuleVerdict::Allow, None));
                 } else {
@@ -288,6 +332,8 @@ mod tests {
                     &request,
                     "reviewer",
                     (&model, &bound),
+                    None,
+                    None,
                     limits,
                 )
                 .await;
@@ -304,6 +350,8 @@ mod tests {
                     let hold = io.as_ref().map(|io| io.guard_owned(retained)).transpose()?;
                     drop(replay);
                     drop(hold);
+                } else if case == 1 || case == 7 {
+                    assert_eq!(replay?, (RuleVerdict::Ask, None));
                 } else if case == 2 {
                     assert_eq!(replay?, (RuleVerdict::Allow, None));
                 } else {
@@ -323,6 +371,8 @@ mod tests {
                             &changed,
                             "reviewer",
                             (&model, &bound),
+                            None,
+                            None,
                             limits
                         )
                         .await

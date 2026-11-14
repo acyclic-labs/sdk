@@ -1,23 +1,161 @@
 {
   "id": "session-cost-rollup",
-  "workspace": {"kind":"plain","files":{"prices.jsonl":"{\"version\":1,\"revision\":\"chosen-1\",\"provider\":\"morph\",\"model\":\"morph-kimik31\",\"effective_at\":1,\"currency\":\"USD\",\"input_nano_units_per_million\":0,\"output_nano_units_per_million\":1000000,\"cached\":{\"kind\":\"included\"},\"cache_write\":{\"kind\":\"included\"},\"reasoning\":{\"kind\":\"included\"}}\n{\"version\":1,\"revision\":\"chosen-1\",\"provider\":\"morph\",\"model\":\"morph-dsv41flash\",\"effective_at\":1,\"currency\":\"USD\",\"input_nano_units_per_million\":0,\"output_nano_units_per_million\":1000000,\"cached\":{\"kind\":\"included\"},\"cache_write\":{\"kind\":\"included\"},\"reasoning\":{\"kind\":\"included\"}}\n"}},
-  "extra_args": ["--prices", "{{workspace}}/prices.jsonl"],
-  "model": {"steps":[
-    {"when":{"user":"PRICED_ROOT"},"tools":[{"id":"spawn-priced","name":"spawn","arguments":{"name":"worker","task":"PRICED_CHILD","role":"worker"}}]},
-    {"when":{"user":"PRICED_ROOT","tool_result":"agent"},"tools":[{"id":"wait-priced","name":"wait","arguments":{"agents":[{"$tool_result":"/agent"}]}}]},
-    {"when":{"user":"PRICED_CHILD"},"text":["PRICED_CHILD_DONE"]},
-    {"when":{"user":"PRICED_ROOT","tool_result":"PRICED_CHILD_DONE"},"text":["PRICED_ROOT_DONE"]}
-  ]},
-  "inputs":[
-    {"mode":"headless","args":["--new-session","--usage-jsonl","{{workspace}}/usage.jsonl","-p","PRICED_ROOT"],"answer":"PRICED_ROOT_DONE"},
-    {"mode":"pty","resume":true,"actions":[
-      {"when":{"contains":["PRICED_ROOT_DONE","This agent","USD 0.000000006"],"cursor":true},"prompt":"/cost"},
-      {"when":{"contains":["Subtree cost","4 calls","4 completed","USD 0.000000008"]},"detach":true}
-    ]}
+  "workspace": {
+    "kind": "plain",
+    "files": {
+      "prices.jsonl": "{\"provider\":\"e2e\",\"effective_at\":1,\"currency\":\"USD\",\"cache_write\":{\"kind\":\"included\"},\"revision\":\"chosen-1\",\"input_nano_units_per_million\":0,\"cached\":{\"kind\":\"included\"},\"reasoning\":{\"kind\":\"included\"},\"output_nano_units_per_million\":1000000,\"model\":\"tiny\",\"version\":1}\n"
+    }
+  },
+  "extra_args": [
+    "--prices",
+    "{{workspace}}/prices.jsonl"
   ],
-  "assert":{"requests":4,"usage_rollup":{"path":"usage.jsonl","agents":2,
-    "root":{"calls":3,"completed":3,"currency":"USD","price_revision":"chosen-1","token_nano_units":6},
-    "subtree":{"calls":4,"completed":4,"currency":"USD","price_revision":"chosen-1","token_nano_units":8}
-  }},
-  "physical":true
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "PRICED_ROOT"
+        },
+        "tools": [
+          {
+            "id": "spawn-priced",
+            "name": "spawn",
+            "arguments": {
+              "name": "worker",
+              "task": "PRICED_CHILD",
+              "role": "worker",
+              "model": "e2e/tiny"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PRICED_ROOT",
+          "tool_result": "agent"
+        },
+        "tools": [
+          {
+            "id": "wait-priced",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                {
+                  "$tool_result": "/agent"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PRICED_CHILD"
+        },
+        "text": [
+          "PRICED_CHILD_DONE"
+        ]
+      },
+      {
+        "when": {
+          "user": "PRICED_ROOT",
+          "tool_result": "PRICED_CHILD_DONE"
+        },
+        "text": [
+          "PRICED_ROOT_DONE"
+        ]
+      },
+      {
+        "when": {
+          "user": "PRICED_CHILD",
+          "contains": "Append feedback records; reply none"
+        },
+        "text": [
+          "none"
+        ]
+      },
+      {
+        "when": {
+          "user": "PRICED_ROOT",
+          "contains": "Append feedback records; reply none"
+        },
+        "text": [
+          "none"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "service"
+    },
+    {
+      "mode": "headless",
+      "args": [
+        "--new-session",
+        "--usage-jsonl",
+        "{{workspace}}/usage.jsonl",
+        "-p",
+        "PRICED_ROOT"
+      ],
+      "answer": "PRICED_ROOT_DONE"
+    },
+    {
+      "mode": "pty",
+      "resume": true,
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "PRICED_ROOT_DONE",
+              "This agent",
+              "USD 0.000000008"
+            ],
+            "cursor": true
+          },
+          "prompt": "/cost"
+        },
+        {
+          "when": {
+            "contains": [
+              "Subtree cost",
+              "6 calls",
+              "6 completed",
+              "USD 0.000000012"
+            ]
+          },
+          "detach": true
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 6,
+    "usage_rollup": {
+      "path": "usage.jsonl",
+      "agents": 2,
+      "root": {
+        "calls": 4,
+        "completed": 4,
+        "currency": "USD",
+        "price_revision": "chosen-1",
+        "token_nano_units": 8
+      },
+      "subtree": {
+        "calls": 6,
+        "completed": 6,
+        "currency": "USD",
+        "price_revision": "chosen-1",
+        "token_nano_units": 12
+      }
+    },
+    "stable_system_between": [
+      [
+        0,
+        3
+      ]
+    ]
+  },
+  "physical": true,
+  "selected_model": "e2e/tiny"
 }

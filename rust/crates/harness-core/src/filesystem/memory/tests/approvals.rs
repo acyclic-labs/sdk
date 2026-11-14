@@ -586,3 +586,97 @@ async fn an_interrupted_rule_publication_replays_the_original_decision() -> Resu
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn parent_review_requires_the_original_parent_and_active_stage() -> Result<()> {
+    use crate::approvals::Approver;
+    use crate::interaction::ApprovalVerdict;
+    for parent_stage in [false, true] {
+        for human_guard in [false, true] {
+            let child = AgentId::new();
+            let parent = crate::agent::AgentId::from_bytes([23; 16]);
+            let unrelated = crate::agent::AgentId::from_bytes([24; 16]);
+            let storage = MemoryHarnessStorage::new(child.clone(), 65_536).await?;
+            let policy = Arc::new(AgentApprovalPolicy::new(
+                crate::agent::AgentId::from_bytes(child.into_bytes()),
+                ApprovalPolicy {
+                    approvers: vec![if parent_stage {
+                        Approver::Parent
+                    } else {
+                        Approver::Human {
+                            principal: "human".into(),
+                        }
+                    }],
+                },
+                Some(parent.clone()),
+                Default::default(),
+                Limits {
+                    file_bytes: Some(65_536),
+                    ..Limits::default()
+                },
+            )?);
+            let owner = AgentApprovals::new(storage.internal_files.clone(), policy.clone());
+            let journal = storage.journal();
+            let id = InteractionId::new();
+            let mut original = approval();
+            if human_guard {
+                let Interaction::Approval {
+                    subject: ApprovalSubject::Tool { route, .. },
+                    ..
+                } = &mut original
+                else {
+                    unreachable!()
+                };
+                *route = ApprovalRoute::Human;
+            }
+            owner.open(id, &original).await?;
+            let request = crate::approvals::agent_request_id(id);
+            assert!(matches!(
+                policy
+                    .parent_request(storage.internal_files.as_ref(), &request, &unrelated)
+                    .await,
+                Err(Error::Unauthorized(_))
+            ));
+            let selected = policy
+                .parent_request(storage.internal_files.as_ref(), &request, &parent)
+                .await;
+            if !parent_stage || human_guard {
+                assert!(matches!(selected, Err(Error::Unauthorized(_))));
+                continue;
+            }
+            let bytes = selected?;
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+                serde_json::to_value(&original).unwrap(),
+                "review substituted another action"
+            );
+            assert_eq!(
+                owner.outcome(id, journal.as_ref(), None).await?,
+                None,
+                "opening a review conferred decision authority"
+            );
+            for _ in 0..2 {
+                owner
+                    .decide(
+                        id,
+                        ApprovalResponder::Parent(&parent),
+                        ApprovalVerdict::Approve,
+                        None,
+                    )
+                    .await?;
+                assert_eq!(
+                    owner.outcome(id, journal.as_ref(), None).await?,
+                    Some(InteractionOutcome::Approved {})
+                );
+                assert_eq!(
+                    policy
+                        .parent_request(storage.internal_files.as_ref(), &request, &parent)
+                        .await?,
+                    bytes,
+                    "decision replay lost the original request needed for wake repair"
+                );
+            }
+        }
+    }
+    Ok(())
+}

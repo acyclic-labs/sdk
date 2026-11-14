@@ -387,3 +387,139 @@ fn wheel_notches_scroll_the_view_and_never_the_editor() {
     assert_eq!(input.editor.text(), "draft");
     assert_eq!(input.editor.selected_text(), "draft");
 }
+
+#[test]
+fn query_history_replies_preserve_edits_and_cancelled_searches() {
+    let mut input = PromptInput::new(Editor::new("draft"));
+    input.use_history_query();
+    input.editor.set_cursor(0, false);
+    let first = press(&mut input, KeyCode::Up, M::NONE, 0);
+    let [InputEffect::History { request: first, .. }] = first.as_slice() else {
+        panic!("missing query demand")
+    };
+    let second = press(&mut input, KeyCode::Up, M::NONE, 1);
+    let [
+        InputEffect::History {
+            request: second, ..
+        },
+    ] = second.as_slice()
+    else {
+        panic!("missing next demand")
+    };
+    assert!(!input.resolve_history(*first, "draft", Some("old response"), true, 2));
+    assert!(input.resolve_history(*second, "draft", Some("older prompt"), true, 3));
+    assert_eq!(input.editor.cursor(), 0);
+    input.committed_text("new ", 4);
+    assert!(!input.resolve_history(*second, "older prompt", Some("stale"), true, 5));
+    assert_eq!(input.editor.text(), "new older prompt");
+    let search = press(&mut input, KeyCode::Char('r'), M::CONTROL, 6);
+    let [
+        InputEffect::History {
+            request,
+            search: Some(query),
+            ..
+        },
+    ] = search.as_slice()
+    else {
+        panic!("missing search demand")
+    };
+    assert_eq!(query, "");
+    assert!(input.resolve_history(*request, "new older prompt", Some("query match"), true, 7));
+    press(&mut input, KeyCode::Esc, M::NONE, 8);
+    assert_eq!(input.editor.text(), "new older prompt");
+    assert!(!input.resolve_history(*request, "new older prompt", Some("late match"), true, 9));
+    let reopened = press(&mut input, KeyCode::Char('r'), M::CONTROL, 10);
+    let [InputEffect::History { restart: true, .. }] = reopened.as_slice() else {
+        panic!("reopened search retained its old position")
+    };
+    let repeated = press(&mut input, KeyCode::Char('r'), M::CONTROL, 11);
+    let [InputEffect::History { restart: false, .. }] = repeated.as_slice() else {
+        panic!("repeated search restarted instead of advancing")
+    };
+    assert!(
+        input.history().entries().is_empty(),
+        "query recall copied a second history authority"
+    );
+    press(&mut input, KeyCode::Esc, M::NONE, 12);
+    press(&mut input, KeyCode::Home, M::NONE, 13);
+    let navigation = press(&mut input, KeyCode::Up, M::NONE, 14);
+    let [InputEffect::History { request, .. }] = navigation.as_slice() else {
+        panic!("missing navigation after search")
+    };
+    let expected = input.editor.text().to_owned();
+    assert!(input.resolve_history(*request, &expected, Some("recalled"), true, 15));
+    press(&mut input, KeyCode::Char('x'), M::NONE, 16);
+    press(&mut input, KeyCode::Home, M::NONE, 17);
+    let edited = press(&mut input, KeyCode::Up, M::NONE, 18);
+    assert!(matches!(
+        edited.as_slice(),
+        [InputEffect::History { restart: true, .. }]
+    ));
+    let mut moved = PromptInput::new(Editor::new("draft"));
+    moved.use_history_query();
+    press(&mut moved, KeyCode::Home, M::NONE, 0);
+    let requested = press(&mut moved, KeyCode::Up, M::NONE, 1);
+    let [InputEffect::History { request, .. }] = requested.as_slice() else {
+        panic!("missing history demand before cursor motion")
+    };
+    press(&mut moved, KeyCode::End, M::NONE, 2);
+    assert!(moved.resolve_history(*request, "draft", Some("latest"), true, 3));
+    let requested = press(&mut moved, KeyCode::Char('r'), M::CONTROL, 4);
+    let [InputEffect::History { request, .. }] = requested.as_slice() else {
+        panic!("missing search demand after recall")
+    };
+    assert!(moved.resolve_history(*request, "latest", Some("searched"), true, 5));
+    assert_eq!(
+        press(&mut moved, KeyCode::Esc, M::NONE, 6),
+        [InputEffect::HistorySearchFinished { accepted: false }]
+    );
+    assert_eq!(moved.editor.text(), "latest");
+    press(&mut moved, KeyCode::End, M::NONE, 7);
+    assert!(matches!(
+        press(&mut moved, KeyCode::Down, M::NONE, 8).as_slice(),
+        [InputEffect::History {
+            restart: false,
+            previous: false,
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn a_changed_history_query_accepts_only_its_own_completed_match() {
+    for completed in [false, true] {
+        let mut input = PromptInput::new(Editor::new("draft"));
+        input.use_history_query();
+        let original = press(&mut input, KeyCode::Char('r'), M::CONTROL, 0);
+        let [InputEffect::History { request, .. }] = original.as_slice() else {
+            panic!("missing original search")
+        };
+        assert!(input.resolve_history(*request, "draft", Some("old match"), true, 1));
+        let changed = press(&mut input, KeyCode::Char('x'), M::NONE, 2);
+        let [
+            InputEffect::History {
+                request,
+                search: Some(query),
+                ..
+            },
+        ] = changed.as_slice()
+        else {
+            panic!("missing changed search")
+        };
+        assert_eq!(query, "x");
+        if completed {
+            assert!(input.resolve_history(*request, "old match", Some("new match"), true, 3));
+        }
+        assert_eq!(
+            press(&mut input, KeyCode::Enter, M::NONE, 4),
+            vec![InputEffect::HistorySearchFinished {
+                accepted: completed
+            }]
+        );
+        assert_eq!(
+            input.editor.text(),
+            if completed { "new match" } else { "draft" }
+        );
+        assert!(!input.resolve_history(*request, "draft", Some("late match"), true, 5));
+    }
+}

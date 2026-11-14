@@ -344,7 +344,14 @@ pub(super) async fn read(
     } else {
         None
     };
-    let budget = super::read::encoded_text_budget(&version, &input.path, maximum, work, io)?;
+    let budget = super::read::encoded_text_budget(
+        &version,
+        &input.path,
+        context.is_self_projection(&input.path, io)?,
+        maximum,
+        work,
+        io,
+    )?;
     let _scan_hold = edit::allocation(
         work,
         std::mem::size_of::<JsonSpans>() + std::mem::size_of::<Selection>() + Document::BYTES,
@@ -523,7 +530,13 @@ pub(super) async fn read(
         .or(selection.array_end)
         .ok_or_else(|| executor::rejection(work, "notebook cell array is missing"))?;
     let (start, mut selected_end) = selection.interval.unwrap_or((empty, empty));
-    let media_budget = super::projection::notebook_text_budget(&input.path, &version, maximum, io)?;
+    let media_budget = super::projection::notebook_text_budget(
+        &input.path,
+        &version,
+        context.is_self_projection(&input.path, io)?,
+        maximum,
+        io,
+    )?;
     let outputs = super::notebook_outputs::retain(
         context,
         input,

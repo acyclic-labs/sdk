@@ -55,7 +55,7 @@ mod machine;
 mod names;
 mod notices;
 pub use names::NameIndex;
-pub use notices::NoticeSelection;
+pub use notices::{ApprovalControl, ApprovalSelection, NoticeSelection};
 pub(crate) mod records;
 mod release;
 mod reply;
@@ -107,11 +107,11 @@ pub use commit::{
 };
 pub use driver::{
     COMPACT_INSTRUCTION, ConversationEntry, ExecutorDriver, NOTICE_MEDIA_TYPE, OpenControl,
-    OpenTurn, TurnHost, TurnIdentity, TurnOutcome, TurnOutputs, USER_INPUT_MEDIA_TYPE,
+    OpenTriage, OpenTurn, TurnHost, TurnIdentity, TurnOutcome, TurnOutputs, USER_INPUT_MEDIA_TYPE,
     approval_intent, encode_user_input, expand_attachments, model_input, model_input_at,
     turn_announcements, turn_id, turn_notices, turn_segment,
 };
-pub(crate) use handler::Agents;
+pub(crate) use handler::{Agents, observe_state};
 pub use handler::{AgentHandler, Companions, INBOX};
 pub use host::{AgentHost, Delivered, InputProgress, actor_store};
 pub use kernel::{CONTINUE_NOW, MAX_FANOUT};
@@ -121,8 +121,9 @@ pub use layout::{
 pub use lower::{delivery_key, lower};
 pub use machine::{
     AgentState, Alarm, INADMISSIBLE_EFFECT, MAX_QUEUED, MAX_QUEUED_BYTES, OVERSIZED_STATE, Out,
-    Progress, Queued, SpawnOutcome, SpawnRefusal, Step, TurnDriver, TurnFuture, TurnInput,
-    TurnStep, Until, Wait, WaitReason, WaitResume, Wake, requested_child, step,
+    Progress, Queued, ReviewFuture, ReviewStep, SpawnOutcome, SpawnRefusal, Step, TurnDriver,
+    TurnFuture, TurnInput, TurnStep, Until, Wait, WaitReason, WaitResume, Wake, requested_child,
+    step,
 };
 pub use records::{
     AgentOutcome, AgentRecord, Approval, ApprovalRequested, Cancellation, ChildDone, ChildSettled,

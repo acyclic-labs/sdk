@@ -40,7 +40,7 @@ impl TurnDriver for Waiting {
                     TurnOutcome::Cancelled
                 }
                 None => match &queued.input {
-                    TurnInput::Message { .. } | TurnInput::ApprovalRequested { .. } => {
+                    TurnInput::Message { .. } | TurnInput::Approval { .. } => {
                         TurnOutcome::Completed
                     }
                     _ => return Err(Error::Record("unexpected interrupt fixture input")),

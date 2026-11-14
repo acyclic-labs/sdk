@@ -102,6 +102,9 @@ pub struct AgentState {
     /// of the number of pending events. This is not a conversation-item cursor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_notices: Option<std::ops::Range<u64>>,
+    /// Independent parent reviews never occupy or resume the worker turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval_control: Option<super::ApprovalControl>,
     /// Exclusive inbox cursor included at an admitted model boundary. Payloads
     /// remain in the original inbox; checkpoint cost is constant per agent.
     pub steered_through: u64,
@@ -238,6 +241,11 @@ impl AgentState {
             .min(self.turn.as_ref().map_or(consumed, |turn| turn.inbox))
             .min(self.queued.front().map_or(consumed, |queued| queued.inbox))
             .min(self.overflow.unwrap_or(consumed))
+            .min(
+                self.approval_control
+                    .as_ref()
+                    .map_or(consumed, |control| control.range.start),
+            )
     }
 
     /// State at adoption, before the first step.
@@ -267,6 +275,7 @@ impl AgentState {
             brief,
             conversation_tail: adopted.conversation_tail,
             pending_notices: None,
+            approval_control: None,
             steered_through: 0,
             steering_tail: 0,
             dropped_before: 0,
@@ -689,6 +698,17 @@ pub struct TurnStep {
 /// owned in the browser, like every provider and executor future.
 pub type TurnFuture<'a> = acyclic_stream::BoxProviderFuture<'a, Result<TurnStep, Error>>;
 
+/// A review changes only independent control progress and its committed effects.
+pub enum ReviewStep {
+    /// Retain the original page and policy before inference.
+    Selected(super::ApprovalSelection),
+    /// Consume the selected page and publish its decisions and optional notice.
+    Reviewed(super::OpenTriage),
+}
+
+/// Independent review future with the same platform ownership as turn execution.
+pub type ReviewFuture<'a> = acyclic_stream::BoxProviderFuture<'a, Result<ReviewStep, Error>>;
+
 /// Executes turn steps (model calls, tool calls) for an agent.
 ///
 /// A step may repeat after a crash; anything durable it does outside the returned
@@ -696,7 +716,18 @@ pub type TurnFuture<'a> = acyclic_stream::BoxProviderFuture<'a, Result<TurnStep,
 /// A definitively changed foreign read fence also re-enters the step. Accepted
 /// work replays from its original journal; actor-state conflicts still fence
 /// placement, and an identical refused observation never spins.
+
 pub trait TurnDriver: acyclic_stream::ProviderPlatform {
+    /// Reviews parent controls without altering the worker's retained invocation.
+    fn review<'a>(
+        &'a self,
+        _agent: &'a AgentState,
+        _cursor: u64,
+        _cancellation: acyclic_actors::guest::CancellationToken,
+    ) -> ReviewFuture<'a> {
+        Box::pin(async { Err(Error::Record("independent parent review is not bound")) })
+    }
+
     /// Runs one step. `input` is `None` when continuing or after an alarm.
     /// `cancellation` is signalled by the actor runtime when a later control
     /// matches the handler's interrupt filter; settle cleanup through this step.
@@ -1180,6 +1211,9 @@ fn finalize_step(
                 .retain(|input| input.inbox >= *through || !input.steering);
         }
     }
+    if matches!(state.phase, Phase::Done { .. }) {
+        state.approval_control = None;
+    }
     let queued =
         wake_input(&state).is_some() || (!control(&state).input && state.overflow.is_some());
     let approval_ready = approval_position(&state).is_some();
@@ -1214,6 +1248,7 @@ fn finalize_step(
     // An awaited child answers its parent once it settles, in the commit
     // that publishes it so: the parent's wait wakes on exactly that record.
     if state.awaited
+        && state.settled_before(cursor) >= cursor
         && matches!(
             phase,
             Phase::Idle | Phase::WaitingUser { .. } | Phase::Done { .. }
@@ -1334,6 +1369,7 @@ fn control(state: &AgentState) -> Control {
             Phase::Done { .. } => Mode::Done,
         },
         input: matches!(state.phase, Phase::Waiting { input: true, .. }),
+        review: state.approval_control.is_some(),
         closed: state.closed,
         archive_refused: state.archive_refused,
         reported: state.reported,
@@ -1392,6 +1428,24 @@ async fn admit(
             Some(_) => return Err(Error::Record("notice inbox cursor moved backwards")),
             None => state.pending_notices = Some(sequence..end),
         }
+    }
+    if admitted.enqueue && matches!(&record, InboxRecord::ApprovalRequested(_)) {
+        let end = sequence
+            .checked_add(1)
+            .ok_or(Error::Record("approval inbox cursor overflows"))?;
+        match &mut state.approval_control {
+            Some(control) if control.range.end <= sequence => control.range.end = end,
+            Some(_) => return Err(Error::Record("approval inbox cursor moved backwards")),
+            None => {
+                state.approval_control = Some(super::ApprovalControl {
+                    range: sequence..end,
+                    selected: None,
+                })
+            }
+        }
+    }
+    if state.closed {
+        state.approval_control = None;
     }
     if let InboxRecord::ChildDone(done) = &record {
         if done.child.is_child_of(&state.path) {
@@ -1602,6 +1656,20 @@ async fn run<T: TurnDriver + ?Sized>(
     let queued = waking_input.is_some();
     let approval_ready = approval.is_some();
     let before = control(state);
+    // A review continuation shares the one actor alarm with the worker deadline.
+    // Only the original due deadline is a worker alarm while that wait is parked.
+    let alarm_wake = alarm_wake
+        && match state.phase {
+            Phase::Waiting {
+                deadline_unix_ms: Some(deadline),
+                ..
+            } => now_unix_ms >= deadline,
+            Phase::Waiting {
+                deadline_unix_ms: None,
+                ..
+            } => false,
+            _ => true,
+        };
     let picked = kernel::pick(before, alarm_wake, queued, approval_ready);
     #[cfg(feature = "test-support")]
     control_trace::record(
@@ -1610,6 +1678,75 @@ async fn run<T: TurnDriver + ?Sized>(
     );
     let input = match picked {
         Pick::Nothing => return Ok(()),
+        Pick::Review => {
+            let review = driver.review(state, cursor, cancellation.clone()).await;
+            let review = match review {
+                Err(Error::Turn(error))
+                    if cancellation.is_cancelled()
+                        && matches!(
+                            *error,
+                            crate::Error::InteractionRejected(
+                                crate::InteractionRejection::Cancelled
+                            )
+                        ) =>
+                {
+                    return Ok(());
+                }
+                result => result?,
+            };
+            let pending = state
+                .approval_control
+                .as_mut()
+                .ok_or(Error::Record("review has no original control"))?;
+            match review {
+                ReviewStep::Selected(selection) => {
+                    if pending.selected.is_some() {
+                        return Err(Error::Record("review selection is already frozen"));
+                    }
+                    selection.validate(&state.path, pending.range.start)?;
+                    if selection.range.end > pending.range.end || selection.range.end > cursor {
+                        return Err(Error::Record("review page exceeds its original control"));
+                    }
+                    pending.selected = Some(selection);
+                }
+                ReviewStep::Reviewed(reviewed) => {
+                    let selected = pending
+                        .selected
+                        .as_ref()
+                        .ok_or(Error::Record("review has no frozen selection"))?;
+                    if reviewed
+                        .outs
+                        .iter()
+                        .any(|out| !admissible(out, &state.path))
+                    {
+                        return Err(Error::Record("review returned an inadmissible effect"));
+                    }
+                    if let Some(summary) = reviewed.summary {
+                        let notice = Out::Send {
+                            to: state.path.clone(),
+                            record: InboxRecord::Notice {
+                                id: IntentId::try_from(format!(
+                                    "approval-summary-{}",
+                                    selected.range.start
+                                ))?,
+                                notice: super::NoticePayload::Waking(Box::new(summary)),
+                            },
+                        };
+                        if !admissible(&notice, &state.path) {
+                            return Err(Error::Record("review summary exceeds its record"));
+                        }
+                        outs.push(notice);
+                    }
+                    outs.extend(reviewed.outs);
+                    pending.range.start = selected.range.end;
+                    pending.selected = None;
+                    if pending.range.start == pending.range.end {
+                        state.approval_control = None;
+                    }
+                }
+            }
+            return Ok(());
+        }
         Pick::Resume => None,
         Pick::Front => state.queued.pop_front(),
         Pick::Approval => approval.and_then(|position| state.queued.remove(position)),

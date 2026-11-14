@@ -606,7 +606,7 @@ async fn trial(
                     return Ok(failed(agent, "the arm asked for an approval".into(), None));
                 }
             }
-            Event::Delta => {}
+            Event::Delta | Event::Input { .. } => {}
         }
     };
     drop(events);

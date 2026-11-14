@@ -68,7 +68,16 @@
   ],
   "assert": {
     "requests": 5,
-    "default_conventions": true,
+    "each_model_absent": [
+      "Plans and notes go in",
+      "GOAL.md is used only when",
+      "<model>",
+      "<git_status>",
+      "Approval mode:",
+      "policy-controlled approvals",
+      "workspace-write OS sandbox",
+      "Shell commands retain the host boundary"
+    ],
     "last_model_contains": [
       "---\\nstatus: active\\n---\\nGOAL_E2E\\n"
     ],

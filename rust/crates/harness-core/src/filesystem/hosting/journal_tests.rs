@@ -26,6 +26,13 @@ impl TurnExecutors for NoTurns {
 }
 
 async fn binding() -> TestResult<(Binding, AgentPath)> {
+    binding_with(Arc::new(NoTurns), Default::default()).await
+}
+
+pub(in crate::filesystem) async fn binding_with(
+    executors: Arc<dyn TurnExecutors>,
+    approval_policy: crate::approvals::ApprovalPolicy,
+) -> TestResult<(Binding, AgentPath)> {
     acyclic_native_runtime::initialize_native_io_services()?;
     let stream = Arc::new(MemoryStream::default());
     let provider = ProviderRef::new("fixture".into(), "filesystem".into(), "2".into(), &mut None)?;
@@ -50,14 +57,14 @@ async fn binding() -> TestResult<(Binding, AgentPath)> {
             within: ActorReference::new(b"account", b"agents", b"owner")?,
         },
         Turns {
-            executors: Arc::new(NoTurns),
+            executors,
             limits: TurnLimits {
                 maximum_bytes: Some(65_536),
                 history_turns: 8,
             },
             actors: ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             clock: Arc::new(acyclic_actors::local::SystemClock),
-            approval_policy: Default::default(),
+            approval_policy,
         },
     )?;
     let id = AgentId::from_bytes([1; 16]);
@@ -255,6 +262,146 @@ async fn waking_notices_steer_without_granting_their_journal_files() -> TestResu
         .await
         .expect_err("an ordinary message acquired the host notice reader");
     assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+    Ok(())
+}
+
+#[tokio::test]
+async fn independent_review_uses_selected_model_without_opening_worker_context() -> TestResult {
+    use crate::{
+        approvals::{ApprovalRequest, RuleVerdict},
+        conversation::Limits,
+        filesystem::{StockExecutors, TurnContext},
+        model::{Model, ModelContent, ModelProvider, ModelResolver},
+        test_support::{ScriptedModelProvider, ScriptedTurn},
+        tool::ToolRegistry,
+    };
+    struct NoWorkerContext;
+    impl TurnContext for NoWorkerContext {
+        fn prepare<'a>(
+            &'a self,
+            _: (crate::executor::StockExecutor, Limits),
+            _: &'a crate::agent::AgentState,
+            _: OperationId,
+            _: &'a ModelContent,
+            _: &'a TurnAuthority,
+        ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<crate::executor::StockExecutor>>
+        {
+            Box::pin(async {
+                Err(crate::Error::Invalid(
+                    "worker context must stay unopened".into(),
+                ))
+            })
+        }
+    }
+    let (bound, root) = binding().await?;
+    let mut agent = bound.agents().state(&root).await?;
+    agent.profile = Some(crate::agent::CreationConfig {
+        question_plugin: false,
+        topology: None,
+        continuation: None,
+        context: crate::agent::SpawnContext::TopLevel,
+        template: None,
+        peers: Default::default(),
+        model: Some("test/parent-review".into()),
+    });
+    let reviewer = Arc::new(ScriptedModelProvider::new((0..2).map(|_| {
+        ScriptedTurn::Text(r#"{"verdict":"ask","reason":"needs parent action"}"#.into())
+    })));
+    let selected = (
+        Model::new("test".into(), "parent-review".into(), "1".into())?,
+        {
+            let provider: Arc<dyn ModelProvider> = reviewer.clone();
+            provider
+        },
+    );
+    let expected_model = selected.0.clone();
+    let resolver = ModelResolver::new("test/worker", move |selection| {
+        if selection != "test/parent-review" {
+            return Err(crate::Error::Invalid(
+                "unexpected review model selection".into(),
+            ));
+        }
+        Ok(selected.clone())
+    });
+    let worker = Arc::new(ScriptedModelProvider::new([]));
+    let executors = StockExecutors::new(
+        (
+            Model::new("test".into(), "worker".into(), "1".into())?,
+            worker.clone(),
+        ),
+        ToolRegistry::default(),
+        (Limits::default(), None::<crate::context::CompactionPolicy>),
+        Arc::new(NoWorkerContext),
+    )
+    .with_models(Arc::new(resolver));
+    let storage = crate::filesystem::MemoryHarnessStorage::new(
+        crate::AgentId::from_bytes(agent.path.id_bytes()),
+        1_000_000,
+    )
+    .await?;
+    let journal = storage.journal();
+    let request =
+        ApprovalRequest::new("child-request", br#"{"action":"exact child action"}"#, 4096)?;
+    assert!(matches!(
+        executors
+            .review(
+                &agent,
+                (journal.as_ref(), None),
+                (&agent.path, &request),
+                "parent:fixture",
+                "TRUSTED_PARENT_POLICY"
+            )
+            .await,
+        Err(crate::Error::Unauthorized(_))
+    ));
+    for source in [AgentId::from_bytes([31; 16]), AgentId::from_bytes([32; 16])] {
+        let child = agent.path.child(&source)?;
+        for _ in 0..2 {
+            assert_eq!(
+                executors
+                    .review(
+                        &agent,
+                        (journal.as_ref(), None),
+                        (&child, &request),
+                        "parent:fixture",
+                        "TRUSTED_PARENT_POLICY"
+                    )
+                    .await?,
+                (RuleVerdict::Ask, Some("needs parent action".into()))
+            );
+        }
+    }
+    assert_eq!(worker.request_count(), 0);
+    let child = agent.path.child(&AgentId::from_bytes([31; 16]))?;
+    assert!(matches!(
+        executors
+            .review(
+                &agent,
+                (journal.as_ref(), None),
+                (&child, &request),
+                "parent:fixture",
+                "DIFFERENT_PARENT_POLICY"
+            )
+            .await,
+        Err(crate::Error::Conflict(_))
+    ));
+    let requests = reviewer.requests();
+    assert_eq!(
+        requests.len(),
+        2,
+        "child identities collided or replay dispatched another review"
+    );
+    assert_eq!(requests[0].model, expected_model);
+    assert!(requests[0].tools.is_empty());
+    assert!(requests[0].messages.iter().any(|message| {
+        message.role == crate::model::ModelRole::System
+            && message.content == ModelContent::Text("TRUSTED_PARENT_POLICY".into())
+    }));
+    assert!(requests[0].messages.iter().any(|message| {
+        message.role == crate::model::ModelRole::User
+            && message.content == ModelContent::Text(r#"{"action":"exact child action"}"#.into())
+    }));
+
     Ok(())
 }
 
@@ -1134,5 +1281,131 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     assert_eq!(value["coveredThrough"], 2);
     assert_eq!(value["mechanisms"]["io"]["completed"], 1);
     assert_eq!(value["activeSpans"], 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn prompt_history_streams_original_human_messages_in_bounded_ranges() -> TestResult {
+    use crate::agent::{InputPreviewStep, InputSelection, Message};
+    use crate::model::{ModelContent, ModelContentPart};
+    use futures::StreamExt as _;
+    let (bound, root) = binding().await?;
+    let structured_text = "structured🙂\n\"\\\0".repeat(64);
+    for (name, from, content) in [
+        (
+            "first",
+            Sender::User {
+                principal: "owner".into(),
+            },
+            ModelContent::Text("same🙂".into()),
+        ),
+        (
+            "host",
+            Sender::Host {
+                host: "host".into(),
+            },
+            ModelContent::Text("host-only".into()),
+        ),
+        (
+            "structured",
+            Sender::User {
+                principal: "owner".into(),
+            },
+            ModelContent::Parts(vec![
+                ModelContentPart::text(structured_text.clone()),
+                ModelContentPart::text("content".into()),
+            ]),
+        ),
+        (
+            "second",
+            Sender::User {
+                principal: "owner".into(),
+            },
+            ModelContent::Text("same🙂".into()),
+        ),
+    ] {
+        let intent = IntentId::try_from(name)?;
+        let body = match &content {
+            ModelContent::Text(text) => {
+                bound
+                    .stage_text(&root, "message", &from, &intent, ("prompt", text))
+                    .await?
+            }
+            _ => bound.stage_prompt(&root, &from, &intent, &content).await?,
+        };
+        bound
+            .agents()
+            .send(
+                &root,
+                &from,
+                &InboxRecord::Message(Message {
+                    from: from.clone(),
+                    id: intent,
+                    body: Box::new(body),
+                    re: None,
+                    attachments: None,
+                }),
+            )
+            .await?;
+        if name == "structured" {
+            for (maximum, expected) in [(0, ""), (1, "s"), (4, "stru"), (11, "structured")] {
+                let mut source =
+                    bound.input_preview_steps(root.clone(), maximum, InputSelection::Latest);
+                let mut work = 0;
+                let preview = loop {
+                    let step = source
+                        .next()
+                        .await
+                        .transpose()?
+                        .ok_or("structured preview ended before selection")?;
+                    match step {
+                        InputPreviewStep::Progress => work += 1,
+                        InputPreviewStep::Selected(Some(preview)) => {
+                            break preview;
+                        }
+                        _ => panic!("latest structured preview returned a history range"),
+                    }
+                };
+                assert!(work > 1, "structured source work did not yield credit");
+                assert_eq!(preview.text, expected);
+                assert_eq!(preview.bytes, structured_text.len() as u64 + 7);
+            }
+        }
+    }
+    let source = bound.input_preview_steps(root, 4, InputSelection::History);
+    futures::pin_mut!(source);
+    let mut messages: Vec<(u64, String)> = Vec::new();
+    let mut progress = 0;
+    while let Some(step) = source.next().await.transpose()? {
+        match step {
+            InputPreviewStep::Progress => progress += 1,
+            InputPreviewStep::MessageRange {
+                inbox,
+                offset,
+                preview,
+            } => {
+                assert!(preview.text.len() <= 4);
+                if offset == 0 {
+                    if messages.len() == 1 {
+                        assert!(progress > 1, "structured source was not credited in chunks");
+                    }
+                    messages.push((inbox, String::new()));
+                }
+                progress = 0;
+                let (selected, text) = messages.last_mut().expect("range has an original message");
+                assert_eq!(*selected, inbox);
+                assert_eq!(text.len() as u64, offset);
+                text.push_str(&preview.text);
+                assert!(text.len() as u64 <= preview.bytes);
+            }
+            InputPreviewStep::Selected(None) => break,
+            InputPreviewStep::Selected(Some(_)) => panic!("history became a latest-input prefix"),
+        }
+    }
+    assert_eq!(messages.len(), 3);
+    assert!(messages[0].0 > messages[1].0);
+    assert_eq!(messages[0].1, "same🙂");
+    assert_eq!(messages[1].1, format!("{structured_text}content"));
+    assert_eq!(messages[2].1, "same🙂");
     Ok(())
 }

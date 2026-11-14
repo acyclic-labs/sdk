@@ -174,10 +174,7 @@ export function toolResults(records) {
 // Evidence names a provider body, never an observer's path or diagnostic.
 // Each selected body is encoded once for all presence/absence queries.
 export function modelInputs(expected, generations) {
-  const contains = expected.default_conventions
-    ? [...(expected.model_contains ?? []), ...JSON.parse(readFileSync(
-      new URL("../../rust/crates/harness-core/src/context/instructions.json", import.meta.url), "utf8")).map(text => JSON.stringify(text).slice(1, -1))]
-    : expected.model_contains;
+  const contains = expected.model_contains;
   const all = contains?.length || expected.model_absent?.length
     || expected.each_model_contains?.length || expected.each_model_absent?.length;
   if (!all && !expected.last_model_contains?.length && !expected.last_model_absent?.length) return;
@@ -243,6 +240,24 @@ export function requests(test, records) {
   assert.ok(records.every(record => record.status !== 409), "unmatched model request");
   for (const expected of test.assert.http ?? []) assert.ok(records.some(record => subset(record, expected)), `missing HTTP request ${JSON.stringify(expected)}`);
   modelInputs(test.assert, generations);
+  for (const [before, after] of test.assert.stable_system_between ?? []) {
+    const system = step => {
+      const request = generations.find(request => request.step === step);
+      assert.ok(request, `missing system-input comparison step ${step}`);
+      const body = request.body;
+      const selected = {
+        instructions: body.instructions,
+        system: body.system,
+        systemInstruction: body.systemInstruction,
+        messages: (body.input ?? body.messages ?? body.contents ?? []).filter(
+          message => message.role === "system" || message.role === "developer"),
+      };
+      assert.ok(selected.instructions || selected.system || selected.systemInstruction || selected.messages.length,
+        `step ${step} has no provider system input to compare`);
+      return selected;
+    };
+    assert.deepEqual(system(after), system(before), `provider system input changed from step ${before} to ${after}`);
+  }
   // Auxiliary search/fetch requests have independent, non-conversation schemas.
   const outputs = toolResults(generations).map(value => { try { return JSON.parse(value); } catch { return value; } });
   for (const expected of test.assert.tool_results ?? []) assert.ok(outputs.some(value => subset(value, expected)), `step=assert exact tool result; actual tool result missing exact value ${JSON.stringify(expected)}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${test.id}`);

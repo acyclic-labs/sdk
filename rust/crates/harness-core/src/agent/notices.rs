@@ -64,3 +64,42 @@ impl NoticeSelection {
         Ok(())
     }
 }
+
+/// A single bounded page of original approval requests, frozen before inference.
+/// The optional policy is an immutable parent-private source, never child text.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalSelection {
+    /// Agent whose original inbox owns the selected records.
+    pub source: AgentPath,
+    /// Exclusive original inbox range; interleaved inputs are not consumed.
+    pub range: Range<u64>,
+    /// Original parent-private policy; None freezes its absence.
+    pub policy: Option<crate::conversation::FileRef>,
+}
+
+impl ApprovalSelection {
+    /// Refuses a foreign, empty, shifted or oversized source page.
+    pub fn validate(&self, agent: &AgentPath, inbox: u64) -> Result<(), Error> {
+        if &self.source != agent
+            || self.range.start != inbox
+            || self.range.end <= inbox
+            || self.range.end - inbox > super::MAX_QUEUED as u64
+        {
+            return Err(Error::Record(
+                "approval selection differs from its original input page",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Pending independent reviews retain only an original range and one frozen page.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalControl {
+    /// Original pending inbox range; other event kinds can interleave.
+    pub range: Range<u64>,
+    /// Frozen page and policy, committed before inference.
+    pub selected: Option<ApprovalSelection>,
+}

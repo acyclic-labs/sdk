@@ -320,6 +320,41 @@ impl TurnExecutors for StockExecutors {
     ) -> BoxProviderFuture<'a, Result<()>> {
         self.context.park(agent, operation)
     }
+
+    fn review<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        execution: (
+            &'a dyn crate::executor::ExecutionJournal,
+            Option<&'a crate::executor::PreparationIo>,
+        ),
+        request: (
+            &'a crate::agent::AgentPath,
+            &'a crate::approvals::ApprovalRequest<'a>,
+        ),
+        principal: &'a str,
+        policy: &'a str,
+    ) -> BoxProviderFuture<'a, Result<(crate::approvals::RuleVerdict, Option<String>)>> {
+        Box::pin(async move {
+            if !request.0.is_child_of(&agent.path) {
+                return Err(Error::Unauthorized(
+                    "review source is not a direct child".into(),
+                ));
+            }
+            let binding = self.selected(agent)?;
+            crate::approvals::review_model(
+                execution,
+                request.1,
+                principal,
+                (&binding.0, &binding.1),
+                Some(policy),
+                Some(request.0),
+                self.limits,
+            )
+            .await
+        })
+    }
+
     fn question_plugin(&self) -> bool {
         self.question_plugin
     }

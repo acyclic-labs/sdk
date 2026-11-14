@@ -4449,7 +4449,7 @@ async fn historical_input_preview_case(later_hook: bool) -> Result<()> {
     let preview = loop {
         match query.next().await.map_err(agent)? {
             Some(InputPreviewStep::Progress) => {}
-            Some(InputPreviewStep::Pending { .. }) => {
+            Some(InputPreviewStep::MessageRange { .. }) => {
                 return Err(Error::Invalid("preview returned pending ranges".into()));
             }
             Some(InputPreviewStep::Selected(preview)) => break preview,
@@ -4584,7 +4584,7 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
     let preview = loop {
         match input.next().await.map_err(agent)? {
             Some(crate::client::InputPreviewStep::Progress) => {}
-            Some(crate::client::InputPreviewStep::Pending { .. }) => {
+            Some(crate::client::InputPreviewStep::MessageRange { .. }) => {
                 return Err(Error::Invalid("preview returned pending ranges".into()));
             }
             Some(crate::client::InputPreviewStep::Selected(preview)) => break preview,

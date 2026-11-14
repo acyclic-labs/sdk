@@ -350,37 +350,9 @@ impl LocalHarness {
             crate::context::capture_working_documents(binding.reader, binding.scratch, self.limits)
                 .await?;
         manifest.tools = tools;
-        let mode = match self.preset.approval_policy.approvers.as_slice() {
-            [
-                crate::approvals::Approver::Rules {
-                    rules,
-                    fallback: crate::approvals::RuleVerdict::Allow,
-                    ..
-                },
-            ] if rules.is_empty() => "all admitted actions allowed",
-            _ => "policy-controlled approvals",
-        };
-        // A physical workspace projects no home volume.
-        #[cfg(any(test, not(target_arch = "wasm32")))]
-        let home = binding
-            .workspace
-            .as_ref()
-            .is_none_or(|workspace| workspace.mounting == super::WorkspaceMounting::Native);
-        #[cfg(not(any(test, not(target_arch = "wasm32"))))]
-        let home = true;
-        let home = if home {
-            " volume:///home is your private retained home volume and is never merged into the project. Use volume:///home/tmp for scratch files; shells and lifecycle hooks set TMPDIR to its native projection. Use volume paths in child instructions, since native paths belong to one task view."
-        } else {
-            ""
-        };
-        let sandbox = if cfg!(any(target_os = "linux", target_os = "macos")) {
-            "Shell commands and lifecycle hooks run in a workspace-write OS sandbox."
-        } else {
-            "Shell commands retain the host boundary; native OS confinement is not yet available."
-        };
-        manifest.conventions.push(format!(
-            "Approval mode: {mode}. {sandbox} A refusal returns a tool failure; adapt or report the block, never assume the action ran.{home} volume:///shared belongs to this session tree and is shared with its descendants; condition edits on the exact version you read."
-        ));
+        manifest.conventions.push(
+            "volume:///shared belongs to this session tree and is shared with its descendants; condition edits on the exact version you read.".into(),
+        );
         #[cfg(any(test, not(target_arch = "wasm32")))]
         if let Some(workspace) = &binding.workspace {
             manifest
@@ -413,11 +385,9 @@ impl LocalHarness {
                         .as_ref()
                         .map(|mounted| mounted.path.as_path())
                 };
-                let (model, _) = self.agent()?;
                 manifest.environment = Some(environment::gather(
                     cwd,
                     self.clock.now_unix_millis(),
-                    &model.name,
                     &self.environment_platform,
                 )?);
             }

@@ -2583,8 +2583,7 @@ async fn conversation_creation_wait_retains_member_absence_diagnostics() -> Resu
     host.send(
         &root,
         &super::user(),
-        &InboxRecord::ApprovalRequested(ApprovalRequested {
-            child: root.child(&id(2))?,
+        &InboxRecord::Approval(Approval {
             id: intent("publish-conversation"),
         }),
     )

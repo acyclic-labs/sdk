@@ -1151,3 +1151,16 @@ where
         })
     }
 }
+
+/// Host controls use the same original checkpoint/adoption reader as AgentHost.
+pub(crate) async fn observe_state<P: crate::store::JournalProvider + ?Sized + 'static>(
+    provider: &std::sync::Arc<P>,
+    within: &ActorReference,
+    agent: &AgentPath,
+) -> Result<AgentState, Error> {
+    let reader = Agents::new(super::actor_store(provider)?);
+    Ok(reader
+        .state(&Agents::<P>::actor(within, &agent.id())?, agent)
+        .await?
+        .0)
+}

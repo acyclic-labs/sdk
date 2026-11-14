@@ -188,7 +188,7 @@ impl Conversation {
         while let Some(step) = query.next().await.map_err(failed)? {
             match step {
                 crate::client::InputPreviewStep::Progress => {}
-                crate::client::InputPreviewStep::Pending {
+                crate::client::InputPreviewStep::MessageRange {
                     inbox,
                     offset,
                     preview,
@@ -237,6 +237,21 @@ impl Conversation {
         ))
     }
 
+    /// Open original human prompt history without loading a transcript or file.
+    pub async fn prompt_history_query(
+        &self,
+        page: AgentPageRequest,
+    ) -> std::result::Result<ConversationInput, AgentExchangeError> {
+        let query = self
+            .connection
+            .controls
+            .prompt_history_query(self.agent().clone(), page)
+            .await?;
+        Ok(ConversationInput {
+            query,
+            _connection: self.connection.clone(),
+        })
+    }
     /// Open the selected context's bounded last-input query.
     pub async fn input_query(
         &self,
@@ -945,7 +960,7 @@ impl Conversation {
                 match events.next().await? {
                     super::Event::Status(next) => break Some(next),
                     super::Event::Turn { .. } => break None,
-                    super::Event::Delta => {}
+                    super::Event::Delta | super::Event::Input { .. } => {}
                 }
             };
         }

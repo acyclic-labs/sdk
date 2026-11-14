@@ -84,7 +84,7 @@ impl ObservedConversation {
                         return Err(Error::Conflict(format!("agent finished: {status:?}")));
                     }
                 }
-                Event::Turn { .. } | Event::Delta => {}
+                Event::Turn { .. } | Event::Delta | Event::Input { .. } => {}
             }
         }
     }

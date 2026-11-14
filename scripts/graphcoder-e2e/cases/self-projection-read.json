@@ -1,0 +1,162 @@
+{
+  "id": "self-projection-read",
+  "adapter": "chat",
+  "workspace": {
+    "kind": "git",
+    "files": {
+      "ui/index.md": "PROJECT_SOURCE_BODY",
+      "inspect-cwd.mjs": {
+        "source": "support/inspect-cwd.mjs"
+      }
+    }
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "author-view",
+            "name": "write",
+            "arguments": {
+              "path": "volume:///private/ui/index.md",
+              "content": "SELF_VIEW_BODY"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "tool_result": "version"
+        },
+        "tools": [
+          {
+            "id": "implicit-view",
+            "name": "read",
+            "arguments": {
+              "path": "volume:///private/ui/index.md"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "tool_result": "include_body: true"
+        },
+        "tools": [
+          {
+            "id": "explicit-view",
+            "name": "read",
+            "arguments": {
+              "path": "volume:///private/ui/index.md",
+              "include_body": true
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "tool_result": "SELF_VIEW_BODY"
+        },
+        "tools": [
+          {
+            "id": "program-view",
+            "name": "code",
+            "arguments": {
+              "code": "import {read} from 'acyclic'; export default {program_body: (await read('volume:///private/ui/index.md')).text()}"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "tool_result": "program_body"
+        },
+        "tools": [
+          {
+            "id": "project-source",
+            "name": "read",
+            "arguments": {
+              "path": "ui/index.md"
+            }
+          }
+        ]
+      },
+      {
+        "tools": [
+          {
+            "arguments": {
+              "command": [
+                "node",
+                "inspect-cwd.mjs",
+                "SELF_VIEW_BODY",
+                "PROJECT_SOURCE_BODY"
+              ]
+            },
+            "id": "inspect-cwd",
+            "name": "shell"
+          }
+        ],
+        "when": {
+          "tool_result": "PROJECT_SOURCE_BODY"
+        }
+      },
+      {
+        "text": [
+          "done"
+        ],
+        "when": {
+          "tool_result": "CWD_ISOLATED"
+        }
+      },
+      {
+        "when": {
+          "contains": "Append feedback records; reply none"
+        },
+        "text": [
+          "none"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "Inspect the private view and project source.",
+      "answer": "done"
+    }
+  ],
+  "assert": {
+    "requests": 8,
+    "files": {
+      "ui/index.md": "PROJECT_SOURCE_BODY"
+    },
+    "absent_files": [
+      "agent",
+      "context",
+      "children",
+      "evals"
+    ],
+    "tool_results": [
+      {
+        "path": "volume:///private/ui/index.md",
+        "self-projection": true,
+        "text": "Your human view repeats your context. Pull source files, or read this path with include_body: true."
+      },
+      {
+        "path": "volume:///private/ui/index.md",
+        "self-projection": true,
+        "text": "SELF_VIEW_BODY"
+      },
+      {
+        "path": "ui/index.md",
+        "text": "PROJECT_SOURCE_BODY"
+      }
+    ],
+    "tool_contains": [
+      "program_body",
+      "SELF_VIEW_BODY",
+      "CWD_ISOLATED"
+    ]
+  }
+}
