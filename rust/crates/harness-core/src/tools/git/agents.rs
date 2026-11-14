@@ -14,9 +14,10 @@ where
         stat: bool,
     ) -> crate::Result<super::Output<P, O>> {
         let (target, target_view) = self.agent_view(branch, current).await?;
-        // Both sides must include the same inherited source namespace before
-        // attributing parent changes against the refined common ancestor.
-        let parent_tree = self.lazy_current.tree(true, self.permit).await?;
+        // Preparation already captured this exact parent tree. Retain that
+        // same cut for branch authorization and comparison instead of
+        // recapturing it after reading the branch catalog.
+        let parent_tree = current;
         let target_tree = target_view
             .view()
             .tree(
