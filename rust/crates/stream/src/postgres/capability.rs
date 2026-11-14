@@ -1,5 +1,8 @@
-//! Requires a disposable PostgreSQL database through `STORAGE_POSTGRES_URL`.
-//! Select this entire capability with the `postgres::capability::` test filter.
+//! The postgres suite. It requires a disposable PostgreSQL database through
+//! `STORAGE_POSTGRES_URL`; every case fails naming that variable when it is
+//! absent, and never skips. The default nextest profile excludes the suite by
+//! name; run it with `cargo nextest run --profile postgres -p acyclic-stream`
+//! against the database `scripts/backends/storage-conformance.sh` provisions.
 //! SQL observation counts additionally use server statement logs tagged with
 //! the `publication-count-` application name; enable `log_statement = 'all'`
 //! and include `%a` in `log_line_prefix` when collecting those observations.
@@ -7,6 +10,15 @@
 use super::*;
 use crate::replicated::{JournalNotifications as _, ReplayObserver};
 use futures::FutureExt as _;
+
+/// The suite's declared requirement, refused by name when absent.
+fn database() -> Result<String, String> {
+    std::env::var("STORAGE_POSTGRES_URL").map_err(|error| {
+        format!(
+            "the postgres suite requires STORAGE_POSTGRES_URL ({error});              run it through scripts/backends/storage-conformance.sh"
+        )
+    })
+}
 
 async fn append(provider: &PostgresStream, path: &str) -> Result<(), StreamError> {
     provider
@@ -36,7 +48,7 @@ async fn sql_case(replica: &Replicated<PgJournal>, case: &str) -> Result<(), Str
 #[tokio::test]
 async fn publication_uses_only_required_sql_observations()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let database = std::env::var("STORAGE_POSTGRES_URL")?;
+    let database = database()?;
     let namespace = format!("publication-count-{}", uuid::Uuid::new_v4());
     let provider = PostgresStream::connect(&database, &namespace).await?;
     let writer = PostgresStream::connect(&database, &namespace).await?;
@@ -491,7 +503,7 @@ impl ReplayObserver for AppendDuringReplay<'_> {
 #[tokio::test]
 async fn paged_refresh_retains_observed_head_after_consuming_its_wake()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let database = std::env::var("STORAGE_POSTGRES_URL")?;
+    let database = database()?;
     let namespace = format!("paged-refresh-{}", uuid::Uuid::new_v4());
     let follower = PostgresStream::connect(&database, &namespace).await?;
     let writer = PostgresStream::connect(&database, &namespace).await?;
@@ -575,7 +587,7 @@ impl ReplayObserver for CompetingPublication<'_> {
 #[tokio::test]
 async fn stale_publication_returns_without_retaining_the_losing_identity()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let database = std::env::var("STORAGE_POSTGRES_URL")?;
+    let database = database()?;
     let namespace = format!("stale-publication-{}", uuid::Uuid::new_v4());
     let provider = PostgresStream::connect(&database, &namespace).await?;
     let writer = PostgresStream::connect(&database, &namespace).await?;
@@ -639,7 +651,7 @@ async fn stale_publication_returns_without_retaining_the_losing_identity()
 #[tokio::test]
 async fn cancelled_acknowledgement_replays_the_committed_identity()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let database = std::env::var("STORAGE_POSTGRES_URL")?;
+    let database = database()?;
     let namespace = format!("cancelled-ack-{}", uuid::Uuid::new_v4());
     let provider = PostgresStream::connect(&database, &namespace).await?;
     let peer = PostgresStream::connect(&database, &namespace).await?;
@@ -715,7 +727,7 @@ fn refresh_producer_retirement_ends_public_waits()
             observer.0.store(true, Ordering::Release);
         }
     }
-    let database = std::env::var("STORAGE_POSTGRES_URL")?;
+    let database = database()?;
     for producer in 0..4 {
         for park in [true, false] {
             let runtime = tokio::runtime::Builder::new_current_thread()
