@@ -9,6 +9,9 @@ use acyclic_stream::{
 use futures::{StreamExt as _, future::poll_fn};
 use std::sync::Arc;
 
+#[path = "agents_tests/delivery.rs"]
+mod delivery;
+
 struct Endpoint(Arc<MemoryStream>);
 impl transport::Transport for Endpoint {
     fn session(
@@ -243,22 +246,6 @@ async fn empty_conversation_waits_for_creation_without_selection_retry()
                 own_charge + path.as_str().len(),
                 "inherited origin was not charged"
             );
-            let mut bounded = StreamView::new(
-                crate::StreamViewPolicy::new(1, own_charge)?,
-                0,
-                0,
-                false,
-                Some(followed),
-                Default::default(),
-            );
-            assert!(matches!(
-                bounded.apply(&raw, 1),
-                Err(StreamError::LimitExceeded)
-            ));
-            assert_eq!(bounded.next_sequence(), 0);
-            assert_eq!(bounded.revision(), 0);
-            assert_eq!(bounded.retained_bytes(), 0);
-            assert_eq!(bounded.records().len(), 0);
         }
         retained.push(view);
     }
@@ -323,8 +310,7 @@ async fn empty_conversation_waits_for_creation_without_selection_retry()
     drop(clone);
     assert_eq!(observed.retained_bytes(), 0);
 
-    // An owner equal to the whole display budget still cannot fit beside row
-    // metadata. Both delivery modes detach it, just as for a larger owner.
+    // Both delivery modes detach tiny slices from excess original backing.
     for capacity in [1024, 64 * 1024] {
         for latest in [false, true] {
             let owner = acyclic_stream::OwnedBytes::from(vec![b'x'; capacity]);
@@ -359,7 +345,7 @@ async fn empty_conversation_waits_for_creation_without_selection_retry()
                 tiny.as_slice().as_ptr(),
             );
             let mut tiny_view = StreamView::new(
-                crate::StreamViewPolicy::new(1, 1024)?,
+                crate::StreamViewPolicy::new(1)?,
                 0,
                 0,
                 latest,
@@ -368,7 +354,7 @@ async fn empty_conversation_waits_for_creation_without_selection_retry()
             );
             tiny_view
                 .apply(&frame, 1)
-                .expect("tiny slice failed display admission");
+                .expect("tiny slice failed display retention");
             let retained = if latest {
                 &tiny_view
                     .latest_value(b"status")

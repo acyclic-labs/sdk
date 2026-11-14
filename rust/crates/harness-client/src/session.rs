@@ -121,7 +121,7 @@ impl WireSession {
         Self::with_view_policy(client, policy, StreamViewPolicy::default())
     }
 
-    /// Use caller-selected finite display bounds on the same canonical pool.
+    /// Use a caller-selected display page size on the same canonical pool.
     #[must_use]
     pub fn with_view_policy(
         client: Client,
