@@ -52,8 +52,11 @@ export function contractModules(families = []) {
 
 }
 
-export async function generateContracts(mode = "write", families = []) {
-  const modules = contractModules(families);
+// Full generation keeps every output. A selection omits outputs only a native build reads unless it asks for them.
+export const keepsGenerator = (generator, families, native) => !generator.nativeOnly || native || families.length === 0;
+
+export async function generateContracts(mode = "write", families = [], { native = false } = {}) {
+  let modules = contractModules(families);
 
   if (mode !== "write" && mode !== "check") throw new Error("STEP_FAILED contract-mode: expected write|check; recovery: bun scripts/generate-contracts.mjs check");
   // One build compiles every contract target from current Rust source; the
@@ -81,7 +84,10 @@ export async function generateContracts(mode = "write", families = []) {
     if (process.env.CI_HEAD_SHA && report.source_commit !== process.env.CI_HEAD_SHA) throw new Error("contract checkout differs from CI_HEAD_SHA");
     report.phase = "imports";
     saveReport();
-    const generators = await Promise.all(modules.map(name => import(`./${name}`)));
+    let generators = await Promise.all(modules.map(name => import(`./${name}`)));
+    const kept = generators.map(generator => keepsGenerator(generator, families, native));
+    modules = modules.filter((_, index) => kept[index]);
+    generators = generators.filter((_, index) => kept[index]);
     const targets = [...new Map(generators.flatMap(generator => generator.rust ?? [])
       .map(target => [JSON.stringify(target), target])).values()];
     const features = [...new Set(generators.flatMap(generator => generator.rustFeatures ?? []))];
@@ -133,5 +139,6 @@ export async function generateContracts(mode = "write", families = []) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  await generateContracts(process.argv[2] ?? "write", process.argv.slice(3));
+  const args = process.argv.slice(3);
+  await generateContracts(process.argv[2] ?? "write", args.filter(arg => arg !== "--native"), { native: args.includes("--native") });
 }
