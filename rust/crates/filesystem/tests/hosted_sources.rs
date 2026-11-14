@@ -221,6 +221,22 @@ async fn native_source_rpcs_keep_read_only_observation_lazy_and_capture_replay_a
         let original_seal = sealed.clone();
         let generation = sealed.generation.ok_or("sealed generation missing")?;
         std::fs::write(directory.join("value"), b"later")?;
+        let replayed = client
+            .reconcile_source(wire::SourceOperationRequest {
+                workspace: Some(workspace.clone()),
+                operation: operation(2),
+            })
+            .await?
+            .into_inner();
+        assert_eq!(replayed.generation, original_reconcile.generation);
+        let replayed = client
+            .rescan_source(wire::SourceOperationRequest {
+                workspace: Some(workspace.clone()),
+                operation: operation(3),
+            })
+            .await?
+            .into_inner();
+        assert_eq!(replayed.generation, original_rescan.generation);
         let read = client
             .read(wire::ReadRequest {
                 generation: Some(generation.clone()),

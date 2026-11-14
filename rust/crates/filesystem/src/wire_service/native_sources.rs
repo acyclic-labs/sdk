@@ -9,14 +9,9 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use tokio::sync::{Mutex, MutexGuard};
 use tonic::Status;
 
-struct Attachment<A: 'static, O: 'static> {
-    source: Source<A, O>,
-    generation: GenerationId,
-}
-
 struct Directory<A: 'static, O: 'static> {
     path: PathBuf,
-    attachment: Mutex<Option<Attachment<A, O>>>,
+    attachment: Mutex<Option<Source<A, O>>>,
 }
 
 /// Configured native roots over the canonical filesystem engine.
@@ -63,7 +58,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemNativeSources<A, O> 
     async fn attach<'a>(
         &'a self,
         workspace: &Workspace<A, O>,
-    ) -> Result<MutexGuard<'a, Option<Attachment<A, O>>>, Status> {
+    ) -> Result<MutexGuard<'a, Option<Source<A, O>>>, Status> {
         let directory = self.directory(workspace)?;
         let mut attached = directory.attachment.lock().await;
         if attached.is_none() {
@@ -75,8 +70,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemNativeSources<A, O> 
                 .source()
                 .cloned()
                 .ok_or_else(|| Status::internal("native source attachment missing"))?;
-            let generation = head(&native).await?;
-            *attached = Some(Attachment { source, generation });
+            *attached = Some(source);
         }
         Ok(attached)
     }
@@ -97,18 +91,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemSourceProvider<A, O>
             });
         };
         let bound = attached
-            .source
             .bind_workspace(workspace.clone())
             .await
             .map_err(status)?;
+        let generation = bound.generation_id();
         let mut state = state(bound.state());
-        if state == HostedSourceState::Clean && head(workspace).await? != attached.generation {
+        if state == HostedSourceState::Clean && head(workspace).await? != generation {
             state = HostedSourceState::Conflict;
         }
         Ok(HostedSourceResult {
             state,
             generation_id: matches!(state, HostedSourceState::Clean | HostedSourceState::Sealed)
-                .then_some(attached.generation),
+                .then_some(generation),
         })
     }
 
@@ -117,19 +111,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemSourceProvider<A, O>
         workspace: &Workspace<A, O>,
         key: IdempotencyKey,
     ) -> Result<HostedSourceResult, Status> {
-        let mut attached = self.attach(workspace).await?;
+        let attached = self.attach(workspace).await?;
         let attached = attached
-            .as_mut()
+            .as_ref()
             .ok_or_else(|| Status::internal("native source attachment missing"))?;
         let outcome = attached
-            .source
             .bind_workspace(workspace.clone())
             .await
             .map_err(status)?
             .reconcile_with_key(key)
             .await
             .map_err(status)?;
-        Ok(outcome_result(attached, outcome))
+        Ok(outcome_result(outcome))
     }
 
     async fn rescan(
@@ -137,19 +130,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemSourceProvider<A, O>
         workspace: &Workspace<A, O>,
         key: IdempotencyKey,
     ) -> Result<HostedSourceResult, Status> {
-        let mut attached = self.attach(workspace).await?;
+        let attached = self.attach(workspace).await?;
         let attached = attached
-            .as_mut()
+            .as_ref()
             .ok_or_else(|| Status::internal("native source attachment missing"))?;
         let outcome = attached
-            .source
             .bind_workspace(workspace.clone())
             .await
             .map_err(status)?
             .rescan_with_key(key)
             .await
             .map_err(status)?;
-        Ok(outcome_result(attached, outcome))
+        Ok(outcome_result(outcome))
     }
 
     async fn seal(
@@ -157,19 +149,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemSourceProvider<A, O>
         workspace: &Workspace<A, O>,
         key: IdempotencyKey,
     ) -> Result<HostedSourceResult, Status> {
-        let mut attached = self.attach(workspace).await?;
+        let attached = self.attach(workspace).await?;
         let attached = attached
-            .as_mut()
+            .as_ref()
             .ok_or_else(|| Status::internal("native source attachment missing"))?;
         let generation = attached
-            .source
             .bind_workspace(workspace.clone())
             .await
             .map_err(status)?
             .seal_with_key(key)
             .await
             .map_err(status)?;
-        attached.generation = generation.id();
         Ok(HostedSourceResult {
             state: HostedSourceState::Sealed,
             generation_id: Some(generation.id()),
@@ -177,15 +167,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemSourceProvider<A, O>
     }
 }
 
-fn outcome_result<A: 'static, O: 'static>(
-    attached: &mut Attachment<A, O>,
-    outcome: ReconcileOutcome<A, O>,
-) -> HostedSourceResult {
+fn outcome_result<A: 'static, O: 'static>(outcome: ReconcileOutcome<A, O>) -> HostedSourceResult {
     let (state, generation_id) = match outcome {
-        ReconcileOutcome::Clean(generation) => {
-            attached.generation = generation.id();
-            (HostedSourceState::Clean, Some(generation.id()))
-        }
+        ReconcileOutcome::Clean(generation) => (HostedSourceState::Clean, Some(generation.id())),
         ReconcileOutcome::NeedsRescan(reason) => {
             (HostedSourceState::NeedsRescan(invalidation(reason)), None)
         }
