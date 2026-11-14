@@ -1637,7 +1637,9 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         .map_err(host_error)?
                         .flatten();
                     let (id, parent, binding) = match pending {
-                        Some((request, parent, binding)) => (request, parent, Some(binding)),
+                        Some((request, parent, binding)) => {
+                            (crate::approvals::request_id(request), parent, Some(binding))
+                        }
                         None => (approval_intent(approval), false, None),
                     };
                     let id = IntentId::try_from(id)?;

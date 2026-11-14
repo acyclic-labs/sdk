@@ -5,6 +5,8 @@ pub(in crate::filesystem) struct HostInvocation {
     pub(in crate::filesystem) executor: Arc<dyn Executor>,
     // Keep signing custody with the journal and original task it issued.
     pub(in crate::filesystem) authority: TurnAuthority,
+    // The event actor parks on this original owner, just like an ordinary turn.
+    pub(in crate::filesystem) approvals: Arc<AgentApprovals>,
 }
 
 impl<P, A, O> FilesystemTurnHost<P, A, O>
@@ -43,7 +45,7 @@ where
                 .with_actor_admissions(self.actor_admissions(agent)?)
                 .with_agent_lineage(agent.path.clone())
                 .with_stop(stop)
-                .with_agent_approvals(approvals),
+                .with_agent_approvals(approvals.clone()),
         );
         let mut authority = TurnAuthority {
             templates: self.templates(),
@@ -67,6 +69,7 @@ where
         Ok(HostInvocation {
             executor,
             authority,
+            approvals,
         })
     }
 }

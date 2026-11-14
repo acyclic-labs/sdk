@@ -136,13 +136,16 @@ async fn source_invocations_use_original_agent_grants_policy_and_receipts_withou
             authority: &'a TurnAuthority,
         ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<StockExecutor>> {
             Box::pin(async move {
-                Grants(vec!["tool:call:write".into()])
-                    .prepare_invocation(composed, agent, operation, authority)
-                    .await
+                Grants(vec![
+                    "tool:call:write".into(),
+                    crate::contract::capability::INTERACTION_ROUTE.into(),
+                ])
+                .prepare_invocation(composed, agent, operation, authority)
+                .await
             })
         }
     }
-    for allow in [false, true] {
+    for (allow, ask) in [(false, false), (true, false), (true, true)] {
         let model = Arc::new(ScriptedModelProvider::new([]));
         let mut tools = ToolRegistry::default();
         tools.register((crate::tool::files::write()?, None), &mut None, None)?;
@@ -159,7 +162,9 @@ async fn source_invocations_use_original_agent_grants_policy_and_receipts_withou
             (Limits::default(), None::<crate::context::CompactionPolicy>),
             Arc::new(NoPrompt),
         );
-        let policy = if allow {
+        let policy = if ask {
+            crate::approvals::ApprovalPolicy::default()
+        } else if allow {
             crate::approvals::ApprovalPolicy::accept_all("source-test")
         } else {
             crate::approvals::ApprovalPolicy::deny_all("source-test")
@@ -174,8 +179,8 @@ async fn source_invocations_use_original_agent_grants_policy_and_receipts_withou
             arguments: serde_json::json!({"path":"source.txt","content":"original event"}),
         };
         // Reopening the exact session execution must recover its receipt.
-        for _ in 0..2 {
-            let issued = bound
+        for replay in 0..2 {
+            let mut issued = bound
                 .turns()
                 .invocation(
                     &state,
@@ -184,7 +189,7 @@ async fn source_invocations_use_original_agent_grants_policy_and_receipts_withou
                 )
                 .await?;
             let mut context = Vec::new();
-            let result = issued
+            let mut result = issued
                 .executor
                 .settle_invocation(
                     issued.authority.journal.as_ref(),
@@ -195,6 +200,68 @@ async fn source_invocations_use_original_agent_grants_policy_and_receipts_withou
                     None,
                 )?
                 .await?;
+            if ask && replay == 0 {
+                assert!(
+                    matches!(result, ExecutionProgress::Pending(pending) if pending == call.operation_id)
+                );
+                assert!(
+                    issued
+                        .authority
+                        .journal
+                        .replay(operation, 0, 64, None)?
+                        .await?
+                        .is_empty()
+                );
+                let (id, parent, shown) = issued
+                    .approvals
+                    .pending()?
+                    .ok_or("source approval owner lost its request")?;
+                assert!(!parent);
+                assert_eq!(shown.operation_id, call.operation_id);
+                assert!(
+                    issued
+                        .approvals
+                        .decide(
+                            id,
+                            crate::approvals::ApprovalResponder::Human("intruder"),
+                            crate::interaction::ApprovalVerdict::Approve,
+                            None,
+                        )
+                        .await
+                        .is_err()
+                );
+                issued
+                    .approvals
+                    .decide(
+                        id,
+                        crate::approvals::ApprovalResponder::Human("human"),
+                        crate::interaction::ApprovalVerdict::Approve,
+                        None,
+                    )
+                    .await?;
+                // The actor can drop its active frame while approval is pending.
+                // A new original journal recovers the same decision and selection.
+                drop(issued);
+                issued = bound
+                    .turns()
+                    .invocation(
+                        &state,
+                        operation,
+                        acyclic_actors::guest::CancellationToken::new(),
+                    )
+                    .await?;
+                result = issued
+                    .executor
+                    .settle_invocation(
+                        issued.authority.journal.as_ref(),
+                        (operation, 0),
+                        (call.clone(), Arc::clone(&binding)),
+                        &serde_json::Value::Null,
+                        &mut context,
+                        None,
+                    )?
+                    .await?;
+            }
             let ExecutionProgress::Ready(Some(result)) = result else {
                 return Err("source call did not settle".into());
             };

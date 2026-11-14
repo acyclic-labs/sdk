@@ -175,7 +175,7 @@ pub struct AgentApprovals {
     files: Arc<dyn ApprovalFiles>,
     policy: Arc<AgentApprovalPolicy>,
     /// The request the turn waits on, and whether its stage is the parent's.
-    pending: Mutex<Option<(String, bool, ApprovalBinding)>>,
+    pending: Mutex<Option<(InteractionId, bool, ApprovalBinding)>>,
     /// The turn's agent effects, committed before any later call dispatches.
     effects: Option<Arc<dyn crate::agent::TurnEffects>>,
     /// Whether the call the turn last stopped at waits on those effects.
@@ -263,11 +263,13 @@ impl AgentApprovals {
 
     /// The request the turn now waits on, its original action binding, and
     /// whether the parent decides it. Lock loss ends the step with an error.
-    pub fn pending(&self) -> Result<Option<(String, bool, ApprovalBinding)>> {
+    /// The original interaction identity also lets a source-event actor resume
+    /// this owner without parsing or reconstructing an approval file name.
+    pub fn pending(&self) -> Result<Option<(InteractionId, bool, ApprovalBinding)>> {
         Ok(locked(&self.pending)?.clone())
     }
 
-    fn wait(&self, pending: Option<(String, bool, ApprovalBinding)>) -> Result<()> {
+    fn wait(&self, pending: Option<(InteractionId, bool, ApprovalBinding)>) -> Result<()> {
         *locked(&self.pending)? = pending;
         Ok(())
     }
@@ -305,11 +307,12 @@ impl AgentApprovals {
         let request = request_id(id);
         let bytes = self.policy.request(&*self.files, &request).await?;
         let view = ApprovalRequest::new(&request, &bytes, self.policy.limits.file_bytes)?;
-        self.resolve_outcome(&view, Some((journal, io))).await
+        self.resolve_outcome(id, &view, Some((journal, io))).await
     }
 
     async fn resolve_outcome(
         &self,
+        id: InteractionId,
         view: &ApprovalRequest<'_>,
         execution: Option<(
             &dyn crate::executor::ExecutionJournal,
@@ -383,11 +386,7 @@ impl AgentApprovals {
                     self.wait(None)?;
                     return Ok(Some(InteractionOutcome::Approved {}));
                 }
-                self.wait(Some((
-                    view.id().to_owned(),
-                    matches!(approver, Approver::Parent),
-                    binding,
-                )))?;
+                self.wait(Some((id, matches!(approver, Approver::Parent), binding)))?;
                 return Ok(None);
             };
             let decision = ApprovalDecisionFile::decode(&decided, policy.limits.file_bytes)?;
@@ -466,7 +465,7 @@ impl AgentApprovals {
         }
         // Authorization observes only settled evidence. It cannot start a review.
         let view = ApprovalRequest::new(&request, &bytes, self.policy.limits.file_bytes)?;
-        match self.resolve_outcome(&view, None).await? {
+        match self.resolve_outcome(id, &view, None).await? {
             Some(InteractionOutcome::Approved {}) => Ok(()),
             _ => Err(Error::Unauthorized(
                 "tool installation lacks a resolved approval".into(),
