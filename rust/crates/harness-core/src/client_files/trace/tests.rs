@@ -173,6 +173,24 @@ async fn bounded_trace_files_preserve_captured_cuts_and_follow_original_sources(
     assert_eq!(value["caughtUp"], true);
     assert_eq!(value["mechanisms"]["wait"]["elapsed_ns"], 20);
     assert_eq!(value["mechanisms"]["wait"]["unsettled"], 1);
+    assert!(value["mechanisms"]["wait"]["outliers"].is_null());
+    for (threshold, outliers) in [(19, 1), (20, 0)] {
+        let selected = format!("{PREFIX}0/2/outliers/wait/{threshold}.json");
+        let values = files
+            .read(
+                provider.as_ref(),
+                &agent,
+                &[&selected],
+                &path,
+                2,
+                Default::default(),
+            )
+            .await?;
+        let policy: serde_json::Value = serde_json::from_str(&values[0].text)?;
+        assert_eq!(policy["coveredThrough"], 2);
+        assert_eq!(policy["mechanisms"]["wait"]["elapsed_ns"], 20);
+        assert_eq!(policy["mechanisms"]["wait"]["outliers"], outliers);
+    }
     let suffix = files
         .read(
             provider.as_ref(),

@@ -5,6 +5,8 @@ use acyclic_stream::{ReadRequest, StreamPath, StreamProvider, trace::TraceQuery}
 
 /// Cursor windows, `live/agents/self/trace/<from>/<count>.json`. Counts split
 /// work; there is no default history scan or server-selected retention bound.
+/// Append `/outliers/<mechanism>/<nanoseconds>` before `.json` to select an
+/// explicit outlier threshold. Other mechanisms retain unknown classification.
 pub const PREFIX: &str = "live/agents/self/trace/";
 
 /// One agent's original trace subtree. Children own their own trace histories.
@@ -32,11 +34,31 @@ struct IncompleteWindow {
     received_through: u64,
 }
 
-fn window(path: &str) -> Option<(u64, u32)> {
-    let (from, count) = path
-        .strip_prefix(PREFIX)?
-        .strip_suffix(".json")?
-        .split_once('/')?;
+struct Window {
+    from: u64,
+    count: u32,
+    thresholds: std::collections::BTreeMap<acyclic_stream::trace::Mechanism, u64>,
+}
+
+fn window(path: &str) -> Option<Window> {
+    let selection = path.strip_prefix(PREFIX)?.strip_suffix(".json")?;
+    let mut thresholds = std::collections::BTreeMap::new();
+    let bounds = if let Some((bounds, policy)) = selection.split_once("/outliers/") {
+        let (mechanism, nanos) = policy.split_once('/')?;
+        let mechanism = serde::Deserialize::deserialize(serde::de::value::StrDeserializer::<
+            serde::de::value::Error,
+        >::new(mechanism))
+        .ok()?;
+        let threshold: u64 = nanos.parse().ok()?;
+        if nanos != threshold.to_string() {
+            return None;
+        }
+        thresholds.insert(mechanism, threshold);
+        bounds
+    } else {
+        selection
+    };
+    let (from, count) = bounds.split_once('/')?;
     let start: u64 = from.parse().ok()?;
     let length: u32 = count.parse().ok()?;
     if length == 0
@@ -46,7 +68,11 @@ fn window(path: &str) -> Option<(u64, u32)> {
     {
         return None;
     }
-    Some((start, length))
+    Some(Window {
+        from: start,
+        count: length,
+        thresholds,
+    })
 }
 
 impl<P: StreamProvider + ?Sized> FileView<P> for TraceFiles<P> {
@@ -96,13 +122,17 @@ impl<P: StreamProvider + ?Sized> FileView<P> for TraceFiles<P> {
                 .copied()
                 .collect::<std::collections::BTreeSet<_>>()
             {
-                let (from, count) = window(path)
+                let Window {
+                    from,
+                    count,
+                    thresholds,
+                } = window(path)
                     .ok_or_else(|| Error::Invalid("invalid trace cursor window".into()))?;
                 if from >= through {
                     continue;
                 }
                 let end = (from + u64::from(count)).min(through);
-                let mut query = TraceQuery::new((), Default::default());
+                let mut query = TraceQuery::new((), thresholds);
                 let mut received_through = from;
                 while received_through < end {
                     let limit = u32::try_from(
