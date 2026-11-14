@@ -742,7 +742,7 @@ impl Opening {
             agent,
             models: self.models,
             sampling,
-            served: self.config.served,
+            admission: self.config.admission,
             active_directory: self.config.active_directory,
             #[cfg(test)]
             context_read_observer: None,

@@ -23,6 +23,7 @@ mod agents;
 mod context;
 mod context_documents;
 mod history_retry;
+mod platform;
 mod programs;
 mod replay;
 pub(super) mod settings;

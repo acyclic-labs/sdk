@@ -124,9 +124,8 @@ pub struct LocalHarness {
     models: Option<Arc<crate::model::ModelResolver>>,
     /// The sampling `agent.ts` selected for every model call.
     sampling: Option<crate::config::Sampling>,
-    /// The verifier of a served tree's caller and clients; see
-    /// [`LocalHarnessConfig::served`].
-    served: Option<Arc<dyn Verifier>>,
+    /// Every agent's caller verification, independent of session transport.
+    admission: Arc<dyn Verifier>,
     active_directory: String,
     #[cfg(any(test, not(target_arch = "wasm32")))]
     settings: Option<Arc<crate::native_settings::SettingsConfig>>,
