@@ -1186,6 +1186,11 @@ async fn workspace_metadata_and_directory_pages_retire_only_their_own_scratch()
                 .matches_optional_file_payload(&generation, "/missing", &original, &cancellation)
                 .await?
         );
+        assert!(
+            generation
+                .matches_optional_content(&generation, "/missing/child", &original, &cancellation)
+                .await?
+        );
         original.receipt().verify(budget)?;
         assert_eq!(original.live_allocation_bytes(), baseline);
         assert_eq!(

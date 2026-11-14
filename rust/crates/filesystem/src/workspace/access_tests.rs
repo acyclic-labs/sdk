@@ -87,12 +87,20 @@ async fn retained_content_comparisons_recheck_current_read_authority()
             .await?
             .value
     );
-    assert!(
-        original
-            .matches_optional_file_payload(&original, "/absent", WorkBudget::UNBOUNDED, &cancel,)
-            .await?
-            .value
-    );
+    for path in ["/absent", "/missing/child", "/entry/child"] {
+        assert!(
+            original
+                .matches_optional_file_payload(&original, path, WorkBudget::UNBOUNDED, &cancel)
+                .await?
+                .value
+        );
+        assert!(
+            original
+                .matches_optional_content(&original, path, WorkBudget::UNBOUNDED, &cancel)
+                .await?
+                .value
+        );
+    }
     assert!(
         !recreated
             .matches_optional_file_payload(&original, "/entry", WorkBudget::UNBOUNDED, &cancel,)

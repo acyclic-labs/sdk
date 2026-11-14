@@ -222,12 +222,6 @@ pub(super) async fn matches_content<
                     cancellation,
                 )
                 .await?;
-            let record = checkout
-                .value
-                .lookup_no_follow_with_accounting(&path.value, &mut scope, cancellation, false)
-                .await?
-                .0
-                .record;
             let mut original = workspace
                 .open_checkout(
                     GenerationSelector::Exact(original),
@@ -236,12 +230,39 @@ pub(super) async fn matches_content<
                     cancellation,
                 )
                 .await?;
-            let expected = original
-                .value
-                .lookup_no_follow_with_accounting(&path.value, &mut scope, cancellation, false)
-                .await?
-                .0
-                .record;
+            let mut records = [None; 2];
+            for (selected, record) in [&mut checkout.value, &mut original.value]
+                .into_iter()
+                .zip(&mut records)
+            {
+                *record = if allow_absent {
+                    let (lookup, allocation) = selected
+                        .lookup_batch_no_follow_with_accounting::<false>(
+                            std::slice::from_ref(&path.value),
+                            true,
+                            &mut scope,
+                            cancellation,
+                        )
+                        .await?;
+                    let record = lookup.entries.first().ok_or(FsError::InvalidDiff)?.record;
+                    let bytes = lookup.retained_allocation_bytes;
+                    drop(lookup);
+                    crate::kernel::retire_allocation(allocation, bytes, &mut scope)?;
+                    record
+                } else {
+                    selected
+                        .lookup_no_follow_with_accounting(
+                            &path.value,
+                            &mut scope,
+                            cancellation,
+                            false,
+                        )
+                        .await?
+                        .0
+                        .record
+                };
+            }
+            let [record, expected] = records;
             let matches = match (record, expected) {
                 (Some(record), Some(expected)) if exact_payload => {
                     record.file_id == expected.file_id
