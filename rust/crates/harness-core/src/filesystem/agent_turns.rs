@@ -156,7 +156,8 @@ impl TurnAdmission {
 /// filesystem selection; fresh allocations have a separate creation check.
 /// Attestation is deferred until execution needs a signed scope. Every
 /// read of a turn and its [`AgentAuthority`] require one.
-pub(super) struct AdmittedAgent<'v> {
+pub(super) struct AdmittedAgent<'v, 'p> {
+    path: &'p AgentPath,
     issuer: RuntimeAuthority,
     owner: crate::AgentId,
     volumes: &'v [WorkspaceEntry],
@@ -166,13 +167,13 @@ pub(super) struct AdmittedAgent<'v> {
     parent: Option<&'v Scope>,
 }
 
-impl<'v> AdmittedAgent<'v> {
+impl<'v, 'p> AdmittedAgent<'v, 'p> {
     /// Verifies the admission of the agent at `path` over `volumes`, signed
     /// with `issuer`'s custody. It performs no IO.
     pub(super) fn verify(
         issuer: &RuntimeAuthority,
         admission: &'v TurnAdmission,
-        path: &AgentPath,
+        path: &'p AgentPath,
         volumes: &'v [WorkspaceEntry],
     ) -> Result<Self> {
         let owner = crate::AgentId::from_bytes(path.id_bytes());
@@ -237,6 +238,7 @@ impl<'v> AdmittedAgent<'v> {
             }
         }
         Ok(Self {
+            path,
             issuer,
             owner,
             volumes,
@@ -1088,13 +1090,7 @@ where
         }
         let retained = policy.map(std::slice::from_ref).unwrap_or(&[]);
         let (journal, bindings, _) = self
-            .journal(
-                (self.admit(parent)?, &parent.path),
-                &[],
-                retained,
-                None,
-                None,
-            )
+            .journal(self.admit(parent)?, &[], retained, None, None)
             .await?;
         let bytes = match policy {
             Some(policy) => {
@@ -1182,14 +1178,8 @@ where
         Bindings<A, O>,
         Arc<AgentInternalFiles<A, O>>,
     )> {
-        self.journal(
-            (self.admit(agent)?, &agent.path),
-            agent.policy.as_slice(),
-            &[],
-            None,
-            None,
-        )
-        .await
+        self.journal(self.admit(agent)?, agent.policy.as_slice(), &[], None, None)
+            .await
     }
 
     /// Opens journal queries through this agent's original journal grant.
@@ -1328,7 +1318,7 @@ where
     }
 
     /// `agent`'s verified admission; it performs no IO.
-    fn admit<'v>(&'v self, agent: &'v AgentState) -> Result<AdmittedAgent<'v>> {
+    fn admit<'v>(&'v self, agent: &'v AgentState) -> Result<AdmittedAgent<'v, 'v>> {
         AdmittedAgent::verify(&self.issuer, &self.admission, &agent.path, &agent.volumes)
     }
 
@@ -1338,7 +1328,7 @@ where
     /// version.
     async fn journal(
         &self,
-        (admitted, trace_owner): (AdmittedAgent<'_>, &AgentPath),
+        admitted: AdmittedAgent<'_, '_>,
         external: &[FileRef],
         retained: &[FileRef],
         context: Option<&mut TurnContext<'_>>,
@@ -1348,6 +1338,7 @@ where
         Bindings<A, O>,
         Arc<AgentInternalFiles<A, O>>,
     )> {
+        let trace_owner = admitted.path;
         let local_root = admitted.parent.is_none();
         let turn = context.as_ref().map(|context| context.turn);
         let storage = crate::core::until_turn_stopped(
@@ -1496,7 +1487,7 @@ where
     /// This reader and its journal write grant never enter the tool bindings.
     async fn journal_storage(
         &self,
-        admitted: &AdmittedAgent<'_>,
+        admitted: &AdmittedAgent<'_, '_>,
         retained: &[FileRef],
         external: &[FileRef],
     ) -> Result<JournalStorage<A, O>> {
@@ -1527,7 +1518,7 @@ where
     /// sequences, oldest first.
     async fn history(
         &self,
-        _: &AdmittedAgent<'_>,
+        _: &AdmittedAgent<'_, '_>,
         agent: &AgentState,
     ) -> Result<Vec<(u64, ConversationEntry)>> {
         if agent.conversation_tail == 0 {
@@ -2491,7 +2482,7 @@ where
                     .collect();
                 let (journal, bindings, files) = self
                     .journal(
-                        (admitted, &agent.path),
+                        admitted,
                         &external,
                         &retained,
                         Some(&mut context),

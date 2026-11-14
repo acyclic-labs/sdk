@@ -101,11 +101,23 @@ where
     pub(super) async fn observe_request<T, E>(
         &self,
         request: acyclic_stream::trace::Request,
-        work: impl std::future::Future<Output = std::result::Result<T, E>>,
+        work: impl std::future::Future<Output = std::result::Result<T, E>>
+        + acyclic_stream::ProviderTask,
         bytes: impl FnOnce(&T) -> Option<u64>,
     ) -> std::result::Result<T, E> {
         match &self.traces {
             Some((traces, owner)) => {
+                // Borrow the original pinned future across the observer seam.
+                // This cuts generic layout nesting without another allocation.
+                let mut original = std::pin::pin!(work);
+                #[cfg(not(target_arch = "wasm32"))]
+                let work: std::pin::Pin<
+                    &mut (dyn std::future::Future<Output = std::result::Result<T, E>> + Send),
+                > = original.as_mut();
+                #[cfg(target_arch = "wasm32")]
+                let work: std::pin::Pin<
+                    &mut dyn std::future::Future<Output = std::result::Result<T, E>>,
+                > = original.as_mut();
                 traces
                     .observe(owner.as_str(), request, work, bytes)
                     .await
