@@ -50,7 +50,7 @@ pub struct Recorder<P: ?Sized> {
     origin: Instant,
     next: AtomicU64,
     demand: Option<AtomicUsize>,
-    publications: Arc<tokio::sync::Semaphore>,
+    publications: Option<Arc<tokio::sync::Semaphore>>,
     suppressed: AtomicU64,
     #[cfg(not(target_arch = "wasm32"))]
     executor: std::sync::OnceLock<tokio::runtime::Handle>,
@@ -90,19 +90,28 @@ impl<P: ?Sized> Recorder<P> {
                 StreamError::InvalidArgument.with_source(RecorderFailure::PublicationCredit)
             );
         }
-        self.publications = Arc::new(tokio::sync::Semaphore::new(credit.get()));
+        self.publications = Some(Arc::new(tokio::sync::Semaphore::new(credit.get())));
         Ok(self)
     }
     #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
-    fn reserve_publication(&self) -> Result<tokio::sync::OwnedSemaphorePermit, StreamError> {
-        self.publications.clone().try_acquire_owned().map_err(|_| {
-            let _ = self
-                .suppressed
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                    Some(count.saturating_add(1))
-                });
-            StreamError::Capacity.with_source(RecorderFailure::PublicationCredit)
-        })
+    fn reserve_publication(
+        &self,
+    ) -> Result<Option<tokio::sync::OwnedSemaphorePermit>, StreamError> {
+        let Some(publications) = &self.publications else {
+            return Ok(None);
+        };
+        publications
+            .clone()
+            .try_acquire_owned()
+            .map(Some)
+            .map_err(|source| {
+                let _ =
+                    self.suppressed
+                        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                            Some(count.saturating_add(1))
+                        });
+                StreamError::Capacity.with_source(source)
+            })
     }
     pub(super) fn with_demand(mut self) -> Self {
         self.demand = Some(AtomicUsize::new(0));
@@ -231,6 +240,7 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
     /// Bind an already authorized owner's ordinary trace stream. `process`
     /// identifies this origin and must never be reused for a new recorder.
     /// Neither this constructor nor an opaque identity grants stream access.
+    /// Publication concurrency is unbounded unless the caller configures credit.
     pub fn new(stream: Stream<P>, process: [u8; 16]) -> Self {
         Self {
             stream,
@@ -238,7 +248,7 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
             origin: Instant::now(),
             next: AtomicU64::new(0),
             demand: None,
-            publications: Arc::new(tokio::sync::Semaphore::new(64)),
+            publications: None,
             suppressed: AtomicU64::new(0),
             #[cfg(not(target_arch = "wasm32"))]
             executor: std::sync::OnceLock::new(),
@@ -434,7 +444,10 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
 enum Admission {
     Retained(RetainedRecord),
     #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
-    Submitted(crate::AppendPending, tokio::sync::OwnedSemaphorePermit),
+    Submitted(
+        crate::AppendPending,
+        Option<tokio::sync::OwnedSemaphorePermit>,
+    ),
 }
 
 #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
@@ -536,6 +549,6 @@ impl<P: StreamProvider + ?Sized> Recording<P> {
             Admission::Submitted(pending, credit) => (Some(pending), credit),
         };
         self.recorder
-            .publish_submitted(event, before, Some(credit), comparison)
+            .publish_submitted(event, before, credit, comparison)
     }
 }

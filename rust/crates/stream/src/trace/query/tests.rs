@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 #[tokio::test]
 #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+
 async fn original_guard_unlock_precedes_its_trace_settlement()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::trace::{Recorder, Request, observe_guard};
@@ -101,6 +102,67 @@ async fn original_guard_unlock_precedes_its_trace_settlement()
     drop(original);
     assert_eq!(*mutex.try_lock()?, 7);
     let terminal = root.finish_submitted(None, Outcome::Succeeded)?;
+    assert!(matches!(
+        terminal.result().await?,
+        Ok(AppendOutcome::Committed(_))
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+#[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+async fn concurrent_original_publications_have_no_default_credit_ceiling()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::trace::{Recorder, Request};
+    let request = || Request {
+        name: "original_concurrent_request",
+        mechanism: Mechanism::Io,
+        parent: None,
+        guarantee: Some("original_publication_custody"),
+    };
+    let stream = crate::Stream::new(Arc::new(MemoryStream::default()), "agents/concurrent/trace")?;
+    let recorder = Arc::new(Recorder::new(stream.clone(), [71; 16]));
+    let mut original = Vec::new();
+    for _ in 0..65 {
+        original.push(recorder.submit_start(request())?);
+    }
+    for span in original {
+        let terminal = span.finish_submitted(Some(0), Outcome::Succeeded)?;
+        assert!(matches!(
+            terminal.result().await?,
+            Ok(AppendOutcome::Committed(_))
+        ));
+    }
+    assert_eq!(recorder.suppressed_spans(), 0);
+    let mut query = TraceQuery::new(stream.read(0, 130).await?, Default::default());
+    let mut completed = 0;
+    while let Some(observation) = query.next().await? {
+        if let Observation::Completed { bytes, result, .. } = observation {
+            assert_eq!(bytes, Some(0));
+            assert_eq!(result, Outcome::Succeeded);
+            completed += 1;
+        }
+    }
+    assert_eq!(completed, 65);
+    let bounded = Arc::new(
+        Recorder::new(stream, [72; 16])
+            .with_publication_credit(std::num::NonZeroUsize::new(1).unwrap())?,
+    );
+    let held = bounded.submit_start(request())?;
+    let error = bounded
+        .submit_start(request())
+        .err()
+        .ok_or("explicit credit was ignored")?;
+    assert_eq!(error.category(), StreamError::Capacity);
+    assert_eq!(bounded.suppressed_spans(), 1);
+    let terminal = held.finish_submitted(Some(0), Outcome::Succeeded)?;
+    assert!(matches!(
+        terminal.result().await?,
+        Ok(AppendOutcome::Committed(_))
+    ));
+    let terminal = bounded
+        .submit_start(request())?
+        .finish_submitted(Some(0), Outcome::Succeeded)?;
     assert!(matches!(
         terminal.result().await?,
         Ok(AppendOutcome::Committed(_))
