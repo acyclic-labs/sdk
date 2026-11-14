@@ -191,6 +191,23 @@ pub(crate) fn is_source(path: &crate::StreamPath) -> bool {
     })
 }
 
+/// Retain recording custody around original synchronous admission without
+/// delaying or allocating for an unobserved in-process action.
+pub fn accompany_sync<T>(
+    request: Request,
+    work: impl FnOnce() -> T,
+) -> (T, Option<OwnedRecording>) {
+    use futures::FutureExt as _;
+    let recording = child(request)
+        .and_then(|admission| admission.now_or_never())
+        .and_then(Result::ok);
+    let result = if let Some(recording) = &recording {
+        recording.within_sync(work)
+    } else {
+        work()
+    };
+    (result, recording)
+}
 /// Observe original synchronous work with optional original comparison evidence.
 /// The classifier runs only after admission. Terminal and comparison share one
 /// bounded append; neither waits for diagnostic IO before returning the value.
@@ -201,14 +218,10 @@ pub fn observe_sync<T>(
 ) -> T {
     #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
     {
-        use futures::FutureExt as _;
-        let recording = child(request)
-            .and_then(|admission| admission.now_or_never())
-            .and_then(Result::ok);
+        let (result, recording) = accompany_sync(request, work);
         let Some(recording) = recording else {
-            return work();
+            return result;
         };
-        let result = recording.within_sync(work);
         if let Some((bytes, outcome, comparison)) = _outcome(&result) {
             let _completion = recording.finish_compared(bytes, outcome, comparison);
         }
@@ -218,5 +231,32 @@ pub fn observe_sync<T>(
     {
         let _ = request;
         work()
+    }
+}
+
+pin_project_lite::pin_project! {
+    struct InheritedStream<S> {
+        #[pin]
+        body: S,
+        active: Option<Active>,
+    }
+}
+
+impl<S: futures::Stream> futures::Stream for InheritedStream<S> {
+    type Item = S::Item;
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let state = self.project();
+        let _restore = Restore(CURRENT.replace(state.active.clone()));
+        state.body.poll_next(cx)
+    }
+}
+
+pub(crate) fn inherit_stream<S: futures::Stream>(body: S) -> impl futures::Stream<Item = S::Item> {
+    InheritedStream {
+        body,
+        active: CURRENT.with_borrow(Clone::clone),
     }
 }
