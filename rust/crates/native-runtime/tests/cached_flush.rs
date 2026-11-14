@@ -32,7 +32,7 @@ fn create(path: &Path) -> io::Result<File> {
         .open(path)
 }
 
-const CONTROL: &str = "public_leases_keep_unfinished_flushes_until_physical_close";
+const CONTROL: &str = "cached_flush::public_leases_keep_unfinished_flushes_until_physical_close";
 const DRAIN_CHILD: &str = "ACYCLIC_NATIVE_CACHED_FLUSH_CHILD";
 const COMPLETED: &str = "ORIGINAL_CACHED_FLUSH_COMPLETED";
 

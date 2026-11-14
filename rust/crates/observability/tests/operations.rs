@@ -9,8 +9,6 @@ use std::{
 };
 use tracing_subscriber::prelude::*;
 
-acyclic_test_support::counting_allocator!();
-
 fn operation(fail: bool) {
     let _ =
         acyclic_observability::operation!("acyclic.test.operation", |()| "refused", || if fail {
@@ -817,14 +815,14 @@ fn disabled_operation_has_zero_syscalls_with_real_io_negative_control()
             .arg(std::env::current_exe()?)
             .args([
                 "--exact",
-                "disabled_operation_allocates_nothing_with_enabled_negative_control",
+                "operations::disabled_operation_allocates_nothing_with_enabled_negative_control",
                 "--nocapture",
                 "--test-threads=1",
             ]);
         if negative {
             command.env("ACYCLIC_OBSERVATION_NEGATIVE", "1");
         }
-        let result = command.output().map_err(|error| std::io::Error::new(error.kind(), format!("syscall trace failed to start: {error}; install strace and rerun cargo test -p acyclic-observability --test operations disabled_operation_has_zero_syscalls_with_real_io_negative_control -- --exact")))?;
+        let result = command.output().map_err(|error| std::io::Error::new(error.kind(), format!("syscall trace failed to start: {error}; install strace and rerun cargo test -p acyclic-observability --test main operations::disabled_operation_has_zero_syscalls_with_real_io_negative_control -- --exact")))?;
         assert!(
             result.status.success(),
             "syscall probe failed: {}",

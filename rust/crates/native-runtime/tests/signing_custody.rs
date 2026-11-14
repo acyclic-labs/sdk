@@ -58,7 +58,7 @@ fn explicit_private_custody_reopens_and_refuses_public_access() -> io::Result<()
             Command::new(std::env::current_exe()?)
                 .args([
                     "--exact",
-                    "explicit_private_custody_reopens_and_refuses_public_access",
+                    "signing_custody::explicit_private_custody_reopens_and_refuses_public_access",
                     "--nocapture",
                 ])
                 .env("CUSTODY_CONTROL_OPERATION", operation)
@@ -86,7 +86,7 @@ fn explicit_private_custody_reopens_and_refuses_public_access() -> io::Result<()
         command
             .args([
                 "--exact",
-                "explicit_private_custody_reopens_and_refuses_public_access",
+                "signing_custody::explicit_private_custody_reopens_and_refuses_public_access",
                 "--nocapture",
             ])
             .env("CUSTODY_CONTROL_OPERATION", "mismatch")
