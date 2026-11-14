@@ -2642,7 +2642,6 @@ where
                     agent.clone(),
                     (turn, inbox, initial_through),
                     Arc::clone(&bindings.journal.files),
-                    Arc::clone(&bindings.journal.reader),
                     crate::executor::ExecutionJournal::output_content(&journal, turn)?
                         .and_then(|content| content.writer)
                         .ok_or_else(|| Error::Invalid("agent turn has no journal writer".into()))?,

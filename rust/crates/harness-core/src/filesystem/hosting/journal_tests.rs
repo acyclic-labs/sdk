@@ -158,13 +158,6 @@ async fn waking_notices_steer_without_granting_their_journal_files() -> TestResu
             &mut None,
         )?,
     ));
-    let journal_reader = FilesystemContentVerifier::new(
-        Arc::clone(bound.volumes()),
-        &host.verifier,
-        &host.scope,
-        crate::conversation::MAX_EXACT_JS_INTEGER,
-        None,
-    )?;
     let writer = FilesystemContentPublisher::new(
         Arc::clone(bound.volumes()),
         private,
@@ -187,7 +180,6 @@ async fn waking_notices_steer_without_granting_their_journal_files() -> TestResu
         state.clone(),
         (operation, inbox, initial_through),
         files,
-        journal_reader,
         writer,
         None,
     );
@@ -243,6 +235,62 @@ async fn waking_notices_steer_without_granting_their_journal_files() -> TestResu
     assert_eq!(notices.as_slice(), &[notice]);
     boundary.admitted(operation, 1).await?;
 
+    // A child's settlement notice lives in the child's journal, which no
+    // grant fixed when this turn started names. It still steers mid-turn.
+    let other = AgentId::from_bytes([2; 16]);
+    let RootSubmission::Created(other) = bound
+        .create_root(
+            &IntentId::try_from("other")?,
+            RootRequest {
+                peer: true,
+                agent: other.clone(),
+                fresh: vec![WorkspaceEntry::initial_volume(
+                    crate::agent::WorkspaceRole::Private,
+                    PRIVATE_VOLUME.into(),
+                    VolumeRef::new(
+                        private.provider().clone(),
+                        "private".into(),
+                        VolumeClass::AgentPrivate,
+                        VolumeOwner::Agent(crate::AgentId::from_bytes(other.to_bytes())),
+                        &mut None,
+                    )?,
+                )],
+                retained: Vec::new(),
+                brief: None,
+                policy: None,
+            },
+        )
+        .await?
+    else {
+        return Err("uncertain second agent".into());
+    };
+    bound.agents().drain(&other).await?;
+    let settled = crate::conversation::wire::Notice {
+        kind: "child.settled".into(),
+        ..notice.clone()
+    };
+    let foreign = bound
+        .stage_notice(&other, &by, &IntentId::try_from("settled")?, &settled)
+        .await?;
+    let InboxRecord::Notice {
+        notice: NoticePayload::Waking(foreign_file),
+        ..
+    } = &foreign
+    else {
+        return Err("foreign waking notice was not staged".into());
+    };
+    assert_ne!(foreign_file.volume(), &journal);
+    bound.agents().send(&root, &by, &foreign).await?;
+    let messages = boundary.messages(operation, 2, None).await?;
+    let [message] = messages.as_slice() else {
+        return Err("missing foreign waking notice".into());
+    };
+    let ModelContent::Part(ModelContentPart::Notices { notices }) = &message.content else {
+        return Err("foreign waking notice was not decoded".into());
+    };
+    assert_eq!(notices.as_slice(), &[settled]);
+    boundary.admitted(operation, 2).await?;
+
     bound
         .agents()
         .send(
@@ -258,7 +306,7 @@ async fn waking_notices_steer_without_granting_their_journal_files() -> TestResu
         )
         .await?;
     let denied = boundary
-        .messages(operation, 2, None)
+        .messages(operation, 3, None)
         .await
         .expect_err("an ordinary message acquired the host notice reader");
     assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
