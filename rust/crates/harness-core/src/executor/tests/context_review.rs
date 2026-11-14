@@ -641,43 +641,49 @@ async fn replay_preserves_review_boundaries_skipped_during_active_work() -> Resu
     Ok(())
 }
 
+/// A reviewer's malformed, empty or invalid decision never fails the worker.
+/// It is re-asked once with its reason; a second defect keeps the unreviewed
+/// context until capacity. The first two payloads are the ones DeepSeek
+/// returned in GC-274: a raw newline inside a JSON string, and no text.
 #[tokio::test]
-async fn invalid_context_decisions_preserve_history_and_original_admissions() -> Result<()> {
+async fn defective_context_decisions_reask_once_then_keep_history() -> Result<()> {
+    let raw_newline =
+        "{\"version\":1,\"summary\":\"line one\nline two\",\"review_at_input_tokens\":500}";
     for decision in [
+        raw_newline.to_owned(),
+        String::new(),
         "not JSON".to_owned(),
         json!({"version":2,"summary":"replacement","review_at_input_tokens":500}).to_string(),
         json!({"version":1,"summary":"","review_at_input_tokens":500}).to_string(),
         json!({"version":1,"summary":null,"review_at_input_tokens":250}).to_string(),
         json!({"version":1,"summary":"replacement","review_at_input_tokens":8192}).to_string(),
     ] {
-        let started = Arc::new(tokio::sync::Notify::new());
-        let release = Arc::new(tokio::sync::Notify::new());
-        let (seen, gate) = (started.clone(), release.clone());
-        let calls = AtomicUsize::new(0);
+        let response = || {
+            ScriptedTurn::Events(vec![ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: json!({"usage":{"prompt_tokens":250,"completion_tokens":1}}),
+            })])
+        };
+        // No text at all is a completion carrying no content event.
+        let reply = |decision: &str| match decision {
+            "" => ScriptedTurn::Events(vec![ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: Value::Null,
+            })]),
+            text => ScriptedTurn::Text(text.to_owned()),
+        };
         let provider = Arc::new(
             ScriptedModelProvider::new([
-                ScriptedTurn::Events(vec![ScriptedEvent::Event(ModelEvent::Completed {
-                    metadata: json!({"usage":{"prompt_tokens":250,"completion_tokens":1}}),
-                })]),
-                ScriptedTurn::Text(decision),
+                response(),
+                reply(&decision),
+                response(),
+                reply(&decision),
+                response(),
             ])
             .with_context_capacity(crate::context::ModelContextCapacity {
                 context_tokens: 8192,
                 output_tokens: Some(512),
                 output_shares_context: false,
             })
-            .with_token_counter(fixture_token_count)
-            .with_dispatch_observer(move |_| {
-                let index = calls.fetch_add(1, Ordering::SeqCst);
-                let (seen, gate) = (seen.clone(), gate.clone());
-                Box::pin(async move {
-                    if index == 1 {
-                        seen.notify_one();
-                        gate.notified().await;
-                    }
-                    Ok(())
-                })
-            }),
+            .with_token_counter(fixture_token_count),
         );
         let stock = StockExecutor::new(
             Model::new("fixture".into(), "selected".into(), "1".into())?,
@@ -707,34 +713,53 @@ async fn invalid_context_decisions_preserve_history_and_original_admissions() ->
             },
         ];
         let worker = async {
-            let events = execution.model_step(journal, &input, 0, &prior).await?;
-            execution
-                .request_context_review(journal, &input, 0, &prior, original_metadata(&events))
-                .await?;
-            started.notified().await;
-            release.notify_one();
-            execution.review.completed.notified().await;
-            let result = execution
-                .prepared_response(journal, &input, 1, &prior, None)
-                .await;
-            assert!(
-                matches!(result, Err(ref error) if error.code() == crate::wire::ErrorCode::Invalid)
-            );
-            let (_, records) = execution
-                .model_records(journal, input.operation_id, 1, ModelPurpose::Response)
-                .await?;
-            assert!(
-                !records
-                    .iter()
-                    .any(|record| matches!(record.event, ExecutionEvent::ContextCompacted { .. }))
-            );
-            assert_eq!(provider.request_count(), 2);
-            assert!(provider.request(1).unwrap().summary);
+            for step in 0..3 {
+                let events = execution.model_step(journal, &input, step, &prior).await?;
+                let (_, records) = execution
+                    .model_records(journal, input.operation_id, step, ModelPurpose::Response)
+                    .await?;
+                assert!(
+                    !records.iter().any(|record| matches!(
+                        record.event,
+                        ExecutionEvent::ContextCompacted { .. }
+                    )),
+                    "a rejected decision never rewrites history"
+                );
+                let requests = provider.request_count();
+                execution
+                    .request_context_review(
+                        journal,
+                        &input,
+                        step,
+                        &prior,
+                        original_metadata(&events),
+                    )
+                    .await?;
+                if step < 2 {
+                    execution.review.completed.notified().await;
+                    assert_eq!(provider.request_count(), requests + 1);
+                } else {
+                    assert_eq!(
+                        provider.request_count(),
+                        requests,
+                        "after the re-ask, review waits for capacity"
+                    );
+                }
+            }
+            let ask = provider.request(1).unwrap();
+            let reask = provider.request(3).unwrap();
+            assert!(ask.summary && reask.summary);
+            let rejected = |request: &crate::model::ModelRequest| {
+                format!("{:?}", request.messages).contains("Your previous decision was rejected")
+            };
+            assert!(!rejected(&ask));
+            assert!(rejected(&reask), "the re-ask carries its rejection");
             Ok(ExecutionProgress::Ready(()))
         };
         execution
             .with_context_review(journal, &input, worker)
             .await?;
+        assert_eq!(provider.request_count(), 5);
     }
     Ok(())
 }
