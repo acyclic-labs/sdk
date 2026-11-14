@@ -274,6 +274,21 @@ impl NamespacePath {
         copy_names(names.iter(), depth, encoded, accounting, cancellation)
     }
 
+    /// Project the canonical Unicode spelling while retaining its original
+    /// allocation owner. Native names are decoded without a temporary string.
+    pub fn unicode_text(
+        &self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<crate::kernel::Retained<String>, crate::FsError> {
+        let cancellation = accounting.cancellation();
+        let (text, allocation) = self.unicode_text_with_accounting(accounting, cancellation)?;
+        let bytes = text.capacity() as u64;
+        crate::kernel::Retained::from_owned(
+            crate::kernel::Owned::new(text, allocation, bytes),
+            accounting,
+        )
+    }
+
     pub(crate) fn unicode_text_with_accounting(
         &self,
         accounting: &mut KernelAccounting<'_>,

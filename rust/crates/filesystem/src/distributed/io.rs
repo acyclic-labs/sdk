@@ -113,6 +113,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             }
             selected.extend(paths.iter().cloned());
             Ok::<_, AuthorityStoreError>(acyclic_stream::HeadsRequest {
+                at: None,
                 retained: Default::default(),
                 durable_through: None,
                 projection,

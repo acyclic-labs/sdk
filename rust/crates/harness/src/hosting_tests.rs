@@ -991,7 +991,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     owner.denied.store(false, Ordering::SeqCst);
     let children = AgentCommand::Children {
         agent: root.clone(),
-        page: Default::default(),
+        page: AgentPageRequest::new(acyclic_stream::MAX_ITEMS as u32 + 1, 64 * 1024, None)?,
     };
     assert!(matches!(
         call(&client, "agents", &children).await?,

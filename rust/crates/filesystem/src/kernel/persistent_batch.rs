@@ -424,7 +424,7 @@ pub(crate) fn sort_indexed<K: Ord>(
 }
 
 /// One bounded in-place sort for metered kernel and namespace buffers.
-pub(crate) fn sort_by_with_accounting<T>(
+pub fn sort_by_with_accounting<T>(
     values: &mut [T],
     accounting: &mut KernelAccounting<'_>,
     compare: impl Fn(&T, &T) -> std::cmp::Ordering,

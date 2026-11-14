@@ -25,6 +25,7 @@ impl From<PrivateDirectoryEntry> for DiscoveryEntry {
             kind: match entry.kind {
                 PrivateDirectoryEntryKind::File => DiscoveryKind::File,
                 PrivateDirectoryEntryKind::Directory => DiscoveryKind::Directory,
+                _ => DiscoveryKind::Other,
             },
         }
     }
@@ -599,14 +600,14 @@ pub struct VolumeDiscovery<'a> {
 }
 impl DiscoverySource for VolumeDiscovery<'_> {
     type Revision = GenerationRef;
-    type Cursor = String;
+    type Cursor = Vec<u8>;
     fn page<'a>(
         &'a mut self,
         directory: &'a str,
         revision: Option<&'a GenerationRef>,
-        cursor: Option<String>,
+        cursor: Option<Vec<u8>>,
         maximum: u32,
-    ) -> BoxProviderFuture<'a, Result<Option<DiscoveryPage<GenerationRef, String>>>> {
+    ) -> BoxProviderFuture<'a, Result<Option<DiscoveryPage<GenerationRef, Vec<u8>>>>> {
         Box::pin(async move {
             self.root.validate(&mut None)?;
             let selected = self
@@ -626,13 +627,9 @@ impl DiscoverySource for VolumeDiscovery<'_> {
                 return Ok(None);
             };
             page.validate()?;
-            if page.entries.first().is_some_and(|e| {
-                cursor
-                    .as_ref()
-                    .is_some_and(|c| e.name.as_bytes() <= c.as_bytes())
-            }) {
+            if cursor.is_some() && page.next == cursor {
                 return Err(Error::Storage(
-                    "discovery page violated pinned range".into(),
+                    "discovery continuation did not advance".into(),
                 ));
             }
             if page.generation.as_resource().provider() != self.root.volume.provider() {
@@ -640,20 +637,12 @@ impl DiscoverySource for VolumeDiscovery<'_> {
                     "discovery page returned another provider".into(),
                 ));
             }
-            let next = if page.has_more {
-                page.entries.last().map(|e| e.name.clone())
-            } else {
-                None
-            };
-            if page.has_more && next.is_none() {
-                return Err(Error::Storage("empty discovery continuation".into()));
-            }
             Ok(Some(DiscoveryPage {
                 revision: page.generation,
                 scanned: u32::try_from(page.entries.len())
                     .map_err(|_| Error::Invalid("entry count overflow".into()))?,
                 entries: page.entries.into_iter().map(Into::into).collect(),
-                next,
+                next: page.next,
             }))
         })
     }

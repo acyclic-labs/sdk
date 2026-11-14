@@ -1,9 +1,11 @@
 use super::*;
 
+mod follow;
 mod output;
 mod prepared;
 mod request;
 mod work;
+pub(crate) use follow::{boxed_stream, follow_records, validate_follow};
 pub use output::NativeStreamOutput;
 pub use output::{NativeProviderFuture, NativeRecordStream, NativeStreamResult};
 pub(crate) use prepared::NativeCommitRecordSlot;

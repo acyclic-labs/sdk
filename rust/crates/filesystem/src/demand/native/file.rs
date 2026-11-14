@@ -26,7 +26,7 @@ impl NativeDemandFile {
         expected: SourceVersion,
         context: &mut CallbackWork,
     ) -> Result<Self, DemandError> {
-        provider.check(source, context)?;
+        provider.check(&source, context)?;
         provider.observe_parent(path, context)?;
         let (relative, allocation) = provider.relative(path, context)?;
         let ownership = SourcePayloadOwnership::new(context)?;
@@ -137,7 +137,7 @@ impl NativeDemandFile {
 
     #[cfg(windows)]
     fn reopen(&self, context: &mut CallbackWork) -> Result<SourceFile, DemandError> {
-        self.provider.check(self.source, context)?;
+        self.provider.check(&self.source, context)?;
         let file = match self
             .provider
             .inner
@@ -289,10 +289,10 @@ impl NativeDemandFile {
         if version(&held) != self.expected
             || named.as_ref().map(version).ok() != Some(self.expected)
         {
-            self.provider.check(self.source, context)?;
+            self.provider.check(&self.source, context)?;
             return Err(DemandError::StaleVersion);
         }
-        self.provider.check(self.source, context)
+        self.provider.check(&self.source, context)
     }
 }
 

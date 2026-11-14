@@ -75,8 +75,8 @@ export class StreamClient {
   }
   heads(request: import("./types.js").HeadsRequest): Promise<import("./types.js").Heads> { return this.provider.heads(structuredClone(request)); }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
-    const { parent, after, hierarchyVersion, limit } = request;
-    const origin = { limit, ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }), ...(parent === undefined ? {} : { parent }) };
+    const { parent, after, offset, hierarchyVersion, limit } = request;
+    const origin = { limit, ...(offset === undefined ? {} : { offset }), ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }), ...(parent === undefined ? {} : { parent }) };
     const authored: ChildrenPageRequest = { ...origin, ...(after === undefined ? {} : { after }), ...(hierarchyVersion === undefined ? {} : { hierarchyVersion: hierarchyVersion.slice() as CommitId }) };
     if (authored.parent !== undefined) validatePathValue(authored.parent);
     if (authored.after !== undefined) {

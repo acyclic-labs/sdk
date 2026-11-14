@@ -88,6 +88,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         path: acyclic_stream::StreamPath,
     ) -> Result<acyclic_stream::FollowRequest, Error> {
         let request = acyclic_stream::HeadsRequest {
+            at: None,
             paths: [path.clone()].into_iter().collect(),
             retained: Default::default(),
             durable_through: None,

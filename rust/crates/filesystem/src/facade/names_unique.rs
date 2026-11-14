@@ -24,6 +24,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     }),
                     super::names::CASE_FOLD_COLLISION_SCAN_PAGE,
                     acyclic_collections::page::Direction::Ascending,
+                    false,
                 ),
                 DecodeLimits::for_volume(self.volume.config),
                 accounting,

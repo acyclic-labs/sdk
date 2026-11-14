@@ -1,6 +1,93 @@
 use super::*;
 
 #[tokio::test]
+async fn reopened_overlay_source_alias_keeps_decoded_credit_until_last_drop() {
+    let cancellation = crate::CancellationToken::new();
+    let mut writer = unbounded_accounting(&cancellation);
+    let leaf =
+        crate::demand::SourceReference::opaque([0x61; 16], 7, &[0x63; 257], &mut writer).unwrap();
+    let pair = crate::demand::SourceReference::pair(
+        [0x62; 16],
+        &leaf,
+        &crate::demand::SourceReference::new([0x64; 16], 9),
+        &mut writer,
+    )
+    .unwrap();
+    // Scalar cuts have no component backing; opaque and routed cuts do.
+    for source in [
+        crate::demand::SourceReference::new([0x60; 16], 3),
+        leaf,
+        pair,
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalCoreStateStore::new(directory.path());
+        let empty = LazyOverlayId::from_bytes(content_address(&LazyOverlay::Empty).unwrap());
+        let (_, mut node) = linked_overlay("/observed", empty, empty);
+        let LazyOverlay::Node { change, .. } = &mut node else {
+            unreachable!()
+        };
+        *change = crate::lazy_workspace::LazyOverlayChange::Observe {
+            source: source.clone(),
+            node: crate::demand::SourceNode {
+                kind: crate::demand::SourceNodeKind::RegularFile,
+                file_identity: [0x65; 32],
+                link_count: Some(1),
+                device: None,
+                logical_bytes: Some(1),
+                version: crate::demand::SourceVersion([0x66; 32]),
+                metadata: Default::default(),
+            },
+            complete: false,
+        };
+        let id = LazyOverlayId::from_bytes(content_address(&node).unwrap());
+        let allocation = writer.claim_owned(node.owned_bytes(), 1).unwrap();
+        store
+            .put_lazy_overlay(id, (node, allocation), &mut writer)
+            .await
+            .unwrap();
+        drop(store);
+        // Completion headers retire inline, independently of the returned alias.
+        let _inline = acyclic_native_runtime::InlineBlocking::enter();
+        let reopened = LocalCoreStateStore::new(directory.path());
+        let work =
+            crate::NativeMaterializationWork::new(native::finite_budget(), &cancellation).unwrap();
+        let baseline = work.live_allocation_bytes();
+        let mut ctx = crate::kernel::KernelAccounting::native(&work, work.cancellation());
+        let loaded = reopened
+            .load_lazy_overlay(id, &mut ctx)
+            .await
+            .unwrap()
+            .unwrap();
+        let LazyOverlay::Node {
+            change:
+                crate::lazy_workspace::LazyOverlayChange::Observe {
+                    source: decoded, ..
+                },
+            ..
+        } = &loaded.0
+        else {
+            panic!("observation missing")
+        };
+        assert_eq!(decoded, &source);
+        let alias = decoded.clone();
+        let bytes = loaded.0.owned_bytes();
+        drop(loaded.0);
+        crate::kernel::retire_allocation(loaded.1, bytes, &mut ctx).unwrap();
+        drop(reopened);
+        assert!(
+            work.live_allocation_bytes() >= baseline + alias.components.len() as u64,
+            "overlay source alias lost its decoded memory credit"
+        );
+        drop(alias);
+        assert_eq!(
+            work.live_allocation_bytes(),
+            baseline,
+            "source credit failed to retire"
+        );
+    }
+}
+
+#[tokio::test]
 async fn lazy_overlay_load_rejects_content_address_mismatch() {
     let cancellation = crate::CancellationToken::new();
     let mut accounting = unbounded_accounting(&cancellation);
@@ -204,20 +291,27 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
     let directory = tempfile::tempdir().unwrap();
     let id = WorkspaceId::from_bytes([0xb1; 16]);
     let mut state = lazy_state(id, 1);
+    let cancellation = crate::CancellationToken::new();
+    state.source = crate::demand::SourceReference::pair(
+        [0xb3; 16],
+        &state.source,
+        &crate::demand::SourceReference::new([0xb4; 16], 2),
+        &mut unbounded_accounting(&cancellation),
+    )
+    .unwrap();
     let snapshot = crate::LazySnapshotRef::new(
         id,
         crate::GenerationId::new(Digest::from_bytes([0xb2; 32])),
-        state.source,
+        state.source.clone(),
         state.overlay,
         state.shadows,
     );
-    state.selected_import_roots = Some(
-        [(
-            snapshot,
+    state.selected_import_roots = Some(std::array::from_fn(|_| {
+        (
+            snapshot.clone(),
             crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral),
-        ); 3],
-    );
-    let cancellation = crate::CancellationToken::new();
+        )
+    }));
     let work = crate::materializer::NativeMaterializationWork::new(
         crate::WorkBudget::UNBOUNDED,
         &cancellation,
@@ -257,15 +351,38 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
     );
     assert_eq!(work.receipt().object_bytes_written, before);
     drop(store);
+    // Run the real native transaction inline so its completion owner retires
+    // before the alias assertions; background completion headers have their
+    // own physical lifetime independent of the returned record's backing.
+    let _inline = acyclic_native_runtime::InlineBlocking::enter();
     let restarted = LocalCoreStateStore::new(directory.path());
+    let decoded_work = crate::materializer::NativeMaterializationWork::new(
+        crate::WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .unwrap();
+    let decoded_baseline = decoded_work.live_allocation_bytes();
+    let mut decoded_accounting =
+        crate::kernel::KernelAccounting::native(&decoded_work, decoded_work.cancellation());
     let original = restarted
-        .load_lazy_workspace(id, &mut accounting)
+        .load_lazy_workspace(id, &mut decoded_accounting)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(original.selected_import_roots, state.selected_import_roots);
     assert_eq!(original.source, state.source);
     assert_eq!(original.workspace_id, id);
+    let held_cut = original.source.clone();
+    let held_roots = original.selected_import_roots.clone();
+    drop(original);
+    drop(restarted);
+    assert!(
+        decoded_work.live_allocation_bytes() > decoded_baseline,
+        "returned source aliases retain their original decoded backing"
+    );
+    drop(held_cut);
+    drop(held_roots);
+    assert_eq!(decoded_work.live_allocation_bytes(), decoded_baseline);
 }
 
 #[tokio::test]

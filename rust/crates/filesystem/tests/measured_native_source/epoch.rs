@@ -11,6 +11,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
     )?;
     let observer = Arc::new(DirectoryObserver::default());
     let reference = SourceReference {
+        components: acyclic_stream::OwnedBytes::new(),
         identity: [51; 16],
         epoch: 8,
     };
@@ -21,7 +22,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
             std::borrow::Cow::Owned(directory.path().to_path_buf()),
             FilesystemProfile::Portable,
             VolumeLimits::default(),
-            Some(reference),
+            Some(reference.clone()),
             Some(observer.clone()),
             budget,
             &cancellation,
@@ -86,7 +87,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
             std::borrow::Cow::Owned(directory.path().to_path_buf()),
             FilesystemProfile::Portable,
             VolumeLimits::default(),
-            Some(advanced),
+            Some(advanced.clone()),
             Some(observer.clone()),
             budget,
             &cancellation,
@@ -153,6 +154,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
             FilesystemProfile::Portable,
             VolumeLimits::default(),
             Some(SourceReference {
+                components: acyclic_stream::OwnedBytes::new(),
                 identity: [52; 16],
                 epoch: advanced.epoch,
             }),

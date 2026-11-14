@@ -18,11 +18,21 @@ use acyclic_collections::page::Direction;
 use std::mem::size_of;
 use std::ops::{Bound, Range};
 
+/// A name-free address inside one immutable ordered tree.
+/// The root and each child index are checked again when the address is used.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PagePosition {
+    pub(crate) root: ObjectId,
+    pub(crate) path: acyclic_stream::OwnedBytes,
+    pub(crate) offset: u32,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Receipt<V> {
     pub(crate) values: Vec<V>,
     pub(crate) has_more: bool,
     pub(crate) next_request: Option<ObjectReadRequest>,
+    pub(crate) position: Option<PagePosition>,
     pub(crate) work: WorkCounters,
 }
 
@@ -31,6 +41,7 @@ struct Pending<K> {
     lower: Option<Owned<K>>,
     upper: Option<Owned<K>>,
     height: u16,
+    child_index: u32,
 }
 
 impl<K> Pending<K> {
@@ -51,7 +62,7 @@ impl<K> Pending<K> {
 )]
 pub(crate) async fn paginate<F>(
     store: &dyn Source,
-    query: (ObjectId, Bound<&F::Key>, u32, Direction),
+    query: (ObjectId, Bound<&F::Key>, u32, Direction, bool),
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &CancellationToken,
@@ -60,11 +71,11 @@ pub(crate) async fn paginate<F>(
 where
     F: Format,
 {
-    let (root, bound, maximum_values, direction) = query;
+    let (root, bound, maximum_values, direction, position) = query;
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
     let result = paginate_with_accounting::<F>(
         store,
-        (root, bound, maximum_values, direction),
+        (root, bound, maximum_values, direction, position),
         limits,
         &mut accounting,
         cancellation,
@@ -82,7 +93,7 @@ where
 )]
 pub(crate) async fn paginate_with_accounting<F>(
     store: &dyn Source,
-    query: (ObjectId, Bound<&F::Key>, u32, Direction),
+    query: (ObjectId, Bound<&F::Key>, u32, Direction, bool),
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -91,10 +102,17 @@ pub(crate) async fn paginate_with_accounting<F>(
 where
     F: Format,
 {
-    let (root, bound, maximum_values, direction) = query;
+    let (root, bound, maximum_values, direction, position) = query;
     paginate_range_with_accounting::<F>(
         store,
-        (root, bound, Bound::Unbounded, maximum_values, direction),
+        (
+            root,
+            bound,
+            Bound::Unbounded,
+            maximum_values,
+            direction,
+            position,
+        ),
         limits,
         accounting,
         cancellation,
@@ -106,7 +124,14 @@ where
 /// Stops traversal at the opposite range bound, before loading excluded subtrees.
 pub(crate) async fn paginate_range_with_accounting<F: Format>(
     store: &dyn Source,
-    query: (ObjectId, Bound<&F::Key>, Bound<&F::Key>, u32, Direction),
+    query: (
+        ObjectId,
+        Bound<&F::Key>,
+        Bound<&F::Key>,
+        u32,
+        Direction,
+        bool,
+    ),
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -165,6 +190,7 @@ pub(crate) async fn paginate_range_with_accounting<F: Format>(
 }
 
 struct Machine<'a, 'accounting, F: Format> {
+    root: ObjectId,
     bound: Bound<&'a F::Key>,
     end: Bound<&'a F::Key>,
     direction: Direction,
@@ -178,6 +204,8 @@ struct Machine<'a, 'accounting, F: Format> {
     values_container_bytes: u64,
     values_nested_bytes: u64,
     successor_page: Option<ObjectId>,
+    path: Option<Owned<Vec<u8>>>,
+    boundary: Option<(Owned<Vec<u8>>, u32)>,
     data_custody: Option<&'a super::ProofDataCustody>,
     accounting: &'a mut KernelAccounting<'accounting>,
 }
@@ -194,12 +222,13 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
             Bound<&'a F::Key>,
             u32,
             Direction,
+            bool,
         ),
         limits: DecodeLimits,
         accounting: &'a mut KernelAccounting<'accounting>,
         data_custody: Option<&'a super::ProofDataCustody>,
     ) -> Result<Self, Failure> {
-        let (root, bound, end, maximum_values, direction) = query;
+        let (root, bound, end, maximum_values, direction, position) = query;
         let fail = |error| failed(error, accounting.spent());
         if root.kind != F::kind() {
             return Err(fail(Error::WrongRootKind));
@@ -270,7 +299,7 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         let pending_result = accounting
             .claim_owned(0, 0)
             .map(|allocation| (Vec::new(), allocation));
-        let (pending, pending_allocation) = match pending_result {
+        let (pending, mut pending_allocation) = match pending_result {
             Ok(result) => result,
             Err(error) => {
                 visited
@@ -282,7 +311,10 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
                 return Err(failed(project_failure(error), accounting.spent()));
             }
         };
+        let path_allocation = split_allocation(&mut pending_allocation, 0)
+            .map_err(|error| failed(project_failure(error), accounting.spent()))?;
         let mut machine = Self {
+            root,
             bound,
             end,
             direction,
@@ -296,6 +328,8 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
             values_container_bytes: values.bytes,
             values_nested_bytes: 0,
             successor_page: None,
+            path: position.then(|| Owned::new(Vec::new(), path_allocation, 0)),
+            boundary: None,
             data_custody,
             accounting,
         };
@@ -304,6 +338,7 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
             lower: None,
             upper: None,
             height: 1,
+            child_index: 0,
         }) {
             machine
                 .retire()
@@ -374,7 +409,55 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
                 .map_err(|error| self.failure(error))?;
             return Err(failed(Error::HeightExceeded, self.accounting.spent()));
         }
+        let advance = (|| {
+            if pending.height > 1
+                && let Some(path) = &mut self.path
+            {
+                path.value.truncate(usize::from(pending.height - 2) * 4);
+                let required = path.value.len() + 4;
+                if required > path.value.capacity() {
+                    let capacity = path
+                        .value
+                        .capacity()
+                        .saturating_mul(2)
+                        .max(required)
+                        .min(usize::from(self.limits.maximum_page_height) * 4);
+                    path.reserve_capacity(capacity, self.accounting)
+                        .map_err(|error| failed(project_failure(error), self.accounting.spent()))?;
+                }
+                self.accounting
+                    .perform(
+                        WorkCounters {
+                            bytes_copied: 4,
+                            ..WorkCounters::UNCHARGED
+                        },
+                        || {
+                            path.value
+                                .extend_from_slice(&pending.child_index.to_le_bytes())
+                        },
+                    )
+                    .map_err(|error| failed(project_failure(error), self.accounting.spent()))?;
+            }
+            Ok(())
+        })();
+        if let Err(failure) = advance {
+            pending
+                .retire(self.accounting)
+                .map_err(|error| self.failure(error))?;
+            return Err(failure);
+        }
         Ok(pending)
+    }
+
+    fn remember_position(&mut self, offset: usize) -> Result<(), Failure> {
+        if self.values.len() == self.target - 1 {
+            let offset = u32::try_from(offset)
+                .map_err(|_| failed(Error::LimitOverflow, self.accounting.spent()))?;
+            if let Some(path) = self.path.take() {
+                self.boundary = Some((path, offset));
+            }
+        }
+        Ok(())
     }
 
     fn visit(&mut self, page: ObjectId) -> Result<(), Failure> {
@@ -616,9 +699,10 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
             return Err(failed(Error::ChildBoundsMismatch, self.accounting.spent()));
         }
         let range = self.value_range(values)?;
-        let mut selected = values[range].iter();
+        let start = range.start;
+        let mut selected = values[range].iter().enumerate();
         while self.values.len() < self.target {
-            let Some(value) = self.direction.next(&mut selected) else {
+            let Some((offset, value)) = self.direction.next(&mut selected) else {
                 break;
             };
             self.examine_value(value)?;
@@ -636,6 +720,7 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
                 return Err(self.failure(error));
             }
             self.push_value(cloned)?;
+            self.remember_position(start + offset)?;
         }
         Ok(())
     }
@@ -669,6 +754,8 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
                 lower: Some(lower),
                 upper,
                 height,
+                child_index: u32::try_from(offset)
+                    .map_err(|_| failed(Error::LimitOverflow, self.accounting.spent()))?,
             })?;
         }
         Ok(())
@@ -713,9 +800,13 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
             }
             let range = self.value_range(&values)?;
             // Iterator destruction drops every skipped/unselected item and the source buffer.
-            let mut selected = values.into_iter().skip(range.start).take(range.len());
+            let mut selected = values
+                .into_iter()
+                .enumerate()
+                .skip(range.start)
+                .take(range.len());
             while self.values.len() < self.target {
-                let Some(value) = self.direction.next(&mut selected) else {
+                let Some((offset, value)) = self.direction.next(&mut selected) else {
                     break;
                 };
                 let nested = self.examine_value(&value)?;
@@ -725,6 +816,7 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
                     .checked_add(nested)
                     .ok_or_else(|| failed(Error::AllocationFailed, self.accounting.spent()))?;
                 self.push_value(Owned::new(value, tag, nested))?;
+                self.remember_position(offset)?;
             }
             Ok(())
         })();
@@ -763,8 +855,16 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
             };
             let mut children = children;
             children.truncate(range.end);
+            let mut offsets = range.clone();
             let mut tail = children.drain(range.start..);
             while let Some(child) = self.direction.reversed().next(&mut tail) {
+                let offset = self
+                    .direction
+                    .reversed()
+                    .next(&mut offsets)
+                    .ok_or_else(|| failed(Error::TraversalState, self.accounting.spent()))?;
+                let child_index = u32::try_from(offset)
+                    .map_err(|_| failed(Error::LimitOverflow, self.accounting.spent()))?;
                 let adjacent = match self.direction {
                     Direction::Ascending if tail.len() != 0 => Some(&child.first),
                     Direction::Descending => tail.as_slice().first().map(|next| &next.first),
@@ -797,6 +897,7 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
                 };
                 if let Err(failure) = self.push_pending(Pending {
                     page: child.page,
+                    child_index,
                     lower: Some(lower),
                     upper,
                     height,
@@ -890,6 +991,9 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
     }
 
     fn retire_traversal(&mut self) -> Result<(), crate::FsError> {
+        if let Some(path) = self.path.take() {
+            path.retire(self.accounting)?;
+        }
         for pending in self.pending.value.drain(..) {
             pending.retire(self.accounting)?;
         }
@@ -907,6 +1011,9 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
 
     fn retire(mut self) -> Result<(), Error> {
         self.retire_traversal().map_err(project_failure)?;
+        if let Some((path, _)) = self.boundary.take() {
+            path.retire(self.accounting).map_err(project_failure)?;
+        }
         drop(self.values);
         retire_allocation(
             self.values_allocation,
@@ -957,6 +1064,27 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         Ok((has_more, next_request))
     }
 
+    fn finish_position(&mut self, has_more: bool) -> Result<Option<PagePosition>, crate::FsError> {
+        let Some((path, offset)) = self.boundary.take() else {
+            return Ok(None);
+        };
+        if !has_more {
+            path.retire(self.accounting)?;
+            return Ok(None);
+        }
+        let path = if path.value.is_empty() {
+            path.retire(self.accounting)?;
+            acyclic_stream::OwnedBytes::new()
+        } else {
+            super::Retained::from_owned(path, self.accounting)?
+                .into_owned_bytes((), self.accounting)?
+        };
+        Ok(Some(PagePosition {
+            root: self.root,
+            path,
+            offset,
+        }))
+    }
     fn finish(mut self) -> Result<(Receipt<F::Value>, KernelOwnedAllocation), Failure> {
         let (has_more, next_request) = match self.finish_state() {
             Ok(result) => result,
@@ -966,10 +1094,20 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
                 return Err(failure);
             }
         };
+        let position = match self.finish_position(has_more) {
+            Ok(position) => position,
+            Err(error) => {
+                let failure = self.failure(error);
+                self.retire()
+                    .map_err(|error| failed(error, *failure.work))?;
+                return Err(failure);
+            }
+        };
         let receipt = Receipt {
             values: self.values,
             has_more,
             next_request,
+            position,
             work: self.accounting.spent(),
         };
         Ok((receipt, self.values_allocation))

@@ -209,6 +209,14 @@ pub trait HistoryIo: Send {
     fn receive_work(&mut self, work: acyclic_fs::WorkCounters) -> Result<()>;
 }
 
+/// Funds geometric growth before an append, without reserving an unseen page.
+pub(crate) fn reserve_for_push<T>(values: &mut Vec<T>, observer: &mut dyn HistoryIo) -> Result<()> {
+    if values.len() == values.capacity() {
+        reserve(values, values.capacity().saturating_mul(2).max(1), observer)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn reserve<T>(
     values: &mut Vec<T>,
     capacity: usize,

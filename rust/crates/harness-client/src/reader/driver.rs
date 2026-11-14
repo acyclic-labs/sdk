@@ -477,35 +477,56 @@ pub(super) async fn execute<P: StreamProvider + ?Sized>(provider: &P, op: Op) ->
         Op::Head { stream, .. } => provider.head(stream).await.map(Outcome::Head),
         Op::Children {
             parent,
-            after,
+            index,
             limit,
             tail,
             version,
             ..
-        } => provider
-            .children_page(ChildrenPageRequest {
-                tail_stream: tail,
-                parent: Some(parent),
-                after,
-                hierarchy_version: version,
-                limit,
-            })
-            .await
-            .map(|page| Outcome::Children {
-                next: page.next_after,
-                version: page.hierarchy_version,
-                children: page
-                    .children
-                    .into_iter()
-                    .map(|child| ListedChild {
-                        path: child.path,
-                        origin: child.origin,
-                        tail: child.tail_record.map(fetched),
-                    })
-                    .collect(),
-            }),
+        } => children(provider, parent, index, limit, tail, version).await,
     };
     result.unwrap_or_else(Outcome::Failed)
+}
+
+async fn children<P: StreamProvider + ?Sized>(
+    provider: &P,
+    parent: StreamPath,
+    index: u32,
+    limit: u32,
+    tail: Option<StreamPath>,
+    mut version: Option<acyclic_stream::CommitId>,
+) -> Result<Outcome, StreamError> {
+    let mut children = Vec::new();
+    let mut chunks = acyclic_stream::demand::listing_chunks(index, limit)?.peekable();
+    while let Some((offset, chunk)) = chunks.next() {
+        let page = provider
+            .children_page(ChildrenPageRequest {
+                offset,
+                tail_stream: tail.clone(),
+                parent: Some(parent.clone()),
+                after: None,
+                hierarchy_version: version,
+                limit: chunk,
+            })
+            .await?;
+        let count = u32::try_from(page.children.len()).map_err(|_| StreamError::InvalidResponse)?;
+        if count > chunk || version.is_some_and(|selected| selected != page.hierarchy_version) {
+            return Err(StreamError::InvalidResponse);
+        }
+        version = Some(page.hierarchy_version);
+        children.extend(page.children.into_iter().map(|child| ListedChild {
+            path: child.path,
+            origin: child.origin,
+            tail: child.tail_record.map(fetched),
+        }));
+        if chunks.peek().is_none() || page.next_after.is_none() {
+            return Ok(Outcome::Children {
+                children,
+                next: page.next_after,
+                version: page.hierarchy_version,
+            });
+        }
+    }
+    Err(StreamError::InvalidArgument)
 }
 
 async fn read<P: StreamProvider + ?Sized>(
@@ -538,6 +559,68 @@ async fn read<P: StreamProvider + ?Sized>(
 mod tests {
     use super::*;
     use acyclic_stream::{AppendRequest, ForkRequest, IdempotencyKey, MemoryStream};
+
+    #[test]
+    fn indexed_listing_reaches_cold_and_evicted_pages_in_one_request() {
+        use super::super::{Priority, ReaderPolicy, Want};
+
+        futures::executor::block_on(async {
+            let provider = MemoryStream::default();
+            let parent = StreamPath::new("indexed/children").unwrap();
+            for child in 0..257u32 {
+                provider
+                    .append(AppendRequest {
+                        path: StreamPath::new(format!("{parent}/{child:03}")).unwrap(),
+                        records: vec![b"child".as_slice().into()],
+                        if_tail: None,
+                        idempotency_key: IdempotencyKey::unique(),
+                    })
+                    .await
+                    .unwrap();
+            }
+            let mut reader = Reader::new(ReaderPolicy {
+                listing_limit: 2,
+                ..ReaderPolicy::default()
+            })
+            .unwrap();
+            // No earlier page is fetched or retained, including after eviction.
+            // The maximum page also exercises multiplication above u32::MAX.
+            for (frame, index) in [100, u32::MAX, 100].into_iter().enumerate() {
+                reader.cache.clear_listings();
+                reader.begin_frame(frame as u64);
+                reader.plan([(
+                    Want::Listing {
+                        parent: parent.clone(),
+                        index,
+                        tail: None,
+                        witness: None,
+                        limit: 2,
+                    },
+                    Priority::Visible,
+                )]);
+                let [op]: [Op; 1] = reader.poll(frame as u64).try_into().unwrap();
+                assert!(matches!(&op, Op::Children { index: selected, .. } if *selected == index));
+                let id = op.id();
+                reader.complete(id, execute(&provider, op).await, frame as u64);
+                let page = reader.cache.listing(&parent, index, 2).unwrap();
+                if index == u32::MAX {
+                    assert!(page.children.is_empty());
+                    assert!(page.next.is_none());
+                } else {
+                    assert_eq!(
+                        page.children
+                            .iter()
+                            .map(StreamPath::as_str)
+                            .collect::<Vec<_>>(),
+                        ["indexed/children/200", "indexed/children/201"]
+                    );
+                    assert_eq!(page.next.as_ref(), page.children.last());
+                }
+                assert!(reader.poll(frame as u64).is_empty());
+                assert_eq!(reader.cache.listings(&parent).count(), 1);
+            }
+        });
+    }
 
     #[test]
     fn record_coordinates_refuse_unrepresentable_ends_before_retaining_bytes() {
@@ -611,6 +694,7 @@ mod tests {
                 index: 0,
                 tail: Some(StreamPath::new("body").unwrap()),
                 witness: None,
+                limit: 64,
             };
             for sequence in [u64::MAX, u64::MAX - 1] {
                 let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
@@ -631,7 +715,7 @@ mod tests {
                     1,
                 );
                 let invalid = sequence == u64::MAX;
-                assert_eq!(reader.cache.listing(&parent, 0).is_none(), invalid);
+                assert_eq!(reader.cache.listing(&parent, 0, 64).is_none(), invalid);
                 assert_eq!(
                     reader.cache.tail(&path),
                     if invalid { None } else { Some(u64::MAX) }
@@ -927,6 +1011,7 @@ mod tests {
                         index: 0,
                         tail: projection.tail.clone(),
                         witness: projection.witness.clone(),
+                        limit: 64,
                     },
                     Priority::Visible,
                 )
@@ -977,7 +1062,7 @@ mod tests {
                 assert_eq!(
                     reader
                         .cache()
-                        .listing(&parent, 0)
+                        .listing(&parent, 0, 64)
                         .unwrap()
                         .projections
                         .get(projection),
@@ -990,7 +1075,7 @@ mod tests {
                 reader.poll(1).is_empty(),
                 "completed views did not retain their original observations"
             );
-            let before = reader.cache().listing(&parent, 0).unwrap().version;
+            let before = reader.cache().listing(&parent, 0, 64).unwrap().version;
             // The page stays byte-identical while the original hierarchy cut
             // moves elsewhere. An old observation cannot acquire that cut.
             provider
@@ -1023,7 +1108,10 @@ mod tests {
             assert!(matches!(&op, Op::Children { tail: Some(tail), .. } if tail == &alpha));
             let id = op.id();
             reader.complete(id, execute(&provider, op).await, 1);
-            assert_ne!(reader.cache().listing(&parent, 0).unwrap().version, before);
+            assert_ne!(
+                reader.cache().listing(&parent, 0, 64).unwrap().version,
+                before
+            );
             reader.plan(projections.iter().map(want));
             let ops = reader.poll(1);
             assert_eq!(
@@ -1090,7 +1178,7 @@ mod tests {
             let op = retried.pop().unwrap();
             let id = op.id();
             reader.complete(id, execute(&provider, op).await, retry_at);
-            let listing = reader.cache().listing(&parent, 0).unwrap();
+            let listing = reader.cache().listing(&parent, 0, 64).unwrap();
             assert_eq!(listing.projections.get(&projections[0]), None);
             assert_eq!(listing.projections.get(&projections[1]), None);
             assert_eq!(listing.projections.get(&projections[2]), Some(&Some(2)));
@@ -1116,7 +1204,7 @@ mod tests {
             reader.denied(&parent);
             assert_eq!(reader.take_cancelled().len(), 2);
             reader.complete(late_id, late, retry_at);
-            assert!(reader.cache().listing(&parent, 0).is_none());
+            assert!(reader.cache().listing(&parent, 0, 64).is_none());
             assert!(reader.poll(retry_at).is_empty());
         });
     }
@@ -1778,6 +1866,187 @@ mod tests {
     }
 
     #[test]
+    fn differently_sized_pages_coexist_and_quiesce() {
+        use super::super::{Priority, ReaderPolicy, RecordCache, Want};
+        futures::executor::block_on(async {
+            let provider = MemoryStream::default();
+            let parent = StreamPath::new("sized").unwrap();
+            for name in ["a", "b", "c", "d", "e"] {
+                provider
+                    .append(AppendRequest {
+                        path: StreamPath::new(format!("sized/{name}")).unwrap(),
+                        records: vec![b"child".as_slice().into()],
+                        if_tail: None,
+                        idempotency_key: IdempotencyKey::unique(),
+                    })
+                    .await
+                    .unwrap();
+            }
+            for cache_bytes in [0, 64 * 1024] {
+                let mut reader = Reader::new(ReaderPolicy {
+                    cache_bytes,
+                    ..ReaderPolicy::default()
+                })
+                .unwrap();
+                let wants = [1, 2].map(|limit| {
+                    (
+                        Want::Listing {
+                            parent: parent.clone(),
+                            index: 1,
+                            limit,
+                            tail: None,
+                            witness: None,
+                        },
+                        Priority::Visible,
+                    )
+                });
+                reader.begin_frame(0);
+                reader.plan(wants.clone());
+                let mut seen = Vec::new();
+                for _ in 0..2 {
+                    let [op]: [Op; 1] = reader
+                        .poll(0)
+                        .try_into()
+                        .expect("one distinct page operation");
+                    let Op::Children { limit, .. } = &op else {
+                        panic!("listing operation");
+                    };
+                    seen.push(*limit);
+                    let id = op.id();
+                    reader.complete(id, execute(&provider, op).await, 0);
+                }
+                assert_eq!(seen, [1, 2], "different page sizes coalesced");
+                assert!(
+                    reader.cache().listing(&parent, 1, 3).is_none(),
+                    "an unrequested page size borrowed another page's authority"
+                );
+                for (limit, expected) in [(1, vec!["sized/b"]), (2, vec!["sized/c", "sized/d"])] {
+                    let page = reader
+                        .cache()
+                        .listing(&parent, 1, limit)
+                        .expect("page size lost its cache identity");
+                    assert_eq!(
+                        page.children
+                            .iter()
+                            .map(StreamPath::as_str)
+                            .collect::<Vec<_>>(),
+                        expected
+                    );
+                    assert_eq!(
+                        reader
+                            .cache()
+                            .listing_containing(&parent, &page.children[0], limit)
+                            .unwrap()
+                            .0,
+                        1
+                    );
+                }
+                reader.begin_frame(1);
+                reader.plan(wants);
+                assert!(
+                    reader.poll(1).is_empty(),
+                    "satisfied sized pages were reissued"
+                );
+                if cache_bytes > 0 {
+                    let snapshot = reader.cache().snapshot();
+                    let mut restored = RecordCache::new(cache_bytes, 16);
+                    restored.restore(&snapshot).unwrap();
+                    assert_eq!(
+                        restored.listing(&parent, 1, 1).unwrap().children[0].as_str(),
+                        "sized/b"
+                    );
+                    assert_eq!(
+                        restored.listing(&parent, 1, 2).unwrap().children[0].as_str(),
+                        "sized/c"
+                    );
+                    let mut obsolete = snapshot;
+                    let version = obsolete
+                        .windows(b"acyclic.records.v2".len())
+                        .position(|x| x == b"acyclic.records.v2")
+                        .unwrap();
+                    obsolete[version + b"acyclic.records.v".len()] = b'1';
+                    assert!(
+                        restored.restore(&obsolete).is_err(),
+                        "obsolete page identity format accepted"
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn cold_indexed_pages_establish_one_hierarchy_before_parallel_reads() {
+        use super::super::{Priority, ReaderPolicy, Want};
+        futures::executor::block_on(async {
+            let provider = MemoryStream::default();
+            for path in ["parent/a", "parent/b", "parent/c"] {
+                provider
+                    .append(AppendRequest {
+                        path: StreamPath::new(path).unwrap(),
+                        records: vec![b"value".as_slice().into()],
+                        if_tail: None,
+                        idempotency_key: IdempotencyKey::unique(),
+                    })
+                    .await
+                    .unwrap();
+            }
+            let parent = StreamPath::new("parent").unwrap();
+            let mut reader = Reader::new(ReaderPolicy {
+                listing_limit: 1,
+                ..ReaderPolicy::default()
+            })
+            .unwrap();
+            reader.plan([1, 2].map(|index| {
+                (
+                    Want::Listing {
+                        parent: parent.clone(),
+                        index,
+                        tail: None,
+                        witness: None,
+                        limit: 1,
+                    },
+                    Priority::Visible,
+                )
+            }));
+            let mut initial = reader.poll(0);
+            assert_eq!(
+                initial.len(),
+                1,
+                "unfenced pages could select different cuts"
+            );
+            let first = initial.pop().unwrap();
+            let id = first.id();
+            let outcome = execute(&provider, first).await;
+            reader.complete(id, outcome, 0);
+            let second = reader.poll(0).pop().unwrap();
+            assert!(matches!(
+                &second,
+                Op::Children {
+                    version: Some(_),
+                    ..
+                }
+            ));
+            provider
+                .append(AppendRequest {
+                    path: StreamPath::new("parent/aa").unwrap(),
+                    records: vec![b"new".as_slice().into()],
+                    if_tail: None,
+                    idempotency_key: IdempotencyKey::unique(),
+                })
+                .await
+                .unwrap();
+            let id = second.id();
+            let outcome = execute(&provider, second).await;
+            assert!(matches!(
+                &outcome,
+                Outcome::Failed(StreamError::HierarchyChanged)
+            ));
+            reader.complete(id, outcome, 0);
+            assert!(reader.cache().listings(&parent).next().is_none());
+        });
+    }
+
+    #[test]
     fn changed_hierarchy_abandons_old_pages_before_another_driver_wake() {
         use super::super::{Priority, ReaderPolicy, Want};
 
@@ -1810,6 +2079,7 @@ mod tests {
                         index,
                         tail: None,
                         witness: None,
+                        limit: 1,
                     },
                     Priority::Visible,
                 )
@@ -1858,12 +2128,15 @@ mod tests {
             );
             reader.plan(parents.iter().map(|parent| want(parent, 1)));
             let fresh = reader.poll(0);
-            assert_eq!(fresh.len(), 2);
+            assert_eq!(
+                fresh.len(),
+                1,
+                "one unfenced request establishes the new hierarchy"
+            );
             assert!(fresh.iter().all(|op| matches!(
                 op,
                 Op::Children {
-                    index: 0,
-                    after: None,
+                    index: 1,
                     version: None,
                     ..
                 }
@@ -2033,7 +2306,6 @@ mod tests {
                     id: 2,
                     parent: StreamPath::new("agents").unwrap(),
                     index: 0,
-                    after: None,
                     limit: 8,
                     tail: Some(StreamPath::new("conversation").unwrap()),
                     version: None,

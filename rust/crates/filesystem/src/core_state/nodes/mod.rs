@@ -8,6 +8,12 @@ pub(super) trait LazyNode:
     const FAMILY: &'static str;
 
     fn address(id: Self::Id) -> [u8; 32];
+
+    fn retain_decoded(
+        &mut self,
+        allocation: &mut crate::kernel::KernelOwnedAllocation,
+        ctx: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError>;
 }
 
 impl LazyNode for LazyOverlay {
@@ -17,6 +23,21 @@ impl LazyNode for LazyOverlay {
     fn address(id: Self::Id) -> [u8; 32] {
         id.into_bytes()
     }
+
+    fn retain_decoded(
+        &mut self,
+        allocation: &mut crate::kernel::KernelOwnedAllocation,
+        ctx: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        if let Self::Node {
+            change: crate::lazy_workspace::LazyOverlayChange::Observe { source, .. },
+            ..
+        } = self
+        {
+            source.retain_decoded(allocation, ctx)?;
+        }
+        Ok(())
+    }
 }
 
 impl LazyNode for crate::LazyShadow {
@@ -25,6 +46,14 @@ impl LazyNode for crate::LazyShadow {
 
     fn address(id: Self::Id) -> [u8; 32] {
         id.into_bytes()
+    }
+
+    fn retain_decoded(
+        &mut self,
+        _allocation: &mut crate::kernel::KernelOwnedAllocation,
+        _ctx: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        Ok(())
     }
 }
 
@@ -119,15 +148,27 @@ impl LocalCoreStateStore {
                     let Some(mut owned) = read_published::<T>(paths)? else {
                         return Ok(None);
                     };
+                    let mut allocation = crate::kernel::KernelOwnedAllocation::NativeOriginal(
+                        owned.1.take().expect("native record allocation"),
+                    );
                     owned
-                        .1
-                        .as_mut()
-                        .expect("native record allocation")
-                        .resize(owned.0.owned_bytes())?;
+                        .0
+                        .retain_decoded(
+                            &mut allocation,
+                            &mut crate::kernel::KernelAccounting::native(work, work.cancellation()),
+                        )
+                        .map_err(crate::LazyWorkspaceError::from)
+                        .map_err(LocalCoreStateStoreError::LazyWork)?;
+                    let crate::kernel::KernelOwnedAllocation::NativeOriginal(mut allocation) =
+                        allocation
+                    else {
+                        return Err(LocalCoreStateStoreError::Integrity);
+                    };
+                    allocation.resize(owned.0.owned_bytes())?;
                     if lazy_digest(&owned.0, work)? != T::address(id) {
                         return Err(LocalCoreStateStoreError::Integrity);
                     }
-                    Ok(Some((owned.0, owned.1.expect("native record allocation"))))
+                    Ok(Some((owned.0, allocation)))
                 }
             })
             .await

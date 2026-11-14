@@ -50,7 +50,7 @@ impl<D: DemandSource> crate::kernel::AsyncBlobSource for DemandBlobSource<'_, D>
         let result = self
             .provider
             .read_range(
-                self.source,
+                self.source.clone(),
                 self.path,
                 self.version,
                 self.offset,
@@ -107,7 +107,7 @@ impl<D: DemandSource> crate::kernel::AsyncBlobSource for DemandBlobSource<'_, D>
         let chunk = match self
             .provider
             .read_range(
-                self.source,
+                self.source.clone(),
                 self.path,
                 self.version,
                 self.offset,
