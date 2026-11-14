@@ -463,7 +463,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
             };
             let mut view = self.heads(request.clone()).await?;
             view.validate_for(&request)?;
-            let head = view.heads.pop().flatten().ok_or(StreamError::NotFound)?;
+            let head = view.heads.pop().flatten().ok_or_else(|| { eprintln!("C7NF durable {:?} {}", request.paths, std::backtrace::Backtrace::force_capture()); StreamError::NotFound })?;
             Ok(head
                 .retained_through
                 .map(|through| DurableReceipt { path, through }))
@@ -571,5 +571,5 @@ async fn named_head<P: StreamProvider + ?Sized>(
     };
     let mut view = provider.heads(request.clone()).await?;
     view.validate_for(&request)?;
-    view.heads.pop().flatten().ok_or(StreamError::NotFound)
+    view.heads.pop().flatten().ok_or_else(|| { eprintln!("C7NF heads {:?} {}", request.paths, std::backtrace::Backtrace::force_capture()); StreamError::NotFound })
 }

@@ -1563,7 +1563,10 @@ async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else(
     assert_eq!(second.phase, Phase::Idle);
     let requests = model.requests();
     for (n, request) in requests.iter().enumerate() {
-        eprintln!("C7DBG request {n}: {:?}", request.messages.iter().map(|m| (m.role, format!("{:?}", m.content).chars().take(160).collect::<String>())).collect::<Vec<_>>());
+        eprintln!("C7DBG request {n}: roles={:?}", request.messages.iter().map(|m| m.role).collect::<Vec<_>>());
+        for m in request.messages.iter().filter(|m| m.role != ModelRole::System) {
+            eprintln!("C7DBG   {:?}: {}", m.role, format!("{:?}", m.content).chars().take(400).collect::<String>());
+        }
     }
     assert_eq!(requests.len(), 2);
     let roles = |index: usize| -> Vec<ModelRole> {
