@@ -162,6 +162,7 @@ pub fn trust() -> Result<String, JsValue> {
         account: "account".into(),
         issuer_keys: keys.issuers,
         minimum_key_epoch: 1,
+        not_before_unix_seconds: 0,
         revoked_key_ids: Default::default(),
         revoked_block_ids: Default::default(),
     })
