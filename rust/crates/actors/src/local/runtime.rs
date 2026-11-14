@@ -105,7 +105,10 @@ impl Drop for EventDelivery {
 /// slot's state without taking its lock (a cancelled publication may have
 /// committed), and its carried wake, not a resident token, retains the
 /// alarm; its flight then keeps the actor's failure mark. The work it was
-/// taken for settles with it.
+/// taken for settles with it. Only a failure no retry of the retained input
+/// can decide (`unavailable`) is published to [`Runtime::unavailable`]
+/// observers: a retryable error, a cancelled await or a released slot keeps
+/// the actor available for its next attempt.
 struct Settlement<'a> {
     actor: &'a ActorReference,
     failures: &'a Arc<failure::Signals>,
@@ -113,7 +116,7 @@ struct Settlement<'a> {
     flight: Option<Flight<ActorReference>>,
     work: Option<Work<ActorReference>>,
     failed: bool,
-    cause: Option<DeliveryFailure>,
+    unavailable: Option<DeliveryFailure>,
 }
 impl Drop for Settlement<'_> {
     fn drop(&mut self) {
@@ -121,21 +124,18 @@ impl Drop for Settlement<'_> {
             return;
         };
         if self.failed {
-            let cause = Arc::new(self.cause.take().unwrap_or_else(|| DeliveryFailure {
-                message: format!(
-                    "actor {:?}: delivery producer disappeared before reporting an outcome",
-                    self.actor
-                ),
-            }));
-            self.slot
-                .failure
-                .get_or_init(|| self.failures.signal(self.actor))
-                .failed(self.actor, Arc::clone(&cause));
-            if let Some(owner) = self.slot.failure_owner.get() {
+            if let Some(cause) = self.unavailable.take() {
+                let cause = Arc::new(cause);
                 self.slot
-                    .owner_failure
-                    .get_or_init(|| self.failures.signal(owner))
-                    .failed(self.actor, cause);
+                    .failure
+                    .get_or_init(|| self.failures.signal(self.actor))
+                    .failed(self.actor, Arc::clone(&cause));
+                if let Some(owner) = self.slot.failure_owner.get() {
+                    self.slot
+                        .owner_failure
+                        .get_or_init(|| self.failures.signal(owner))
+                        .failed(self.actor, cause);
+                }
             }
             self.slot.refresh.store(true, Ordering::Release);
             self.slot.registration.suspend_alarm();
@@ -156,8 +156,10 @@ impl Drop for Settlement<'_> {
     }
 }
 
-/// One failed delivery attempt. Its input and any unknown publication remain
-/// owned by the actor; observing this failure does not settle either.
+/// Why an actor is unavailable: a delivery failure that no retry of its
+/// retained input can decide, or the runtime's release. Its input and any
+/// unknown publication remain owned by the actor; observing this failure
+/// does not settle either.
 #[derive(Clone, Debug, thiserror::Error)]
 #[error("{message}")]
 pub struct DeliveryFailure {
@@ -509,11 +511,19 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         Ok(())
     }
 
-    /// Observe this actor's next failed delivery, including a failure already
-    /// retained by this runtime. Observation registers no resident slot or work. Observers
-    /// survive hibernation without retaining actor I/O. Recovery clears the
-    /// current failure, but cannot erase an event from an earlier observer.
-    pub fn delivery_failure(
+    /// The actor's availability event: resolves when it becomes unavailable,
+    /// at once if it already is. An actor is unavailable after a delivery
+    /// failure no retry of its retained input can decide
+    /// (not [`Error::retryable`]), or when this runtime is released.
+    /// A retryable attempt failure, a cancelled attempt or a released slot
+    /// never resolves it: the actor keeps its input and carried wake, and its
+    /// next event retries that input. Waiters on an actor's progress end
+    /// on this event, never on a single attempt.
+    ///
+    /// Observation registers no resident slot or work. Observers survive
+    /// hibernation without retaining actor I/O. Recovery clears the current
+    /// unavailability, but cannot erase an event from an earlier observer.
+    pub fn unavailable(
         &self,
         actor: &ActorReference,
     ) -> Result<BoxProviderFuture<'static, DeliveryFailure>, Error> {
@@ -1504,7 +1514,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     ),
                     work,
                     failed: true,
-                    cause: None,
+                    unavailable: None,
                 };
                 let result = match &self.admission[self.handler.admission_class(actor).index()] {
                     Some(admission) => admission
@@ -1532,10 +1542,14 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 // Settled under the actor's delivery lock, so an earlier
                 // delivery's success never clears a later one's failure.
                 // A released slot delivered nothing: its input belongs to
-                // the next placer.
+                // the next placer. A retained publication's outcome is still
+                // undecided whatever error reported it: retrying it decides.
                 settlement.failed = result.is_err() || inner.released;
-                if let Err(error) = &result {
-                    settlement.cause = Some(DeliveryFailure {
+                if let Err(error) = &result
+                    && !error.retryable()
+                    && inner.pending.is_none()
+                {
+                    settlement.unavailable = Some(DeliveryFailure {
                         message: format!("actor {actor:?}: {error}"),
                     });
                 }

@@ -59,7 +59,14 @@ async fn handler_failure_transition_consumes_only_decided_work() -> TestResult {
             Arc::new(SystemClock),
         );
         runtime.track(address.clone())?;
+        let mut unavailable = runtime.unavailable(&address)?;
         let result = runtime.drain_actor(&address).await;
+        // Retained (pending) work is retried by the actor's next event, and
+        // settled work published its failure: neither leaves it unavailable.
+        assert!(
+            futures::poll!(unavailable.as_mut()).is_pending(),
+            "a decided or retryable failure made its actor unavailable"
+        );
         let snapshot = runtime.store().load(&address).await?;
         let state = snapshot.state().ok_or("missing actor state")?;
         if pending {

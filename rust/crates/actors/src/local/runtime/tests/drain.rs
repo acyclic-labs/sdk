@@ -3,6 +3,17 @@ use super::*;
 struct OwnedGated {
     gated: Gated,
     owner: ActorReference,
+    /// Actors whose next delivery fails definitively, making them unavailable.
+    refused: std::sync::Mutex<Vec<ActorReference>>,
+}
+impl OwnedGated {
+    fn refuse(&self, actor: &ActorReference, refused: bool) {
+        let mut actors = self.refused.lock().unwrap();
+        actors.retain(|candidate| candidate != actor);
+        if refused {
+            actors.push(actor.clone());
+        }
+    }
 }
 impl Handler for OwnedGated {
     fn manifest(&self) -> &Manifest {
@@ -24,6 +35,11 @@ impl Handler for OwnedGated {
         checkpoint: Option<&'a Checkpoint>,
         cancellation: crate::guest::CancellationToken,
     ) -> GuestFuture<'a, Transition> {
+        if self.refused.lock().unwrap().contains(&delivery.actor) {
+            return Box::pin(async {
+                Err(crate::guest::GuestError::Handler("definitive refusal".into()))
+            });
+        }
         self.gated.on_record(delivery, checkpoint, cancellation)
     }
 }
@@ -40,6 +56,7 @@ async fn dependent_failures_survive_owner_success_and_clear_only_on_source_recov
     let handler = Arc::new(OwnedGated {
         gated: Gated::new()?,
         owner: owner.clone(),
+        refused: std::sync::Mutex::new(Vec::new()),
     });
     let hosted = Arc::new(crate::guest::HostedHandler::new(
         handler.clone(),
@@ -52,15 +69,15 @@ async fn dependent_failures_survive_owner_success_and_clear_only_on_source_recov
         hosted,
         Arc::new(SystemClock),
     );
-    let observed = runtime.delivery_failure(&owner)?;
+    let observed = runtime.unavailable(&owner)?;
     for actor in [&first, &second] {
+        handler.refuse(actor, true);
         runtime.host(actor.clone())?;
-        let mut delivery = Box::pin(runtime.drain_actor(actor));
-        assert!(futures::poll!(delivery.as_mut()).is_pending());
-        drop(delivery);
+        assert!(runtime.drain_actor(actor).await.is_err());
+        handler.refuse(actor, false);
     }
     assert!(observed.await.to_string().contains("dependent-"));
-    let unpolled = runtime.delivery_failure(&owner)?;
+    let unpolled = runtime.unavailable(&owner)?;
     // A healthy owner cannot erase either failed dependency.
     for actor in [&owner, &first] {
         runtime.host(actor.clone())?;
@@ -69,7 +86,7 @@ async fn dependent_failures_survive_owner_success_and_clear_only_on_source_recov
     }
     assert!(
         runtime
-            .delivery_failure(&owner)?
+            .unavailable(&owner)?
             .await
             .to_string()
             .contains("dependent-second")
@@ -80,13 +97,12 @@ async fn dependent_failures_survive_owner_success_and_clear_only_on_source_recov
     handler.gated.gate.add_permits(1);
     runtime.drain_actor(&second).await?;
     assert!(unpolled.await.to_string().contains("dependent-"));
-    let mut healthy = runtime.delivery_failure(&owner)?;
+    let mut healthy = runtime.unavailable(&owner)?;
     assert!(futures::poll!(healthy.as_mut()).is_pending());
-    let unrelated_failure = runtime.delivery_failure(&unrelated)?;
+    let unrelated_failure = runtime.unavailable(&unrelated)?;
+    handler.refuse(&unrelated, true);
     runtime.host(unrelated.clone())?;
-    let mut delivery = Box::pin(runtime.drain_actor(&unrelated));
-    assert!(futures::poll!(delivery.as_mut()).is_pending());
-    drop(delivery);
+    assert!(runtime.drain_actor(&unrelated).await.is_err());
     assert!(unrelated_failure.await.to_string().contains("unrelated"));
     assert!(futures::poll!(healthy.as_mut()).is_pending());
     Ok(())
@@ -154,8 +170,11 @@ async fn delayed_activation_cannot_redeliver_a_failed_attempt() -> TestResult {
     Ok(())
 }
 
+/// Availability is an actor event, not an attempt event: a cancelled attempt
+/// keeps its input for the next one and resolves no observer, while a
+/// definitive failure reaches observers registered before hibernation.
 #[tokio::test]
-async fn failure_observers_survive_hibernation_and_unpolled_recovery() -> TestResult {
+async fn unavailability_observers_survive_hibernation_and_cancelled_attempts() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let store = Store::new(Arc::clone(&provider), root()?);
     let handler = Arc::new(Gated::new()?);
@@ -166,7 +185,7 @@ async fn failure_observers_survive_hibernation_and_unpolled_recovery() -> TestRe
         Arc::new(SystemClock),
     );
     let address = spawn_with(&store, "failure-observed", &[b"emit"]).await?;
-    let mut failed = runtime.delivery_failure(&address)?;
+    let mut failed = runtime.unavailable(&address)?;
     assert_eq!(
         runtime.counts(),
         (0, 0),
@@ -196,17 +215,20 @@ async fn failure_observers_survive_hibernation_and_unpolled_recovery() -> TestRe
             .and_then(|state| state.cursor("inbox")),
         Some(0)
     );
-    // Recover before the registered observer gets another poll. Recovery must
-    // not erase its event, but a newly registered observer must remain healthy.
+    // The actor's next event retries the retained input. The cancelled
+    // attempt made the actor unavailable to no observer, old or new.
     assert!(runtime.release(&address));
     runtime.host(address.clone())?;
     handler.gate.add_permits(1);
     runtime.drain_actor(&address).await?;
-    assert!(failed.await.to_string().contains("producer disappeared"));
-    let mut next = runtime.delivery_failure(&address)?;
+    assert!(
+        futures::poll!(failed.as_mut()).is_pending(),
+        "a cancelled attempt made its actor unavailable"
+    );
+    let mut next = runtime.unavailable(&address)?;
     assert!(
         futures::poll!(next.as_mut()).is_pending(),
-        "recovery retained a stale active failure"
+        "recovery retained a stale unavailability"
     );
     assert_eq!(records(&*provider, "out/failure-observed").await?.len(), 1);
 
@@ -227,7 +249,11 @@ async fn failure_observers_survive_hibernation_and_unpolled_recovery() -> TestRe
         next.await.to_string().contains("test gate closed"),
         "rehydration lost its original observer"
     );
-    let mut stopping = runtime.delivery_failure(&actor("healthy-runtime-shutdown")?)?;
+    assert!(
+        failed.await.to_string().contains("test gate closed"),
+        "hibernation lost its earliest observer"
+    );
+    let mut stopping = runtime.unavailable(&actor("healthy-runtime-shutdown")?)?;
     assert!(futures::poll!(stopping.as_mut()).is_pending());
     drop(runtime);
     assert!(stopping.await.to_string().contains("runtime released"));

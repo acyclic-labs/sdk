@@ -393,9 +393,9 @@ async fn source_failure_and_fanout_remain_bounded_and_recover_without_stopping_o
     .await?;
     let mut failures = actors
         .iter()
-        .map(|actor| runtime.delivery_failure(actor))
+        .map(|actor| runtime.unavailable(actor))
         .collect::<Result<Vec<_>, _>>()?;
-    let mut healthy = runtime.delivery_failure(&actor("unrelated")?)?;
+    let mut healthy = runtime.unavailable(&actor("unrelated")?)?;
     {
         let mut subscriptions = runtime.subscriptions.lock().unwrap();
         let source = subscriptions
@@ -430,7 +430,7 @@ async fn source_failure_and_fanout_remain_bounded_and_recover_without_stopping_o
             "a failed subscription left its actor's waiter pending"
         );
     }
-    let mut retained = runtime.delivery_failure(&actors[0])?;
+    let mut retained = runtime.unavailable(&actors[0])?;
     assert!(
         futures::poll!(retained.as_mut()).is_ready(),
         "a resident actor lost its subscription failure"

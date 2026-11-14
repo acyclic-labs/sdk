@@ -5584,7 +5584,7 @@ async fn failed_child_keeps_siblings_and_the_served_session_alive() -> Result<()
             );
             let cause = agents
                 .runtime()
-                .delivery_failure(&actor)
+                .unavailable(&actor)
                 .map_err(agent)?
                 .await
                 .to_string();
@@ -5641,15 +5641,16 @@ async fn failed_child_keeps_siblings_and_the_served_session_alive() -> Result<()
     Ok(())
 }
 
-/// A lost model producer must fail its original actor waiters, preserving the
-/// queued input and the shared serving loop for unrelated work.
+/// A lost model producer fails one attempt, not the actor (GC-217): its
+/// storage-class cause is retryable, so every waiter, live query and follow
+/// stays parked on the retained input until the actor's next event retries it.
 #[tokio::test]
-async fn lost_model_producer_fails_actor_waiters_without_settling_input() -> Result<()> {
+async fn lost_model_producer_parks_actor_waiters_until_retry() -> Result<()> {
     lost_model_producer(false).await
 }
 
 #[tokio::test]
-async fn served_lost_model_producer_preserves_actor_failure() -> Result<()> {
+async fn served_lost_model_producer_parks_actor_waiters_until_retry() -> Result<()> {
     lost_model_producer(true).await
 }
 
@@ -5666,19 +5667,31 @@ async fn lost_model_producer(wire: bool) -> Result<()> {
     let (producer, result) = oneshot::channel::<()>();
     let gate = Mutex::new(Some((entered, result)));
     let warming = AtomicBool::new(true);
+    let recovered = vec![
+        serde_json::from_value(serde_json::json!({"kind": "content", "delta": "recovered"}))
+            .map_err(agent)?,
+        serde_json::from_value(serde_json::json!({"kind": "completed", "metadata": null}))
+            .map_err(agent)?,
+    ];
     let provider = ScriptedModelProvider::new([
         super::ScriptedTurn::Text("ready".into()),
         super::ScriptedTurn::Events(Vec::new()),
+        super::ScriptedTurn::Text("recovered".into()),
     ])
     .with_context_capacity(super::capacity())
+    .with_reconciliations([crate::test_support::ScriptedReconciliation {
+        orphan: false,
+        observed: Vec::new(),
+        continuation: Some(recovered),
+    }])
     .with_dispatch_observer(move |_| {
         let warming = warming.swap(false, Ordering::SeqCst);
         let gate = (!warming).then(|| gate.lock().unwrap().take()).flatten();
         Box::pin(async move {
-            if warming {
+            // The warm-up and the retry pass; only the gated attempt is lost.
+            let Some((entered, result)) = gate else {
                 return Ok(());
-            }
-            let (entered, result) = gate.ok_or_else(|| Error::Invalid("second dispatch".into()))?;
+            };
             let _ = entered.send(());
             result
                 .await
@@ -5757,21 +5770,6 @@ async fn assert_lost_model_producer(
     producer: tokio::sync::oneshot::Sender<()>,
     wire: bool,
 ) -> Result<()> {
-    fn exchange_failure<T: std::fmt::Debug>(result: &Result<T>, operation: &str) {
-        let Err(error @ Error::Exchange { .. }) = result else {
-            panic!("{operation} lost its typed exchange: {result:?}");
-        };
-        assert_eq!(error.code(), crate::wire::ErrorCode::Storage);
-        let mut source = std::error::Error::source(error);
-        while let Some(cause) = source {
-            if cause.to_string().contains("model producer closed") {
-                return;
-            }
-            source = cause.source();
-        }
-        panic!("{operation} lost the original producer cause: {error:?}");
-    }
-
     let client = Conversation::open(connection.clone());
     // Create the conversation through its actual first turn before testing
     // out-of-range follows: an absent stream intentionally waits for creation.
@@ -5801,12 +5799,6 @@ async fn assert_lost_model_producer(
             "settlement admitted an unrelated progress producer or performed I/O before refusal: {observed:?}"
         );
     }
-    // Retain another observer on the original connection. Its first failed
-    // opening retires only that follow; the other selected follows remain.
-    // A future live cursor is valid and waits, so it cannot provoke retirement.
-    let mut retired = client.replay(&acyclic_harness_client::EventProjection::new(
-        "retired-source".into(),
-    ))?;
     let root = connection.root().clone();
     let settling = settled(&harness, &root);
     tokio::pin!(settling);
@@ -5820,7 +5812,6 @@ async fn assert_lost_model_producer(
     }
     assert_eq!(usage.totals().calls, 2);
     assert_eq!(usage.totals().completed, 1);
-    let before = usage.totals().clone();
     let fenced = client.wait_current_input();
     tokio::pin!(fenced);
     assert!(
@@ -5840,76 +5831,59 @@ async fn assert_lost_model_producer(
         futures::poll!(&mut admission).is_pending(),
         "live runtime must retain in-flight admission"
     );
-    let usage_result = {
-        let advancing = usage.advance();
-        tokio::pin!(advancing);
-        assert!(
-            futures::poll!(&mut advancing).is_pending(),
-            "quiet live usage must wait at its retained frontier"
-        );
-        eprintln!("producer-loss wire={wire}: dropping model producer");
-        drop(producer);
-        advancing.await
-    };
-    let usage_result: Result<bool> = match usage_result {
-        Err(error) => Err(error),
-        Ok(_) => loop {
-            // Journal-only lifecycle records can advance a page without
-            // changing visible totals. Consume those original pages;
-            // the quiet continuation waits on the producer's event.
-            if let Err(error) = usage.advance().await {
-                break Err(error);
-            }
-        },
-    };
-    eprintln!("producer-loss wire={wire}: usage terminal");
-    exchange_failure(&usage_result, "usage");
-    let fenced = fenced.await;
-    eprintln!("producer-loss wire={wire}: input fence terminal");
-    exchange_failure(&fenced, "input fence");
+    let mut advancing = Box::pin(usage.advance());
+    assert!(
+        futures::poll!(advancing.as_mut()).is_pending(),
+        "quiet live usage must wait at its retained frontier"
+    );
+    eprintln!("producer-loss wire={wire}: dropping model producer");
+    drop(producer);
+    // Completion settles every in-flight delivery and reports the failed one.
+    let hosted = harness.agents.get().unwrap();
+    assert!(matches!(
+        hosted.agents().runtime().complete().await,
+        Err(acyclic_actors::local::Error::CompletionFailed(_))
+    ));
+    eprintln!("producer-loss wire={wire}: failed attempt settled");
     let admitted = futures::poll!(&mut admission);
     assert!(
         admitted.is_pending(),
-        "actor failure closed unrelated runtime admission: {admitted:?}"
+        "an attempt failure closed runtime admission: {admitted:?}"
     );
     assert_eq!(
-        usage.totals(),
-        &before,
-        "source loss changed the admitted projection"
+        hosted
+            .agents()
+            .reply(
+                hosted.root(),
+                &crate::agent::IntentId::try_from("lost-producer").map_err(agent)?,
+                inbox
+            )
+            .await
+            .map_err(agent)?,
+        crate::agent::Reply::Pending,
+        "a failed attempt settled its input"
     );
-    // Only the failed actor's live subscriptions report its original failure.
+    // The actor's next event retries the retained input. Every waiter parked
+    // before the loss observes that retry's outcome: on the old contract each
+    // had already failed with the attempt's storage cause.
+    hosted.agents().host(&root).map_err(agent)?;
     let observed = waiting.await;
     eprintln!("producer-loss wire={wire}: public settlement terminal");
-    exchange_failure(&observed, "public settlement");
-    let hosted = harness.agents.get().unwrap();
-    assert!(futures::poll!(core::pin::pin!(hosted.runtime.completion())).is_pending());
-    loop {
-        match retired.next_projected().await {
-            Err(error) => {
-                exchange_failure(&Err::<(), _>(error), "retired follow");
-                break;
-            }
-            Ok((event, _)) => {
-                event?;
-            }
-        }
-    }
-    let invalid = client.settle("lost-producer", inbox, &mut retired);
-    eprintln!("producer-loss wire={wire}: replay terminal");
-    tokio::pin!(invalid);
     assert!(
         matches!(
-            futures::poll!(&mut invalid),
-            std::task::Poll::Ready(Err(Error::Invalid(_)))
+            observed,
+            Ok(crate::local::agent_conversation::Settlement::Reply(
+                crate::agent::Reply::Answered { .. }
+            ))
         ),
-        "settlement admitted a retired original follow or performed I/O before refusal"
+        "a retryable attempt failure ended the public settlement: {observed:?}"
     );
-    let settled = settling.await;
+    fenced.await?;
+    eprintln!("producer-loss wire={wire}: input fence settled");
+    advancing.await?;
+    let settled = settling.await?;
     eprintln!("producer-loss wire={wire}: direct settlement terminal");
-    assert!(
-        matches!(&settled, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
-        "settlement bypassed the original runtime terminal event: {settled:?}"
-    );
+    assert_eq!(settled.len(), 2, "the retry lost or duplicated an entry");
     assert!(
         harness.agent_stream.as_ref().unwrap().failure().is_none(),
         "the Session's runtime failure must not be invented as a provider failure"
@@ -5923,35 +5897,27 @@ async fn assert_lost_model_producer(
         ),
         "actor failure closed the shared command session"
     );
-    assert_eq!(
-        hosted
-            .agents()
-            .reply(
-                hosted.root(),
-                &crate::agent::IntentId::try_from("lost-producer").map_err(agent)?,
-                inbox
-            )
-            .await
-            .map_err(agent)?,
-        crate::agent::Reply::Pending,
-        "failed input stays recoverable"
-    );
-    assert_eq!(
-        records(
-            hosted.agents().provider(),
-            hosted.root().conversation().map_err(agent)?
-        )
-        .await?
-        .len(),
-        1,
-        "failed input appended another conversation entry"
+    assert!(
+        matches!(
+            hosted
+                .agents()
+                .reply(
+                    hosted.root(),
+                    &crate::agent::IntentId::try_from("lost-producer").map_err(agent)?,
+                    inbox
+                )
+                .await
+                .map_err(agent)?,
+            crate::agent::Reply::Answered { .. }
+        ),
+        "the retry did not settle the retained input"
     );
     assert!(
         harness.connect().await.is_ok(),
         "actor failure refused a new command session"
     );
-    // Both admitted calls outlive the failed delivery. Only the warm-up completed;
-    // losing the second producer must preserve its distinct unfinished call.
+    // Both admitted calls outlive the failed attempt, each exactly once, and
+    // the retry completed the lost call: nothing stale or duplicated remains.
     let mut exported = Vec::new();
     eprintln!("producer-loss wire={wire}: exporting saved usage");
     client
@@ -5965,9 +5931,9 @@ async fn assert_lost_model_producer(
         .map_err(agent)?;
     assert_eq!(rows.len(), 2, "an admitted call was lost or duplicated");
     assert_ne!(rows[0].usage.dispatch, rows[1].usage.dispatch);
-    assert_eq!(rows.iter().filter(|row| row.usage.completed).count(), 1);
+    assert!(rows.iter().all(|row| row.usage.completed));
     eprintln!("producer-loss wire={wire}: reading saved queries");
-    // A later failed delivery cannot revoke the warm-up's committed results,
+    // A failed attempt cannot revoke the warm-up's committed results,
     // including queries whose caller permits waiting for new progress.
     hosted
         .agents()
