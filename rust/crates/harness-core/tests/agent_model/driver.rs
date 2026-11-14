@@ -881,7 +881,7 @@ fn continuation(step: &Step, path: &AgentPath) -> Option<Message> {
         .filter_map(|out| match out {
             Out::Send {
                 to,
-                record: InboxRecord::Message(message),
+                record: InboxRecord::FollowUp(message),
             } if to == path => Some(message.clone()),
             _ => None,
         })
@@ -988,7 +988,7 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
             assert_eq!(message.from, Sender::Agent { path: path.clone() });
             assert_eq!(*message.body, file("GOAL.md")?);
             sent.push(message.id.as_str().to_owned());
-            next = Some(InboxRecord::Message(message));
+            next = Some(InboxRecord::FollowUp(message));
         }
         let commit = lower(
             &settled,
@@ -1198,7 +1198,7 @@ async fn an_unlimited_goal_keeps_its_loop_identity_across_counter_boundaries() -
                 (sequence, 0),
                 Wake::Inbox {
                     sequence,
-                    record: InboxRecord::Message(message),
+                    record: InboxRecord::FollowUp(message),
                 },
                 acyclic_actors::guest::CancellationToken::new(),
             )
