@@ -92,16 +92,23 @@ async fn terminal_replies_prepare_no_review_source_at_any_history_size() -> Resu
                 .any(|(event, _)| *event == "context review source messages")
         );
         let execution = StockExecution::ordinary(&stock);
+        // A retrospective reply has already crossed the original boundary.
+        // Replay correctly skips that review; the old-caller control needs a
+        // fresh boundary with the same selected history and original usage.
+        let control_input = TurnInput {
+            operation_id: OperationId::new(),
+            ..input.clone()
+        };
         let old_caller = async {
             execution
-                .request_context_review(journal, &input, 0, &[], &output.metadata)
+                .request_context_review(journal, &control_input, 0, &[], &output.metadata)
                 .await?;
             Ok(ExecutionProgress::Ready(()))
         };
         let (result, trace) = acyclic_test_support::differential::observe_async::<
             _,
             (&'static str, u64),
-        >(execution.with_context_review(journal, &input, old_caller))
+        >(execution.with_context_review(journal, &control_input, old_caller))
         .await;
         result?;
         let constructed: Vec<_> = trace
@@ -421,37 +428,55 @@ async fn reviews_bound_complete_groups_without_stopping_a_fitting_worker() -> Re
         let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
         let journal_owner = storage.journal();
         let journal = journal_owner.as_ref();
-        let input = TurnInput {
-            operation_id: OperationId::new(),
-            max_steps: None,
-            input: ModelContent::Text("Continue.".into()),
-            selected_context: None,
-        };
         let groups = if partitioned { 4 } else { 1 };
-        let mut prior = Vec::new();
+        let mut messages = Vec::new();
         for index in 0..groups {
-            prior.push(ModelMessage {
+            messages.push(ModelMessage {
                 role: ModelRole::User,
                 content: ModelContent::Text(format!(
                     "{index}{}",
                     "a".repeat(if partitioned { 640 } else { 2816 })
                 )),
             });
-            prior.push(ModelMessage {
+            messages.push(ModelMessage {
                 role: ModelRole::Assistant,
                 content: ModelContent::Text("b".repeat(64)),
             });
         }
+        // Historical messages precede the current input. Supplying them as an
+        // in-turn tail instead puts the tiny current input first, making that
+        // input alone a valid manager window even in the irreducible case.
+        let input_text = ModelContent::Text("Continue.".into());
+        messages.push(ModelMessage {
+            role: ModelRole::User,
+            content: input_text.clone(),
+        });
+        let input = TurnInput {
+            operation_id: OperationId::new(),
+            max_steps: None,
+            input: input_text,
+            selected_context: Some(SelectedModelContext {
+                selection: crate::conversation::ModelContextSelection {
+                    conversation_revision: messages.len() as u64,
+                    message_ids: (1..=messages.len())
+                        .map(|index| uuid::Uuid::from_u128(index as u128))
+                        .collect(),
+                    checkpoint: None,
+                },
+                messages,
+            }),
+        };
+        let history = &input.selected_context.as_ref().unwrap().messages;
         let execution = StockExecution::ordinary(&stock);
         let worker = async {
-            let events = execution.model_step(journal, &input, 0, &prior).await?;
+            let events = execution.model_step(journal, &input, 0, &[]).await?;
             assert_eq!(
                 overflowed.load(Ordering::SeqCst),
                 0,
                 "the original worker fits"
             );
             execution
-                .request_context_review(journal, &input, 0, &prior, original_metadata(&events))
+                .request_context_review(journal, &input, 0, &[], original_metadata(&events))
                 .await?;
             execution.review.completed.notified().await;
             assert!(
@@ -466,18 +491,18 @@ async fn reviews_bound_complete_groups_without_stopping_a_fitting_worker() -> Re
                     request
                         .messages
                         .iter()
-                        .any(|m| m.content == prior[0].content)
+                        .any(|m| m.content == history[0].content)
                 );
                 assert!(
                     !request
                         .messages
                         .iter()
-                        .any(|m| m.content == prior[6].content)
+                        .any(|m| m.content == history[6].content)
                 );
             }
-            execution.model_step(journal, &input, 1, &prior).await?;
+            execution.model_step(journal, &input, 1, &[]).await?;
             let request = provider.last_request().unwrap();
-            for message in &prior {
+            for message in history {
                 assert!(
                     request
                         .messages
@@ -493,9 +518,9 @@ async fn reviews_bound_complete_groups_without_stopping_a_fitting_worker() -> Re
         let paid = provider.request_count();
         let reopened = StockExecution::ordinary(&stock);
         let replay = async {
-            let events = reopened.model_step(journal, &input, 0, &prior).await?;
+            let events = reopened.model_step(journal, &input, 0, &[]).await?;
             reopened
-                .request_context_review(journal, &input, 0, &prior, original_metadata(&events))
+                .request_context_review(journal, &input, 0, &[], original_metadata(&events))
                 .await?;
             assert_eq!(
                 provider.request_count(),
