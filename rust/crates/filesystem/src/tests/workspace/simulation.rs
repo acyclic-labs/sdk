@@ -13,7 +13,7 @@ fn choice() -> u8 {
     byte[0]
 }
 
-async fn check<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
+pub(super) async fn check<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     workspace: &Workspace<A, O>,
     expected: &Image,
 ) -> Result<(), Box<dyn Error>> {
@@ -72,13 +72,11 @@ async fn join<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
 }
 
 async fn scenario(steps: usize) -> Result<(), Box<dyn Error>> {
-    let simulation = crate::Simulation::new();
-    let (authority, objects) = simulation.stores();
-    let fs = Fs::new(authority, objects, crate::EmbeddedCapabilities::MEMORY);
+    let fs = Fs::memory();
     let mut parent = unbounded!(fs, create_workspace("parent"))?;
     let mut expected = Image::new();
     for step in 0..steps {
-        let operation = choice() % 7;
+        let operation = choice() % 5;
         let path = format!("/file-{}", choice() % 4);
         let bytes = vec![choice(); 1 + usize::from(choice() % 32)];
         match operation {
@@ -98,22 +96,29 @@ async fn scenario(steps: usize) -> Result<(), Box<dyn Error>> {
                 let mut first = unbounded!(parent, begin_transaction(IdempotencyKey::new()))?;
                 let mut second = unbounded!(parent, begin_transaction(IdempotencyKey::new()))?;
                 unbounded!(first, write(&path, bytes.clone()))?;
-                unbounded!(second, write(&path, vec![choice(); 33]))?;
+                let second_bytes = vec![choice(); 33];
+                unbounded!(second, write(&path, second_bytes.clone()))?;
                 let reverse = choice() & 1 != 0;
-                let (winner, loser) = if reverse {
-                    (&mut second, &mut first)
+                let (first, second) = if reverse {
+                    let (second, first) = tokio::join!(commit(&mut second), commit(&mut first));
+                    (first?, second?)
                 } else {
-                    (&mut first, &mut second)
+                    let (first, second) = tokio::join!(commit(&mut first), commit(&mut second));
+                    (first?, second?)
                 };
-                let TransactionCommit::Committed(generation) = commit(winner).await? else {
-                    return Err("first conditional publication failed".into());
+                let (generation, winning) = match (first, second) {
+                    (
+                        TransactionCommit::Committed(generation),
+                        TransactionCommit::Conflict { .. },
+                    ) => (generation, bytes),
+                    (
+                        TransactionCommit::Conflict { .. },
+                        TransactionCommit::Committed(generation),
+                    ) => (generation, second_bytes),
+                    _ => return Err("racing publications did not elect exactly one winner".into()),
                 };
-                let winning = unbounded!(generation, read(&path, 256))?.as_ref().to_vec();
+                assert_eq!(unbounded!(generation, read(&path, 256))?.as_ref(), winning);
                 expected.insert(path, winning);
-                assert!(matches!(
-                    commit(loser).await?,
-                    TransactionCommit::Conflict { .. }
-                ));
             }
             2 => {
                 let base = unbounded!(parent, head())?;
@@ -173,7 +178,7 @@ async fn scenario(steps: usize) -> Result<(), Box<dyn Error>> {
                 ));
                 assert_eq!(unbounded!(parent, head())?.id(), before);
             }
-            4 => {
+            _ => {
                 // Crash after preparing an unpublished candidate: drop all
                 // caller state, then reopen through durable storage authority.
                 let mut transaction = unbounded!(parent, begin_transaction(IdempotencyKey::new()))?;
@@ -181,39 +186,6 @@ async fn scenario(steps: usize) -> Result<(), Box<dyn Error>> {
                 drop(transaction);
                 drop(parent);
                 parent = unbounded!(fs, open_workspace("parent"))?;
-            }
-            _ => {
-                let key = IdempotencyKey::new();
-                let mut transaction = unbounded!(parent, begin_transaction(key))?;
-                unbounded!(transaction, write(&path, bytes.clone()))?;
-                let before = unbounded!(parent, head())?.id();
-                let (operation, fault) = if operation == 5 {
-                    (
-                        crate::SimulationOperation::ObjectFlush,
-                        crate::SimulationFault::RejectBefore,
-                    )
-                } else {
-                    (
-                        crate::SimulationOperation::AuthorityAppend,
-                        crate::SimulationFault::AmbiguousAuthorityAppend,
-                    )
-                };
-                simulation.schedule_next(operation, fault)?;
-                let result = commit(&mut transaction).await;
-                drop(transaction);
-                drop(parent);
-                parent = unbounded!(fs, open_workspace("parent"))?;
-                let durable = unbounded!(parent, operation_generation(key))?;
-                if let Some(generation) = durable {
-                    assert_eq!(unbounded!(generation, read(&path, 256))?.as_ref(), bytes);
-                    expected.insert(path, bytes);
-                } else {
-                    assert!(
-                        result.is_err(),
-                        "successful commit disappeared after reopen"
-                    );
-                    assert_eq!(unbounded!(parent, head())?.id(), before);
-                }
             }
         }
         check(&parent, &expected).await?;

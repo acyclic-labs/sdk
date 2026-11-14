@@ -1,11 +1,10 @@
 # Filesystem deterministic simulation
 
-`workspace::simulation::seeded_volume_history` drives the production workspace,
+`workspace::tests::simulation::seeded_volume_history` drives the production workspace,
 transaction, fork, join and generation code over the real in-memory Streams and
-Objects implementations. Storage interception uses the existing filesystem
-`Simulation` adapter. Entropy, owned-task scheduling and boundary events come
-from `acyclic_native_runtime::testing::Schedule`; there is no subsystem clock,
-scheduler or random generator.
+Objects implementations. Entropy, owned-task scheduling and boundary events
+come from `acyclic_native_runtime::testing::Schedule`; there is no subsystem
+clock, scheduler, fault injector or random generator.
 
 The oracle is an independent map of acknowledged file contents. After every
 operation, both the current workspace and its independently reopened immutable
@@ -19,9 +18,6 @@ generation must agree with it. The obligations are:
   joins preserve parent resolutions of previously imported child changes.
 - Divergent edits conflict without changing the target generation.
 - Dropping an unpublished candidate changes no durable state.
-- A failed durability barrier publishes nothing; a lost acknowledgement is
-  reconciled by the original operation identity after reopening. A successful
-  commit must never be absent from that operation lookup.
 - Paged directory enumeration has exactly the oracle's names, including after
   a failed or abandoned publication.
 - Reading a native source file leaves it unresolved in the authored generation.
@@ -32,6 +28,17 @@ checkout and completion path. Each seeded range edit is checked against a byte
 array, and completion must publish that array. Retained commands must observe a
 subsequent external publication. This uses the existing mount source and command
 publication fixture without requiring a mounted kernel driver.
+
+`publication::commit_recovery::history::seeded_physical_crash_history` uses the
+existing cold-process driver with seeded multi-transaction histories. The
+production local backend runs eight atomic two-file publications. The shared
+Schedule cuts an original file operation before execution, after execution or
+after a torn prefix, and the process exits before releasing its acknowledgement.
+A separate process reopens the volume and reconciles the last operation by its
+original idempotency key. The whole namespace must match either the acknowledged
+map or the pending map, never a partial mixture. An acknowledged operation must
+retain its lookup identity. A new fork and join must succeed after recovery
+without losing previously committed files.
 
 The default test uses four seeds and sixteen operations per seed. Replay one
 seed with `ACYCLIC_FS_SEED=<seed> ACYCLIC_FS_SEEDS=1`. The separate deep target is
@@ -45,7 +52,8 @@ fixed incremental join ancestry that could overwrite a parent's resolution of
 an earlier child change. The simulator's incremental join operation exercises
 that class. A pre-fix seed result is required before claiming historical proof.
 
-Remaining coverage: physical crash/restart cuts and trace minimization are not
-yet established by this test. In-memory handle reopening is not physical crash
-durability proof. The existing `publication::commit_recovery` suite separately
-checks actual process termination at shared-core physical storage cuts.
+Shared-core integration still required: consume `testing::sweep` for standard
+`DST_SEED`/`DST_SEEDS` selection and trace minimization when its API is available.
+No subsystem sweep/minimization engine is introduced. Execution and timing
+evidence, including the historical negative/positive comparison, must be
+recorded before treating these obligations as proved.
