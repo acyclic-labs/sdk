@@ -34,6 +34,7 @@ async fn empty_ranges_preserve_native_presence_without_dispatch()
     let medium = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None).await?;
     assert!(medium.create("key", bytes(b"original")).await?);
     assert!(medium.create("empty", bytes(b"")).await?);
+    assert!(medium.create("a-longer-key", bytes(b"short")).await?);
     assert_eq!(medium.close().await?, LocalClose::Released);
     let medium = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None).await?;
 
@@ -62,6 +63,22 @@ async fn empty_ranges_preserve_native_presence_without_dispatch()
     assert_eq!(result?.as_deref(), Some(&b"rigi"[..]));
     assert_eq!(jobs, 1);
 
+    // A value no longer than its key is held by the replayed index: every
+    // range of it, and its observation, is answered without a job.
+    for range in [None, Some(1..4)] {
+        let (result, jobs) = counted(medium.read("a-longer-key", range.clone())).await;
+        let expected =
+            &b"short"[range.map_or(0..5, |range| range.start as usize..range.end as usize)];
+        assert_eq!(result?.as_deref(), Some(expected));
+        assert_eq!(jobs, 0, "held value dispatched a physical read");
+    }
+    let (observed, jobs) = counted(medium.observe("a-longer-key".to_owned())).await;
+    assert_eq!(
+        observed?.ok_or("held value absent")?.bytes.as_ref(),
+        b"short"
+    );
+    assert_eq!(jobs, 0, "held observation dispatched a physical read");
+
     // A writer holds the log over disk work. Presence and listings take one
     // path regardless: they read the index in the caller's first poll, so a
     // seeded schedule never branches on another thread's lock timing.
@@ -81,7 +98,11 @@ async fn empty_ranges_preserve_native_presence_without_dispatch()
         else {
             panic!("listing depended on the writer's log lock");
         };
-        assert_eq!(listed?, [("empty".to_owned(), 0), ("key".to_owned(), 8)]);
+        let expected = [("a-longer-key", 5), ("empty", 0), ("key", 8)];
+        assert_eq!(
+            listed?,
+            expected.map(|(key, length)| (key.to_owned(), length))
+        );
     }
 
     assert!(medium.remove("key").await?);
@@ -104,10 +125,44 @@ async fn empty_ranges_preserve_native_presence_without_dispatch()
     let account = LocalObjects::open(root.path(), LocalObjectsLimits::default(), None).await?;
     let (head, jobs) = counted(account.head(digest)).await;
     assert_eq!(head?.length, 8);
-    assert_eq!(jobs, 1, "HEAD dispatched beyond its original envelope read");
+    assert_eq!(jobs, 0, "HEAD read its held envelope from the log");
     let (head, jobs) = counted(account.head(crate::Digest::of(b"absent"))).await;
     assert_eq!(head.unwrap_err().code, crate::wire::ErrorCode::NotFound);
-    assert_eq!(jobs, 1, "missing envelope changed the native read path");
+    assert_eq!(jobs, 0, "a missing envelope dispatched a physical read");
+    assert_eq!(account.close().await?, LocalClose::Released);
+    Ok(())
+}
+
+/// GC-285: each new tree version re-admits every child, reading the child's
+/// envelope and probing its payload. Those reads are answered by the index,
+/// so publishing versions over a shared child reads nothing from the log.
+#[tokio::test]
+async fn new_versions_admit_their_children_without_reading_the_log()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::Blobs as _;
+
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let root = tempfile::tempdir()?;
+    let account = LocalObjects::open(root.path(), LocalObjectsLimits::default(), None).await?;
+    let child = account
+        .put(bytes(b"shared child"), Vec::new())
+        .await?
+        .verified()
+        .ok_or("child put outcome unknown")?
+        .digest;
+    let before = account.borrowed_medium().reads();
+    for version in 0..8_u8 {
+        account
+            .put(bytes(&[version]), vec![child])
+            .await?
+            .verified()
+            .ok_or("parent put outcome unknown")?;
+    }
+    assert_eq!(
+        account.borrowed_medium().reads() - before,
+        0,
+        "admitting a held child read the log"
+    );
     assert_eq!(account.close().await?, LocalClose::Released);
     Ok(())
 }
