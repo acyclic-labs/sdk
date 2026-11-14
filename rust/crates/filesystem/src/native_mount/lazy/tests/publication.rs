@@ -57,8 +57,8 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
         view.lazy
             .content_changed_at_snapshots(&unchanged_before, &unchanged_after, &mut accounting,)
             .await?,
-        None,
-        "source identity promotion invented complete alias coverage"
+        Some(false),
+        "publishing identical bytes must preserve unchanged logical content"
     );
     let created = mounted(&["created"]);
     view.create_file(&created, FileMetadata::default(), None, &work)?;

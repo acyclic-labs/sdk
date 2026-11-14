@@ -792,7 +792,13 @@ async fn list_objects_lazy<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore
                 name_prefix,
                 after,
             } => {
-                let page_limit = LIST_PAGE_ENTRIES.min(options.maximum_keys.saturating_add(1));
+                let remaining = maximum
+                    .saturating_sub(result.objects.len() + result.common_prefixes.len());
+                let page_limit = LIST_PAGE_ENTRIES.min(
+                    u32::try_from(remaining)
+                        .map_err(|_| S3Error::InvalidObject)?
+                        .saturating_add(1),
+                );
                 let page = checkout
                     .list_directory_records(
                         &path,
