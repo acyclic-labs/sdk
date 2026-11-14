@@ -39,7 +39,7 @@ fn persistent_generated_histories() -> Result<(), &'static str> {
                     let items = work.items;
                     let claims = work.claims;
                     let next = view
-                        .insert(key.to_be_bytes(), value, &mut work)
+                        .insert(&key.to_be_bytes(), value, &mut work)
                         .map_err(TestCaseError::fail)?;
                     // Two search paths plus two admitted child minima at each
                     // copied branch; coordinates strictly increase within u64.
@@ -69,7 +69,7 @@ fn persistent_generated_histories() -> Result<(), &'static str> {
                             );
                             prop_assert!(work.items - items <= 65 * 58);
                             let actual = history
-                                .exact_position(query.to_be_bytes(), &mut work)
+                                .exact_position(&query.to_be_bytes(), &mut work)
                                 .map_err(TestCaseError::fail)?
                                 .map(|position| *position.value);
                             prop_assert_eq!(actual, expected.get(&query).copied());
@@ -99,7 +99,7 @@ fn persistent_physical_retirement() -> Result<(), &'static str> {
         result = (|| {
             let mut history = PersistentIndex::default();
             for key in 0_u64..256 {
-                history = history.insert(key.to_be_bytes(), key, &mut work)?;
+                history = history.insert(&key.to_be_bytes(), key, &mut work)?;
                 assert_eq!(
                     work.live_bytes(),
                     acyclic_test_support::current_allocations()
@@ -112,7 +112,7 @@ fn persistent_physical_retirement() -> Result<(), &'static str> {
             let live = work.live.get();
             for claims in 0..=8 {
                 work.maximum_claims = Some(work.claims + claims);
-                let attempt = history.insert(200_u64.to_be_bytes(), 999, &mut work);
+                let attempt = history.insert(&200_u64.to_be_bytes(), 999, &mut work);
                 if claims == 0 {
                     assert!(matches!(attempt, Err("allocation refused")));
                 }
@@ -136,13 +136,13 @@ fn persistent_physical_retirement() -> Result<(), &'static str> {
             }
             for items in [0, 1, 32, 128] {
                 work.maximum_items = Some(work.items + items);
-                drop(history.insert(200_u64.to_be_bytes(), 999, &mut work));
+                drop(history.insert(&200_u64.to_be_bytes(), 999, &mut work));
                 assert_eq!(work.live.get(), live);
                 work.maximum_items = None;
             }
             work.cancelled = true;
             assert!(history.predecessor(0_u64.to_be_bytes(), &mut work).is_err());
-            assert!(history.insert(0_u64.to_be_bytes(), 1, &mut work).is_err());
+            assert!(history.insert(&0_u64.to_be_bytes(), 1, &mut work).is_err());
             drop(original);
             drop(history);
             Ok(())
@@ -163,11 +163,11 @@ fn persistent_physical_retirement() -> Result<(), &'static str> {
 fn spine<const N: usize>(height: usize) -> Result<usize, &'static str> {
     let mut work = Work::default();
     let mut tree = PersistentIndex::<usize, Allocation, N>::default();
-    tree = tree.insert([0; N], 0, &mut work)?;
+    tree = tree.insert(&[0; N], 0, &mut work)?;
     for bit in 0..height {
         let mut key = [0; N];
         key[bit / 8] = 0x80 >> (bit % 8);
-        tree = tree.insert(key, bit + 1, &mut work)?;
+        tree = tree.insert(&key, bit + 1, &mut work)?;
     }
     let depth = tree.depth();
     drop(tree);

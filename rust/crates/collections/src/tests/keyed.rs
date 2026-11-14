@@ -49,7 +49,7 @@ fn keyed_generated_histories() -> Result<(), &'static str> {
                     };
                     prop_assert_eq!(work.claims, claims);
                     let next = view
-                        .insert(key.to_be_bytes(), sequence, value, &mut work)
+                        .insert(&key.to_be_bytes(), sequence, value, &mut work)
                         .map_err(TestCaseError::fail)?;
                     prop_assert!(work.claims - claims <= 130);
                     let bound = view.insertion_bound(1).unwrap();
@@ -138,16 +138,17 @@ fn keyed_global_cut_negative() -> Result<(), &'static str> {
         result[8..].copy_from_slice(&sequence.to_be_bytes());
         result
     };
-    let old = PersistentIndex::default().insert(composite(0, 9), 9, &mut work)?;
+    let old = PersistentIndex::default().insert(&composite(0, 9), 9, &mut work)?;
     assert!(
         old.prefix(composite(1, 5))
             .predecessor(composite(0, 9), &mut work)?
             .is_some()
     );
-    let original = KeyedIndex::<_, _, 8>::default().insert(0_u64.to_be_bytes(), 9, 9, &mut work)?;
+    let original =
+        KeyedIndex::<_, _, 8>::default().insert(&0_u64.to_be_bytes(), 9, 9, &mut work)?;
     let corrected = original
         .cap(5)
-        .insert(1_u64.to_be_bytes(), 5, 5, &mut work)?;
+        .insert(&1_u64.to_be_bytes(), 5, 5, &mut work)?;
     assert_eq!(corrected.seek(0_u64.to_be_bytes(), 0, 20, &mut work)?, None);
     assert_eq!(
         corrected.seek(1_u64.to_be_bytes(), 0, 20, &mut work)?,
@@ -170,7 +171,7 @@ fn keyed_population_work() -> Result<(), &'static str> {
             result = (|| {
                 let mut index = KeyedIndex::<_, _, 8>::default();
                 for key in 0..population {
-                    index = index.insert(key.to_be_bytes(), 7, key, &mut work)?;
+                    index = index.insert(&key.to_be_bytes(), 7, key, &mut work)?;
                 }
                 assert_eq!(
                     work.live_bytes(),
@@ -198,13 +199,13 @@ fn keyed_population_work() -> Result<(), &'static str> {
                 let live = work.live.get();
                 for additional in 0..=16 {
                     work.maximum_claims = Some(work.claims + additional);
-                    drop(capped.insert(0_u64.to_be_bytes(), 8, 999, &mut work));
+                    drop(capped.insert(&0_u64.to_be_bytes(), 8, 999, &mut work));
                     work.maximum_claims = None;
                     assert_eq!(work.live.get(), live);
                 }
                 for additional in [0, 1, 32, 128, 1024] {
                     work.maximum_items = Some(work.items + additional);
-                    drop(capped.insert(0_u64.to_be_bytes(), 8, 999, &mut work));
+                    drop(capped.insert(&0_u64.to_be_bytes(), 8, 999, &mut work));
                     work.maximum_items = None;
                     assert_eq!(work.live.get(), live);
                 }
@@ -213,7 +214,7 @@ fn keyed_population_work() -> Result<(), &'static str> {
                 assert!(index.seek(0_u64.to_be_bytes(), 8, 8, &mut work).is_err());
                 assert!(
                     index
-                        .insert(0_u64.to_be_bytes(), 8, 999, &mut work)
+                        .insert(&0_u64.to_be_bytes(), 8, 999, &mut work)
                         .is_err()
                 );
                 drop((index, capped, fork));
@@ -306,9 +307,9 @@ fn keyed_wide_path_retirement() -> Result<(), &'static str> {
     let measured = acyclic_test_support::measure(|| {
         result = (|| {
             let zero = binary_key::<1032, _>(&[0; 1024], &mut work).unwrap();
-            let mut index = KeyedIndex::default().insert(zero, 0, 0, &mut work)?;
+            let mut index = KeyedIndex::default().insert(&zero, 0, 0, &mut work)?;
             let items = work.items;
-            drop(index.insert(zero, 0, 0, &mut work)?);
+            drop(index.insert(&zero, 0, 0, &mut work)?);
             assert!(work.items - items <= 2 * 1032 + 8 + 5);
             let items = work.items;
             assert_eq!(index.seek(zero, 0, 1, &mut work)?, Some((0, &0)));
@@ -329,7 +330,7 @@ fn keyed_wide_path_retirement() -> Result<(), &'static str> {
                 let bound = index.insertion_bound(1).unwrap();
                 let claimed = work.claimed_bytes;
                 let items = work.items;
-                index = index.insert(key, 9, bit + 1, &mut work)?;
+                index = index.insert(&key, 9, bit + 1, &mut work)?;
                 assert!(work.claimed_bytes - claimed <= bound.allocation_bytes);
                 assert!(work.items - items <= bound.examined_items);
             }
@@ -338,13 +339,13 @@ fn keyed_wide_path_retirement() -> Result<(), &'static str> {
             let claimed = work.claimed_bytes;
             let items = work.items;
             work.maximum_items = Some(items + bound.examined_items);
-            index = index.insert(zero, 0, 8888, &mut work)?;
+            index = index.insert(&zero, 0, 8888, &mut work)?;
             assert!(work.claimed_bytes - claimed <= bound.allocation_bytes);
             assert!(work.items - items <= bound.examined_items);
             work.maximum_items = None;
             assert_eq!(index.seek(zero, 0, 1, &mut work)?, Some((0, &8888)));
             assert_eq!(original.seek(zero, 0, 1, &mut work)?, Some((0, &0)));
-            index = index.cap(1).insert(zero, 1, 9999, &mut work)?;
+            index = index.cap(1).insert(&zero, 1, 9999, &mut work)?;
             let items = work.items;
             assert_eq!(index.seek(zero, 1, 2, &mut work)?, Some((1, &9999)));
             assert!(work.items - items <= 9 * 1032 + 1 + 3 * 65 * 60);

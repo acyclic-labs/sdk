@@ -31,7 +31,7 @@ impl<V, const N: usize> PersistentIndex<V, N> {
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Self, FsError> {
         self.0
-            .insert(key, value, &mut IndexAccounting(accounting))
+            .insert(&key, value, &mut IndexAccounting(accounting))
             .map(Self)
     }
 }

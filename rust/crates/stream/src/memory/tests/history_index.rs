@@ -410,7 +410,7 @@ async fn pinned_ranges_preserve_cold_bounds_cuts_and_original_admission() -> Tes
             Ordering::SeqCst,
         );
         let next = selected_state.ranges.insert(
-            20_u64.to_be_bytes(),
+            &20_u64.to_be_bytes(),
             Arc::clone(records),
             &mut HistoryIndexWork(&admitted),
         );

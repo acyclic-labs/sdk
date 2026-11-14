@@ -63,7 +63,7 @@ impl KeyTree {
                         acyclic_collections::BinaryKeyError::Work(error) => error,
                         _ => StreamError::InvalidArgument,
                     })?;
-                tree = tree.insert(key, records.start + index as u64, (), work)?;
+                tree = tree.insert(&key, records.start + index as u64, (), work)?;
                 changed = true;
             }
         }

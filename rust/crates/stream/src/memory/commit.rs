@@ -222,7 +222,7 @@ impl MemoryStream {
             && before.is_none_or(|before| records.start < before)
         {
             ranges = ranges.insert(
-                records.start.to_be_bytes(),
+                &records.start.to_be_bytes(),
                 Arc::clone(records),
                 &mut HistoryIndexWork(self),
             )?;

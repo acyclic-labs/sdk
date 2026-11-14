@@ -298,19 +298,29 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
         }
     }
 
+    // Never inlined: the body is assembled in this frame before it moves to
+    // the heap, so callers' frames stay independent of the key width. Without
+    // `minimum`, a branch takes its low child's minimum.
+    #[inline(never)]
     fn node<W: IndexWork<Allocation = A>>(
-        minimum: [u8; N],
+        minimum: Option<&[u8; N]>,
         kind: Kind<V, A, N, C>,
         work: &mut W,
     ) -> Result<Self, W::Error> {
         let allocation = work.claim(arc_allocation_bytes::<Body<V, A, N, C>>() as u64)?;
-        let depth = match &kind {
-            Kind::Leaf(_) => 0,
-            Kind::Branch { low, high, .. } => 1 + low.depth().max(high.depth()),
+        let (depth, inherited) = match &kind {
+            Kind::Leaf(_) => (0, None),
+            Kind::Branch { low, high, .. } => (
+                1 + low.depth().max(high.depth()),
+                low.body().map(|body| &body.minimum),
+            ),
+        };
+        let Some(minimum) = minimum.or(inherited) else {
+            unreachable!("a leaf names its key and a joined branch has a low child")
         };
         Ok(Self {
             root: Some(Node(Some(Arc::new(Body {
-                minimum,
+                minimum: *minimum,
                 depth,
                 kind,
                 _allocation: allocation,
@@ -329,15 +339,13 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
         match (low.visible_body(work)?, high.visible_body(work)?) {
             (None, _) => Ok(high),
             (_, None) => Ok(low),
-            (Some(low_body), Some(_)) => {
-                Self::node(low_body.minimum, Kind::Branch { bit, low, high }, work)
-            }
+            (Some(_), Some(_)) => Self::node(None, Kind::Branch { bit, low, high }, work),
         }
     }
 
     pub(crate) fn exact_position<W: IndexReadWork>(
         &self,
-        key: [u8; N],
+        key: &[u8; N],
         work: &mut W,
     ) -> Result<Option<Position<'_, V, N, C>>, W::Error> {
         work.validate()?;
@@ -347,7 +355,7 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
         loop {
             if let Some(cut) = cursor.before {
                 work.examine(N as u64)?;
-                if key >= cut {
+                if *key >= cut {
                     return Ok(None);
                 }
                 if before.is_some() {
@@ -365,7 +373,7 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
             match &body.kind {
                 Kind::Leaf(value) => {
                     work.examine(N as u64)?;
-                    return Ok((body.minimum == key).then_some(Position {
+                    return Ok((body.minimum == *key).then_some(Position {
                         key: &body.minimum,
                         value,
                         before,
@@ -377,7 +385,7 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
                     low,
                     high: upper,
                 } => {
-                    cursor = if high(&key, *bit) { upper } else { low };
+                    cursor = if high(key, *bit) { upper } else { low };
                 }
             }
         }
@@ -501,7 +509,7 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
     /// Each allocated node retains the original issuing owner's funding.
     pub fn insert<W: IndexWork<Allocation = A>>(
         &self,
-        key: [u8; N],
+        key: &[u8; N],
         value: V,
         work: &mut W,
     ) -> Result<Self, W::Error> {
@@ -512,7 +520,7 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
             match &body.kind {
                 Kind::Leaf(_) => {
                     work.charge_items(N as u64)?;
-                    differing = difference(&body.minimum, &key);
+                    differing = difference(&body.minimum, key);
                     break;
                 }
                 Kind::Branch {
@@ -523,11 +531,11 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
                     // The original uncut shape locates the differing bit. Cuts
                     // propagate to retained children when the new path is built.
                     work.charge_items(1)?;
-                    cursor = if high(&key, *bit) { upper } else { low }.body();
+                    cursor = if high(key, *bit) { upper } else { low }.body();
                 }
             }
         }
-        let leaf = Self::node(key, Kind::Leaf(value), work)?;
+        let leaf = Self::node(Some(key), Kind::Leaf(value), work)?;
         let mut view = self.clone();
         let mut result = Self::default();
         let mut destination = &mut result;
@@ -547,10 +555,14 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
                 } if differing.is_none_or(|difference| *bit < difference) => {
                     work.charge_items(2 * N as u64)?;
                     let bit = *bit;
-                    let minimum = body.minimum.min(key);
+                    let minimum = if body.minimum <= *key {
+                        &body.minimum
+                    } else {
+                        key
+                    };
                     let low = view.child(low);
                     let upper = view.child(upper);
-                    let selected_high = high(&key, bit);
+                    let selected_high = high(key, bit);
                     let (selected, sibling) = if selected_high {
                         (upper, low)
                     } else {
@@ -566,7 +578,8 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
                     } else {
                         (Self::default(), sibling)
                     };
-                    *destination = Self::node(minimum, Kind::Branch { bit, low, high }, work)?;
+                    *destination =
+                        Self::node(Some(minimum), Kind::Branch { bit, low, high }, work)?;
                     let (_, _, low, high) = destination.unpublished_branch();
                     destination = if selected_high { high } else { low };
                     view = selected;
@@ -574,7 +587,7 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
                 _ => {
                     *destination = match differing {
                         None => leaf,
-                        Some(bit) if high(&key, bit) => Self::branch(bit, view, leaf, work)?,
+                        Some(bit) if high(key, bit) => Self::branch(bit, view, leaf, work)?,
                         Some(bit) => Self::branch(bit, leaf, view, work)?,
                     };
                     break;
@@ -590,7 +603,7 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
         for _ in 0..copied {
             work.charge_items(1)?;
             let (_, bit, low, upper) = cursor.unpublished_branch();
-            let child = std::mem::replace(if high(&key, *bit) { upper } else { low }, above);
+            let child = std::mem::replace(if high(key, *bit) { upper } else { low }, above);
             above = std::mem::replace(&mut cursor, child);
         }
         let mut height = cursor.depth();
@@ -600,7 +613,7 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
             // A copied branch holds one plus its sibling's depth.
             height = (*depth).max(1 + height);
             *depth = height;
-            let parent = std::mem::replace(if high(&key, *bit) { upper } else { low }, cursor);
+            let parent = std::mem::replace(if high(key, *bit) { upper } else { low }, cursor);
             cursor = std::mem::replace(&mut above, parent);
         }
         Ok(cursor)

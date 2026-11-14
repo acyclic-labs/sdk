@@ -196,7 +196,7 @@ impl<V, A, const N: usize> KeyedIndex<V, A, N> {
         let mut key = if descending { range.last } else { range.first };
         loop {
             let position = if range.first == range.last {
-                self.keys.exact_position(key, work)?
+                self.keys.exact_position(&key, work)?
             } else if descending {
                 self.keys.predecessor_position(key, work)?
             } else {
@@ -252,7 +252,7 @@ impl<V, A, const N: usize> KeyedIndex<V, A, N> {
     /// success, cancellation or refusal. The supplied value is moved once.
     pub fn insert<W: IndexWork<Allocation = A>>(
         &self,
-        key: [u8; N],
+        key: &[u8; N],
         sequence: u64,
         value: V,
         work: &mut W,
@@ -264,7 +264,7 @@ impl<V, A, const N: usize> KeyedIndex<V, A, N> {
             ),
             _ => PersistentIndex::default(),
         };
-        let entries = entries.insert(sequence.to_be_bytes(), value, work)?;
+        let entries = entries.insert(&sequence.to_be_bytes(), value, work)?;
         self.keys
             .insert(key, entries, work)
             .map(|keys| Self { keys })
