@@ -122,6 +122,56 @@ class HarborContracts(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "inherited agent env"):
             GraphCoder(**self.kwargs, extra_env={"FIXTURE_TOKEN": "not-a-real-key"})
 
+    async def test_uploaded_binary_identity_uses_version_not_filename(self):
+        uploaded = self.root / "uploaded executable"
+
+        class ExecutingEnvironment(Environment):
+            async def upload_file(self, source, target):
+                await super().upload_file(source, target)
+                if target.endswith("/graphcoder"):
+                    uploaded.write_bytes(self.uploads[target])
+
+            async def exec(self, command, **kwargs):
+                if "sha256sum" in command or shlex.split(command)[-1] == "--version":
+                    self.commands.append(command)
+                    command = command.replace(shlex.quote(agent.binary), shlex.quote(str(uploaded)))
+                    child = await asyncio.create_subprocess_exec(
+                        "bash", "-ec", command,
+                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                    stdout, stderr = await child.communicate()
+                    return SimpleNamespace(return_code=child.returncode,
+                                           stdout=stdout.decode(), stderr=stderr.decode())
+                return await super().exec(command, **kwargs)
+
+        for filename, version in (("graphcoder", "graphcoder 1.2.3"),
+                                  ("acyclic", "graphcoder 1.2.3"),
+                                  ("build ' artifact", "graphcoder 1.2.3"),
+                                  ("graphcoder", "acyclic 1.2.3"),
+                                  ("graphcoder", "graphcoder"),
+                                  ("graphcoder", "graphcoder 1.2.3\nacyclic 1.2.3")):
+            with self.subTest(filename=filename, version=version):
+                binary = self.root / filename
+                contents = ("#!/bin/sh\nprintf '%s\\n' " + shlex.quote(version) + "\n").encode()
+                binary.write_bytes(contents)
+                agent = GraphCoder(**{**self.kwargs, "graphcoder_binary": str(binary),
+                    "graphcoder_sha256": hashlib.sha256(contents).hexdigest()})
+                # Setup must inspect its captured upload, not a changed source path.
+                binary.write_bytes(b"replaced after capture")
+                environment = ExecutingEnvironment()
+                if version == "graphcoder 1.2.3":
+                    await agent.setup(environment)
+                    await agent.run("hello", environment, None)
+                else:
+                    with self.assertRaisesRegex(ValueError, "expected graphcoder <version>") as error:
+                        await agent.setup(environment)
+                    self.assertIn(str(binary), str(error.exception))
+                    self.assertIn(agent.binary, str(error.exception))
+                    self.assertIn(repr(version + "\n"), str(error.exception))
+                    self.assertNotIn("doctor", environment.commands[-1])
+                    with self.assertRaisesRegex(RuntimeError, "not installed"):
+                        await agent.run("hello", environment, None)
+                self.assertEqual(environment.uploads[agent.binary], contents)
+
     async def test_task_skills_are_project_files_and_copy_failure_revokes_execution(self):
         skills = self.root / "task skills' $(false)"
         files = {

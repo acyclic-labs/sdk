@@ -1,6 +1,7 @@
 """Harbor installed agent using immutable, prebuilt GraphCoder artifacts."""
 
 import json
+import re
 import shlex
 import tempfile
 import uuid
@@ -32,6 +33,7 @@ class GraphCoder(BaseInstalledAgent):
                  output_tokens: int, adapter: str | None = None,
                  providers: list[dict] | None = None, **kwargs):
         self.artifact = Artifact.read(graphcoder_binary, graphcoder_sha256, source_sha)
+        self.artifact_path = graphcoder_binary
         if kwargs.get("version") not in (None, source_sha):
             raise ValueError("GraphCoder version must be the artifact source SHA")
         kwargs["version"] = source_sha
@@ -78,9 +80,13 @@ class GraphCoder(BaseInstalledAgent):
             await self.exec_as_root(environment, command="chown -R " + shlex.join([
                 str(environment.default_user), self.state]))
         # Even --version sees only this trial's fixture environment.
-        await self.exec_as_agent(environment, command=shlex.join([
+        version = await self.exec_as_agent(environment, command=shlex.join([
             "env", "-i", "PATH=/usr/bin:/bin", "HOME=" + self.state + "/home",
             "CODEX_HOME=" + self.state + "/fixture-codex", self.binary, "--version"]))
+        if re.fullmatch(r"graphcoder \S+\n?", version.stdout) is None:
+            raise ValueError(f"expected graphcoder <version> from {self.artifact_path!r} "
+                             f"(uploaded to {self.binary!r}); "
+                             f"received {version.stdout!r}")
         # GraphCoder's own startup checks list every missing prerequisite at once.
         await self.exec_as_agent(environment, command=doctor_command(
             self.binary, self.state, self.model_name, compaction=self.compaction))
