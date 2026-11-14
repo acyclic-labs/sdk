@@ -564,6 +564,8 @@ async fn named_head<P: StreamProvider + ?Sized>(
     path: StreamPath,
     projection: HeadProjection,
 ) -> Result<PathHead, StreamError> {
+    #[cfg(feature = "serde")]
+    let diagnostic = crate::trace::is_source(&path);
     let request = HeadsRequest {
         at: None,
         retained: Default::default(),
@@ -574,7 +576,32 @@ async fn named_head<P: StreamProvider + ?Sized>(
         limit: 1,
         at_least: Default::default(),
     };
-    let mut view = provider.heads(request.clone()).await?;
-    view.validate_for(&request)?;
-    view.heads.pop().flatten().ok_or(StreamError::NotFound)
+    let work = async {
+        let mut view = provider.heads(request.clone()).await?;
+        view.validate_for(&request)?;
+        view.heads.pop().flatten().ok_or(StreamError::NotFound)
+    };
+    #[cfg(feature = "serde")]
+    if !diagnostic {
+        let (name, guarantee) = match projection {
+            HeadProjection::History => ("stream.head", "atomic_history_durability_origin"),
+            HeadProjection::Tail => ("stream.tail", "accepted_tail_without_durability_wait"),
+            HeadProjection::Watermarks => (
+                "stream.watermarks",
+                "accepted_visibility_and_confirmed_durability_at_one_snapshot",
+            ),
+        };
+        return crate::trace::observe(
+            crate::trace::Request {
+                name,
+                mechanism: crate::trace::Mechanism::ProviderCall,
+                parent: None,
+                guarantee: Some(guarantee),
+            },
+            work,
+            |_| None,
+        )
+        .await;
+    }
+    work.await
 }

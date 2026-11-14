@@ -793,6 +793,7 @@ mod indexed_trace_tests {
                 Default::default(),
             )
             .await?;
+        let original_head = provider.head(data.path().clone()).await?;
         let trace = Stream::new(provider.clone(), "agents/worker/trace")?;
         let recorder = Arc::new(Recorder::new(trace.clone(), [51; 16]));
         let root = recorder
@@ -805,6 +806,21 @@ mod indexed_trace_tests {
             .await?
             .into_owned();
         let parent = root.id();
+        assert_eq!(root.within(data.head()).await?, original_head);
+        assert_eq!(
+            root.within(provider.head(data.path().clone())).await?,
+            original_head
+        );
+        assert_eq!(
+            root.within(provider.tail(data.path().clone())).await?,
+            original_head.tail
+        );
+        let watermarks = root
+            .within(provider.watermarks(data.path().clone()))
+            .await?;
+        assert_eq!(watermarks.accepted, original_head.tail);
+        assert_eq!(watermarks.durable, original_head.durable);
+        root.within(provider.head(trace.path().clone())).await?;
         let (selected, condition) = root
             .within(provider.latest_fenced(
                 data.path().clone(),
@@ -852,7 +868,8 @@ mod indexed_trace_tests {
         let mut fence = false;
         let mut request = false;
         let mut indexed_bytes = Vec::new();
-        while completed < 4 {
+        let mut projections = std::collections::BTreeMap::new();
+        while completed < 8 {
             let Some(observation) = query.next().await? else {
                 return Err("trace ended before original request hops settled".into());
             };
@@ -890,6 +907,16 @@ mod indexed_trace_tests {
                         );
                         indexed_bytes.push(bytes);
                     }
+                    "stream.head" | "stream.tail" | "stream.watermarks" => {
+                        let guarantee = match start.name.as_str() {
+                            "stream.head" => "atomic_history_durability_origin",
+                            "stream.tail" => "accepted_tail_without_durability_wait",
+                            _ => "accepted_visibility_and_confirmed_durability_at_one_snapshot",
+                        };
+                        assert_eq!(start.guarantee.as_deref(), Some(guarantee));
+                        assert_eq!(bytes, None);
+                        *projections.entry(start.name).or_insert(0) += 1;
+                    }
                     name => panic!("unexpected indexed request hop: {name}"),
                 }
             }
@@ -897,9 +924,12 @@ mod indexed_trace_tests {
         assert!(fence && request);
         indexed_bytes.sort();
         assert_eq!(indexed_bytes, [Some(0), Some(8)]);
+        assert_eq!(projections["stream.head"], 2);
+        assert_eq!(projections["stream.tail"], 1);
+        assert_eq!(projections["stream.watermarks"], 1);
         assert_eq!(
             trace.tail().await?,
-            8,
+            16,
             "zero cuts and diagnostic reads must not emit provider work"
         );
         assert_eq!(
@@ -914,7 +944,7 @@ mod indexed_trace_tests {
         );
         assert_eq!(
             trace.tail().await?,
-            8,
+            16,
             "the request owner must not leak into unrelated work"
         );
         Ok(())
