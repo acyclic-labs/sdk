@@ -884,7 +884,13 @@ async fn lost_ack_keeps_participant_and_replays_the_sealed_request_once() -> Res
 /// A raw Streams fork inherits bytes, not the source's settlement obligation.
 #[tokio::test]
 async fn copied_actors_leave_committed_custody_with_the_source() -> Result<(), Failure> {
-    for settled in [false, true] {
+    copied_custody([false, true]).await
+}
+
+pub(super) async fn copied_custody(
+    settlements: impl IntoIterator<Item = bool>,
+) -> Result<(), Failure> {
+    for settled in settlements {
         let provider = Arc::new(Faulty {
             inner: MemoryStream::default(),
             plan: vec![Fault::None, Fault::None, Fault::LoseAck],
@@ -1118,7 +1124,13 @@ async fn participant_cannot_remove_the_actor_fence_before_submission() -> Result
 #[tokio::test]
 async fn composition_extends_activation_prefix_but_cannot_rewrite_it_or_grow_actor_state()
 -> Result<(), Failure> {
-    for mode in [3, 4, 5] {
+    activation_extensions([3, 4, 5]).await
+}
+
+pub(super) async fn activation_extensions(
+    modes: impl IntoIterator<Item = u8>,
+) -> Result<(), Failure> {
+    for mode in modes {
         let provider = Arc::new(Faulty {
             inner: MemoryStream::default(),
             plan: Vec::new(),
