@@ -78,11 +78,14 @@ impl PauseBeforeReply {
                     let harness = harness
                         .upgrade()
                         .ok_or_else(|| Error::Storage("reply pause host closed".into()))?;
+                    eprintln!("scripted parent pause: selecting host");
                     let (agents, _) = harness.agents().await?;
+                    eprintln!("scripted parent pause: starting control");
                     agents
                         .pause(&parent, true)
                         .await
                         .map_err(|error| Error::Storage(error.to_string()))?;
+                    eprintln!("scripted parent pause: control completed");
                 }
                 Ok(())
             })
