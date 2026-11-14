@@ -109,7 +109,7 @@ async fn create_filesystem_root(
 ) -> Result<AgentPath> {
     use acyclic_harness_core::filesystem::hosting::{Prepared, RootSubmission};
     let spawn = agents.prepare_root(intent, adoption, false)?;
-    let prepared = Prepared::prepare(files, spawn, &[], None).await?;
+    let prepared = Prepared::prepare(files, spawn, &[], None, None).await?;
     match prepared.submit(files, agents).await? {
         RootSubmission::Created(path) => Ok(path),
         RootSubmission::Unknown(_) => Err("root publication is unknown".into()),
