@@ -64,9 +64,11 @@ physical root reopening.
 
 ## Execution and remaining proof
 
-The default tests run four seeds with bounded histories. The separate ignored
-`deep_` tests enumerate 4096 seeds and are intended only for idle workers.
-Neither sweep is a substitute for historical negative controls.
+Every driver runs through `testing::sweep`: the default run takes four seeds
+(two for the physical fault scenarios, each over three faults) and stays in the
+fast suite. `DST_SEEDS=0..4096` runs a deep sweep of the same named test on an
+idle worker, and `DST_SEED=<n>` replays the reported failing seed. Neither sweep
+is a substitute for historical negative controls.
 
 Historical targets are the shared scheduling-shard composition fix
 `fe83ab67b5c` (pre-fix `88ea479eabc9f73daaebc248cfdac5026b2a1720`) and copied
@@ -80,7 +82,7 @@ corresponding exact pre-fix source and requires an executed failing test.
 Compiler failures and zero-test selections are rejected. The output names
 both the product source revision and the revision supplying the test overlay.
 
-The shared core owner is adding `testing::sweep` for seed selection/replay and
-trace minimization. These drivers will consume it when available. Their small
-boundary adapters only release Schedule's permits and join its owned work;
-they add no executor, clock, RNG or fault mechanism.
+Seed selection, replay and failure reporting come from the shared core's
+`testing::sweep`. The drivers' small boundary adapters only release Schedule's
+permits and join its owned work; they add no executor, clock, RNG or fault
+mechanism.

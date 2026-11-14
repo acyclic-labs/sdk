@@ -30,7 +30,7 @@ run_case() {
         # nothing. Require this specific seeded test to have executed and failed.
         if [[ "$result" == 0 ]]; then return 1; fi
         rg -q 'test result: FAILED\. 0 passed; 1 failed' "$log"
-        rg -q 'seed=0' "$log"
+        rg -q 'failed at seed [0-9]+; reproduce with DST_SEED=' "$log"
     fi
     printf 'ACTORS_HISTORY revision=%s overlay=%s test=%s expected=%s exit=%s\n' \
         "$revision" "$source_sha" "$test" "$expected" "$result"
@@ -47,6 +47,12 @@ for before in "$shard_before" "$custody_before"; do
     snapshot="$scratch/$before"
     git -C "$source_root" worktree add --detach "$snapshot" "$before"
     snapshots+=("$snapshot")
+    # The drivers report through the shared core's sweep, which postdates both.
+    testing=rust/crates/native-runtime/src/testing
+    cp "$source_root/$testing/sweep.rs" "$snapshot/$testing/sweep.rs"
+    printf '
+pub mod sweep;
+' >> "$snapshot/$testing.rs"
 done
 
 runtime=rust/crates/actors/src/local/runtime

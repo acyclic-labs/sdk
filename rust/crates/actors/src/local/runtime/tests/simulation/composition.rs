@@ -1,7 +1,10 @@
 //! A parent turn creates two children whose activation appends coalesce.
 use super::*;
 use crate::guest::{Composer, Composition, Delivery, GuestError, Participant};
-use acyclic_native_runtime::testing::{Schedule, fill_seeded, seeded_runtime};
+use acyclic_native_runtime::testing::{
+    Schedule, fill_seeded, seeded_runtime,
+    sweep::{seeds, sweep},
+};
 
 struct Children {
     parent: ActorReference,
@@ -209,20 +212,19 @@ async fn history() -> TestResult {
 
 #[test]
 fn seeded_children_share_one_activation_shard() -> TestResult {
-    for seed in [0, 1, 7, 42] {
-        eprintln!("seed={seed}");
-        seeded_runtime(seed)?.block_on(async {
+    sweep("actors-composition", seeds(0..4), |seed| {
+        seeded_runtime(seed).map_err(|error| error.to_string())?.block_on(async {
             tokio::time::pause();
             let (schedule, mut boundaries) = Schedule::seeded(seed);
             let turn = schedule.scope(history());
             tokio::pin!(turn);
             loop {
                 tokio::select! {
-                    result = &mut turn => return result,
+                    result = &mut turn => return result.map_err(|error| error.to_string()),
                     boundary = boundaries.recv() => boundary.ok_or("boundary channel closed")?.release(),
                 }
             }
-        })?;
-    }
+        })
+    })?;
     Ok(())
 }

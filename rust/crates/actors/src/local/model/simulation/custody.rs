@@ -1,12 +1,14 @@
 //! A stream fork copies state bytes but never the source's settlement duty.
 use super::*;
-use acyclic_native_runtime::testing::{Schedule, fill_seeded, seeded_runtime};
+use acyclic_native_runtime::testing::{
+    Schedule, fill_seeded, seeded_runtime,
+    sweep::{seeds, sweep},
+};
 
 #[test]
 fn seeded_forks_preserve_custody_ownership() -> Result<(), Failure> {
-    for seed in [0, 1, 7, 42] {
-        eprintln!("seed={seed}");
-        seeded_runtime(seed)?.block_on(async {
+    sweep("actors-custody", seeds(0..4), |seed| {
+        seeded_runtime(seed).map_err(|error| error.to_string())?.block_on(async {
             tokio::time::pause();
             let (schedule, mut boundaries) = Schedule::seeded(seed);
             let turn = schedule.scope(async {
@@ -17,11 +19,11 @@ fn seeded_forks_preserve_custody_ownership() -> Result<(), Failure> {
             tokio::pin!(turn);
             loop {
                 tokio::select! {
-                    result = &mut turn => return result,
+                    result = &mut turn => return result.map_err(|error| error.to_string()),
                     boundary = boundaries.recv() => boundary.ok_or("boundary channel closed")?.release(),
                 }
             }
-        })?;
-    }
+        })
+    })?;
     Ok(())
 }
