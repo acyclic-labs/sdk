@@ -990,9 +990,6 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
             None,
             &[
                 WorkspaceMutation::CreateDirectory {
-                    path: "/.system".into(),
-                },
-                WorkspaceMutation::CreateDirectory {
                     path: "/.system/harness-uploads".into(),
                 },
                 WorkspaceMutation::PutFile {
