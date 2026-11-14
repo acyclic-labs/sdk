@@ -28,6 +28,7 @@ mod programs;
 mod replay;
 pub(super) mod settings;
 mod signing;
+mod tool_refusals;
 mod transcripts;
 
 pub(super) fn scripted(
