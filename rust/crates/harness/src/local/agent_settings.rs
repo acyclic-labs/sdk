@@ -1127,6 +1127,15 @@ mod tests {
                 "plugins/guard/hooks/before-tool.sh",
                 "printf '%s' '{\"decision\":\"deny\"}'",
             ),
+            (
+                "hooks/guard/program.ts",
+                "import {enabled} from '../../switch.ts'; export default {version: 1, name: 'guard', description: enabled ? 'original' : 'changed', inputSchema: {type: 'object'}, entry: {sh: 'main.sh', ps1: 'main.ps1'}, on: {kind: 'stream', path: enabled ? 'events/original' : 'events/changed', from: 'start'}};",
+            ),
+            ("hooks/guard/main.sh", "cat"),
+            (
+                "hooks/guard/main.ps1",
+                "[Console]::Out.Write([Console]::In.ReadToEnd())",
+            ),
         ] {
             crate::local::tests::settings::write(&harness, path, source).await?;
         }
@@ -1147,6 +1156,23 @@ mod tests {
         let journal = storage.journal();
         let operation = crate::OperationId::new();
         let original = Tree::for_step(&volumes, journal.as_ref(), operation, 0, None).await?;
+        let programs = crate::plugins::ProgramFiles::new(
+            crate::filesystem::FilesystemContentVerifier::new(
+                harness.files.clone(),
+                &harness.verifier,
+                &harness.signed,
+                None,
+                None,
+            )?,
+            harness.scratch.clone(),
+            (*harness.harness.issuer_configuration()).clone(),
+            Arc::new(harness.tools.get("shell", None, None)?.unwrap().clone()),
+            None,
+        );
+        let (selected, _) = programs
+            .hook_for_execution(journal.as_ref(), operation, "guard", None)?
+            .await?;
+        let selected_revision = selected.binding().definition.revision.clone();
         for (path, source) in [
             ("switch.ts", "export const enabled = false;"),
             (
@@ -1154,10 +1180,33 @@ mod tests {
                 "export default {name: 'changed', description: 'Changed'};",
             ),
             ("plugins/guard/hooks/before-tool.sh", "\0"),
+            ("hooks/guard/main.sh", "exit 73"),
+            ("hooks/guard/main.ps1", "exit 73"),
         ] {
             crate::local::tests::settings::write(&harness, path, source).await?;
         }
         let replayed = Tree::for_step(&volumes, journal.as_ref(), operation, 0, None).await?;
+        let (recovered, _) = programs
+            .hook_for_execution(journal.as_ref(), operation, "guard", None)?
+            .await?;
+        assert_eq!(
+            recovered.binding().definition.revision,
+            selected_revision,
+            "hook recovery replaced an original manifest import or executable"
+        );
+        assert!(
+            matches!(recovered.on(), config::ProgramTrigger::Stream { path, .. } if path == "events/original")
+        );
+        let (current_program, _) = programs
+            .hook_for_execution(journal.as_ref(), crate::OperationId::new(), "guard", None)?
+            .await?;
+        assert_ne!(
+            current_program.binding().definition.revision,
+            selected_revision
+        );
+        assert!(
+            matches!(current_program.on(), config::ProgramTrigger::Stream { path, .. } if path == "events/changed")
+        );
         assert_eq!(
             original.cut()?,
             replayed.cut()?,
