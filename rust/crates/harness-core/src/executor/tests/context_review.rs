@@ -372,11 +372,29 @@ async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixe
     Ok(())
 }
 
+// The original stock contract is deliberately unusable once a step selected
+// another provider. This makes accidental fallback fail before dispatch.
+struct UnusedStockProvider;
+impl ModelProvider for UnusedStockProvider {
+    fn reported_input_tokens(&self, _: &Model, _: &Value) -> Result<Option<u64>> {
+        panic!("review usage must belong to the selected step provider");
+    }
+
+    fn generate<'a>(
+        &'a self,
+        _: &'a crate::model::PreparedModelRequest,
+        _: crate::model::ModelDispatch,
+    ) -> crate::model::ModelStream<'a> {
+        panic!("selected step dispatch must not fall back to stock");
+    }
+}
 #[tokio::test]
 async fn reviews_bound_complete_groups_without_stopping_a_fitting_worker() -> Result<()> {
-    for partitioned in [true, false] {
+    for (partitioned, selected_step) in [(true, false), (false, false), (true, true), (false, true)] {
         let overflowed = Arc::new(AtomicUsize::new(0));
         let seen = overflowed.clone();
+        let probes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let counted = Arc::clone(&probes);
         let response = || {
             ScriptedTurn::Events(vec![ScriptedEvent::Event(ModelEvent::Completed {
                 metadata: json!({"usage":{"prompt_tokens":3000,"completion_tokens":1}}),
@@ -399,18 +417,20 @@ async fn reviews_bound_complete_groups_without_stopping_a_fitting_worker() -> Re
                     output_tokens: Some(128),
                 })
                 .with_token_counter(move |request| {
+                    counted.lock().unwrap().push((request.bytes().len(), request.request().messages.len()));
                     if request.bytes().len() > 4096 - 128 {
                         seen.fetch_add(1, Ordering::SeqCst);
                     }
                     fixture_token_count(request)
                 }),
         );
-        let stock = StockExecutor::new(
+        let mut stock = StockExecutor::new(
             Model::new("fixture".into(), "selected".into(), "1".into())?,
             provider.clone(),
             ContextPipeline::default(),
             ToolRegistry::default(),
         )
+        .with_compaction_policy(crate::context::CompactionPolicy::default())
         .with_automatic_compaction()?;
         let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
         let journal_owner = storage.journal();
@@ -436,7 +456,22 @@ async fn reviews_bound_complete_groups_without_stopping_a_fitting_worker() -> Re
                 content: ModelContent::Text("b".repeat(64)),
             });
         }
-        let execution = StockExecution::ordinary(&stock);
+        let selected = if selected_step {
+            let binding = stock.step_template();
+            let unused = StockExecutor::new(
+                Model::new("unused".into(), "stock".into(), "1".into())?,
+                Arc::new(UnusedStockProvider),
+                ContextPipeline::default(),
+                ToolRegistry::default(),
+            );
+            stock.model = unused.model;
+            stock.provider = unused.provider;
+            Some(Arc::new(binding))
+        } else {
+            None
+        };
+        let mut execution = StockExecution::ordinary(&stock);
+        execution.selected = selected.clone();
         let worker = async {
             let events = execution.model_step(journal, &input, 0, &prior).await?;
             assert_eq!(
@@ -452,7 +487,7 @@ async fn reviews_bound_complete_groups_without_stopping_a_fitting_worker() -> Re
                 overflowed.load(Ordering::SeqCst) > 0,
                 "the full review does not fit"
             );
-            assert_eq!(provider.request_count(), 1 + usize::from(partitioned));
+            assert_eq!(provider.request_count(), 1 + usize::from(partitioned), "admission probes: {:?}", probes.lock().unwrap());
             if partitioned {
                 let request = provider.request(1).unwrap();
                 assert!(request.summary);
@@ -485,7 +520,8 @@ async fn reviews_bound_complete_groups_without_stopping_a_fitting_worker() -> Re
             .with_context_review(journal, &input, worker)
             .await?;
         let paid = provider.request_count();
-        let reopened = StockExecution::ordinary(&stock);
+        let mut reopened = StockExecution::ordinary(&stock);
+        reopened.selected = selected;
         let replay = async {
             let events = reopened.model_step(journal, &input, 0, &prior).await?;
             reopened
