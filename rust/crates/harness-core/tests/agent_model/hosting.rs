@@ -2633,6 +2633,50 @@ async fn trees_sharing_a_stream_each_claim_only_their_own_agents() -> Result {
 }
 
 #[tokio::test]
+async fn input_wait_retains_the_original_actor_failure_after_source_drop() -> Result {
+    let host = AgentHost::new(
+        Arc::new(MemoryStream::default()),
+        super::script(vec![]),
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(SystemClock),
+    )?;
+    let root = host
+        .create(&intent("failed-input-root"), super::adopted(id(1)))
+        .await?;
+    assert!(host.runtime().drain().await.is_empty());
+    let Delivered::Committed { inbox } = host
+        .send(
+            &root,
+            &super::user(),
+            &InboxRecord::Approval(Approval {
+                id: intent("failed-input"),
+            }),
+        )
+        .await?
+    else {
+        return Err("the original input was not committed".into());
+    };
+    assert!(!host.runtime().drain().await.is_empty());
+    let Err(Error::Stream(original)) = host.wait_for_input(&root, inbox).await else {
+        return Err("a failed actor certified input settlement".into());
+    };
+    let retained = original.clone();
+    drop(original);
+    drop(host);
+    assert_eq!(retained.category(), StreamError::Unavailable);
+    let mut source = std::error::Error::source(&retained);
+    while let Some(cause) = source {
+        if let Some(original) = cause.downcast_ref::<acyclic_actors::local::DeliveryFailure>() {
+            assert!(original.to_string().contains("script exhausted"));
+            return Ok(());
+        }
+        source = cause.source();
+    }
+    Err("the input wait replaced the original actor failure with status text".into())
+}
+
+#[tokio::test]
 async fn conversation_creation_wait_retains_member_absence_diagnostics() -> Result {
     use futures::TryStreamExt as _;
     let provider = Arc::new(Evidence::default());

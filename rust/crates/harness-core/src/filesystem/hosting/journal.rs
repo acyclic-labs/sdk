@@ -304,7 +304,7 @@ where
             }
             if let Some(cause) = failure {
                 return Err(Error::Stream(
-                    acyclic_stream::StreamError::unavailable_with_cause(&cause),
+                    acyclic_stream::StreamError::Unavailable.with_source(cause),
                 ));
             }
             let failed = self
@@ -312,7 +312,7 @@ where
                 .runtime()
                 .unavailable(&self.agents.actor(agent)?)
                 .map_err(|error| {
-                    Error::Stream(acyclic_stream::StreamError::unavailable_with_cause(&error))
+                    Error::Stream(acyclic_stream::StreamError::Unavailable.with_source(error))
                 })?;
             // Both continuations start at their original observations, so an
             // append between the page and this wait remains visible. No task,
@@ -440,7 +440,7 @@ where
                         break Some(self.journal_record(request.clone()).await?);
                     }
                     return Err(Error::Stream(
-                        acyclic_stream::StreamError::unavailable_with_cause(&cause),
+                        acyclic_stream::StreamError::Unavailable.with_source(cause),
                     ));
                 }
                 let failed = self
@@ -448,7 +448,7 @@ where
                     .runtime()
                     .unavailable(&self.agents.actor(agent)?)
                     .map_err(|error| {
-                        Error::Stream(acyclic_stream::StreamError::unavailable_with_cause(&error))
+                        Error::Stream(acyclic_stream::StreamError::Unavailable.with_source(error))
                     })?;
                 tokio::select! {
                     record = self.journal_record(request.clone()) => break Some(record?),

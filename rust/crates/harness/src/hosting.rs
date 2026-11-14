@@ -2015,14 +2015,14 @@ where
             let actors = server.bound.agents();
             let actor = match actors.actor(&agent) {
                 Ok(actor) => actor,
-                Err(error) => return StreamError::unavailable_with_cause(&error),
+                Err(error) => return StreamError::Unavailable.with_source(error),
             };
             let failure = match actors.runtime().unavailable(&actor) {
                 Ok(failure) => failure,
-                Err(error) => return StreamError::unavailable_with_cause(&error),
+                Err(error) => return StreamError::Unavailable.with_source(error),
             };
             drop(server);
-            StreamError::unavailable_with_cause(&failure.await)
+            StreamError::Unavailable.with_source(failure.await)
         })
     }
 }
