@@ -52,7 +52,7 @@ where
             operation,
             published.generation(),
             selected_proof,
-            published.context,
+            published.context.clone(),
             accounting,
         )
         .await?;
@@ -90,6 +90,7 @@ where
             })?;
         publication
             .acknowledged
+            .clone()
             .ok_or_else(|| MountSourceError::Indeterminate.into())
     }
     pub(super) async fn publication_context(
@@ -116,13 +117,13 @@ where
         if let Some(context) = retained {
             let settled = self
                 .lazy
-                .publication_companion_settled(operation, context, committed, accounting)
+                .publication_companion_settled(operation, context.clone(), committed, accounting)
                 .await
                 .map_err(lazy_error)?;
-            match (context, proof) {
+            match (&context, proof) {
                 (NativeSnapshotContext::Lazy(_), None) => {}
                 (NativeSnapshotContext::Selected { input, .. }, Some(proof))
-                    if input == proof.input => {}
+                    if *input == proof.input => {}
                 (NativeSnapshotContext::Selected { .. }, None)
                     if settled && committed.is_some() => {}
                 _ => return Err(MountSourceError::Stale),
@@ -139,10 +140,10 @@ where
             if original.generation() != generation {
                 return Err(MountSourceError::Stale);
             }
-            match (original.context, proof) {
+            match (&original.context, proof) {
                 (NativeSnapshotContext::Lazy(_), None) => {}
                 (NativeSnapshotContext::Selected { input, .. }, Some(proof))
-                    if input == proof.input => {}
+                    if *input == proof.input => {}
                 (NativeSnapshotContext::Selected { .. }, None) => {}
                 _ => return Err(MountSourceError::Stale),
             }
@@ -171,7 +172,7 @@ where
         // A retry may find the companion CAS completed before cancellation,
         // while the exact original operation/evidence still awaits retirement.
         self.lazy
-            .publication_companion_settled(operation, context, Some(generation), accounting)
+            .publication_companion_settled(operation, context.clone(), Some(generation), accounting)
             .await
             .map_err(lazy_error)?;
         if let Some(SelectedImportProof {
@@ -233,7 +234,7 @@ where
         };
         if !self
             .lazy
-            .publication_companion_settled(operation, context, Some(generation), accounting)
+            .publication_companion_settled(operation, context.clone(), Some(generation), accounting)
             .await
             .map_err(lazy_error)?
         {

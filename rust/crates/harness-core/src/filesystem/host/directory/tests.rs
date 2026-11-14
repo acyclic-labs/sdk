@@ -50,12 +50,12 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
         maximum_entries: 8,
         ceiling: None,
     };
-    let (_, before) = host
+    let before = host
         .list_private_directory(&volume, &grant, "rows", options)
         .await?
         .expect("fixture directory exists");
     assert_eq!(before.entries.len(), 8);
-    let (current, _) = host
+    let current = host
         .list_private_directory(
             &volume,
             &grant,
@@ -67,7 +67,7 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
         )
         .await?
         .expect("fixture directory exists");
-    assert_eq!(current, generation);
+    assert_eq!(current.generation, generation);
     host.put_content(
         &volume,
         &writer,
@@ -288,7 +288,7 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
                 .expect_err("root and descendant policy must both authorize saved ranges");
             assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
         }
-        let (_, page) = host
+        let page = host
             .list_private_directory(&volume, &grant, "rows", options)
             .await?
             .expect("fixture directory exists");
@@ -300,7 +300,7 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
                 .any(|entry| entry.name.as_bytes() == b"00"),
             "a root policy update must not restore names hidden by the data owner"
         );
-        let (_, current) = host
+        let current = host
             .list_private_directory(
                 &volume,
                 &grant,
@@ -366,7 +366,7 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
             .iter()
             .any(|entry| entry.name.as_bytes() == b"branch-only")
     );
-    let (_, current) = host
+    let current = host
         .list_private_directory(
             &volume,
             &grant,
@@ -383,12 +383,12 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
         7,
         "current reads must follow the durable branch switch"
     );
-    let (selected, page) = host
+    let page = host
         .list_private_directory(&volume, &grant, "rows", options)
         .await?
         .expect("fixture directory exists");
     assert_eq!(
-        selected, generation,
+        page.generation, generation,
         "policy changes must not replace the pinned data cut"
     );
     assert_eq!(page.entries.len(), 6);
@@ -751,16 +751,19 @@ proptest! {
                 }).await;
                 if refuse_at == 0 { guard_count = calls; }
                 assert_eq!(result.is_ok(), refuse_at == 0, "guard {refuse_at}: {result:?}");
-                if let Ok(((generation, page), custody)) = result {
-                    assert_eq!(custody.bytes(), owned_bytes(&page)? + generation.logical_owned_bytes()?);
-                    assert!(!page.entries.is_empty() || !page.has_more);
+                if let Ok((page, custody)) = result {
+                    let expected = std::mem::size_of::<PrivateDirectoryPage>() as u64
+                        + page.generation.logical_owned_bytes()?
+                        + (page.entries.capacity() * std::mem::size_of::<crate::conversation::PrivateDirectoryEntry>()) as u64
+                        + page.entries.iter().map(|entry| entry.name.capacity() as u64).sum::<u64>()
+                        + page.next.as_ref().map_or(0, |next| next.capacity() as u64);
+                    assert_eq!(custody.bytes(), expected);
                     assert!(page.entries.len() <= page_size as usize);
                     for entry in &page.entries {
                         let name = std::str::from_utf8(entry.name.as_bytes()).unwrap();
                         let index: usize = name.parse().unwrap();
                         assert!(mask[index] && caller_mask[index]);
                     }
-                    drop(generation);
                     drop(page);
                     drop(custody);
                 }

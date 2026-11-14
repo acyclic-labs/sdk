@@ -124,10 +124,6 @@ impl<S: PageSource> PinnedCursor<S> {
         self.exhausted = false;
     }
 
-    pub(crate) fn seed_page(&mut self, page: S::Page) {
-        self.page = Some(page.peekable());
-    }
-
     /// Observes the next record without advancing the application cursor.
     pub async fn peek(&mut self) -> Result<Option<&Record>, StreamError> {
         if self.page.as_mut().is_some_and(|page| page.peek().is_none()) {

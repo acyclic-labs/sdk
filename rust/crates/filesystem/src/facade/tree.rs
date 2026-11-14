@@ -46,6 +46,7 @@ pub(super) async fn list_directory_to_file_root_with_accounting<
                     .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
                 page.1,
                 page.2,
+                false,
             ),
             DecodeLimits::for_volume(volume.config),
             accounting,
@@ -122,6 +123,53 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         budget.finish_owned::<_, crate::FsError>(result, &accounting)
     }
 
+    pub(crate) async fn list_directory_from_position_with_accounting(
+        &mut self,
+        path: &NamespacePath,
+        position: Option<&crate::kernel::PagePosition>,
+        maximum_entries: u32,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(DirectoryPage, crate::kernel::KernelOwnedAllocation), FsError> {
+        let (lookup, _) = self
+            .lookup_no_follow_with_accounting(path, accounting, cancellation, false)
+            .await?;
+        let record = lookup.record.ok_or(FsError::NotFound)?;
+        let FilePayload::Directory { entries } = record.payload else {
+            return Err(FsError::NotDirectory);
+        };
+        let after = match position {
+            Some(position) => Some(
+                crate::kernel::key_at_position_with_accounting::<crate::kernel::TreeFormat>(
+                    &self.volume.fs.inner.objects,
+                    entries,
+                    position,
+                    DecodeLimits::for_volume(self.volume.config),
+                    accounting,
+                    cancellation,
+                    Some(&self.dependencies.data_custody),
+                )
+                .await?,
+            ),
+            None => None,
+        };
+        let result = self
+            .list_directory_record_with_accounting(
+                record,
+                after.as_ref().map_or(std::ops::Bound::Unbounded, |after| {
+                    std::ops::Bound::Excluded(&after.value)
+                }),
+                (maximum_entries, true),
+                accounting,
+                cancellation,
+            )
+            .await;
+        if let Some(after) = after {
+            after.retire(accounting)?;
+        }
+        result
+    }
+
     pub(crate) async fn list_directory_with_accounting(
         &mut self,
         path: &NamespacePath,
@@ -145,7 +193,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         self.list_directory_record_with_accounting(
             lookup.record.ok_or(FsError::NotFound)?,
             after,
-            maximum_entries,
+            (maximum_entries, false),
             accounting,
             cancellation,
         )
@@ -159,7 +207,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         &mut self,
         record: FileRecord,
         after: std::ops::Bound<&LogicalName>,
-        maximum_entries: u32,
+        page_request: (u32, bool),
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<
@@ -169,6 +217,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         ),
         FsError,
     > {
+        let (maximum_entries, position) = page_request;
         accounting.check()?;
         let before = readonly_standalone_live(accounting);
         // The future is destroyed before its exact physical frame claim.
@@ -189,7 +238,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 let (page, allocation) = crate::kernel::list_tree_entries_async_with_accounting(
                     &this.volume.fs.inner.objects,
                     entries,
-                    (after, maximum_entries, Direction::Ascending),
+                    (after, maximum_entries, Direction::Ascending, position),
                     DecodeLimits::for_volume(this.volume.config),
                     accounting,
                     cancellation,

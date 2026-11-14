@@ -1,7 +1,8 @@
 //! One funded serde visitor for persisted metadata on every backend.
 
 mod original;
-pub(crate) use original::{MetadataDecodeError, from_slice};
+pub use original::MetadataDecodeError;
+pub(crate) use original::from_slice;
 
 /// Backend adapter for the original work and allocation owner. Failures remain
 /// typed in `MaterializationDecode::failure` while serde unwinds its visitor.
@@ -113,7 +114,7 @@ impl<'de, W: DecodeWork, D: serde::Deserializer<'de>> serde::Deserializer<'de>
     for Funded<'_, '_, W, D>
 {
     type Error = D::Error;
-    deserialize!(deserialize_any, DecodeKind::Borrowed);
+    deserialize!(deserialize_any, DecodeKind::String);
     deserialize!(deserialize_bool);
     deserialize!(deserialize_i8);
     deserialize!(deserialize_i16);
@@ -204,6 +205,14 @@ impl<'de, W: DecodeWork, V: serde::de::Visitor<'de>> serde::de::Visitor<'de>
                 .copy(value.len(), || self.inner.visit_str(value))
         } else {
             self.inner.visit_str(value)
+        }
+    }
+    fn visit_borrowed_str<E: serde::de::Error>(self, value: &'de str) -> Result<Self::Value, E> {
+        if matches!(self.kind, DecodeKind::String | DecodeKind::ByteBuffer) {
+            self.decode
+                .copy(value.len(), || self.inner.visit_borrowed_str(value))
+        } else {
+            self.inner.visit_borrowed_str(value)
         }
     }
     fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Self::Value, E> {

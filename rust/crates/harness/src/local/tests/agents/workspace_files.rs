@@ -93,7 +93,7 @@ async fn workspace_directory_follows_commits_and_keeps_its_original_cut_and_scop
     else {
         return Err(Error::Conflict("directory reply".into()));
     };
-    assert!(absent.entries.is_empty() && !absent.has_more);
+    assert!(absent.entries.is_empty() && absent.next.is_none());
     let waiting_request = request(
         DirectoryTarget::Primary {},
         None,

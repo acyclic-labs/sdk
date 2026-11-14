@@ -278,9 +278,9 @@ pub use kernel::{
     decode_generation_export_manifest, encode_generation_export_manifest,
 };
 pub use lazy_workspace::{
-    LazyDirectoryCursor, LazyDirectoryEntry, LazyDirectoryPage, LazyForkOrigin, LazyForkPhase,
-    LazyLookup, LazyOverlay, LazyOverlayId, LazyShadow, LazyShadowId, LazySnapshotId,
-    LazySnapshotRef, LazySourceRecord, LazyStat, LazyStoredRecord, LazyWorkspace,
+    LazyDirectoryCursor, LazyDirectoryEntry, LazyDirectoryListing, LazyDirectoryNode,
+    LazyDirectoryPage, LazyForkOrigin, LazyForkPhase, LazyLookup, LazyOverlay, LazyOverlayId,
+    LazyShadow, LazyShadowId, LazySnapshotId, LazySnapshotRef, LazySourceRecord, LazyStoredRecord, LazyStat, LazyWorkspace,
     LazyWorkspaceError, LazyWorkspaceState, LazyWorkspaceStore, MemoryLazyWorkspaceStore,
     NativePublicationSnapshot, SelectedImportPlan,
 };

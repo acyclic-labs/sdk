@@ -39,10 +39,10 @@ pub enum GitFilesystemResult {
 }
 
 impl GitFilesystemResult {
-    pub(crate) fn resulting_tree(&self) -> Option<GitTreeRef> {
+    pub(crate) fn resulting_tree(&self) -> Option<&GitTreeRef> {
         match self {
-            Self::Captured { tree, .. } => Some(*tree),
-            Self::Applied { tree, .. } => *tree,
+            Self::Captured { tree, .. } => Some(tree),
+            Self::Applied { tree, .. } => tree.as_ref(),
             Self::Forked { .. } | Self::Data { .. } => None,
         }
     }

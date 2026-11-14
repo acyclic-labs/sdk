@@ -611,6 +611,7 @@ async fn blocked_registration_and_one_shot_reply_are_reported_waits() -> TestRes
         .revisions
         .at(provider.revisions.current().index + 1);
     let mut request = crate::HeadsRequest {
+        at: None,
         paths: vec![StreamPath::new("waits")?].into(),
         retained: Default::default(),
         durable_through: None,

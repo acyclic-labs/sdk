@@ -104,6 +104,7 @@ pub mod tool;
 pub mod tools;
 pub mod topology;
 pub mod turn;
+pub mod ui;
 pub mod wire_api;
 pub mod wire_codec;
 pub mod workspace;

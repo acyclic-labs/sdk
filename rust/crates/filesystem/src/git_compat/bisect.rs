@@ -155,7 +155,7 @@ pub(super) fn prepare_bisect_checkout<E: std::error::Error + 'static>(
     Ok(prepare_transition(
         state,
         GitFilesystemAction::RestoreGeneration {
-            tree: record.tree,
+            tree: record.tree.clone(),
             paths: Some(paths),
         },
         GitPendingMutation::Bisect {

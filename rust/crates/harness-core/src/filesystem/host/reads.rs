@@ -11,6 +11,8 @@ struct PrivateReadSelection<'a, A: 'static, O: 'static> {
     generation: Generation<A, O>,
     view: super::super::access::CompiledAccess<'a>,
     data_access: Option<(Workspace<A, O>, super::super::access::CompiledAccess<'a>)>,
+    #[cfg(not(target_arch = "wasm32"))]
+    snapshot: Option<acyclic_fs::kernel::Retained<acyclic_fs::LazySnapshotRef>>,
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PrivateReadSelection<'_, A, O> {
@@ -41,9 +43,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let workspace_ref = (workspace_ref, workspace_hold);
         let workspace = self.open(&workspace_ref.0, Some(io)).await?;
         drop(workspace_ref);
-        let generation = match expected_generation {
-            Some(expected) => self.generation(&workspace, expected, Some(io)).await?,
-            None => self.current_generation(&workspace, io).await?,
+        #[cfg(not(target_arch = "wasm32"))]
+        let snapshot = self
+            .private_snapshot(&workspace, expected_generation, io)
+            .await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let lazy_generation = snapshot.as_ref().map(|cut| cut.authored_generation);
+        #[cfg(target_arch = "wasm32")]
+        let lazy_generation: Option<GenerationId> = None;
+        let generation = match (lazy_generation, expected_generation) {
+            (Some(generation), _) => self.select_generation(&workspace, generation, io).await?,
+            (None, Some(expected)) => self.generation(&workspace, expected, Some(io)).await?,
+            (None, None) => self.current_generation(&workspace, io).await?,
         };
         let view = private_read_view(&workspace, grant, generation.id(), ceiling, io).await?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::List, path, io)?;
@@ -66,6 +77,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             generation,
             view,
             data_access,
+            #[cfg(not(target_arch = "wasm32"))]
+            snapshot,
         })
     }
 
@@ -95,6 +108,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .select_private_read(volume, grant, path, expected_generation, access.ceiling, io)
             .await?;
         selected.recheck(grant, io).await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(cut) = &selected.snapshot {
+            self.validate_private_snapshot(cut, io).await?;
+            selected.recheck(grant, io).await?;
+            return self.private_generation_ref(cut, expected_generation, io);
+        }
         self.generation_ref_id(selected.generation.id(), access.io)
     }
 
@@ -422,7 +441,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         expected_generation: Option<&GenerationRef>,
         range: acyclic_fs::ByteRange,
         access: crate::conversation::ContentAccess<'_, '_>,
-    ) -> Result<(acyclic_stream::OwnedBytes, GenerationId, u64)> {
+    ) -> Result<(acyclic_stream::OwnedBytes, GenerationRef, u64)> {
         let crate::conversation::ContentAccess { ceiling, io } = access;
         let unmeasured;
         let io = if let Some(io) = io {
@@ -439,6 +458,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             crate::executor::preparation_format(format_args!("/{path}"), work)
         })?;
         let requested_hold = io.guard_owned(requested.capacity() as u64)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(cut) = &selected.snapshot {
+            let (bytes, length) = self
+                .read_private_snapshot(cut, &requested, range, io)
+                .await?;
+            selected.recheck(grant, io).await?;
+            return Ok((
+                bytes,
+                self.private_generation_ref(cut, expected_generation, io)?,
+                length,
+            ));
+        }
         let (stat, recorded) = generation.stat(&requested, io, io.cancellation()).await;
         let stat = io.sdk((Ok::<_, Error>(stat), recorded))?;
         let stat = stat.map_err(|error| path_read_refusal(error.into()))?;
@@ -468,7 +499,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )?;
         selected.recheck(grant, io).await?;
         drop(requested_hold);
-        let selected_id = generation.id();
+        let selected_id = self.generation_ref_id(generation.id(), Some(io))?;
         Ok((io.retain_read_bytes(chunk.bytes)?, selected_id, length))
     }
 
@@ -587,7 +618,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let reference = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
         let reference_hold = io.guard_owned(reference.logical_owned_bytes()?)?;
         let workspace = (self).open(&reference, Some(io)).await?;
-        let pinned = (self).generation(&workspace, generation, Some(io)).await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let snapshot = self
+            .private_snapshot(&workspace, Some(generation), io)
+            .await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let authored = snapshot.as_ref().map(|cut| cut.authored_generation);
+        #[cfg(target_arch = "wasm32")]
+        let authored: Option<GenerationId> = None;
+        let pinned = match authored {
+            Some(authored) => self.select_generation(&workspace, authored, io).await?,
+            None => self.generation(&workspace, generation, Some(io)).await?,
+        };
         let label = crate::core::filesystem_scope_label(
             grant.policy_scope().capabilities(),
             &mut Some(&mut io.history_io()),
@@ -619,23 +661,48 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         })?;
         let path_hold = io.guard_owned(path.capacity() as u64)?;
         io.remaining()?;
-        let stat = io.sdk(pinned.stat(&path, io, io.cancellation()).await)?;
-        if stat.kind != FileKind::Regular {
-            return Err(io.invalid("prefix requires a regular file"));
-        }
-        let length = stat.logical_bytes.ok_or_else(|| {
-            stock_boundary(
-                Some(io),
-                crate::wire::ErrorCode::Storage,
-                "file length is missing",
+        #[cfg(not(target_arch = "wasm32"))]
+        let lazy = if let Some(cut) = &snapshot {
+            Some(
+                self.read_private_snapshot(
+                    cut,
+                    &path,
+                    acyclic_fs::ByteRange {
+                        offset: 0,
+                        length: maximum_bytes,
+                    },
+                    io,
+                )
+                .await?
+                .0,
             )
-        })?;
-        io.remaining()?;
-        let chunk = io.sdk(
-            pinned
-                .read_range(&path, 0, maximum_bytes.min(length), io, io.cancellation())
-                .await,
-        )?;
+        } else {
+            None
+        };
+        #[cfg(target_arch = "wasm32")]
+        let lazy: Option<acyclic_stream::OwnedBytes> = None;
+        let bytes = if let Some(bytes) = lazy {
+            bytes
+        } else {
+            let stat = io.sdk(pinned.stat(&path, io, io.cancellation()).await)?;
+            if stat.kind != FileKind::Regular {
+                return Err(io.invalid("prefix requires a regular file"));
+            }
+            let length = stat.logical_bytes.ok_or_else(|| {
+                stock_boundary(
+                    Some(io),
+                    crate::wire::ErrorCode::Storage,
+                    "file length is missing",
+                )
+            })?;
+            io.remaining()?;
+            io.sdk(
+                pinned
+                    .read_range(&path, 0, maximum_bytes.min(length), io, io.cancellation())
+                    .await,
+            )?
+            .bytes
+        };
         drop(path);
         drop(path_hold);
         drop(reference);
@@ -645,7 +712,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             super::super::access::require_current(workspace, &view.0, io).await?;
         }
         grant.recheck(Some(io))?;
-        Ok(chunk.bytes)
+        Ok(bytes)
     }
 
     pub(in crate::filesystem) fn require_private_directory(

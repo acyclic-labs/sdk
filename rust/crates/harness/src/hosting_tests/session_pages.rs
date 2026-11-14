@@ -141,6 +141,35 @@ async fn session_and_peer_pages_keep_discovery_at_two_bounded_head_views() -> Re
             0,
             "discovery must not read transcripts or volumes"
         );
+        // A command ceiling can exceed the transport page size. Both directory
+        // families must keep row projections within one bounded Stream view.
+        for scope in [
+            acyclic_harness_client::SessionsScope::Owned,
+            acyclic_harness_client::SessionsScope::Peers,
+        ] {
+            let AgentReply::Children { items, next } = call(
+                &client,
+                "agents",
+                &AgentCommand::Sessions {
+                    requester: None,
+                    scope,
+                    page: AgentPageRequest::new(
+                        acyclic_stream::MAX_ITEMS as u32 + 1,
+                        64 * 1024,
+                        None,
+                    )?,
+                },
+            )
+            .await??
+            else {
+                return Err("large session page returned another result".into());
+            };
+            assert!(!items.is_empty());
+            assert!(items.iter().all(|item| item.status.is_some()));
+            if count > acyclic_stream::MAX_ITEMS as u128 {
+                assert!(next.is_some(), "protocol chunk lost its continuation");
+            }
+        }
         // Exercise ordinary client enrollment, rather than supplying the peer
         // grant in a test credential. It must not enroll directory authority.
         let enrolled = server

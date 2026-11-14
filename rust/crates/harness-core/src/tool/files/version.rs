@@ -224,7 +224,7 @@ pub(crate) fn encode_path_version(
     )
 }
 
-fn encode_token<T: Serialize>(
+pub(super) fn encode_token<T: Serialize>(
     file: &T,
     prefix: &str,
     work: acyclic_fs::NativeWork<'_>,

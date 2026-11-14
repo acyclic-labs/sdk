@@ -867,7 +867,10 @@ async fn oversized_summary_input_rejects_before_accounting_or_journal_publicatio
         let executor = base.clone().with_limits(limits);
         let storage =
             crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
-        let (generation, _) = storage.list_private_directory("", None, None, 1).await?;
+        let generation = storage
+            .list_private_directory("", None, None, 1)
+            .await?
+            .generation;
         let journal = storage.journal();
         let journal = journal.as_ref();
         let operation = OperationId::new();
@@ -887,7 +890,10 @@ async fn oversized_summary_input_rejects_before_accounting_or_journal_publicatio
         ));
         assert!(journal.replay(operation, 0, 1, None)?.await?.is_empty());
         assert_eq!(
-            storage.list_private_directory("", None, None, 1).await?.0,
+            storage
+                .list_private_directory("", None, None, 1)
+                .await?
+                .generation,
             generation,
         );
     }
