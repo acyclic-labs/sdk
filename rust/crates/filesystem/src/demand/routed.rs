@@ -439,5 +439,6 @@ fn scope_page(
         |_, node, ctx| scoped_node(source, node, ctx),
     )?;
     output.publication = page.publication.take();
+    output.prefix = page.prefix.take();
     Ok(output)
 }
