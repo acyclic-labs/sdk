@@ -159,6 +159,7 @@ async fn sealed_spills_stay_private_until_explicit_publication()
         .flush_before_publish(
             acyclic_fs::PublicationScope {
                 objects: &[id, small_id],
+                related_objects: &[],
                 proven_at: staged.collection_sweeps(),
             },
             &mut work,
