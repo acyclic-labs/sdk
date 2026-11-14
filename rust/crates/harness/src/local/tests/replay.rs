@@ -208,7 +208,12 @@ async fn a_run_replays_its_source_until_input_changes() -> Result<()> {
     let replayed = fixture
         .run(replay.clone(), refused(), &["first", "second"])
         .await?;
-    assert_eq!(divergences.taken(), []);
+    assert_eq!(
+        divergences.taken(),
+        [],
+        "source requests: {requests:#?}\nlive requests: {:#?}",
+        live.requests()
+    );
     assert!(live.requests().is_empty());
     assert_eq!(replay.unused(), 0);
     // Same keys, verbatim events (native reasoning included) and the
