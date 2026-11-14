@@ -41,7 +41,7 @@ pub(super) fn event() -> io::Result<&'static OwnedFd> {
         })?;
     let descriptor = ready
         .recv()
-        .map_err(|_| io::Error::other("device owner thread exited during admission"))??;
+        .map_err(|_| io::Error::other("process owner thread exited during admission"))??;
     // Process lifetime owns these two handles, once per owner, never per view.
     static LIFETIME: OnceLock<(std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>)> =
         OnceLock::new();

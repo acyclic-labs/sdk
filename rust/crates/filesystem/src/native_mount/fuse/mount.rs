@@ -72,7 +72,7 @@ impl Mount {
         // still borrows it while waiting for a request's directory lock.
         self.arm_exit_action(
             c"/bin/umount",
-            &["-i", "-f", "-l", "--"],
+            &["-i", "-c", "-f", "-l", "--"],
             path,
             fence,
             work,
@@ -109,7 +109,7 @@ impl Mount {
             *device = Some(Device::InProcess(file));
             self.arm_exit_action(
                 c"/bin/umount",
-                &["-i", "-f", "-l", "--"],
+                &["-i", "-c", "-f", "-l", "--"],
                 path,
                 fence,
                 work,
@@ -136,7 +136,7 @@ impl Mount {
                 // Follow owner death before any kernel callback is admitted.
                 self.arm_exit_action(
                     c"/bin/umount",
-                    &["-i", "-f", "-l", "--"],
+                    &["-i", "-c", "-f", "-l", "--"],
                     path,
                     fence,
                     work,

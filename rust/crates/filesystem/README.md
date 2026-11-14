@@ -28,7 +28,7 @@ select plain directories explicitly with `--workspace-mounting physical`; run
 as the task. Native mode refuses unavailable FUSE and startup failures remain
 errors; they never switch a running task to physical directories. On Linux,
 direct mounts need `/dev/fuse` and mount authority. Their stale-mount recovery
-uses `umount2(MNT_DETACH)`; owner-exit cleanup uses `umount -i -f -l` (internal
+uses `umount2(MNT_DETACH)`; owner-exit cleanup uses `umount -i -c -f -l` (internal
 kernel connection abort followed by namespace detach, with filesystem helpers
 disabled). Neither requires fusermount.
 Only an unprivileged mount denied by the kernel uses the setuid FUSE helper.
