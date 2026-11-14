@@ -94,7 +94,9 @@ fn snapshot(cursor: &wire::SessionCursor, fault: Fault) -> Result<(), &'static s
         (1.., Ok(anchor)) => Ok(Some(anchor)),
         _ => Err(StreamError::InvalidArgument),
     };
-    let mut actual = record_anchor(cursor).map(|anchor| anchor.map(|id| *id.as_bytes()));
+    let mut actual = record_anchor(cursor)
+        .map(|anchor| anchor.map(|id| *id.as_bytes()))
+        .map_err(|error| error.category());
     if matches!(fault, Fault::ReverseDecode | Fault::ReverseBoth) {
         actual = actual.map(|anchor| {
             anchor.map(|mut bytes| {
@@ -129,7 +131,10 @@ fn snapshot(cursor: &wire::SessionCursor, fault: Fault) -> Result<(), &'static s
                 opaque: anchor.to_vec().into(),
             })
         };
-        require(encoded == expected, "snapshot encode bytes")?;
+        require(
+            encoded.map_err(|error| error.category()) == expected,
+            "snapshot encode bytes",
+        )?;
     }
     Ok(())
 }

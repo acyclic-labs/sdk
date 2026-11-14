@@ -520,7 +520,10 @@ mod framing {
         kani::assume(length <= 12);
         kani::assume(chunk > 0 && chunk <= 12);
         let input = &bytes[..usize::from(length)];
-        assert_eq!(lengths(input, 12), lengths(input, usize::from(chunk)));
+        assert_eq!(
+            lengths(input, 12).map_err(|error| error.category()),
+            lengths(input, usize::from(chunk)).map_err(|error| error.category())
+        );
     }
 
     #[kani::proof]
@@ -556,7 +559,10 @@ mod framing {
         let mut decoder = FrameDecoder::with_decoder(usize::MAX, |body| Ok(body.len()));
         let mut prefix: &[u8] = &[1];
         assert_eq!(decoder.read(&mut prefix), Ok(None));
-        assert_eq!(decoder.finish(), Err(StreamError::InvalidResponse));
+        assert_eq!(
+            decoder.finish().map_err(|error| error.category()),
+            Err(StreamError::InvalidResponse)
+        );
         let mut body: &[u8] = &[0];
         assert_eq!(decoder.read(&mut body), Ok(Some(1)));
         assert_eq!(decoder.finish(), Ok(()));
@@ -583,8 +589,11 @@ mod framing {
             decoder.finish()?;
             Ok::<_, StreamError>(frame)
         };
-        let result = decode(5);
-        assert_eq!(result, decode(usize::from(chunk)));
+        let result = decode(5).map_err(|error| error.category());
+        assert_eq!(
+            result,
+            decode(usize::from(chunk)).map_err(|error| error.category())
+        );
         let length = u32::from_be_bytes(header[1..].try_into().unwrap()) as usize;
         match header[0] {
             1 => assert_eq!(result, Err(StreamError::Unsupported)),

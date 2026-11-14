@@ -263,10 +263,7 @@ async fn dependent_resources_keep_original_call_grants_and_live_trust() -> TestR
     let mut lost = core::pin::pin!(lost);
     let (_, producer) = calls.recv().await.ok_or("second call did not dispatch")?;
     drop(producer);
-    assert!(matches!(
-        lost.next().await,
-        Some(Err(StreamError::Unavailable))
-    ));
+    assert_reply_failure(lost.next().await, StreamError::Unavailable);
 
     let revoked = client.actor_call_chunks(&invocation, 0, Some(128)).await?;
     let mut revoked = core::pin::pin!(revoked);
@@ -282,10 +279,7 @@ async fn dependent_resources_keep_original_call_grants_and_live_trust() -> TestR
         Err(StreamError::AccessDenied),
         "dependent disclosure used a stale trust snapshot"
     );
-    assert!(matches!(
-        revoked.next().await,
-        Some(Err(StreamError::AccessDenied))
-    ));
+    assert_reply_failure(revoked.next().await, StreamError::AccessDenied);
     Ok(())
 }
 
@@ -561,10 +555,7 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
         "consumer loss must wake without escaped credit returning"
     );
     let mut abandoned_reply = core::pin::pin!(abandoned_reply);
-    assert!(matches!(
-        abandoned_reply.next().await,
-        Some(Err(StreamError::Unavailable))
-    ));
+    assert_reply_failure(abandoned_reply.next().await, StreamError::Unavailable);
     assert_eq!(escaped.as_ref().as_ptr(), original.as_ptr());
     assert_eq!(escaped_second.as_ref().as_ptr(), second_original.as_ptr());
 
@@ -591,10 +582,7 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
     drop(host);
     assert_eq!(finish.await, Err(StreamError::Unavailable));
     let mut lost = core::pin::pin!(lost);
-    assert!(matches!(
-        lost.next().await,
-        Some(Err(StreamError::Unavailable))
-    ));
+    assert_reply_failure(lost.next().await, StreamError::Unavailable);
     // The held EOF followed the queued data on the same ordered transport.
     // Once source loss is observed, a data-first adapter would disclose that
     // data instead of the original failure. Return the cause exactly once.
@@ -740,7 +728,99 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
         Some(lifetime),
     );
     client.register_credential(0, credential.into())?;
+    for (invalid, maximum) in [(Bytes::new(), None), (invocation.clone(), Some(0))] {
+        let error = client
+            .actor_call(&invalid, 0, maximum)
+            .await
+            .expect_err("invalid original invocation dispatched");
+        assert_eq!(error.category(), StreamError::InvalidArgument);
+        assert!(
+            std::error::Error::source(&error).is_some(),
+            "original invocation evidence lost"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "rejected invocation called provider"
+        );
+    }
+    #[cfg(feature = "serde")]
+    let (trace, root, parent) = {
+        let trace = crate::Stream::new(Arc::new(MemoryStream::default()), "owner/trace")?;
+        let recorder = Arc::new(crate::trace::Recorder::new(trace.clone(), [41; 16]));
+        let root = recorder
+            .start(
+                "reply_owner",
+                crate::trace::Mechanism::ActorDelivery,
+                None,
+                Some("original_call_request"),
+            )
+            .await?;
+        let parent = root.id();
+        (trace, root.into_owned(), parent)
+    };
+    #[cfg(feature = "serde")]
+    let response = root.within(client.actor_call(&invocation, 0, None)).await?;
+    #[cfg(not(feature = "serde"))]
     let response = client.actor_call(&invocation, 0, None).await?;
+    #[cfg(feature = "serde")]
+    {
+        use crate::trace::{Mechanism, Observation, Outcome, TraceQuery};
+        let terminal = root.finish_submitted(None, Outcome::Succeeded)?;
+        let _receipt = terminal.result().await?;
+        let mut query = TraceQuery::new(
+            trace.read(0, u32::try_from(trace.tail().await?)?).await?,
+            Default::default(),
+        );
+        let mut round_trip = None;
+        let mut copies = Vec::new();
+        let fragments = body.chunks(crate::MAX_RECORD_BYTES).count();
+        while let Some(event) = query.next().await? {
+            if let Observation::Completed {
+                id,
+                start,
+                bytes,
+                result,
+                ..
+            } = event
+            {
+                match start.name.as_str() {
+                    "stream.finite_reply" => {
+                        assert_eq!(start.parent, Some(parent));
+                        assert_eq!(start.mechanism, Mechanism::RoundTrip);
+                        assert_eq!(
+                            start.guarantee.as_deref(),
+                            Some("complete_bounded_reply_on_original_session")
+                        );
+                        assert_eq!(result, Outcome::Succeeded);
+                        assert_eq!(bytes, Some(body.len() as u64));
+                        round_trip = Some(id);
+                    }
+                    "stream.reply_copy" => {
+                        assert_eq!(start.mechanism, Mechanism::Copy);
+                        assert_eq!(
+                            start.guarantee.as_deref(),
+                            Some("contiguous_complete_reply_ownership")
+                        );
+                        assert_eq!(result, Outcome::Succeeded);
+                        copies.push((start.parent, bytes.ok_or("copy size absent")?));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert!(round_trip.is_some());
+        assert_eq!(copies.len(), fragments);
+        assert!(copies.iter().all(|(parent, _)| *parent == round_trip));
+        assert_eq!(
+            copies.iter().map(|(_, bytes)| bytes).sum::<u64>(),
+            body.len() as u64
+        );
+        assert_eq!(
+            query.totals()[&Mechanism::Copy].known_bytes,
+            body.len() as u128
+        );
+    }
     assert_eq!(response.as_ref(), body.as_ref());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
@@ -768,10 +848,15 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
         .actor_call_chunks(&invocation, 0, Some(body.len() - 1))
         .await?;
     let mut refused = core::pin::pin!(refused);
-    assert!(matches!(
-        refused.next().await,
-        Some(Err(StreamError::InvalidResponse))
-    ));
+    let error = match refused.next().await {
+        Some(Err(error)) => error,
+        _ => return Err("oversized original reply was accepted".into()),
+    };
+    assert_eq!(error.category(), StreamError::InvalidResponse);
+    assert!(
+        std::error::Error::source(&error).is_some(),
+        "original reply bound cause was lost"
+    );
 
     let stopped = client
         .actor_call_chunks(&invocation, 0, Some(body.len()))
@@ -788,14 +873,65 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
     // Both original channel credits remain held. Losing the real host still
     // closes the incomplete reply without waiting for either fragment to drop.
     drop(host);
-    assert!(matches!(
-        stopped.next().await,
-        Some(Err(StreamError::Unavailable))
-    ));
+    assert_reply_failure(stopped.next().await, StreamError::Unavailable);
     assert_eq!(first.1.as_ref(), &body[..crate::MAX_RECORD_BYTES]);
     assert_eq!(
         second.1.as_ref(),
         &body[crate::MAX_RECORD_BYTES..2 * crate::MAX_RECORD_BYTES]
     );
+    Ok(())
+}
+
+fn assert_reply_failure<T>(result: Option<Result<T, StreamError>>, expected: StreamError) {
+    let error = match result {
+        Some(Err(error)) => error,
+        _ => panic!("reply ended without its original failure"),
+    };
+    assert_eq!(error.category(), expected);
+    let mut cause = std::error::Error::source(&error);
+    while let Some(source) = cause {
+        if source
+            .downcast_ref::<StreamError>()
+            .is_some_and(|original| original.category() == expected)
+        {
+            return;
+        }
+        cause = source.source();
+    }
+    panic!("reply failure lost its original stream error");
+}
+
+#[tokio::test]
+async fn input_producer_loss_retains_original_terminal_receive_error() -> TestResult {
+    let released = Arc::new(signal::Signal::new());
+    let (producer, mut input) = super::super::calls::InputProducer::new(
+        wire::SessionChannel {
+            channel_id: 1,
+            generation: 1,
+        },
+        released,
+    );
+    let error = {
+        let mut waiting = core::pin::pin!(input.next_chunk());
+        assert!(futures::poll!(waiting.as_mut()).is_pending());
+        drop(producer);
+        match waiting.await {
+            Err(error) => error,
+            Ok(_) => return Err("lost terminal producer returned a successful EOF".into()),
+        }
+    };
+    assert_eq!(error.category(), StreamError::Unavailable);
+    let mut source = std::error::Error::source(&error);
+    let mut retained = false;
+    while let Some(cause) = source {
+        retained |= cause.is::<oneshot::error::RecvError>();
+        source = cause.source();
+    }
+    assert!(
+        retained,
+        "input producer loss discarded the original receive error"
+    );
+    assert!(input.next_chunk().await?.is_none());
+    assert!(input.trailers().is_none());
     Ok(())
 }

@@ -70,16 +70,46 @@ pub fn actor_call_total(data: &wire::SessionData) -> Result<usize, StreamError> 
     let opaque = &data
         .after
         .as_ref()
-        .ok_or(StreamError::InvalidResponse)?
+        .ok_or_else(|| StreamError::InvalidResponse.with_source(ReplyCursorFailure::Missing))?
         .opaque;
     let bytes: [u8; 8] = opaque
         .as_ref()
         .try_into()
-        .map_err(|_| StreamError::InvalidResponse)?;
-    usize::try_from(u64::from_le_bytes(bytes))
-        .ok()
-        .filter(|total| *total > 0)
-        .ok_or(StreamError::InvalidResponse)
+        .map_err(|source| StreamError::InvalidResponse.with_source(source))?;
+    let total = usize::try_from(u64::from_le_bytes(bytes))
+        .map_err(|source| StreamError::InvalidResponse.with_source(source))?;
+    if total == 0 {
+        return Err(StreamError::InvalidResponse.with_source(ReplyCursorFailure::Empty));
+    }
+    Ok(total)
+}
+
+#[derive(Debug, thiserror::Error)]
+enum ReplyCursorFailure {
+    #[error("original finite reply has no cursor")]
+    Missing,
+    #[error("original finite reply advertises an empty total")]
+    Empty,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum ReplyFragmentFailure {
+    #[error("finite reply fragment has no reply payload")]
+    Payload,
+    #[error("finite reply position {next} is outside advertised total {total}")]
+    Position { next: u64, total: usize },
+    #[error(
+        "finite reply fragment at {next}: cursor={advertised}, bytes={bytes}, total={total}, accepted={accepted}, durable={durable}, changed={changed}"
+    )]
+    Shape {
+        next: u64,
+        advertised: u64,
+        bytes: usize,
+        total: usize,
+        accepted: u64,
+        durable: u64,
+        changed: bool,
+    },
 }
 
 /// Admit one ordered, bounded fragment without returning credit or advancing
@@ -89,33 +119,74 @@ pub fn actor_call_sequence(
     previous_opaque: &[u8],
     data: &wire::SessionData,
 ) -> Result<u64, StreamError> {
-    let after = data.after.as_ref().ok_or(StreamError::InvalidResponse)?;
+    let after = data
+        .after
+        .as_ref()
+        .ok_or_else(|| StreamError::InvalidResponse.with_source(ReplyCursorFailure::Missing))?;
     let total = actor_call_total(data)?;
-    let chunk = reply_chunk(data.item.as_ref()).ok_or(StreamError::InvalidResponse)?;
-    let start = usize::try_from(next)
-        .ok()
-        .and_then(|index| index.checked_mul(crate::MAX_RECORD_BYTES))
+    let chunk = reply_chunk(data.item.as_ref())
+        .ok_or_else(|| StreamError::InvalidResponse.with_source(ReplyFragmentFailure::Payload))?;
+    let index =
+        usize::try_from(next).map_err(|source| StreamError::InvalidResponse.with_source(source))?;
+    let start = index
+        .checked_mul(crate::MAX_RECORD_BYTES)
         .filter(|start| *start < total)
-        .ok_or(StreamError::InvalidResponse)?;
+        .ok_or_else(|| {
+            StreamError::InvalidResponse.with_source(ReplyFragmentFailure::Position { next, total })
+        })?;
     if chunk.is_empty()
         || chunk.len() > crate::MAX_RECORD_BYTES
         || chunk.len() > total
         || chunk.len() != (total - start).min(crate::MAX_RECORD_BYTES)
         || (!previous_opaque.is_empty() && previous_opaque != after.opaque.as_ref())
-        || after.next != next.checked_add(1).ok_or(StreamError::OutOfRange)?
+        || after.next
+            != next.checked_add(1).ok_or_else(|| {
+                StreamError::OutOfRange.with_source(ReplyFragmentFailure::Position { next, total })
+            })?
         || data.accepted != after.next
         || data.durable != 0
     {
-        return Err(StreamError::InvalidResponse);
+        return Err(
+            StreamError::InvalidResponse.with_source(ReplyFragmentFailure::Shape {
+                next,
+                advertised: after.next,
+                bytes: chunk.len(),
+                total,
+                accepted: data.accepted,
+                durable: data.durable,
+                changed: !previous_opaque.is_empty() && previous_opaque != after.opaque.as_ref(),
+            }),
+        );
     }
     Ok(next)
+}
+
+#[derive(Debug, thiserror::Error)]
+enum SocketFrameFailure {
+    #[error("actor socket frame has no cursor")]
+    MissingCursor,
+    #[error("actor socket frame sequence overflows at {next}")]
+    Overflow { next: u64 },
+    #[error(
+        "actor socket frame at {next}: cursor={advertised}, opaque bytes={opaque_bytes}, accepted={accepted}, durable={durable}, whole={whole}"
+    )]
+    Shape {
+        next: u64,
+        advertised: u64,
+        opaque_bytes: usize,
+        accepted: u64,
+        durable: u64,
+        whole: bool,
+    },
 }
 
 /// Admit one whole actor-socket frame: `after.next` counts frames from 1 on
 /// one generation, with an empty opaque cursor. Frames are never spliced
 /// across a reconnect, because a socket channel is never replayed.
 pub fn actor_socket_sequence(next: u64, data: &wire::SessionData) -> Result<u64, StreamError> {
-    let after = data.after.as_ref().ok_or(StreamError::InvalidResponse)?;
+    let after = data.after.as_ref().ok_or_else(|| {
+        StreamError::InvalidResponse.with_source(SocketFrameFailure::MissingCursor)
+    })?;
     let whole = matches!(
         &data.item,
         Some(wire::session_data::Item::ActorSocket(frame))
@@ -123,11 +194,23 @@ pub fn actor_socket_sequence(next: u64, data: &wire::SessionData) -> Result<u64,
     );
     if !whole
         || !after.opaque.is_empty()
-        || after.next != next.checked_add(1).ok_or(StreamError::OutOfRange)?
+        || after.next
+            != next.checked_add(1).ok_or_else(|| {
+                StreamError::OutOfRange.with_source(SocketFrameFailure::Overflow { next })
+            })?
         || data.accepted != after.next
         || data.durable != 0
     {
-        return Err(StreamError::InvalidResponse);
+        return Err(
+            StreamError::InvalidResponse.with_source(SocketFrameFailure::Shape {
+                next,
+                advertised: after.next,
+                opaque_bytes: after.opaque.len(),
+                accepted: data.accepted,
+                durable: data.durable,
+                whole,
+            }),
+        );
     }
     Ok(next)
 }
@@ -137,7 +220,8 @@ pub fn decode_frame(bytes: &[u8]) -> Result<wire::SessionFrame, StreamError> {
     if bytes.len() > crate::MAX_COMMAND_BYTES {
         return Err(StreamError::LimitExceeded);
     }
-    wire::SessionFrame::decode(bytes).map_err(|_| StreamError::InvalidResponse)
+    wire::SessionFrame::decode(bytes)
+        .map_err(|source| StreamError::InvalidResponse.with_source(source))
 }
 
 /// Validates a logical Streams follow without creating transport state.
@@ -268,13 +352,21 @@ pub fn confirm_follow(
     Ok(())
 }
 
+#[derive(Debug, thiserror::Error)]
+enum SnapshotCursorFailure {
+    #[error("snapshot continuation requires a nonzero cut")]
+    ZeroCut,
+    #[error("initial snapshot cursor carries {bytes} unexpected anchor bytes")]
+    InitialAnchor { bytes: usize },
+}
+
 /// Complete record continuation at a nonzero cut, including its immutable anchor.
 /// The provider-owned `opaque` field carries the 32-byte commit ID of `next - 1`.
 /// ALL-record route adapters resume this token through [`follow_records`], and
 /// retain it unchanged on placement moves. No new frame or cursor schema is used.
 pub fn record_cursor(next: u64, preceding: CommitId) -> Result<wire::SessionCursor, StreamError> {
     if next == 0 {
-        return Err(StreamError::InvalidArgument);
+        return Err(StreamError::InvalidArgument.with_source(SnapshotCursorFailure::ZeroCut));
     }
     Ok(wire::SessionCursor {
         next,
@@ -288,14 +380,18 @@ pub fn record_anchor(cursor: &wire::SessionCursor) -> Result<Option<CommitId>, S
         return if cursor.opaque.is_empty() {
             Ok(None)
         } else {
-            Err(StreamError::InvalidArgument)
+            Err(
+                StreamError::InvalidArgument.with_source(SnapshotCursorFailure::InitialAnchor {
+                    bytes: cursor.opaque.len(),
+                }),
+            )
         };
     }
     let anchor = cursor
         .opaque
         .as_ref()
         .try_into()
-        .map_err(|_| StreamError::InvalidArgument)?;
+        .map_err(|source| StreamError::InvalidArgument.with_source(source))?;
     Ok(Some(CommitId::from_bytes(anchor)))
 }
 

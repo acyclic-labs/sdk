@@ -52,6 +52,15 @@ fn closed_diagnostics_preserve_every_declared_category() {
 
 #[test]
 fn actor_call_chunks_preserve_order_total_and_finite_fragment_work() {
+    let rejected = |result: Result<u64, StreamError>| {
+        let error = result.expect_err("invalid original finite reply fragment accepted");
+        assert_eq!(error.category(), StreamError::InvalidResponse);
+        assert!(
+            std::error::Error::source(&error).is_some(),
+            "reply fragment discarded its original rejection cause"
+        );
+        true
+    };
     let total = crate::MAX_RECORD_BYTES + 1;
     let mut data = wire::SessionData {
         after: Some(wire::SessionCursor {
@@ -69,20 +78,43 @@ fn actor_call_chunks_preserve_order_total_and_finite_fragment_work() {
     data.item = Some(Item::ActorCall(Bytes::from_static(b"x")));
     assert_eq!(actor_call_sequence(1, &opaque, &data), Ok(1));
     assert!(
-        actor_call_sequence(0, &opaque, &data).is_err(),
+        rejected(actor_call_sequence(0, &opaque, &data)),
         "a hole must be refused"
     );
     let changed = ((total + 1) as u64).to_le_bytes();
     assert!(
-        actor_call_sequence(1, &changed, &data).is_err(),
+        rejected(actor_call_sequence(1, &changed, &data)),
         "a changed response cannot be spliced"
     );
     data.after.as_mut().unwrap().next = 1;
     data.accepted = 1;
     assert!(
-        actor_call_sequence(0, &[], &data).is_err(),
+        rejected(actor_call_sequence(0, &[], &data)),
         "small nonterminal fragments must not amplify work"
     );
+    for after in [
+        None,
+        Some(wire::SessionCursor {
+            next: 1,
+            opaque: Bytes::new(),
+        }),
+        Some(wire::SessionCursor {
+            next: 1,
+            opaque: 0_u64.to_le_bytes().to_vec().into(),
+        }),
+    ] {
+        data.after = after;
+        let error = actor_call_total(&data).expect_err("invalid original reply cursor accepted");
+        assert_eq!(error.category(), StreamError::InvalidResponse);
+        let mut cause = std::error::Error::source(&error);
+        let mut original = false;
+        while let Some(source) = cause {
+            original |=
+                source.is::<ReplyCursorFailure>() || source.is::<std::array::TryFromSliceError>();
+            cause = source.source();
+        }
+        assert!(original, "reply cursor discarded its original parser cause");
+    }
 }
 
 fn round_trip(frame: &wire::SessionFrame) -> Result<wire::SessionFrame, prost::DecodeError> {
@@ -91,7 +123,20 @@ fn round_trip(frame: &wire::SessionFrame) -> Result<wire::SessionFrame, prost::D
 
 #[test]
 fn malformed_peer_protobuf_is_a_terminal_response_error() {
-    assert_eq!(decode_frame(&[255]), Err(StreamError::InvalidResponse));
+    let malformed = [255];
+    let original = wire::SessionFrame::decode(malformed.as_slice()).unwrap_err();
+    let error = decode_frame(&malformed).unwrap_err();
+    assert_eq!(error.category(), StreamError::InvalidResponse);
+    let mut source = std::error::Error::source(&error);
+    let mut retained = None;
+    while let Some(cause) = source {
+        if let Some(decode) = cause.downcast_ref::<prost::DecodeError>() {
+            retained = Some(decode);
+            break;
+        }
+        source = cause.source();
+    }
+    assert_eq!(retained, Some(&original));
     let frame = wire::SessionFrame {
         channel_id: 1,
         generation: 1,
@@ -230,5 +275,32 @@ fn credit_failures_never_partially_change_balances() {
             Err(StreamError::Capacity)
         );
         assert_eq!(remaining, before);
+    }
+}
+
+#[test]
+fn actor_socket_rejections_retain_original_frame_facts() {
+    let valid = wire::SessionData {
+        after: Some(wire::SessionCursor {
+            next: 1,
+            opaque: Bytes::new(),
+        }),
+        accepted: 1,
+        durable: 0,
+        item: Some(Item::ActorSocket(Bytes::from_static(b"original frame"))),
+    };
+    assert_eq!(actor_socket_sequence(0, &valid), Ok(0));
+    for field in 0..5 {
+        let mut data = valid.clone();
+        match field {
+            0 => data.after = None,
+            1 => data.after.as_mut().unwrap().next = 2,
+            2 => data.accepted = 0,
+            3 => data.durable = 1,
+            _ => data.item = Some(Item::ActorSocket(Bytes::new())),
+        }
+        let error = actor_socket_sequence(0, &data).unwrap_err();
+        assert_eq!(error.category(), StreamError::InvalidResponse);
+        assert!(std::error::Error::source(&error).is_some());
     }
 }

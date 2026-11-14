@@ -106,7 +106,21 @@ proptest! {
             (1.., Ok(anchor)) => Ok(Some(anchor)),
             _ => Err(StreamError::InvalidArgument),
         };
-        prop_assert_eq!(record_anchor(&decoded).map(|id| id.map(|id| *id.as_bytes())), expected);
+        let actual = record_anchor(&decoded);
+        if next != 0 && decoded.opaque.len() != 32 {
+            let error = actual.as_ref().unwrap_err();
+            let mut source = std::error::Error::source(error);
+            let mut retained = false;
+            while let Some(cause) = source {
+                retained |= cause.is::<std::array::TryFromSliceError>();
+                source = cause.source();
+            }
+            prop_assert!(retained, "snapshot anchor discarded its original parser cause");
+        }
+        if let Err(error) = &actual {
+            prop_assert!(std::error::Error::source(error).is_some());
+        }
+        prop_assert_eq!(actual.map(|id| id.map(|id| *id.as_bytes())).map_err(|error| error.category()), expected);
     }
 
     #[test]
@@ -117,7 +131,9 @@ proptest! {
         prop_assert_eq!(decoded.opaque.as_ref(), &anchor);
         prop_assert_eq!(record_anchor(&decoded).map(|id| id.map(|id| *id.as_bytes())), Ok(Some(anchor)));
         prop_assert_eq!(decoded.next, next);
-        prop_assert_eq!(record_cursor(0, CommitId::from_bytes(anchor)), Err(StreamError::InvalidArgument));
+        let error = record_cursor(0, CommitId::from_bytes(anchor)).unwrap_err();
+        prop_assert_eq!(error.category(), StreamError::InvalidArgument);
+        prop_assert!(std::error::Error::source(&error).is_some());
     }
 
     #[test]
