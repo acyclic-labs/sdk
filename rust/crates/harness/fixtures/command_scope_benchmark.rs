@@ -41,7 +41,7 @@ mod command_scope_benchmark {
             let state = tempfile::tempdir().map_err(storage)?;
             let harness = open(root.path(), state.path()).await?;
             let mounts = &harness.workspace().unwrap().mounts;
-            let volumes = ordered_mounts(mounts)?;
+            let volumes = ordered_mounts(mounts.mounts());
             let volume_count = volumes
                 .iter()
                 .filter(|(_, mount)| {
