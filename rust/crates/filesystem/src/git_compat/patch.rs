@@ -30,6 +30,7 @@ struct UnifiedPatch<'a> {
 
 struct UnifiedHunk<'a> {
     old_start: usize,
+    old_lines: usize,
     lines: Vec<&'a str>,
 }
 
@@ -190,30 +191,53 @@ fn parse_unified_patch(bytes: &[u8]) -> Result<Vec<UnifiedPatch<'_>>, GitPatchEr
             if !line.starts_with("@@ ") {
                 continue;
             }
-            let old_start = parse_hunk_old_start(line)?;
+            let (old_start, old_lines, new_lines) = parse_hunk_header(line)?;
+            let (mut old_left, mut new_left) = (old_lines, new_lines);
             let mut hunk_lines: Vec<&str> = Vec::new();
-            while let Some(line) =
-                lines.next_if(|line| !line.starts_with("@@ ") && !line.starts_with("--- "))
-            {
-                if line.starts_with('\\') {
-                    let previous = hunk_lines.last_mut().ok_or_else(|| {
-                        GitPatchError::Invalid(
-                            "no-newline marker does not follow a hunk line".to_owned(),
-                        )
-                    })?;
-                    if let Some(line) = previous.strip_suffix('\n') {
-                        *previous = line.strip_suffix('\r').unwrap_or(line);
+            while old_left > 0 || new_left > 0 {
+                let line = lines.next().ok_or_else(|| {
+                    GitPatchError::Invalid("hunk is shorter than its header".to_owned())
+                })?;
+                let (old, new) = match line.as_bytes().first() {
+                    Some(b'\\') => {
+                        strip_final_newline(&mut hunk_lines)?;
+                        continue;
                     }
-                } else if line.starts_with([' ', '+', '-']) {
-                    hunk_lines.push(line);
-                } else {
-                    return Err(GitPatchError::Invalid(
-                        "hunk line lacks a unified-diff prefix".to_owned(),
-                    ));
-                }
+                    Some(b' ') => (1, 1),
+                    Some(b'-') => (1, 0),
+                    Some(b'+') => (0, 1),
+                    _ => {
+                        return Err(GitPatchError::Invalid(
+                            "hunk line lacks a unified-diff prefix".to_owned(),
+                        ));
+                    }
+                };
+                (old_left, new_left) = old_left
+                    .checked_sub(old)
+                    .zip(new_left.checked_sub(new))
+                    .ok_or_else(|| {
+                        GitPatchError::Invalid("hunk lines contradict its header".to_owned())
+                    })?;
+                hunk_lines.push(line);
+            }
+            if lines.next_if(|line| line.starts_with('\\')).is_some() {
+                strip_final_newline(&mut hunk_lines)?;
+            }
+            // Git drops body lines past the counts, which would lose edits
+            // without an error. `-- ` is the mail signature.
+            if lines.peek().is_some_and(|line| {
+                line.starts_with([' ', '+'])
+                    || (line.starts_with('-')
+                        && !line.starts_with("--- ")
+                        && line.trim_end() != "--")
+            }) {
+                return Err(GitPatchError::Invalid(
+                    "hunk is longer than its header".to_owned(),
+                ));
             }
             hunks.push(UnifiedHunk {
                 old_start,
+                old_lines,
                 lines: hunk_lines,
             });
         }
@@ -255,16 +279,41 @@ fn parse_patch_path<'a>(line: &'a str, prefix: &str) -> Result<Option<&'a str>, 
     Ok(Some(value))
 }
 
-fn parse_hunk_old_start(line: &str) -> Result<usize, GitPatchError> {
-    let range = line
+fn strip_final_newline(lines: &mut [&str]) -> Result<(), GitPatchError> {
+    let previous = lines.last_mut().ok_or_else(|| {
+        GitPatchError::Invalid("no-newline marker does not follow a hunk line".to_owned())
+    })?;
+    if let Some(line) = previous.strip_suffix('\n') {
+        *previous = line.strip_suffix('\r').unwrap_or(line);
+    }
+    Ok(())
+}
+
+// `@@ -start[,lines] +start[,lines] @@`: an omitted count is one line.
+fn parse_hunk_header(line: &str) -> Result<(usize, usize, usize), GitPatchError> {
+    fn range(text: &str) -> Option<(usize, usize)> {
+        match text.split_once(',') {
+            Some((start, lines)) => Some((start.parse().ok()?, lines.parse().ok()?)),
+            None => Some((text.parse().ok()?, 1)),
+        }
+    }
+    let mut ranges = line
         .strip_prefix("@@ -")
-        .and_then(|line| line.split_whitespace().next())
-        .ok_or_else(|| GitPatchError::Invalid("malformed hunk header".to_owned()))?;
-    range
-        .split(',')
+        .ok_or_else(|| GitPatchError::Invalid("malformed hunk header".to_owned()))?
+        .split_whitespace();
+    let old = ranges.next().and_then(range);
+    let new = ranges
         .next()
-        .and_then(|value| value.parse().ok())
-        .ok_or_else(|| GitPatchError::Invalid("malformed hunk source range".to_owned()))
+        .and_then(|text| text.strip_prefix('+'))
+        .and_then(range);
+    match (old, new) {
+        (Some((old_start, old_lines)), Some((_, new_lines))) => {
+            Ok((old_start, old_lines, new_lines))
+        }
+        _ => Err(GitPatchError::Invalid(
+            "malformed hunk line range".to_owned(),
+        )),
+    }
 }
 
 fn apply_unified_hunks(
@@ -276,7 +325,12 @@ fn apply_unified_hunks(
     let mut output = String::new();
     let mut cursor = 0_usize;
     for hunk in hunks {
-        let start = hunk.old_start.saturating_sub(1);
+        // An empty source range names the line it follows, not its first line.
+        let start = if hunk.old_lines == 0 {
+            hunk.old_start
+        } else {
+            hunk.old_start.saturating_sub(1)
+        };
         if start < cursor || start > source.len() {
             return Err(GitPatchError::Conflict {
                 path: path.to_owned(),
