@@ -119,7 +119,7 @@ async fn signed_account_admission_preserves_membership_and_original_outcomes()
         epoch: Some([7; 32]),
     };
     let admission = PeerAdmission {
-        sender: witness.clone(),
+        sender: witness,
         recipient: witness,
     };
     let first = peer_envelope(&roots[0], &roots[2], "first", admission.clone())?;

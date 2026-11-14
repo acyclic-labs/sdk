@@ -19,11 +19,11 @@ pub const MAX_RECORD_BYTES: usize = 56 * 1024;
 pub const MAX_INTENT_BYTES: usize = 128;
 /// Inline failure packing threshold; longer terminal text uses a Diagnostic.
 pub const MAX_MESSAGE_BYTES: usize = 4 * 1024;
-/// Version-seven admissions carry public revocable intervals rather than
-/// private membership heads, so remote preparation needs no private reads.
+/// Version-eight routed inputs retain the qualified sender and use keys bound
+/// to both actor references. Admissions carry public revocable intervals.
 /// Other formats are refused whole;
 /// sessions must start fresh, with no migration or compatibility reader.
-pub const RECORD_VERSION: u32 = 7;
+pub const RECORD_VERSION: u32 = 8;
 
 /// Version-one creation event in an agent's append-only membership stream.
 /// The first event names the owner; subsequent events name its direct children.

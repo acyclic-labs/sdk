@@ -13,8 +13,33 @@ mod tests;
 pub(super) const OUTBOX: &str = "acyclic.actors.route.outbox.v1";
 pub(super) const SOURCE_INTENT: &str = "acyclic.actors.route.source-intent.v1";
 pub(super) const ADMISSION: &str = "acyclic.harness.peer-admission.v1";
+const SENDER: &str = "acyclic.actors.route.sender.v1";
 
 impl AgentRecord for PeerAdmission {}
+
+fn qualified_intent(
+    kind: &str,
+    sender: &ActorReference,
+    to: &ActorReference,
+    id: &super::IntentId,
+) -> Result<acyclic_stream::IdempotencyKey, Error> {
+    let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.routed-intent.v1");
+    for part in [
+        kind.as_bytes(),
+        to.account().as_bytes(),
+        to.namespace().as_str().as_bytes(),
+        to.id().as_bytes(),
+        sender.account().as_bytes(),
+        sender.namespace().as_str().as_bytes(),
+        sender.id().as_bytes(),
+        id.as_str().as_bytes(),
+    ] {
+        hash.update(&(part.len() as u64).to_le_bytes());
+        hash.update(part);
+    }
+    acyclic_stream::IdempotencyKey::new(hash.finalize().to_hex().as_bytes().to_vec())
+        .map_err(Error::Stream)
+}
 
 /// Routing subtree and source identity admitted by this node's host.
 #[derive(Clone, Debug)]
@@ -151,12 +176,76 @@ pub struct PeerRoute<'a> {
 }
 
 impl<'a> PeerRoute<'a> {
+    /// Prepare the ordinary inbox request with its fully qualified source.
+    /// The owning host must authorize both identities and the retained grant;
+    /// this value confers no authority and performs no publication or IO.
+    pub fn prepare(
+        source: route::NodeId,
+        sender: ActorReference,
+        to: ActorReference,
+        input: &super::InboxRecord,
+        admission: &PeerAdmission,
+    ) -> Result<route::Envelope, Error> {
+        Ok(route::Envelope {
+            source,
+            request: Self::request(&sender, &to, input, admission)?,
+            sender,
+            to,
+        })
+    }
+
+    fn request(
+        sender: &ActorReference,
+        to: &ActorReference,
+        input: &super::InboxRecord,
+        admission: &PeerAdmission,
+    ) -> Result<acyclic_stream::CommitRequest, Error> {
+        let (super::InboxRecord::Message(message) | super::InboxRecord::FollowUp(message)) = input
+        else {
+            return Err(Error::Record("peer route cannot carry control input"));
+        };
+        let recipient = AgentPath::root(&super::AgentId::try_from(to.id().to_owned())?);
+        let super::Sender::Agent { path } = &message.from else {
+            return Err(Error::Record("peer route requires agent attribution"));
+        };
+        if path.depth() != 0
+            || sender.id() != path.id().as_str()
+            || sender == to
+            || sender.account() != to.account()
+            || !admission.sender.enabled()
+            || !admission.recipient.enabled()
+        {
+            return Err(Error::Record("peer route identity or membership differs"));
+        }
+        let mut request = super::commit::send(&recipient, &message.from, input)?;
+        request.idempotency_key = qualified_intent("message", sender, to, &message.id)?;
+        let acyclic_stream::CommitMutation::Append { records, .. } =
+            &mut request.effects[0].mutations[0]
+        else {
+            unreachable!()
+        };
+        records[0].headers = acyclic_stream::RecordHeaders::new(
+            Vec::new(),
+            vec![
+                acyclic_stream::Attribute {
+                    name: SENDER.into(),
+                    value: sender.encode().into(),
+                },
+                acyclic_stream::Attribute {
+                    name: ADMISSION.into(),
+                    value: admission.encode()?.into(),
+                },
+            ],
+        )
+        .map_err(Error::Stream)?;
+        Ok(request)
+    }
+
     /// Accept exactly one ordinary, root-to-root Message or FollowUp. Extra
     /// conditions, mutations, control records and substituted intent keys are
     /// refused; a node credential cannot turn an inbox grant into other access.
     pub fn parse(envelope: &'a route::Envelope) -> Result<Self, Error> {
         use super::{InboxRecord, Sender};
-        use acyclic_stream::CommitMutation;
         let (path, record) = inbox_append(envelope)?;
         let input = InboxRecord::decode(&record.value)?;
         let (InboxRecord::Message(message) | InboxRecord::FollowUp(message)) = &input else {
@@ -167,23 +256,22 @@ impl<'a> PeerRoute<'a> {
         };
         let recipient = AgentPath::root(&super::AgentId::try_from(envelope.to.id().to_owned())?);
         if sender.depth() != 0
-            || sender == &recipient
+            || envelope.sender == envelope.to
             || envelope.sender.account() != envelope.to.account()
-            || envelope.sender.namespace() != envelope.to.namespace()
             || envelope.sender.id().as_bytes() != sender.id().as_str().as_bytes()
             || path != &recipient.inbox()?
         {
             return Err(Error::Record("peer route attribution differs"));
         }
         let attributes = record.headers.attributes();
-        if attributes.len() != 1 {
+        if attributes.len() != 2 {
             return Err(Error::Record("peer route has no unique admission"));
         }
         let attribute = attributes
             .iter()
-            .next()
+            .find(|attribute| attribute.name == ADMISSION)
             .ok_or(Error::Record("peer route has no admission"))?;
-        if attribute.name != ADMISSION || !record.headers.keys().is_empty() {
+        if !record.headers.keys().is_empty() {
             return Err(Error::Record("peer route has foreign headers"));
         }
         let admission = PeerAdmission::decode(attribute.value)?;
@@ -192,11 +280,7 @@ impl<'a> PeerRoute<'a> {
                 "peer route requires enabled membership intervals",
             ));
         }
-        let mut expected = super::commit::send(&recipient, &message.from, &input)?;
-        let CommitMutation::Append { records, .. } = &mut expected.effects[0].mutations[0] else {
-            unreachable!()
-        };
-        records[0].headers = record.headers.clone();
+        let expected = Self::request(&envelope.sender, &envelope.to, &input, &admission)?;
         if envelope.request != expected {
             return Err(Error::Record(
                 "peer route differs from ordinary message delivery",

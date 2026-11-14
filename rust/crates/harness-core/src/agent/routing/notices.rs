@@ -41,31 +41,30 @@ impl ResultRecord {
     ) -> Result<route::Envelope, Error> {
         Ok(route::Envelope {
             source: node,
+            request: self.request(&sender, &to, target, receipt)?,
             sender,
             to,
-            request: self.request(target, receipt)?,
         })
     }
 
     fn request(
         &self,
+        sender: &acyclic_actors::addressing::ActorReference,
+        to: &acyclic_actors::addressing::ActorReference,
         target: &AgentPath,
         receipt: Option<&route::RelayReceipt>,
     ) -> Result<CommitRequest, Error> {
         if self.version != 1
             || self.peer.depth() != 0
             || target.depth() != 0
-            || target == &self.peer
+            || sender == to
             || matches!(self.status, SentReplyStatus::Pending)
             || (self.rejection.is_some() != receipt.is_none())
             || (self.rejection.is_some() && self.status != SentReplyStatus::Dropped)
         {
             return Err(Error::Record("invalid terminal peer result"));
         }
-        let identity = crate::agent::intent_key(
-            "peer-result",
-            &[target.as_str(), self.peer.as_str(), self.id.as_str()],
-        )?;
+        let identity = super::qualified_intent("result", sender, to, &self.id)?;
         let id = IntentId::try_from(
             std::str::from_utf8(identity.as_bytes())
                 .map_err(|_| Error::Record("invalid result identity"))?,
@@ -136,9 +135,9 @@ impl ResultRecord {
         )?);
         let receipt = route::RelayReceipt::from_headers(&record.headers).map_err(super::error)?;
         if envelope.sender.account() != envelope.to.account()
-            || envelope.sender.namespace() != envelope.to.namespace()
             || envelope.sender.id() != result.peer.id().as_str()
-            || result.request(&target, receipt.as_ref())? != envelope.request
+            || result.request(&envelope.sender, &envelope.to, &target, receipt.as_ref())?
+                != envelope.request
         {
             return Err(Error::Record("result differs from ordinary delivery"));
         }
@@ -204,6 +203,7 @@ pub(in crate::agent) struct PeerInput<'a> {
     sender: &'a AgentPath,
     id: &'a IntentId,
     receipt: route::RelayReceipt,
+    source: acyclic_actors::addressing::ActorReference,
 }
 
 impl<'a> PeerInput<'a> {
@@ -218,11 +218,7 @@ impl<'a> PeerInput<'a> {
         let Sender::Agent { path: sender } = &message.from else {
             return Ok(None);
         };
-        if agent.depth() != 0
-            || sender.depth() != 0
-            || sender == agent
-            || record.origin != agent.inbox()?
-        {
+        if agent.depth() != 0 || sender.depth() != 0 || record.origin != agent.inbox()? {
             return Ok(None);
         }
         let Some(receipt) =
@@ -230,11 +226,23 @@ impl<'a> PeerInput<'a> {
         else {
             return Ok(None);
         };
+        let attribute = record
+            .headers
+            .attributes()
+            .iter()
+            .find(|attribute| attribute.name == super::SENDER)
+            .ok_or(Error::Record("routed input has no qualified sender"))?;
+        let source = acyclic_actors::addressing::ActorReference::decode(attribute.value)
+            .map_err(|_| Error::Record("routed input sender is invalid"))?;
+        if source.id() != sender.id().as_str() {
+            return Err(Error::Record("routed input sender attribution differs"));
+        }
         Ok(Some(Self {
             peer: agent,
             sender,
             id: &message.id,
             receipt,
+            source,
         }))
     }
 
@@ -244,12 +252,11 @@ impl<'a> PeerInput<'a> {
         within: &acyclic_actors::addressing::ActorReference,
         status: SentReplyStatus,
     ) -> Result<AppendRecord, Error> {
-        let actor = |path: &AgentPath| {
-            crate::agent::handler::Agents::<dyn crate::store::JournalProvider>::actor(
-                within,
-                &path.id(),
-            )
-        };
+        if self.source.account() != within.account() {
+            return Err(Error::Record(
+                "routed input sender belongs to another account",
+            ));
+        }
         Ok(ResultRecord {
             version: 1,
             id: self.id.clone(),
@@ -259,8 +266,11 @@ impl<'a> PeerInput<'a> {
         }
         .envelope(
             routing.node.clone(),
-            actor(self.peer)?,
-            actor(self.sender)?,
+            crate::agent::handler::Agents::<dyn crate::store::JournalProvider>::actor(
+                within,
+                &self.peer.id(),
+            )?,
+            self.source.clone(),
             self.sender,
             Some(&self.receipt),
         )?

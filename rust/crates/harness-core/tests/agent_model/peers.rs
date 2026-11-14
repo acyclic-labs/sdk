@@ -1681,13 +1681,25 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                 ActorReference::new(b"account", b"other", recipient.id().as_str().as_bytes())?;
             assert!(
                 PeerRoute::parse(&altered).is_err(),
-                "foreign namespace was admitted"
+                "substituted destination namespace was admitted"
             );
             let mut altered = envelope.clone();
             altered.sender =
                 ActorReference::new(b"other-account", b"agents", envelope.sender.id().as_bytes())?;
             altered.to =
                 ActorReference::new(b"other-account", b"agents", envelope.to.id().as_bytes())?;
+            let CommitMutation::Append { records, .. } = &envelope.request.effects[0].mutations[0]
+            else {
+                unreachable!()
+            };
+            let input = InboxRecord::decode(&records[0].value)?;
+            let altered = PeerRoute::prepare(
+                altered.source,
+                altered.sender,
+                altered.to,
+                &input,
+                peer.admission(),
+            )?;
             assert!(
                 PeerRoute::parse(&altered)?
                     .deliver(&host, &receiving, &receipt)
@@ -1848,10 +1860,6 @@ async fn remote_send_recovers_original_admission_from_its_source_publication() -
                 Sender::Agent {
                     path: sender.clone()
                 }
-            );
-            assert_eq!(
-                envelope.request.idempotency_key,
-                send(&recipient, &message.from, &original)?.idempotency_key
             );
             assert_eq!(
                 sent(&local, &sender, &intent(name))

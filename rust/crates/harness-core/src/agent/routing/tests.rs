@@ -7,10 +7,152 @@ use crate::agent::{
 use crate::conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef};
 use acyclic_stream::{
     CommitCondition, CommitEffect, CommitMutation, CommitOutcome, CommitRequest, MemoryStream,
-    RecordHeaders, StreamPath, StreamProvider as _, StreamProviderExt as _,
+    StreamPath, StreamProvider as _, StreamProviderExt as _,
 };
 
 mod account;
+
+#[tokio::test]
+async fn qualified_senders_keep_distinct_intents_and_reply_destinations()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = MemoryStream::default();
+    let account = MemoryStream::default();
+    let sender = AgentPath::root(&AgentId::from_bytes([1; 16]));
+    let recipient = AgentPath::root(&AgentId::from_bytes([2; 16]));
+    let created = create_root_with_peer(
+        &IntentId::try_from("recipient")?,
+        ForkAdopted {
+            agent: recipient.id(),
+            parent: None,
+            profile: None,
+            forked_at: 0,
+            conversation_tail: 0,
+            checkpoint: None,
+            volumes: Vec::new(),
+            brief: None,
+            policy: None,
+        },
+        true,
+    )?;
+    assert!(matches!(
+        provider.commit(created.request).await?,
+        CommitOutcome::Committed(_)
+    ));
+    let member = provider
+        .head(recipient.peer_membership()?)
+        .await?
+        .last
+        .ok_or("membership missing")?;
+    let admission = PeerAdmission {
+        sender: PeerMembership {
+            epoch: Some([7; 32]),
+        },
+        recipient: PeerMembership::decode(&member.value)?,
+    };
+    let original = peer_envelope(&sender, &recipient, "same-intent", admission.clone())?;
+    let input = InboxRecord::decode(&inbox_append(&original)?.1.value)?;
+    let routing = Routing {
+        paths: route::Paths::new(StreamPath::new("routing")?),
+        node: route::NodeId::new(b"destination")?,
+    };
+    let mut first_key: Option<acyclic_stream::IdempotencyKey> = None;
+    for (index, namespace) in [b"first".as_slice(), b"second".as_slice()]
+        .into_iter()
+        .enumerate()
+    {
+        let source = ActorReference::new(b"account", namespace, sender.id().as_str().as_bytes())?;
+        let envelope = PeerRoute::prepare(
+            original.source.clone(),
+            source.clone(),
+            original.to.clone(),
+            &input,
+            &admission,
+        )?;
+        let peer = PeerRoute::parse(&envelope)?;
+        envelope
+            .publish_relay(&account, &routing.paths, &routing.node, Vec::new())
+            .await?;
+        let relay = account
+            .record_at(routing.paths.relay(&routing.node)?, index as u64)
+            .await?
+            .ok_or("relay missing")?;
+        let receipt = route::RelayReceipt {
+            commit_id: relay.commit_id,
+            sequence: relay.sequence,
+        };
+        let request = peer.delivery_request(&receipt)?;
+        let committed = provider.commit(request.clone()).await?;
+        assert!(
+            matches!(&committed, CommitOutcome::Committed(receipt) if receipt.skipped.is_empty())
+        );
+        assert_eq!(provider.commit(request.clone()).await?, committed);
+        let record = provider
+            .record_at(recipient.inbox()?, index as u64 + 1)
+            .await?
+            .ok_or("input missing")?;
+        let received = InboxRecord::decode(&record.value)?;
+        let InboxRecord::Message(message) = &received else {
+            return Err("peer input lost its message envelope".into());
+        };
+        assert_eq!(
+            message.from,
+            Sender::Agent {
+                path: sender.clone()
+            }
+        );
+        let owned = super::notices::PeerInput::parse(&recipient, &received, &record)?
+            .ok_or("routed input lost its source")?;
+        let result = owned.terminal(
+            &routing,
+            &envelope.to,
+            crate::agent::SentReplyStatus::Answered { sequence: 0 },
+        )?;
+        let result = route::Publication::decode(&result.value)?.delivery()?;
+        assert_eq!(
+            result.to, source,
+            "reply crossed into the receiver's namespace"
+        );
+        assert_eq!(result.sender, envelope.to);
+        super::notices::PeerResultRoute::parse(&result)?
+            .verify_original(&account, &routing.paths)
+            .await?;
+        if let Some(first) = &first_key {
+            assert_ne!(&request.idempotency_key, first);
+            // Negative control: restoring the unqualified collision rejects
+            // this genuine second sender's input on the original native store.
+            let mut collided = request.clone();
+            collided.idempotency_key = first.clone();
+            assert_eq!(
+                provider
+                    .commit(collided)
+                    .await
+                    .expect_err("qualified keys collided")
+                    .category(),
+                acyclic_stream::StreamError::IdempotencyMismatch
+            );
+        } else {
+            first_key = Some(request.idempotency_key);
+        }
+        let mut missing_source = envelope.clone();
+        let CommitMutation::Append { records, .. } =
+            &mut missing_source.request.effects[0].mutations[0]
+        else {
+            unreachable!()
+        };
+        let attributes = records[0]
+            .headers
+            .attributes()
+            .iter()
+            .filter(|attribute| attribute.name != SENDER)
+            .map(|attribute| attribute.to_owned())
+            .collect();
+        records[0].headers = acyclic_stream::RecordHeaders::new(Vec::new(), attributes)?;
+        assert!(PeerRoute::parse(&missing_source).is_err());
+    }
+    assert_eq!(provider.tail(recipient.inbox()?).await?, 3);
+    assert_eq!(account.tail(routing.paths.relay(&routing.node)?).await?, 2);
+    Ok(())
+}
 
 #[tokio::test]
 async fn account_membership_uses_one_fenced_view_for_both_roots()
@@ -27,7 +169,7 @@ async fn account_membership_uses_one_fenced_view_for_both_roots()
             &recipient,
             "message",
             PeerAdmission {
-                sender: witness.clone(),
+                sender: witness,
                 recipient: witness,
             },
         )?;
@@ -367,7 +509,7 @@ async fn absent_refusal_fences_creation_of_a_disabled_recipient()
         &created.child,
         "message",
         PeerAdmission {
-            sender: witness.clone(),
+            sender: witness,
             recipient: witness,
         },
     )?;
@@ -476,30 +618,14 @@ fn peer_envelope(
         )?),
         attachments: None,
     });
-    let mut request = crate::agent::send(
-        recipient,
-        &Sender::Agent {
-            path: sender.clone(),
-        },
-        &input,
-    )?;
-    let CommitMutation::Append { records, .. } = &mut request.effects[0].mutations[0] else {
-        return Err("inbox append missing".into());
-    };
-    records[0].headers = RecordHeaders::new(
-        Vec::new(),
-        vec![acyclic_stream::Attribute {
-            name: ADMISSION.into(),
-            value: admission.encode()?.into(),
-        }],
-    )?;
     let actor = |path: &AgentPath| {
         ActorReference::new(b"account", b"agents", path.id().as_str().as_bytes())
     };
-    Ok(route::Envelope {
-        source: route::NodeId::new(b"source")?,
-        sender: actor(sender)?,
-        to: actor(recipient)?,
-        request,
-    })
+    Ok(PeerRoute::prepare(
+        route::NodeId::new(b"source")?,
+        actor(sender)?,
+        actor(recipient)?,
+        &input,
+        &admission,
+    )?)
 }

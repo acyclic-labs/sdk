@@ -134,6 +134,9 @@ pub(super) fn lower_routed(
     let mut peer_guards = BTreeMap::new();
     for out in &step.outs {
         if let Out::PeerGuard { to, admission } = out {
+            if routing.is_some_and(|(_, _, remote)| remote.contains(to)) {
+                continue;
+            }
             let conditions = admission.conditions(path, to)?;
             peer_guards.entry(to.inbox()?).or_insert(conditions);
         }
@@ -323,32 +326,19 @@ pub(super) fn lower_routed(
                             "peer routing accepts only attributed messages",
                         ));
                     }
-                    let mut request = commit::send(to, &sender, record)?;
-                    let CommitMutation::Append { records, .. } =
-                        &mut request.effects[0].mutations[0]
-                    else {
-                        return Err(Error::Record("message has no ordinary inbox append"));
-                    };
-                    records[0].headers = acyclic_stream::RecordHeaders::new(
-                        Vec::new(),
-                        vec![acyclic_stream::Attribute {
-                            name: super::routing::ADMISSION.into(),
-                            value: admission.encode()?.into(),
-                        }],
-                    )
-                    .map_err(Error::Stream)?;
-                    let envelope = acyclic_actors::route::Envelope {
-                        source: routing.node.clone(),
-                        sender: super::handler::Agents::<dyn crate::store::JournalProvider>::actor(
+                    let envelope = super::PeerRoute::prepare(
+                        routing.node.clone(),
+                        super::handler::Agents::<dyn crate::store::JournalProvider>::actor(
                             within,
                             &path.id(),
                         )?,
-                        to: super::handler::Agents::<dyn crate::store::JournalProvider>::actor(
+                        super::handler::Agents::<dyn crate::store::JournalProvider>::actor(
                             within,
                             &to.id(),
                         )?,
-                        request,
-                    };
+                        record,
+                        admission,
+                    )?;
                     let target = routing.paths.outbox(&routing.node).map_err(Error::Stream)?;
                     let record = envelope
                         .outbox_record(&routing.paths)

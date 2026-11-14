@@ -361,7 +361,7 @@ mod provenance_tests {
                 &sender
             };
             let enabled = PeerMembership {
-                epoch: (true).then_some([7; 32]),
+                epoch: Some([7; 32]),
             };
             let publish = async |effect| {
                 let outcome = provider
