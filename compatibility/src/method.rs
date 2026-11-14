@@ -278,7 +278,10 @@ fn render_authorization(
         "#[doc=\"Exhaustive compiler-linked public service methods.\"] #[derive(Clone,Copy,Debug,PartialEq,Eq)] pub enum {method_type} {{ {} }}",
         variants
             .iter()
-            .map(|name| format!("#[doc={name:?}] {name}"))
+            .map(|name| {
+                let documentation = format!("`{name}`");
+                format!("#[doc={documentation:?}] {name}")
+            })
             .collect::<Vec<_>>()
             .join(",")
     )?;
