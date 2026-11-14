@@ -26,6 +26,7 @@ mod subscriptions;
 mod conditional;
 mod handler_failure;
 mod scheduling;
+mod simulation;
 
 fn root() -> Result<StreamPath, StreamError> {
     StreamPath::new("harness/actors")

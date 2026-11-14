@@ -19,7 +19,17 @@ Admission close rejects new work while preserving already accepted work.
 `local::model::simulation` currently samples dropped submissions and lost
 acknowledgements around the existing production Store script and checks its
 tuple after each publication attempt. This is logical recovery over MemoryStream,
-not physical restart proof or full Runtime coverage.
+not physical restart proof. It also samples the composition prefix extension
+and tampering oracle over the real Store's scheduling shard.
+
+`local::runtime::tests::simulation` drives three actors concurrently through
+the production delivery loop. Its independent model tracks input sequence,
+ordered outputs, paused admission, alarm generation, deadline and delivery.
+Generated operations append input, set or clear alarms, advance the shared
+clock, pause or resume admission, and discard/recreate the Runtime with new
+placement commands. Every step joins the finite delivery operation and checks
+all three persisted actors and their outputs. Restart currently retains the
+provider; physical journal reopen and crash-during-delivery are still required.
 
 ## Objects
 
