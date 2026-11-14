@@ -185,7 +185,7 @@ where
                 let records = streams
                     .follow(acyclic_stream::FollowRequest {
                         bootstrap_head: false,
-                        until: None,
+                        until: request.until,
                         when_absent: Default::default(),
                         path,
                         from: request.from,

@@ -405,6 +405,9 @@ pub struct ResourceFollowRequest {
     pub resource: String,
     /// Next stream sequence and optional immutable preceding commit anchor.
     pub from: u64,
+    /// Exclusive finite bound, clamped to the original opening tail. `None`
+    /// keeps a live follow; a finite read never waits for another publication.
+    pub until: Option<u64>,
     /// Preceding commit when the caller resumes an accepted cut.
     pub preceding: Option<crate::CommitId>,
     /// Requested selection intersected with all credential filter ceilings.
@@ -438,17 +441,33 @@ pub(super) fn source(
     identity: wire::SessionChannel,
     preceding: Option<crate::CommitId>,
     opening_cut: bool,
+    until: Option<u64>,
 ) -> Source {
     Box::pin(
         stream::try_unfold(
-            (Some(open), None::<crate::FollowStream>),
-            move |(open, mut records)| async move {
+            Some((Some(open), None::<crate::FollowStream>, 0, None)),
+            move |state| async move {
+                let Some((open, mut records, mut next, mut end)) = state else {
+                    return Ok(None);
+                };
                 if let Some(open) = open {
-                    records = Some(open.await?);
+                    let observed = open.await?;
+                    next = observed.selection.from;
+                    if let Some(until) = until {
+                        let bound = observed.selection.end.ok_or(StreamError::InvalidResponse)?;
+                        if bound > until {
+                            return Err(StreamError::InvalidResponse);
+                        }
+                        end = Some(bound);
+                    }
+                    records = Some(observed);
                     return Ok(Some((
                         Event::Opened(preceding, None, None),
-                        (None, records),
+                        Some((None, records, next, end)),
                     )));
+                }
+                if end.is_some_and(|end| next >= end) {
+                    return Ok(Some((Event::End, None)));
                 }
                 let event = loop {
                     let update = records
@@ -468,20 +487,33 @@ pub(super) fn source(
                                 ..Default::default()
                             })
                         }
-                        crate::FollowUpdate::Record(record) => Event::Record(record),
-                        crate::FollowUpdate::Progress { next, preceding } => {
+                        crate::FollowUpdate::Record(record) => {
+                            next = record
+                                .sequence
+                                .checked_add(1)
+                                .ok_or(StreamError::OutOfRange)?;
+                            Event::Record(record)
+                        }
+                        crate::FollowUpdate::Progress {
+                            next: through,
+                            preceding,
+                        } => {
+                            next = through;
                             Event::Progress(wire::SessionWatermark {
                                 opening_tail: None,
-                                accepted: next,
+                                accepted: through,
                                 durable: 0,
-                                after: Some(cursor(next)),
+                                after: Some(cursor(through)),
                                 preceding_commit_id: Bytes::copy_from_slice(preceding.as_bytes()),
                             })
                         }
                     };
                     break event;
                 };
-                Ok(Some((event, (None, records))))
+                if end.is_some_and(|end| next > end) {
+                    return Err(StreamError::InvalidResponse);
+                }
+                Ok(Some((event, Some((None, records, next, end)))))
             },
         )
         .map(move |event| (identity, event)),

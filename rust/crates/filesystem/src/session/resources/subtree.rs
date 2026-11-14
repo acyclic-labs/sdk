@@ -240,6 +240,7 @@ mod tests {
             Ok(ResourceFollowRequest {
                 resource: resource.clone(),
                 from,
+                until: None,
                 preceding,
                 filter: FollowFilter::default(),
                 authorization: acyclic_stream::session::testing::resource_authorization(
@@ -355,6 +356,7 @@ mod tests {
                 ResourceFollowRequest {
                     resource: child_resource.clone(),
                     from: record.sequence,
+                    until: None,
                     preceding: None,
                     filter: FollowFilter::default(),
                     authorization: acyclic_stream::session::testing::resource_authorization(
@@ -463,6 +465,7 @@ mod tests {
             ResourceFollowRequest {
                 resource: resource.clone(),
                 from,
+                until: None,
                 preceding: None,
                 filter: FollowFilter::default(),
                 authorization: acyclic_stream::session::testing::resource_authorization(
@@ -577,6 +580,7 @@ mod tests {
                 let request = ResourceFollowRequest {
                     resource: resource.clone(),
                     from,
+                    until: None,
                     preceding: None,
                     filter: filter.clone(),
                     authorization: acyclic_stream::session::testing::resource_authorization(

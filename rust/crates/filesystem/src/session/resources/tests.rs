@@ -68,6 +68,7 @@ async fn subscribe(
         ChangeProvider::new(fs, streams)?.follow(ResourceFollowRequest {
             resource,
             from,
+            until: None,
             preceding: None,
             filter: FollowFilter::default(),
             authorization: context,
