@@ -103,6 +103,18 @@ pub struct Checkout<A: 'static, O: 'static> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn bind_workspace(
+        &mut self,
+        workspace: &crate::Workspace<A, O>,
+    ) -> Result<(), crate::SourceError> {
+        if self.volume.id != workspace.volume.id || self.volume.config != workspace.volume.config {
+            return Err(crate::SourceError::BindingMismatch);
+        }
+        self.volume = workspace.volume.clone();
+        Ok(())
+    }
+
     /// Transfers the original registration instead of closing it at observation.
     pub(crate) fn into_generation_closure(
         mut self,

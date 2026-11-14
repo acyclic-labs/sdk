@@ -23,6 +23,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
+mod native_sources;
+pub use native_sources::FilesystemNativeSources;
+
 type WireStream<T> = Pin<Box<dyn futures::Stream<Item = Result<T, Status>> + Send + 'static>>;
 
 /// Version of the public Filesystem protocol identity.
@@ -143,24 +146,6 @@ pub trait FilesystemCredentialIssuer: Send + Sync + 'static {
     async fn issue(&self, request: CredentialGrantRequest) -> Result<CredentialGrant, Status>;
 }
 
-/// Deployment-owned source identity after the SDK authenticates its workspace.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HostedSourceScope {
-    /// Stable workspace identity.
-    pub workspace_id: crate::WorkspaceId,
-    /// Canonical workspace name.
-    pub workspace_name: crate::WorkspaceName,
-}
-
-/// Stable operation identity for a hosted source mutation.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HostedSourceOperation {
-    /// Authenticated source workspace.
-    pub scope: HostedSourceScope,
-    /// Caller retry identity retained across ambiguous outcomes.
-    pub idempotency_key: IdempotencyKey,
-}
-
 /// Why a hosted source can no longer prove a contiguous change interval.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HostedSourceInvalidation {
@@ -206,18 +191,27 @@ pub struct HostedSourceResult {
 
 /// Deployment extension for a remotely owned attached source.
 #[tonic::async_trait]
-pub trait FilesystemSourceProvider: Send + Sync + 'static {
+pub trait FilesystemSourceProvider<A: 'static, O: 'static>: Send + Sync + 'static {
     /// Returns the current source state without mutation.
-    async fn state(&self, scope: HostedSourceScope) -> Result<HostedSourceResult, Status>;
+    async fn state(&self, workspace: &Workspace<A, O>) -> Result<HostedSourceResult, Status>;
     /// Captures one bounded contiguous source interval.
     async fn reconcile(
         &self,
-        operation: HostedSourceOperation,
+        workspace: &Workspace<A, O>,
+        key: IdempotencyKey,
     ) -> Result<HostedSourceResult, Status>;
     /// Rebuilds a complete authenticated source baseline.
-    async fn rescan(&self, operation: HostedSourceOperation) -> Result<HostedSourceResult, Status>;
+    async fn rescan(
+        &self,
+        workspace: &Workspace<A, O>,
+        key: IdempotencyKey,
+    ) -> Result<HostedSourceResult, Status>;
     /// Produces a generation independent of the attached source.
-    async fn seal(&self, operation: HostedSourceOperation) -> Result<HostedSourceResult, Status>;
+    async fn seal(
+        &self,
+        workspace: &Workspace<A, O>,
+        key: IdempotencyKey,
+    ) -> Result<HostedSourceResult, Status>;
 }
 
 /// One SDK-owned protocol adapter over the canonical filesystem engine.
@@ -229,7 +223,7 @@ pub struct FilesystemWireService<A: 'static, O: 'static> {
     filesystem: Fs<A, O>,
     limits: FilesystemWireLimits,
     credential_issuer: Option<Arc<dyn FilesystemCredentialIssuer>>,
-    source_provider: Option<Arc<dyn FilesystemSourceProvider>>,
+    source_provider: Option<Arc<dyn FilesystemSourceProvider<A, O>>>,
 }
 
 impl<A, O> FilesystemWireService<A, O> {
@@ -285,7 +279,10 @@ impl<A, O> FilesystemWireService<A, O> {
 
     /// Installs the deployment's authenticated hosted-source provider.
     #[must_use]
-    pub fn with_source_provider(mut self, provider: Arc<dyn FilesystemSourceProvider>) -> Self {
+    pub fn with_source_provider(
+        mut self,
+        provider: Arc<dyn FilesystemSourceProvider<A, O>>,
+    ) -> Self {
         self.source_provider = Some(provider);
         self
     }
@@ -296,41 +293,48 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         &self,
         reference: Option<wire::WorkspaceRef>,
     ) -> Result<Workspace<A, O>, Status> {
-        let reference = required(reference, "workspace")?;
+        self.open_workspace_with_access(
+            wire::OpenWorkspaceRequest {
+                selector: reference.map(wire::open_workspace_request::Selector::Workspace),
+            },
+            &crate::access::Action::ALL,
+        )
+        .await
+    }
+
+    /// Resolve an already authenticated deployment request to its canonical
+    /// workspace and intersect its action ceiling with persisted policy.
+    /// Native consumers use this same name/identity validation as RPCs; the
+    /// deployment retains its original account and revocation admission.
+    pub async fn open_workspace_with_access(
+        &self,
+        request: wire::OpenWorkspaceRequest,
+        actions: &[crate::access::Action],
+    ) -> Result<Workspace<A, O>, Status> {
+        let (name, expected) = match required(request.selector, "workspace selector")? {
+            wire::open_workspace_request::Selector::Name(name) => (name, None),
+            wire::open_workspace_request::Selector::Workspace(reference) => {
+                (reference.name, Some(reference.workspace_id))
+            }
+        };
         let workspace = self
             .filesystem
-            .open_workspace(
-                &reference.name,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
+            .open_workspace(&name, WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
             .map_err(|failure| status(&failure.error))?
             .value;
-        if workspace.id().into_bytes().as_slice() != reference.workspace_id {
+        if expected.is_some_and(|expected| workspace.id().into_bytes().as_slice() != expected) {
             return Err(Status::failed_precondition(
                 "workspace name and identity disagree",
             ));
         }
         workspace
-            .bind_coarse_access(&crate::access::Action::ALL, &CancellationToken::new())
+            .bind_coarse_access(actions, &CancellationToken::new())
             .await
             .map_err(|error| status(&error))
     }
 
-    async fn source_scope(
-        &self,
-        reference: Option<wire::WorkspaceRef>,
-    ) -> Result<(Workspace<A, O>, HostedSourceScope), Status> {
-        let workspace = self.workspace(reference).await?;
-        let scope = HostedSourceScope {
-            workspace_id: workspace.id(),
-            workspace_name: workspace.name().clone(),
-        };
-        Ok((workspace, scope))
-    }
-
-    fn source_provider(&self) -> Result<&Arc<dyn FilesystemSourceProvider>, Status> {
+    fn source_provider(&self) -> Result<&Arc<dyn FilesystemSourceProvider<A, O>>, Status> {
         self.source_provider
             .as_ref()
             .ok_or_else(|| Status::unimplemented("hosted source reconciliation is unavailable"))
