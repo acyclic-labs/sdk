@@ -6,4 +6,4 @@ diff --git a/rust/crates/stream/src/memory/commit.rs b/rust/crates/stream/src/me
 -            .filter_map(|(omitted, effect)| (!omitted).then_some(effect));
 +        let applied = request.effects.iter();
          let scope = state.ephemeral.scope(
-             &state.paths,
+             state,
