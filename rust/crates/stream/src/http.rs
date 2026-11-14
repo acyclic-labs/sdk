@@ -704,8 +704,8 @@ mod tests {
             assert!(error.uncertain());
             drop(provider);
             assert!(
-                std::error::Error::source(&error)
-                    .is_some_and(|source| source.is::<reqwest::Error>())
+                std::iter::successors(std::error::Error::source(&error), |source| source.source())
+                    .any(|source| source.is::<reqwest::Error>())
             );
             Ok(())
         }

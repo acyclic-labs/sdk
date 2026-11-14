@@ -334,7 +334,10 @@ async fn truncated_unary_body_fails_without_retry() {
     assert!(error.uncertain());
     assert_eq!(server.requests().len(), 1);
     drop(server);
-    assert!(std::error::Error::source(&error).is_some_and(|source| source.is::<reqwest::Error>()));
+    assert!(
+        std::iter::successors(std::error::Error::source(&error), |source| source.source())
+            .any(|source| source.is::<reqwest::Error>())
+    );
 }
 
 #[tokio::test(start_paused = true)]
