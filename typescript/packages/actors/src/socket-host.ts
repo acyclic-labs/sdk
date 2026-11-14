@@ -1,5 +1,6 @@
 /** Delivery-scoped socket effects over the SDK's canonical binary host codec. */
 import { loadWasmModule } from "./client.js";
+import { snapshotBytes } from "@acyclic-labs/auth/owned-bytes";
 import type { GuestContext, SocketCommand, WebSocketAutoResponse } from "./generated/guest.js";
 
 type Port = NonNullable<GuestContext<unknown>["socketHost"]>;
@@ -13,7 +14,7 @@ export class SocketHostClient {
   async #call(command: SocketCommand, body: Uint8Array = new Uint8Array(), signal?: AbortSignal) {
     // Capture before resolving WASM: mutation by the caller cannot change an
     // operation already accepted by this async owner.
-    const retained = body.slice();
+    const retained = snapshotBytes(body);
     const wasm = await loadWasmModule();
     signal?.throwIfAborted();
     const response = await this.#port(wasm.encodeSocketRequest(command, retained), signal);
@@ -52,7 +53,8 @@ export class SocketHostClient {
   }
 
   setAutoResponse(value: WebSocketAutoResponse | null, signal?: AbortSignal): Promise<void> {
-    return this.#done({ type: "setAutoResponse", value }, undefined, signal);
+    const pair = value === null ? null : { request: value.request, response: value.response };
+    return this.#done({ type: "setAutoResponse", value: pair }, undefined, signal);
   }
 
   async autoResponse(signal?: AbortSignal): Promise<WebSocketAutoResponse | null> {
