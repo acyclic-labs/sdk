@@ -951,8 +951,7 @@ pub async fn check(bytes: &[u8]) -> Result<(), String> {
 pub async fn codec_seeds(
     clock: std::sync::Arc<dyn acyclic_stream::UnixMillisClock>,
 ) -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error>> {
-    use acyclic_stream::{MemoryLimits, wire_codec};
-    use prost::Message as _;
+    use acyclic_stream::MemoryLimits;
     use std::sync::Arc;
 
     let mut seeds = Vec::new();
@@ -998,112 +997,145 @@ pub async fn codec_seeds(
             Fault::None,
             outcome.clone(),
         )?;
-        let call = &model.call;
-        let fence = StreamPath::new("codec/executor/ended").map_err(Error::Stream)?;
-        let acceptance = Accepted {
-            executor: OwnedBytes::from(&b"executor"[..]),
-            fence: fenced.then_some(fence),
-        };
-        let mut steps = Vec::new();
-        if requested {
-            let body = OwnedBytes::from(&b"request"[..]);
-            let hold = crate::escrow::Escrow::new(Some(7));
-            steps.push((
-                call.request(body.clone(), hold)?,
-                vec![
-                    ("call-v2-request", Entry::Request(body)),
-                    ("call-v2-hold", Entry::Hold(hold)),
-                ],
-            ));
-        }
-        if accepted {
-            steps.push((
-                call.accept(&acceptance, requested)?,
-                vec![(
-                    if fenced {
-                        "call-v2-accepted-fenced"
-                    } else {
-                        "call-v2-accepted"
-                    },
-                    Entry::Accepted(acceptance.clone()),
-                )],
-            ));
-            let body = OwnedBytes::from(&b"\x00\xffchunk"[..]);
-            steps.push((
-                call.chunk(acceptance.fence.as_ref(), body.clone())?,
-                vec![(
-                    if fenced {
-                        "call-v2-chunk-fenced"
-                    } else {
-                        "call-v2-chunk"
-                    },
-                    Entry::Chunk(body),
-                )],
-            ));
-        }
-        steps.push((
-            call.settle(acceptance.fence.as_ref(), &outcome)?,
-            vec![(name, Entry::Terminal(outcome.clone()))],
-        ));
-        let mut journal = Journal::new(call.log());
-        for (index, (commit, expected)) in steps.into_iter().enumerate() {
-            let key = IdempotencyKey::new(format!("{name}/{index}")).map_err(Error::Stream)?;
-            assert!(matches!(
-                model
-                    .provider
-                    .commit(commit.request(key))
-                    .await
-                    .map_err(Error::Stream)?,
-                CommitOutcome::Committed(_)
-            ));
-            let records = model.records(call.log(), journal.next()).await?;
-            assert_eq!(
-                records.len(),
-                expected.len(),
-                "original co-committed call records"
-            );
-            for (record, (label, expected)) in records.into_iter().zip(expected) {
-                let bytes = wire_codec::record_wire(record, None).encode_to_vec();
-                let record = wire_codec::record(
-                    acyclic_stream::wire::Record::decode(bytes.as_slice())?,
-                    None,
-                )
-                .map_err(Error::Stream)?;
-                assert_eq!(
-                    Entry::decode(&record)?,
-                    expected,
-                    "call writer must admit its committed record"
-                );
-                let contextual = match &expected {
-                    Entry::Terminal(Outcome::Cancelled(reason)) if accepted => Entry::Terminal(
-                        Outcome::Indeterminate(format!("cancelled after acceptance: {reason}")),
-                    ),
-                    _ => expected,
-                };
-                assert_eq!(
-                    journal.apply(&record)?,
-                    contextual,
-                    "call reader must retain its acceptance context"
-                );
-                // Keep one original capture per wire shape. Other topologies still
-                // pass through the same independent producer admission above.
-                if !seeds.iter().any(|(name, _)| *name == label) {
-                    seeds.push((label, bytes));
-                }
-            }
-        }
-        let receipt = journal
-            .receipt(call.log())
-            .ok_or(Error::Malformed("original terminal receipt is missing"))?;
-        assert_eq!(receipt.request.is_some(), requested);
-        assert_eq!(
-            receipt.outcome,
-            if accepted && matches!(outcome, Outcome::Cancelled(_)) {
-                Outcome::Indeterminate("cancelled after acceptance: stop".into())
-            } else {
-                outcome
-            }
-        );
+        capture_case(
+            &model, name, outcome, requested, accepted, fenced, &mut seeds,
+        )
+        .await?;
     }
     Ok(seeds)
+}
+
+type CaptureStep = (Commit, Vec<(&'static str, Entry)>);
+
+fn seed_steps(
+    call: &CallPath,
+    name: &'static str,
+    outcome: &Outcome,
+    requested: bool,
+    accepted: bool,
+    fenced: bool,
+) -> Result<Vec<CaptureStep>, Error> {
+    let fence = StreamPath::new("codec/executor/ended").map_err(Error::Stream)?;
+    let acceptance = Accepted {
+        executor: OwnedBytes::from(&b"executor"[..]),
+        fence: fenced.then_some(fence),
+    };
+    let mut steps = Vec::new();
+    if requested {
+        let body = OwnedBytes::from(&b"request"[..]);
+        let hold = crate::escrow::Escrow::new(Some(7));
+        steps.push((
+            call.request(body.clone(), hold)?,
+            vec![
+                ("call-v2-request", Entry::Request(body)),
+                ("call-v2-hold", Entry::Hold(hold)),
+            ],
+        ));
+    }
+    if accepted {
+        steps.push((
+            call.accept(&acceptance, requested)?,
+            vec![(
+                if fenced {
+                    "call-v2-accepted-fenced"
+                } else {
+                    "call-v2-accepted"
+                },
+                Entry::Accepted(acceptance.clone()),
+            )],
+        ));
+        let body = OwnedBytes::from(&b"\x00\xffchunk"[..]);
+        steps.push((
+            call.chunk(acceptance.fence.as_ref(), body.clone())?,
+            vec![(
+                if fenced {
+                    "call-v2-chunk-fenced"
+                } else {
+                    "call-v2-chunk"
+                },
+                Entry::Chunk(body),
+            )],
+        ));
+    }
+    steps.push((
+        call.settle(acceptance.fence.as_ref(), outcome)?,
+        vec![(name, Entry::Terminal(outcome.clone()))],
+    ));
+    Ok(steps)
+}
+
+async fn capture_case(
+    model: &Model,
+    name: &'static str,
+    outcome: Outcome,
+    requested: bool,
+    accepted: bool,
+    fenced: bool,
+    seeds: &mut Vec<(&'static str, Vec<u8>)>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_stream::wire_codec;
+    use prost::Message as _;
+
+    let call = &model.call;
+    let steps = seed_steps(call, name, &outcome, requested, accepted, fenced)?;
+    let mut journal = Journal::new(call.log());
+    for (index, (commit, expected)) in steps.into_iter().enumerate() {
+        let key = IdempotencyKey::new(format!("{name}/{index}")).map_err(Error::Stream)?;
+        assert!(matches!(
+            model
+                .provider
+                .commit(commit.request(key))
+                .await
+                .map_err(Error::Stream)?,
+            CommitOutcome::Committed(_)
+        ));
+        let records = model.records(call.log(), journal.next()).await?;
+        assert_eq!(
+            records.len(),
+            expected.len(),
+            "original co-committed call records"
+        );
+        for (record, (label, expected)) in records.into_iter().zip(expected) {
+            let bytes = wire_codec::record_wire(record, None).encode_to_vec();
+            let record = wire_codec::record(
+                acyclic_stream::wire::Record::decode(bytes.as_slice())?,
+                None,
+            )
+            .map_err(Error::Stream)?;
+            assert_eq!(
+                Entry::decode(&record)?,
+                expected,
+                "call writer must admit its committed record"
+            );
+            let contextual = match &expected {
+                Entry::Terminal(Outcome::Cancelled(reason)) if accepted => Entry::Terminal(
+                    Outcome::Indeterminate(format!("cancelled after acceptance: {reason}")),
+                ),
+                _ => expected,
+            };
+            assert_eq!(
+                journal.apply(&record)?,
+                contextual,
+                "call reader must retain its acceptance context"
+            );
+            // Keep one original capture per wire shape. Other topologies still
+            // pass through the same independent producer admission above.
+            if !seeds.iter().any(|(name, _)| *name == label) {
+                seeds.push((label, bytes));
+            }
+        }
+    }
+    let receipt = journal
+        .receipt(call.log())
+        .ok_or(Error::Malformed("original terminal receipt is missing"))?;
+    assert_eq!(receipt.request.is_some(), requested);
+    assert_eq!(
+        receipt.outcome,
+        if accepted && matches!(outcome, Outcome::Cancelled(_)) {
+            Outcome::Indeterminate("cancelled after acceptance: stop".into())
+        } else {
+            outcome
+        }
+    );
+    Ok(())
 }
