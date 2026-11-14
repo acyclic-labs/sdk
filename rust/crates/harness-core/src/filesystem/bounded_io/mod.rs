@@ -386,6 +386,29 @@ impl PreparationIo {
         &self,
         operation: impl FnOnce(&mut KernelAccounting<'_>) -> std::result::Result<T, acyclic_fs::FsError>,
     ) -> std::result::Result<T, acyclic_fs::FsError> {
+        self.with_accounting(true, operation)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::filesystem) fn take_native_accounting(
+        &self,
+    ) -> std::result::Result<acyclic_fs::kernel::NativeAccounting, acyclic_fs::FsError> {
+        self.with_accounting(false, acyclic_fs::kernel::NativeAccounting::take)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::filesystem) fn restore_native_accounting(
+        &self,
+        owner: acyclic_fs::kernel::NativeAccounting,
+    ) -> std::result::Result<(), acyclic_fs::FsError> {
+        self.with_accounting(false, |accounting| owner.restore(accounting))
+    }
+
+    fn with_accounting<T>(
+        &self,
+        track_scratch: bool,
+        operation: impl FnOnce(&mut KernelAccounting<'_>) -> std::result::Result<T, acyclic_fs::FsError>,
+    ) -> std::result::Result<T, acyclic_fs::FsError> {
         match self {
             Self::Owned {
                 budget,
@@ -401,15 +424,19 @@ impl PreparationIo {
                 let allocations = allocations
                     .as_mut()
                     .map_err(|error| acyclic_fs::FsError::from(*error))?;
-                let before = allocations.scratch_bytes();
+                // Native handoffs move admission on the same ledger. Their
+                // completion can retire independently owned native checkout
+                // storage; that decrease does not belong to this scope.
+                let before = track_scratch.then(|| allocations.scratch_bytes());
                 let result = operation(&mut KernelAccounting::borrowed_standalone(
                     allocations,
                     spent,
                     *budget,
                     cancellation,
                 ));
-                let after = allocations.scratch_bytes();
-                if let Err(error) = custody.record(before, after) {
+                if let Some(before) = before
+                    && let Err(error) = custody.record(before, allocations.scratch_bytes())
+                {
                     state.1 = Err(acyclic_fs::WorkError::Overflow);
                     return Err(error.into());
                 }

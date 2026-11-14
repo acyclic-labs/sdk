@@ -323,7 +323,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if expected.is_some_and(|expected| expected.as_resource().version() != Some(FORMAT)) {
             return Ok(None);
         }
-        let owner = io.account(acyclic_fs::kernel::NativeAccounting::take)?;
+        let owner = io.take_native_accounting()?;
         let native_io = PreparationIo::from_native_work(&owner.work)?;
         let mut ctx = KernelAccounting::NativeOriginal {
             work: &owner.work,
@@ -363,7 +363,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         .await;
         drop(ctx);
         drop(native_io);
-        io.account(|ctx| owner.restore(ctx))?;
+        io.restore_native_accounting(owner)?;
         result.map(Some)
     }
 
@@ -410,7 +410,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .as_ref()
             .filter(|view| view.workspace_id() == cut.workspace_id)
             .ok_or_else(|| io.invalid("private source binding is unavailable"))?;
-        let owner = io.account(acyclic_fs::kernel::NativeAccounting::take)?;
+        let owner = io.take_native_accounting()?;
         let native_io = PreparationIo::from_native_work(&owner.work)?;
         let mut ctx = KernelAccounting::NativeOriginal {
             work: &owner.work,
@@ -419,7 +419,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let result = async { view.stat(cut, path, &mut ctx, &native_io)?.await }.await;
         drop(ctx);
         drop(native_io);
-        io.account(|ctx| owner.restore(ctx))?;
+        io.restore_native_accounting(owner)?;
         result
     }
 
@@ -435,7 +435,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .as_ref()
             .filter(|view| view.workspace_id() == cut.workspace_id)
             .ok_or_else(|| io.invalid("private source binding is unavailable"))?;
-        let owner = io.account(acyclic_fs::kernel::NativeAccounting::take)?;
+        let owner = io.take_native_accounting()?;
         let native_io = PreparationIo::from_native_work(&owner.work)?;
         let mut ctx = KernelAccounting::NativeOriginal {
             work: &owner.work,
@@ -444,7 +444,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let result = async { view.read(cut, path, range, &mut ctx, &native_io)?.await }.await;
         drop(ctx);
         drop(native_io);
-        io.account(|ctx| owner.restore(ctx))?;
+        io.restore_native_accounting(owner)?;
         result
     }
 
@@ -457,7 +457,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .private_view
             .as_ref()
             .ok_or_else(|| io.invalid("private source binding is unavailable"))?;
-        let owner = io.account(acyclic_fs::kernel::NativeAccounting::take)?;
+        let owner = io.take_native_accounting()?;
         let native_io = PreparationIo::from_native_work(&owner.work)?;
         let mut ctx = KernelAccounting::NativeOriginal {
             work: &owner.work,
@@ -466,7 +466,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let result = async { view.validate(cut, &mut ctx, &native_io)?.await }.await;
         drop(ctx);
         drop(native_io);
-        io.account(|ctx| owner.restore(ctx))?;
+        io.restore_native_accounting(owner)?;
         result
     }
 }
