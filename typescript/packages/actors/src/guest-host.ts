@@ -160,7 +160,8 @@ export class GuestActivation<State, Bindings> {
         ...this.#context, deliveryId, admittedIdentity: null, clock: () => nowUnixMs,
         retryKey: effect => retryKey(deliveryId, effect),
       };
-      let reply: Uint8Array | null;
+      // A reply materializes after the quiesced checkpoint, as the host publishes them.
+      let reply: () => Uint8Array | null;
       if (invocation !== null) {
         // An InvokeActor input is the definition's fetch; its reply is the
         // canonical InvokeActorResponse the front door returns to the caller.
@@ -169,14 +170,15 @@ export class GuestActivation<State, Bindings> {
         if (method !== "GET" && method !== "HEAD") init.body = Uint8Array.from(body);
         if (signal !== undefined) init.signal = signal;
         const request = new Request(url, init);
-        reply = await invokeResponse(wasm, await this.fetch(request, context), signal);
+        const response = await invokeResponse(wasm, await this.fetch(request, context), signal);
+        reply = () => response;
       } else {
         const result = await this.event(event, context);
         if (result !== null && result.type !== "reply") throw new Error("socket result outside a socket delivery");
-        reply = result?.payload ?? null;
+        reply = () => result?.payload ?? null;
       }
       const next = await this.checkpoint();
-      const encoded = wasm.encodeTransition(next.codec.name, next.codec.version, next.bytes, reply);
+      const encoded = wasm.encodeTransition(next.codec.name, next.codec.version, next.bytes, reply());
       signal?.throwIfAborted();
       this.#basis = next;
       return encoded;

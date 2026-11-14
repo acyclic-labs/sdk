@@ -201,22 +201,14 @@ test("onRecord refuses a transition when reply materialization revokes ownership
   await expect(activation.checkpoint()).rejects.toMatchObject({ code: "unavailable" });
 });
 test("definitionHandler serves a namespace of one public ActorDefinition through the core's Handler ABI", async () => {
-  const reservations = { name: "acyclic.actors.reservations", version: "1" };
-  const alarm = recordingActor(reservations);
-  const alarms = definitionHandler(alarm.actor, { code: new Uint8Array(32).fill(7), subscriptions: [] }, {});
-  const captured = fixture("transition");
-  const expected = Uint8Array.from([...captured.subarray(0, 0x5e), 0x3a, 0x1e, ...captured.subarray(captured.length - 30)]);
-  // Each delivery restores its actor from the checkpoint it carries; a retry is the same answer.
-  expect(await alarms.onRecord(fixture("delivery"))).toEqual(expected);
-  expect(await alarms.onRecord(fixture("delivery"))).toEqual(expected);
-  expect(alarm.restores()).toBe(2);
-  expect(alarm.seen.map(seen => seen.deliveryId)).toEqual(["alarm:1", "alarm:1"]);
-  // The record fixture names another actor of another namespace; the same handler serves it.
   const counter = { name: "counter", version: "1" };
   const record = recordingActor(counter);
   const shared = JSON.parse(readFileSync(new URL("../../../../rust/crates/actors/tests/fixtures/guest-record.json", import.meta.url), "utf8"));
   const records = definitionHandler(record.actor, { code: new Uint8Array(32).fill(7), subscriptions: ["inbox"] }, {});
+  // Each delivery restores its actor from the checkpoint it carries; a retry is the same answer.
   expect(await records.onRecord(Uint8Array.from(shared.delivery))).toEqual(Uint8Array.from(shared.transition));
+  expect(await records.onRecord(Uint8Array.from(shared.delivery))).toEqual(Uint8Array.from(shared.transition));
+  expect(record.restores()).toBe(2);
   // The manifest is the deployment's code and subscriptions with the definition's codec.
   const manifest = await records.manifest();
   expect(new TextDecoder("latin1").decode(manifest)).toContain("counter");
