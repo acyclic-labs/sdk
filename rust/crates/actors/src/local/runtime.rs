@@ -1967,7 +1967,16 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     ) -> Result<T, Error> {
         let request = self.requests.open(actor, epoch);
         let delivery = delivery(request.id());
-        let handled = invoke(delivery.clone());
+        let handled = core::pin::pin!(acyclic_stream::trace::observe(
+            acyclic_stream::trace::Request {
+                name: "actors.handler",
+                mechanism: acyclic_stream::trace::Mechanism::ActorDelivery,
+                parent: None,
+                guarantee: Some("admitted_handler_under_original_control_and_deadline"),
+            },
+            invoke(delivery.clone()),
+            |_| None,
+        ));
         let delivery = &delivery;
         let interrupted = self.interrupt(inner, cancellation, |subscription, record| {
             Box::pin(async move {
