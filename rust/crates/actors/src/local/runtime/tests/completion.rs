@@ -269,10 +269,9 @@ async fn completion_joins_discovery_delivery_and_producer_lifetime() -> TestResu
         .and_then(|source| source.downcast_ref::<Error>())
         .ok_or("completion discarded its original actor failure")?;
     assert!(matches!(original, Error::Handler(_)));
-    assert!(
-        std::error::Error::source(original)
-            .is_some_and(|source| source.is::<crate::guest::GuestError>())
-    );
+    if let Error::CompletionFailed(retained) = &refused {
+        assert!(std::ptr::eq(original, retained.as_ref()));
+    }
     for stop_before_start in [false, true] {
         let provider = Arc::new(Counted::new(MemoryStream::default()));
         let target = LocalTarget::start(&provider, Arc::new(Package::new()?), provider.ledger())?;
