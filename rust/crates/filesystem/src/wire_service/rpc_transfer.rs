@@ -75,10 +75,28 @@ where
         &self,
         request: Request<tonic::Streaming<wire::ImportChunk>>,
     ) -> Result<Response<wire::ImportResponse>, Status> {
-        let mut stream = request.into_inner();
+        self.import_stream(request.into_inner()).await
+    }
+
+    /// Imports the canonical message stream after deployment admission. A host
+    /// may inspect the first message and chain it back before calling this
+    /// method; no complete-transfer buffer or second import codec is needed.
+    /// Every message retains the same workspace, operation and closure checks
+    /// as the generated gRPC method.
+    ///
+    /// # Errors
+    /// Rejects invalid, incomplete or discontinuous transfers and retains
+    /// transport and storage failures without publishing an incomplete volume.
+    pub async fn import_stream(
+        &self,
+        stream: impl futures::Stream<Item = Result<wire::ImportChunk, Status>> + Send,
+    ) -> Result<Response<wire::ImportResponse>, Status> {
+        use futures::StreamExt as _;
+        let mut stream = std::pin::pin!(stream);
         let first = stream
-            .message()
-            .await?
+            .next()
+            .await
+            .transpose()?
             .ok_or_else(|| Status::invalid_argument("import stream is empty"))?;
         self.admit_message(&first)?;
         if !first.object_id.is_empty() || first.contents.is_empty() {
@@ -111,7 +129,7 @@ where
         }
         let mut expected_index = 0_usize;
         let mut terminal = first.terminal;
-        while let Some(chunk) = stream.message().await? {
+        while let Some(chunk) = stream.next().await.transpose()? {
             self.admit_message(&chunk)?;
             if expected_index >= self.limits.maximum_page_items as usize {
                 return Err(Status::resource_exhausted(
