@@ -7,8 +7,9 @@ It compares original production writer inputs with decoded values before testing
 arbitrary bytes. Re-encoding or decoding a canonical value must panic on failure;
 refusal cannot silently end an oracle check.
 
-Source facts cover both modes, every state and invalidation reason, all three
-nonzero bounds, version refusal and complete framing. Stream records retain both
+Source facts cover both modes, every state and invalidation reason, both optional
+path and extent bounds, version refusal and complete framing. A missing bound is
+unbounded; an explicit zero is refused. Stream records retain both
 locator words, the typed generation identity and free/active gate identity.
 These are format checks, not publication authorization or physical recovery proofs.
 The generated typed inputs are library writer evidence, not captured remote wire.
@@ -20,8 +21,8 @@ replaces the same selected provenance and golden names without changing other ro
 Run the shared controls:
 
 ```sh
-cargo test --locked -p acyclic-fs --lib --no-default-features --features local,memory,test-support,native-watch kernel::decoder_fuzz
-cargo run --locked --manifest-path rust/codec-fuzz/Cargo.toml --features acyclic-fs/native-watch --example capture -- --only-filesystem-records --extend-goldens
+cargo test --locked -p acyclic-fs --lib --features test-support kernel::decoder_fuzz
+cargo run --locked --manifest-path rust/codec-fuzz/Cargo.toml --example capture -- --only-filesystem-records --extend-goldens
 cargo +nightly fuzz run --fuzz-dir rust/crates/filesystem/fuzz decoder_work --features fuzz-targets -- -runs=1000
 cargo +nightly fuzz run --fuzz-dir rust/codec-fuzz filesystem_codecs -- -runs=1000
 cargo +nightly fuzz run --fuzz-dir rust/codec-fuzz filesystem_pages -- -runs=1000
