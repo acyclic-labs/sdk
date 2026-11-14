@@ -66,7 +66,6 @@ pub(crate) async fn merge_directory_record_async<S: AsyncObjectStore>(
 
 #[allow(
     clippy::too_many_arguments,
-    clippy::too_many_lines,
     reason = "This state transition keeps admission, effects and resource retirement in one frame."
 )]
 async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(

@@ -1,7 +1,6 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::too_many_lines,
         clippy::indexing_slicing,
         reason = "adapter tests run ordered scenarios over fixtures they built"
     )
@@ -152,7 +151,6 @@ pub async fn retain_published_generation<A: AsyncAuthorityStore, O: AsyncObjectS
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     #[allow(
         clippy::too_many_arguments,
-        clippy::too_many_lines,
         reason = "one implementation pins the complete staged file contract"
     )]
     fn put_content_impl<'a, B: ContentInput + ?Sized>(

@@ -2,7 +2,6 @@ use super::*;
 
 #[allow(
     clippy::too_many_arguments,
-    clippy::too_many_lines,
     reason = "This state transition keeps admission, effects and resource retirement in one frame."
 )]
 pub(super) async fn resolve_path_with_accounting<S: AsyncObjectStore>(

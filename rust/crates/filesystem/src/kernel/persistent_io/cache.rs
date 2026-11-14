@@ -82,10 +82,6 @@ async fn read_cold_object(
     drop(frame);
     owner.finish(read)
 }
-#[allow(
-    clippy::too_many_lines,
-    reason = "This state transition keeps admission, effects and resource retirement in one frame."
-)]
 pub(crate) fn admit_decoded_with_accounting<F: Format>(
     store: &dyn Source,
     miss: crate::async_storage::DecodedCacheMiss<'_>,

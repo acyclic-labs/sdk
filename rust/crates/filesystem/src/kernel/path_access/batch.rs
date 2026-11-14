@@ -69,7 +69,6 @@ impl<'a> PathQueries<'a> {
 
 #[allow(
     clippy::too_many_arguments,
-    clippy::too_many_lines,
     reason = "This state transition keeps admission, effects and resource retirement in one frame."
 )]
 pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(

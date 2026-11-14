@@ -155,10 +155,6 @@ pub(in crate::bindings) fn decode_authored_transactions(
         .collect()
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "one exhaustive match lowers every browser transaction operation"
-)]
 pub(in crate::bindings) fn authored_transaction(
     operation: TransactionOperation,
     config: VolumeConfig,

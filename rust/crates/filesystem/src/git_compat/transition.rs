@@ -74,10 +74,6 @@ pub(super) fn record_captured_commit_state<E: std::error::Error + 'static>(
     record_commit_state(state, commit, previous)
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "one exhaustive match settles every pending mutation kind against its filesystem result"
-)]
 pub(super) fn complete_pending<E: std::error::Error + 'static>(
     state: &mut GitCompatState,
     mutation: GitPendingMutation,

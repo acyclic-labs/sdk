@@ -6,10 +6,6 @@ use crate::{AgentId, conversation::VolumeOwner, executor::ModelPurpose, resource
 mod staged_ref;
 
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one production journal roundtrip and isolated persisted-header adversaries"
-)]
 async fn observation_reopen_preserves_original_turn_and_rejects_header_substitution() -> Result<()>
 {
     let provider = ProviderRef::new(

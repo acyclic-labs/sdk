@@ -5,7 +5,6 @@
         clippy::indexing_slicing,
         clippy::cognitive_complexity,
         clippy::redundant_clone,
-        clippy::too_many_lines,
         reason = "tests index fixtures directly and spell out long scenario matrices"
     )
 )]

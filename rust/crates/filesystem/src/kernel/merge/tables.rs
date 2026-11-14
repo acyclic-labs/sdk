@@ -59,10 +59,6 @@ fn merge_conflict_bytes(conflicts: &Vec<MergeConflict>) -> Result<u64, WorkError
     u64::try_from(bytes).map_err(|_| WorkError::Overflow)
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "This state transition keeps admission, effects and resource retirement in one frame."
-)]
 fn merge_file_tables_core<'a, 'accounting, S: AsyncObjectStore>(
     store: &'a S,
     request: MergeFileTableRequest<'a>,

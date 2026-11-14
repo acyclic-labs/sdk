@@ -205,7 +205,6 @@ mod path_selection_tests;
 
 #[allow(
     clippy::too_many_arguments,
-    clippy::too_many_lines,
     reason = "one canonical traversal dispatches ordinary or original-native source leaves"
 )]
 pub(super) async fn materialize_source<A, O, E, F, Fut>(

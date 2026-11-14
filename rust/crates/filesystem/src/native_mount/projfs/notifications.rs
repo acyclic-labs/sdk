@@ -143,10 +143,6 @@ pub(super) fn record_post_operation_failure(
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "notification admission and its exact authored operation share one callback boundary"
-)]
 pub(super) unsafe fn notification(
     callback_data: *const PRJ_CALLBACK_DATA,
     is_directory: bool,

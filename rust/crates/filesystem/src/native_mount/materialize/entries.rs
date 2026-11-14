@@ -7,7 +7,6 @@ type KnownPayloads = GenerationIndex<(u64, ObjectId, ObjectId), HeldHostPath>;
 
 #[allow(
     clippy::too_many_arguments,
-    clippy::too_many_lines,
     reason = "one entry needs the reader, host root, both paths, its record, options, budget, cancellation, and the shared link and pending maps"
 )]
 pub(super) async fn materialize_entry<A, O, E, F, Fut>(

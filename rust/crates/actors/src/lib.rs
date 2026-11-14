@@ -65,8 +65,6 @@ pub mod http;
 /// Rust-owned Actors v1 wire types and schema metadata.
 #[allow(
     clippy::allow_attributes_without_reason,
-    clippy::doc_markdown,
-    clippy::too_many_lines,
     dead_code,
     missing_docs,
     reason = "tonic emits this module and its generated server dispatch code"

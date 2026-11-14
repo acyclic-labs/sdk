@@ -49,10 +49,6 @@ impl ContentResidencyVerifier for SnapshotReader {
 }
 
 #[tokio::test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one authenticated snapshot through actual pipeline/model admission, metadata bounds, capture identity and retained replay"
-)]
 pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_model_admission()
 -> Result<()> {
     use acyclic_harness::context::{ContextInput, ContextStage as _, PinnedContextStage};

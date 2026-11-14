@@ -23,10 +23,6 @@ struct Napi {
     build_features: Vec<String>,
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "Keep the complete Cargo ownership and source-closure admission sequence together"
-)]
 pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error>> {
     let root = root.canonicalize()?;
     let metadata = MetadataCommand::new()

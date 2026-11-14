@@ -104,10 +104,6 @@ fn agent_owned_read_delegation_is_independent_of_volume_role() -> Result<()> {
 }
 
 #[tokio::test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one bounded consumer workflow keeps grants, pinned import, and source immutability assertions together"
-)]
 async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> Result<()> {
     let provider = ProviderRef::new("skills".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = FilesystemHost::new(Fs::memory(), &provider, None)?;

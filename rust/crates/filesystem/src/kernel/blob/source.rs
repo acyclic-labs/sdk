@@ -310,10 +310,6 @@ pub(super) async fn read_owned_blob_source<R: AsyncBlobSource>(
     Ok(None)
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "This state transition keeps admission, effects and resource retirement in one frame."
-)]
 pub(super) async fn read_blob_chunk<R: AsyncBlobSource>(
     source: &mut R,
     maximum: usize,

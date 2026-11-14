@@ -41,10 +41,6 @@ impl<F: Format> Machine<'_, F> {
         accepted
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "Leaf selection and copying share the same admitted cursor and allocation guard."
-    )]
     fn accept_leaf(
         &mut self,
         request: &Request<F::Key>,

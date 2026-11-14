@@ -300,10 +300,6 @@ pub type MergeGenerationResult =
     MeasuredResult<OperationReceipt<MergeGenerationOutcome>, MergeGenerationError>;
 
 /// Performs one sparse bounded three-way merge and constructs its two-parent checkpoint.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one sparse bounded three-way merge and its two-parent checkpoint"
-)]
 pub async fn merge_generation_async<S: AsyncObjectStore>(
     store: &S,
     request: MergeGenerationRequest,

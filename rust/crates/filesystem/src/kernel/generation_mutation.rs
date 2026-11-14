@@ -895,10 +895,6 @@ async fn verify_created_identities<S: AsyncObjectStore>(
     Ok(ids)
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "The lookup frame owns admission, borrowed paths and cleanup until all initial reads finish."
-)]
 async fn load_initial_lookups<S: AsyncObjectStore>(
     store: &S,
     generation: &GenerationRoot,
@@ -1073,10 +1069,6 @@ impl MutationLeaf<'_, '_> {
 }
 
 impl TransactionState {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "builds the whole transaction state from one validated plan"
-    )]
     fn new(
         plan: &MutationPlan,
         lookups: &InitialLookups,
@@ -1293,10 +1285,6 @@ impl TransactionState {
         })
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "Mutation variants share one atomic preparation frame and resource cleanup."
-    )]
     fn prepare(
         &mut self,
         leaf: &mut MutationLeaf<'_, '_>,

@@ -64,7 +64,6 @@ pub fn derived_uuid(operation_id: OperationId, label: &str) -> Uuid {
 /// Prepares one deterministic turn with optional identity and checkpoint.
 #[expect(
     clippy::too_many_arguments,
-    clippy::too_many_lines,
     reason = "one deterministic admission sequence"
 )]
 pub fn prepare_turn(

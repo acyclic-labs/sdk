@@ -1,10 +1,6 @@
 use super::*;
 
 #[tokio::test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one ordered scenario checks publication, exact retry, concurrent user edits and negative controls"
-)]
 async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() -> Result<()> {
     let provider = ProviderRef::new(
         "portable".into(),

@@ -22,11 +22,7 @@ mod scope;
 mod formal_proofs;
 
 #[cfg(test)]
-#[allow(
-    clippy::indexing_slicing,
-    clippy::too_many_lines,
-    reason = "grouped boundary cases"
-)]
+#[allow(clippy::indexing_slicing, reason = "grouped boundary cases")]
 mod tests;
 
 mod worker;

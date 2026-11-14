@@ -14,10 +14,6 @@ impl NativeSourceWatch {
         Self::start_bound_driver(directory, delivery, true, work)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "Startup retains every cleanup slot until native ownership transfers or rollback completes."
-    )]
     pub(in crate::source_watch) fn start_bound_driver<W: SourceDemandReadWork>(
         directory: &crate::native_host::HostRoot,
         delivery: Arc<Delivery>,

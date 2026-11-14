@@ -869,10 +869,6 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
             .map_err(|error| failed(project_probe_error(error), work))
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "Each dependency variant completes within the same admitted capture frame."
-    )]
     async fn capture_validated_record_with_accounting(
         &self,
         record: Option<FileRecord>,
@@ -1063,10 +1059,6 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "Sparse content capture retires each bounded page before admitting its successor."
-    )]
     async fn content_state_with_accounting(
         &self,
         record: FileRecord,

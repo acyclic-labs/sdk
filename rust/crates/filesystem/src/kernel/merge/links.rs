@@ -150,10 +150,6 @@ fn add_delta(
     Ok(())
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "Link-count validation and edits share the admitted mutation frame."
-)]
 async fn adjust_link_counts<S: AsyncObjectStore>(
     store: &S,
     limits: DecodeLimits,

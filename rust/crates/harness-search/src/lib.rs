@@ -3,7 +3,6 @@
     test,
     allow(
         clippy::indexing_slicing,
-        clippy::too_many_lines,
         clippy::cognitive_complexity,
         reason = "unit tests run ordered scenarios over fixtures they built"
     )

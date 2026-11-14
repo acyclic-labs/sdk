@@ -1,10 +1,7 @@
 #![doc = include_str!("../../docs/objects.md")]
 #![cfg_attr(
     test,
-    allow(
-        clippy::too_many_lines,
-        reason = "one ordered scenario keeps each step next to the state it checks"
-    )
+    allow(reason = "one ordered scenario keeps each step next to the state it checks")
 )]
 
 use crate::{

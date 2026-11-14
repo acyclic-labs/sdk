@@ -354,10 +354,6 @@ impl MutationPlan {
             .map_err(|error| OperationFailure::new(plan_error(&error), accounting.spent()))
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "This state transition keeps admission, effects and resource retirement in one frame."
-    )]
     pub(crate) fn compile_with_accounting(
         operations: Vec<Mutation>,
         accounting: &mut super::allocation::KernelAccounting<'_>,

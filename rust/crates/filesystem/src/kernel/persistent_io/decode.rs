@@ -50,10 +50,6 @@ fn logical_page_bytes<F: Format>(shape: DecodedPageShape) -> Option<u64> {
     container_bytes.checked_add(shape.nested_bytes)
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "This state transition keeps admission, effects and resource retirement in one frame."
-)]
 pub(crate) fn decode_read_with_accounting<F: Format>(
     read: &ObjectRead,
     limits: DecodeLimits,

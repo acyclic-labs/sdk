@@ -2,7 +2,6 @@
     test,
     allow(
         clippy::indexing_slicing,
-        clippy::too_many_lines,
         reason = "adapter tests run ordered scenarios over fixtures they built"
     )
 )]

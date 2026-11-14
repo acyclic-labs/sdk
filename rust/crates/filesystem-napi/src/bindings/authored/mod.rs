@@ -79,10 +79,6 @@ impl NativeCheckout {
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "one exhaustive match lowers every native transaction operation"
-)]
 pub(in crate::bindings) fn native_authored_transaction(
     operation: NativeTransactionOperation,
     config: VolumeConfig,

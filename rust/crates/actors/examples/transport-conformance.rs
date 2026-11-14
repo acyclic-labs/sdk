@@ -2,10 +2,6 @@
 use acyclic_actors as actors;
 use std::io::{self, Read};
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "enumerates every canonical RPC in the conformance runner"
-)]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut input = String::new();

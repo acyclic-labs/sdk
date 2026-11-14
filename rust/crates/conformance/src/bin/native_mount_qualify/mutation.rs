@@ -14,10 +14,6 @@ impl QualificationWatcher {
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "one ordered scenario keeps each step next to the state it checks"
-)]
 pub(super) async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
     let root = tempfile::tempdir()?;
     let store = root.path().join("store");

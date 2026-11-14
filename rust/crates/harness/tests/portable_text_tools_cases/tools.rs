@@ -104,10 +104,6 @@ async fn image_conversion_authorizes_the_pinned_source_before_reading() -> Resul
 }
 
 #[tokio::test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one real content-provider scenario exercises scoped tool execution, replay and authority controls"
-)]
 async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> Result<()> {
     use acyclic_harness::{
         filesystem::{FilesystemContentPublisher, FilesystemContentVerifier},
