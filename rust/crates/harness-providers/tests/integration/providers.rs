@@ -86,7 +86,12 @@ pub(super) async fn parsed(case: &ProviderCase, transport: Arc<Recorded>) -> Tes
             step: u32::try_from(step)?,
             request_digest: request.request_digest(),
         };
-        let events: Vec<_> = provider.generate(&request, dispatch).try_collect().await?;
+        let events: Vec<_> = super::provider_output::without_request_traces(
+            provider.generate(&request, dispatch),
+            |event| event,
+        )
+        .try_collect()
+        .await?;
         let mut ordinal = 0;
         for event in &events {
             if let ModelEvent::ToolCall(call) = event {

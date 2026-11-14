@@ -36,6 +36,8 @@ mod provider_case;
 mod provider_http;
 #[path = "integration/provider_tests.rs"]
 mod provider_tests;
+#[path = "../src/fixtures/output.rs"]
+mod provider_output;
 #[path = "integration/providers.rs"]
 mod providers;
 #[path = "../../harness/tests/support/quiescent.rs"]
