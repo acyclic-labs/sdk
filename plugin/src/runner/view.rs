@@ -330,7 +330,8 @@ struct View {
     /// took, so a second never opens over the first.
     prompt: Option<Prompt>,
     feedback_scroll: usize,
-    /// A command's result or refusal, until the next prompt.
+    /// The latest action's result, dismissed by the next deliberate input or
+    /// replaced by the next completed layout action, independently of status.
     notice: Option<String>,
     /// Original waiting-status identity of the action displayed by the pager.
     approval_status: Option<u64>,
@@ -834,15 +835,30 @@ impl View {
         Line::from(spans)
     }
 
+    fn begin_input(&mut self, event: Result<&InputEvent, &AgentPath>) {
+        use acyclic_harness::tui::key_event::{KeyEventKind, MouseEventKind};
+        let deliberate = match event {
+            Err(_) => true,
+            Ok(InputEvent::Key(key)) => key.kind != KeyEventKind::Release,
+            Ok(InputEvent::Paste(_) | InputEvent::CommittedText(_)) => true,
+            Ok(InputEvent::Mouse(mouse)) => {
+                !matches!(mouse.kind, MouseEventKind::Moved | MouseEventKind::Up(_))
+            }
+            Ok(
+                InputEvent::SettlementQuery(_) | InputEvent::Focus(_) | InputEvent::Resize(_, _),
+            ) => false,
+        };
+        if deliberate {
+            self.notice = None;
+        }
+    }
+
     fn status(&self) -> String {
         if matches!(self.prompt, Some(Prompt::StopOrDetach)) {
             return "Stop or detach? s stops this turn; d or Ctrl+D detaches; Esc stays.".into();
         }
         if let Some(Prompt::Confirm(CommandRequest::ClearAll {})) = &self.prompt {
             return "Clear all conversations? Enter yes or no.".into();
-        }
-        if let Some(notice) = &self.notice {
-            return notice.clone();
         }
         if let Some(Prompt::Restore { at, mode, .. }) = &self.prompt {
             let target = match mode {
@@ -1049,7 +1065,8 @@ async fn run_current(
     let query_loading = [Line::raw("Loading…")];
     let mut query_future = std::pin::pin!(None);
     if resume {
-        view.notice = apply_open_view(
+        apply_open_view(
+            &mut view,
             ui.open_view(),
             &mut overlay,
             &mut queries,
@@ -1219,6 +1236,7 @@ async fn run_current(
                 .spans
                 .push(Span::raw(format!(" · {}", conversation.agent().id())));
             view.rows(transcript_width.saturating_sub(1));
+            let notice = view.notice.as_deref().map(Line::raw);
             let (transcript, links, code) = view.transcript.presentation();
             let mut screen = Screen {
                 header,
@@ -1228,6 +1246,7 @@ async fn run_current(
                 tree: &tree_rows,
                 terminal: if busy { &output_rows[..] } else { &[] },
                 status,
+                notifications: notice.as_slice(),
                 usage: if usage_stopped.is_some() {
                     &usage_unavailable[..]
                 } else {
@@ -1500,6 +1519,7 @@ async fn run_current(
                         settlement_queries.push(async move { (id, root.wait_current_input().await) });
                         continue;
                     }
+                    view.begin_input(event.as_ref());
                     let intent = match &event {
                         Err(agent) => Some(tree::Intent::Attach(agent.clone())),
                         Ok(event) if overlay.is_none() && queries.source().is_none() => sidebar.event(event, &input.keymap, areas.tree),
@@ -1939,7 +1959,8 @@ async fn run_current(
                     // A batch can submit a panel and then Escape. Publish its
                     // visible state before the next event decides what to close.
                     if files_changed
-                        && let Some(notice) = apply_session_layout(
+                        && apply_session_layout(
+                            &mut view,
                             &ui,
                             &mut previous_layout,
                             &mut overlay,
@@ -1948,7 +1969,6 @@ async fn run_current(
                             &input,
                         )
                     {
-                        view.notice = notice.or(view.notice.take());
                         overlay_top = 0;
                     }
                 }
@@ -1970,7 +1990,8 @@ async fn run_current(
             if overlay.as_ref().is_some_and(|(title, _)| *title == "Help") {
                 overlay = Some(("Help", View::help(&ui.catalog, &input)));
             }
-            if let Some(notice) = apply_session_layout(
+            if apply_session_layout(
+                &mut view,
                 &ui,
                 &mut previous_layout,
                 &mut overlay,
@@ -1978,7 +1999,6 @@ async fn run_current(
                 query_future.as_mut(),
                 &input,
             ) {
-                view.notice = notice.or(view.notice.take());
                 overlay_top = 0;
             }
             // A command can reopen past an in-flight follow. Apply the whole
@@ -1994,6 +2014,109 @@ async fn run_current(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_notices_dismiss_on_input_without_replacing_live_or_prompt_status()
+    -> Result<(), Failure> {
+        use acyclic_harness::tui::{
+            key_event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+            ratatui::{Terminal, backend::TestBackend},
+        };
+
+        fn paint(view: &View, input: &PromptInput) -> Result<String, Failure> {
+            let notice = view.notice.as_deref().map(Line::raw);
+            let screen = Screen {
+                status: Line::raw(view.status()),
+                notifications: notice.as_slice(),
+                ..Screen::default()
+            };
+            let mut terminal = Terminal::new(TestBackend::new(140, 12))?;
+            terminal.draw(|frame| {
+                let areas = screen.render(frame, input, &mut Viewport::default(), 0, 0);
+                assert!(areas.notifications.bottom() <= areas.status.y);
+            })?;
+            Ok(terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect())
+        }
+
+        // Use the original command catalog and capability refusal, then the
+        // same composed screen and decoded input path as the attached client.
+        let catalog = CommandCatalog::builtins()?;
+        let reason = capabilities::selected(&catalog, "/goal").ok_or("expected refusal")?;
+        let mut view = View {
+            phase: Some(Phase::Running),
+            notice: refusal(reason),
+            ..View::default()
+        };
+        let input = PromptInput::default();
+        let initial = paint(&view, &input)?;
+        assert!(initial.contains(reason));
+        assert!(
+            initial.contains("working"),
+            "a command notice hid live execution status"
+        );
+
+        // A release belongs to the gesture that produced the notice. Focus,
+        // resize and private settlement fences must not dismiss it either.
+        let mut release = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        release.kind = KeyEventKind::Release;
+        for event in [
+            InputEvent::Key(release),
+            InputEvent::Resize(140, 12),
+            InputEvent::Focus(false),
+            InputEvent::SettlementQuery(9),
+        ] {
+            view.begin_input(Ok(&event));
+            assert!(paint(&view, &input)?.contains(reason));
+        }
+        view.prompt = Some(Prompt::History { at: 0 });
+        let confirming = paint(&view, &input)?;
+        assert!(confirming.contains(reason));
+        assert!(confirming.contains("Cut 1 selected"));
+        view.prompt = None;
+
+        for event in [
+            InputEvent::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+            InputEvent::Paste("next draft".into()),
+            InputEvent::CommittedText("committed text".into()),
+        ] {
+            view.notice = refusal(reason);
+            let mut input = PromptInput::default();
+            input.busy = true;
+            let areas = Screen::default().areas(Rect::new(0, 0, 140, 12), &input);
+            view.begin_input(Ok(&event));
+            let effects = areas
+                .event(&mut input, event, &mut Viewport::default(), 0, &mut |_| {
+                    None
+                })
+                .collect::<Vec<_>>();
+            assert!(effects.iter().all(|effect| !matches!(
+                effect,
+                InputEffect::Submit { .. } | InputEffect::Interrupt
+            )));
+            assert!(!input.editor.text().is_empty());
+            let shown = paint(&view, &input)?;
+            assert!(
+                !shown.contains(reason),
+                "a draft edit retained the old refusal"
+            );
+            assert!(shown.contains("working"));
+            assert!(view.busy());
+        }
+        view.notice = refusal(reason);
+        let navigation = AgentPath::root(&acyclic_harness::agent::AgentId::from_bytes([3; 16]));
+        view.begin_input(Err(&navigation));
+        assert!(
+            !paint(&view, &input)?.contains(reason),
+            "navigation retained the old refusal"
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     async fn stop_targets_the_active_input_while_a_later_prompt_is_pending() -> Result<(), Failure>
@@ -2473,6 +2596,7 @@ mod tests {
         use acyclic_harness::command_request::{CommandFileSnapshot, layout_view, view_changes};
         let catalog = CommandCatalog::builtins()?;
         let input = PromptInput::default();
+        let mut view = View::default();
         let mut overlay = None;
         let mut queries = QueryController::<query::Source, query::Context>::default();
         let mut pending = std::pin::pin!(None::<std::future::Ready<()>>);
@@ -2489,7 +2613,8 @@ mod tests {
             )?;
             let saved = layout_view(&changes[0].contents)?.ok_or("view was not saved")?;
             queries.select(query::Source::Diff(None), pending.as_mut());
-            let notice = apply_open_view(
+            apply_open_view(
+                &mut view,
                 Some(saved),
                 &mut overlay,
                 &mut queries,
@@ -2497,11 +2622,16 @@ mod tests {
                 &catalog,
                 &input,
             );
-            assert!(notice.is_some_and(|notice| notice.contains(saved)));
+            assert!(
+                view.notice
+                    .as_deref()
+                    .is_some_and(|notice| notice.contains(saved))
+            );
             assert!(overlay.is_none() && queries.source().is_none());
         }
         // Negative control: a renderable view opens without a notice.
-        let notice = apply_open_view(
+        apply_open_view(
+            &mut view,
             Some("shortcuts"),
             &mut overlay,
             &mut queries,
@@ -2509,7 +2639,10 @@ mod tests {
             &catalog,
             &input,
         );
-        assert!(notice.is_none() && overlay.is_some());
+        assert!(
+            view.notice.is_none() && overlay.is_some(),
+            "a successful saved view retained an old refusal"
+        );
         Ok(())
     }
 
@@ -2787,39 +2920,45 @@ mod tests {
 // Compare content, since an unrelated file commit also changes file revisions.
 // An unchanged layout preserves the selected page and its retained read.
 fn apply_session_layout<F>(
+    view: &mut View,
     ui: &session::Session,
     previous: &mut Option<[u8; 32]>,
     overlay: &mut Option<(&'static str, Vec<Line<'static>>)>,
     queries: &mut QueryController<query::Source, query::Context>,
     pending: std::pin::Pin<&mut Option<F>>,
     input: &PromptInput,
-) -> Option<Option<String>> {
+) -> bool {
     if *previous == ui.layout_digest() {
-        return None;
+        return false;
     }
     *previous = ui.layout_digest();
-    Some(apply_open_view(
+    apply_open_view(
+        view,
         ui.open_view(),
         overlay,
         queries,
         pending,
         &ui.catalog,
         input,
-    ))
+    );
+    true
 }
 
 /// Projects the session's saved view onto the terminal. Total over every
 /// view name: `layout.json` is shared with other clients and the shared
 /// `view_changes` writer, so a view this terminal cannot render closes the
-/// panel and returns a notice instead of ending the session.
+/// panel and records its notice instead of ending the session. The action
+/// owns the notice, so success dismisses a previous refusal.
 fn apply_open_view<F>(
+    view: &mut View,
     selected: Option<&str>,
     overlay: &mut Option<(&'static str, Vec<Line<'static>>)>,
     queries: &mut QueryController<query::Source, query::Context>,
     pending: std::pin::Pin<&mut Option<F>>,
     catalog: &CommandCatalog,
     input: &PromptInput,
-) -> Option<String> {
+) {
+    view.notice = None;
     *overlay = None;
     match selected {
         Some("cost") => queries.select(query::Source::Cost, pending),
@@ -2832,10 +2971,9 @@ fn apply_open_view<F>(
         None => queries.close(pending),
         Some(other) => {
             queries.close(pending);
-            return Some(format!(
+            view.notice = Some(format!(
                 "The saved {other:?} view is not available in this terminal"
             ));
         }
     }
-    None
 }

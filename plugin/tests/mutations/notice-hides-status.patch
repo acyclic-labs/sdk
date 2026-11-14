@@ -1,0 +1,10 @@
+diff --git a/plugin/src/runner/view.rs b/plugin/src/runner/view.rs
+--- a/plugin/src/runner/view.rs
++++ b/plugin/src/runner/view.rs
+@@ -862,3 +862,6 @@
++        if let Some(notice) = &self.notice {
++            return notice.clone();
++        }
+         if let Some(Prompt::Restore { at, mode, .. }) = &self.prompt {
+             let target = match mode {
+                 RestoreMode::Files => "files",

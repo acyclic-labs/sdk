@@ -1,0 +1,10 @@
+diff --git a/plugin/src/runner/view.rs b/plugin/src/runner/view.rs
+--- a/plugin/src/runner/view.rs
++++ b/plugin/src/runner/view.rs
+@@ -2957,6 +2957,5 @@
+     input: &PromptInput,
+ ) {
+-    view.notice = None;
+     *overlay = None;
+     match selected {
+         Some("cost") => queries.select(query::Source::Cost, pending),
