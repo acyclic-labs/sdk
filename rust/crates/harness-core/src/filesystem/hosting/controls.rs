@@ -754,7 +754,16 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
                     },
                 )
             })
-            .chain(metadata.map(|(id, path)| (id.into(), Subscription { path, cursor: 0 })))
+            .chain(metadata.map(|(id, path)| {
+                (
+                    id.into(),
+                    Subscription {
+                        path,
+                        cursor: 0,
+                        paused: false,
+                    },
+                )
+            }))
             .chain([
                 (
                     CLOSED.into(),

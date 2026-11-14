@@ -14,6 +14,13 @@ where
         self.traces = Some((traces, owner));
         self
     }
+    /// Uses the original host alarm clock for tool quiet deadlines.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn acyclic_actors::local::Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
     fn invalidate_execution_caches(&mut self) {
         self.cache_identity = Default::default();
         *self.verified.get_mut() = SummaryCache::default();
@@ -169,6 +176,7 @@ where
         let scope = scope.copy_in_quota(&mut quota)?;
         let _native_metadata = quota.into_custody()?;
         Ok(Self {
+            clock: Arc::new(acyclic_actors::local::SystemClock),
             cache_identity: Default::default(),
             traces: None,
             stream,

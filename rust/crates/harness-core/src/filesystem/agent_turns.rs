@@ -730,6 +730,7 @@ pub struct TurnLimits {
 /// [`TurnHost`] binding every agent to its executor and a journal on its
 /// private volume, under a conversation authority named by the agent's id.
 pub struct FilesystemTurnHost<P: ?Sized, A: 'static, O: 'static> {
+    clock: Arc<dyn acyclic_actors::local::Clock>,
     stream: Arc<P>,
     traces: Option<acyclic_stream::trace::Registry<P>>,
     within: acyclic_actors::addressing::ActorReference,
@@ -831,6 +832,7 @@ where
             within,
             actor_root: None,
             traces: None,
+            clock: Arc::new(acyclic_actors::local::SystemClock),
             host,
             issuer,
             templates,

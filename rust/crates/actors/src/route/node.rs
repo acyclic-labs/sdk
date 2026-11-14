@@ -286,6 +286,7 @@ impl NodeActor {
                             Subscription {
                                 path: inbox.clone(),
                                 cursor: 1,
+                                paused: false,
                             },
                         )]),
                         checkpoint: Some(state.checkpoint()),

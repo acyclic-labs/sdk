@@ -20,6 +20,7 @@ async fn input_aliases<P: StreamProvider>(provider: P) -> TestResult {
                             Subscription {
                                 path: input.clone(),
                                 cursor: 0,
+                                paused: false,
                             },
                         )
                     })

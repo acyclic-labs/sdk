@@ -32,6 +32,7 @@ async fn node_links_bind_owner_credentials_and_publish_only_lifecycle_changes() 
                 crate::local::Subscription {
                     path: foreign_inbox.clone(),
                     cursor: 0,
+                    paused: false,
                 },
             )]),
             checkpoint: None,
