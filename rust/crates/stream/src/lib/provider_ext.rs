@@ -8,13 +8,14 @@ impl LatestRead {
     fn new(
         path: StreamPath,
         key: Option<Bytes>,
-        before: u64,
+        before: std::num::NonZeroU64,
         at_least: RevisionCut,
-    ) -> Option<(Self, ReadRequest)> {
-        let last = before.checked_sub(1)?;
+    ) -> (Self, ReadRequest) {
+        let before = before.get();
+        let last = before - 1;
         let key = key.map(|key| ReadKeySeek::latest(key, before));
         let from = if key.is_some() { 0 } else { last };
-        Some((
+        (
             Self {
                 from,
                 key: key.clone(),
@@ -27,7 +28,7 @@ impl LatestRead {
                 limit: 1,
                 at_least,
             },
-        ))
+        )
     }
 
     fn validate(&mut self, record: &Record) -> Result<(), StreamError> {
@@ -71,17 +72,16 @@ pub trait StreamProviderExt: StreamProvider {
             let work = async move {
                 use futures::TryStreamExt as _;
                 meter.check()?;
-                if before == 0 {
+                let Some(before) = std::num::NonZeroU64::new(before) else {
                     return Ok(Ok(NativeStreamOutput::new(
                         None,
                         acyclic_native_runtime::ReadAllocation::empty(&meter),
                     )));
-                }
+                };
                 let key = key
                     .map(|key| key.into_cloneable_native(&meter))
                     .transpose()?;
-                let (mut selection, request) = LatestRead::new(path, key, before, at_least)
-                    .expect("nonzero original cut has one predecessor");
+                let (mut selection, request) = LatestRead::new(path, key, before, at_least);
                 let mut records = match self.native_read(request, meter.clone()).await? {
                     Ok(records) => records,
                     Err(error) => return Ok(Err(error)),
@@ -270,10 +270,10 @@ pub trait StreamProviderExt: StreamProvider {
             use futures::StreamExt as _;
             #[cfg(feature = "serde")]
             let diagnostic = crate::trace::is_source(&path);
-            let Some((mut selection, request)) = LatestRead::new(path, key, before, at_least)
-            else {
+            let Some(before) = std::num::NonZeroU64::new(before) else {
                 return Ok(None);
             };
+            let (mut selection, request) = LatestRead::new(path, key, before, at_least);
             let work = async move {
                 let mut records = self.read(request).await?;
                 let record = records.next().await.transpose()?;
