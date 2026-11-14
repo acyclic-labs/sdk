@@ -1,0 +1,71 @@
+{
+  "prompt": "Preserve literal backslashes through code-mode commands.",
+  "seed": {
+    "sentinel.txt": "unchanged\n"
+  },
+  "turns": [
+    [
+      {
+        "type": "event",
+        "kind": "tool_call",
+        "call_id": "raw-program",
+        "name": "code",
+        "arguments": {
+          "code": "const suffix=':λ'; const expected='a'+String.fromCharCode(92)+'|b:λ'; String.raw=()=>{throw new Error('mutated raw')}; const literal=await tools.shell`printf '%s' 'a\\|b:λ'`; const interpolated=await tools.shell`printf '%s' 'a\\|b${suffix}'`; const cooked=await tools.shell({command:`printf '%s' 'a\\|b:λ'`}); let refused=false; try {await tools.write`not an argument object`} catch(e) {refused=e.message.includes('exactly one required input')}; export default {literal:literal.stdout===expected,interpolated:interpolated.stdout===expected,cookedDiff:cooked.stdout!==expected,exits:[literal.exit_code,interpolated.exit_code,cooked.exit_code],refused};"
+        }
+      },
+      {
+        "type": "event",
+        "kind": "completed",
+        "metadata": null
+      }
+    ],
+    "done"
+  ],
+  "expect": {
+    "files": {
+      "sentinel.txt": "unchanged\n"
+    },
+    "results": {
+      "raw-program": {
+        "content": {
+          "kind": "json",
+          "value": {
+            "literal": true,
+            "interpolated": true,
+            "cookedDiff": true,
+            "exits": [
+              0,
+              0,
+              0
+            ],
+            "refused": true
+          }
+        }
+      }
+    }
+  },
+  "platforms": {
+    "windows": {
+      "turns": [
+        [
+          {
+            "type": "event",
+            "kind": "tool_call",
+            "call_id": "raw-program",
+            "name": "code",
+            "arguments": {
+              "code": "const suffix=':λ'; const expected='a'+String.fromCharCode(92)+'|b:λ'; String.raw=()=>{throw new Error('mutated raw')}; const literal=await tools.shell`[Console]::Out.Write('a\\|b:λ')`; const interpolated=await tools.shell`[Console]::Out.Write('a\\|b${suffix}')`; const cooked=await tools.shell({command:`[Console]::Out.Write('a\\|b:λ')`}); let refused=false; try {await tools.write`not an argument object`} catch(e) {refused=e.message.includes('exactly one required input')}; export default {literal:literal.stdout===expected,interpolated:interpolated.stdout===expected,cookedDiff:cooked.stdout!==expected,exits:[literal.exit_code,interpolated.exit_code,cooked.exit_code],refused};"
+            }
+          },
+          {
+            "type": "event",
+            "kind": "completed",
+            "metadata": null
+          }
+        ],
+        "done"
+      ]
+    }
+  }
+}
