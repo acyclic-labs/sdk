@@ -959,6 +959,10 @@ mod adoption_tests {
             .stage(&state, OperationId::new(), body)
             .await?;
         assert_eq!(file.volume(), &journal);
+        assert!(
+            crate::conversation::ContentGrant::verify_read(&verifier, &scope, &file).is_ok(),
+            "the native view must hold the journal read grant before policy refuses access"
+        );
         let sealed = async { view.read(&file, 4096, None, None)?.await }
             .await
             .expect_err("a view read the host's native record");
