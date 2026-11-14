@@ -58,10 +58,17 @@ fn granting(grants: Vec<Grant>) -> Caveat {
     }
 }
 
-fn chain(leaf: Vec<Grant>) -> Vec<Block> {
+fn chain(leaf: Vec<Grant>) -> Result<Vec<Block>, acyclic_auth::Error> {
     let mut root = root();
-    root.certificates.as_mut().unwrap().keys[0].key.grants = GrantSet { grants: leaf };
-    vec![root]
+    root.certificates
+        .as_mut()
+        .ok_or(acyclic_auth::Error::Invalid)?
+        .keys
+        .first_mut()
+        .ok_or(acyclic_auth::Error::Invalid)?
+        .key
+        .grants = GrantSet { grants: leaf };
+    Ok(vec![root])
 }
 
 fn append(blocks: &[Block], caveat: Caveat) -> Option<Vec<Block>> {
@@ -71,7 +78,7 @@ fn append(blocks: &[Block], caveat: Caveat) -> Option<Vec<Block>> {
 #[test]
 fn execution_limits_keep_or_lower_and_unset_inherits() {
     let parent = append(
-        &chain(vec![execution(None, None, None)]),
+        &chain(vec![execution(None, None, None)]).expect("signed grant fixture"),
         granting(vec![execution(Some(100), Some(4), Some(8))]),
     )
     .expect("a bounded child of an unbounded leaf");
@@ -116,7 +123,7 @@ fn execution_limits_keep_or_lower_and_unset_inherits() {
 
 #[test]
 fn filesystem_generation_and_owner_pin_once() {
-    let open = chain(vec![mount("fs:/v/", None, None)]);
+    let open = chain(vec![mount("fs:/v/", None, None)]).expect("signed grant fixture");
     let pinned = append(&open, granting(vec![mount("fs:/v~3/", Some(10), None)]))
         .expect("a child pins an open generation and an unset owner");
     assert!(
@@ -158,8 +165,11 @@ fn filesystem_generation_and_owner_pin_once() {
 
 #[test]
 fn allowance_products_only_shrink_and_bound_requests() {
-    let every = append(&chain(vec![mount("fs:/", None, None)]), allowance(&[]))
-        .expect("an every-product allowance");
+    let every = append(
+        &chain(vec![mount("fs:/", None, None)]).expect("signed grant fixture"),
+        allowance(&[]),
+    )
+    .expect("an every-product allowance");
     let fs_only = append(&every, allowance(&["fs", "stream"])).expect("subset of every");
     assert!(append(&fs_only, allowance(&["fs"])).is_some());
     // Negative controls: a superset, a disjoint set, or reverting to every product.
@@ -219,7 +229,8 @@ fn plain_resource_and_socket_grants_narrow_too() {
         plain("fs:/v/", true, "fs/read"),
         socket("*.example.com", &[(1000, 2000)]),
         socket("10.0.0.0/8", &[]),
-    ]);
+    ])
+    .expect("signed grant fixture");
     for narrowed in [
         plain("fs:/v/dir/", true, "fs/read"),
         plain("fs:/v/file", false, "fs/read"),
@@ -322,7 +333,11 @@ fn renewed_allowance_restricts_only_what_each_action_bills() {
             None => plain(resource, false, action),
         });
     }
-    let renewed = append(&chain(leaf), allowance(&covered)).expect("a renewed allowance");
+    let renewed = append(
+        &chain(leaf).expect("signed grant fixture"),
+        allowance(&covered),
+    )
+    .expect("a renewed allowance");
     let attributes = RecordAttributes::default();
     let usage = limits(None);
     let mut prefix_disagrees = false;
@@ -391,14 +406,17 @@ fn billed_execution_requires_one_surviving_owner_for_every_allowance() {
         (actor.clone(), inherited.clone()),
         (inherited, actor.clone()),
     ] {
-        let restricted = append(&chain(vec![parent]), granting(vec![child]))
-            .expect("an execution owner may inherit or become pinned");
+        let restricted = append(
+            &chain(vec![parent]).expect("signed grant fixture"),
+            granting(vec![child]),
+        )
+        .expect("an execution owner may inherit or become pinned");
         let billed = append(&restricted, allowance(&["actors"])).expect("a product allowance");
         assert!(allowed(&billed), "the surviving signed owner can pay");
     }
     for (survivor, admitted) in [(actor.clone(), true), (worker.clone(), false)] {
         let restricted = append(
-            &chain(vec![actor.clone(), worker.clone()]),
+            &chain(vec![actor.clone(), worker.clone()]).expect("signed grant fixture"),
             granting(vec![survivor]),
         )
         .expect("an execution grant may be excluded");
@@ -411,7 +429,7 @@ fn billed_execution_requires_one_surviving_owner_for_every_allowance() {
     };
     grant.cpu_millis = Some(0);
     let billed = append(
-        &chain(vec![exhausted_actor, worker.clone()]),
+        &chain(vec![exhausted_actor, worker.clone()]).expect("signed grant fixture"),
         allowance(&["actors"]),
     )
     .expect("a product allowance with a resource-limited grant");
@@ -420,7 +438,7 @@ fn billed_execution_requires_one_surviving_owner_for_every_allowance() {
         "an ineligible execution grant cannot pay"
     );
 
-    let mut disjoint = chain(vec![actor, worker]);
+    let mut disjoint = chain(vec![actor, worker]).expect("signed grant fixture");
     disjoint.push(Block {
         certificates: None,
         caveats: vec![allowance(&["actors"]), allowance(&["workers"])],

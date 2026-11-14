@@ -71,3 +71,19 @@ mod secrets;
 mod secrets_custody;
 
 mod secret_binding;
+
+fn take_credential_event<T>(
+    slot: &std::sync::Mutex<Option<T>>,
+) -> Result<Option<T>, acyclic_auth::credential::CredentialError> {
+    Ok(slot
+        .lock()
+        .map_err(|_| acyclic_auth::credential::CredentialCacheError::Unavailable)?
+        .take())
+}
+
+fn required_credential_event<T>(
+    slot: &std::sync::Mutex<Option<T>>,
+) -> Result<T, acyclic_auth::credential::CredentialError> {
+    take_credential_event(slot)?
+        .ok_or(acyclic_auth::credential::CredentialCacheError::Unavailable.into())
+}

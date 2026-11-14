@@ -42,7 +42,7 @@ proptest! {
             let refused = refused.encode_canonical();
             let header = 1 + prost::encoding::encoded_len_varint(u64::from(version));
             for end in [header, header + 1, refused.len()] {
-                let input = &refused[..end];
+                let input = refused.get(..end).expect("truncated envelope");
                 let measured = acyclic_test_support::measure(|| {
                     assert_eq!(acyclic_auth::authority::decode_capability(input), Err(acyclic_auth::Error::UnsupportedVersion(version)));
                     assert!(matches!(verify(input, &trust, NOW), Err(VerifyError::Version(found)) if found == version));
@@ -245,7 +245,7 @@ proptest! {
         let signed = legacy.blocks.first_mut().unwrap();
         let mut transcript = acyclic_auth::crypto::block_transcript(0, &[0;32], &signed.payload);
         let offset = acyclic_auth::BLOCK_DOMAIN.len() + 8;
-        transcript[offset..offset + 4].copy_from_slice(&1u32.to_le_bytes());
+        transcript.get_mut(offset..offset + 4).expect("transcript version field").copy_from_slice(&1u32.to_le_bytes());
         signed.signature = key(3).sign(&transcript).to_bytes().to_vec();
         let changed = legacy.encode_canonical();
         prop_assert!(acyclic_auth::authority::decode_capability(&changed).is_ok());

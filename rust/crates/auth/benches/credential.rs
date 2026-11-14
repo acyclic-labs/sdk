@@ -26,8 +26,11 @@ fn cohort(
         .into_iter()
         .collect::<Result<Vec<_>, _>>()?;
     let elapsed = started.elapsed().as_secs_f64() * 1e6;
+    let first = leases
+        .first()
+        .ok_or("credential cohort produced no lease")?;
     for lease in &leases {
-        assert!(Arc::ptr_eq(&leases[0], lease));
+        assert!(Arc::ptr_eq(first, lease));
         cache.check(lease)?;
     }
     Ok(elapsed)
@@ -48,11 +51,14 @@ fn measure() -> Result<(), Box<dyn std::error::Error>> {
                 let calls = calls.clone();
                 let gate = gate.clone();
                 move |_| {
-                    let receive = gate.lock().unwrap().take();
+                    let receive = gate
+                        .lock()
+                        .map_err(|_| CredentialError::Invalid)
+                        .map(|mut gate| gate.take());
                     let generation = calls.fetch_add(1, Ordering::Relaxed);
                     let expires = clock.load(Ordering::Relaxed) + 100;
                     async move {
-                        receive
+                        receive?
                             .ok_or(CredentialError::Invalid)?
                             .await
                             .map_err(|_| CredentialError::Invalid)?;
@@ -90,7 +96,7 @@ fn measure() -> Result<(), Box<dyn std::error::Error>> {
         clock.store(101, Ordering::Relaxed);
         assert!(cache.check(&lease).is_err());
         let (release, receive) = oneshot::channel();
-        *gate.lock().unwrap() = Some(receive);
+        *gate.lock().map_err(|error| error.to_string())? = Some(receive);
         let expiry = cohort(&cache, callers, release)?;
         assert_eq!(calls.load(Ordering::Relaxed), 2);
         // Negative control: raw callbacks have no trusted validity or reuse.

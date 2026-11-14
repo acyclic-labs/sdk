@@ -121,7 +121,7 @@ proptest! {
             || { before.push_str(&encode_component(&a)); before },
             || { append_component(&a, &mut after); after },
         );
-        prop_assert_eq!(&appended["objects:/".len()..], encoded.as_str());
+        prop_assert_eq!(appended.strip_prefix("objects:/").expect("resource domain"), encoded.as_str());
         prop_assert_eq!(direct.count_total, 0);
         if !a.is_empty() {
             prop_assert!(temporary.count_total > 0);

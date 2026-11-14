@@ -475,7 +475,7 @@ fn account_events_preserve_exact_dependencies_without_unrelated_wakes() {
 
     observe_clock_and_global(
         &world,
-        trust,
+        &trust,
         &first,
         &other,
         second,
@@ -486,7 +486,7 @@ fn account_events_preserve_exact_dependencies_without_unrelated_wakes() {
 
 fn observe_clock_and_global(
     world: &World,
-    trust: Follower,
+    trust: &Follower,
     first: &verify::TrustEvidence,
     other: &verify::TrustEvidence,
     mut second: AccountRoot,
@@ -497,7 +497,7 @@ fn observe_clock_and_global(
     let first_waker = futures::task::waker_ref(&first_wakes);
     let other_waker = futures::task::waker_ref(&other_wakes);
     // Advancing the original protected clock is a genuine global dependency.
-    let time_changed = first.changed(&trust);
+    let time_changed = first.changed(trust);
     let clock_record = second.revoke(&[([88; 32], NOW + 10_000)], NOW + 1).unwrap();
     trust.apply(&clock_record, NOW + 1).unwrap();
     assert_eq!(time_changed.now_or_never(), Some(Ok(())));
@@ -506,8 +506,8 @@ fn observe_clock_and_global(
 
     // Observing the original clock also advances the same global floor,
     // without any signed publication. Already-polled dependencies must wake.
-    let mut first_time = first.changed(&trust);
-    let mut other_time = other.changed(&trust);
+    let mut first_time = first.changed(trust);
+    let mut other_time = other.changed(trust);
     assert_eq!(
         first_time
             .as_mut()
@@ -534,12 +534,12 @@ fn observe_clock_and_global(
     assert_eq!(other_time.now_or_never(), Some(Ok(())));
     assert_eq!(unscoped_time.now_or_never(), Some(Ok(())));
     assert_eq!(
-        first.check(&trust, trust.protected_now(NOW)),
+        first.check(trust, trust.protected_now(NOW)),
         Err(VerifyError::Time)
     );
 
     // An unchanged or rolled-back observation performs no notification.
-    let mut unchanged_time = first.changed(&trust);
+    let mut unchanged_time = first.changed(trust);
     assert_eq!(
         unchanged_time
             .as_mut()
@@ -552,9 +552,9 @@ fn observe_clock_and_global(
     assert_eq!(first_wakes.0.load(Ordering::Relaxed), before);
     assert!((&mut unchanged_time).now_or_never().is_none());
     drop(unchanged_time);
-    let other_event = other.changed(&trust);
+    let other_event = other.changed(trust);
 
-    assert_global_transitions(world, &trust, first, other, other_event);
+    assert_global_transitions(world, trust, first, other, other_event);
 }
 
 fn assert_global_transitions(

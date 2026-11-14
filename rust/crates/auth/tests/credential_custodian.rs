@@ -24,7 +24,11 @@ impl CredentialRequest for DeferredRequest {
         self.lease.binding()
     }
     fn check(&self) -> CredentialAction<()> {
-        let Some(admission) = self.admission.lock().unwrap().take() else {
+        let event = match crate::take_credential_event(&self.admission) {
+            Ok(event) => event,
+            Err(error) => return Err(error).into(),
+        };
+        let Some(admission) = event else {
             return self.lease.check();
         };
         let lease = self.lease.clone();
@@ -34,7 +38,11 @@ impl CredentialRequest for DeferredRequest {
         }))
     }
     fn reject(&self) -> CredentialAction<bool> {
-        let Some(rejection) = self.rejection.lock().unwrap().take() else {
+        let event = match crate::take_credential_event(&self.rejection) {
+            Ok(event) => event,
+            Err(error) => return Err(error).into(),
+        };
+        let Some(rejection) = event else {
             return self.lease.reject();
         };
         let lease = self.lease.clone();
@@ -201,7 +209,7 @@ fn custodian_adapter_retains_singleflight_exact_rejection_and_drop_owned_watch()
     );
     let closed = Arc::new(AtomicUsize::new(0));
     let provider = CredentialProvider::from_custodian(Source {
-        provider: cache.clone().into(),
+        provider: cache.into(),
         closed: closed.clone(),
     });
     let mut cohort = Box::pin(join_all((0..100).map(|_| provider.resolve())));
@@ -209,7 +217,7 @@ fn custodian_adapter_retains_singleflight_exact_rejection_and_drop_owned_watch()
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     release.send(()).unwrap();
     let requests: Vec<_> = block_on(cohort).into_iter().map(Result::unwrap).collect();
-    let old = &requests[0];
+    let old = requests.first().expect("credential cohort nonempty");
     assert!(old.retained_access().unwrap().is_ok());
     let binding = old.binding().unwrap();
     assert_eq!(binding.revision, revision);

@@ -61,13 +61,20 @@ impl CredentialRequest for DeferredRequest {
         if self.first.swap(false, std::sync::atomic::Ordering::SeqCst) {
             return self.lease.check();
         }
-        let Some(admission) = self.admission.lock().unwrap().take() else {
+        let event = match crate::take_credential_event(&self.admission) {
+            Ok(event) => event,
+            Err(error) => return Err(error).into(),
+        };
+        let Some(admission) = event else {
             return self.lease.check();
         };
-        let entered = self.entered.lock().unwrap().take().unwrap();
+        let entered = match crate::required_credential_event(&self.entered) {
+            Ok(event) => event,
+            Err(error) => return Err(error).into(),
+        };
         let lease = self.lease.clone();
         CredentialAction::Pending(Box::pin(async move {
-            entered.send(()).unwrap();
+            entered.send(()).map_err(|_| CredentialError::Invalid)?;
             admission
                 .await
                 .map_err(|_| CredentialError::from(CredentialCacheError::Unavailable))?;
@@ -186,18 +193,25 @@ impl CredentialRequest for StopDuringAdmission {
         if self.first.swap(false, std::sync::atomic::Ordering::SeqCst) {
             return self.lease.check();
         }
-        let cancel = self.cancel.lock().unwrap().take().unwrap();
-        let release = self.release.lock().unwrap().take();
+        let cancel = match crate::required_credential_event(&self.cancel) {
+            Ok(event) => event,
+            Err(error) => return Err(error).into(),
+        };
+        let release = match crate::take_credential_event(&self.release) {
+            Ok(event) => event,
+            Err(error) => return Err(error).into(),
+        };
         let lease = self.lease.clone();
-        match release {
-            Some(release) => CredentialAction::Pending(Box::pin(async move {
+        if let Some(release) = release {
+            CredentialAction::Pending(Box::pin(async move {
                 release.await.map_err(|_| CredentialError::Invalid)?;
-                cancel.send(()).unwrap();
+                cancel.send(()).map_err(|_| CredentialError::Invalid)?;
                 lease.check().await
-            })),
-            None => {
-                cancel.send(()).unwrap();
-                lease.check()
+            }))
+        } else {
+            match cancel.send(()) {
+                Ok(()) => lease.check(),
+                Err(_) => Err(CredentialError::Invalid).into(),
             }
         }
     }
@@ -353,7 +367,7 @@ async fn successful_reply_requires_the_original_credential_to_remain_current() {
             (),
             move |_, request| async move {
                 assert!(!request.metadata().contains_key("grpc-timeout"));
-                entered.send(()).unwrap();
+                entered.send(()).map_err(|_| CredentialError::Invalid)?;
                 released.await.unwrap();
                 Ok(Response::new(()))
             },

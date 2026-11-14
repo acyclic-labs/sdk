@@ -18,10 +18,14 @@ use std::{
 };
 
 fn revision(value: u64) -> CredentialRevision {
-    CredentialRevision::from([value as u8; 32])
+    let mut bytes = [0; 32];
+    for chunk in bytes.chunks_exact_mut(8) {
+        chunk.copy_from_slice(&value.to_le_bytes());
+    }
+    CredentialRevision::from(bytes)
 }
-fn snapshot(value: &str, rev: u64, expires: u64) -> CredentialSnapshot {
-    CredentialSnapshot::new(value.into(), revision(rev), expires).unwrap()
+fn snapshot(value: &str, rev: u64, expires: u64) -> Result<CredentialSnapshot, CredentialError> {
+    CredentialSnapshot::new(value.into(), revision(rev), expires)
 }
 fn observer(clock: Arc<AtomicU64>, rev: Arc<AtomicU64>) -> impl Fn() -> CredentialValidity {
     move || CredentialValidity {
@@ -40,11 +44,11 @@ fn provider_projects_trusted_binding_and_push_changes_without_raw_identity() {
     let source_rev = rev.clone();
     let cache = CredentialCache::new(
         move |_| {
-            future::ready(Ok(snapshot(
+            future::ready(snapshot(
                 "synthetic-binding",
                 source_rev.load(Ordering::SeqCst),
                 100,
-            )))
+            ))
         },
         observer(Arc::new(AtomicU64::new(1)), rev.clone()),
     );
@@ -82,26 +86,19 @@ fn provider_projects_trusted_binding_and_push_changes_without_raw_identity() {
     assert_eq!(block_on(raw.resolve()).unwrap().binding(), None);
 }
 
-#[test]
-fn source_watch_retires_epochs_and_reports_last_producer_loss_without_waiting() {
-    use futures::task::{ArcWake, waker};
-
-    struct Reenter {
-        source: CredentialCache,
-        watch: Mutex<Option<CredentialWatch>>,
-    }
-    impl ArcWake for Reenter {
-        fn wake_by_ref(this: &Arc<Self>) {
-            *this.watch.lock().unwrap() = Some(this.source.watch().unwrap());
-        }
-    }
-    let source = CredentialCache::new(
-        |_| future::ready(Ok(snapshot("synthetic", 1, 100))),
+fn watched_source() -> CredentialCache {
+    CredentialCache::new(
+        |_| future::ready(snapshot("synthetic", 1, 100)),
         || CredentialValidity {
             now_unix_seconds: 1,
             revision: Some(revision(1)),
         },
-    );
+    )
+}
+
+#[test]
+fn source_watch_registration_has_constant_work() {
+    let source = watched_source();
     // Record the atomic lease slots' thread initialization separately from
     // steady-state notification work; no event has a subscriber yet.
     let cold = acyclic_test_support::measure(|| source.invalidate().unwrap());
@@ -144,7 +141,7 @@ fn source_watch_retires_epochs_and_reports_last_producer_loss_without_waiting() 
         // A distinct source cannot retire a registration on this owner.
         let mut unrelated = Box::pin(source.watch().unwrap());
         let foreign = CredentialCache::new(
-            |_| future::ready(Ok(snapshot("synthetic-foreign", 1, 100))),
+            |_| future::ready(snapshot("synthetic-foreign", 1, 100)),
             || CredentialValidity {
                 now_unix_seconds: 1,
                 revision: Some(revision(1)),
@@ -155,6 +152,22 @@ fn source_watch_retires_epochs_and_reports_last_producer_loss_without_waiting() 
         drop(unrelated);
         source.invalidate().unwrap();
     }
+}
+
+#[test]
+fn source_watch_retires_epochs_and_reports_last_producer_loss_without_waiting() {
+    use futures::task::{ArcWake, waker};
+
+    struct Reenter {
+        source: CredentialCache,
+        watch: Mutex<Option<CredentialWatch>>,
+    }
+    impl ArcWake for Reenter {
+        fn wake_by_ref(this: &Arc<Self>) {
+            *this.watch.lock().unwrap() = Some(this.source.watch().unwrap());
+        }
+    }
+    let source = watched_source();
     let mut first = Box::pin(source.watch().unwrap());
     let mut peer = Box::pin(source.watch().unwrap());
     let reenter = Arc::new(Reenter {
@@ -219,7 +232,7 @@ fn cold_cohort_and_warm_calls_share_one_snapshot() {
             let gate = gate.clone();
             async move {
                 gate.await.unwrap();
-                Ok(snapshot("bearer", 1, 100))
+                snapshot("bearer", 1, 100)
             }
         },
         || CredentialValidity {
@@ -233,14 +246,22 @@ fn cold_cohort_and_warm_calls_share_one_snapshot() {
     send.send(()).unwrap();
     let leases: Vec<_> = block_on(cohort).into_iter().map(Result::unwrap).collect();
     for lease in leases.iter().skip(1) {
-        assert!(Arc::ptr_eq(&leases[0], lease));
+        assert!(Arc::ptr_eq(
+            leases.first().expect("credential cohort nonempty"),
+            lease
+        ));
     }
     let warm = block_on(join_all((0..64).map(|_| cache.resolve())));
     for lease in warm {
-        assert!(Arc::ptr_eq(&leases[0], &lease.unwrap()));
+        assert!(Arc::ptr_eq(
+            leases.first().expect("credential cohort nonempty"),
+            &lease.unwrap()
+        ));
     }
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert!(!format!("{:?}", leases[0]).contains("bearer"));
+    assert!(
+        !format!("{:?}", leases.first().expect("credential cohort nonempty")).contains("bearer")
+    );
 }
 
 #[test]
@@ -253,11 +274,7 @@ fn expiry_revision_and_unavailable_source_never_use_the_old_bearer() {
     let cache = CredentialCache::new(
         move |_| {
             count.fetch_add(1, Ordering::SeqCst);
-            future::ready(Ok(snapshot(
-                "bearer",
-                source_rev.load(Ordering::SeqCst),
-                10,
-            )))
+            future::ready(snapshot("bearer", source_rev.load(Ordering::SeqCst), 10))
         },
         observer(clock.clone(), rev.clone()),
     );
@@ -360,7 +377,10 @@ fn failed_refresh_cohort_shares_the_original_diagnostic_without_caching_failure(
         })
         .collect();
     for error in errors.iter().skip(1) {
-        assert!(Arc::ptr_eq(&errors[0], error));
+        assert!(Arc::ptr_eq(
+            errors.first().expect("refusal cohort nonempty"),
+            error
+        ));
     }
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert!(block_on(cache.resolve()).is_err());
@@ -377,7 +397,7 @@ fn invalidation_aborts_old_refresh_and_late_revision_completion_refuses() {
             let gate = gate.clone();
             async move {
                 gate.await.unwrap();
-                Ok(snapshot("old", 1, 100))
+                snapshot("old", 1, 100)
             }
         },
         observer(Arc::new(AtomicU64::new(1)), rev.clone()),
@@ -406,7 +426,7 @@ fn exact_401_invalidation_passes_rejected_bearer_and_protects_replacement() {
                 .unwrap()
                 .push(previous.map(|snapshot| snapshot.token().to_owned()));
             let index = count.fetch_add(1, Ordering::SeqCst);
-            future::ready(Ok(snapshot(&format!("bearer{index}"), 1, 100)))
+            future::ready(snapshot(&format!("bearer{index}"), 1, 100))
         },
         || CredentialValidity {
             now_unix_seconds: 1,
@@ -439,9 +459,9 @@ fn exact_401_invalidation_passes_rejected_bearer_and_protects_replacement() {
                     if let Some(previous) = previous {
                         assert_eq!(previous.token(), "rejected");
                         gate.await.unwrap();
-                        Ok(snapshot(replacement, 1, 100))
+                        snapshot(replacement, 1, 100)
                     } else {
-                        Ok(snapshot("rejected", 1, 100))
+                        snapshot("rejected", 1, 100)
                     }
                 }
             },
@@ -475,7 +495,7 @@ fn exact_401_invalidation_passes_rejected_bearer_and_protects_replacement() {
             let gate = gate.clone();
             async move {
                 gate.await.unwrap();
-                Ok(snapshot("published", 1, 100))
+                snapshot("published", 1, 100)
             }
         },
         || CredentialValidity {
@@ -504,11 +524,11 @@ fn cached_callback_composes_with_existing_provider_and_redacts_invalid_bytes() {
     let clock = Arc::new(AtomicU64::new(1));
     let cache = CredentialCache::new(
         move |_| {
-            future::ready(Ok(snapshot(
+            future::ready(snapshot(
                 &format!("opaque{}", count.fetch_add(1, Ordering::SeqCst)),
                 1,
                 100,
-            )))
+            ))
         },
         observer(clock.clone(), Arc::new(AtomicU64::new(1))),
     );

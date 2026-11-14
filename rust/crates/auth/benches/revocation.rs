@@ -79,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "{}",
             serde_json::json!({
                 "retained_before": retained, "targeted_updates": 128, "affected_per_delta": 1,
-                "delta_mean_bytes": delta_bytes as f64 / 128., "initial_checkpoint_bytes": checkpoint_bytes,
+                "delta_mean_bytes": f64::from(u32::try_from(delta_bytes)?) / 128., "initial_checkpoint_bytes": checkpoint_bytes,
                 "full_checkpoint_bytes": bytes(&compact), "retired_checkpoint_bytes": bytes(&retired),
                 "apply_mean_us": elapsed.as_secs_f64() * 1e6 / 128., "checkpoint_us": checkpoint_us,
             })
