@@ -5,6 +5,7 @@ use std::sync::OnceLock;
 
 const BUDGET: usize = 8192;
 const STREAMS: usize = 16;
+const LISTING_LIMIT: u32 = 64;
 const BODY: &[u8] = b"original committed payload";
 
 fn parent() -> StreamPath {
@@ -40,7 +41,7 @@ fn inherited() -> RecordCache {
     assert!(cache.insert_listing(
         &parent(),
         0,
-        1,
+        LISTING_LIMIT,
         Listing {
             after: None,
             next: Some(child()),
@@ -121,7 +122,7 @@ fn check_with(
                         return Err("writer lost inherited original row");
                     }
                     let listing = cache
-                        .listing(&parent(), 0, 1)
+                        .listing(&parent(), 0, LISTING_LIMIT)
                         .ok_or("writer lost listing")?;
                     if listing.children.as_slice() != [child()]
                         || listing.fresh
