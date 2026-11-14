@@ -2,7 +2,7 @@
 use super::*;
 use crate::model::{ModelContentPart, ModelEvent, ToolCall, ToolResultContent};
 use crate::test_support::ScriptedEvent;
-use acyclic_fs::{CancellationToken, IdempotencyKey, PublicationPermit, WorkBudget};
+use acyclic_fs::{CancellationToken, WorkBudget};
 
 struct Writer {
     harness: Arc<LocalHarness>,
@@ -13,74 +13,19 @@ struct Writer {
 #[tokio::test]
 async fn concurrent_model_writes_settle_project_and_home_payloads() -> Result<()> {
     let backing = tempfile::tempdir().map_err(crate::local::storage)?;
-    let initial = volume(backing.path()).await?;
-    let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(
-        backing.path().join("filesystem"),
-    ))
-    .await
-    .map_err(crate::local::storage)?;
-    let host = FilesystemHost::new(filesystem.clone(), initial.provider(), None)?;
+    acyclic_native_runtime::initialize_native_io_services().map_err(crate::local::storage)?;
+    acyclic_fs::initialize_native_mount_services().map_err(crate::local::storage)?;
     let cancellation = CancellationToken::new();
     let mut writers: Vec<Writer> = Vec::new();
     let mut projects = Vec::new();
     let mut homes = Vec::new();
     for index in 0..8 {
-        let project = VolumeRef::new(
-            initial.provider().clone(),
-            format!("project-{index}"),
-            VolumeClass::Project,
-            VolumeOwner::Project(format!("project-{index}")),
-            &mut None,
-        )?;
-        host.create_volume(&project).await?;
-        let workspace = filesystem
-            .open_workspace(
-                project.storage_name(&mut None)?,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .map_err(|failure| crate::local::storage(failure.error))?
-            .value;
-        let mut transaction = workspace
-            .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map_err(|failure| crate::local::storage(failure.error))?
-            .value;
+        let checkout = backing.path().join(format!("checkout-{index}"));
+        std::fs::create_dir(&checkout).map_err(crate::local::storage)?;
         for file in 0..128 {
-            transaction
-                .write(
-                    &format!("/source-{file:03}.txt"),
-                    acyclic_stream::OwnedBytes::from_static(b"source\n"),
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .await
-                .map_err(|failure| crate::local::storage(failure.error))?;
+            std::fs::write(checkout.join(format!("source-{file:03}.txt")), b"source\n")
+                .map_err(crate::local::storage)?;
         }
-        let seeded = transaction
-            .commit(
-                None,
-                PublicationPermit::Unrestricted,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-                |_| {
-                    std::future::ready(Ok::<
-                        _,
-                        acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>,
-                    >(acyclic_fs::OperationReceipt {
-                        value: (),
-                        work: acyclic_fs::WorkCounters::UNCHARGED,
-                    }))
-                },
-            )
-            .await
-            .map_err(|failure| crate::local::storage(failure.error))?
-            .value;
-        assert!(matches!(
-            seeded,
-            acyclic_fs::TransactionCommit::Committed(_)
-        ));
         let provider = scripted([
             ScriptedTurn::Events(vec![
                 ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
@@ -100,7 +45,11 @@ async fn concurrent_model_writes_settle_project_and_home_payloads() -> Result<()
             ScriptedTurn::Text("prepared".into()),
         ]);
         let harness = Arc::new(
-            open_scripted(volume_config(backing.path(), project, provider.clone())?).await?,
+            open_scripted(
+                crate::test_support::local_harness_config(&checkout, (model()?, provider.clone()))?
+                    .state_directory(backing.path().join(format!("state-{index}"))),
+            )
+            .await?,
         );
         let mut observed = ObservedConversation::open(&harness).await?;
         // Initial capture and executor preparation are outside write timings.
@@ -189,7 +138,12 @@ async fn concurrent_model_writes_settle_project_and_home_payloads() -> Result<()
                 } else {
                     &homes[index]
                 };
-                let workspace = filesystem
+                let workspace = writer
+                    .harness
+                    .workspace
+                    .as_ref()
+                    .expect("source-backed checkout")
+                    .filesystem
                     .open_workspace(
                         volume.storage_name(&mut None)?,
                         WorkBudget::UNBOUNDED,
