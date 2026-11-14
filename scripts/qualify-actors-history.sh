@@ -21,7 +21,9 @@ run_case() {
     (
         cd "$directory"
         cargo test --locked --all-features -p acyclic-actors --lib --no-run 2>&1 | tee "$log.build"
-        binary=$(grep -oE '\(/[^)]*/acyclic_actors-[0-9a-f]+\)' "$log.build" | tail -1 | tr -d '()')
+        # A snapshot without a shared target directory prints a relative path.
+        binary=$(grep -oE '\([^()]*/acyclic_actors-[0-9a-f]+\)' "$log.build" | tail -1 | tr -d '()')
+        binary=$(realpath "$binary")
         cd rust/crates/actors
         timeout --signal=KILL 10 "$binary" "$test" --nocapture
     ) >"$log" 2>&1 || result=$?
