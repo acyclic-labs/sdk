@@ -688,8 +688,9 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
     /// host-owned socket ledger root; independently owned hosts sharing an
     /// actor store MUST use distinct roots. A replacement MUST reuse its
     /// predecessor's root. This does not change the actor store's state paths.
-    /// Connection IDs include this root's encoded identity, so independent
-    /// owners cannot alias the actor-visible identity of a connection.
+    /// Connection IDs include a fixed-width, domain-separated SHA-256 digest
+    /// of this root, separating independent owners under SHA-256's collision
+    /// resistance without duplicating the root in each socket path.
     /// Every socket a previous
     /// incarnation left open receives Close(Runtime, 1012) first, in work
     /// proportional to those sockets, and that incarnation can open no more.
@@ -787,7 +788,9 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
         Ok(Self {
             shared: Arc::new(Shared {
                 store,
-                owner: acyclic_auth::encode_component(layout.root.as_str().as_bytes()),
+                owner: acyclic_auth::encode_component(
+                    layout.key(&[b"connection-owner"])?.as_bytes(),
+                ),
                 layout,
                 executor,
                 clock,
