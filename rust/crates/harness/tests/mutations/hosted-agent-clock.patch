@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness/src/server/actors.rs b/rust/crates/harness/src/server/actors.rs
+--- a/rust/crates/harness/src/server/actors.rs
++++ b/rust/crates/harness/src/server/actors.rs
+@@ -200,7 +200,7 @@
+                 Turns {
+                     executors: Arc::new(executors),
+                     limits: execution.turns,
+                     actors: execution.actors,
+-                    clock: execution.clock,
++                    clock: Arc::new(acyclic_actors::local::SystemClock),
+                     approval_policy: self.preset.approval_policy.clone(),
+                 },

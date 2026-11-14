@@ -1,6 +1,6 @@
 //! The original host scheduling clock and its deadline event.
 use acyclic_stream::runtime::{Executor as _, PlatformExecutor};
-use acyclic_stream::{BoxProviderFuture, ProviderPlatform, UnixMillisClock as _};
+use acyclic_stream::{BoxProviderFuture, ProviderPlatform, UnixMillisClock};
 use tokio::sync::watch;
 
 /// Failure of the original scheduling clock or its controller.
@@ -19,9 +19,7 @@ pub enum ClockError {
 
 /// The host clock. The dispatcher owns the only timer, armed at the earliest
 /// committed, undelivered alarm.
-pub trait Clock: ProviderPlatform + 'static {
-    /// Last observed Unix milliseconds. This read does not wait for advancement.
-    fn now_unix_ms(&self) -> u64;
+pub trait Clock: UnixMillisClock + ProviderPlatform + 'static {
     /// Resolve no earlier than `deadline_unix_ms`, or return the original
     /// clock failure. Loss of the deadline producer must terminate the wait.
     fn sleep_until(
@@ -32,10 +30,13 @@ pub trait Clock: ProviderPlatform + 'static {
 
 /// Wall clock over the shared native absolute alarm or browser event loop.
 pub struct SystemClock;
-impl Clock for SystemClock {
-    fn now_unix_ms(&self) -> u64 {
+impl UnixMillisClock for SystemClock {
+    fn now_unix_millis(&self) -> u64 {
         acyclic_stream::SystemUnixMillisClock.now_unix_millis()
     }
+}
+
+impl Clock for SystemClock {
     fn sleep_until(
         &self,
         deadline_unix_ms: u64,
@@ -44,7 +45,7 @@ impl Clock for SystemClock {
         {
             // Capture the original clock producer before this future can move
             // to another executor or outlive its creating scope.
-            let alarm = (self.now_unix_ms() < deadline_unix_ms)
+            let alarm = (self.now_unix_millis() < deadline_unix_ms)
                 .then(|| acyclic_native_runtime::WallAlarm::wait(deadline_unix_ms));
             Box::pin(async move {
                 if let Some(alarm) = alarm {
@@ -58,7 +59,7 @@ impl Clock for SystemClock {
         }
         #[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]
         {
-            let milliseconds = deadline_unix_ms.saturating_sub(self.now_unix_ms());
+            let milliseconds = deadline_unix_ms.saturating_sub(self.now_unix_millis());
             Box::pin(async move {
                 platform_sleep(milliseconds).await;
                 Ok(())
@@ -110,11 +111,13 @@ impl ClockControl {
     }
 }
 
-impl Clock for ControlledClock {
-    fn now_unix_ms(&self) -> u64 {
+impl UnixMillisClock for ControlledClock {
+    fn now_unix_millis(&self) -> u64 {
         *self.time.borrow()
     }
+}
 
+impl Clock for ControlledClock {
     fn sleep_until(
         &self,
         deadline_unix_ms: u64,

@@ -1317,7 +1317,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
         connection: &str,
         payload: SocketPayload,
     ) -> Result<(), StreamError> {
-        let now = self.clock.now_unix_ms();
+        let now = self.clock.now_unix_millis();
         let mut table = self.lock(connection);
         let Table { sockets, auto, .. } = &mut *table;
         let Some(entry) = sockets.get_mut(connection) else {

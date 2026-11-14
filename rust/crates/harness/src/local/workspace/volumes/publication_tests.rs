@@ -151,7 +151,7 @@ async fn publications_keep_all_live_volume_projections_at_the_committed_head() -
     let (_, publisher) = selected
         .executor(
             (&harness.project, &harness.files, harness.limits.file_bytes),
-            Arc::clone(&harness.clock),
+            harness.clock.clone(),
             &harness.signed,
             &harness.verifier,
             None,

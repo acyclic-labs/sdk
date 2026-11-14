@@ -30,10 +30,7 @@ impl Composition for LocalHarnessConfig {
             let server = hosted.server().clone();
             let completion = hosted.runtime.completion();
             let changes = server.bound().changes().map_err(super::storage)?;
-            Ok(
-                Hosted::new(server, local.clock.clone(), local, Some(Arc::new(changes)))
-                    .with_completion(completion),
-            )
+            Ok(Hosted::new(server, local, Some(Arc::new(changes))).with_completion(completion))
         })
     }
 }

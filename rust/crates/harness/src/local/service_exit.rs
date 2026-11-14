@@ -288,7 +288,6 @@ mod tests {
         let absent = workspace.path().join("missing-original-journal");
         let hosted = Hosted::new(
             Arc::clone(hosted.server()),
-            local.clock.clone(),
             local.clone(),
             Some(Arc::new(changes)),
         )

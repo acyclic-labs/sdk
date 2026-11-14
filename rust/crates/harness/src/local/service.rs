@@ -458,7 +458,7 @@ mod tests {
         let server = Arc::clone(hosted.server());
         let restricted = server
             .bound()
-            .client_credential(server.root(), server.resource(), local.clock.clone())
+            .client_credential(server.root(), server.resource())
             .await
             .map_err(storage)?;
         let restricted = acyclic_auth::credential::capability_text(&restricted.credential);
@@ -472,7 +472,6 @@ mod tests {
             listener,
             crate::server::ServerConfig::new(crate::server::Hosted::new(
                 server,
-                local.clock.clone(),
                 local.clone(),
                 Some(Arc::new(changes)),
             )),
