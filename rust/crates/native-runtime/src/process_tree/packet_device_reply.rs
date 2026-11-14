@@ -24,7 +24,7 @@ pub fn receive_packet_device_reply_for_test(socket: &UnixStream) -> io::Result<O
     message.msg_iov = &raw mut vector;
     message.msg_iovlen = 1;
     message.msg_control = control.0.as_mut_ptr().cast();
-    message.msg_controllen = control.0.len();
+    message.msg_controllen = ancillary_length(control.0.len())?;
     let length = loop {
         // SAFETY: every pointer names live writable storage of the given size.
         let length =
@@ -41,7 +41,7 @@ pub fn receive_packet_device_reply_for_test(socket: &UnixStream) -> io::Result<O
         // SAFETY: the decoder surrenders each received descriptor exactly once.
         drop(unsafe { OwnedFd::from_raw_fd(descriptor) });
     };
-    let control_length = message.msg_controllen;
+    let control_length: usize = ancillary_length(message.msg_controllen)?;
     let handles = ancillary::decode::<8>(
         control
             .0
@@ -60,4 +60,15 @@ pub fn receive_packet_device_reply_for_test(socket: &UnixStream) -> io::Result<O
         .map_err(|()| io::ErrorKind::InvalidData)?;
     // SAFETY: the actual decoder transferred exactly one live descriptor.
     Ok(unsafe { OwnedFd::from_raw_fd(descriptor) })
+}
+
+// libc uses different control-length widths for the same syscall across Linux ABIs.
+// Keep both directions checked without assuming that either field is size_t.
+fn ancillary_length<T, U: TryFrom<T>>(length: T) -> io::Result<U> {
+    U::try_from(length).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "ancillary length exceeds native width",
+        )
+    })
 }
