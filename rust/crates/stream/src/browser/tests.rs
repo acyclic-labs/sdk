@@ -786,3 +786,40 @@ async fn every_opener_of_one_database_proves_the_others_revisions() {
         Some(Err(StreamError::RevisionForeign))
     ));
 }
+
+#[wasm_bindgen_test]
+fn javascript_retains_original_refusal_through_reply_cause_wrappers() {
+    use acyclic_auth::refusal::{Canonical, Refusal};
+    let mut metadata = http::HeaderMap::new();
+    metadata.insert(
+        "acyclic-request-id",
+        http::HeaderValue::from_static("original-member"),
+    );
+    let refusal = Refusal::capture(
+        14,
+        "original member refusal",
+        b"original details",
+        &metadata,
+        Canonical {
+            code: 14,
+            message: "unavailable",
+            details: &[],
+            owned: &[],
+        },
+        None,
+    )
+    .expect("original refusal differs from canonical category");
+    let original = refusal.original().expect("original member status").clone();
+    let error = crate::StreamError::Unavailable
+        .with_refusal(refusal)
+        .with_source(std::io::Error::other("original reply transport"));
+    let value = crate::wasm::js_error(error);
+    let code = js_sys::Reflect::get(&value, &wasm_bindgen::JsValue::from_str("code"))
+        .expect("canonical code property");
+    assert_eq!(code.as_string().as_deref(), Some("unavailable"));
+    let envelope = js_sys::Reflect::get(&value, &wasm_bindgen::JsValue::from_str("refusal"))
+        .expect("original refusal property");
+    let actual = acyclic_auth::refusal::javascript::parts(&envelope, |bytes| Ok(bytes.to_vec()))
+        .expect("original refusal envelope");
+    assert_eq!(actual, original);
+}

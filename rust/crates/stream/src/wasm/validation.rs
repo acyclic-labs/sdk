@@ -14,7 +14,7 @@ pub fn js_error(error: StreamError) -> JsValue {
         &JsValue::from_str("code"),
         &JsValue::from_str(error.code()),
     );
-    if let StreamError::Refused(refusal) = &error
+    if let Some(refusal) = error.member_refusal()
         && let Some(original) = refusal.original()
     {
         let _property_result = Reflect::set(
