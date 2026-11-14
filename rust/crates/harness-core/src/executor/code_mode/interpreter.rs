@@ -315,9 +315,26 @@ mod tests {
             .build()?
             .agent_context(&Capabilities::default(), content)?,
         );
-        let code = r#"
+        let specification = crate::tools::catalog()
+            .find(|spec| spec.name == "code")
+            .expect("code-mode declaration");
+        let examples: Vec<_> = specification
+            .description
+            .split("```javascript\n")
+            .skip(1)
+            .map(|section| section.split_once("```").expect("closed code example").0)
+            .collect();
+        assert!(
+            !examples.is_empty(),
+            "the code tool must advertise an executable example"
+        );
+        let example = examples.join("\n");
+        let definitions = serde_json::to_vec(&[crate::tools::catalog::READ.definition()?])
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        let code = [r#"
             import {read, write, remove, list, DeniedError, ConflictError} from 'acyclic';
             const first = await write('file.txt', 'one\r\nβ\n', 'absent');
+        "#, &example, r#"
             const file = await read('file.txt');
             if (file.lines(0, 0).length !== 0) throw new Error('empty line selection');
             const lines = file.lines(1, 1);
@@ -402,12 +419,12 @@ mod tests {
             } catch (error) { missingError = error; }
             if (missingError?.class !== 'not_found') throw new Error('missing directory was not refused');
             export default {lines, conflict, absent, moduleText};
-        "#;
+        "#].concat();
         let (send, mut receive) = tokio::sync::mpsc::channel(1);
         let (result, served) = tokio::join!(
             acyclic_native_runtime::blocking_future(super::run(
-                code.into(),
-                acyclic_stream::OwnedBytes::from_static(b"[]"),
+                code,
+                definitions.into(),
                 send,
                 tokio_util::sync::CancellationToken::new(),
                 4096,
@@ -427,7 +444,7 @@ mod tests {
                         .name
                         .value
                         .strip_prefix("acyclic.")
-                        .expect("canonical action");
+                        .unwrap_or(&call.name.value);
                     let tool = match name {
                         "read" => crate::tool::files::read()?,
                         "write" => crate::tool::files::write()?,
@@ -579,7 +596,10 @@ mod tests {
         // A serving failure drops its reply producer. Preserve that original
         // error before inspecting the guest's resulting channel-closure error.
         let (calls, large_pages, directory_pages) = served?;
-        let mut value = result.unwrap().unwrap().value;
+        let mut value = result
+            .unwrap()
+            .expect("advertised code examples must execute using only the registered file tools")
+            .value;
         let module_text = value
             .as_object_mut()
             .expect("module result")
@@ -626,7 +646,11 @@ mod tests {
         // One initial page, two resumed pages, one root page and three refusals.
         // Breaking after the first entry does not prefetch the next page.
         assert_eq!(directory_pages, 7);
-        assert_eq!(calls, 13 + 22 + 18 + large_pages + directory_pages);
+        // Each advertised single-input example performs its one real read.
+        assert_eq!(
+            calls,
+            13 + 22 + 18 + large_pages + directory_pages + examples.len()
+        );
         Ok(())
     }
 
