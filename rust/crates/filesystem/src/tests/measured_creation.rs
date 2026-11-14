@@ -273,7 +273,7 @@ async fn original_operation_recovery_is_bounded_and_never_adopts_head()
 #[cfg(not(target_arch = "wasm32"))]
 mod source_bound_lost_ack {
     use super::*;
-    use acyclic_fs::demand::{DemandSource, SourceReference, native::NativeDemandSource};
+    use acyclic_fs::demand::{SourceReference, native::NativeDemandSource};
     use acyclic_fs::facade::FsWork;
     use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
     use acyclic_fs::{
@@ -405,6 +405,7 @@ mod source_bound_lost_ack {
             b"unread source",
         )?;
         let reference = SourceReference {
+            components: acyclic_stream::OwnedBytes::new(),
             identity: [61; 16],
             epoch: 4,
         };
@@ -413,7 +414,7 @@ mod source_bound_lost_ack {
                 std::borrow::Cow::Owned(directory.path().to_path_buf()),
                 FilesystemProfile::Portable,
                 VolumeLimits::default(),
-                Some(reference),
+                Some(reference.clone()),
                 None,
                 budget,
                 &cancellation,
@@ -483,7 +484,7 @@ mod source_bound_lost_ack {
                 std::borrow::Cow::Owned(directory.path().to_path_buf()),
                 FilesystemProfile::Portable,
                 VolumeLimits::default(),
-                Some(reference),
+                Some(reference.clone()),
                 None,
                 budget,
                 &cancellation,
@@ -491,7 +492,7 @@ mod source_bound_lost_ack {
             .await?
             .value,
         );
-        assert_eq!(source.reference(), reference);
+        assert_eq!(source.as_ref().reference(), reference);
         let mut accounting = budget.accounting(&cancellation);
         let result = LazyWorkspace::attach(
             &reopened,

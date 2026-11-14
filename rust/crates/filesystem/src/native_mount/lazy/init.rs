@@ -81,7 +81,14 @@ where
                 drop(owner);
                 None
             };
-            let source_epoch = AtomicU64::new(lazy.source_reference().epoch);
+            let meter = original.map(|work| work.runtime_meter());
+            let source = carrier
+                .with_accounting(|ctx| {
+                    Ok(runtime.block_on(|| lazy.source_reference(ctx), meter.as_deref()))
+                })?
+                .map_err(|error| NativeMountError::Source(adapter::capture_io_error(error)))?
+                .map_err(|error| NativeMountError::Source(lazy_error(error)))?;
+            let source_epoch = AtomicU64::new(source.epoch);
             Ok(Self {
                 lazy,
                 authored,

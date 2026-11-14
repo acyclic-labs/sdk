@@ -58,7 +58,7 @@ async fn discarded_source_promotion_retains_before_images_without_overriding_liv
         assert_ne!(unobserved.source, original.source);
         assert_eq!(unobserved.shadows, original.shadows);
         assert!(matches!(
-            root.read_file_at_snapshot(unobserved, id, 64, &mut ctx)
+            root.read_file_at_snapshot(&unobserved, id, 64, &mut ctx)
                 .await,
             Err(LazyWorkspaceError::StaleSource)
         ));
@@ -68,18 +68,18 @@ async fn discarded_source_promotion_retains_before_images_without_overriding_liv
                 b"external"
             );
             assert!(matches!(
-                root.read_at_snapshot(original, "/alias", None, 64, &mut ctx)
+                root.read_at_snapshot(&original, "/alias", None, 64, &mut ctx)
                     .await,
                 Err(LazyWorkspaceError::StaleSource)
             ));
         }
         let (bytes, used_source) = root
-            .read_at_snapshot(original, "/file", None, 64, &mut ctx)
+            .read_at_snapshot(&original, "/file", None, 64, &mut ctx)
             .await?;
         assert_eq!(bytes.bytes.as_ref(), b"original");
         assert!(!used_source);
         assert_eq!(
-            root.read_file_at_snapshot(original, id, 64, &mut ctx)
+            root.read_file_at_snapshot(&original, id, 64, &mut ctx)
                 .await?
                 .bytes
                 .as_ref(),
@@ -87,14 +87,14 @@ async fn discarded_source_promotion_retains_before_images_without_overriding_liv
         );
         let (_, fresh) = promote().await?;
         assert_eq!(
-            root.read_file_at_snapshot(fresh, id, 64, &mut ctx)
+            root.read_file_at_snapshot(&fresh, id, 64, &mut ctx)
                 .await?
                 .bytes
                 .as_ref(),
             b"external"
         );
         assert_eq!(
-            root.read_at_snapshot(fresh, "/file", None, 64, &mut ctx)
+            root.read_at_snapshot(&fresh, "/file", None, 64, &mut ctx)
                 .await?
                 .0
                 .bytes
@@ -102,7 +102,7 @@ async fn discarded_source_promotion_retains_before_images_without_overriding_liv
             b"external"
         );
         assert_eq!(
-            root.read_at_snapshot(original, "/file", None, 64, &mut ctx)
+            root.read_at_snapshot(&original, "/file", None, 64, &mut ctx)
                 .await?
                 .0
                 .bytes
@@ -213,7 +213,7 @@ async fn source_before_images_require_their_original_collection_roots_after_rest
             "collection did not reclaim the unpublished control"
         );
         let read = root
-            .read_at_snapshot(cut, "/file", None, None, &mut ctx)
+            .read_at_snapshot(&cut, "/file", None, None, &mut ctx)
             .await;
         if retain_original {
             let (read, used_source) = read?;
@@ -232,8 +232,8 @@ async fn source_before_images_require_their_original_collection_roots_after_rest
 #[tokio::test]
 async fn materialization_phase_denial_preserves_the_callers_owned_namespace() {
     let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
-    let reference = source.reference();
-    let node = source.versioned_node(reference).unwrap();
+    let reference = source.reference(accounting!()).await.unwrap();
+    let node = source.versioned_node(&reference).unwrap();
     let root = attach(&Fs::memory(), source, MemoryLazyWorkspaceStore::default())
         .await
         .unwrap();
@@ -273,7 +273,7 @@ async fn materialization_phase_denial_preserves_the_callers_owned_namespace() {
                 root.populate_source_directory(
                     &mut transaction,
                     "/file.txt",
-                    reference,
+                    reference.clone(),
                     node,
                     &mut namespace,
                     &mut ctx,
@@ -288,7 +288,7 @@ async fn materialization_phase_denial_preserves_the_callers_owned_namespace() {
                 .prepare_source_mutation(
                     &mut transaction,
                     "/file.txt",
-                    (reference, node),
+                    (reference.clone(), node),
                     6,
                     &mut namespace,
                     &mut ctx,
@@ -513,12 +513,10 @@ async fn mounted_listing_includes_dirty_authored_bindings() {
         .list_directory_in_checkout(&mut checkout, "/", source.next, 16, None, accounting!())
         .await
         .unwrap();
-    assert!(
-        authored
-            .entries
-            .iter()
-            .any(|e| e.authored && e.name.as_bytes() == b"new.txt")
-    );
+    assert!(authored.entries.iter().any(|e| matches!(
+        e.node,
+        crate::LazyDirectoryNode::Authored { .. }
+    ) && e.name.as_bytes() == b"new.txt"));
     assert!(
         root.workspace()
             .stat("/new.txt", WorkBudget::UNBOUNDED, &CancellationToken::new())
@@ -590,7 +588,7 @@ async fn mounted_whiteouts_follow_the_original_publication_decision() {
         }));
         let snapshot = root.publication_snapshot(accounting!()).await.unwrap();
         assert!(matches!(snapshot.context, NativeSnapshotContext::Lazy(cut)
-            if cut.source == source.reference()));
+            if cut.source == source.reference(accounting!()).await.unwrap()));
         assert_eq!(
             store
                 .load_lazy_workspace(root.workspace().id(), accounting!())
@@ -608,7 +606,10 @@ async fn mounted_whiteouts_follow_the_original_publication_decision() {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(prepared.source, source.reference());
+        assert_eq!(
+            prepared.source,
+            source.reference(accounting!()).await.unwrap()
+        );
         assert_eq!(prepared.revision, before.revision + 1);
         if committed {
             let mut checkout = root
@@ -792,8 +793,8 @@ async fn source_directory_identity_cannot_be_promoted_twice() {
     let mut source = CountingSource::new(Bytes::new());
     source.node.kind = SourceNodeKind::Directory;
     let source = Arc::new(source);
-    let reference = source.reference();
-    let node = source.versioned_node(reference).unwrap();
+    let reference = source.reference(accounting!()).await.unwrap();
+    let node = source.versioned_node(&reference).unwrap();
     let root = attach(&Fs::memory(), source, MemoryLazyWorkspaceStore::default())
         .await
         .unwrap();
@@ -807,9 +808,16 @@ async fn source_directory_identity_cannot_be_promoted_twice() {
         .await
         .unwrap()
         .value;
-    root.populate_source_node(&mut transaction, "/d", reference, node, 0, accounting!())
-        .await
-        .unwrap();
+    root.populate_source_node(
+        &mut transaction,
+        "/d",
+        reference.clone(),
+        node,
+        0,
+        accounting!(),
+    )
+    .await
+    .unwrap();
     let error = root
         .populate_source_node(&mut transaction, "/e", reference, node, 0, accounting!())
         .await

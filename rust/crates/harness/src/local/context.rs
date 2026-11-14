@@ -770,16 +770,16 @@ struct VolumeInstructions<'a> {
 }
 impl crate::context::DiscoverySource for VolumeInstructions<'_> {
     type Revision = crate::resources::GenerationRef;
-    type Cursor = String;
+    type Cursor = Vec<u8>;
     fn page<'a>(
         &'a mut self,
         directory: &'a str,
         revision: Option<&'a Self::Revision>,
-        cursor: Option<String>,
+        cursor: Option<Vec<u8>>,
         maximum: u32,
     ) -> acyclic_stream::BoxProviderFuture<
         'a,
-        Result<Option<crate::context::DiscoveryPage<Self::Revision, String>>>,
+        Result<Option<crate::context::DiscoveryPage<Self::Revision, Vec<u8>>>>,
     > {
         self.source.page(directory, revision, cursor, maximum)
     }

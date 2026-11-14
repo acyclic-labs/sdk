@@ -223,6 +223,7 @@ impl Connection {
                 .session
                 .heads(
                     acyclic_stream::HeadsRequest {
+                        at: None,
                         retained: Default::default(),
                         durable_through: None,
                         projection: acyclic_stream::HeadProjection::Tail,
@@ -293,6 +294,7 @@ impl TreeFeed {
             .session
             .heads(
                 acyclic_stream::HeadsRequest {
+                    at: None,
                     retained: Default::default(),
                     durable_through: None,
                     projection: acyclic_stream::HeadProjection::Tail,

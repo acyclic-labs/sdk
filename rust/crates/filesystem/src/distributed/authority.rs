@@ -13,6 +13,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             let listed = self
                 .provider
                 .children_page(acyclic_stream::ChildrenPageRequest {
+                    offset: 0,
                     tail_stream: None,
                     parent: Some(parent.clone()),
                     after: after.take(),

@@ -274,6 +274,7 @@ mod tests {
         // oracle stays intact; a method-class name cannot turn it into a probe.
         let before = ledger.requests();
         let list = || crate::ChildrenPageRequest {
+            offset: 0,
             tail_stream: None,
             parent: None,
             limit: 8,

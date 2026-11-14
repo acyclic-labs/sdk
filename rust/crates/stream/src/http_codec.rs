@@ -240,10 +240,12 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
                 "commitId": STANDARD.encode(selected.commit_id.as_bytes()),
                 "path": selected.path.to_string(), "sequence": selected.sequence.to_string(),
             })).collect();
-            Ok(with_at_least(
-                json!({ "retained": retained, "durableThrough": request.durable_through.map(|through| through.to_string()), "paths": request.paths.iter().map(ToString::to_string).collect::<Vec<_>>(), "children": children, "limit": request.limit, "projection": match request.projection { crate::HeadProjection::History => "history", crate::HeadProjection::Watermarks => "watermarks", crate::HeadProjection::Tail => "tail" } }),
-                &wire.at_least,
-            ))
+            let mut value = json!({ "retained": retained, "durableThrough": request.durable_through.map(|through| through.to_string()), "paths": request.paths.iter().map(ToString::to_string).collect::<Vec<_>>(), "children": children, "limit": request.limit, "projection": match request.projection { crate::HeadProjection::History => "history", crate::HeadProjection::Watermarks => "watermarks", crate::HeadProjection::Tail => "tail" } });
+            if let Some(at) = &request.at {
+                value["at"] =
+                    crate::http_response::revision_json(Some(&wire_codec::revision_to_wire(at)));
+            }
+            Ok(with_at_least(value, &wire.at_least))
         }
         "head" => {
             let request = wire::HeadRequest::decode(input).map_err(|_| "invalid_argument")?;
@@ -294,6 +296,9 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
                 wire_codec::children_page_from_wire(request).map_err(|error| error.code())?;
             memory::validate_limit(request.limit).map_err(|error| error.code())?;
             let mut value = serde_json::Map::from_iter([("limit".into(), json!(request.limit))]);
+            if request.offset != 0 {
+                value.insert("offset".into(), json!(request.offset.to_string()));
+            }
             if let Some(tail_stream) = request.tail_stream {
                 value.insert("tailStream".into(), json!(tail_stream.to_string()));
             }
@@ -335,6 +340,49 @@ pub(crate) fn encode_append(request: &crate::AppendRequest) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retained_cut_and_child_offset_preserve_full_uint64_positions()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let request = crate::HeadsRequest {
+            at: Some(crate::Revision {
+                scope: crate::RevisionScope::new(crate::OwnedBytes::from_static(b"http-cut")),
+                incarnation: 1,
+                index: u64::MAX,
+            }),
+            retained: Default::default(),
+            durable_through: None,
+            projection: crate::HeadProjection::Tail,
+            paths: [crate::StreamPath::new("events")?].into_iter().collect(),
+            children: None,
+            limit: 1,
+            at_least: Default::default(),
+        };
+        let wire = wire_codec::heads_request_to_wire(request);
+        let projected: Value = serde_json::from_str(&encode("heads", &wire.encode_to_vec())?)?;
+        assert_eq!(
+            projected.pointer("/at/index").and_then(Value::as_str),
+            Some("18446744073709551615")
+        );
+        for offset in [0, u64::MAX] {
+            let request = crate::ChildrenPageRequest {
+                parent: Some(crate::StreamPath::new("events")?),
+                offset,
+                after: None,
+                hierarchy_version: None,
+                limit: 1,
+                tail_stream: None,
+            };
+            let wire = wire_codec::children_page_request_to_wire(request);
+            let projected: Value =
+                serde_json::from_str(&encode("children/page", &wire.encode_to_vec())?)?;
+            assert_eq!(
+                projected.get("offset").and_then(Value::as_str),
+                (offset != 0).then_some("18446744073709551615")
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn commit_projection_preserves_deadline_without_losing_uint64_precision()

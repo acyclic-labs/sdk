@@ -218,13 +218,12 @@ where
             }
             let (child, _allocation) = copy_path(path.components(), Some(&name), work)?;
             let (child_text, _text_allocation) = self.path(&child, work)?;
-            let (lookup, pin) = if let Some(node) = entry.source {
+            let (lookup, pin) = if let crate::LazyDirectoryNode::Source(node) = entry.node {
                 let (lookup, _, _allocation) = self
                     .lazy
                     .inspect_unauthored(
                         checkout,
                         &child_text,
-                        None,
                         crate::lazy_workspace::InspectBasis {
                             state: Some(state),
                             listed: Some(node),

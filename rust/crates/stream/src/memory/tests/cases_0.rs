@@ -147,6 +147,7 @@ async fn paginates_more_children_than_one_wire_page_without_gaps() -> Result<(),
     loop {
         let page = provider
             .children_page(ChildrenPageRequest {
+                offset: 0,
                 tail_stream: None,
                 parent: Some(path("agents")?),
                 after,
@@ -680,7 +681,8 @@ proptest::proptest! {
             let (mut found, mut after, mut version) = (Vec::new(), None, None);
             loop {
                 let page = provider
-                    .children_page(ChildrenPageRequest { tail_stream: None,
+                    .children_page(ChildrenPageRequest {
+offset: 0, tail_stream: None,
                         parent: Some(path("root")?),
                         after,
                         hierarchy_version: version,
@@ -717,6 +719,7 @@ async fn hierarchy_page_starts_after_prefix_siblings() -> Result<(), StreamError
     }
     let page = provider
         .children_page(ChildrenPageRequest {
+            offset: 0,
             tail_stream: None,
             parent: Some(path("a")?),
             after: None,

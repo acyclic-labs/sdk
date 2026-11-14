@@ -458,7 +458,7 @@ pub(in crate::local) fn configuration(
             acyclic_fs::NativeViewBaseline::new(workspace.identity, false)
                 .recorded_in(&workspace.store)
         }),
-        source_namespace: Some(workspace.view().source_reference().identity),
+        source_namespace: Some(workspace.view().source_identity()),
         source_root: workspace.path.clone(),
         expected_root_identity: workspace.identity,
         maximum_paths: None,

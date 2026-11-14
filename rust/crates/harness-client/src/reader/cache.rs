@@ -36,8 +36,8 @@ const RECORD_OVERHEAD: usize = ENTRY_OVERHEAD + size_of::<Option<RecordEvidence>
 pub enum Key {
     /// Committed record at `(stream, sequence)`.
     Record(StreamPath, u64),
-    /// `children_page` page `index` of a parent stream.
-    Listing(StreamPath, u32),
+    /// `children_page` page `(limit, index)` of a parent stream.
+    Listing(StreamPath, u32, u32),
 }
 
 /// The original projection and freshness witness of a children request.
@@ -121,7 +121,7 @@ impl Value {
             Self::Listing(listing) => listing
                 .children
                 .iter()
-                .fold(41usize.saturating_add(path_len(key)), |bytes, child| {
+                .fold(49usize.saturating_add(path_len(key)), |bytes, child| {
                     bytes.saturating_add(8).saturating_add(child.as_str().len())
                 })
                 .saturating_add(listing.after.as_ref().map_or(0, |path| path.as_str().len()))
@@ -138,7 +138,7 @@ struct Entry {
 
 // Cached pages sort before pass-through pages, matching `listings` when an
 // old and a refreshed page both contain the same child.
-type ChildLocation = (StreamPath, StreamPath, bool, u32);
+type ChildLocation = (StreamPath, StreamPath, u32, bool, u32);
 
 /// Per-stream facts learned from committed history. Bounded with the entries.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -569,8 +569,9 @@ impl RecordCache {
             self.forget(path);
             self.remove_meta(path);
         }
-        let listings =
-            self.keys_in(Key::Listing(stream.clone(), 0)..=Key::Listing(stream.clone(), u32::MAX));
+        let listings = self.keys_in(
+            Key::Listing(stream.clone(), 0, 0)..=Key::Listing(stream.clone(), u32::MAX, u32::MAX),
+        );
         for key in listings {
             self.remove(&key);
         }
@@ -579,12 +580,14 @@ impl RecordCache {
 
     /// Drop a parent's listing pages after `index`: their cursors were cut
     /// at a boundary the refreshed page `index` no longer ends at.
-    pub fn drop_listings_after(&mut self, parent: &StreamPath, index: u32) {
+    pub fn drop_listings_after(&mut self, parent: &StreamPath, index: u32, limit: u32) {
         let Some(first) = index.checked_add(1) else {
             return;
         };
-        let keys = self
-            .keys_in(Key::Listing(parent.clone(), first)..=Key::Listing(parent.clone(), u32::MAX));
+        let keys = self.keys_in(
+            Key::Listing(parent.clone(), limit, first)
+                ..=Key::Listing(parent.clone(), limit, u32::MAX),
+        );
         for key in keys {
             self.remove(&key);
         }
@@ -792,41 +795,11 @@ impl RecordCache {
 
     /// Borrow a listing page without touching recency.
     #[must_use]
-    pub fn listing(&self, parent: &StreamPath, index: u32) -> Option<&Listing> {
-        match self.value(&Key::Listing(parent.clone(), index)) {
+    pub fn listing(&self, parent: &StreamPath, index: u32, limit: u32) -> Option<&Listing> {
+        match self.value(&Key::Listing(parent.clone(), limit, index)) {
             Some(Value::Listing(listing)) => Some(listing),
             _ => None,
         }
-    }
-
-    /// The last retained page in `[from, before)` of one parent. Cached and
-    /// displayed pass-through pages share the same cursor order. Two range
-    /// seeks inspect at most one candidate from each residency map.
-    #[must_use]
-    pub fn listing_before(
-        &self,
-        parent: &StreamPath,
-        from: u32,
-        before: u32,
-    ) -> Option<(u32, &Listing)> {
-        if !self.access.allows() || from >= before {
-            return None;
-        }
-        let range = Key::Listing(parent.clone(), from)..Key::Listing(parent.clone(), before);
-        [
-            self.entries
-                .range(range.clone())
-                .next_back()
-                .map(|(key, entry)| (key, &entry.value)),
-            self.passed
-                .range(range)
-                .next_back()
-                .map(|(key, entry)| (key, &entry.value)),
-        ]
-        .into_iter()
-        .flatten()
-        .filter_map(|(key, value)| self.listing_entry(key, value))
-        .max_by_key(|(index, _)| *index)
     }
 
     #[cfg(test)]
@@ -844,8 +817,9 @@ impl RecordCache {
     pub fn listings<'a>(
         &'a self,
         parent: &StreamPath,
-    ) -> impl Iterator<Item = (u32, &'a Listing)> + use<'a> {
-        let range = Key::Listing(parent.clone(), 0)..=Key::Listing(parent.clone(), u32::MAX);
+    ) -> impl Iterator<Item = ((u32, u32), &'a Listing)> + use<'a> {
+        let range =
+            Key::Listing(parent.clone(), 0, 0)..=Key::Listing(parent.clone(), u32::MAX, u32::MAX);
         self.entries
             .range(range.clone())
             .map(|(key, entry)| (key, &entry.value))
@@ -855,7 +829,13 @@ impl RecordCache {
                     .map(|(key, entry)| (key, &entry.value)),
             )
             .filter(|_| self.access.allows())
-            .filter_map(|(key, value)| self.listing_entry(key, value))
+            .filter_map(|(key, value)| {
+                let Key::Listing(_, limit, index) = key else {
+                    return None;
+                };
+                self.listing_entry(key, value)
+                    .map(|(_, listing)| ((*index, *limit), listing))
+            })
     }
 
     /// The first retained page containing `child`, in cached-then-pass-through
@@ -866,18 +846,19 @@ impl RecordCache {
         &self,
         parent: &StreamPath,
         child: &StreamPath,
+        limit: u32,
     ) -> Option<(u32, &Listing)> {
         if !self.access.allows() {
             return None;
         }
-        let (_, _, passed, page) = self
+        let (_, _, limit, passed, page) = self
             .children
             .range(
-                (parent.clone(), child.clone(), false, 0)
-                    ..=(parent.clone(), child.clone(), true, u32::MAX),
+                (parent.clone(), child.clone(), limit, false, 0)
+                    ..=(parent.clone(), child.clone(), limit, true, u32::MAX),
             )
             .next()?;
-        let key = Key::Listing(parent.clone(), *page);
+        let key = Key::Listing(parent.clone(), *limit, *page);
         let value = if *passed {
             &self.passed.get(&key)?.value
         } else {
@@ -890,7 +871,7 @@ impl RecordCache {
         #[cfg(test)]
         self.listing_visits.set(self.listing_visits.get() + 1);
         match (key, value) {
-            (Key::Listing(_, index), Value::Listing(listing)) => Some((*index, listing)),
+            (Key::Listing(_, _, index), Value::Listing(listing)) => Some((*index, listing)),
             _ => None,
         }
     }
@@ -955,12 +936,12 @@ impl RecordCache {
     }
 
     /// Mark a displayed listing page most recently used.
-    pub fn touch_listing(&mut self, parent: &StreamPath, index: u32) {
-        self.touch(&Key::Listing(parent.clone(), index));
+    pub fn touch_listing(&mut self, parent: &StreamPath, index: u32, limit: u32) {
+        self.touch(&Key::Listing(parent.clone(), limit, index));
     }
 
-    pub(super) fn retain_listing(&mut self, parent: &StreamPath, index: u32) {
-        self.touch_passed(&Key::Listing(parent.clone(), index));
+    pub(super) fn retain_listing(&mut self, parent: &StreamPath, index: u32, limit: u32) {
+        self.touch_passed(&Key::Listing(parent.clone(), limit, index));
     }
 
     fn touch_passed(&mut self, key: &Key) {
@@ -1020,8 +1001,8 @@ impl RecordCache {
 
     /// Move the original page out before refreshing one of its projections.
     /// Its observation map is transferred, never cloned per reply.
-    fn take_listing(&mut self, parent: &StreamPath, index: u32) -> Option<Listing> {
-        let key = Key::Listing(parent.clone(), index);
+    fn take_listing(&mut self, parent: &StreamPath, index: u32, limit: u32) -> Option<Listing> {
+        let key = Key::Listing(parent.clone(), limit, index);
         let entry = if let Some(entry) = self.entries.remove(&key) {
             index_listing(&mut self.children, &key, &entry.value, false, false);
             self.lru.remove(&entry.used);
@@ -1047,12 +1028,13 @@ impl RecordCache {
         &mut self,
         parent: &StreamPath,
         index: u32,
+        limit: u32,
         mut listing: Listing,
         observations: impl IntoIterator<Item = (ListingProjection, Option<u64>)>,
         protect: Option<u64>,
     ) {
         listing.projections = self
-            .take_listing(parent, index)
+            .take_listing(parent, index, limit)
             .filter(|old| {
                 old.fresh
                     && old.version == listing.version
@@ -1064,7 +1046,7 @@ impl RecordCache {
         for (projection, witnessed) in observations {
             listing.projections.observe(projection, witnessed);
         }
-        self.store_listing(parent, index, listing, protect);
+        self.store_listing(parent, index, limit, listing, protect);
     }
 
     /// Insert or replace one listing page.
@@ -1072,21 +1054,23 @@ impl RecordCache {
         &mut self,
         parent: &StreamPath,
         index: u32,
+        limit: u32,
         listing: Listing,
         protect: Option<u64>,
     ) -> bool {
-        self.remove(&Key::Listing(parent.clone(), index));
-        self.store_listing(parent, index, listing, protect)
+        self.remove(&Key::Listing(parent.clone(), limit, index));
+        self.store_listing(parent, index, limit, listing, protect)
     }
 
     fn store_listing(
         &mut self,
         parent: &StreamPath,
         index: u32,
+        limit: u32,
         listing: Listing,
         protect: Option<u64>,
     ) -> bool {
-        let key = Key::Listing(parent.clone(), index);
+        let key = Key::Listing(parent.clone(), limit, index);
         let charge = listing
             .children
             .iter()
@@ -1309,7 +1293,7 @@ impl RecordCache {
         for key in self.lru.values().rev() {
             // A record must not outlive the fact that anchors its identity.
             let path = match key {
-                Key::Record(path, _) | Key::Listing(path, _) => path,
+                Key::Record(path, _) | Key::Listing(path, _, _) => path,
             };
             if self.meta.get(path).is_some_and(|meta| !retained(meta)) {
                 continue;
@@ -1334,10 +1318,11 @@ impl RecordCache {
                     put_u64(&mut out, *sequence);
                     put_bytes(&mut out, value);
                 }
-                (Key::Listing(path, index), Value::Listing(listing)) => {
+                (Key::Listing(path, limit, index), Value::Listing(listing)) => {
                     out.push(1);
                     put_str(&mut out, path.as_str());
                     put_u64(&mut out, u64::from(*index));
+                    put_u64(&mut out, u64::from(*limit));
                     put_str(
                         &mut out,
                         listing.after.as_ref().map_or("", |after| after.as_str()),
@@ -1461,6 +1446,10 @@ impl RecordCache {
                 1 => {
                     let path = input.path()?;
                     let index = u32::try_from(input.u64()?).map_err(|_| SnapshotError)?;
+                    let limit = u32::try_from(input.u64()?).map_err(|_| SnapshotError)?;
+                    if limit == 0 {
+                        return Err(SnapshotError);
+                    }
                     let after = match input.str()? {
                         "" => None,
                         text => Some(StreamPath::new(text).map_err(|_| SnapshotError)?),
@@ -1471,7 +1460,7 @@ impl RecordCache {
                     };
                     let mut children = Vec::new();
                     let count = input.count()?;
-                    if count > acyclic_stream::MAX_ITEMS {
+                    if count > limit as usize {
                         return Err(SnapshotError);
                     }
                     for _ in 0..count {
@@ -1480,6 +1469,7 @@ impl RecordCache {
                     restored.insert_listing(
                         &path,
                         index,
+                        limit,
                         Listing {
                             after,
                             children,
@@ -1533,11 +1523,11 @@ fn index_listing(
     passed: bool,
     insert: bool,
 ) {
-    let (Key::Listing(parent, page), Value::Listing(listing)) = (key, value) else {
+    let (Key::Listing(parent, limit, page), Value::Listing(listing)) = (key, value) else {
         return;
     };
     for child in &listing.children {
-        let location = (parent.clone(), child.clone(), passed, *page);
+        let location = (parent.clone(), child.clone(), *limit, passed, *page);
         if insert {
             locations.insert(location);
         } else {
@@ -1555,11 +1545,11 @@ fn touch_entry(lru: &mut BTreeMap<u64, Key>, clock: &mut u64, key: &Key, entry: 
 
 fn path_len(key: &Key) -> usize {
     match key {
-        Key::Record(path, _) | Key::Listing(path, _) => path.as_str().len(),
+        Key::Record(path, _) | Key::Listing(path, _, _) => path.as_str().len(),
     }
 }
 
-const MAGIC: &[u8] = b"acyclic.records.v1\n";
+const MAGIC: &[u8] = b"acyclic.records.v2\n";
 
 fn put_binding(
     out: &mut Vec<u8>,
@@ -2019,6 +2009,7 @@ mod tests {
         assert!(cache.insert_listing(
             &stream,
             0,
+            64,
             Listing {
                 after: None,
                 children: vec![StreamPath::new("record/child").unwrap()],
@@ -2033,7 +2024,7 @@ mod tests {
         assert!(!cache.insert_record(&stream, 0, full, None, Some(mark)));
         assert_eq!(cache.record(&stream, 0).unwrap().as_ptr(), pointer);
         assert_eq!(cache.record(&stream, 1).unwrap().as_ref(), &[2]);
-        assert!(cache.listing(&stream, 0).is_some());
+        assert!(cache.listing(&stream, 0, 64).is_some());
         assert_eq!(cache.backing_bytes(), 8193);
         cache.retain_passed(cache.clock());
         assert_eq!(cache.backing_bytes(), 1);
@@ -2555,34 +2546,47 @@ mod tests {
             projections: ListingProjections::default(),
             version: None,
         };
-        assert!(target.insert_listing(&stream, 0, page(&child), None));
-        assert!(target.insert_listing(&stream, 0, page(&next_child), None));
-        assert!(target.listing_containing(&stream, &child).is_none());
+        assert!(target.insert_listing(&stream, 0, 64, page(&child), None));
+        assert!(target.insert_listing(&stream, 0, 64, page(&next_child), None));
+        assert!(target.listing_containing(&stream, &child, 64).is_none());
         assert_eq!(
-            target.listing_containing(&stream, &next_child).unwrap().0,
+            target
+                .listing_containing(&stream, &next_child, 64)
+                .unwrap()
+                .0,
             0
         );
         let snapshot = target.snapshot();
         target.restore(&snapshot).unwrap();
         assert_eq!(
-            target.listing_containing(&stream, &next_child).unwrap().0,
+            target
+                .listing_containing(&stream, &next_child, 64)
+                .unwrap()
+                .0,
             0
         );
         target.set_budget(0);
-        assert!(target.listing_containing(&stream, &next_child).is_none());
+        assert!(
+            target
+                .listing_containing(&stream, &next_child, 64)
+                .is_none()
+        );
         let mark = target.begin_frame();
-        assert!(!target.insert_listing(&stream, 0, page(&child), Some(mark)));
-        assert_eq!(target.listing_containing(&stream, &child).unwrap().0, 0);
+        assert!(!target.insert_listing(&stream, 0, 64, page(&child), Some(mark)));
+        assert_eq!(target.listing_containing(&stream, &child, 64).unwrap().0, 0);
         let mark = target.clock();
-        target.retain_listing(&stream, 0);
+        target.retain_listing(&stream, 0, 64);
         target.retain_passed(mark);
-        assert!(target.listing_containing(&stream, &child).is_some());
+        assert!(target.listing_containing(&stream, &child, 64).is_some());
         target.retain_passed(target.clock());
-        assert!(target.listing_containing(&stream, &child).is_none());
-        assert!(!target.insert_listing(&stream, 0, page(&next_child), Some(mark)));
-        assert!(target.listing_containing(&stream, &child).is_none());
+        assert!(target.listing_containing(&stream, &child, 64).is_none());
+        assert!(!target.insert_listing(&stream, 0, 64, page(&next_child), Some(mark)));
+        assert!(target.listing_containing(&stream, &child, 64).is_none());
         assert_eq!(
-            target.listing_containing(&stream, &next_child).unwrap().0,
+            target
+                .listing_containing(&stream, &next_child, 64)
+                .unwrap()
+                .0,
             0
         );
     }

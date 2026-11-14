@@ -16,8 +16,14 @@ async fn source_epoch_reads_never_publish_bookkeeping() {
     let (first, second) = tokio::join!(async { root.state(accounting!()).await }, async {
         root.state(accounting!()).await
     });
-    assert_eq!(first.unwrap().source, source.reference());
-    assert_eq!(second.unwrap().source, source.reference());
+    assert_eq!(
+        first.unwrap().source,
+        source.reference(accounting!()).await.unwrap()
+    );
+    assert_eq!(
+        second.unwrap().source,
+        source.reference(accounting!()).await.unwrap()
+    );
     assert_eq!(
         store
             .load_lazy_workspace(root.workspace().id(), accounting!())
@@ -57,13 +63,13 @@ async fn retained_snapshot_rejects_the_previous_overlay_format_before_loading_it
     old_hash.update(&cut.shadows.into_bytes());
     let previous = LazySnapshotRef {
         id: LazySnapshotId(*old_hash.finalize().as_bytes()),
-        ..cut
+        ..cut.clone()
     };
     assert!(matches!(
-        root.validate_snapshot(previous, accounting!()).await,
+        root.validate_snapshot(&previous, accounting!()).await,
         Err(LazyWorkspaceError::StaleSource)
     ));
-    root.validate_snapshot(cut, accounting!()).await.unwrap();
+    root.validate_snapshot(&cut, accounting!()).await.unwrap();
 }
 
 #[tokio::test]
@@ -149,7 +155,7 @@ async fn exactification_denials_do_not_publish_or_create_children() {
     ] {
         assert!(
             root.exactify_snapshot(
-                cut,
+                cut.clone(),
                 name,
                 IdempotencyKey::new(),
                 &mut KernelAccounting::standalone(budget, &cancel)
@@ -247,14 +253,14 @@ async fn attach_open_and_fork_demand_no_source_work() {
     let sealed_cut = LazySnapshotRef::new(
         cut.workspace_id,
         sealed_generation,
-        cut.source,
+        cut.source.clone(),
         cut.overlay,
         cut.shadows,
     );
     assert_ne!(sealed_cut.id, cut.id);
     assert_eq!(
-        LazySnapshotRef::hash_bytes(sealed_generation),
-        LazySnapshotRef::hash_bytes(cut.authored_generation) + 80
+        LazySnapshotRef::hash_bytes(sealed_generation, &cut.source),
+        LazySnapshotRef::hash_bytes(cut.authored_generation, &cut.source) + 80
     );
     let (child, original) = reopened
         .fork(

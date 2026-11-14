@@ -48,7 +48,7 @@ async fn an_authored_file_hides_descendants_at_live_and_frozen_cuts() {
     checkout.retire(&mut context).unwrap();
     let cut = root.snapshot(accounting!()).await.unwrap();
     assert!(
-        root.lookup_at_snapshot(cut, "/file.txt/child", accounting!())
+        root.lookup_at_snapshot(&cut, "/file.txt/child", accounting!())
             .await
             .unwrap()
             .0
@@ -93,7 +93,7 @@ async fn observation_and_transient_inspection_pin_their_versions() {
     root.retain_observation(
         "/file.txt",
         &LazyLookup::Source {
-            source: pinned,
+            source: pinned.clone(),
             node,
         },
         accounting!(),

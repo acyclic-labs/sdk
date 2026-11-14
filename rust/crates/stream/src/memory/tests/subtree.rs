@@ -5,6 +5,78 @@ use proptest::prelude::*;
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(48))]
     #[test]
+    fn child_rank_seek_matches_sorted_model_without_visiting_preceding_siblings(
+        keys in proptest::collection::btree_set(any::<u16>(), 0..128),
+        after in proptest::option::of(any::<u16>()),
+        offset in prop_oneof![0u64..256, Just(u64::MAX)],
+        limit in 1usize..16,
+    ) {
+        let result: Result<(), StreamError> = futures::executor::block_on(async {
+            let provider = MemoryStream::default();
+            provider.append(AppendRequest {
+                path: StreamPath::new("rank")?, records: vec![Bytes::from_static(b"root").into()],
+                if_tail: Some(0), idempotency_key: IdempotencyKey::unique(),
+            }).await?;
+            // Every direct child has descendants. A subtree count used as a
+            // sibling rank is a planted wrong model which this input exposes.
+            for key in &keys {
+                provider.append(AppendRequest {
+                    path: StreamPath::new(format!("rank/{key:04x}/nested/leaf"))?,
+                    records: vec![Bytes::from_static(b"value").into()], if_tail: Some(0),
+                    idempotency_key: IdempotencyKey::unique(),
+                }).await?;
+            }
+            provider.fork(ForkRequest {
+                source: StreamPath::new("rank")?, destination: StreamPath::new("forked")?,
+                exclude: Vec::new(),
+                at_tail: None, idempotency_key: IdempotencyKey::unique(),
+            }).await?;
+            for prefix in ["rank", "forked"] {
+                let parent = StreamPath::new(prefix)?;
+                let lower = after.map(|key| format!("{key:04x}"));
+                let request = ChildrenPageRequest {
+                    offset, tail_stream: None, parent: Some(parent.clone()),
+                    after: lower.as_ref().map(|key| StreamPath::new(format!("{prefix}/{key}"))).transpose()?,
+                    hierarchy_version: None, limit: limit as u32,
+                };
+                // Exercise the production wire adapter before the provider.
+                let request = crate::wire_codec::children_page_from_wire(
+                    crate::wire_codec::children_page_request_to_wire(request),
+                )?;
+                let actual = provider.children_page(request.clone()).await?;
+                actual.validate_for(&request)?;
+                let expected = keys.iter().filter(|key| after.is_none_or(|after| **key > after))
+                    .skip(usize::try_from(offset).unwrap_or(usize::MAX))
+                    .take(limit + 1).map(|key| StreamPath::new(format!("{prefix}/{key:04x}")))
+                    .collect::<Result<Vec<_>, _>>()?;
+                assert_eq!(actual.children.iter().map(|child| &child.path).collect::<Vec<_>>(),
+                    expected.iter().take(limit).collect::<Vec<_>>());
+                assert_eq!(actual.next_after.as_ref(), (expected.len() > limit).then(|| &expected[limit - 1]));
+
+                let state = provider.state.read().await;
+                let children = &state.paths.node(&parent).ok_or(StreamError::NotFound)?.children;
+                let mut visited = 0usize;
+                let mut selected = Vec::new();
+                let page = namespace_page(children, lower.as_deref(), offset, limit,
+                    &mut |_| { visited += 1; Ok(()) })?;
+                page.visit(&mut |_| { visited += 1; Ok(()) }, &mut |name| {
+                        selected.push(StreamPath::new(format!("{prefix}/{name}"))?);
+                        Ok(true)
+                    })?;
+                assert_eq!(selected, expected[..expected.len().min(limit)]);
+                assert_eq!(page.has_more, expected.len() > limit);
+                assert!(visited <= 4 * usize::from(height(children)) + 3 * (limit + 1),
+                    "rank seek visited {visited} nodes instead of a height-plus-page bound");
+            }
+            Ok(())
+        });
+        prop_assert!(result.is_ok(), "{result:?}");
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
+    #[test]
     fn subtree_cut_and_private_suffix_match_flat_model(
         values in proptest::collection::vec(any::<u8>(), 1..32),
         exclude_items in any::<bool>(),
@@ -71,6 +143,7 @@ async fn fork_namespace_allocation_is_independent_of_descendant_count() -> Resul
         next.put(
             &StreamPath::new("copy")?,
             source.clone(),
+            state.decision + 1,
             &mut NamespaceBuilder::new(&|_| {
                 count.set(count.get() + 1);
                 Ok(None)
@@ -168,6 +241,7 @@ async fn page_projection_skips_a_child_whose_named_tail_cannot_exist() -> Result
     assert_eq!(provider.tail(destination).await, Err(StreamError::NotFound));
     let page = provider
         .children_page(ChildrenPageRequest {
+            offset: 0,
             parent: Some(StreamPath::new("agents")?),
             tail_stream: Some(StreamPath::new("status")?),
             after: None,

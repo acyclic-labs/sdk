@@ -76,6 +76,16 @@ pub(crate) fn child_len(child: &crate::Child) -> usize {
         )
 }
 
+fn revision_len(revision: &crate::Revision) -> usize {
+    (if revision.scope.as_bytes().is_empty() {
+        0
+    } else {
+        block_len(revision.scope.as_bytes().len())
+    })
+    .saturating_add(block_len(16))
+    .saturating_add(uint_len((revision.index != 0).then_some(revision.index)))
+}
+
 /// Encoded page length from its framed children and optional continuation.
 pub(crate) fn children_page_len(
     children_bytes: usize,
@@ -90,17 +100,9 @@ pub(crate) fn heads_len(view: &crate::Heads) -> usize {
     heads_len_with_durability(view, false)
 }
 
-/// Deferred providers can fill durable watermarks after capturing the view.
-/// Reserve their largest captured value without asserting that it is durable.
+/// Reserves deferred durable watermarks without claiming them during capture.
 pub(crate) fn heads_len_with_durability(view: &crate::Heads, deferred: bool) -> usize {
-    let revision = &view.snapshot;
-    let snapshot = (if revision.scope.as_bytes().is_empty() {
-        0
-    } else {
-        block_len(revision.scope.as_bytes().len())
-    })
-    .saturating_add(block_len(16))
-    .saturating_add(uint_len((revision.index != 0).then_some(revision.index)));
+    let snapshot = revision_len(&view.snapshot);
     let named = view
         .heads
         .iter()
@@ -109,6 +111,7 @@ pub(crate) fn heads_len_with_durability(view: &crate::Heads, deferred: bool) -> 
                 let durable = if deferred { head.tail } else { head.durable };
                 block_len(
                     uint_len((head.tail != 0).then_some(head.tail))
+                        .saturating_add(uint_len((head.changed_at != 0).then_some(head.changed_at)))
                         .saturating_add(
                             head.last
                                 .as_ref()
@@ -135,6 +138,7 @@ pub(crate) fn heads_len_with_durability(view: &crate::Heads, deferred: bool) -> 
         ))
     });
     block_len(snapshot)
+        .saturating_add(block_len(revision_len(&view.applied)))
         .saturating_add(
             view.retained
                 .iter()

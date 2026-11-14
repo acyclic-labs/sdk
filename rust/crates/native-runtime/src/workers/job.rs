@@ -1,6 +1,11 @@
 use crate::*;
 
+pub(crate) trait DeferredPoll: Send + Sync {
+    fn poll_deferred(self: Arc<Self>);
+}
+
 pub(crate) enum NativeJob {
+    Deferred(Arc<dyn DeferredPoll>),
     Read {
         file: Arc<HeldFile>,
         reads: Vec<OwnedRead>,
@@ -93,7 +98,7 @@ impl NativeJob {
         match self {
             Self::Task { scope, .. } => !scope.as_ref().is_some_and(|scope| scope.controlled()),
             // File batches cannot await an async response from the driver.
-            Self::Read { .. } | Self::Write { .. } => false,
+            Self::Read { .. } | Self::Write { .. } | Self::Deferred(_) => false,
         }
     }
     #[cfg(feature = "test-support")]
@@ -102,6 +107,7 @@ impl NativeJob {
             Self::Read { state, .. } => state.clone(),
             Self::Write { state, .. } => state.clone(),
             Self::Task { terminal, .. } => terminal.clone(),
+            Self::Deferred(_) => unreachable!("deferred polls have no file-operation terminal"),
         }
     }
 
@@ -140,6 +146,10 @@ impl NativeJob {
 
     pub(crate) fn run(self) -> Option<Waker> {
         match self {
+            Self::Deferred(owner) => {
+                owner.poll_deferred();
+                None
+            }
             Self::Read {
                 file,
                 reads,

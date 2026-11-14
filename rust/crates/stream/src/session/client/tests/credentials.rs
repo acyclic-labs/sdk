@@ -18,6 +18,7 @@ async fn scoped_credentials_share_the_pool_and_retire_after_the_last_cursor() ->
     let heads = selected
         .read_provider()
         .heads(crate::HeadsRequest {
+            at: None,
             paths: [StreamPath::new("scoped-credential")?]
                 .into_iter()
                 .collect(),

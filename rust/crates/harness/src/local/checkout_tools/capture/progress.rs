@@ -121,7 +121,7 @@ impl CheckoutTools {
                         .await;
                 };
                 let changed = match view
-                    .content_changed_at_snapshots(before, after, &mut accounting)
+                    .content_changed_at_snapshots(&before, &after, &mut accounting)
                     .await
                 {
                     Ok(changed) => changed,

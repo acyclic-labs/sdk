@@ -213,6 +213,7 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
     );
     let page = provider
         .children_page(ChildrenPageRequest {
+            offset: 0,
             parent: Some(store.failures_path(&address)?),
             after: None,
             hierarchy_version: None,

@@ -27,7 +27,7 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
             )
             .await
             .map_err(|(cause, _)| cause)?;
-        assert_eq!(acknowledged, Some(receipt));
+        assert_eq!(acknowledged, Some(receipt.clone()));
         Ok::<_, MountSourceError>(receipt)
     };
     view.write_range(&mounted(&["same"]), 0, Bytes::from_static(b"same bytes"))?;
@@ -45,8 +45,8 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
     assert!(
         view.lazy
             .matches_optional_content_at_snapshots(
-                unchanged_before,
-                unchanged_after,
+                &unchanged_before,
+                &unchanged_after,
                 "/same",
                 &mut accounting,
             )
@@ -55,7 +55,7 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
     );
     assert_eq!(
         view.lazy
-            .content_changed_at_snapshots(unchanged_before, unchanged_after, &mut accounting,)
+            .content_changed_at_snapshots(&unchanged_before, &unchanged_after, &mut accounting,)
             .await?,
         None,
         "source identity promotion invented complete alias coverage"
@@ -80,7 +80,7 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
         .original_publication_cuts(operation, &mut accounting)
         .await?
         .ok_or("original native cuts missing")?;
-    let (before, after) = cuts;
+    let (before, after) = &cuts;
     assert_eq!(
         view.lazy
             .content_changed_at_snapshots(before, after, &mut accounting)
@@ -118,19 +118,19 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
     );
     assert!(
         view.lazy
-            .stat_at_snapshot(before, "/created", &mut accounting)
+            .stat_at_snapshot(&before, "/created", &mut accounting)
             .await?
             .is_none()
     );
     assert!(
         view.lazy
-            .stat_at_snapshot(after, "/removed", &mut accounting)
+            .stat_at_snapshot(&after, "/removed", &mut accounting)
             .await?
             .is_none()
     );
     assert_eq!(
         view.lazy
-            .read_at_snapshot(before, "/removed", None, 64, &mut accounting)
+            .read_at_snapshot(&before, "/removed", None, 64, &mut accounting)
             .await?
             .0
             .bytes
@@ -139,7 +139,7 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
     );
     assert_eq!(
         view.lazy
-            .read_at_snapshot(after, "/created", None, 64, &mut accounting)
+            .read_at_snapshot(&after, "/created", None, 64, &mut accounting)
             .await?
             .0
             .bytes
@@ -150,7 +150,7 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
     view.fence_changes()?;
     assert_eq!(
         view.lazy
-            .read_at_snapshot(before, "/edited", None, 64, &mut accounting)
+            .read_at_snapshot(&before, "/edited", None, 64, &mut accounting)
             .await?
             .0
             .bytes
@@ -159,7 +159,7 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
     );
     assert_eq!(
         view.lazy
-            .read_at_snapshot(after, "/edited", None, 64, &mut accounting)
+            .read_at_snapshot(&after, "/edited", None, 64, &mut accounting)
             .await?
             .0
             .bytes
@@ -173,13 +173,13 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
         view.lazy
             .original_publication(operation, &mut accounting)
             .await?,
-        Some(receipt)
+        Some(receipt.clone())
     );
     assert_eq!(
         view.lazy
             .original_publication_cuts(operation, &mut accounting)
             .await?,
-        Some(cuts)
+        Some(cuts.clone())
     );
     assert!(
         !view
@@ -251,7 +251,7 @@ async fn caller_selected_publication_replays_a_clean_receipt_without_claiming_la
             )
             .await
             .map_err(|(cause, _)| cause)?;
-        assert_eq!(acknowledged, Some(receipt));
+        assert_eq!(acknowledged, Some(receipt.clone()));
         Ok::<_, MountSourceError>(receipt)
     };
     let clean = capture(operation)
@@ -298,7 +298,7 @@ async fn caller_selected_publication_replays_a_clean_receipt_without_claiming_la
             .await
             .map_err(|(cause, _)| cause)?;
         assert_eq!(replay, clean);
-        assert_eq!(acknowledged, Some(clean));
+        assert_eq!(acknowledged, Some(clean.clone()));
         assert_eq!(work.receipt().authority_records_appended, appended);
         if let Some(pending) = pending {
             let mut checkout = view.authored.shared_checkout().lock().await;
@@ -311,7 +311,7 @@ async fn caller_selected_publication_replays_a_clean_receipt_without_claiming_la
         }
         assert!(
             view.lazy
-                .stat_at_snapshot(after, "/later", &mut accounting)
+                .stat_at_snapshot(&after, "/later", &mut accounting)
                 .await?
                 .is_none()
         );
@@ -1173,7 +1173,7 @@ async fn mounted_read_selection_rejects_other_pending_kinds_and_prepared_forks()
             "fork" => {
                 next.fork_origin = Some(crate::lazy_workspace::LazyForkOrigin {
                     operation_id: crate::OperationId::new(),
-                    snapshot: cut,
+                    snapshot: cut.clone(),
                     config: crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
                     phase: crate::lazy_workspace::LazyForkPhase::Prepared,
                 })

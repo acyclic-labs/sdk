@@ -57,6 +57,7 @@ where
             .map(|io| io.guard_owned((paths.capacity() * std::mem::size_of::<StreamPath>()) as u64))
             .transpose()?;
         let request = acyclic_stream::HeadsRequest {
+            at: None,
             limit: u32::try_from(paths.len()).map_err(|_| invalid(io))?,
             paths: acyclic_stream::HeadSet::from_vec(paths),
             retained: Default::default(),

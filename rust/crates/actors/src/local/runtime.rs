@@ -1299,6 +1299,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     // One snapshot of every assigned shard log: a single
                     // control request regardless of the shard count.
                     let request = acyclic_stream::HeadsRequest {
+                        at: None,
                         retained: Default::default(),
                         durable_through: None,
                         projection: acyclic_stream::HeadProjection::Tail,

@@ -110,7 +110,7 @@ proptest! {
             priority,
             authored: (shadow_kind != 0).then(|| content.clone()),
             observed: (shadow_kind != 1).then(|| LazySourceRecord {
-                source: SourceReference { identity: file_id, epoch: priority },
+                source: SourceReference::new(file_id, priority),
                 version: SourceVersion(right),
                 content,
             }),

@@ -187,6 +187,42 @@ pub(super) fn clone_native_record_value(
     Ok((value, held))
 }
 
+/// Transfer newly decoded cuts before their enclosing record can enter a cache
+/// or lose its read allocation. Every alias then keeps the original custody.
+pub(super) fn retain_decoded_lazy(
+    state: &mut LazyWorkspaceState,
+    allocation: &mut NativeAllocation,
+) -> Result<(), Error> {
+    let work = allocation.work().clone();
+    let mut ctx = crate::kernel::KernelAccounting::native(&work, work.cancellation());
+    let mut backing = crate::kernel::KernelOwnedAllocation::NativeOriginal(
+        allocation.split_off(allocation.bytes())?,
+    );
+    let result = (|| {
+        state.source.retain_decoded(&mut backing, &mut ctx)?;
+        if let Some(origin) = &mut state.fork_origin {
+            origin
+                .snapshot
+                .source
+                .retain_decoded(&mut backing, &mut ctx)?;
+        }
+        if let Some(roots) = &mut state.selected_import_roots {
+            for (snapshot, _) in roots {
+                snapshot.source.retain_decoded(&mut backing, &mut ctx)?;
+            }
+        }
+        Ok::<_, crate::FsError>(())
+    })();
+    // Restore all remaining enclosing custody on success and refusal alike.
+    let crate::kernel::KernelOwnedAllocation::NativeOriginal(remaining) = backing else {
+        return Err(Error::Integrity);
+    };
+    *allocation = remaining;
+    result
+        .map_err(crate::LazyWorkspaceError::from)
+        .map_err(Error::from)
+}
+
 pub(super) fn native_record_owned_bytes(value: &RecordValue, work: &Work) -> Result<u64, Error> {
     Ok(match value {
         RecordValue::Context(context) => native_context_owned_bytes(context, work)?,
@@ -196,9 +232,9 @@ pub(super) fn native_record_owned_bytes(value: &RecordValue, work: &Work) -> Res
             .checked_mul(std::mem::size_of::<WorkspaceContextId>())
             .ok_or_else(overflow)? as u64,
         RecordValue::Lineage(lineage) => native_lineage_owned_bytes(lineage, work)?,
-        // These payloads have only fixed identifiers/scalars/Copy metadata.
-        // Their enclosing resident vector, output or source Box funds its
-        // compiled inline storage; they own no additional dynamic backing.
+        // Inline metadata is funded by its enclosing storage. Decoded source
+        // cuts transfer their backing before installation and retain that
+        // custody intrinsically, so it must not be reserved a second time.
         RecordValue::ChildCount(_) | RecordValue::ChildIndex(_) | RecordValue::LazyWorkspace(_) => {
             0
         }

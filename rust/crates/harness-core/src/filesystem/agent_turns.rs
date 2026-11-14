@@ -1090,7 +1090,13 @@ where
         }
         let retained = policy.map(std::slice::from_ref).unwrap_or(&[]);
         let (journal, bindings, _) = self
-            .journal(self.admit(parent)?, &[], retained, None, None)
+            .journal(
+                (self.admit(parent)?, &parent.path),
+                &[],
+                retained,
+                None,
+                None,
+            )
             .await?;
         let bytes = match policy {
             Some(policy) => {

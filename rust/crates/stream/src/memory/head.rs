@@ -1,4 +1,43 @@
+struct PathObservation<'a> {
+    node: &'a Arc<NamespaceNode>,
+    origin: Option<(&'a ForkMarker, usize)>,
+}
+impl PathObservation<'_> {
+    fn changed_at(&self) -> u64 {
+        self.node
+            .data
+            .changed_at
+            .max(self.origin.map_or(0, |(origin, _)| origin.decision))
+    }
+}
 impl Namespace {
+    fn observation_with(
+        &self,
+        path: &StreamPath,
+        mut examine: impl FnMut() -> Result<(), StreamError>,
+    ) -> Result<Option<PathObservation<'_>>, StreamError> {
+        let mut node = None;
+        let mut origin = None;
+        let mut end = 0;
+        let mut index = &self.roots;
+        for part in path.as_str().split('/') {
+            examine()?;
+            let Some(current) = lookup(index, part) else {
+                return Ok(None);
+            };
+            end += usize::from(node.is_some()) + part.len();
+            if let Some(candidate) = &current.origin
+                && origin.is_none_or(|(previous, _): (&ForkMarker, usize)| {
+                    candidate.decision >= previous.decision
+                })
+            {
+                origin = Some((candidate, end));
+            }
+            node = Some(current);
+            index = &current.children;
+        }
+        Ok(node.map(|node| PathObservation { node, origin }))
+    }
     fn origin(
         &self,
         path: &StreamPath,
@@ -16,23 +55,10 @@ impl Namespace {
         mut examine: impl FnMut() -> Result<(), StreamError>,
         extend: impl FnOnce(&StreamPath, &str) -> Result<StreamPath, StreamError>,
     ) -> Result<Option<crate::Provenance<crate::StreamPath, crate::ForkCut>>, StreamError> {
-        let mut parts = path.as_str().split('/');
-        let first = parts.next().ok_or(StreamError::InvalidPath)?;
-        examine()?;
-        let mut node = lookup(&self.roots, first).ok_or(StreamError::NotFound)?;
-        let mut end = first.len();
-        let mut selected = node.origin.as_ref().map(|origin| (origin, end));
-        for part in parts {
-            examine()?;
-            node = lookup(&node.children, part).ok_or(StreamError::NotFound)?;
-            end += 1 + part.len();
-            if let Some(origin) = &node.origin
-                && selected.is_none_or(|(previous, _)| origin.decision >= previous.decision)
-            {
-                selected = Some((origin, end));
-            }
-        }
-        let Some((origin, end)) = selected else {
+        let observation = self
+            .observation_with(path, &mut examine)?
+            .ok_or(StreamError::NotFound)?;
+        let Some((origin, end)) = observation.origin else {
             return Ok(None);
         };
         let relative = path.as_str().get(end..).ok_or(StreamError::InvalidPath)?;

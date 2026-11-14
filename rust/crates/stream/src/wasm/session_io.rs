@@ -418,6 +418,7 @@ mod tests {
             None,
         );
         let request = wire_codec::heads_request_to_wire(crate::HeadsRequest {
+            at: None,
             retained: Default::default(),
             durable_through: None,
             projection: crate::HeadProjection::Tail,
