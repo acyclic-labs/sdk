@@ -600,9 +600,14 @@ impl LocalHarness {
             .root_authority
             .as_ref()
             .ok_or_else(|| Error::Unsupported("agent signing custody is closed".into()))?;
+        let hosted = self
+            .agents
+            .get()
+            .ok_or_else(|| Error::Unsupported("agent admission is closed".into()))?;
+        let bound = hosted.server().bound();
         let authority = crate::filesystem::agent_authority(
-            &issuer.clone().into(),
-            &crate::filesystem::TurnAdmission::LocalRoot,
+            bound.issuer(),
+            bound.admission(),
             &receiver.path,
             &receiver.volumes,
             &[],
