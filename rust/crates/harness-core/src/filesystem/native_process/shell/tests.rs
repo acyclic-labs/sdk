@@ -175,7 +175,6 @@ async fn abandoned_preparation_retains_its_root_and_leaves_the_executor_availabl
                     &preparation_mounts,
                     native,
                     1,
-                    std::time::Instant::now(),
                 );
                 let _ = completed.send(prepared.is_err());
                 prepared
