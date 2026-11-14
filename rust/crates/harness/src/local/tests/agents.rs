@@ -4227,11 +4227,23 @@ async fn historical_session_forks_keep_source_only_files_from_adoption() -> Resu
         .workspace
         .as_ref()
         .ok_or_else(|| Error::Invalid("historical session has no native workspace".into()))?;
+    let adoption =
+        crate::filesystem::history_checkpoint(agents.provider().as_ref(), &root, 0).await?;
+    let selected = adoption
+        .volumes
+        .iter()
+        .find(|saved| {
+            saved
+                .binding
+                .as_volume()
+                .is_some_and(|volume| volume.class() == crate::conversation::VolumeClass::Project)
+        })
+        .ok_or_else(|| Error::Invalid("adoption has no project cut".into()))?;
     let cancellation = CancellationToken::new();
     let authored = workspace
         .view()
         .workspace()
-        .head(WorkBudget::UNBOUNDED, &cancellation)
+        .generation(selected.generation, WorkBudget::UNBOUNDED, &cancellation)
         .await
         .map_err(|failure| agent(failure.error))?
         .value;
