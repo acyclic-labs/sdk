@@ -337,7 +337,8 @@ impl HostProcessLease {
         view: &Path,
     ) -> Result<Self> {
         super::owner::planned_separated_directory(state, Some(workspace))?;
-        if view != workspace
+        if acyclic_native_runtime::paths::strip_native_prefix(view, workspace)
+            != Some(Path::new(""))
             && acyclic_native_runtime::paths::strip_native_prefix(
                 view,
                 &state.join(super::workspace::HOST_VIEW_ROOT),
@@ -878,10 +879,11 @@ mod tests {
             &acyclic_fs::CancellationToken::new(),
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let mut process =
-            HostProcessLease::acquire(state.path(), &view, &task, &view)?.process(&work)?;
-        let mut command = ProcessCommand::new(view.join("absent-native-program"));
         let host_view = acyclic_host_platform::paths::strip_verbatim(&view);
+        let mut process =
+            HostProcessLease::acquire(state.path(), host_view.as_ref(), &task, &view)?
+                .process(&work)?;
+        let mut command = ProcessCommand::new(view.join("absent-native-program"));
         command.current_dir(host_view.as_ref());
         let error = process
             .spawn(&mut command, OperationId::new(), None)
@@ -898,9 +900,9 @@ mod tests {
                 .is_err(),
             "retired owner cannot spawn again"
         );
-        HostProcessLease::acquire(state.path(), &view, &task, &view)?
+        HostProcessLease::acquire(state.path(), &view, &task, host_view.as_ref())?
             .quiescent()
-            .verify(&task, host_view.as_ref())?;
+            .verify(&task, &view)?;
         Ok(())
     }
 
@@ -910,9 +912,12 @@ mod tests {
         let state = tempfile::tempdir().map_err(storage)?;
         let outside = tempfile::tempdir().map_err(storage)?;
         let task = test_agent();
-        assert!(
-            HostProcessLease::acquire(state.path(), root.path(), &task, outside.path()).is_err()
-        );
+        for selected in [outside.path().to_path_buf(), root.path().join("nested")] {
+            assert!(matches!(
+                HostProcessLease::acquire(state.path(), root.path(), &task, &selected),
+                Err(Error::Unauthorized(_))
+            ));
+        }
         let view = root.path().canonicalize().map_err(storage)?;
         let work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::performance::BOUNDARY_BUDGET,
