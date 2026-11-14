@@ -365,6 +365,10 @@ async fn session_credentials_renew_on_handshake_retry_reconnect_and_move() -> Te
             Err(error) => error,
         };
         assert_eq!(error.category(), StreamError::AccessDenied);
+        assert!(
+            std::iter::successors(std::error::Error::source(&error), |source| source.source())
+                .any(|source| source.is::<grpc::CredentialError>())
+        );
         let original = tonic::Status::from(&error);
         assert_eq!(original.code(), tonic::Code::Unauthenticated);
         assert_eq!(original.message(), "credential provider failed");
