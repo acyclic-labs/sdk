@@ -793,6 +793,15 @@ mod indexed_trace_tests {
                 Default::default(),
             )
             .await?;
+        let child_request = ChildrenPageRequest {
+            offset: 0,
+            tail_stream: None,
+            parent: Some(data.path().clone()),
+            after: None,
+            hierarchy_version: None,
+            limit: 1,
+        };
+
         let trace = Stream::new(provider.clone(), "agents/worker/trace")?;
         let recorder = Arc::new(Recorder::new(trace.clone(), [51; 16]));
         let root = recorder
@@ -805,6 +814,248 @@ mod indexed_trace_tests {
             .await?
             .into_owned();
         let parent = root.id();
+        let trace_head = provider.head(trace.path().clone()).await?;
+        assert_eq!(trace_head.tail, 1);
+        let trace_record = trace_head.last.as_ref().ok_or("trace root missing")?;
+        for accepted in [false, true] {
+            let path = StreamPath::new(if accepted {
+                "guarded/accepted"
+            } else {
+                "guarded/commit"
+            })?;
+            let condition = if accepted {
+                CommitCondition::Head {
+                    path: trace.path().clone(),
+                    expected: 1,
+                    commit_id: trace_record.commit_id,
+                }
+            } else {
+                CommitCondition::Tail {
+                    path: trace.path().clone(),
+                    expected: 1,
+                }
+            };
+            let request = CommitRequest {
+                deadline_unix_millis: None,
+                effects: vec![CommitEffect::hard(
+                    vec![condition],
+                    vec![CommitMutation::Append {
+                        path: path.clone(),
+                        records: vec![AppendRecord::from(OwnedBytes::from_static(b"guarded"))],
+                    }],
+                )],
+                idempotency_key: IdempotencyKey::unique(),
+            };
+            if accepted {
+                assert!(matches!(
+                    root.within(provider.commit_accepted(request)).await?,
+                    AcceptedCommitOutcome::Committed { .. }
+                ));
+            } else {
+                assert!(matches!(
+                    root.within(provider.commit(request)).await?,
+                    CommitOutcome::Committed(_)
+                ));
+            }
+            assert_eq!(provider.tail(path).await?, 1);
+            assert_eq!(
+                provider.tail(trace.path().clone()).await?,
+                1,
+                "observation must not change the state guarded by the original commit"
+            );
+        }
+        for name in ["agents/worker/data/a", "agents/worker/data/b"] {
+            Stream::new(provider.clone(), name)?
+                .append(
+                    AppendRecord::from(OwnedBytes::from_static(b"child")),
+                    IdempotencyKey::unique(),
+                )
+                .await?;
+        }
+        let original_head = provider.head(data.path().clone()).await?;
+        let child = Stream::new(provider.clone(), "agents/worker/data/a")?;
+        let direct_append = root
+            .within(provider.append(AppendRequest {
+                path: child.path().clone(),
+                records: vec![AppendRecord::from(OwnedBytes::from_static(b"direct"))],
+                if_tail: Some(1),
+                idempotency_key: IdempotencyKey::unique(),
+            }))
+            .await?;
+        assert!(matches!(direct_append, AppendOutcome::Committed(_)));
+        let handle_append = root
+            .within(child.append_at(
+                AppendRecord::from(OwnedBytes::from_static(b"handle")),
+                2,
+                IdempotencyKey::unique(),
+            ))
+            .await?;
+        assert!(matches!(handle_append, AppendOutcome::Committed(_)));
+        assert_eq!(child.tail().await?, 3);
+        let commit = CommitRequest {
+            deadline_unix_millis: None,
+            effects: vec![CommitEffect::hard(
+                vec![
+                    CommitCondition::Present {
+                        path: trace.path().clone(),
+                    },
+                    CommitCondition::Tail {
+                        path: child.path().clone(),
+                        expected: 3,
+                    },
+                ],
+                vec![CommitMutation::Append {
+                    path: child.path().clone(),
+                    records: vec![AppendRecord::from(OwnedBytes::from_static(b"commit"))],
+                }],
+            )],
+            idempotency_key: IdempotencyKey::unique(),
+        };
+        let committed = root.within(provider.commit(commit.clone())).await?;
+        assert!(matches!(committed, CommitOutcome::Committed(_)));
+        assert_eq!(root.within(provider.commit(commit)).await?, committed);
+        assert_eq!(child.tail().await?, 4);
+        let diagnostic_commit = CommitRequest {
+            deadline_unix_millis: None,
+            effects: vec![CommitEffect::hard(
+                vec![CommitCondition::Tail {
+                    path: trace.path().clone(),
+                    expected: u64::MAX,
+                }],
+                vec![CommitMutation::Append {
+                    path: trace.path().clone(),
+                    records: vec![AppendRecord::from(OwnedBytes::from_static(
+                        b"never-published",
+                    ))],
+                }],
+            )],
+            idempotency_key: IdempotencyKey::unique(),
+        };
+        assert!(matches!(
+            root.within(provider.commit(diagnostic_commit)).await?,
+            CommitOutcome::Conflict(_)
+        ));
+
+        let accepted_request = CommitRequest {
+            deadline_unix_millis: None,
+            effects: vec![CommitEffect::hard(
+                vec![CommitCondition::Tail {
+                    path: child.path().clone(),
+                    expected: 4,
+                }],
+                vec![CommitMutation::Append {
+                    path: child.path().clone(),
+                    records: vec![AppendRecord::from(OwnedBytes::from_static(b"accepted"))],
+                }],
+            )],
+            idempotency_key: IdempotencyKey::unique(),
+        };
+        let accepted = root
+            .within(provider.commit_accepted(accepted_request.clone()))
+            .await?;
+        assert!(matches!(accepted, AcceptedCommitOutcome::Committed { .. }));
+        assert_eq!(
+            root.within(provider.commit_accepted(accepted_request))
+                .await?,
+            accepted
+        );
+        assert_eq!(child.tail().await?, 5);
+        let receipt = provider.durable_receipt(data.path().clone(), 1).await?;
+        assert!(receipt.is_some());
+        assert_eq!(
+            root.within(provider.durable_receipt(data.path().clone(), 1))
+                .await?,
+            receipt
+        );
+        assert!(
+            root.within(provider.durable_receipt(data.path().clone(), 2))
+                .await?
+                .is_none()
+        );
+        root.within(provider.durable_receipt(trace.path().clone(), 1))
+            .await?;
+        let visibility_cut = RevisionCut::of(provider.wait_applied(&Default::default()).await?);
+        let applied = root.within(provider.wait_applied(&visibility_cut)).await?;
+        assert!(visibility_cut.proven_by(Some(&applied)));
+        let original_children = provider.children_page(child_request.clone()).await?;
+        assert_eq!(original_children.children.len(), 1);
+        let mut continuation = child_request.clone();
+        continuation.after = original_children.next_after.clone();
+        continuation.hierarchy_version = Some(original_children.hierarchy_version);
+        assert!(continuation.after.is_some());
+        let next_children = provider.children_page(continuation.clone()).await?;
+        assert_eq!(next_children.children.len(), 1);
+        assert!(next_children.next_after.is_none());
+        assert_eq!(root.within(data.head()).await?, original_head);
+        assert_eq!(
+            root.within(provider.head(data.path().clone())).await?,
+            original_head
+        );
+        assert_eq!(
+            root.within(provider.tail(data.path().clone())).await?,
+            original_head.tail
+        );
+        let watermarks = root
+            .within(provider.watermarks(data.path().clone()))
+            .await?;
+        assert_eq!(watermarks.accepted, original_head.tail);
+        assert_eq!(watermarks.durable, original_head.durable);
+        assert_eq!(
+            root.within(data.children(None, 1)).await?,
+            original_children
+        );
+        assert_eq!(
+            root.within(provider.children_page(continuation)).await?,
+            next_children
+        );
+        root.within(provider.children_page(ChildrenPageRequest {
+            offset: 0,
+            tail_stream: None,
+            parent: Some(trace.path().clone()),
+            after: None,
+            hierarchy_version: None,
+            limit: 1,
+        }))
+        .await?;
+        let fork = root
+            .within(provider.fork(ForkRequest {
+                source: data.path().clone(),
+                destination: StreamPath::new("copies/direct")?,
+                at_tail: Some(1),
+                exclude: Vec::new(),
+                idempotency_key: IdempotencyKey::unique(),
+            }))
+            .await?;
+        assert_eq!(fork.source, *data.path());
+        assert_eq!(fork.forked_at, 1);
+        assert_eq!(fork.tail, 1);
+        let handle_fork = root
+            .within(data.fork(
+                "copies/handle",
+                Some(1),
+                Vec::new(),
+                IdempotencyKey::unique(),
+            ))
+            .await?;
+        let handle_receipt = handle_fork
+            .fork_receipt()
+            .ok_or("fork lost original receipt")?;
+        assert_eq!(handle_receipt.source, fork.source);
+        assert_eq!(handle_receipt.forked_at, fork.forked_at);
+        assert_eq!(handle_receipt.tail, fork.tail);
+        for path in [fork.destination, handle_fork.path().clone()] {
+            assert_eq!(
+                provider
+                    .latest(
+                        path,
+                        OwnedBytes::from_static(b"selected"),
+                        Default::default()
+                    )
+                    .await?,
+                original
+            );
+        }
+        root.within(provider.head(trace.path().clone())).await?;
         let (selected, condition) = root
             .within(provider.latest_fenced(
                 data.path().clone(),
@@ -850,9 +1101,16 @@ mod indexed_trace_tests {
         );
         let mut completed = 0;
         let mut fence = false;
+        let mut applied_wait = false;
+        let mut appends = 0;
+        let mut forks = 0;
+        let mut commits = 0;
+        let mut accepted_commits = 0;
+        let mut receipt_outcomes = Vec::new();
         let mut request = false;
         let mut indexed_bytes = Vec::new();
-        while completed < 4 {
+        let mut projections = std::collections::BTreeMap::new();
+        while completed < 21 {
             let Some(observation) = query.next().await? else {
                 return Err("trace ended before original request hops settled".into());
             };
@@ -865,6 +1123,17 @@ mod indexed_trace_tests {
             } = observation
             {
                 completed += 1;
+                if start.name == "stream.durable_receipt" {
+                    assert_eq!(start.parent, Some(parent));
+                    assert_eq!(start.mechanism, Mechanism::ProviderCall);
+                    assert_eq!(
+                        start.guarantee.as_deref(),
+                        Some("original_irreversible_prefix_confirmation")
+                    );
+                    assert_eq!(bytes, None);
+                    receipt_outcomes.push(result);
+                    continue;
+                }
                 assert_eq!(result, Outcome::Succeeded);
                 if id == parent {
                     assert!(!request);
@@ -872,6 +1141,57 @@ mod indexed_trace_tests {
                     continue;
                 }
                 assert_eq!(start.parent, Some(parent));
+                if start.name == "stream.wait_applied" {
+                    assert!(!applied_wait);
+                    applied_wait = true;
+                    assert_eq!(start.mechanism, Mechanism::Wait);
+                    assert_eq!(
+                        start.guarantee.as_deref(),
+                        Some("original_revision_cut_visible_before_return")
+                    );
+                    assert_eq!(bytes, None);
+                    continue;
+                }
+                if start.name == "stream.commit_accepted" {
+                    accepted_commits += 1;
+                    assert_eq!(start.mechanism, Mechanism::Commit);
+                    assert_eq!(
+                        start.guarantee.as_deref(),
+                        Some("original_accepted_envelope_at_atomic_publication")
+                    );
+                    assert_eq!(bytes, None);
+                    continue;
+                }
+                if start.name == "stream.commit" {
+                    commits += 1;
+                    assert_eq!(start.mechanism, Mechanism::Commit);
+                    assert_eq!(
+                        start.guarantee.as_deref(),
+                        Some("atomic_keyed_multi_path_publication_decision")
+                    );
+                    assert_eq!(bytes, None);
+                    continue;
+                }
+                if start.name == "stream.fork" {
+                    forks += 1;
+                    assert_eq!(start.mechanism, Mechanism::Commit);
+                    assert_eq!(
+                        start.guarantee.as_deref(),
+                        Some("immutable_selected_prefix_and_origin")
+                    );
+                    assert_eq!(bytes, None);
+                    continue;
+                }
+                if start.name == "stream.append" {
+                    appends += 1;
+                    assert_eq!(start.mechanism, Mechanism::Commit);
+                    assert_eq!(
+                        start.guarantee.as_deref(),
+                        Some("atomic_contiguous_append_decision")
+                    );
+                    assert_eq!(bytes, None);
+                    continue;
+                }
                 assert_eq!(start.mechanism, Mechanism::ProviderCall);
                 match start.name.as_str() {
                     "stream.latest_fence" => {
@@ -890,16 +1210,53 @@ mod indexed_trace_tests {
                         );
                         indexed_bytes.push(bytes);
                     }
+                    "stream.head"
+                    | "stream.tail"
+                    | "stream.watermarks"
+                    | "stream.children_page" => {
+                        let guarantee = match start.name.as_str() {
+                            "stream.children_page" => "bounded_direct_children_at_namespace_cut",
+                            "stream.head" => "atomic_history_durability_origin",
+                            "stream.tail" => "accepted_tail_without_durability_wait",
+                            _ => "accepted_visibility_and_confirmed_durability_at_one_snapshot",
+                        };
+                        assert_eq!(start.guarantee.as_deref(), Some(guarantee));
+                        assert_eq!(bytes, None);
+                        *projections.entry(start.name).or_insert(0) += 1;
+                    }
                     name => panic!("unexpected indexed request hop: {name}"),
                 }
             }
         }
-        assert!(fence && request);
+        assert!(fence && request && applied_wait);
+        assert_eq!(appends, 2);
+        assert_eq!(forks, 2);
+        assert_eq!(commits, 2);
+        assert_eq!(accepted_commits, 2);
+        assert_eq!(receipt_outcomes.len(), 2);
+        assert_eq!(
+            receipt_outcomes
+                .iter()
+                .filter(|outcome| **outcome == Outcome::Succeeded)
+                .count(),
+            1
+        );
+        assert_eq!(
+            receipt_outcomes
+                .iter()
+                .filter(|outcome| **outcome == Outcome::Unsettled)
+                .count(),
+            1
+        );
         indexed_bytes.sort();
         assert_eq!(indexed_bytes, [Some(0), Some(8)]);
+        assert_eq!(projections["stream.children_page"], 2);
+        assert_eq!(projections["stream.head"], 2);
+        assert_eq!(projections["stream.tail"], 1);
+        assert_eq!(projections["stream.watermarks"], 1);
         assert_eq!(
             trace.tail().await?,
-            8,
+            42,
             "zero cuts and diagnostic reads must not emit provider work"
         );
         assert_eq!(
@@ -914,7 +1271,7 @@ mod indexed_trace_tests {
         );
         assert_eq!(
             trace.tail().await?,
-            8,
+            42,
             "the request owner must not leak into unrelated work"
         );
         Ok(())

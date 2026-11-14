@@ -61,21 +61,7 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
 
     /// One atomic observation of history, durability and inherited origin.
     pub async fn head(&self) -> Result<PathHead, StreamError> {
-        let work = self.provider.head(self.path.clone());
-        #[cfg(feature = "serde")]
-        return crate::trace::observe(
-            crate::trace::Request {
-                name: "stream.head",
-                mechanism: crate::trace::Mechanism::Io,
-                parent: None,
-                guarantee: Some("atomic_history_durability_origin"),
-            },
-            work,
-            |_| None,
-        )
-        .await;
-        #[cfg(not(feature = "serde"))]
-        work.await
+        self.provider.head(self.path.clone()).await
     }
 
     /// Current tail.
@@ -111,26 +97,14 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         if_tail: Option<u64>,
         idempotency_key: IdempotencyKey,
     ) -> Result<AppendOutcome, StreamError> {
-        let work = self.provider.append(AppendRequest {
-            path: self.path.clone(),
-            records,
-            if_tail,
-            idempotency_key,
-        });
-        #[cfg(feature = "serde")]
-        return crate::trace::observe(
-            crate::trace::Request {
-                name: "stream.append",
-                mechanism: crate::trace::Mechanism::Commit,
-                parent: None,
-                guarantee: Some("atomic_contiguous_append_decision"),
-            },
-            work,
-            |_| None,
-        )
-        .await;
-        #[cfg(not(feature = "serde"))]
-        work.await
+        self.provider
+            .append(AppendRequest {
+                path: self.path.clone(),
+                records,
+                if_tail,
+                idempotency_key,
+            })
+            .await
     }
 
     /// Forks the current or selected retained prefix.
@@ -141,27 +115,16 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         exclude: Vec<RelativePath>,
         idempotency_key: IdempotencyKey,
     ) -> Result<Self, StreamError> {
-        let work = self.provider.fork(ForkRequest {
-            exclude,
-            source: self.path.clone(),
-            destination: StreamPath::new(destination)?,
-            at_tail,
-            idempotency_key,
-        });
-        #[cfg(feature = "serde")]
-        let receipt = crate::trace::observe(
-            crate::trace::Request {
-                name: "stream.fork",
-                mechanism: crate::trace::Mechanism::Commit,
-                parent: None,
-                guarantee: Some("immutable_selected_prefix_and_origin"),
-            },
-            work,
-            |_| None,
-        )
-        .await?;
-        #[cfg(not(feature = "serde"))]
-        let receipt = work.await?;
+        let receipt = self
+            .provider
+            .fork(ForkRequest {
+                exclude,
+                source: self.path.clone(),
+                destination: StreamPath::new(destination)?,
+                at_tail,
+                idempotency_key,
+            })
+            .await?;
         Ok(Self {
             provider: Arc::clone(&self.provider),
             path: receipt.destination.clone(),
@@ -245,28 +208,16 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         after: Option<StreamPath>,
         limit: u32,
     ) -> Result<ChildrenPage, StreamError> {
-        let work = self.provider.children_page(ChildrenPageRequest {
-            offset: 0,
-            tail_stream: None,
-            parent: Some(self.path.clone()),
-            after,
-            hierarchy_version: None,
-            limit,
-        });
-        #[cfg(feature = "serde")]
-        return crate::trace::observe(
-            crate::trace::Request {
-                name: "stream.children_page",
-                mechanism: crate::trace::Mechanism::Io,
-                parent: None,
-                guarantee: Some("bounded_direct_children_at_namespace_cut"),
-            },
-            work,
-            |_| None,
-        )
-        .await;
-        #[cfg(not(feature = "serde"))]
-        work.await
+        self.provider
+            .children_page(ChildrenPageRequest {
+                offset: 0,
+                tail_stream: None,
+                parent: Some(self.path.clone()),
+                after,
+                hierarchy_version: None,
+                limit,
+            })
+            .await
     }
 
     /// Pages every record from `from` to the tail. See [`Replay`].

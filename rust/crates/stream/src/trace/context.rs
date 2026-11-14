@@ -184,10 +184,20 @@ pub(crate) fn records(records: crate::RecordStream) -> crate::RecordStream {
 }
 
 pub(crate) fn is_source(path: &crate::StreamPath) -> bool {
+    any_source(std::iter::once(path))
+}
+
+/// Diagnostic path traversal is lazy and only paid by an admitted owner.
+pub(crate) fn any_source<'a>(paths: impl IntoIterator<Item = &'a crate::StreamPath>) -> bool {
     CURRENT.with_borrow(|active| {
         active
             .as_ref()
-            .is_some_and(|active| active.producer.is_source(path))
+            .filter(|active| active.producer.enabled())
+            .is_some_and(|active| {
+                paths
+                    .into_iter()
+                    .any(|path| active.producer.is_source(path))
+            })
     })
 }
 
