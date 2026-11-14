@@ -617,13 +617,22 @@ impl StreamProvider for MemoryStream {
         crate::ProviderContext::new(&self.operation_claims).with_process_exclusion()
     }
 
-    async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
-        acyclic_observability::async_operation!(
+    fn heads<'a, 'async_trait>(
+        &'a self,
+        request: crate::HeadsRequest,
+    ) -> crate::BoxProviderFuture<'async_trait, Result<crate::Heads, StreamError>>
+    where
+        'a: 'async_trait,
+        Self: 'async_trait,
+    {
+        // The observed producer is already the erased provider future. A
+        // forwarding async frame would retain another inline view while polling.
+        Box::pin(acyclic_observability::operation_future!(
             "acyclic.stream.heads",
             StreamError::code,
             acyclic_native_runtime::obs::OperationSpan::new,
             self.heads_inner(request)
-        )
+        ))
     }
 
     async fn inspect_idempotency(
@@ -699,16 +708,20 @@ impl StreamProvider for MemoryStream {
         )
     }
 
-    async fn follow(
-        &self,
+    fn follow<'a, 'async_trait>(
+        &'a self,
         request: crate::FollowRequest,
-    ) -> Result<crate::FollowStream, StreamError> {
-        acyclic_observability::async_operation!(
+    ) -> crate::BoxProviderFuture<'async_trait, Result<crate::FollowStream, StreamError>>
+    where
+        'a: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(acyclic_observability::operation_future!(
             "acyclic.stream.follow",
             StreamError::code,
             acyclic_native_runtime::obs::OperationSpan::new,
             self.follow_inner(request)
-        )
+        ))
     }
 
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
