@@ -46,6 +46,7 @@ async fn historical_commit_lookup_and_snapshot_rebuild_do_not_scan_retained_hist
                     sequence: 0,
                 };
                 let request = crate::HeadsRequest {
+                    at: None,
                     retained: std::iter::repeat_n(selected, count).collect(),
                     durable_through: None,
                     projection: crate::HeadProjection::Tail,

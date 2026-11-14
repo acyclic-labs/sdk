@@ -110,11 +110,12 @@ where
         let (work, cancellation) = (publication.work, publication.cancellation);
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         let selected_proof = selected
+            .as_ref()
             .map(|(destination, plan, _)| {
-                plan.input_digest(destination, accounting)
+                plan.input_digest(&destination, accounting)
                     .map(|input| SelectedImportProof {
-                        destination,
-                        source: plan.source,
+                        destination: destination.clone(),
+                        source: plan.source.clone(),
                         config: plan.source_config,
                         input,
                     })
@@ -122,7 +123,11 @@ where
             })
             .transpose()?;
         if let Some(published) = self
-            .recover_publication(publication, accounting, (selected, selected_proof))
+            .recover_publication(
+                publication,
+                accounting,
+                (selected.clone(), selected_proof.clone()),
+            )
             .await?
         {
             return Ok(published);
@@ -150,14 +155,14 @@ where
                 removals,
                 &dirty.value,
                 captured_records,
-                (selected, selected_proof),
+                (selected, selected_proof.clone()),
                 publication.operation,
                 &mut input,
                 accounting,
             )
             .await?;
         let context = self
-            .publication_context(operation, None, selected_proof, accounting)
+            .publication_context(operation, None, selected_proof.clone(), accounting)
             .await?;
         let mut scratch_carrier = adapter::NativeDemandCarrier::Native(work);
         let mut scratch = adapter::InputBuffers::new(&mut scratch_carrier)?;

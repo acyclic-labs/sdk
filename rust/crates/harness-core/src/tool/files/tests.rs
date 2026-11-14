@@ -171,7 +171,6 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
             storage
                 .list_private_directory("", None, None, 1)
                 .await?
-                .1
                 .entries
                 .is_empty()
         );
@@ -203,14 +202,13 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
                 } else if mode == "namespace" {
                     // The existing directory producer supplies the generation;
                     // the version needs no file-body read, length or digest.
-                    let (generation, page) =
-                        storage.list_private_directory("", None, None, 128).await?;
+                    let page = storage.list_private_directory("", None, None, 128).await?;
                     assert!(
                         page.entries
                             .iter()
                             .any(|entry| entry.name.as_bytes() == relative.as_bytes())
                     );
-                    encode_path_version(storage.volume(), &relative, &generation, None)?.0
+                    encode_path_version(storage.volume(), &relative, &page.generation, None)?.0
                 } else {
                     let invocation = ToolInvocation {
                         operation_id: OperationId::new(),
@@ -375,7 +373,10 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
                     "original"
                 );
             }
-            let before = storage.list_private_directory("", None, None, 1).await?.0;
+            let before = storage
+                .list_private_directory("", None, None, 1)
+                .await?
+                .generation;
             let restarted =
                 ToolContext::new(task.clone(), invocation.operation_id, &invocation.call_id)?;
             if matches!(mode, "content" | "authored" | "namespace") {
@@ -415,7 +416,10 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
                 work_before.durability_operations
             );
             assert_eq!(
-                storage.list_private_directory("", None, None, 1).await?.0,
+                storage
+                    .list_private_directory("", None, None, 1)
+                    .await?
+                    .generation,
                 before
             );
             assert_eq!(storage.read(&later).await?.as_ref(), b"later");

@@ -80,7 +80,7 @@ impl CountingSource {
             .unwrap_or_else(|p| p.into_inner())
             .insert(epoch, bytes);
     }
-    fn versioned_node(&self, source: SourceReference) -> Option<SourceNode> {
+    fn versioned_node(&self, source: &SourceReference) -> Option<SourceNode> {
         if source.identity != [7; 16] {
             return None;
         }
@@ -102,7 +102,7 @@ impl CountingSource {
         version: SourceVersion,
     ) -> Result<Bytes, DemandError> {
         let node = self
-            .versioned_node(source)
+            .versioned_node(&source)
             .ok_or(DemandError::StaleSource)?;
         if node.version != version {
             return Err(DemandError::StaleVersion);
@@ -160,11 +160,19 @@ impl DemandFile for PinnedFile {
     }
 }
 impl DemandSource for CountingSource {
-    fn reference(&self) -> SourceReference {
-        SourceReference {
+    fn identity(&self) -> [u8; 16] {
+        [7; 16]
+    }
+    async fn reference(
+        &self,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<SourceReference, DemandError> {
+        ctx.check()?;
+        Ok(SourceReference {
+            components: acyclic_stream::OwnedBytes::new(),
             identity: [7; 16],
             epoch: self.epoch.load(Ordering::Relaxed),
-        }
+        })
     }
     async fn lookup<W: crate::facade::FsWork + Send>(
         &self,
@@ -181,7 +189,7 @@ impl DemandSource for CountingSource {
             })
             .map_err(DemandError::from)?;
             self.counts.lookups.fetch_add(1, Ordering::Relaxed);
-            self.versioned_node(source)
+            self.versioned_node(&source)
                 .map(Some)
                 .ok_or(DemandError::StaleSource)
         })();
@@ -207,7 +215,7 @@ impl DemandSource for CountingSource {
                 return Err(DemandError::StaleCursor);
             }
             let node = self
-                .versioned_node(source)
+                .versioned_node(&source)
                 .ok_or(DemandError::StaleSource)?;
             ctx.charge(WorkCounters {
                 backend_read_operations: 1,

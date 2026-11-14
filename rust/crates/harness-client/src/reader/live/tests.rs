@@ -368,6 +368,7 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
                 index: 0,
                 tail: None,
                 witness: None,
+                limit: 64,
             },
             Priority::Visible,
         )]);

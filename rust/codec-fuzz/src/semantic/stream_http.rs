@@ -169,6 +169,7 @@ pub(super) fn seeds(streams: &[(String, Vec<u8>)]) -> Result<Seeds, Box<dyn std:
         .checked_add(1)
         .ok_or("Stream producer tail overflow")?;
     let head = PathHead {
+        changed_at: 0,
         tail,
         durable: tail,
         retained_through: None,
@@ -197,10 +198,12 @@ pub(super) fn seeds(streams: &[(String, Vec<u8>)]) -> Result<Seeds, Box<dyn std:
         "children/page",
         c::children_page_to_wire(page.clone())
     );
+    let snapshot = snapshot.ok_or("missing original Stream revision producer")?;
     let heads = Heads {
+        applied: snapshot.clone(),
         retained: Default::default(),
         projection: HeadProjection::History,
-        snapshot: snapshot.ok_or("missing original Stream revision producer")?,
+        snapshot,
         heads: [Some(head)].into(),
         children: Some(page),
     };

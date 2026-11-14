@@ -77,7 +77,7 @@ struct LocalProgress {
     cursor: crate::memory::HistoryCursor,
     anchor: Option<crate::CommitId>,
     filter: crate::FollowFilter,
-    changed: watch::Receiver<u64>,
+    changed: crate::change::Subscription,
     failed: watch::Receiver<Option<LocalStreamFailure>>,
 }
 impl crate::snapshot::Snapshot for Box<LocalProgress> {

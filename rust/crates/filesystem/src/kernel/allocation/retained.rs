@@ -5,7 +5,7 @@ use std::sync::Arc;
 mod native;
 mod shared;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use native::NativeAccounting;
+pub use native::NativeAccounting;
 #[cfg(not(target_arch = "wasm32"))]
 pub use shared::{ErasedRetainedArc, ErasedRetainedWeak};
 pub use shared::{RetainedArc, RetainedWeak};
@@ -508,6 +508,32 @@ impl Retained<Vec<u8>> {
     }
 }
 
+/// Adopts freshly decoded immutable bytes before aliases can outlive the decoder.
+pub(crate) fn retain_decoded_bytes(
+    value: &mut acyclic_stream::OwnedBytes,
+    allocation: &mut KernelOwnedAllocation,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(), crate::FsError> {
+    if value.is_empty() {
+        return Ok(());
+    }
+    let bytes = std::mem::take(value)
+        .try_into_ordinary_vec()
+        .map_err(|bytes| {
+            *value = bytes;
+            crate::FsError::from(super::super::CanonicalDecodeError::Invariant(
+                super::super::CanonicalInvariant::Static("decoded backing is shared"),
+            ))
+        })?;
+    let capacity = bytes.capacity() as u64;
+    let guard = crate::kernel::split_allocation(allocation, capacity)?;
+    *value = Retained::from_owned(
+        crate::kernel::Owned::new(bytes, guard, capacity),
+        accounting,
+    )?
+    .into_owned_bytes((), accounting)?;
+    Ok(())
+}
 struct RetainedBytes<B, T> {
     bytes: B,
     _custody: T,
@@ -541,12 +567,31 @@ impl<B: AsRef<[u8]> + Send + 'static> Retained<B> {
 }
 
 impl<T> Retained<Vec<T>> {
-    pub(crate) fn allocate(
+    /// Admits and allocates a vector on the original ledger.
+    pub fn allocate(
         capacity: usize,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Self, crate::FsError> {
         let owned = crate::kernel::Owned::<Vec<T>>::allocate(capacity, accounting)?;
         Self::from_owned(owned, accounting)
+    }
+
+    /// Grows on the original ledger before inserting an independently owned
+    /// value. Memory credit is the only bound on the vector's length.
+    pub fn push(
+        &mut self,
+        value: T,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        self.ensure_for_push(usize::MAX, accounting)?;
+        accounting.perform(
+            crate::WorkCounters {
+                items_examined: 1,
+                bytes_copied: std::mem::size_of::<T>() as u64,
+                ..crate::WorkCounters::UNCHARGED
+            },
+            || self.value.push(value),
+        )
     }
 
     pub(crate) fn ensure_for_push(

@@ -79,8 +79,12 @@ impl LocalCoreStateStore {
                     Ok(log) => log,
                     Err(error) if is_missing(&error) => {
                         let paths = T::key(id).paths(&root)?;
-                        return records::read_recoverable_mode::<Option<T>>(&paths, false)
-                            .map(|value| value.and_then(|(value, _)| value));
+                        let mut decoded =
+                            records::read_recoverable_mode::<Option<T>>(&paths, false)?;
+                        if let Some((Some(value), Some(allocation))) = &mut decoded {
+                            value.retain_decoded(allocation)?;
+                        }
+                        return Ok(decoded.and_then(|(value, _)| value));
                     }
                     Err(error) => return Err(error),
                 };

@@ -145,6 +145,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
     }
     let children = provider
         .children_page(ChildrenPageRequest {
+            offset: 0,
             tail_stream: None,
             parent: Some(path("conformance")?),
             limit: 8,
@@ -163,6 +164,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
     }
     let first_page = provider
         .children_page(ChildrenPageRequest {
+            offset: 0,
             tail_stream: None,
             parent: Some(path("conformance")?),
             after: None,
@@ -178,6 +180,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
     }
     let final_page = provider
         .children_page(ChildrenPageRequest {
+            offset: 0,
             tail_stream: None,
             parent: Some(path("conformance")?),
             after: first_page.next_after.clone(),
@@ -191,6 +194,33 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
     if final_page.next_after.is_some() || final_child.path == first_child.path {
         return Err(violated!());
     }
+    // The same second page is directly addressable without opening page one.
+    let indexed = provider
+        .children_page(ChildrenPageRequest {
+            offset: 1,
+            tail_stream: None,
+            parent: Some(path("conformance")?),
+            after: None,
+            hierarchy_version: Some(first_page.hierarchy_version),
+            limit: 1,
+        })
+        .await?;
+    if indexed != final_page {
+        return Err(violated!());
+    }
+    let beyond = provider
+        .children_page(ChildrenPageRequest {
+            offset: u64::MAX,
+            tail_stream: None,
+            parent: Some(path("conformance")?),
+            after: None,
+            hierarchy_version: Some(first_page.hierarchy_version),
+            limit: 1,
+        })
+        .await?;
+    if !beyond.children.is_empty() || beyond.next_after.is_some() {
+        return Err(violated!());
+    }
     provider
         .append(AppendRequest {
             path: path("conformance/paging-new")?,
@@ -201,6 +231,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
         .await?;
     if provider
         .children_page(ChildrenPageRequest {
+            offset: 0,
             tail_stream: None,
             parent: Some(path("conformance")?),
             after: first_page.next_after.clone(),
@@ -214,6 +245,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
     }
     let live_page = provider
         .children_page(ChildrenPageRequest {
+            offset: 0,
             tail_stream: None,
             parent: Some(path("conformance")?),
             after: first_page.next_after,
@@ -234,6 +266,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
     }
     if provider
         .children_page(ChildrenPageRequest {
+            offset: 0,
             tail_stream: None,
             parent: Some(path("conformance")?),
             after: Some(path("foreign/child")?),
@@ -812,6 +845,7 @@ async fn verify_subtree_private_writes(
     }
     let page = provider
         .children_page(ChildrenPageRequest {
+            offset: 0,
             tail_stream: None,
             parent: Some(destination.clone()),
             after: None,
@@ -880,6 +914,7 @@ pub async fn verify_page_tails(provider: &(impl StreamProvider + ?Sized)) -> Res
     }
     let page = provider
         .children_page(ChildrenPageRequest {
+            offset: 0,
             parent: Some(path("conformance/page-tails")?),
             after: None,
             hierarchy_version: None,
@@ -932,6 +967,7 @@ pub async fn verify_page_tails(provider: &(impl StreamProvider + ?Sized)) -> Res
     }
     let next = provider
         .children_page(ChildrenPageRequest {
+            offset: 0,
             parent: Some(path("conformance/page-tails")?),
             after: None,
             hierarchy_version: None,
@@ -998,6 +1034,7 @@ pub async fn verify_page_tail_bytes(
         sequence: 0,
     };
     let mut request = ChildrenPageRequest {
+        offset: 0,
         parent: Some(path("conformance/page-bytes")?),
         after: None,
         hierarchy_version: None,
@@ -1007,6 +1044,7 @@ pub async fn verify_page_tail_bytes(
     let mut seen = 0;
     while seen < count {
         let heads_request = crate::HeadsRequest {
+            at: None,
             retained: [selected.clone()].into_iter().collect(),
             durable_through: None,
             projection: crate::HeadProjection::Watermarks,

@@ -111,6 +111,7 @@ class RustStreamProvider implements StreamProvider {
       throw new StreamError("invalid_argument", "children page request must be an object");
     }
     const authored = { kind: "children_page" as const,
+      ...(request.offset === undefined ? {} : { offset: request.offset }),
       ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }),
       ...(request.parent === undefined ? {} : { parent: request.parent }),
       ...(request.after === undefined ? {} : { after: request.after }),

@@ -307,7 +307,6 @@ copy_layouts!(
     acyclic_fs::access::Relation,
     acyclic_fs::access::GenerationRange,
     acyclic_fs::access::Generations,
-    acyclic_fs::LazySnapshotRef,
     acyclic_fs::JoinCommitWitness,
     acyclic_fs::WorkCounters,
 );
@@ -373,7 +372,6 @@ copy_layouts!(
     acyclic_fs::MaterializationPhase,
     acyclic_fs::MaterializationPreparationIdentity,
     acyclic_fs::MaterializationPreparationProgress,
-    acyclic_fs::demand::SourceReference,
 );
 
 /// A struct as the derive lays out one without flattened members: an object
@@ -384,6 +382,23 @@ macro_rules! record {
     };
 }
 
+impl HeapLayout for acyclic_fs::demand::SourceReference {
+    const LAYOUT: &'static JsonLayout = &record!(
+        "identity" => <[u8; 16] as HeapLayout>::LAYOUT,
+        "epoch" => <u64 as HeapLayout>::LAYOUT,
+        "components" => <acyclic_stream::OwnedBytes as HeapLayout>::LAYOUT
+    );
+}
+impl HeapLayout for acyclic_fs::LazySnapshotRef {
+    const LAYOUT: &'static JsonLayout = &record!(
+        "id" => <[u8; 32] as HeapLayout>::LAYOUT,
+        "workspace_id" => <[u8; 16] as HeapLayout>::LAYOUT,
+        "authored_generation" => <acyclic_fs::GenerationId as HeapLayout>::LAYOUT,
+        "source" => <acyclic_fs::demand::SourceReference as HeapLayout>::LAYOUT,
+        "overlay" => <[u8; 32] as HeapLayout>::LAYOUT,
+        "shadows" => <[u8; 32] as HeapLayout>::LAYOUT
+    );
+}
 #[cfg(not(target_arch = "wasm32"))]
 impl HeapLayout for acyclic_native_runtime::signing_key::SigningKeyReference {
     const LAYOUT: &'static JsonLayout =

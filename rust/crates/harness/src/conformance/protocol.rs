@@ -448,7 +448,7 @@ pub async fn verify(backend: &dyn Backend) -> Result {
                 page: AgentPageRequest::new(items, bytes, cursor)?,
             })
         };
-        let first_command = children(1, AgentPageRequest::default().bytes(), None)?;
+        let first_command = children(1, AgentPageRequest::<String>::default().bytes(), None)?;
         let first = Ok(call(endpoint, &first_command).await??);
         // The actual serving reply defines credit, including its opaque cursor
         // and canonical wire framing; the fixture invents neither encoding.

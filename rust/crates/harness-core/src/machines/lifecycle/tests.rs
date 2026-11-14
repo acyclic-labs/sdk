@@ -266,6 +266,7 @@ async fn original_plans_bound_lifecycle_discovery_and_release() -> TestResult {
     // same namespace must not invalidate its next ownership page.
     let fenced = stream
         .children_page(ChildrenPageRequest {
+            offset: 0,
             tail_stream: None,
             parent: Some(agent.machines()?),
             after: None,
@@ -288,6 +289,7 @@ async fn original_plans_bound_lifecycle_discovery_and_release() -> TestResult {
     assert_eq!(
         stream
             .children_page(ChildrenPageRequest {
+                offset: 0,
                 tail_stream: None,
                 parent: Some(agent.machines()?),
                 after: fenced.next_after,

@@ -182,7 +182,11 @@ fn explorer_prefetch_and_expansion_keep_original_provider_cuts() {
             explorer
                 .reader_ref()
                 .cache()
-                .listing(&root.children().unwrap(), 0)
+                .listing(
+                    &root.children().unwrap(),
+                    0,
+                    explorer.reader_ref().policy().listing_limit
+                )
                 .is_some()
         );
         // More logical expansion intents than the former hidden limit. Only

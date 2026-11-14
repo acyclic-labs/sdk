@@ -50,7 +50,7 @@ impl<
         E: From<LazyWorkspaceError> + From<WorkspaceError> + From<crate::FsError> + Send + 'static,
     {
         seal::<_, E>(guard, ctx).await?;
-        self.validate_snapshot(basis, ctx).await?;
+        self.validate_snapshot(&basis, ctx).await?;
         let domain = b"acyclic-fs-lazy-write-input-v1\0";
         let mut hash = blake3::Hasher::new();
         ctx.charge(WorkCounters {
@@ -124,7 +124,7 @@ impl<
         ))?;
         for (path, bytes) in mutations {
             if let Some(bytes) = bytes {
-                let (lookup, _, funding) = self.lookup_at_snapshot(basis, path, ctx).await?;
+                let (lookup, _, funding) = self.lookup_at_snapshot(&basis, path, ctx).await?;
                 let result = self
                     .stage_write(&mut transaction, path, bytes, lookup.as_ref(), ctx)
                     .await;
@@ -143,7 +143,7 @@ impl<
             cut: qualification::LazyPublicationCut {
                 workspace_id: basis.workspace_id,
                 config: self.workspace.volume.config,
-                source: basis.source,
+                source: basis.source.clone(),
                 overlay: basis.overlay,
                 shadows: basis.shadows,
                 prior_overlay: basis.overlay,
@@ -153,18 +153,29 @@ impl<
         };
         let (context, evidence) = publication_evidence(context, key.operation_id(), permit, ctx)?;
         let source = Arc::clone(&self.source);
+        let retained_source = self.retained_source.clone();
         let before = guard.clone();
+        let expected_source = basis.source.clone();
         let commit = 'sdk: {
             if let Some(work) = ctx.native_work() {
                 let mut callback = move |work: &crate::NativeMaterializationWork| {
                     let source = Arc::clone(&source);
+                    let retained_source = retained_source.clone();
                     let mut before = before.clone();
                     let work = work.clone();
+                    let expected_source = expected_source.clone();
                     async move {
-                        if source.reference() != basis.source {
+                        let mut ctx = KernelAccounting::native(&work, work.cancellation());
+                        if binding::selected_source_reference(
+                            source.as_ref(),
+                            retained_source.as_ref(),
+                            &mut ctx,
+                        )
+                        .await?
+                            != expected_source
+                        {
                             return Err(E::from(LazyWorkspaceError::StaleSource));
                         }
-                        let mut ctx = KernelAccounting::native(&work, work.cancellation());
                         seal::<_, E>(&mut before, &mut ctx).await
                     }
                 };
@@ -187,15 +198,26 @@ impl<
                     &cancel.clone(),
                     move |budget| {
                         let source = Arc::clone(&source);
+                        let retained_source = retained_source.clone();
                         let mut before = before.clone();
                         let cancel = cancel.clone();
+                        let expected_source = expected_source.clone();
                         async move {
                             let mut ctx = KernelAccounting::standalone(budget, &cancel);
-                            let result = if source.reference() == basis.source {
+                            let result: Result<(), E> = async {
+                                if binding::selected_source_reference(
+                                    source.as_ref(),
+                                    retained_source.as_ref(),
+                                    &mut ctx,
+                                )
+                                .await?
+                                    != expected_source
+                                {
+                                    return Err(E::from(LazyWorkspaceError::StaleSource));
+                                }
                                 seal::<_, E>(&mut before, &mut ctx).await
-                            } else {
-                                Err(E::from(LazyWorkspaceError::StaleSource))
-                            };
+                            }
+                            .await;
                             result
                                 .map(|()| OperationReceipt {
                                     value: (),
