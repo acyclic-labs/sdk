@@ -1,29 +1,29 @@
 #!/usr/bin/env bash
 # Run on a build worker after the source revision's shared compile succeeds.
+# Each historical case checks out its exact pre-fix revision in place (the
+# worker's one build tree and cache), overlays only the seeded test, and
+# restores the source revision on exit.
 set -euo pipefail
 
 source_root=$(git rev-parse --show-toplevel)
 source_sha=$(git rev-parse HEAD)
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/actors-history.XXXXXX")
-snapshots=()
-cleanup() {
-    for snapshot in "${snapshots[@]}"; do
-        git -C "$source_root" worktree remove --force "$snapshot"
-    done
-    rmdir "$scratch" 2>/dev/null || true
+restore() {
+    git -C "$source_root" checkout -q -f "$source_sha"
+    git -C "$source_root" clean -q -f -- rust/crates/actors/src rust/crates/native-runtime/src
+    rm -rf "$scratch"
 }
-trap cleanup EXIT
+trap restore EXIT
+cd "$source_root"
 
 run_case() {
-    local directory=$1 test=$2 expected=$3 revision=$4 log=$5
-    local result=0
+    local test=$1 expected=$2 log=$3
+    local result=0 revision
+    revision=$(git rev-parse HEAD)
     # Compile, then run the one test under the suite's 10 s per-test limit.
     (
-        cd "$directory"
         cargo test --locked --all-features -p acyclic-actors --lib --no-run 2>&1 | tee "$log.build"
-        # A snapshot without a shared target directory prints a relative path.
         binary=$(grep -oE '\([^()]*/acyclic_actors-[0-9a-f]+\)' "$log.build" | tail -1 | tr -d '()')
-        binary=$(realpath "$binary")
         cd rust/crates/actors
         timeout --signal=KILL 10 "$binary" "$test" --nocapture
     ) >"$log" 2>&1 || result=$?
@@ -44,41 +44,41 @@ run_case() {
 
 shard_test=seeded_children_share_one_activation_shard
 custody_test=seeded_forks_preserve_custody_ownership
-run_case "$source_root" "$shard_test" pass "$source_sha" "$scratch/shard-fixed.log"
-run_case "$source_root" "$custody_test" pass "$source_sha" "$scratch/custody-fixed.log"
+run_case "$shard_test" pass "$scratch/shard-fixed.log"
+run_case "$custody_test" pass "$scratch/custody-fixed.log"
 
-shard_before=88ea479eabc9f73daaebc248cfdac5026b2a1720
-custody_before=d269a4731a4b932e31d7256640dccb6b8d8d065d
-for before in "$shard_before" "$custody_before"; do
-    snapshot="$scratch/$before"
-    git -C "$source_root" worktree add --detach "$snapshot" "$before"
-    snapshots+=("$snapshot")
-    # The drivers report through the shared core's sweep, which postdates both.
-    testing=rust/crates/native-runtime/src/testing
-    cp "$source_root/$testing/sweep.rs" "$snapshot/$testing/sweep.rs"
-    printf '
-pub mod sweep;
-' >> "$snapshot/$testing.rs"
-done
-
+# The overlay sources, taken from the source revision before any checkout.
+testing=rust/crates/native-runtime/src/testing
 runtime=rust/crates/actors/src/local/runtime
-cp "$source_root/$runtime/tests/simulation/composition.rs" \
-    "$scratch/$shard_before/$runtime/tests/historical_composition.rs"
-printf '\nmod historical_composition;\n' >> "$scratch/$shard_before/$runtime/tests.rs"
-run_case "$scratch/$shard_before" "$shard_test" fail "$shard_before" "$scratch/shard-before.log"
+model=rust/crates/actors/src/local/model
+mkdir "$scratch/overlay"
+cp "$testing/sweep.rs" "$scratch/overlay/sweep.rs"
+cp "$runtime/tests/simulation/composition.rs" "$scratch/overlay/composition.rs"
+cp "$model/simulation/custody.rs" "$scratch/overlay/custody.rs"
+cp "$model/composition.rs" "$scratch/overlay/model-composition.rs"
+
+# The drivers report through the shared core's sweep, which postdates both.
+before() {
+    git checkout -q -f --detach "$1"
+    cp "$scratch/overlay/sweep.rs" "$testing/sweep.rs"
+    printf '\npub mod sweep;\n' >> "$testing.rs"
+}
+
+before 88ea479eabc9f73daaebc248cfdac5026b2a1720
+cp "$scratch/overlay/composition.rs" "$runtime/tests/historical_composition.rs"
+printf '\nmod historical_composition;\n' >> "$runtime/tests.rs"
+run_case "$shard_test" fail "$scratch/shard-before.log"
 grep -qE 'composition changed the actor publication' "$scratch/shard-before.log"
 
-node --input-type=module - "$source_root" "$scratch/$custody_before" <<'JS'
+before d269a4731a4b932e31d7256640dccb6b8d8d065d
+node --input-type=module - "$scratch/overlay/model-composition.rs" "$model" <<'JS'
 import fs from 'node:fs';
-import path from 'node:path';
-const [source, before] = process.argv.slice(2);
-const model = 'rust/crates/actors/src/local/model';
-const composition = fs.readFileSync(path.join(source, model, 'composition.rs'), 'utf8');
-const helper = composition.match(/pub\(super\) async fn copied_custody\([\s\S]*?\n}\n/);
+const [composition, model] = process.argv.slice(2);
+const helper = fs.readFileSync(composition, 'utf8').match(/pub\(super\) async fn copied_custody\([\s\S]*?\n}\n/);
 if (!helper) throw Error('copied custody test helper missing');
-fs.appendFileSync(path.join(before, model, 'composition.rs'), '\n' + helper[0]);
-fs.copyFileSync(path.join(source, model, 'simulation/custody.rs'), path.join(before, model, 'historical_custody.rs'));
-fs.appendFileSync(path.join(before, model + '.rs'), '\nmod historical_custody;\n');
+fs.appendFileSync(`${model}/composition.rs`, '\n' + helper[0]);
 JS
-run_case "$scratch/$custody_before" "$custody_test" fail "$custody_before" "$scratch/custody-before.log"
+cp "$scratch/overlay/custody.rs" "$model/historical_custody.rs"
+printf '\nmod historical_custody;\n' >> "$model.rs"
+run_case "$custody_test" fail "$scratch/custody-before.log"
 printf 'ACTORS_HISTORY_COMPLETE source=%s cases=4\n' "$source_sha"
