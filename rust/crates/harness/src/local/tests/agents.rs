@@ -811,7 +811,7 @@ async fn records<P: StreamProvider + ?Sized>(
 ) -> Result<Vec<Vec<u8>>> {
     let tail = match stream.tail(path.clone()).await {
         Ok(tail) => tail,
-        Err(StreamError::NotFound) => return Ok(Vec::new()),
+        Err(error) if error == StreamError::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(agent(error)),
     };
     let mut replay = acyclic_stream::Stream::new(Arc::clone(stream), path.as_str())

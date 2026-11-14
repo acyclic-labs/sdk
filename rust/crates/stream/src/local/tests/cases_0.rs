@@ -532,7 +532,7 @@ async fn every_partial_current_frame_recovers_only_the_accepted_prefix()
                     .await
                 {
                     Ok(records) => Some(records.try_collect().await?),
-                    Err(StreamError::NotFound) => None,
+                    Err(error) if error == StreamError::NotFound => None,
                     Err(error) => return Err(error),
                 },
             );

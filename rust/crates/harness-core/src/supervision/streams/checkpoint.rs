@@ -133,7 +133,7 @@ impl<P: StreamProvider + ?Sized> Queries<'_, P> {
             .await
         {
             Ok(record) => record,
-            Err(StreamError::NotFound) => None,
+            Err(error) if error == StreamError::NotFound => None,
             Err(error) => return Err(error.into()),
         };
         record

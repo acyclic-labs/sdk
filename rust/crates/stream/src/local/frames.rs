@@ -65,7 +65,7 @@ fn versioned_header<'a>(
     version: &[u8],
     format: &'static str,
 ) -> Result<&'a [u8], LocalStreamError> {
-    crate::persistence::header(encoded, domain, version).map_err(|error| match error {
+    crate::persistence::header(encoded, domain, version).map_err(|error| match error.category() {
         StreamError::Unsupported => LocalStreamError::UnsupportedVersion { format },
         _ => LocalStreamError::Corrupt,
     })

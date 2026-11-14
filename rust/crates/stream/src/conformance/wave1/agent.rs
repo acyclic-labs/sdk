@@ -510,7 +510,7 @@ pub(super) async fn inherited_follow<P: StreamProvider + ?Sized>(
         .map_ok(crate::records_only)
         .await
     {
-        Err(StreamError::NotFound) => {}
+        Err(error) if error == StreamError::NotFound => {}
         Ok(mut follow) => history.check(
             "follow_missing",
             Invariant::MissingFollow,

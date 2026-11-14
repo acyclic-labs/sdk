@@ -51,7 +51,7 @@ async fn activations<P: StreamProvider + ?Sized>(
     root: &StreamPath,
 ) -> Result<u64, StreamError> {
     match provider.tail(root.clone()).await {
-        Err(StreamError::NotFound) => Ok(0),
+        Err(error) if error == StreamError::NotFound => Ok(0),
         tail => tail,
     }
 }

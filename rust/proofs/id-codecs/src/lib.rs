@@ -628,7 +628,7 @@ mod framing {
                 assert_eq!(before.bytes.checked_sub(bytes), Some(after.bytes));
                 assert_eq!(before.frames.checked_sub(1), Some(after.frames));
             }
-            Err(StreamError::InvalidArgument) => {
+            Err(error) if error == StreamError::InvalidArgument => {
                 assert_eq!(frame.channel_id, 0);
                 assert_eq!(after, before);
             }

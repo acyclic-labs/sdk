@@ -246,7 +246,7 @@ impl Model {
     async fn tail(&self, path: &StreamPath) -> Result<u64, String> {
         match self.provider.head(path.clone()).await {
             Ok(head) => Ok(head.tail),
-            Err(StreamError::NotFound) => Ok(0),
+            Err(error) if error == StreamError::NotFound => Ok(0),
             Err(error) => Err(error.to_string()),
         }
     }

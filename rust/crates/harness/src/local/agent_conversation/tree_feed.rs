@@ -116,7 +116,7 @@ impl SupervisionFeed {
             .await
         {
             Ok(records) => records,
-            Err(acyclic_stream::StreamError::NotFound) => return Ok(None),
+            Err(error) if error == acyclic_stream::StreamError::NotFound => return Ok(None),
             Err(error) => return Err(self.0.connection.stream_failure(error)),
         };
         records
@@ -237,7 +237,9 @@ impl Connection {
                 .await
             {
                 Ok(_) => {}
-                Err(acyclic_stream::StreamError::AccessDenied) => return Ok(feed),
+                Err(error) if error == acyclic_stream::StreamError::AccessDenied => {
+                    return Ok(feed);
+                }
                 Err(error) => return Err(feed.connection.stream_failure(error)),
             }
             let records = records_only(

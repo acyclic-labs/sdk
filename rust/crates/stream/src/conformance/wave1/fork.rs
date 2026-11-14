@@ -59,7 +59,7 @@ pub(super) async fn absent<P: StreamProvider + ?Sized>(
     invariant: Invariant,
 ) -> Result<(), Failure> {
     match history.provider.tail(target.clone()).await {
-        Err(StreamError::NotFound) => Ok(()),
+        Err(error) if error == StreamError::NotFound => Ok(()),
         Ok(_) => history.check("absent_fork_path", invariant, false),
         Err(source) => Err(super::provider_failure(
             history.case,
@@ -103,7 +103,7 @@ pub(super) async fn values<P: StreamProvider + ?Sized>(
         .await
     {
         Ok(reader) => reader,
-        Err(StreamError::NotFound) => {
+        Err(error) if error == StreamError::NotFound => {
             return history.check("read_inherited_path", invariant, false);
         }
         Err(source) => {

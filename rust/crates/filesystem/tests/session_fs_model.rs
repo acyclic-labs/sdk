@@ -96,7 +96,7 @@ fn replacement(unchecked: bool) {
                 .await;
             writer.join().unwrap();
             let rejected = match &mut follow {
-                Err(StreamError::PrefixNotRetained) => true,
+                Err(error) if error == StreamError::PrefixNotRetained => true,
                 Ok(records) => match records.next().await {
                     Some(Err(StreamError::PrefixNotRetained)) => true,
                     Some(Ok(FollowUpdate::Opening { .. })) => matches!(

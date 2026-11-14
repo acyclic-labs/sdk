@@ -1273,7 +1273,7 @@ async fn records<P: StreamProvider + ?Sized>(
     let path = StreamPath::new(path)?;
     let tail = match provider.tail(path.clone()).await {
         Ok(tail) => tail,
-        Err(StreamError::NotFound) => return Ok(Vec::new()),
+        Err(error) if error == StreamError::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error.into()),
     };
     let stream = provider

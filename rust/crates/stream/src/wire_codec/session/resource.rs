@@ -226,7 +226,7 @@ mod tests {
                 temporary_stream_path(resource)
             );
             let validated = match temporary_stream_path(resource) {
-                Err(StreamError::Unsupported) => Ok(()),
+                Err(error) if error == StreamError::Unsupported => Ok(()),
                 result => result.map(|_| ()),
             };
             assert_eq!(

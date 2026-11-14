@@ -62,7 +62,7 @@ async fn event_before<'a, P: NativeStreamProvider + ?Sized>(
             original.runtime_meter(),
         )
         .await;
-    if matches!(&result, Ok(Err(StreamError::NotFound))) {
+    if matches!(&result, Ok(Err(error)) if *error == StreamError::NotFound) {
         return Ok(None);
     }
     let output = crate::store::history::native_sdk_result(original, result)?;

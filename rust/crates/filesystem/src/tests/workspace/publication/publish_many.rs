@@ -142,7 +142,7 @@ async fn assert_cut<O: crate::AsyncObjectStore + 'static>(
             assert_eq!(tail, 1);
             true
         }
-        Err(acyclic_stream::StreamError::NotFound) => false,
+        Err(error) if error == acyclic_stream::StreamError::NotFound => false,
         Err(error) => return Err(error.into()),
     };
     for ((workspace, before), after) in workspaces.iter().zip(expected).zip(staged) {

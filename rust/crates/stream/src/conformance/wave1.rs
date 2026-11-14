@@ -186,7 +186,7 @@ impl<'a, P: StreamProvider + ?Sized> History<'a, P> {
 
     async fn require_fresh(&self) -> Result<(), Failure> {
         match self.provider.tail(self.path.clone()).await {
-            Err(StreamError::NotFound) => (),
+            Err(error) if error == StreamError::NotFound => (),
             Ok(_) => return self.check("fresh_path", Invariant::FreshNamespace, false),
             Err(source) => return Err(provider_failure(self.case, "fresh_path", source)),
         }
@@ -261,7 +261,7 @@ impl<'a, P: StreamProvider + ?Sized> History<'a, P> {
         result: Result<T, StreamError>,
     ) -> Result<(), Failure> {
         match result {
-            Err(StreamError::IdempotencyMismatch) => Ok(()),
+            Err(error) if error == StreamError::IdempotencyMismatch => Ok(()),
             Ok(_) => self.check(step, Invariant::ChangedIntentRejected, false),
             Err(source) => Err(provider_failure(self.case, step, source)),
         }

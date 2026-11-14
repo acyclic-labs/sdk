@@ -2340,7 +2340,7 @@ impl StreamProvider for Evidence {
             return Ok(records);
         }
         match self.inner.read(request).await {
-            Err(StreamError::NotFound) => {
+            Err(error) if error == StreamError::NotFound => {
                 if let Some((selected, error)) = &*self.missing.lock().expect("missing diagnostic")
                 {
                     if &path == selected {

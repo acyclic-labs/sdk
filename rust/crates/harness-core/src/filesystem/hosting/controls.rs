@@ -286,7 +286,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                 let closed = state.agent.closed()?;
                 match self.store.provider().tail(closed.clone()).await {
                     Ok(_) => return state.transition(effects, true),
-                    Err(acyclic_stream::StreamError::NotFound) => {}
+                    Err(error) if error == acyclic_stream::StreamError::NotFound => {}
                     Err(error) => return Err(Error::Stream(error)),
                 }
                 effects.push(CommitEffect::hard(
@@ -472,7 +472,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                                 path: path.clone(),
                                 expected,
                             },
-                            Err(acyclic_stream::StreamError::NotFound) => {
+                            Err(error) if error == acyclic_stream::StreamError::NotFound => {
                                 CommitCondition::Absent { path: path.clone() }
                             }
                             Err(error) => return Err(Error::Stream(error)),

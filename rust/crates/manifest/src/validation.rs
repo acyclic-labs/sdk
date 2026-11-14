@@ -514,7 +514,7 @@ fn validate_inboxes(
             acyclic_stream::wire_codec::session::stream_path(&inbox.name).map_err(|error| {
                 ManifestError::invalid(
                     &cp,
-                    match error {
+                    match error.category() {
                         acyclic_stream::StreamError::Unsupported => "streams-resource",
                         acyclic_stream::StreamError::InvalidArgument => "auth-resource",
                         _ => "stream-path",

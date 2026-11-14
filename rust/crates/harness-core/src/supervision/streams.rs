@@ -137,7 +137,7 @@ pub(crate) async fn current_run_before<P: StreamProvider + ?Sized>(
         .await
     {
         Ok(record) => record,
-        Err(StreamError::NotFound) => None,
+        Err(error) if error == StreamError::NotFound => None,
         Err(error) => return Err(error.into()),
     };
     record
@@ -245,7 +245,7 @@ pub async fn active_run_before<P: StreamProvider + ?Sized>(
         .await
     {
         Ok(record) => record,
-        Err(StreamError::NotFound) => None,
+        Err(error) if error == StreamError::NotFound => None,
         Err(error) => return Err(error.into()),
     };
     decode_run(record, agent)
@@ -287,7 +287,7 @@ fn signal_key(run: OperationId, kind: Kind) -> Bytes {
 async fn tail<P: StreamProvider + ?Sized>(provider: &P, path: StreamPath) -> Result<Option<u64>> {
     match provider.tail(path).await {
         Ok(tail) => Ok(Some(tail)),
-        Err(StreamError::NotFound) => Ok(None),
+        Err(error) if error == StreamError::NotFound => Ok(None),
         Err(error) => Err(error.into()),
     }
 }
@@ -769,7 +769,7 @@ impl<'a, P: StreamProvider + ?Sized> Queries<'a, P> {
             .await
         {
             Ok(record) => record,
-            Err(StreamError::NotFound) => None,
+            Err(error) if error == StreamError::NotFound => None,
             Err(error) => return Err(error.into()),
         };
         record

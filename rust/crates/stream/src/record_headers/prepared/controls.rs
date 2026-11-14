@@ -118,8 +118,10 @@ fn validate(
             .attribute(name, value)
             .map_err(|_| io::ErrorKind::InvalidData)?;
     }
-    validation.finish(maximum).map_err(|error| match error {
-        StreamError::LimitExceeded => io::ErrorKind::InvalidInput.into(),
-        _ => io::ErrorKind::InvalidData.into(),
-    })
+    validation
+        .finish(maximum)
+        .map_err(|error| match error.category() {
+            StreamError::LimitExceeded => io::ErrorKind::InvalidInput.into(),
+            _ => io::ErrorKind::InvalidData.into(),
+        })
 }

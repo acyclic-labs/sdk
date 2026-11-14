@@ -99,7 +99,7 @@ impl ActorsDomain {
                 .await
             {
                 Ok(records) => records.try_collect::<Vec<_>>().await.map_err(failed)?,
-                Err(StreamError::NotFound) => Vec::new(),
+                Err(error) if error == StreamError::NotFound => Vec::new(),
                 Err(error) => return Err(failed(error)),
             };
             *cursor = records.last().map_or(*cursor, |record| record.sequence + 1);

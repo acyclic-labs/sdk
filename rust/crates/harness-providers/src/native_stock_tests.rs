@@ -309,7 +309,7 @@ async fn records(stream: &MemoryStream, path: StreamPath) -> Result<Vec<Vec<u8>>
         .await
     {
         Ok(records) => records,
-        Err(acyclic_stream::StreamError::NotFound) => return Ok(Vec::new()),
+        Err(error) if error == acyclic_stream::StreamError::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(invalid(error.to_string())),
     };
     records

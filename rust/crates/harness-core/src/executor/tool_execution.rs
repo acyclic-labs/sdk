@@ -1525,7 +1525,7 @@ mod cancellation_tests {
                     assert!(accepted);
                     assert_eq!(head.tail, 1);
                 }
-                Err(acyclic_stream::StreamError::NotFound) => assert!(!accepted),
+                Err(error) if error == acyclic_stream::StreamError::NotFound => assert!(!accepted),
                 Err(error) => return Err(error.into()),
             }
             if lost_stop {
@@ -1546,7 +1546,9 @@ mod cancellation_tests {
                 );
                 match provider.head(log).await {
                     Ok(head) => assert_eq!(head.tail, 1),
-                    Err(acyclic_stream::StreamError::NotFound) => assert!(!accepted),
+                    Err(error) if error == acyclic_stream::StreamError::NotFound => {
+                        assert!(!accepted)
+                    }
                     Err(error) => return Err(error.into()),
                 }
                 continue;

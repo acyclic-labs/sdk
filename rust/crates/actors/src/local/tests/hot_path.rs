@@ -809,7 +809,7 @@ async fn accepted_call_recovery_survives_physical_loss() -> TestResult {
                     .ok_or("missing original terminal marker")?
                     .commit_id,
             ),
-            Err(StreamError::NotFound) => None,
+            Err(error) if error == StreamError::NotFound => None,
             Err(error) => return Err(error.into()),
         };
         assert_eq!(retained_terminal.is_some(), fail_at == 2);

@@ -234,13 +234,13 @@ pub fn check(bytes: &[u8]) -> bool {
         // varying its record values and fork position with this input.
         let commands = match commands(Some(value.clone())) {
             Ok(commands) => Some(commands),
-            Err(StreamError::LimitExceeded) => None,
+            Err(error) if error == StreamError::LimitExceeded => None,
             Err(_) => return false,
         };
         for (_, command) in commands.into_iter().flatten() {
             let command = match command.validated() {
                 Ok(command) => command,
-                Err(StreamError::LimitExceeded) => continue,
+                Err(error) if error == StreamError::LimitExceeded => continue,
                 Err(_) => return false,
             };
             if !crate::journal::decode_command(&command.encode_to_vec())

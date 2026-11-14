@@ -220,7 +220,7 @@ async fn values(provider: &MemoryStream, stream: &str) -> Result<Vec<Bytes>, Fai
     let stream = path(stream)?;
     let tail = match provider.tail(stream.clone()).await {
         Ok(tail) => tail,
-        Err(StreamError::NotFound) => return Ok(Vec::new()),
+        Err(error) if error == StreamError::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error.into()),
     };
     if tail == 0 {

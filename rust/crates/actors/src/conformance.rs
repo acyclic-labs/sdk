@@ -555,7 +555,7 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
                 }
                 observed
             }
-            Err(StreamError::NotFound) => Vec::new(),
+            Err(error) if error == StreamError::NotFound => Vec::new(),
             Err(error) => return Err(Error::from(error).into()),
         };
         Ok(observed)
@@ -1073,7 +1073,7 @@ impl<P: StreamProvider + ?Sized> Isolated<P> {
             .await
         {
             Ok(tail) => Ok(tail),
-            Err(StreamError::NotFound) => Ok(0),
+            Err(error) if error == StreamError::NotFound => Ok(0),
             Err(error) => Err(Error::from(error).into()),
         }
     }

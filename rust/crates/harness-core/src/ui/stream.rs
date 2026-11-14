@@ -828,7 +828,7 @@ fn native_result<T>(
         .map_err(stream_error)
 }
 fn stream_error(error: StreamError) -> DemandError {
-    match error {
+    match error.category() {
         StreamError::NotFound => DemandError::Absent,
         StreamError::RevisionForeign | StreamError::PrefixNotRetained | StreamError::OutOfRange => {
             DemandError::StaleSource
@@ -837,8 +837,8 @@ fn stream_error(error: StreamError) -> DemandError {
             DemandError::InvalidRequest
         }
         StreamError::Unsupported => DemandError::NativeWorkUnavailable,
-        error => {
-            let kind = if matches!(error, StreamError::AccessDenied) {
+        category => {
+            let kind = if category == StreamError::AccessDenied {
                 std::io::ErrorKind::PermissionDenied
             } else {
                 std::io::ErrorKind::Other

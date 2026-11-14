@@ -46,6 +46,41 @@ mod error_code_tests {
         assert_eq!(scheduled.category(), StreamError::OutOfRange);
     }
 
+    /// Retained causes and member diagnostics never change which failure a
+    /// comparison sees: every comparison point agrees with `code`.
+    #[test]
+    fn equality_is_the_public_classification_however_the_failure_was_wrapped() {
+        let forms = |category: &StreamError| {
+            [
+                category.clone(),
+                category.clone().with_source(std::fmt::Error),
+                category
+                    .clone()
+                    .with_source(std::fmt::Error)
+                    .with_source(std::fmt::Error),
+                category
+                    .clone()
+                    .with_refusal(acyclic_auth::refusal::Refusal::caused(
+                        acyclic_auth::refusal::Cause::new("stream.test", "retained"),
+                    ))
+                    .with_source(std::fmt::Error),
+            ]
+        };
+        for left in StreamError::ALL {
+            for right in StreamError::ALL {
+                for wrapped_left in forms(&left) {
+                    for wrapped_right in forms(&right) {
+                        assert_eq!(wrapped_left == wrapped_right, left.code() == right.code());
+                        assert_eq!(
+                            Err::<(), _>(wrapped_left.clone()) == Err(right.clone()),
+                            left == right
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn boxed_native_causes_survive_cloning_without_changing_classification() {
         use std::error::Error as _;

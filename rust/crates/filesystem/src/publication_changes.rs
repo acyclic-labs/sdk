@@ -99,7 +99,7 @@ impl PublicationDelta {
             acyclic_auth::authority::PolicyDecision::Allow,
         ) {
             Ok(()) => Ok(true),
-            Err(acyclic_stream::StreamError::AccessDenied) => Ok(false),
+            Err(error) if error == acyclic_stream::StreamError::AccessDenied => Ok(false),
             Err(error) => Err(error),
         }
     }

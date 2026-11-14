@@ -209,7 +209,12 @@ impl Pool {
         let failure = result
             .as_ref()
             .err()
-            .filter(|error| !matches!(error, StreamError::Capacity | StreamError::LimitExceeded))
+            .filter(|error| {
+                !matches!(
+                    error.category(),
+                    StreamError::Capacity | StreamError::LimitExceeded
+                )
+            })
             .cloned();
         let _ = ready.send(result);
         match failure {
