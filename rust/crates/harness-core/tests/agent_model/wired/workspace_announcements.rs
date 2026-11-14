@@ -46,18 +46,14 @@ impl acyclic_harness_core::filesystem::TurnContext for InstructionTools {
                 private.provider().clone(),
                 &agent.path.id(),
             )?;
-            for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-                assert!(
-                    ContentGrant::verify(
-                        &authority.issuer.verifier(&mut None)?,
-                        &authority.scope,
-                        &journal,
-                        operation,
-                        &mut None,
-                    )
-                    .is_err()
-                );
-            }
+            // Every admitted turn reads its own journal; the journal policy
+            // decides each path. Only the host writes it.
+            let verifier = authority.issuer.verifier(&mut None)?;
+            let grants = |operation| {
+                ContentGrant::verify(&verifier, &authority.scope, &journal, operation, &mut None)
+            };
+            assert!(grants(VolumeOperation::Read).is_ok());
+            assert!(grants(VolumeOperation::Write).is_err());
             executor.with_tool_authority(
                 acyclic_harness_core::runtime::RuntimeScope::new(
                     Capabilities::new([
