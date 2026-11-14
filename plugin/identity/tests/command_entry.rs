@@ -52,7 +52,7 @@ pub(super) fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn secrets_invocation(directory: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-    use axum::{Json, Router, http::StatusCode, routing::post};
+    use axum::{Json, Router, routing::post};
     use std::io::Write as _;
     let bearer = directory.join("bearer");
     let token = "a".repeat(12 * 1024 + 1);
@@ -91,6 +91,8 @@ async fn secrets_invocation(directory: &std::path::Path) -> Result<(), Box<dyn s
     // The OS interrupt is delivered only after the request reaches the server.
     #[cfg(unix)]
     {
+        use axum::http::StatusCode;
+
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let mut arguments = arguments;
         arguments[3] = format!("http://{}", listener.local_addr()?);
