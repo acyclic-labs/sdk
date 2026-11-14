@@ -382,6 +382,26 @@ impl PreparationIo {
         }
     }
     #[inline]
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::filesystem) fn return_native_allocation(
+        &self,
+        owner: &acyclic_fs::kernel::NativeAccounting,
+        allocation: acyclic_fs::NativeAllocation,
+        bytes: u64,
+    ) -> std::result::Result<KernelOwnedAllocation, acyclic_fs::FsError> {
+        self.account(|_| {
+            let allocation = owner.return_allocation(allocation, bytes)?;
+            if let (Self::Owned { custody, .. }, KernelOwnedAllocation::Standalone) =
+                (self, &allocation)
+            {
+                // The producer already charged the common ledger. Surrendering
+                // its guard moves custody without another allocation or charge.
+                custody.record(0, bytes)?;
+            }
+            Ok(allocation)
+        })
+    }
+    #[inline]
     pub(in crate::filesystem) fn account<T>(
         &self,
         operation: impl FnOnce(&mut KernelAccounting<'_>) -> std::result::Result<T, acyclic_fs::FsError>,

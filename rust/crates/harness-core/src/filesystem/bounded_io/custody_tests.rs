@@ -2,6 +2,42 @@
 use super::*;
 use crate::store::history::{HistoryIo, HistoryWork};
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn returned_native_buffer_keeps_original_custody_without_adopting_leases() -> Result<()> {
+    let cancellation = CancellationToken::new();
+    let io = PreparationIo::from_budget(
+        acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+        &cancellation,
+    )?;
+    io.retain_owned(8)?;
+    let independent =
+        io.account(|ctx| acyclic_fs::kernel::RetainedAllocation::claim(19, 1, ctx))?;
+    let live = || {
+        io.account(|ctx| {
+            Ok(ctx
+                .standalone_parts()
+                .ok_or(acyclic_fs::FsError::AccountingHandoffActive)?
+                .0
+                .live_bytes())
+        })
+    };
+    let baseline = live()?;
+    let owner = io.account(acyclic_fs::kernel::NativeAccounting::take)?;
+    let output = owner.work.claim(37, 1, WorkCounters::UNCHARGED)?;
+    let allocation = io.return_native_allocation(&owner, output, 37)?;
+    assert!(matches!(allocation, KernelOwnedAllocation::Standalone));
+    io.account(|ctx| owner.restore(ctx))?;
+    assert_eq!(io.owned_bytes()?, 45);
+    let output = io.guard_owned(37)?;
+    assert_eq!(io.owned_bytes()?, 8);
+    drop(output);
+    assert_eq!(io.owned_bytes()?, 8);
+    assert_eq!(live()?, baseline);
+    drop(independent);
+    Ok(())
+}
+
 #[test]
 fn output_custody_outlives_preparation_observer() -> Result<()> {
     for measured in [false, true] {

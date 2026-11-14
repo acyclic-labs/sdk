@@ -404,7 +404,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     return Err(io.invalid("directory output lost its original native custody"));
                 };
                 let bytes = body_bytes(&page)?;
-                let allocation = io.account(|_| owner.return_allocation(allocation, bytes))?;
+                let allocation = io.return_native_allocation(&owner, allocation, bytes)?;
                 Ok((page, allocation, bytes))
             });
             drop(ctx);
