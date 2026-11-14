@@ -1220,6 +1220,20 @@ mod tests {
             reader.plan(projections.iter().map(want));
             assert!(reader.poll(1).is_empty());
             assert_eq!(reader.next_deadline(), None);
+            let assert_current_witnesses = |reader: &Reader| {
+                for (projection, expected) in projections.iter().zip([1, 1, 2]) {
+                    assert_eq!(
+                        reader
+                            .cache()
+                            .listing(&parent, 0, 64)
+                            .unwrap()
+                            .projections
+                            .get(projection),
+                        Some(&Some(expected))
+                    );
+                }
+            };
+            assert_current_witnesses(&reader);
             let bytes = reader.snapshot().unwrap();
             reader.restore(&bytes).unwrap();
             reader.plan(projections.iter().map(want));
@@ -1255,6 +1269,7 @@ mod tests {
                 reader.poll(retry_at).is_empty(),
                 "retry lost the original witnesses"
             );
+            assert_current_witnesses(&reader);
 
             reader.restore(&bytes).unwrap();
             reader.plan(projections.iter().map(want));
@@ -1287,6 +1302,7 @@ mod tests {
                 reader.poll(retry_at).is_empty(),
                 "timeout lost the original witnesses"
             );
+            assert_current_witnesses(&reader);
 
             reader.restore(&bytes).unwrap();
             reader.plan(projections.iter().map(want));
