@@ -452,10 +452,12 @@ async fn negative_control_conformance_rejects_a_host_that_loses_alarm_changes() 
 }
 
 struct Manual(AtomicU64);
-impl Clock for Manual {
-    fn now_unix_ms(&self) -> u64 {
+impl acyclic_stream::UnixMillisClock for Manual {
+    fn now_unix_millis(&self) -> u64 {
         self.0.load(Ordering::SeqCst)
     }
+}
+impl Clock for Manual {
     fn sleep_until(&self, _deadline_unix_ms: u64) -> BoxFuture<'static, Result<(), ClockError>> {
         futures::future::pending().boxed()
     }
@@ -1071,7 +1073,7 @@ async fn generic_event_host_runs_the_original_package_over_strict_wire() -> Test
     assert_eq!(host.actor(), &address);
     assert_eq!(host.store().root(), store.root());
     assert!(Arc::ptr_eq(host.store().provider(), &provider));
-    assert_eq!(host.clock().now_unix_ms(), 1);
+    assert_eq!(host.clock().now_unix_millis(), 1);
     assert!(
         package
             .deliveries

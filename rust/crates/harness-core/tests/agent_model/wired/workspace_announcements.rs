@@ -762,7 +762,7 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
         let clock = Arc::new(clock);
         let timed_stream = Arc::new(MemoryStream::new_with_clock(
             Default::default(),
-            Arc::new(super::preparation::JournalClock(clock.clone())),
+            clock.clone(),
         ));
         let Fixture {
             path,

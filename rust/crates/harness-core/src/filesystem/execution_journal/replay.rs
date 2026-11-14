@@ -34,7 +34,7 @@ where
                     committed_at_micros: Some(record.committed_at_micros),
                     age_ms: Some(
                         clock
-                            .now_unix_ms()
+                            .now_unix_millis()
                             .saturating_sub(record.committed_at_micros / 1000),
                     ),
                 })

@@ -325,6 +325,12 @@ impl<P: AuthorityProvider + ?Sized + 'static, O> Bound<P, O> {
     pub const fn volumes(&self) -> &Arc<Host<P, O>> {
         &self.volumes
     }
+
+    /// The original clock shared by actor deadlines and session authorization.
+    #[must_use]
+    pub const fn clock(&self) -> &Arc<dyn Clock> {
+        &self.clock
+    }
 }
 
 impl<P, O> Bound<P, O>
@@ -755,14 +761,13 @@ where
                 .map_err(turn)?;
             let state = self.agents.state(agent).await?;
             let (journal, authority) = self.turns.journal_authority(&state).await.map_err(turn)?;
-            let clock = ObservationClock(self.clock.clone());
             let (resource, credential, _) = self
                 .volumes
                 .observation_credential(
                     (&authority, self.observation_parent(&authority.scope)),
                     &state.path,
                     &journal,
-                    &clock,
+                    self.clock.as_ref(),
                     &[],
                     None,
                     audience,
@@ -1587,16 +1592,6 @@ where
     ) -> Result<RootSubmission, Error> {
         self.submit_root(self.prepare_root(intent, request).await?)
             .await
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-struct ObservationClock(Arc<dyn Clock>);
-
-#[cfg(not(target_arch = "wasm32"))]
-impl acyclic_stream::UnixMillisClock for ObservationClock {
-    fn now_unix_millis(&self) -> u64 {
-        self.0.now_unix_ms()
     }
 }
 

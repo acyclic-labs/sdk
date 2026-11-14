@@ -277,7 +277,7 @@ async fn shared_input_invocations_execute_only_under_the_original_store_root() -
     );
     let owner = OwnerEvidence::new(Bytes::from_static(b"owner"), Bytes::from_static(b"proof"))?;
     let deadline = SystemClock
-        .now_unix_ms()
+        .now_unix_millis()
         .checked_add(60_000)
         .ok_or("clock overflow")?;
     let request = Bytes::from_static(b"same-operation");
@@ -366,7 +366,7 @@ async fn release_is_bound_to_the_original_store_root_in_client_and_handler() -> 
         Bytes::from_static(b"original-evidence"),
     )?;
     let deadline = SystemClock
-        .now_unix_ms()
+        .now_unix_millis()
         .checked_add(60_000)
         .ok_or("clock overflow")?;
     let mut first = Box::pin(left_pool.reserve(

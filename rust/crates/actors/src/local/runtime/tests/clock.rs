@@ -156,7 +156,7 @@ async fn clock_schedule(
     notifications.0.store(0, Ordering::SeqCst);
     assert!(matches!(control.advance_to(109), Err(ClockError::Reversed)));
     control.advance_to(110)?;
-    assert_eq!(clock.now_unix_ms(), 110);
+    assert_eq!(clock.now_unix_millis(), 110);
     assert_eq!(
         notifications.0.load(Ordering::SeqCst),
         0,
@@ -288,7 +288,7 @@ fn system_clock_keeps_its_original_deadline_after_runtime_retirement() -> TestRe
             tokio::time::pause();
             schedule
                 .scope(async {
-                    let now = SystemClock.now_unix_ms();
+                    let now = SystemClock.now_unix_millis();
                     let start = tokio::time::Instant::now();
                     let mut jumped = SystemClock.sleep_until(now + 100);
                     let mut context = Context::from_waker(&waker);

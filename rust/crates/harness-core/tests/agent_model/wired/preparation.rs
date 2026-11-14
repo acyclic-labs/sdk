@@ -12,12 +12,6 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-pub(super) struct JournalClock(pub Arc<acyclic_actors::local::ControlledClock>);
-impl acyclic_stream::UnixMillisClock for JournalClock {
-    fn now_unix_millis(&self) -> u64 {
-        acyclic_actors::local::Clock::now_unix_ms(&*self.0)
-    }
-}
 #[derive(Default)]
 struct Probe {
     clock: Option<Arc<acyclic_actors::local::ControlledClock>>,
@@ -444,7 +438,7 @@ async fn live_activity(
     control: &mut acyclic_actors::local::ClockControl,
 ) -> Result {
     let clock = probe.clock.as_ref().ok_or("missing shared test clock")?;
-    let deadline = acyclic_actors::local::Clock::now_unix_ms(&**clock)
+    let deadline = acyclic_stream::UnixMillisClock::now_unix_millis(&**clock)
         .checked_add(10)
         .ok_or("test deadline overflow")?;
     model.extend([

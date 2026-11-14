@@ -1177,10 +1177,12 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     };
     use std::sync::atomic::{AtomicU64, Ordering};
     struct EventClock(AtomicU64);
-    impl Clock for EventClock {
-        fn now_unix_ms(&self) -> u64 {
+    impl acyclic_stream::UnixMillisClock for EventClock {
+        fn now_unix_millis(&self) -> u64 {
             self.0.load(Ordering::SeqCst)
         }
+    }
+    impl Clock for EventClock {
         fn sleep_until(
             &self,
             _: u64,
@@ -1778,7 +1780,7 @@ async fn a_child_inherits_context_but_retains_its_own_observed_answer_across_tur
     let clock = Arc::new(clock);
     let stream = Arc::new(MemoryStream::new_with_clock(
         Default::default(),
-        Arc::new(preparation::JournalClock(clock.clone())),
+        clock.clone(),
     ));
     let model = Arc::new(ScriptedModelProvider::new([
         ScriptedTurn::Text("parent answer".into()),
