@@ -133,6 +133,15 @@ impl StockExecution<'_> {
         reason: ToolFailureKind,
         cause: ToolFailureCause,
     ) -> Result<crate::model::ToolResultContent> {
+        let trace = match journal.trace_request(acyclic_stream::trace::Request {
+            name: "harness.tool_failure",
+            mechanism: acyclic_stream::trace::Mechanism::ToolCall,
+            parent: None,
+            guarantee: Some("original_tool_failure_record"),
+        }) {
+            Some(admission) => admission.await.ok(),
+            None => None,
+        };
         let _writer = self.journal_writes.lock().await;
         let (tail, current) = self
             .tool_records(journal, operation_id, step, call_id)
@@ -156,6 +165,27 @@ impl StockExecution<'_> {
             reason,
             cause,
         };
+        // Receipt-future construction has not published. If diagnostic receipt
+        // admission fails, preserve the original append entrance below.
+        if let Some(publication) = trace
+            .as_ref()
+            .and_then(|_| {
+                journal.append_retained_if_tail(operation_id, tail, &key, &event, self.io)
+            })
+            .and_then(std::result::Result::ok)
+        {
+            let Some(_cause) = publication.await? else {
+                return Err(Error::Indeterminate(operation_id));
+            };
+            #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+            if let Some(recording) = trace {
+                let _completion = recording.finish_submitted(
+                    None,
+                    acyclic_stream::trace::Outcome::Failed { cause: _cause },
+                );
+            }
+            return Ok(content);
+        }
         match journal
             .append_if_tail(operation_id, tail, &key, &event, self.io)?
             .await

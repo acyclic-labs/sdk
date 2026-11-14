@@ -615,6 +615,29 @@ impl LocalStream {
         sequence: u64,
         durability: LocalDurability,
     ) -> Result<SyncCompletion, StreamError> {
+        let wait = self.await_synced_cut(sequence, durability);
+        #[cfg(feature = "serde")]
+        let wait = crate::trace::observe(
+            crate::trace::Request {
+                name: "stream.journal_cut_wait",
+                mechanism: crate::trace::Mechanism::Wait,
+                parent: None,
+                guarantee: Some(match durability {
+                    LocalDurability::FullFlush => "requested_journal_cut_device_flushed",
+                    LocalDurability::Barrier => "requested_journal_cut_writes_ordered",
+                }),
+            },
+            wait,
+            |_| Some(0),
+        );
+        wait.await
+    }
+
+    async fn await_synced_cut(
+        &self,
+        sequence: u64,
+        durability: LocalDurability,
+    ) -> Result<SyncCompletion, StreamError> {
         let mut synced = self.inner.synced.subscribe();
         loop {
             self.check_available()?;
@@ -660,29 +683,39 @@ impl LocalStream {
                     )| {
                         let flushed = owner.inner.flush_through(file, durability, work.as_deref());
                         owner.active = false;
-                        Ok(flushed)
+                        flushed
                     };
-                    #[cfg(not(loom))]
-                    let submitted = acyclic_native_runtime::FileLease::submit(
-                        "streams", "flush", key, acquire, flush,
+                    let submitted = async move {
+                        #[cfg(not(loom))]
+                        let submitted = acyclic_native_runtime::FileLease::submit(
+                            "streams", "flush", key, acquire, flush,
+                        );
+                        #[cfg(loom)]
+                        let submitted =
+                            query_model::submit_file("streams", "flush", key, acquire, flush);
+                        submitted.await
+                    };
+                    #[cfg(feature = "serde")]
+                    let submitted = crate::trace::observe_value(
+                        crate::trace::Request {
+                            name: "stream.journal_flush",
+                            mechanism: crate::trace::Mechanism::Fsync,
+                            parent: None,
+                            guarantee: Some(match durability {
+                                LocalDurability::FullFlush => "journal_cut_device_flushed",
+                                LocalDurability::Barrier => "journal_cut_writes_ordered",
+                            }),
+                        },
+                        submitted,
+                        |result| match result {
+                            Ok(Ok(())) => Some((None, crate::trace::Outcome::Succeeded)),
+                            _ => None,
+                        },
                     );
-                    #[cfg(loom)]
-                    let submitted =
-                        query_model::submit_file("streams", "flush", key, acquire, flush);
-                    let flushed = submitted.await.map_err(|_| {
+                    submitted.await.map_err(|_| {
                         self.inner
                             .fail(LocalStreamFailure::new("flush", "executor"))
                     })??;
-                    // Group commit: one fsync covers every frame written since the last one.
-                    if let Some((target, synced_before, journal_bytes)) = flushed {
-                        tracing::debug!(
-                            fsyncs = 1_u64,
-                            batch_len = target.saturating_sub(synced_before),
-                            journal_bytes,
-                            waiters = self.inner.synced.receiver_count(),
-                            "acyclic.stream.fsync"
-                        );
-                    }
                 }
                 None => {
                     if synced.changed().await.is_err() {
@@ -717,9 +750,9 @@ impl LocalStream {
             let pending = spawn(publication_scope(async move {
                 let task = std::pin::pin!(async {
                     let (result, required) = {
-                        let _visibility = stream.inner.visibility.write().await;
+                        let _visibility = stream.inner.visibility_write().await;
                         stream.check_available()?;
-                        let publication = stream.inner.publication.write().await;
+                        let publication = stream.inner.publication_write().await;
                         stream.check_available()?;
                         let result = mutation(stream.clone()).await;
                         stream.inner.commit_clock.unpin();
@@ -768,7 +801,7 @@ impl LocalStream {
             self.check_available()?;
             let mut failed = self.inner.failed.subscribe();
             let read = std::pin::pin!(async {
-                let _visibility = self.inner.publication.read().await;
+                let _visibility = self.inner.publication_read().await;
                 self.check_available()?;
                 Ok(read.await)
             });

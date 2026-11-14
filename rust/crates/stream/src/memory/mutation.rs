@@ -44,13 +44,50 @@ impl MemoryStream {
         state: &State,
         key: &crate::IdempotencyKey,
         digest: [u8; 32],
+        path: &StreamPath,
     ) -> Result<Option<AppendOutcome>, StreamError> {
         match self.replay_outcome(state, key, digest)? {
             Some(IdempotencyOutcome::Append(result)) => {
-                let mut result = result.clone();
-                if let AppendOutcome::Committed(receipt) = &mut result {
-                    receipt.revision = self.revisions.at(receipt.revision.index);
-                }
+                let replay = || {
+                    let mut result = result.clone();
+                    if let AppendOutcome::Committed(receipt) = &mut result {
+                        receipt.revision = self.revisions.at(receipt.revision.index);
+                    }
+                    result
+                };
+                #[cfg(feature = "serde")]
+                let result = crate::trace::observe_sync(
+                    crate::trace::Request {
+                        name: "stream.append_replay",
+                        mechanism: crate::trace::Mechanism::Commit,
+                        parent: None,
+                        guarantee: Some("same_request_reuses_original_append_receipt"),
+                    },
+                    replay,
+                    |result| {
+                        let comparison = match result {
+                            AppendOutcome::Committed(receipt) if receipt.start < receipt.end => {
+                                Some(crate::trace::Comparison {
+                                    kind: crate::trace::ComparisonKind::Request,
+                                    previous: crate::RetainedRecord {
+                                        commit_id: receipt.commit_id,
+                                        path: path.clone(),
+                                        sequence: receipt.start,
+                                    },
+                                    previous_digest: digest,
+                                    current_digest: digest,
+                                })
+                            }
+                            _ => None,
+                        };
+                        Some((Some(0), crate::trace::Outcome::Succeeded, comparison))
+                    },
+                );
+                #[cfg(not(feature = "serde"))]
+                let result = {
+                    let _ = path;
+                    replay()
+                };
                 Ok(Some(result))
             }
             Some(_) => Err(StreamError::IdempotencyMismatch),

@@ -501,7 +501,7 @@ where
             None,
         ));
         let control_composer: Arc<dyn acyclic_actors::guest::Composer> = composer.clone();
-        controls.bind_composer(Arc::downgrade(&control_composer));
+        controls.bind_composer(Arc::downgrade(&control_composer))?;
         let agents = AgentHost::hosting(
             acyclic_actors::guest::Requests::default(),
             stream,

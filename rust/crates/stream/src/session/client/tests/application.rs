@@ -108,13 +108,93 @@ async fn crash_before_application_commit_replays_despite_returned_credit() -> Te
         transport_cut.resume.as_ref().ok_or("no proposed cut")?.next,
         1
     );
+    #[cfg(feature = "serde")]
+    let (trace, root) = {
+        let trace = crate::Stream::new(provider.clone(), "agents/worker/trace")?;
+        let recorder = Arc::new(crate::trace::Recorder::new(trace.clone(), [28; 16]));
+        let root = recorder
+            .start(
+                "request",
+                crate::trace::Mechanism::ToolCall,
+                None,
+                Some("original_application_request"),
+            )
+            .await?
+            .into_owned();
+        (trace, root)
+    };
     // Cancelling a blocked next must not remove its completion fence.
-    assert!(source.next().now_or_never().is_none());
-    assert!(source.next().now_or_never().is_none());
+    #[cfg(feature = "serde")]
+    {
+        assert!(root.within(source.next()).now_or_never().is_none());
+        assert!(root.within(source.next()).now_or_never().is_none());
+    }
+    #[cfg(not(feature = "serde"))]
+    {
+        assert!(source.next().now_or_never().is_none());
+        assert!(source.next().now_or_never().is_none());
+    }
     assert_eq!(source.checkpoint()?, initial);
     drop(delivery); // Credit returns; application progress must remain zero.
     assert_eq!(source.checkpoint()?, initial);
-    assert!(matches!(source.next().await, Err(StreamError::Unavailable)));
+    #[cfg(feature = "serde")]
+    let abandoned = root.within(source.next()).await;
+    #[cfg(not(feature = "serde"))]
+    let abandoned = source.next().await;
+    let error = abandoned
+        .err()
+        .ok_or("abandoned delivery advanced its replay cut")?;
+    assert_eq!(error.category(), StreamError::Unavailable);
+    let mut cause = std::error::Error::source(&error);
+    let mut original_cause = false;
+    while let Some(source) = cause {
+        original_cause |= matches!(
+            source.downcast_ref::<super::super::application::DecisionFailure>(),
+            Some(super::super::application::DecisionFailure::Abandoned)
+        );
+        cause = source.source();
+    }
+    assert!(
+        original_cause,
+        "application abandonment lost its original typed cause"
+    );
+    #[cfg(feature = "serde")]
+    {
+        use crate::trace::{Mechanism, Observation, Outcome, TraceQuery};
+        let parent = root.id();
+        let _terminal = root.finish_submitted(None, Outcome::Succeeded)?;
+        let mut query = TraceQuery::new(
+            trace.follow(0, Default::default()).await?,
+            Default::default(),
+        );
+        let mut completed = 0;
+        let mut waits = 0;
+        while completed < 4 {
+            if let Some(Observation::Completed {
+                start,
+                result,
+                bytes,
+                ..
+            }) = query.next().await?
+            {
+                completed += 1;
+                if start.name == "stream.application_decision_wait" {
+                    assert_eq!(start.parent, Some(parent));
+                    assert_eq!(start.mechanism, Mechanism::Wait);
+                    assert_eq!(
+                        start.guarantee.as_deref(),
+                        Some("application_decision_before_replay_advance")
+                    );
+                    assert_eq!(result, Outcome::Unsettled);
+                    assert_eq!(bytes, None);
+                    waits += 1;
+                }
+            }
+        }
+        assert_eq!(waits, 3);
+        assert_eq!(query.totals()[&Mechanism::Wait].unsettled, 3);
+        assert_eq!(query.active_waits(), 0);
+    }
     drop(source);
 
     let mut recovered = client.deliveries(initial).await?;
@@ -298,7 +378,7 @@ async fn keyed_application_checkpoints_reopen_without_a_contiguous_anchor() -> T
 async fn reconnect_fences_an_outstanding_application_decision() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     append(&provider, "events", 4).await?;
-    let fixture = Fixture::open(provider, "node").await?;
+    let fixture = Fixture::open(provider.clone(), "node").await?;
     let client = fixture.client()?.session_client()?;
     let mut source = client.deliveries(subscription()).await?;
     let old = data(&mut source).await?;
@@ -316,8 +396,64 @@ async fn reconnect_fences_an_outstanding_application_decision() -> TestResult {
         "a fenced generation certified a later application cut"
     );
     assert_eq!(source.checkpoint()?.resume.ok_or("no cut")?.next, 0);
+    #[cfg(feature = "serde")]
+    let (trace, root) = {
+        let trace = crate::Stream::new(provider, "agents/worker/trace")?;
+        let recorder = Arc::new(crate::trace::Recorder::new(trace.clone(), [29; 16]));
+        let root = recorder
+            .start(
+                "request",
+                crate::trace::Mechanism::ToolCall,
+                None,
+                Some("original_application_request"),
+            )
+            .await?
+            .into_owned();
+        (trace, root)
+    };
+    #[cfg(feature = "serde")]
+    let replayed = root.within(data(&mut source)).await?;
+    #[cfg(not(feature = "serde"))]
     let replayed = data(&mut source).await?;
     assert_eq!(sequence(&replayed)?, 0);
     assert!(replayed.commit()?);
+    #[cfg(feature = "serde")]
+    {
+        use crate::trace::{Mechanism, Observation, Outcome, TraceQuery};
+        let parent = root.id();
+        let _terminal = root.finish_submitted(None, Outcome::Succeeded)?;
+        let mut query = TraceQuery::new(
+            trace.follow(0, Default::default()).await?,
+            Default::default(),
+        );
+        let mut returned = false;
+        let mut fenced = false;
+        while !returned || !fenced {
+            if let Some(Observation::Completed {
+                id,
+                start,
+                result,
+                bytes,
+                ..
+            }) = query.next().await?
+            {
+                if id == parent {
+                    returned = true;
+                } else if start.name == "stream.application_decision_wait"
+                    && result == Outcome::Unsettled
+                {
+                    assert_eq!(start.parent, Some(parent));
+                    assert_eq!(start.mechanism, Mechanism::Wait);
+                    assert_eq!(bytes, Some(0));
+                    assert_eq!(
+                        start.guarantee.as_deref(),
+                        Some("application_decision_before_replay_advance")
+                    );
+                    fenced = true;
+                }
+            }
+        }
+        assert_eq!(query.totals()[&Mechanism::Wait].unsettled, 1);
+    }
     Ok(())
 }
