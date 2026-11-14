@@ -323,8 +323,12 @@ async fn archive_destroys_the_agents_machines_before_it_closes() -> Result {
         assert!(matches!(delivered, Delivered::Committed { .. }));
         assert!(host.runtime().drain().await.is_empty());
         assert!(host.state(&root).await?.closed);
-        // The parent closed first and the provider keeps its source for the fork.
-        assert_eq!(state(&machines, &root).await?, MachineState::Running);
+        // An archive fences the whole tree (#3508), so its cascade may close
+        // the child in the same drain. While the child's fork is open, the
+        // provider keeps the root's Machine as its source.
+        if !host.state(&child).await?.closed {
+            assert_eq!(state(&machines, &root).await?, MachineState::Running);
+        }
         // The cascade's archive reaches the child (a running host discovers it
         // through its activation follow; this deterministic host names it).
         host.host(&child)?;
