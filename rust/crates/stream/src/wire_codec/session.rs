@@ -161,11 +161,32 @@ pub fn actor_call_sequence(
     Ok(next)
 }
 
+#[derive(Debug, thiserror::Error)]
+enum SocketFrameFailure {
+    #[error("actor socket frame has no cursor")]
+    MissingCursor,
+    #[error("actor socket frame sequence overflows at {next}")]
+    Overflow { next: u64 },
+    #[error(
+        "actor socket frame at {next}: cursor={advertised}, opaque bytes={opaque_bytes}, accepted={accepted}, durable={durable}, whole={whole}"
+    )]
+    Shape {
+        next: u64,
+        advertised: u64,
+        opaque_bytes: usize,
+        accepted: u64,
+        durable: u64,
+        whole: bool,
+    },
+}
+
 /// Admit one whole actor-socket frame: `after.next` counts frames from 1 on
 /// one generation, with an empty opaque cursor. Frames are never spliced
 /// across a reconnect, because a socket channel is never replayed.
 pub fn actor_socket_sequence(next: u64, data: &wire::SessionData) -> Result<u64, StreamError> {
-    let after = data.after.as_ref().ok_or(StreamError::InvalidResponse)?;
+    let after = data.after.as_ref().ok_or_else(|| {
+        StreamError::InvalidResponse.with_source(SocketFrameFailure::MissingCursor)
+    })?;
     let whole = matches!(
         &data.item,
         Some(wire::session_data::Item::ActorSocket(frame))
@@ -173,11 +194,23 @@ pub fn actor_socket_sequence(next: u64, data: &wire::SessionData) -> Result<u64,
     );
     if !whole
         || !after.opaque.is_empty()
-        || after.next != next.checked_add(1).ok_or(StreamError::OutOfRange)?
+        || after.next
+            != next.checked_add(1).ok_or_else(|| {
+                StreamError::OutOfRange.with_source(SocketFrameFailure::Overflow { next })
+            })?
         || data.accepted != after.next
         || data.durable != 0
     {
-        return Err(StreamError::InvalidResponse);
+        return Err(
+            StreamError::InvalidResponse.with_source(SocketFrameFailure::Shape {
+                next,
+                advertised: after.next,
+                opaque_bytes: after.opaque.len(),
+                accepted: data.accepted,
+                durable: data.durable,
+                whole,
+            }),
+        );
     }
     Ok(next)
 }

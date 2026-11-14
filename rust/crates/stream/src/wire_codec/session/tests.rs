@@ -277,3 +277,30 @@ fn credit_failures_never_partially_change_balances() {
         assert_eq!(remaining, before);
     }
 }
+
+#[test]
+fn actor_socket_rejections_retain_original_frame_facts() {
+    let valid = wire::SessionData {
+        after: Some(wire::SessionCursor {
+            next: 1,
+            opaque: Bytes::new(),
+        }),
+        accepted: 1,
+        durable: 0,
+        item: Some(Item::ActorSocket(Bytes::from_static(b"original frame"))),
+    };
+    assert_eq!(actor_socket_sequence(0, &valid), Ok(0));
+    for field in 0..5 {
+        let mut data = valid.clone();
+        match field {
+            0 => data.after = None,
+            1 => data.after.as_mut().unwrap().next = 2,
+            2 => data.accepted = 0,
+            3 => data.durable = 1,
+            _ => data.item = Some(Item::ActorSocket(Bytes::new())),
+        }
+        let error = actor_socket_sequence(0, &data).unwrap_err();
+        assert_eq!(error.category(), StreamError::InvalidResponse);
+        assert!(std::error::Error::source(&error).is_some());
+    }
+}
