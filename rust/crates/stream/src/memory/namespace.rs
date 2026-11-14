@@ -510,6 +510,22 @@ impl Namespace {
         node: Arc<NamespaceNode>,
         build: &mut NamespaceBuilder<'_>,
     ) -> Result<(), StreamError> {
+        self.replace(path, Some(node), build)
+    }
+    /// Removes a present `path` with its whole subtree; its ancestors remain.
+    fn remove(
+        &mut self,
+        path: &StreamPath,
+        build: &mut NamespaceBuilder<'_>,
+    ) -> Result<(), StreamError> {
+        self.replace(path, None, build)
+    }
+    fn replace(
+        &mut self,
+        path: &StreamPath,
+        node: Option<Arc<NamespaceNode>>,
+        build: &mut NamespaceBuilder<'_>,
+    ) -> Result<(), StreamError> {
         build.with_frames(path.as_str().split('/').count(), |build, frames| {
             let mut index = &self.roots;
             let mut parts = path.as_str().split('/').peekable();
@@ -534,10 +550,14 @@ impl Namespace {
             let mut next = node;
             let mut root = None;
             while let Some(frame) = frames.pop() {
-                root = index_put(&frame.index, frame.name, Some(next), build)?;
+                root = index_put(&frame.index, frame.name, next.take(), build)?;
                 if let Some(frame) = frames.last() {
                     let parent = frame.parent.as_ref().ok_or(StreamError::Unavailable)?;
-                    next = build.node(parent.data.clone(), root.take(), parent.origin.clone())?;
+                    next = Some(build.node(
+                        parent.data.clone(),
+                        root.take(),
+                        parent.origin.clone(),
+                    )?);
                 } else {
                     break;
                 }

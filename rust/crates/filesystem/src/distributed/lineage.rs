@@ -50,9 +50,6 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 records,
                 [genesis.into(), encoded],
             )?;
-            // Sequence one is intrinsically addressable. Its authenticated
-            // record carries the operation identity and atomic commit identity,
-            // so it needs no separate operation-locator record.
             generation
         } else {
             work.append_record(&mut request.effects[0].mutations, records, [genesis])?;
@@ -323,7 +320,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let mut request = CommitRequest {
             deadline_unix_millis: None,
             effects: crate::distributed::composition::funded_effect(
-                acyclic_stream::CommitEffect::hard(work.vec(9)?, work.vec(9)?),
+                acyclic_stream::CommitEffect::hard(work.vec(10)?, work.vec(10)?),
                 work,
             )?,
             idempotency_key: work.key(
@@ -558,6 +555,125 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         }
     }
 
+    /// Creates an ephemeral fork's authority under a lease taken first, so
+    /// its creation commit is ephemeral as a whole: the authority subtree is
+    /// the lease root, and its fresh changes stream and operation locator are
+    /// adopted. Nothing it writes is journalled, and no retention record is
+    /// made: the lease's owner holds the base.
+    pub(super) async fn ephemeral_records(
+        &self,
+        fork: crate::EphemeralForkCommit,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<acyclic_stream::EphemeralLease, AuthorityStoreError> {
+        let actor = self.actor(fork.destination, work)?;
+        let journal = actor.lease(work).await?;
+        let revision = actor.begin(journal)?;
+        work.check()?;
+        let lineage = match fork.lineage {
+            Some(source) if source.lineage == crate::GenerationFork::PublishedPrefix => {
+                let (lineage, tail) = self
+                    .resolve_source_fork_point(source.authority, source.generation, work)
+                    .await?;
+                Some((lineage, tail, source.generation))
+            }
+            _ => None,
+        };
+        self.prepare_operation_namespace(work).await?;
+        let lease = self
+            .provider
+            .lease_ephemeral(self.placement.stream_path(fork.destination, "")?)
+            .await
+            .map_err(map_stream_error)?;
+        let mut request = CommitRequest {
+            deadline_unix_millis: None,
+            effects: crate::distributed::composition::funded_effect(
+                acyclic_stream::CommitEffect::hard(work.vec(10)?, work.vec(10)?),
+                work,
+            )?,
+            idempotency_key: work.key(
+                self.placement.key_scope(),
+                b"workspace-fork-ephemeral\0",
+                &[
+                    &fork.destination.into_bytes(),
+                    &fork.creation.operation_id.into_bytes(),
+                ],
+            )?,
+        };
+        let projection = self.creation_request(
+            &mut request,
+            fork.destination,
+            Epoch::GENESIS,
+            Some(&fork.creation),
+            lineage,
+            work,
+        )?;
+        let outcome = self
+            .commit(request, None, work, None::<&mut ()>)
+            .await
+            .map_err(|error| error.into_error(std::convert::identity))?;
+        if !work.is_native() {
+            work.release_request()?;
+        }
+        let CommitOutcome::Committed(envelope) = &outcome.0 else {
+            return Err(AuthorityStoreError::RejectedStatic(
+                "an ephemeral fork's destination already exists",
+            ));
+        };
+        actor
+            .complete(revision, projection.seal(envelope.commit_id), work)
+            .await?;
+        Ok(lease)
+    }
+
+    // An adopted locator cannot create a durable ancestor while its authority
+    // is leased. Establish the shared namespace before taking that lease, even
+    // when a reopened store has never published an indexed operation. A soft
+    // absent condition makes concurrent preparation preserve the same parent.
+    async fn prepare_operation_namespace(
+        &self,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(), AuthorityStoreError> {
+        let prefix = std::str::from_utf8(self.placement.operations_prefix())
+            .map_err(|_| AuthorityStoreError::RejectedStatic("operation namespace is not UTF-8"))?;
+        let path = work.own_path(prefix.trim_end_matches('/'))?;
+        let mut conditions = work.vec(1)?;
+        conditions.push(CommitCondition::Absent { path: path.clone() });
+        let mut mutations = work.vec(1)?;
+        work.append_record(
+            &mut mutations,
+            path,
+            [acyclic_stream::OwnedBytes::from_static(
+                b"acyclic.fs.operations/v1",
+            )],
+        )?;
+        let request = CommitRequest {
+            deadline_unix_millis: None,
+            effects: crate::distributed::composition::funded_effect(
+                acyclic_stream::CommitEffect {
+                    conditions,
+                    mutations,
+                    soft: true,
+                },
+                work,
+            )?,
+            idempotency_key: work.key(
+                self.placement.key_scope(),
+                b"operation-namespace/v1",
+                &[],
+            )?,
+        };
+        let result = self.commit(request, None, work, None::<&mut ()>).await;
+        if !work.is_native() {
+            work.release_request()?;
+        }
+        let outcome = result.map_err(|error| error.into_error(std::convert::identity))?;
+        match outcome.0 {
+            CommitOutcome::Committed(_) => Ok(()),
+            CommitOutcome::Conflict(_) => Err(AuthorityStoreError::RejectedStatic(
+                "operation namespace preparation was refused",
+            )),
+        }
+    }
     fn prepare_fork_records(
         &self,
         fork: &WorkspaceForkCommit,
@@ -575,7 +691,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let mut request = CommitRequest {
             deadline_unix_millis: None,
             effects: crate::distributed::composition::funded_effect(
-                acyclic_stream::CommitEffect::hard(work.vec(18)?, work.vec(17)?),
+                acyclic_stream::CommitEffect::hard(work.vec(20)?, work.vec(19)?),
                 work,
             )?,
             idempotency_key: work.key(

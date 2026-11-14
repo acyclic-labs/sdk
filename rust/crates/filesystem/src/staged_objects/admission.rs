@@ -5,6 +5,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         requires_child_first_publication,
         maximum_reference_bytes,
         prepare_hashed,
+        restore_hashed,
     );
 
     async fn put_stored(
@@ -16,13 +17,8 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         if id.storage.is_none() {
             return self.put(id, bytes, work).await;
         }
-        let unswept = self
-            .collection
-            .unswept(&mut work.accounting())
-            .await
-            .map_err(crate::async_storage::object_error)?;
-        self.collection.writing(&unswept, [id]);
-        self.inner.put_stored(id, bytes, work).await
+        let object = self.inner.restore_hashed(id, bytes, u64::MAX, work)?;
+        self.put_hashed(object, work).await
     }
     async fn read_stored(
         &self,
@@ -30,10 +26,8 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         maximum: u64,
         work: &mut AuthorityWork<'_>,
     ) -> Result<ObjectRead, ObjectStoreError> {
-        if id.storage.is_none() {
-            return self.read(id, maximum, work).await;
-        }
-        self.inner.read_stored(id, maximum, work).await
+        self.read_representation::<crate::async_storage::Stored>(id, maximum, work)
+            .await
     }
     async fn read_many_stored(
         &self,
@@ -97,22 +91,24 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
             .check()
             .map_err(crate::async_storage::object_error)?;
         let native = work.original;
-        if object.object_id().storage.is_some() || object.length() > MAXIMUM_DRAIN_BYTES {
-            return in_frame(native, || async {
-                let unswept = self
-                    .collection
-                    .unswept(&mut work.accounting())
-                    .await
-                    .map_err(crate::async_storage::object_error)?;
-                self.collection.writing(&unswept, [object.object_id()]);
-                self.inner.put_hashed(object, work).await
-            })
-            .await;
-        }
+        // This short shared admission establishes the collection cut, while
+        // the original operation's root group protects a not-yet-installed
+        // parent after the admission is released. Concurrent puts are readers.
+        let unswept = self
+            .collection
+            .unswept(&mut work.accounting())
+            .await
+            .map_err(crate::async_storage::object_error)?;
+        let mut construction = std::mem::take(&mut work.construction);
+        let pinned = construction.pin(&self.collection, object.object_id(), &mut work.accounting());
+        work.construction = construction;
+        pinned.map_err(crate::async_storage::object_error)?;
+        self.collection.writing(&unswept, [object.object_id()]);
         let overflowing = {
             let mut index = self.index_mut();
             index.admit_resident(object)? && index.resident_bytes > MAXIMUM_RESIDENT_BYTES
         };
+        drop(unswept);
         if !overflowing {
             return Ok(());
         }
@@ -184,26 +180,8 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         maximum_bytes: u64,
         work: &mut AuthorityWork<'_>,
     ) -> Result<ObjectRead, ObjectStoreError> {
-        work.accounting()
-            .check()
-            .map_err(crate::async_storage::object_error)?;
-        match self.lookup(object_id) {
-            Lookup::Resident(bytes) => return resident_read(bytes, maximum_bytes, work),
-            // Only spill offsets need protection against reuse by a drain.
-            // Durable immutable reads must remain independent of a concurrent
-            // publication, including synchronous native callbacks.
-            Lookup::Absent => {
-                return in_frame(work.original, || {
-                    self.inner.read(object_id, maximum_bytes, work)
-                })
-                .await;
-            }
-            Lookup::Spilled { .. } => {}
-        }
-        in_frame(work.original, || {
-            self.read_private(object_id, maximum_bytes, work)
-        })
-        .await
+        self.read_representation::<crate::async_storage::Decoded>(object_id, maximum_bytes, work)
+            .await
     }
     async fn read_many(
         &self,

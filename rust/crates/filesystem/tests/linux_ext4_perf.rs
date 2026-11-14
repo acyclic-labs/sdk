@@ -227,10 +227,7 @@ async fn qualify_linux_lazy_source_promotion() -> Result<(), Box<dyn std::error:
         );
         let cancel = CancellationToken::new();
         let work = work(&cancel)?;
-        let mut ctx = KernelAccounting::NativeOriginal {
-            work: &work,
-            cancellation: &cancel,
-        };
+        let mut ctx = KernelAccounting::native(&work, &cancel);
         let lookup = lazy.lookup("/direct-remove.txt", &mut ctx).await?;
         assert!(matches!(&lookup.0, acyclic_fs::LazyLookup::Source { .. }));
         lazy.retire_lookup(lookup, &mut ctx)?;
@@ -426,10 +423,7 @@ async fn qualify_linux_open_hardlink_unlink() -> Result<(), Box<dyn std::error::
         verify(b"update")?;
         let cancel = CancellationToken::new();
         let work = work(&cancel)?;
-        let mut ctx = KernelAccounting::NativeOriginal {
-            work: &work,
-            cancellation: &cancel,
-        };
+        let mut ctx = KernelAccounting::native(&work, &cancel);
         assert!(matches!(
             lazy.lookup("/a", &mut ctx).await,
             Err(acyclic_fs::LazyWorkspaceError::NotFound)

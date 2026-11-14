@@ -12,9 +12,16 @@ struct CommitPublication {
     envelope: CommittedEnvelope,
     result: CommitOutcome,
     namespace: Namespace,
+    /// The accepted commit time, once bound.
+    time: u64,
     resident: Allocation,
     output_claim: Allocation,
     _scratch: Allocation,
+}
+
+enum PublicationRetention<'a> {
+    Durable(RetainedFactRef),
+    Ephemeral(&'a MemoryStream, EphemeralRetention),
 }
 
 impl CommitPlan {
@@ -44,6 +51,7 @@ impl CommitPlan {
     ) -> Result<CommitPublication, StreamError> {
         let namespace = stage_namespace(state, self.paths, self.histories, &self.envelope, build)?;
         Ok(CommitPublication {
+            time: self.envelope.committed_at_micros,
             envelope: self.envelope,
             result: self.result,
             namespace,
@@ -64,6 +72,7 @@ impl CommitPublication {
         if let CommitOutcome::Committed(receipt) = &mut self.result {
             receipt.committed_at_micros = time;
         }
+        self.time = time;
         Ok(time)
     }
 
@@ -73,21 +82,44 @@ impl CommitPublication {
         probe: &mut impl FnMut(u64),
         key: IdempotencyKey,
         digest: [u8; 32],
-        time: u64,
-        retained: RetainedFactRef,
+        scope: &Scope,
+        retained: PublicationRetention<'_>,
     ) -> Result<(CommitOutcome, Allocation), StreamError> {
-        install_namespace(state, self.namespace, &self.envelope)?;
-        state.decision += 1;
-        state.last_committed_at_micros = time;
-        retain(
-            state,
-            probe,
-            None,
-            Some(key),
-            digest,
-            IdempotencyOutcome::Commit(self.envelope),
-            (self.resident, retained),
-        );
+        install_namespace(state, self.namespace, &self.envelope, scope)?;
+        state.advance(scope, self.time);
+        let result = IdempotencyOutcome::Commit(self.envelope);
+        match retained {
+            PublicationRetention::Durable(retained) => {
+                retain(
+                    state,
+                    probe,
+                    None,
+                    Some(key),
+                    digest,
+                    result,
+                    (self.resident, retained),
+                );
+            }
+            PublicationRetention::Ephemeral(stream, retention) => {
+                let index = state.decision;
+                state.ephemeral.retain(
+                    stream,
+                    scope,
+                    retention,
+                    RetainedFact {
+                        previous: None,
+                        replay: Some(key.0),
+                        next: Default::default(),
+                        digest,
+                        result,
+                        envelope: None,
+                        index,
+                        _allocation: self.resident,
+                        _header: None,
+                    },
+                );
+            }
+        }
         Ok((self.result, self.output_claim))
     }
 }
@@ -494,20 +526,26 @@ impl MemoryStream {
         >,
         StreamError,
     > {
-        if let Some(replay) = self.replay(state, request.idempotency_key.as_bytes())? {
-            if replay.digest != digest {
+        if let Some((replayed, result, index, ephemeral)) =
+            self.replay_in(state, request.idempotency_key.as_bytes())?
+        {
+            if *replayed != digest {
                 return Err(StreamError::IdempotencyMismatch);
             }
-            let IdempotencyOutcome::Commit(result) = &replay.result else {
+            let IdempotencyOutcome::Commit(result) = result else {
                 return Err(StreamError::IdempotencyMismatch);
             };
-            let (receipt, mut claim) =
-                self.replayed(request, result, self.revisions.at(replay.index))?;
+            let (receipt, mut claim) = self.replayed(request, result, self.revisions.at(index))?;
             let envelope = self.selected_envelope(result, accepted, &mut claim)?;
-            return Ok(Decision::Returned((
-                commit_projection(CommitOutcome::Committed(receipt), envelope)?,
-                claim,
-            )));
+            // A saved success owns its selection and durability. Conditions
+            // and lease ownership may have changed since that publication.
+            return Ok(Decision::Returned {
+                result: (
+                    commit_projection(CommitOutcome::Committed(receipt), envelope)?,
+                    claim,
+                ),
+                ephemeral,
+            });
         }
         let deadline = deadline
             .into_iter()
@@ -521,7 +559,6 @@ impl MemoryStream {
             }
         };
         check_deadline()?;
-        let mut probes = self.replay_insertion_probes(request.idempotency_key.as_bytes())?;
         let (conflicts, output_claim) =
             self.vector(crate::preparation::hard_conditions(request))?;
         // The receipt carries the skipped soft effects, so their claim joins
@@ -536,6 +573,8 @@ impl MemoryStream {
         if !conflicts.is_empty() {
             check_deadline()?;
             let result = CommitOutcome::Conflict(conflicts);
+            #[cfg(all(loom, not(target_arch = "wasm32")))]
+            let mut probes = self.replay_insertion_probes(request.idempotency_key.as_bytes())?;
             // Old behaviour, for negative controls only: the conflict spends the key.
             #[cfg(all(loom, not(target_arch = "wasm32")))]
             if crate::verification::fault_is(crate::verification::Fault::RetainConflictKey) {
@@ -562,9 +601,19 @@ impl MemoryStream {
             } else {
                 crate::WriteOutcome::Commit(result)
             };
-            return Ok(Decision::Returned((result, output_claim)));
+            return Ok(Decision::Returned {
+                result: (result, output_claim),
+                ephemeral: false,
+            });
         }
         drop((conflicts, output_claim));
+        let scope = self.commit_scope(state, request, &skipped)?;
+        let durable = matches!(scope, Scope::Durable);
+        let mut probes = if durable {
+            self.replay_insertion_probes(request.idempotency_key.as_bytes())?
+        } else {
+            ReplayProbes::default()
+        };
         // Planning views the applied mutations in canonical order through one
         // admitted vector of references; no request vector is copied.
         let (applied, applied_claim) =
@@ -581,20 +630,24 @@ impl MemoryStream {
                 }
             }),
         )?;
-        admit_replay(state, self.limits)?;
+        if durable {
+            admit_replay(state, self.limits)?;
+        }
         reserve_coordinated(state, &applied, self.limits)?;
-        self.reserve_commit_index(&mut probes)?;
-        let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
+        if durable {
+            self.reserve_commit_index(&mut probes)?;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
             work.record(work.meter.admit_codec(0, 0, identity_bytes()))?;
         }
-        let commit_id = commit_identity(decision, digest);
+        let (decision, commit_id) = state.identity(&scope, digest)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
             work.record(work.meter.record_codec(0, 0, identity_bytes()))?;
         }
-        let retained = self.reserve_retained(state)?;
+        let retained = durable.then(|| self.reserve_retained(state)).transpose()?;
+        let ephemeral = self.reserve_ephemeral(&scope, &request.idempotency_key)?;
         let mut plan = self.plan_commit(state, &applied, commit_id, time)?;
         drop((applied, applied_claim));
         self.absorb(&mut plan.output_claim, skipped_claim)?;
@@ -612,6 +665,7 @@ impl MemoryStream {
             &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
         )?;
         Ok(Decision::Accepted {
+            ephemeral: matches!(scope, Scope::Ephemeral(_)),
             bytes,
             install: move |state: &mut State, durable: bool, at_millis| {
                 if !durable {
@@ -621,18 +675,86 @@ impl MemoryStream {
                 if let Some(envelope) = &mut envelope {
                     bind_envelope(envelope, commit_id, time);
                 }
-                let retained = self.install_retained(state, retained)?;
+                let retained = match retained {
+                    Some(retained) => {
+                        PublicationRetention::Durable(self.install_retained(state, retained)?)
+                    }
+                    None => PublicationRetention::Ephemeral(
+                        self,
+                        ephemeral
+                            .unwrap_or_else(|| unreachable!("leased write reserves its indexes")),
+                    ),
+                };
                 let (outcome, allocation) = publication.publish(
                     state,
                     &mut |items| self.record_replay_probe(&mut probes, items),
                     request.idempotency_key.clone(),
                     digest,
-                    time,
+                    &scope,
                     retained,
                 )?;
                 Ok((commit_projection(outcome, envelope)?, allocation))
             },
         })
+    }
+
+    /// Scope follows the selected effects, never a skipped mutation. Durable
+    /// replay must also skip any omitted effect that observed a lease: the
+    /// command journal cannot reconstruct an incarnation-only observation.
+    fn commit_scope(
+        &self,
+        state: &State,
+        request: &CommitRequest,
+        skipped: &[u32],
+    ) -> Result<Scope, StreamError> {
+        let applied = crate::preparation::settled_effects(request, skipped)
+            .filter_map(|(omitted, effect)| (!omitted).then_some(effect));
+        let scope = state.ephemeral.scope(
+            &state.paths,
+            applied
+                .clone()
+                .flat_map(|effect| effect.mutations.iter().map(CommitMutation::path)),
+            applied.flat_map(|effect| {
+                effect.conditions.iter().map(CommitCondition::path).chain(
+                    effect
+                        .mutations
+                        .iter()
+                        .filter_map(|mutation| match mutation {
+                            CommitMutation::Fork { source, .. } => Some(source),
+                            CommitMutation::Append { .. } => None,
+                        }),
+                )
+            }),
+        )?;
+        if matches!(scope, Scope::Durable) {
+            for (_, effect) in
+                crate::preparation::settled_effects(request, skipped).filter(|(omitted, effect)| {
+                    *omitted
+                        && effect.conditions.iter().any(|condition| {
+                            state.ephemeral.root_of(condition.path().as_str()).is_some()
+                        })
+                })
+            {
+                let mut replay_skips = false;
+                for condition in &effect.conditions {
+                    let conflict = if state.ephemeral.root_of(condition.path().as_str()).is_some() {
+                        crate::preparation::condition_conflict(condition, None, || {
+                            Err(StreamError::InvalidResponse)
+                        })?
+                    } else {
+                        self.condition_conflict(state, condition)?
+                    };
+                    if conflict.is_some() {
+                        replay_skips = true;
+                        break;
+                    }
+                }
+                if !replay_skips {
+                    return Err(StreamError::InvalidArgument);
+                }
+            }
+        }
+        Ok(scope)
     }
 
     fn selected_envelope(
@@ -867,6 +989,9 @@ fn stage_namespace(
                 #[cfg(not(all(loom, not(target_arch = "wasm32"))))]
                 let excludes = &fork.exclude[..];
                 let subtree = Namespace::excluded(&subtree, excludes, build)?;
+                // No fork carries another lease's ephemeral subtree.
+                let subtree =
+                    Namespace::excluded(&subtree, &state.ephemeral.nested(&fork.source)?, build)?;
                 origin = Some(ForkMarker {
                     source: fork.source.clone(),
                     snapshot: subtree.clone(),
@@ -890,8 +1015,10 @@ fn install_namespace(
     state: &mut State,
     next: Namespace,
     envelope: &CommittedEnvelope,
+    scope: &Scope,
 ) -> Result<(), StreamError> {
-    if next.len() != state.paths.len() {
+    // Ephemeral paths are never listed, so they never move the hierarchy.
+    if matches!(scope, Scope::Durable) && next.len() != state.paths.len() {
         state.hierarchy_version = envelope.commit_id;
     }
     state.path_bytes = next.bytes();
@@ -900,6 +1027,7 @@ fn install_namespace(
     // created. Range over subscribers, never over the inherited subtree.
     for fact in &envelope.mutations {
         let path = crate::request::fact_path(fact);
+        state.ephemeral.adopt(scope, &previous, path);
         if previous.get(path).is_some() {
             continue;
         }
@@ -947,11 +1075,20 @@ fn install_namespace(
             signals.changed.send_replace(tail);
             crate::follow_index::FollowIndex::publish(&signals.follows, fact_records(fact), tail);
         }
-        state.record_count += fact_records(fact).len();
-        state.payload_bytes += fact_records(fact)
+        let records = fact_records(fact).len();
+        let payload_bytes = fact_records(fact)
             .iter()
             .map(|record| record.payload_bytes())
             .sum::<usize>();
+        state.record_count += records;
+        state.payload_bytes += payload_bytes;
+        // A release returns exactly what its subtree was charged.
+        if let Scope::Ephemeral(root) = scope
+            && let Some(lease) = state.ephemeral.roots.get_mut(root)
+        {
+            lease.records += records;
+            lease.payload_bytes += payload_bytes;
+        }
     }
     Ok(())
 }

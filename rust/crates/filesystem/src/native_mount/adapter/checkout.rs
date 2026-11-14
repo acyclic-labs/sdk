@@ -12,6 +12,7 @@ pub struct SharedCheckout<A: 'static, O: 'static> {
     publishing: AtomicBool,
     returned: StdMutex<Option<SharedCheckoutState<A, O>>>,
     publication_changed: tokio::sync::Notify,
+    command: Option<CommandCheckout<A, O>>,
     _native_allocation: Option<crate::NativeAllocation>,
 }
 
@@ -74,6 +75,7 @@ impl<A: 'static, O: 'static> SharedCheckout<A, O> {
             publishing: AtomicBool::new(false),
             returned: StdMutex::new(None),
             publication_changed: tokio::sync::Notify::new(),
+            command: None,
             _native_allocation: None,
         }
     }
@@ -113,6 +115,7 @@ impl<A: 'static, O: 'static> SharedCheckout<A, O> {
             publishing: AtomicBool::new(false),
             returned: StdMutex::new(None),
             publication_changed: tokio::sync::Notify::new(),
+            command: None,
             _native_allocation: Some(allocation),
         }))
     }
@@ -190,6 +193,25 @@ impl<A: 'static, O: 'static> SharedCheckout<A, O> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
+        let command_view = match &self.command {
+            Some(command) => {
+                let work = carrier
+                    .original_native_work()
+                    .ok_or(MountSourceError::OriginalSnapshotUnavailable)?;
+                Some(
+                    access::policy_snapshot(
+                        self,
+                        &command.access,
+                        command.refresh.as_ref(),
+                        &self.clock,
+                        cancellation,
+                        work,
+                    )
+                    .await?,
+                )
+            }
+            None => None,
+        };
         let publication = await_with_cancellation(
             self.publication_fence.read(),
             carrier,
@@ -197,7 +219,8 @@ impl<A: 'static, O: 'static> SharedCheckout<A, O> {
             lifetime,
         )
         .await?;
-        let state = await_with_cancellation(self.lock(), carrier, cancellation, lifetime).await?;
+        let mut state =
+            await_with_cancellation(self.lock(), carrier, cancellation, lifetime).await?;
         let epoch = self.view_gate.generation();
         let stamp = self.ledger.stamp();
         match operation {
@@ -210,6 +233,7 @@ impl<A: 'static, O: 'static> SharedCheckout<A, O> {
             .ok_or(MountSourceError::NativeWork(
                 crate::NativeTreeMaterializationError::InvalidLayout,
             ))?;
+        self.promote_command(&mut state, work, cancellation).await?;
         let mut checkout = state
             .checkout
             .private_candidate(
@@ -228,7 +252,17 @@ impl<A: 'static, O: 'static> SharedCheckout<A, O> {
         // Every native mutation retains its pinned policy metadata in the
         // proof that authorizes publication. Only the private candidate needs
         // this I/O; neither the checkout nor its callback gate stays locked.
-        checkout.access_policy_revision(work, cancellation).await?;
+        let revision = checkout.access_policy_revision(work, cancellation).await?;
+        if let Some(view) = command_view {
+            let generation = self.authorization_generation(&checkout)?;
+            if view
+                .data_generation()
+                .is_some_and(|selected| selected != generation)
+                || !view.matches_policy_revision(generation, revision)
+            {
+                return Err(MountSourceError::AccessDenied);
+            }
+        }
         Ok(CheckoutCandidate {
             _publication: publication,
             deadline: None,

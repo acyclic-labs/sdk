@@ -1555,3 +1555,64 @@ async fn rejected_gate_attempt_retries_without_changing_authority_head() -> Test
     ));
     Ok(())
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn ephemeral_forks_reopen_without_an_operation_namespace() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let cancel = CancellationToken::new();
+    let source = AuthorityId::from_bytes([211; 16]);
+    let operations = StreamPath::new("fs/operations")?;
+    {
+        let provider = Arc::new(
+            acyclic_stream::LocalStream::open(
+                directory.path(),
+                acyclic_stream::LocalStreamLimits::default(),
+            )
+            .await?,
+        );
+        let store = StreamAuthorityStore::new(provider.clone());
+        let mut work = AuthorityWork::new(BUDGET, &cancel);
+        store
+            .create_authority(source, Epoch::GENESIS, &mut work, None::<&mut ()>)
+            .await?;
+        assert!(matches!(
+            provider.tail(operations.clone()).await,
+            Err(StreamError::NotFound)
+        ));
+    }
+    let provider = Arc::new(
+        acyclic_stream::LocalStream::open(
+            directory.path(),
+            acyclic_stream::LocalStreamLimits::default(),
+        )
+        .await?,
+    );
+    let store = StreamAuthorityStore::new(provider.clone());
+    // Both first use after reopen and a later independent lease use the same
+    // durable namespace; settling either lease must not delete that parent.
+    for id in [212, 213] {
+        let destination = AuthorityId::from_bytes([id; 16]);
+        let mut work = AuthorityWork::new(BUDGET, &cancel);
+        let lease = store
+            .fork_ephemeral(
+                crate::EphemeralForkCommit {
+                    lineage: None,
+                    destination,
+                    creation: proposed(id),
+                },
+                &mut work,
+            )
+            .await?;
+        assert_eq!(provider.tail(operations.clone()).await?, 1);
+        let root = store.placement.stream_path(destination, "")?;
+        assert_eq!(provider.tail(root.clone()).await?, 1);
+        lease.settle().await?;
+        assert!(matches!(
+            provider.tail(root).await,
+            Err(StreamError::NotFound)
+        ));
+        assert_eq!(provider.tail(operations.clone()).await?, 1);
+    }
+    Ok(())
+}
