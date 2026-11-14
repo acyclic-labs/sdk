@@ -901,3 +901,93 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
     assert_eq!((first.request_count(), second.request_count()), (8, 10));
     Ok(())
 }
+
+#[tokio::test]
+async fn refused_settings_preserve_the_published_file_and_running_model() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    std::fs::create_dir(directory.path().join(".git"))
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let provider = scripted([ScriptedTurn::Text("ready".into())]);
+    let harness = Arc::new(
+        super::open_scripted(checkout_config(
+            directory.path(),
+            (model()?, provider.clone()),
+        )?)
+        .await?,
+    );
+    let connection = harness.connect().await?;
+    let AgentReply::Spawned { agent: worker, .. } = connection
+        .execute(&AgentCommand::Spawn {
+            parent: connection.root().clone(),
+            id: crate::agent::IntentId::try_from("settings-writer")
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            brief: ModelContent::Text("Prepare to edit your settings".into()),
+            role: "worker".into(),
+        })
+        .await?
+    else {
+        return Err(Error::Invalid("settings worker did not open".into()));
+    };
+    agents::settled(&harness, &worker).await?;
+    assert_eq!(provider.request_count(), 1);
+    provider.extend([
+        code("prepare-settings", r#"
+            import {write} from 'acyclic';
+            await write('volume:///home/agent.ts', "export default {model:'scripted/test'};", 'any');
+            export default 'prepared';
+        "#),
+        code("refuse-settings", r#"
+            import {read, write} from 'acyclic';
+            const path = 'volume:///home/agent.ts';
+            const before = await read(path);
+            if (before === null) throw new Error('original settings are absent');
+            let refused = false;
+            try { await write(path, 'export default {', before.version); }
+            catch (error) {
+                if (!(error instanceof Error)) throw error;
+                refused = true;
+            }
+            const after = await read(path);
+            export default {
+                refused,
+                unchanged: after !== null && after.text() === before.text(),
+                sameVersion: after !== null && after.version === before.version,
+            };
+        "#),
+        ScriptedTurn::Text("configuration unchanged".into()),
+    ]);
+    let conversation = Conversation::open(connection.select(worker).await?);
+    let mut observed = ObservedConversation::observe(conversation, None).await?;
+    let entry = observed
+        .send("refuse-settings", "Try an invalid settings change")
+        .await?;
+    assert!(entry.outcome.is_completed(), "{:?}", entry.outcome);
+    assert_eq!(
+        observed.conversation.output_text(&entry).await?,
+        "configuration unchanged"
+    );
+    assert_eq!(provider.request_count(), 4);
+    let before = provider.request(1).unwrap();
+    let after = provider.request(3).unwrap();
+    assert_eq!(
+        result(&provider.request(2).unwrap(), "prepare-settings")?,
+        "prepared"
+    );
+    assert_eq!(
+        result(&after, "refuse-settings")?,
+        &json!({
+            "refused": true, "unchanged": true, "sameVersion": true,
+        })
+    );
+    assert_eq!(after.model, before.model);
+    assert_eq!(system_prefix(&after)?, system_prefix(&before)?);
+    assert_eq!(
+        observed
+            .conversation
+            .send("refuse-settings", "Try an invalid settings change")
+            .await?,
+        entry.inbox
+    );
+    assert_eq!(provider.request_count(), 4);
+    Ok(())
+}
