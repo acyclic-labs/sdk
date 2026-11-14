@@ -1256,6 +1256,21 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     let mut watching = Box::pin(bound.files(&agent, root, &trace_paths, Some(&before.cut)));
     assert!(futures::poll!(&mut watching).is_pending());
     assert!(bound.trace_recorder(&agent)?.is_some());
+    let appended = journal
+        .append(
+            OperationId::from_bytes([76; 16]),
+            "observed-start",
+            &event,
+            None,
+        )?
+        .await?;
+    assert!(appended > 0);
+    assert!(
+        !journal
+            .append_if_tail(operation, 0, "stale-start", &event, None)?
+            .await?,
+        "stale original tail unexpectedly accepted"
+    );
     let records = journal.replay(operation, 0, 1, None)?.await?;
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].event, event);
@@ -1351,6 +1366,9 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
         } = observation
         {
             let expected = match start.name.as_str() {
+                "harness.execution_append" | "harness.execution_append_if_tail" => {
+                    (None, "original_execution_publication_decision")
+                }
                 "harness.execution_replay_page" => (None, "authenticated_execution_prefix"),
                 "harness.private_stage" => (Some(3), "authenticated_private_publication"),
                 "harness.private_load" => (Some(3), "authenticated_immutable_content"),
@@ -1365,7 +1383,10 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
             assert_eq!(
                 start.mechanism,
                 match start.name.as_str() {
-                    "harness.private_stage" => acyclic_stream::trace::Mechanism::Commit,
+                    "harness.private_stage"
+                    | "harness.execution_append"
+                    | "harness.execution_append_if_tail" =>
+                        acyclic_stream::trace::Mechanism::Commit,
                     "harness.verify_input_file" | "harness.authenticate_publication" =>
                         acyclic_stream::trace::Mechanism::AuthCheck,
                     _ => acyclic_stream::trace::Mechanism::Io,
@@ -1381,7 +1402,7 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
             }
         }
     }
-    assert_eq!(original.len(), 5);
+    assert_eq!(original.len(), 7);
     assert_eq!(membership, 2);
     Ok(())
 }
