@@ -16,8 +16,8 @@ pub(crate) const OWNED: &[&str] = &[REVISION, MINIMUM_REVISION];
 pub struct Error {
     /// Public semantic category, suitable for programmatic handling.
     pub code: wire::ErrorCode,
-    /// Original shared stream or framing failure, retained without reclassification.
-    pub source: Option<acyclic_stream::StreamError>,
+    /// Original local failure, retained independently of the public category.
+    pub source: Option<acyclic_auth::failure::Failure<Error>>,
     /// Original local stop, when the caller's operation budget ended. Neither
     /// cancellation nor expiry proves that a remote mutation did not commit.
     pub stopped: Option<acyclic_auth::operation::Stopped>,
@@ -27,6 +27,15 @@ pub struct Error {
     pub refusal: Option<acyclic_auth::refusal::Refusal>,
 }
 impl Error {
+    /// Retain a concrete local cause without changing the semantic category or
+    /// the refusal encoded on the wire. Clones share the original cause owner.
+    #[must_use]
+    pub fn with_source(self, source: impl acyclic_auth::failure::Source) -> Self {
+        let mut failure = self.clone();
+        failure.source = Some(acyclic_auth::failure::Failure::new(self, source));
+        failure
+    }
+
     /// Decodes an owned member status through the same canonical detail and
     /// category conversion used by native transports. Original diagnostic
     /// bytes remain owned by the refusal, including unknown fields.
@@ -149,7 +158,7 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         if let Some(source) = &self.source {
-            return Some(source);
+            return std::error::Error::source(source);
         }
         match &self.stopped {
             Some(stopped) => Some(stopped),
