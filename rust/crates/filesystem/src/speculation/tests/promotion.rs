@@ -1,6 +1,9 @@
 use super::*;
 use crate::foundation::Digest;
-use crate::memory::{MemoryAuthorityStore, MemoryObjectStore};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::memory::MemoryAuthorityStore;
+use crate::memory::MemoryObjectStore;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::simulation::{Simulation, SimulationFault, sites};
 use crate::storage::{
     ObjectKind, ObjectReadRequest, ObjectReadRetention, ObjectStoreError, object_digest,
@@ -699,6 +702,7 @@ async fn promotion_rejects_owned_retention_that_exceeds_the_admitted_live_peak()
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn simulated_remote_promotion_fails_exactly_and_retries_idempotently()
 -> Result<(), Box<dyn std::error::Error>> {

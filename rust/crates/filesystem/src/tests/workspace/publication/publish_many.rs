@@ -365,6 +365,7 @@ async fn coupled_publication_refuses_the_whole_cut_on_any_conflict() -> Result<(
 /// The shared object simulator stops at each actual read, batch, presence,
 /// write or durability-barrier await. Both errors and dropped futures must
 /// unwind every partial contribution, including the first workspace's proof.
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn coupled_publication_preparation_is_atomic_at_every_object_cut()
 -> Result<(), Box<dyn Error>> {

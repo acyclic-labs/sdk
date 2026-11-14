@@ -196,6 +196,12 @@ async fn scenario(actions: &[Action]) -> Result<(), Box<dyn Error>> {
                     ForkOptions::from_generation(base, IdempotencyKey::new()),
                 )
                 .await?;
+                // Both sides must change the fork-point contents (at most 33
+                // bytes) and differ from each other, or the merge is valid.
+                let mut bytes = bytes;
+                if expected.get(&path) == Some(&bytes) {
+                    bytes.push(action.other);
+                }
                 parent.write(&path, bytes.clone().into()).await?;
                 child.write(&path, vec![action.other; 34].into()).await?;
                 expected.insert(path, bytes);
