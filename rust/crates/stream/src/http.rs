@@ -576,7 +576,14 @@ mod tests {
                             .encode_to_vec(),
                         ),
                     );
-                    prop_assert!(matches!(result, Err(StreamError::AccessDenied)));
+                    let error = result
+                        .expect_err("exhausted original credential source must refuse dispatch");
+                    prop_assert_eq!(error.category(), StreamError::AccessDenied);
+                    prop_assert!(
+                        std::iter::successors(std::error::Error::source(&error), |source| source
+                            .source())
+                        .any(|source| source.is::<CredentialError>())
+                    );
                     Ok(())
                 },
             )
