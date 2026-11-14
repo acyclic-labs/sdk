@@ -364,7 +364,7 @@ fn open_standard_streams(directory: Option<&File>) -> [bool; 3] {
     [0, 1, 2].map(|fd: RawFd| {
         // SAFETY: F_GETFD reads descriptor flags without dereferencing memory or
         // changing descriptor ownership; a closed descriptor simply returns -1.
-        Some(fd) != directory.map(AsRawFd::as_raw_fd)
+        Some(fd) != directory.map(|file| file.as_raw_fd())
             && unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0
     })
 }
