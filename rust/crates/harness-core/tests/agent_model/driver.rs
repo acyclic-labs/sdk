@@ -377,7 +377,7 @@ async fn a_roster_enters_the_conversation_only_when_its_digest_changes() -> Resu
             .outs
             .iter()
             .filter_map(|out| match out {
-                Out::Conversation(bytes) => Some(ConversationEntry::decode(bytes)),
+                Out::Conversation(bytes) => Some(ConversationEntry::decode(bytes.as_bytes())),
                 _ => None,
             })
             .collect::<std::result::Result<_, _>>()?;
@@ -552,7 +552,7 @@ async fn definitive_failures_settle_the_turn_and_uncertain_ones_retry() -> Resul
         let entries = |outs: &[Out]| -> Result<Vec<ConversationEntry>> {
             outs.iter()
                 .filter_map(|out| match out {
-                    Out::Conversation(bytes) => Some(ConversationEntry::decode(bytes)),
+                    Out::Conversation(bytes) => Some(ConversationEntry::decode(bytes.as_bytes())),
                     _ => None,
                 })
                 .collect::<std::result::Result<_, _>>()
@@ -661,7 +661,7 @@ async fn settled_turns_keep_actions_recorded_before_a_later_provider_failure() -
         };
         assert_eq!(
             matches!(
-                ConversationEntry::decode(entry)?.outcome,
+                ConversationEntry::decode(entry.as_bytes())?.outcome,
                 TurnOutcome::Failed { .. }
             ),
             failed
@@ -1025,9 +1025,9 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
         if sequence == 3 {
             for out in &mut wrong.outs {
                 if let Out::Conversation(bytes) = out {
-                    let mut entry = ConversationEntry::decode(bytes)?;
+                    let mut entry = ConversationEntry::decode(bytes.as_bytes())?;
                     entry.goal = Some(OperationId::from_bytes([99; 16]));
-                    *bytes = entry.encode()?;
+                    *bytes = entry.record()?;
                 }
             }
         }

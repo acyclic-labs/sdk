@@ -810,7 +810,7 @@ async fn unrelated_turn_completion_preserves_a_queued_cancellation()
         }),
         notices: None,
     };
-    let encoded = entry.encode()?;
+    let encoded = entry.record()?;
     let outs = vec![Out::Conversation(encoded.clone())];
     let mut completed = CommitRequest {
         deadline_unix_millis: None,
@@ -821,7 +821,7 @@ async fn unrelated_turn_completion_preserves_a_queued_cancellation()
             }],
             vec![CommitMutation::Append {
                 path: path.conversation()?,
-                records: vec![encoded.into()],
+                records: vec![encoded.as_bytes().to_vec().into()],
             }],
         )],
         idempotency_key: crate::agent::intent_key("complete-first", &[])?,
@@ -1082,7 +1082,7 @@ async fn cancelling_a_goal_continuation_closes_only_its_run_without_an_entry()
                         }),
                         notices: None,
                     }
-                    .encode()?,
+                    .record()?,
                 ));
             }
             crate::agent::step(

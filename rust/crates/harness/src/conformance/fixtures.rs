@@ -115,7 +115,7 @@ pub(super) fn entry(
     agent: &AgentState,
     queued: Queued,
     outcome: TurnOutcome,
-) -> std::result::Result<Vec<u8>, Error> {
+) -> std::result::Result<ConversationRecord, Error> {
     ConversationEntry {
         inbox: queued.inbox,
         input: queued.input,
@@ -129,7 +129,7 @@ pub(super) fn entry(
         notices: None,
     }
     .with_observed_prefix(agent.steered_through)
-    .encode()
+    .record()
 }
 
 /// Deterministic turn shared by host and endpoint fixtures. Every intent publishes

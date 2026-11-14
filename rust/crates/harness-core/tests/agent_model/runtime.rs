@@ -132,11 +132,7 @@ async fn same_phase_settlement_advances_the_original_actor_checkpoint() -> Resul
     use futures::TryStreamExt as _;
     let provider = Arc::new(MemoryStream::default());
     let within = ActorReference::new(b"account", b"agents", b"owner")?;
-    let answers = [
-        b"answer".to_vec(),
-        vec![b'x'; MAX_RECORD_BYTES + 1],
-        vec![b'y'; acyclic_stream::MAX_RECORD_BYTES],
-    ];
+    let answers = ["answer", "second", "third"];
     let host = AgentHost::new(
         provider.clone(),
         super::script(
@@ -144,7 +140,7 @@ async fn same_phase_settlement_advances_the_original_actor_checkpoint() -> Resul
                 .iter()
                 .map(|answer| TurnStep {
                     checkpoint: None,
-                    outs: vec![Out::Conversation(answer.clone())],
+                    outs: vec![super::entry(answer)],
                     wait: Wait::Input,
                     drops: None,
                 })
@@ -185,10 +181,10 @@ async fn same_phase_settlement_advances_the_original_actor_checkpoint() -> Resul
         );
     }
     assert_eq!(host.state(&root).await?.conversation_tail, 3);
-    assert_eq!(
-        values(provider.as_ref(), root.conversation()?).await?,
-        answers
-    );
+    assert!(super::names(
+        &values(provider.as_ref(), root.conversation()?).await?,
+        &answers
+    )?);
     Ok(())
 }
 
@@ -454,7 +450,7 @@ async fn cancelling_an_injected_input_preserves_the_original_and_later_turns() -
                 };
                 Ok(TurnStep {
                     checkpoint: None,
-                    outs: vec![Out::Conversation(entry.encode()?)],
+                    outs: vec![Out::Conversation(entry.record()?)],
                     wait: Wait::Input,
                     drops: None,
                 })
@@ -842,10 +838,7 @@ async fn checkpoint_tails() -> Result<Vec<AgentPath>> {
             },
             TurnStep {
                 checkpoint: Some(vec![7; if oversized { MAX_CHECKPOINT_BYTES } else { 8 }]),
-                outs: vec![
-                    Out::Conversation(b"first".to_vec()),
-                    Out::Conversation(b"second".to_vec()),
-                ],
+                outs: vec![super::entry("first"), super::entry("second")],
                 wait: Wait::Approval {
                     id: intent("decision"),
                     binding: Some(acyclic_harness_core::interaction::ApprovalBinding {
@@ -933,10 +926,10 @@ async fn checkpoint_tails() -> Result<Vec<AgentPath>> {
         let committed = host.state(&child).await?;
         assert_eq!(committed.conversation_tail, before.conversation_tail + 2);
         assert_eq!(committed.status_tail, before.status_tail + 1);
-        assert_eq!(
-            values(provider.as_ref(), child.conversation()?).await?,
-            vec![b"first".to_vec(), b"second".to_vec()]
-        );
+        assert!(super::names(
+            &values(provider.as_ref(), child.conversation()?).await?,
+            &["first", "second"]
+        )?);
         assert_eq!(
             values(provider.as_ref(), child.status()?).await?.len() as u64,
             committed.status_tail

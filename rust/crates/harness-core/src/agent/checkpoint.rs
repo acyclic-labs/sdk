@@ -519,7 +519,6 @@ mod tests {
 
     #[test]
     fn wide_record_fixtures_fit_the_frame_and_round_trip() {
-        assert!(MAX_RECORD_BYTES <= acyclic_stream::MAX_RECORD_BYTES);
         // Names admit no control character, so `widest` is their worst case.
         let control = Sender::User {
             principal: "\0".into(),

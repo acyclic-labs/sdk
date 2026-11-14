@@ -469,10 +469,10 @@ pub enum Out {
         /// Entries below this frontier had already settled before cancellation.
         conversation: u64,
     },
-    /// Append to this agent's conversation.
-    Conversation(Vec<u8>),
+    /// Append this entry to the agent's conversation.
+    Conversation(super::ConversationRecord),
     /// Publish the preceding settled entry on the general event feed in its
-    /// same commit. Opaque custom conversation records remain opaque.
+    /// same commit.
     TurnDone {
         /// Original execution identity of the settled turn.
         turn: crate::OperationId,
@@ -1536,7 +1536,6 @@ fn admissible(out: &Out, path: &AgentPath) -> bool {
         Out::Steered(_) | Out::PendingSpawns(_) | Out::AwaitReplies(_) | Out::PeerGuard { .. } => {
             true
         }
-        Out::Conversation(record) => record.len() <= acyclic_stream::MAX_RECORD_BYTES,
         Out::Send { record, .. } => {
             !matches!(
                 record,
@@ -1558,7 +1557,10 @@ fn admissible(out: &Out, path: &AgentPath) -> bool {
                 && super::AgentRecord::check(&closed).is_ok()
                 && super::records::fits_frame(&closed)
         }
-        Out::Checkpoint
+        // An entry's encoding is bounded by the agent record bound, within
+        // the stream record bound (asserted beside `MAX_RECORD_BYTES`).
+        Out::Conversation(_)
+        | Out::Checkpoint
         | Out::Announced(_)
         | Out::Notices(_)
         | Out::TurnDone { .. }

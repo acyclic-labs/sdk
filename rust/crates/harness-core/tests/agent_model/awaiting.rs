@@ -77,7 +77,7 @@ impl TurnDriver for Waiter {
         &'a self,
         agent: &'a AgentState,
         _cursor: u64,
-        _input: Option<Queued>,
+        input: Option<Queued>,
         _cancellation: acyclic_actors::guest::CancellationToken,
     ) -> TurnFuture<'a> {
         Box::pin(async move {
@@ -90,7 +90,7 @@ impl TurnDriver for Waiter {
             if agent.parent.is_some() {
                 // A child's turn appends one entry, which `hold` follows.
                 return Ok(TurnStep {
-                    outs: vec![Out::Conversation(b"answer".to_vec())],
+                    outs: vec![super::entry_for(input.as_ref(), "answer")],
                     ..settled()
                 });
             }
@@ -238,7 +238,7 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
             &'a self,
             agent: &'a AgentState,
             cursor: u64,
-            _input: Option<Queued>,
+            input: Option<Queued>,
             _cancellation: acyclic_actors::guest::CancellationToken,
         ) -> TurnFuture<'a> {
             Box::pin(async move {
@@ -255,7 +255,7 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
                         ),
                         Some(_) => step(
                             b"",
-                            vec![Out::Conversation(b"answer".to_vec())],
+                            vec![super::entry_for(input.as_ref(), "answer")],
                             Wait::Input,
                         ),
                     });
