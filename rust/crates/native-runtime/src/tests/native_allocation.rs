@@ -1,5 +1,96 @@
 use super::*;
 
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config {
+        cases: 128,
+        rng_seed: proptest::test_runner::RngSeed::Fixed(0x6675_6e64_6564_6472),
+        failure_persistence: None,
+        ..proptest::test_runner::Config::default()
+    })]
+    #[test]
+    fn funded_values_refund_every_refusal_and_drop(
+        actions in proptest::collection::vec((0_u8..7, 0_usize..8, 0_usize..128), 0..80)
+    ) {
+        struct StoredBytes {
+            bytes: Box<[u8]>,
+            meter: Arc<ReadBudgetMeter>,
+            live: Arc<AtomicU64>,
+            ordered: Arc<AtomicBool>,
+        }
+        impl Drop for StoredBytes {
+            fn drop(&mut self) {
+                let before = self.live.fetch_sub(self.bytes.len() as u64, Ordering::AcqRel);
+                if self.meter.memory.load(Ordering::Acquire) != before {
+                    self.ordered.store(false, Ordering::Release);
+                }
+            }
+        }
+        let observed = Arc::new(ReadBudgetMeter::new(u64::MAX, u64::MAX));
+        let meter: Arc<dyn NativeReadMeter> = observed.clone();
+        let live = Arc::new(AtomicU64::new(0));
+        let ordered = Arc::new(AtomicBool::new(true));
+        let create = |bytes: usize| {
+            let value = StoredBytes {
+                bytes: vec![0; bytes].into_boxed_slice(),
+                meter: Arc::clone(&observed),
+                live: Arc::clone(&live),
+                ordered: Arc::clone(&ordered),
+            };
+            live.fetch_add(bytes as u64, Ordering::AcqRel);
+            value
+        };
+        let mut stored: [Option<Funded<StoredBytes>>; 8] = std::array::from_fn(|_| None);
+        for (action, slot, bytes) in actions {
+            match action {
+                0 | 1 => {
+                    observed.deny_allocations.store(action == 1, Ordering::Release);
+                    let before = observed.memory.load(Ordering::Acquire);
+                    let allocation = ReadAllocation::new(&meter, bytes);
+                    observed.deny_allocations.store(false, Ordering::Release);
+                    if action == 1 && bytes != 0 {
+                        proptest::prop_assert!(allocation.is_err());
+                    }
+                    match allocation {
+                        Ok(allocation) => {
+                            stored[slot] = Some(allocation.store(create(bytes)));
+                        }
+                        Err(_) => proptest::prop_assert_eq!(observed.memory.load(Ordering::Acquire), before),
+                    }
+                }
+                2 => {
+                    let before = observed.memory.load(Ordering::Acquire);
+                    let allocation = ReadAllocation::new(&meter, bytes).unwrap();
+                    let refused: io::Result<Funded<StoredBytes>> = allocation.try_store(|| {
+                        let _planned = create(bytes);
+                        Err(io::ErrorKind::OutOfMemory.into())
+                    });
+                    proptest::prop_assert!(refused.is_err());
+                    proptest::prop_assert_eq!(observed.memory.load(Ordering::Acquire), before);
+                }
+                3 => drop(stored[slot].take()),
+                4 => stored.swap(slot, (slot + 1) % 8),
+                5 => {
+                    for value in &mut stored {
+                        drop(value.take());
+                    }
+                }
+                _ => {
+                    observed.cancelled.store(true, Ordering::Release);
+                    proptest::prop_assert!(ReadAllocation::new(&meter, bytes).is_err());
+                    drop(stored[slot].take());
+                    observed.cancelled.store(false, Ordering::Release);
+                }
+            }
+            let retained = stored.iter().flatten().map(|value| value.value().bytes.len() as u64).sum::<u64>();
+            proptest::prop_assert_eq!(observed.memory.load(Ordering::Acquire), retained, "funded bytes differ from their stored values");
+        }
+        drop(stored);
+        proptest::prop_assert_eq!(observed.memory.load(Ordering::Acquire), 0, "dropped funded values left allocation bytes charged");
+        proptest::prop_assert_eq!(live.load(Ordering::Acquire), 0);
+        proptest::prop_assert!(ordered.load(Ordering::Acquire), "stored value lost funding before retirement");
+    }
+}
+
 #[repr(align(64))]
 struct Aligned {
     _byte: u8,

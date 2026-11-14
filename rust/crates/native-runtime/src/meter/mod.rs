@@ -4,11 +4,13 @@ mod allocation;
 mod arc;
 mod buffer;
 mod codec;
+mod funded;
 mod reservation;
 pub use allocation::{ReadAllocation, ReadAllocationReservation};
 pub use arc::arc_allocation_bytes;
 pub(crate) use buffer::ReadBuffer;
 pub use codec::{NativeCodecReservation, NativeCodecWork};
+pub use funded::Funded;
 pub use reservation::{NativeByteReservation, NativeOperationReservation};
 pub(crate) use reservation::{native_control_attempt, native_operation_attempt};
 

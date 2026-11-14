@@ -161,7 +161,7 @@ pub use service::{
 pub use shell::{host_command, platform_shell, shell_command};
 mod meter;
 pub use meter::{
-    NativeByteReservation, NativeCodecReservation, NativeCodecWork, NativeOperationKind,
+    Funded, NativeByteReservation, NativeCodecReservation, NativeCodecWork, NativeOperationKind,
     NativeOperationReservation, NativeReadMeter, ReadAllocation, ReadAllocationReservation,
     arc_allocation_bytes,
 };

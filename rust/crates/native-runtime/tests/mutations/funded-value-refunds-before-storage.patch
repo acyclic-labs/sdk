@@ -1,0 +1,12 @@
+diff --git a/rust/crates/native-runtime/src/meter/funded.rs b/rust/crates/native-runtime/src/meter/funded.rs
+--- a/rust/crates/native-runtime/src/meter/funded.rs
++++ b/rust/crates/native-runtime/src/meter/funded.rs
+@@ -7,7 +7,7 @@
+ #[must_use]
+ pub struct Funded<T> {
+-    pub(crate) data: T,
+     pub(super) allocation: ReadAllocation,
++    pub(crate) data: T,
+ }
+ 
+ impl<T> Funded<T> {

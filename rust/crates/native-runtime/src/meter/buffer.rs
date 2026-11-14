@@ -2,12 +2,9 @@ use super::*;
 
 // Shared by prepared Unix arguments and process storage on every OS. Physical
 // capacity is destroyed before the original invocation releases its credit.
-pub(crate) struct ReadBuffer<T> {
-    pub(crate) data: Vec<T>,
-    allocation: ReadAllocation,
-}
+pub(crate) type ReadBuffer<T> = Funded<Vec<T>>;
 
-impl<T> ReadBuffer<T> {
+impl<T> Funded<Vec<T>> {
     pub(crate) fn meter(&self) -> &Arc<dyn NativeReadMeter> {
         self.allocation.meter()
     }
@@ -21,10 +18,7 @@ impl<T> ReadBuffer<T> {
         } else {
             ReadAllocation::new(meter, bytes)?
         };
-        let mut buffer = Self {
-            data: Vec::new(),
-            allocation,
-        };
+        let mut buffer = allocation.store(Vec::new());
         if bytes != 0 {
             buffer
                 .data

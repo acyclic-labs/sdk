@@ -1,0 +1,21 @@
+diff --git a/rust/crates/native-runtime/src/meter/funded.rs b/rust/crates/native-runtime/src/meter/funded.rs
+--- a/rust/crates/native-runtime/src/meter/funded.rs
++++ b/rust/crates/native-runtime/src/meter/funded.rs
+@@ -7,7 +7,7 @@
+ #[must_use]
+ pub struct Funded<T> {
+     pub(crate) data: T,
+-    pub(super) allocation: ReadAllocation,
++    pub(super) allocation: std::mem::ManuallyDrop<ReadAllocation>,
+ }
+ 
+ impl<T> Funded<T> {
+@@ -23,7 +23,7 @@
+     pub fn store<T>(self, data: T) -> Funded<T> {
+         Funded {
+             data,
+-            allocation: self,
++            allocation: std::mem::ManuallyDrop::new(self),
+         }
+     }
+ 
