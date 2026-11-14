@@ -542,6 +542,32 @@ fn pending_owner(root: &Path, old: bool) -> Result<(), Box<dyn std::error::Error
     // possible until the producer is released; no wall clock creates this cut.
     let observed = pending.recv();
     let io = observed.map_err(std::io::Error::other).and_then(|()| {
+        if !old {
+            let transport = transport(&session);
+            let parent = session
+                .driver
+                .as_ref()
+                .expect("native driver")
+                .core
+                .state_to_finish()
+                .root_inode;
+            let (submitted, submission) = sync_channel(1);
+            std::thread::spawn(move || {
+                super::super::host_io::BEFORE_RECEIPT.with_borrow_mut(|hook| {
+                    *hook = Some(Box::new(move || {
+                        let _ = submitted.send(());
+                    }));
+                });
+                let notifier = super::super::notification::CacheNotifier::new(transport);
+                let _ = notifier.inval_entry(parent, b"blocked");
+            });
+            // The kernel request still owns the directory lock. Send the
+            // death barrier only after the complete notification frame is on
+            // the host transport, ahead of any retirement refusal reply.
+            submission
+                .recv_timeout(Duration::from_secs(2))
+                .map_err(std::io::Error::other)?;
+        }
         control.write_all(&[1])?;
         control.read_exact(&mut go)
     });
