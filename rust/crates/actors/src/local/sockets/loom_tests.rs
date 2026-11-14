@@ -6,12 +6,16 @@ use acyclic_stream::{BoxProviderFuture, MemoryStream, Record};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-// Construct each production future in its own frame as well as erasing its
-// polling type. Boxing an already constructed future leaves all construction
-// temporaries in race's unoptimized scenario frame.
+// Return the boxed future before polling it: constructing and driving it in
+// the same helper keeps construction temporaries on the coroutine's stack
+// throughout every nested production poll.
 #[inline(never)]
+fn construct<'a, T>(make: impl FnOnce() -> BoxProviderFuture<'a, T>) -> BoxProviderFuture<'a, T> {
+    make()
+}
+
 fn block_on<'a, T>(make: impl FnOnce() -> BoxProviderFuture<'a, T>) -> T {
-    loom::future::block_on(make())
+    acyclic_stream::verification::park(construct(make))
 }
 
 async fn records(provider: &MemoryStream, path: &StreamPath) -> Result<Vec<Record>> {
@@ -189,18 +193,10 @@ fn race(recover: bool) -> Result {
 
 #[test]
 fn concurrent_closes_and_messages_deliver_exactly_one_final_close() {
-    loom::model(|| {
-        // Match Stream's models: drive one production publication at a time
-        // instead of retaining the whole scenario in a nested async frame.
-        let result = race(false);
-        assert!(result.is_ok(), "{result:?}");
-    });
+    acyclic_stream::verification::check(|| race(false));
 }
 
 #[test]
 fn crash_recovery_and_live_closers_deliver_exactly_one_final_close() {
-    loom::model(|| {
-        let result = race(true);
-        assert!(result.is_ok(), "{result:?}");
-    });
+    acyclic_stream::verification::check(|| race(true));
 }
