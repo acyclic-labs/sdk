@@ -34,6 +34,9 @@ run_case() {
     (
         cargo test --locked --all-features -p acyclic-actors --lib --no-run 2>&1 | tee "$log.build"
         binary=$(grep -oE '\([^()]*/acyclic_actors-[0-9a-f]+\)' "$log.build" | tail -1 | tr -d '()')
+        # Cargo prints a relative path under the default target directory;
+        # resolve it before leaving the workspace root.
+        binary=$(realpath -e "$binary")
         cd rust/crates/actors
         timeout --signal=KILL 10 "$binary" "$test" --nocapture
     ) >"$log" 2>&1 || result=$?
