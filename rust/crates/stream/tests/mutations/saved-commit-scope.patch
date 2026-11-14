@@ -1,0 +1,8 @@
+diff --git a/rust/crates/stream/src/memory/commit.rs b/rust/crates/stream/src/memory/commit.rs
+--- a/rust/crates/stream/src/memory/commit.rs
++++ b/rust/crates/stream/src/memory/commit.rs
+@@ -539,3 +539,4 @@
+             let envelope = self.selected_envelope(result, accepted, &mut claim)?;
++            let _scope = self.commit_scope(state, request, &receipt.skipped)?;
+             // A saved success owns its selection and durability. Conditions
+             // and lease ownership may have changed since that publication.

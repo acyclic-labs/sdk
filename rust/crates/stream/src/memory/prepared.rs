@@ -102,7 +102,8 @@ impl MemoryStream {
         let _publication = self.publication.lock().await;
         let mut state = self.state.write().await;
         // A prepared commit publishes through the journal only.
-        durable_only(state.ephemeral.commit_scope(&state.paths, &request))?;
+        // prepared_tail admits exactly one hard effect: nothing is skipped.
+        durable_only(self.commit_scope(&state, &request, &[]))?;
         let capacity_reservation = self.reserve_prepared_capacity(&state, &request, maximum)?;
         let retained = self.reserve_retained(&state)?;
         // The requested key bounds both lookup and insertion even when other
