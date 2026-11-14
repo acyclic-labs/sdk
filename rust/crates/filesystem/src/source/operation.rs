@@ -13,9 +13,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> BoundSource<'_, A, O> {
         self.session.state
     }
 
-    pub(crate) fn generation_id(&self) -> GenerationId {
+    pub(crate) fn generation_id(&self) -> crate::GenerationId {
         self.session.checkout.generation_id()
     }
+
     /// Capture and publish one retained watcher interval under its retry identity.
     pub async fn reconcile_with_key(
         &mut self,
