@@ -92,7 +92,7 @@ async fn manifest(
             &staged,
             body.as_bytes(),
             "text/markdown",
-            &path,
+            path.rsplit('/').next().unwrap(),
         )
         .await?;
     let discovery = &mut manifest.discovery;
@@ -315,7 +315,7 @@ async fn compaction_summaries_preserve_prefix() -> TestResult {
     for (adapter, path) in FAMILIES {
         use acyclic_harness::executor::{ExecutionEvent, StockExecutor, TurnInput};
         let transport = transport(path);
-        let storage =
+        let mut storage =
             MemoryHarnessStorage::new(StorageAgentId::from_bytes([92; 16]), 1 << 20).await?;
         let bindings = storage.content_bindings();
         let provider = Arc::new(
@@ -335,7 +335,6 @@ async fn compaction_summaries_preserve_prefix() -> TestResult {
             ToolRegistry::default(),
         )
         .with_compaction_policy(CompactionPolicy::Capacity(CapacityCompaction {}));
-        let journal = storage.journal();
         let mut history = vec![
             message(ModelRole::User, "older-0:".repeat(6_000)),
             message(ModelRole::Assistant, "older-1:".repeat(6_000)),
@@ -346,7 +345,10 @@ async fn compaction_summaries_preserve_prefix() -> TestResult {
                 format!("Return 19 + 23. {}", "y".repeat(20_000)),
             ));
             let op = OperationId::from_bytes([turn + 1; 16]);
-            let input = TurnInput::from_selected_context(op, selected(history.clone()))?;
+            let selected = selected(history.clone());
+            storage = storage.with_bound_selection(selected.clone())?;
+            let journal = storage.journal();
+            let input = TurnInput::from_selected_context(op, selected)?;
             if turn == 1 {
                 transport.state.lock().unwrap().1.push_back(text(
                     r#"{"version":1,"drop_through":2,"summary":"retained summary"}"#,
