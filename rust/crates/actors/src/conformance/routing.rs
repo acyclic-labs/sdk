@@ -70,6 +70,46 @@ pub async fn replayed_delivery<T: Backend + ?Sized>(target: &T, run: &str) -> Re
         )?;
     }
     receiver.expect(&["r0"]).await?;
+    let interrupted_forward = crate::route::forward(
+        provider.as_ref(),
+        &paths,
+        &source,
+        async |_| Err(crate::route::Error::InvalidRecord),
+        async |message| {
+            if message != messages[0] {
+                return Err(crate::route::Error::InvalidRecord);
+            }
+            message
+                .publish_relay(provider.as_ref(), &paths, &destination, Vec::new())
+                .await?;
+            // Lose the account response after durable admission, before the
+            // sender can record it. Reconnect must resubmit this same intent.
+            Err(StreamError::Unavailable.into())
+        },
+    )
+    .await;
+    require(
+        matches!(
+            interrupted_forward,
+            Err(crate::route::Error::Stream(StreamError::Unavailable))
+        ),
+        "forwarder did not stop after losing its admission response",
+    )?;
+    require(
+        matches!(
+            provider
+                .tail(paths.outbox_cursor(&source).map_err(Error::from)?)
+                .await,
+            Err(StreamError::NotFound)
+        ) && provider
+            .tail(paths.relay(&destination).map_err(Error::from)?)
+            .await
+            .map_err(Error::from)?
+            == 1,
+        "lost response either acknowledged or lost the admitted input",
+    )?;
+    target.restart().await?;
+    sender.expect(&["r0", "r1"]).await?;
     let forward = crate::route::forward(
         provider.as_ref(),
         &paths,
@@ -88,6 +128,14 @@ pub async fn replayed_delivery<T: Backend + ?Sized>(target: &T, run: &str) -> Re
         forward,
     )
     .await?;
+    require(
+        provider
+            .tail(paths.relay(&destination).map_err(Error::from)?)
+            .await
+            .map_err(Error::from)?
+            == 2,
+        "sender resubmission duplicated its relay input",
+    )?;
     let interrupted =
         crate::route::drain(provider.as_ref(), &paths, &destination, async |record| {
             if record.envelope != messages[0] {
