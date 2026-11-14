@@ -284,11 +284,15 @@ async fn host_invocations_share_canonical_admission_approval_and_receipts() -> R
                     .await
                     .is_err()
             );
+            let canonical = binding
+                .executor
+                .canonical(&call, None)?
+                .ok_or_else(|| Error::Invalid("alias lost its canonical call".into()))?;
             let ((approval, _), _hold) = tool_approval_request(
                 TaskId::from_bytes(parent.into_bytes()),
                 &policy.identity(),
-                &binding.definition,
-                &call,
+                &capability.definition,
+                &canonical,
                 ("approve this write".into(), None),
                 None,
                 (crate::interaction::ApprovalRoute::Policy, None),
