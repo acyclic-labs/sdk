@@ -897,6 +897,44 @@ mod indexed_trace_tests {
             limit: 1,
         }))
         .await?;
+        let fork = root
+            .within(provider.fork(ForkRequest {
+                source: data.path().clone(),
+                destination: StreamPath::new("copies/direct")?,
+                at_tail: Some(1),
+                exclude: Vec::new(),
+                idempotency_key: IdempotencyKey::unique(),
+            }))
+            .await?;
+        assert_eq!(fork.source, *data.path());
+        assert_eq!(fork.forked_at, 1);
+        assert_eq!(fork.tail, 1);
+        let handle_fork = root
+            .within(data.fork(
+                "copies/handle",
+                Some(1),
+                Vec::new(),
+                IdempotencyKey::unique(),
+            ))
+            .await?;
+        let handle_receipt = handle_fork
+            .fork_receipt()
+            .ok_or("fork lost original receipt")?;
+        assert_eq!(handle_receipt.source, fork.source);
+        assert_eq!(handle_receipt.forked_at, fork.forked_at);
+        assert_eq!(handle_receipt.tail, fork.tail);
+        for path in [fork.destination, handle_fork.path().clone()] {
+            assert_eq!(
+                provider
+                    .latest(
+                        path,
+                        OwnedBytes::from_static(b"selected"),
+                        Default::default()
+                    )
+                    .await?,
+                original
+            );
+        }
         root.within(provider.head(trace.path().clone())).await?;
         let (selected, condition) = root
             .within(provider.latest_fenced(
@@ -945,11 +983,12 @@ mod indexed_trace_tests {
         let mut fence = false;
         let mut applied_wait = false;
         let mut appends = 0;
+        let mut forks = 0;
         let mut receipt_outcomes = Vec::new();
         let mut request = false;
         let mut indexed_bytes = Vec::new();
         let mut projections = std::collections::BTreeMap::new();
-        while completed < 15 {
+        while completed < 17 {
             let Some(observation) = query.next().await? else {
                 return Err("trace ended before original request hops settled".into());
             };
@@ -987,6 +1026,16 @@ mod indexed_trace_tests {
                     assert_eq!(
                         start.guarantee.as_deref(),
                         Some("original_revision_cut_visible_before_return")
+                    );
+                    assert_eq!(bytes, None);
+                    continue;
+                }
+                if start.name == "stream.fork" {
+                    forks += 1;
+                    assert_eq!(start.mechanism, Mechanism::Commit);
+                    assert_eq!(
+                        start.guarantee.as_deref(),
+                        Some("immutable_selected_prefix_and_origin")
                     );
                     assert_eq!(bytes, None);
                     continue;
@@ -1039,6 +1088,7 @@ mod indexed_trace_tests {
         }
         assert!(fence && request && applied_wait);
         assert_eq!(appends, 2);
+        assert_eq!(forks, 2);
         assert_eq!(receipt_outcomes.len(), 2);
         assert_eq!(
             receipt_outcomes
@@ -1062,7 +1112,7 @@ mod indexed_trace_tests {
         assert_eq!(projections["stream.watermarks"], 1);
         assert_eq!(
             trace.tail().await?,
-            30,
+            34,
             "zero cuts and diagnostic reads must not emit provider work"
         );
         assert_eq!(
@@ -1077,7 +1127,7 @@ mod indexed_trace_tests {
         );
         assert_eq!(
             trace.tail().await?,
-            30,
+            34,
             "the request owner must not leak into unrelated work"
         );
         Ok(())

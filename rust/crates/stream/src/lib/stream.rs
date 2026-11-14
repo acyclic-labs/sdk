@@ -115,27 +115,16 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         exclude: Vec<RelativePath>,
         idempotency_key: IdempotencyKey,
     ) -> Result<Self, StreamError> {
-        let work = self.provider.fork(ForkRequest {
-            exclude,
-            source: self.path.clone(),
-            destination: StreamPath::new(destination)?,
-            at_tail,
-            idempotency_key,
-        });
-        #[cfg(feature = "serde")]
-        let receipt = crate::trace::observe(
-            crate::trace::Request {
-                name: "stream.fork",
-                mechanism: crate::trace::Mechanism::Commit,
-                parent: None,
-                guarantee: Some("immutable_selected_prefix_and_origin"),
-            },
-            work,
-            |_| None,
-        )
-        .await?;
-        #[cfg(not(feature = "serde"))]
-        let receipt = work.await?;
+        let receipt = self
+            .provider
+            .fork(ForkRequest {
+                exclude,
+                source: self.path.clone(),
+                destination: StreamPath::new(destination)?,
+                at_tail,
+                idempotency_key,
+            })
+            .await?;
         Ok(Self {
             provider: Arc::clone(&self.provider),
             path: receipt.destination.clone(),
