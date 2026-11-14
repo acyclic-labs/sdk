@@ -1117,6 +1117,32 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
         .await?;
     assert_eq!(journal.load(&staged, None)?.await?.as_ref(), b"raw");
     journal.verify_input_file(&staged, None)?.await?;
+    let content = journal
+        .output_content(operation)?
+        .ok_or("journal content absent")?;
+    let (publication, _) = content
+        .writer
+        .as_deref()
+        .ok_or("journal writer absent")?
+        .stage_once(
+            operation,
+            &crate::context::ContextEpoch::path(operation),
+            b"publication",
+            "text/plain",
+            "manifest",
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+    assert!(
+        journal
+            .authenticate_publication(operation, &publication, None)?
+            .await?
+    );
+    assert!(
+        !journal
+            .authenticate_publication(OperationId::from_bytes([77; 16]), &publication, None)?
+            .await?
+    );
     assert_eq!(
         journal
             .load_range(
@@ -1168,6 +1194,7 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
         Default::default(),
     );
     let mut original = std::collections::BTreeMap::new();
+    let mut membership = 0;
     while let Some(observation) = query.next().await? {
         if let acyclic_stream::trace::Observation::Completed {
             start,
@@ -1182,6 +1209,9 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
                 "harness.private_load" => (Some(3), "authenticated_immutable_content"),
                 "harness.private_load_range" => (Some(2), "authenticated_immutable_range"),
                 "harness.verify_input_file" => (None, "authenticated_original_input_file"),
+                "harness.authenticate_publication" => {
+                    (None, "original_publication_membership_decision")
+                }
                 _ => continue,
             };
             assert_eq!(start.parent, None);
@@ -1189,16 +1219,22 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
                 start.mechanism,
                 match start.name.as_str() {
                     "harness.private_stage" => acyclic_stream::trace::Mechanism::Commit,
-                    "harness.verify_input_file" => acyclic_stream::trace::Mechanism::AuthCheck,
+                    "harness.verify_input_file" | "harness.authenticate_publication" =>
+                        acyclic_stream::trace::Mechanism::AuthCheck,
                     _ => acyclic_stream::trace::Mechanism::Io,
                 }
             );
             assert_eq!(start.guarantee.as_deref(), Some(expected.1));
             assert_eq!(bytes, expected.0);
             assert_eq!(result, acyclic_stream::trace::Outcome::Succeeded);
-            assert!(original.insert(start.name, ()).is_none());
+            if start.name == "harness.authenticate_publication" {
+                membership += 1;
+            } else {
+                assert!(original.insert(start.name, ()).is_none());
+            }
         }
     }
     assert_eq!(original.len(), 5);
+    assert_eq!(membership, 2);
     Ok(())
 }

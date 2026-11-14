@@ -732,7 +732,16 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
         crate::conversation::BoundedContentFuture::new(io, || {
-            self.authenticate_publication_with_io(operation, file, io)
+            self.observe_request(
+                acyclic_stream::trace::Request {
+                    name: "harness.authenticate_publication",
+                    mechanism: acyclic_stream::trace::Mechanism::AuthCheck,
+                    parent: None,
+                    guarantee: Some("original_publication_membership_decision"),
+                },
+                self.authenticate_publication_with_io(operation, file, io),
+                |_| None,
+            )
         })
     }
 
