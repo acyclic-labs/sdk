@@ -50,6 +50,41 @@ impl Routing {
     }
 }
 
+impl<P: crate::store::JournalProvider + ?Sized + 'static> super::AgentHost<P> {
+    /// Consume one record supplied by this node's authenticated account drain.
+    /// The connection owner supplies its admitted routing context. This method
+    /// grants no authority: it shares the canonical message and terminal
+    /// validators, and every accepted input uses the ordinary inbox writer.
+    /// A successful return includes any durable refusal needed before ack.
+    pub async fn deliver_routed_peer(
+        &self,
+        routing: &Routing,
+        record: &route::RelayRecord,
+    ) -> Result<super::Delivered, Error> {
+        let [effect] = record.envelope.request.effects.as_slice() else {
+            return Err(Error::Record("peer route is not one inbox effect"));
+        };
+        let [acyclic_stream::CommitMutation::Append { records, .. }] = effect.mutations.as_slice()
+        else {
+            return Err(Error::Record("peer route is not one inbox append"));
+        };
+        let [input] = records.as_slice() else {
+            return Err(Error::Record("peer route is not one input"));
+        };
+        if input
+            .headers
+            .attributes()
+            .iter()
+            .any(|attribute| attribute.name == ADMISSION)
+        {
+            return PeerRoute::parse(&record.envelope)?
+                .deliver(self, routing, &record.receipt)
+                .await;
+        }
+        notices::deliver_terminal(self, record).await
+    }
+}
+
 /// An append-message request whose shape and attribution match its qualified
 /// route. This is data validation, never a credential or account admission.
 /// Account and destination hosts use the same validation before any provider IO.

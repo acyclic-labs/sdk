@@ -294,6 +294,35 @@ pub struct PeerRejectionRoute<'a> {
     reason: route::Rejection,
 }
 
+pub(super) async fn deliver_terminal<P: crate::store::JournalProvider + ?Sized + 'static>(
+    host: &crate::agent::AgentHost<P>,
+    record: &route::RelayRecord,
+) -> Result<crate::agent::Delivered, Error> {
+    let envelope = &record.envelope;
+    let (result, target, receipt) = ResultRecord::parse(envelope)?;
+    if let Some(receipt) = receipt {
+        PeerResultRoute {
+            envelope,
+            target,
+            result,
+            receipt,
+        }
+        .deliver(host)
+        .await
+    } else {
+        PeerRejectionRoute {
+            envelope,
+            target,
+            reason: result
+                .rejection
+                .ok_or(Error::Record("result has no cause"))?,
+            result,
+        }
+        .deliver(host, record)
+        .await
+    }
+}
+
 impl<'a> PeerRejectionRoute<'a> {
     /// Validate the canonical Dropped Notice. This is not an authority check.
     pub fn parse(envelope: &'a route::Envelope) -> Result<Self, Error> {

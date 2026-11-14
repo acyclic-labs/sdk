@@ -78,6 +78,11 @@ async fn absent_recipient_refusal_and_notice_share_the_original_commit() -> Resu
             commit_id: admitted.commit_id,
             sequence: admitted.sequence,
         };
+        let relayed = route::RelayRecord {
+            envelope: route::Envelope::decode(&admitted.value)?,
+            receipt,
+            headers: admitted.headers,
+        };
         let peer = PeerRoute::parse(&original)?;
         let host = AgentHost::new(
             destination.clone(),
@@ -87,7 +92,7 @@ async fn absent_recipient_refusal_and_notice_share_the_original_commit() -> Resu
             Arc::new(acyclic_actors::local::SystemClock),
         )?;
         assert_eq!(
-            peer.deliver(&host, &receiving, &receipt).await?,
+            host.deliver_routed_peer(&receiving, &relayed).await?,
             Delivered::Closed
         );
         assert!(
@@ -97,6 +102,40 @@ async fn absent_recipient_refusal_and_notice_share_the_original_commit() -> Resu
             ),
             "refusal must not create an inbox"
         );
+        let CommitMutation::Append { records, .. } = &original.request.effects[0].mutations[0]
+        else {
+            return Err("message append missing".into());
+        };
+        let mut user_input = InboxRecord::decode(&records[0].value)?;
+        let (InboxRecord::Message(message) | InboxRecord::FollowUp(message)) = &mut user_input
+        else {
+            return Err("message missing".into());
+        };
+        message.from = Sender::User {
+            principal: "owner".into(),
+        };
+        for input in [
+            user_input,
+            InboxRecord::Archive(Control {
+                by: Sender::User {
+                    principal: "owner".into(),
+                },
+                id: intent("forged-archive"),
+            }),
+        ] {
+            let mut forbidden = relayed.clone();
+            let CommitMutation::Append { records, .. } =
+                &mut forbidden.envelope.request.effects[0].mutations[0]
+            else {
+                return Err("message append missing".into());
+            };
+            records[0].value = input.encode()?.into();
+            assert!(
+                host.deliver_routed_peer(&receiving, &forbidden)
+                    .await
+                    .is_err()
+            );
+        }
         let notice = destination
             .record_at(receiving.paths.outbox(&receiving.node)?, 0)
             .await?
@@ -120,7 +159,7 @@ async fn absent_recipient_refusal_and_notice_share_the_original_commit() -> Resu
             .verify_original(&account, &sending.paths)
             .await?;
         assert_eq!(
-            peer.deliver(&host, &receiving, &receipt).await?,
+            host.deliver_routed_peer(&receiving, &relayed).await?,
             Delivered::Closed
         );
 
@@ -129,7 +168,7 @@ async fn absent_recipient_refusal_and_notice_share_the_original_commit() -> Resu
         let created = create_root(&intent("later-creation"), adopted(recipient.id()))?;
         submit(destination.as_ref(), created.request.clone()).await?;
         assert_eq!(
-            peer.deliver(&host, &receiving, &receipt).await?,
+            host.deliver_routed_peer(&receiving, &relayed).await?,
             Delivered::Closed
         );
         assert_eq!(destination.tail(recipient.inbox()?).await?, 1);
@@ -378,9 +417,7 @@ async fn account_rejection_settles_only_its_original_owned_send() -> Result {
                     .await?,
             );
             let drain = route::drain(&account, &routing.paths, &routing.node, async |record| {
-                PeerRejectionRoute::parse(&record.envelope)
-                    .map_err(|_| route::Error::InvalidRecord)?
-                    .deliver(&host, &record)
+                host.deliver_routed_peer(&routing, &record)
                     .await
                     .map_err(|_| route::Error::InvalidRecord)?;
                 Ok(())
@@ -827,6 +864,11 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                 commit_id: original.commit_id,
                 sequence: original.sequence,
             };
+            let incoming = route::RelayRecord {
+                envelope: route::Envelope::decode(&original.value)?,
+                receipt,
+                headers: original.headers,
+            };
             let mut steered = Vec::new();
             for envelope in additional {
                 envelope
@@ -864,7 +906,11 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                 // publication. A rejoin before replay must not deliver input.
                 let failure = Arc::new(RefuseReturn(AtomicBool::new(true)));
                 destination.install_commit_admission(failure.clone())?;
-                assert!(peer.deliver(&host, &receiving, &receipt).await.is_err());
+                assert!(
+                    host.deliver_routed_peer(&receiving, &incoming)
+                        .await
+                        .is_err()
+                );
                 assert!(
                     destination
                         .inspect_idempotency(envelope.request.idempotency_key.clone())
@@ -882,7 +928,10 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                     .await?;
                 failure.0.store(false, Ordering::SeqCst);
             }
-            assert_eq!(peer.deliver(&host, &receiving, &receipt).await?, expected);
+            assert_eq!(
+                host.deliver_routed_peer(&receiving, &incoming).await?,
+                expected
+            );
             assert_eq!(
                 destination.tail(activation_path).await?,
                 before_activation + u64::from(!opt_out_before_delivery),
@@ -1775,7 +1824,7 @@ async fn remote_send_recovers_original_admission_from_its_source_publication() -
             let result = route::Publication::decode(&queued.value)?.delivery()?;
             let routed = PeerResultRoute::parse(&result)?;
             routed.verify_original(&account, &routing.paths).await?;
-            result
+            let admitted = result
                 .publish_relay(&account, &routing.paths, &routing.node, Vec::new())
                 .await?;
             result
@@ -1791,8 +1840,26 @@ async fn remote_send_recovers_original_admission_from_its_source_publication() -
                 false,
             )
             .await?;
-            let delivered = routed.deliver(&host).await?;
-            assert_eq!(routed.deliver(&host).await?, delivered);
+            let Routed::Relayed { relay_seq, .. } = admitted else {
+                return Err("result was not relayed".into());
+            };
+            let record = account
+                .record_at(routing.paths.relay(&routing.node)?, relay_seq)
+                .await?
+                .ok_or("result relay missing")?;
+            let relayed = route::RelayRecord {
+                envelope: route::Envelope::decode(&record.value)?,
+                receipt: route::RelayReceipt {
+                    commit_id: record.commit_id,
+                    sequence: record.sequence,
+                },
+                headers: record.headers,
+            };
+            let delivered = host.deliver_routed_peer(&routing, &relayed).await?;
+            assert_eq!(
+                host.deliver_routed_peer(&routing, &relayed).await?,
+                delivered
+            );
             let event = changes.try_next().await?.ok_or("missing result event")?;
             assert!(matches!(
                 InboxRecord::decode(&event.value)?,
