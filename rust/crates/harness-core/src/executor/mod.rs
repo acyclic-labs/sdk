@@ -681,6 +681,31 @@ impl ExecutionProgress<TurnOutput> {
 
 /// Complete replaceable turn loop. Implementations may own every policy decision.
 pub trait Executor: acyclic_stream::ProviderPlatform {
+    /// Settles one immutable host-selected tool binding without a model request.
+    /// Implementations must retain the ordinary admission, approval, effect
+    /// ownership and replay checks. A loop without this capability refuses
+    /// before dispatch; source selection alone grants no execution authority.
+    fn settle_invocation<'a, 'io: 'a>(
+        &'io self,
+        _journal: &'a dyn ExecutionJournal,
+        _parent: (OperationId, u32),
+        _call: (ToolInvocation, Arc<crate::tool::Tool>),
+        _metadata: &'a Value,
+        _hook_context: &'a mut Vec<ModelMessage>,
+        io: Option<&'io PreparationIo>,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            ExecutionProgress<Option<ToolCallSettlement<'io>>>,
+        >,
+    > {
+        Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "executor does not support host-selected calls",
+        ))
+    }
+
     /// Executes or resumes one turn using only explicit durable host services.
     fn execute<'a>(
         &'a self,
