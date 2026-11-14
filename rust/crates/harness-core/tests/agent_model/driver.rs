@@ -653,8 +653,10 @@ async fn settled_turns_keep_actions_recorded_before_a_later_provider_failure() -
             matches!(step.outs.first(), Some(Out::Send { to: recipient, record: InboxRecord::Message(message) })
             if recipient == &to && message.id == intent("sent") && message.body == body)
         );
-        // A failed turn settles its entry with the recorded actions too.
-        assert_eq!(step.outs.len(), 2);
+        // A failed turn settles its entry with the recorded actions too, and
+        // publishes it on the event feed under its own run.
+        assert_eq!(step.outs.len(), 3);
+        assert!(matches!(step.outs.get(2), Some(Out::TurnDone { turn, run }) if turn == run));
         assert!(matches!(step.wait, Wait::Input));
         let Some(Out::Conversation(entry)) = step.outs.get(1) else {
             return Err("settled turn has no entry".into());
