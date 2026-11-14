@@ -1,5 +1,6 @@
 //! Optional context edits preserve the frozen provider prefix.
 use super::*;
+use acyclic_harness::projection::*;
 use acyclic_harness::{
     OperationId, context::*, filesystem::MemoryHarnessStorage, model::*, tool::ToolRegistry,
 };
@@ -29,6 +30,18 @@ fn message(role: ModelRole, text: impl Into<String>) -> ModelMessage {
     }
 }
 
+fn selected(messages: Vec<ModelMessage>) -> SelectedModelContext {
+    SelectedModelContext {
+        selection: ModelContextSelection {
+            conversation_revision: messages.len() as u64,
+            message_ids: (1..=messages.len())
+                .map(|id| uuid::Uuid::from_u128(id as u128))
+                .collect(),
+            checkpoint: None,
+        },
+        messages,
+    }
+}
 fn transport(path: &'static str) -> Arc<Scripted> {
     Arc::new(Scripted {
         path,
@@ -49,7 +62,7 @@ async fn manifest(
             "server":"fixture", "revision":version.to_string(),
             "schema_exposure":{"kind":"eager"}, "discovery":"disabled",
             "projection_schema":acyclic_harness::tool::json_projection_schema(json!({"type":"object"})),
-            "tools":[{"name":"inspect", "description":format!("Inspect revision {version}"),
+            "tools":[{"name":"inspect", "description":format!("feature-v{version}"),
                 "inputSchema":{"type":"object"}}],
         }))?;
         for definition in catalog.model_definitions(None, None)? {
@@ -64,7 +77,8 @@ async fn manifest(
     if version == 0 {
         return Ok((manifest, tools));
     }
-    let value = format!("optional feature version {version}");
+    let value = format!("feature-v{version}");
+    let body = format!("BODY_{version}: {value}");
     let path = match feature {
         Feature::Source(path) => path.to_owned(),
         Feature::Instructions => "AGENT.md".into(),
@@ -75,22 +89,18 @@ async fn manifest(
         .stage(
             OperationId::new(),
             &staged,
-            value.as_bytes(),
+            body.as_bytes(),
             "text/markdown",
             &path,
         )
         .await?;
+    let discovery = &mut manifest.discovery;
     match feature {
         Feature::Source(_) => manifest.sources.push(file),
-        Feature::Instructions => {
-            manifest
-                .discovery
-                .instructions
-                .push(ProjectInstruction::Captured {
-                    source: InstructionIdentity::new(file.volume().clone(), "AGENT.md".into())?,
-                    file,
-                })
-        }
+        Feature::Instructions => discovery.instructions.push(ProjectInstruction::Captured {
+            source: InstructionIdentity::new(file.volume().clone(), "AGENT.md".into())?,
+            file,
+        }),
         Feature::Environment => {
             manifest.environment = Some(EnvironmentFacts {
                 cwd: Some(format!("/workspace/{version}")),
@@ -103,20 +113,11 @@ async fn manifest(
             let page = storage
                 .list_private_directory("versions", None, None, 1)
                 .await?;
-            manifest.discovery.skills.push(SkillMetadata {
-                name: "inspect".into(),
-                description: value,
-                fields: BTreeMap::new(),
-                identity: "fixture:inspect".into(),
-                source: PinnedContextPath {
-                    root: ContextRoot {
-                        volume: file.volume().clone(),
-                        directory: "versions".into(),
-                    },
-                    generation: page.generation,
-                    path: staged,
-                },
-            });
+            discovery.skills.push(serde_json::from_value(json!({
+                "name":"inspect", "description":value, "fields":{}, "identity":"fixture:inspect",
+                "source":{"root":{"volume":file.volume(), "directory":"versions"},
+                    "generation":page.generation, "path":staged},
+            }))?);
             if matches!(feature, Feature::SelectedSkills) {
                 manifest.selected_skills.push("inspect".into());
             }
@@ -197,23 +198,23 @@ async fn guarded_run(
         }
         let changes = ContextEpoch::changes(&told, &live, bindings.reader.as_ref()).await?;
         for change in changes {
+            let removed = change.notice.body["removed"] == true;
+            assert_eq!(removed, version == 0, "{label}");
             history.push(message(
                 ModelRole::User,
                 serde_json::to_string(&change.notice)?,
             ));
         }
         let dynamic = !matches!(feature, Feature::Source(_) | Feature::Environment);
-        assert_eq!(
-            history.len() > before,
-            enabled && turn > 0 && dynamic,
-            "{label}"
-        );
+        let announced = enabled && turn > 0 && dynamic;
+        assert_eq!(history.len() > before, announced, "{label}");
         told = live.digests()?;
+        history.push(message(ModelRole::User, format!("Task {turn}")));
         let input = ContextInput {
-            input: ModelContent::Text("Return 19 + 23.".into()),
-            selected_context: None,
+            input: history.last().unwrap().content.clone(),
+            selected_context: Some(selected(history.clone())),
             step: 0,
-            prior_messages: history.clone(),
+            prior_messages: Vec::new(),
         };
         let context = ContextPipeline::new([stage])
             .run(&input, limits, None)
@@ -229,6 +230,21 @@ async fn guarded_run(
         complete(&provider, request.clone()).await?;
         {
             let sent = transport.state.lock().unwrap();
+            let body = &sent.2[turn].body;
+            let visible = enabled && !matches!(feature, Feature::Source(_));
+            assert_eq!(holds(body, b"feature-v1"), visible, "{label}");
+            assert_eq!(
+                holds(body, b"BODY_1:"),
+                enabled && matches!(feature, Feature::Instructions | Feature::SelectedSkills),
+                "{label}"
+            );
+            assert_eq!(holds(body, b"feature-v2"), announced, "{label}");
+            for notice in &history[before..history.len() - 1] {
+                let ModelContent::Text(text) = &notice.content else {
+                    unreachable!()
+                };
+                assert!(holds(body, &serde_json::to_vec(text)?), "{label}");
+            }
             if turn > 0 {
                 assert!(
                     departure(&sent.2[turn - 1].body, &sent.2[turn].body).is_none(),
@@ -250,10 +266,7 @@ async fn guarded_run(
             );
             assert!(changed.cached.read < sent.2[turn].cached.read, "{label}");
         }
-        history.extend([
-            message(ModelRole::User, "Return 19 + 23."),
-            message(ModelRole::Assistant, "ok"),
-        ]);
+        history.push(message(ModelRole::Assistant, "ok"));
     }
     let sent = transport.state.lock().unwrap();
     assert_eq!(sent.2.len(), 3, "{label}");
@@ -282,8 +295,12 @@ async fn optional_features_preserve_prefix() -> TestResult {
     ];
     for feature in features {
         for (adapter, path) in FAMILIES {
-            let off = guarded_run(feature, adapter, path, false).await?;
-            let on = guarded_run(feature, adapter, path, true).await?;
+            let off = guarded_run(feature, adapter, path, false)
+                .await
+                .map_err(|error| format!("{feature:?}/{adapter:?}/off: {error}"))?;
+            let on = guarded_run(feature, adapter, path, true)
+                .await
+                .map_err(|error| format!("{feature:?}/{adapter:?}/on: {error}"))?;
             if matches!(feature, Feature::Source(_)) {
                 assert_eq!(on, off, "{feature:?}/{adapter:?}");
             }
@@ -295,10 +312,7 @@ async fn optional_features_preserve_prefix() -> TestResult {
 #[tokio::test]
 async fn compaction_summaries_preserve_prefix() -> TestResult {
     for (adapter, path) in FAMILIES {
-        use acyclic_harness::{
-            executor::{StockExecutor, TurnInput},
-            projection::{ModelContextSelection, SelectedModelContext},
-        };
+        use acyclic_harness::executor::{ExecutionEvent, StockExecutor, TurnInput};
         let transport = transport(path);
         let storage = MemoryHarnessStorage::new(AgentId::from_bytes([92; 16]), 1 << 20).await?;
         let bindings = storage.content_bindings();
@@ -307,16 +321,11 @@ async fn compaction_summaries_preserve_prefix() -> TestResult {
                 .with_content(bindings.reader.clone(), None)
                 .resolve("recorded/model")?,
         );
-        use acyclic_harness::context::{Context, ContextPlacement, SourceStage};
-        let stage = SourceStage::new(
-            "prefix",
-            "1",
-            Arc::new(Context {
-                messages: vec![message(ModelRole::System, "Keep the cached policy.")],
-                ..Default::default()
-            }),
-            ContextPlacement::Prepend,
-        );
+        let system = Context {
+            messages: vec![message(ModelRole::System, "Keep the cached policy.")],
+            ..Default::default()
+        };
+        let stage = SourceStage::new("prefix", "1", Arc::new(system), ContextPlacement::Prepend);
         let executor = StockExecutor::new(
             provider.model().clone(),
             provider,
@@ -335,27 +344,13 @@ async fn compaction_summaries_preserve_prefix() -> TestResult {
                 format!("Return 19 + 23. {}", "y".repeat(20_000)),
             ));
             let op = OperationId::from_bytes([turn + 1; 16]);
-            let input = TurnInput::from_selected_context(
-                op,
-                SelectedModelContext {
-                    selection: ModelContextSelection {
-                        conversation_revision: history.len() as u64,
-                        message_ids: (0..history.len())
-                            .map(|index| uuid::Uuid::from_u128(index as u128 + 1))
-                            .collect(),
-                        checkpoint: None,
-                    },
-                    messages: history.clone(),
-                },
-            )?;
+            let input = TurnInput::from_selected_context(op, selected(history.clone()))?;
             if turn == 1 {
                 transport.state.lock().unwrap().1.push_back(text(
                     r#"{"version":1,"drop_through":2,"summary":"retained summary"}"#,
                 ));
             }
-            transport.state.lock().unwrap().1.push_back(text("42"));
             let output = executor.execute(input.clone(), journal.as_ref()).await?;
-            assert_eq!(output.text, "42");
             let count = transport.state.lock().unwrap().2.len();
             let replay = executor.execute(input, journal.as_ref()).await?;
             assert_eq!(replay.text, output.text);
@@ -363,6 +358,13 @@ async fn compaction_summaries_preserve_prefix() -> TestResult {
                 transport.state.lock().unwrap().2.len(),
                 count,
                 "replay redispatched a model"
+            );
+            let records = journal.replay(op, 0, u32::MAX, None)?.await?;
+            assert_eq!(
+                records
+                    .iter()
+                    .any(|record| matches!(record.event, ExecutionEvent::ContextCompacted { .. })),
+                turn == 1
             );
             history.push(message(ModelRole::Assistant, output.text));
         }
@@ -386,9 +388,7 @@ fn header(path: &str, body: &[u8]) -> TestResult<Value> {
         "models/model:streamGenerateContent" => "contents",
         _ => "messages",
     };
-    value[field]
-        .as_array_mut()
-        .unwrap()
-        .retain(|message| message["role"] == "system");
+    let messages = value[field].as_array_mut().unwrap();
+    messages.retain(|message| message["role"] == "system");
     Ok(value)
 }
