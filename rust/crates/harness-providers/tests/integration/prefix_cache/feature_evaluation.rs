@@ -28,6 +28,7 @@ enum Feature {
     Instructions,
     Environment,
     Skills,
+    SelectedSkills,
     Mcp,
 }
 
@@ -145,7 +146,7 @@ async fn manifest(
                 timezone: "UTC".into(),
             })
         }
-        Feature::Skills => {
+        Feature::Skills | Feature::SelectedSkills => {
             let path = format!("skills/inspect-{version}/SKILL.md");
             let file = storage
                 .stage(
@@ -173,6 +174,9 @@ async fn manifest(
                     path,
                 },
             });
+            if matches!(feature, Feature::SelectedSkills) {
+                manifest.selected_skills.push("inspect".into());
+            }
         }
         Feature::Mcp => {}
     }
@@ -475,6 +479,7 @@ guard!(
 guard!(project_instructions_prefix_digest, Feature::Instructions);
 guard!(environment_facts_prefix_digest, Feature::Environment);
 guard!(skills_prefix_digest, Feature::Skills);
+guard!(selected_skill_bodies_prefix_digest, Feature::SelectedSkills);
 guard!(mcp_listings_prefix_digest, Feature::Mcp);
 
 /// A compaction intentionally replaces older conversation messages. Its
