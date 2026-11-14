@@ -234,16 +234,17 @@ async fn skipped_effects_do_not_change_the_selected_publication_scope() -> Resul
             provider.append(append(&base, 0)?).await?;
             let mut lease = Some(provider.lease_ephemeral(root.clone()).await?);
             let before = frames(&provider)?;
-            let soft = CommitEffect::soft(
-                vec![CommitCondition::Tail {
+            let soft = CommitEffect {
+                conditions: vec![CommitCondition::Tail {
                     path: root.clone(),
                     expected: 1,
                 }],
-                vec![CommitMutation::Append {
+                mutations: vec![CommitMutation::Append {
                     path: omitted.clone(),
                     records: vec![Bytes::from_static(b"omitted").into()],
                 }],
-            );
+                soft: true,
+            };
             let hard = CommitEffect::hard(
                 vec![CommitCondition::Absent { path: kept.clone() }],
                 vec![CommitMutation::Append {
@@ -299,16 +300,17 @@ async fn skipped_effects_do_not_change_the_selected_publication_scope() -> Resul
             let unsafe_request = CommitRequest {
                 deadline_unix_millis: None,
                 effects: vec![
-                    CommitEffect::soft(
-                        vec![CommitCondition::Tail {
+                    CommitEffect {
+                        conditions: vec![CommitCondition::Tail {
                             path: root.clone(),
                             expected: 0,
                         }],
-                        vec![CommitMutation::Append {
+                        mutations: vec![CommitMutation::Append {
                             path: omitted.clone(),
                             records: vec![Bytes::from_static(b"unstable").into()],
                         }],
-                    ),
+                        soft: true,
+                    },
                     CommitEffect::hard(
                         Vec::new(),
                         vec![CommitMutation::Append {
@@ -335,16 +337,17 @@ async fn skipped_effects_do_not_change_the_selected_publication_scope() -> Resul
                 .commit(CommitRequest {
                     deadline_unix_millis: None,
                     effects: vec![
-                        CommitEffect::soft(
-                            vec![CommitCondition::Tail {
+                        CommitEffect {
+                            conditions: vec![CommitCondition::Tail {
                                 path: base.clone(),
                                 expected: 2,
                             }],
-                            vec![CommitMutation::Append {
+                            mutations: vec![CommitMutation::Append {
                                 path: base.clone(),
                                 records: vec![Bytes::from_static(b"omitted durable").into()],
                             }],
-                        ),
+                            soft: true,
+                        },
                         CommitEffect::hard(
                             Vec::new(),
                             vec![CommitMutation::Append {
@@ -417,8 +420,8 @@ async fn saved_commit_retries_keep_their_original_scope_after_conditions_change(
             provider.append(append(&base, 0)?).await?;
             let lease = provider.lease_ephemeral(root.clone()).await?;
             provider.append(append(&root, 0)?).await?;
-            let soft = CommitEffect::soft(
-                vec![
+            let soft = CommitEffect {
+                conditions: vec![
                     CommitCondition::Tail {
                         path: root.clone(),
                         expected: 0,
@@ -428,11 +431,12 @@ async fn saved_commit_retries_keep_their_original_scope_after_conditions_change(
                         expected: 2,
                     },
                 ],
-                vec![CommitMutation::Append {
+                mutations: vec![CommitMutation::Append {
                     path: omitted.clone(),
                     records: vec![Bytes::from_static(b"must remain omitted").into()],
                 }],
-            );
+                soft: true,
+            };
             let hard = CommitEffect::hard(
                 vec![CommitCondition::Absent { path: kept.clone() }],
                 vec![CommitMutation::Append {
