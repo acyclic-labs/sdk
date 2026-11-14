@@ -8,7 +8,9 @@
 //! [`Store::activation`] for that actor in the same commit, and the dispatcher's
 //! assigned shard follow wakes it. A delivery reads its inputs with bounded finite reads.
 use super::ready::{Flight, ReadySet, Registration, Work};
-use super::{Error, PreparedPublish, Publication, Snapshot, State, Store, owned, scheduling};
+use super::{
+    Cause, Error, PreparedPublish, Publication, Snapshot, State, Store, owned, scheduling,
+};
 use acyclic_stream::StreamProviderExt as _;
 mod clock;
 mod completion;
@@ -1183,7 +1185,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         self.subscription_failed(&actor, &error);
                         let error = Error::Stream(error);
                         report(&actor, &error);
-                        failure.get_or_insert_with(|| Arc::new(error));
+                        failure.get_or_insert_with(|| Arc::new(error.into_cause()));
                     }
                     if let Some(watch) = outcome.watch {
                         sources.push(watch.next(provider));
@@ -1217,7 +1219,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 }
                 Event::Done(Err((actor, error))) => {
                     report(&actor, &error);
-                    failure.get_or_insert_with(|| Arc::new(error));
+                    failure.get_or_insert_with(|| Arc::new(error.into_cause()));
                 }
                 Event::Done(Ok(())) | Event::Quiet => {}
                 Event::Armed(armed) => {
@@ -1320,7 +1322,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     for actor in actors {
                         report(&actor, &error);
                     }
-                    failure.get_or_insert_with(|| Arc::new(error));
+                    failure.get_or_insert_with(|| Arc::new(error.into_cause()));
                 }
                 Event::Idle => {
                     // No delivery can publish while this owner captures the cut.

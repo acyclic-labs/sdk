@@ -44,8 +44,13 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 
 /// Typed failure at the shared actor runtime and publication boundary.
+///
+/// `C` is the retry custody an unknown acknowledgement hands back: the sealed
+/// publication by default. Custody may own a composition with thread-affine
+/// platform handles, so it never travels as a cause; [`Error::into_cause`]
+/// keeps the failure and leaves custody with the caller.
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub enum Error<C = Box<PreparedPublish>> {
     /// A shared call journal is malformed or cannot be addressed.
     #[error(transparent)]
     Call(#[from] crate::call::Error),
@@ -72,7 +77,7 @@ pub enum Error {
     CompletionStopped,
     /// A delivery failed before the host could establish its completion cut.
     #[error("actor runtime completion failed: {0}")]
-    CompletionFailed(#[source] Arc<Error>),
+    CompletionFailed(#[source] Arc<Cause>),
     /// The original per-agent spend balance refused the candidate.
     #[error(transparent)]
     Escrow(#[from] crate::escrow::Error),
@@ -84,7 +89,7 @@ pub enum Error {
     #[error("actor publication acknowledgement is unknown: {source}")]
     Unknown {
         /// The sealed publication to pass back to [`Store::submit`].
-        publication: Box<PreparedPublish>,
+        publication: C,
         /// The original uncertain provider response or transport failure.
         source: StreamError,
     },
@@ -169,7 +174,54 @@ pub enum Error {
     Invalid(&'static str),
 }
 
+/// An actor failure without retry custody. It is `Send + Sync` on every
+/// target, so it can be retained, shared and carried as an error source.
+pub type Cause = Error<()>;
+
 impl Error {
+    /// This failure as a cause. An unknown acknowledgement keeps its original
+    /// uncertain source; its sealed publication, the only retry custody, is
+    /// dropped here, so callers that may retry must match before converting.
+    #[must_use]
+    pub fn into_cause(self) -> Cause {
+        match self {
+            Self::Call(error) => Error::Call(error),
+            Self::InvocationTerminated { receipt } => Error::InvocationTerminated { receipt },
+            Self::CallSettled { call, trigger } => Error::CallSettled { call, trigger },
+            Self::Clock(error) => Error::Clock(error),
+            Self::CompletionStopped => Error::CompletionStopped,
+            Self::CompletionFailed(cause) => Error::CompletionFailed(cause),
+            Self::Escrow(error) => Error::Escrow(error),
+            Self::Stream(error) => Error::Stream(error),
+            Self::Unknown { source, .. } => Error::Unknown {
+                publication: (),
+                source,
+            },
+            Self::InvocationDurabilityUnknown { receipt, source } => {
+                Error::InvocationDurabilityUnknown { receipt, source }
+            }
+            Self::PublicationDurabilityUnknown { envelope, source } => {
+                Error::PublicationDurabilityUnknown { envelope, source }
+            }
+            Self::Settlement { outcome, source } => Error::Settlement { outcome, source },
+            Self::Conflict => Error::Conflict,
+            Self::PreconditionChanged(conflicts) => Error::PreconditionChanged(conflicts),
+            Self::PreconditionUnchanged => Error::PreconditionUnchanged,
+            Self::UndecidedUnchanged(failure) => Error::UndecidedUnchanged(failure),
+            Self::Paused => Error::Paused,
+            Self::Handler(failure) => Error::Handler(failure),
+            Self::InvocationFailed { source, receipt } => {
+                Error::InvocationFailed { source, receipt }
+            }
+            Self::AlarmNotDue { authority_unix_ms } => Error::AlarmNotDue { authority_unix_ms },
+            Self::Deleted => Error::Deleted,
+            Self::AdmissionClosed(error) => Error::AdmissionClosed(error),
+            Self::Invalid(reason) => Error::Invalid(reason),
+        }
+    }
+}
+
+impl<C> Error<C> {
     /// Whether a later attempt at the same retained input may decide it: an
     /// undecided or backpressured outcome, a changed cut or guard, a pause or
     /// an early alarm. Such a failure says nothing about the actor's
