@@ -1,5 +1,6 @@
 use super::*;
-use acyclic_stream::MemoryStream;
+use crate::FilesystemCommitOutcome;
+use acyclic_stream::{CommitRequest, MemoryStream};
 use std::sync::Arc;
 
 fn state(id: WorkspaceId, revision: u64, branch: &str) -> GitCompatState {

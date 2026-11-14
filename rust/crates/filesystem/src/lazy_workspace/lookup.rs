@@ -271,7 +271,9 @@ impl<
                 LazyLookup::Source { node, .. } => node.link_count.unwrap_or(1),
             };
             Ok(Some(crate::WorkspaceStat {
-                file_id: self.stable_file_id_for_lookup(path, &lookup, ctx).await?,
+                file_id: self
+                    .file_id_at_overlay(path, &lookup, Some(cut.overlay), ctx)
+                    .await?,
                 kind,
                 link_count,
                 logical_bytes: stat.logical_bytes,
@@ -448,22 +450,41 @@ impl<
         lookup: &LazyLookup,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<FileId, LazyWorkspaceError> {
+        let overlay = if matches!(lookup, LazyLookup::Authored { record, .. } if record.kind == FileKind::Directory)
+        {
+            Some(self.state(ctx).await?.overlay)
+        } else {
+            None
+        };
+        self.file_id_at_overlay(path, lookup, overlay, ctx).await
+    }
+
+    async fn file_id_at_overlay(
+        &self,
+        path: &str,
+        lookup: &LazyLookup,
+        overlay: Option<LazyOverlayId>,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<FileId, LazyWorkspaceError> {
         match lookup {
-            LazyLookup::Source { node, .. } => self.source_file_id(&node.file_identity, ctx),
+            LazyLookup::Source { source, node } => Ok(crate::demand::source_file_id(
+                &source.identity,
+                &node.file_identity,
+                ctx,
+            )?),
             LazyLookup::Shadow { record, .. } => Ok(record.file_id),
             LazyLookup::Authored { record, .. } => {
-                if record.kind == FileKind::Directory {
-                    let state = self.state(ctx).await?;
-                    if let Some(LazyOverlayChange::Observe { source, node, .. }) =
-                        self.overlay_fact(state.overlay, path, ctx).await?
-                        && node.kind == SourceNodeKind::Directory
-                    {
-                        return Ok(crate::demand::source_file_id(
-                            &source.identity,
-                            &node.file_identity,
-                            ctx,
-                        )?);
-                    }
+                if record.kind == FileKind::Directory
+                    && let Some(overlay) = overlay
+                    && let Some(LazyOverlayChange::Observe { source, node, .. }) =
+                        self.overlay_fact(overlay, path, ctx).await?
+                    && node.kind == SourceNodeKind::Directory
+                {
+                    return Ok(crate::demand::source_file_id(
+                        &source.identity,
+                        &node.file_identity,
+                        ctx,
+                    )?);
                 }
                 Ok(record.file_id)
             }
