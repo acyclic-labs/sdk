@@ -23,7 +23,7 @@ use super::{
 };
 use acyclic_stream::{
     CommitCondition, CommitConflict, CommitEffect, CommitMutation, CommitOutcome, CommitReceipt,
-    CommitRequest, IdempotencyKey, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
+    CommitRequest, IdempotencyKey, StreamError, StreamPath, StreamProviderExt as _,
 };
 
 /// Domain-separated idempotency key; one stable key per intent.
