@@ -84,7 +84,14 @@ async fn registration_producer_loss_removes_only_its_interest() -> TestResult {
     let healthy = healthy.await?;
     assert!(futures::poll!(stalled.as_mut()).is_pending());
     drop(_held);
-    assert!(matches!(stalled.await, Err(StreamError::Unavailable)));
+    let Err(StreamError::Caused(failure)) = stalled.await else {
+        return Err("registration lost its original producer cause".into());
+    };
+    assert_eq!(failure.classification().code(), "unavailable");
+    assert!(
+        std::error::Error::source(&failure)
+            .is_some_and(|source| source.is::<oneshot::error::RecvError>())
+    );
     assert_eq!(client.pool.removed.next().await?, id);
     assert_eq!(client.pool.active.load(Ordering::Acquire), 1);
     drop(healthy);
@@ -207,7 +214,14 @@ fn traces_cover_registration_stall_reconnect_terminal_error_and_caller_drop() ->
             let held = commands.recv().await.ok_or("missing Open")?;
             assert!(futures::poll!(stalled.as_mut()).is_pending());
             drop(held);
-            assert!(matches!(stalled.await, Err(StreamError::Unavailable)));
+            let Err(StreamError::Caused(failure)) = stalled.await else {
+                return Err("registration lost its original producer cause".into());
+            };
+            assert_eq!(failure.classification().code(), "unavailable");
+            assert!(
+                std::error::Error::source(&failure)
+                    .is_some_and(|source| source.is::<oneshot::error::RecvError>())
+            );
             let memory = Arc::new(MemoryStream::default());
             append(&memory, "private/events", 1).await?;
             let fixture = Fixture::open(Arc::clone(&memory), "node").await?;

@@ -567,11 +567,6 @@ async fn a_blocked_session_follow_is_a_reported_wait_until_its_record_arrives() 
     let waits = acyclic_native_runtime::obs::WaitReport::default();
     let _subscriber =
         tracing::subscriber::set_default(tracing_subscriber::registry().with(waits.clone()));
-    let report = || -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let mut output = Vec::new();
-        waits.report(&mut output)?;
-        Ok(String::from_utf8(output)?)
-    };
     let provider = Arc::new(MemoryStream::default());
     append(&provider, "waits", 1).await?;
     let fixture = Fixture::open(Arc::clone(&provider), "node").await?;
@@ -581,10 +576,20 @@ async fn a_blocked_session_follow_is_a_reported_wait_until_its_record_arrives() 
         .map_ok(crate::records_only)
         .await?;
     assert!(futures::poll!(follow.next()).is_pending());
-    assert!(report()?.contains("waiting: session-follow "));
+    assert!(
+        waits
+            .snapshot()
+            .iter()
+            .any(|wait| wait.primitive == "session-delivery")
+    );
     append(&provider, "waits", 1).await?;
     assert_eq!(next(&mut follow).await?.sequence, 1);
-    assert!(!report()?.contains("waiting: session-follow "));
+    assert!(
+        !waits
+            .snapshot()
+            .iter()
+            .any(|wait| wait.primitive == "session-delivery")
+    );
     Ok(())
 }
 
@@ -594,11 +599,6 @@ async fn blocked_registration_and_one_shot_reply_are_reported_waits() -> TestRes
     let waits = acyclic_native_runtime::obs::WaitReport::default();
     let _subscriber =
         tracing::subscriber::set_default(tracing_subscriber::registry().with(waits.clone()));
-    let report = || -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let mut output = Vec::new();
-        waits.report(&mut output)?;
-        Ok(String::from_utf8(output)?)
-    };
     let provider = Arc::new(MemoryStream::default());
     append(&provider, "waits", 1).await?;
     let client = Client::in_process(
@@ -626,20 +626,34 @@ async fn blocked_registration_and_one_shot_reply_are_reported_waits() -> TestRes
     // executor. Cancelling it must retire the wait and its original interest.
     let mut opening = Box::pin(open(kind.clone()));
     assert!(futures::poll!(opening.as_mut()).is_pending());
-    assert_eq!(report()?.matches("waiting: session-open ").count(), 1);
+    assert_eq!(
+        waits
+            .snapshot()
+            .iter()
+            .filter(|wait| wait.primitive == "session-open")
+            .count(),
+        1
+    );
     drop(opening);
-    assert_eq!(report()?, "");
+    assert!(waits.snapshot().is_empty());
     assert_eq!(client.pool.active.load(Ordering::Acquire), 0);
 
     // Heads admission precedes completion. Its real provider waits for the
     // requested publication; no replacement completion signal is introduced.
     let mut opened = open(kind).await?;
-    assert_eq!(report()?, "");
+    assert!(waits.snapshot().is_empty());
     let mut reply = Box::pin(opened.receive());
     assert!(futures::poll!(reply.as_mut()).is_pending());
-    assert_eq!(report()?.matches("waiting: session-reply ").count(), 1);
+    assert_eq!(
+        waits
+            .snapshot()
+            .iter()
+            .filter(|wait| wait.primitive == "session-delivery")
+            .count(),
+        1
+    );
     drop(reply);
-    assert_eq!(report()?, "");
+    assert!(waits.snapshot().is_empty());
     let mut reply = Box::pin(opened.receive());
     assert!(futures::poll!(reply.as_mut()).is_pending());
     append(&provider, "waits", 1).await?;
@@ -651,7 +665,7 @@ async fn blocked_registration_and_one_shot_reply_are_reported_waits() -> TestRes
     let view = wire_codec::heads_from_response(wire::HeadsResponse::decode(bytes)?)?;
     assert_eq!(view.snapshot, minimum);
     assert_eq!(view.heads[0].as_ref().ok_or("missing head")?.tail, 2);
-    assert_eq!(report()?, "");
+    assert!(waits.snapshot().is_empty());
     drop(delivery.credit);
     drop(opened);
 
@@ -663,7 +677,7 @@ async fn blocked_registration_and_one_shot_reply_are_reported_waits() -> TestRes
     assert!(futures::poll!(reply.as_mut()).is_pending());
     provider.revisions.close();
     assert!(matches!(reply.await, Err(StreamError::Unavailable)));
-    assert_eq!(report()?, "");
+    assert!(waits.snapshot().is_empty());
     Ok(())
 }
 
