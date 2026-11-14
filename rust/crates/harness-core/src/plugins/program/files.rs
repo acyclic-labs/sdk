@@ -88,7 +88,7 @@ impl ProgramFiles {
         BoundedContentFuture::new(io, || async move {
             let attempt = io.map(PreparationIo::scoped).transpose()?;
             let temporary = attempt.as_ref();
-            let (key, path) = crate::executor::with_history_io(temporary, |work| {
+            let (key, path) = crate::executor::with_history_io(temporary, |work| -> Result<_> {
                 Ok((
                     crate::executor::preparation_format(
                         format_args!("program:hooks/{name}:sources"),

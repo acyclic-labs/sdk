@@ -250,6 +250,7 @@ async fn source_invocations_use_original_agent_grants_policy_and_receipts_withou
                     .await?;
                 // The actor can drop its active frame while approval is pending.
                 // A new original journal recovers the same decision and selection.
+                drop(result);
                 drop(issued);
                 issued = bound
                     .turns()
