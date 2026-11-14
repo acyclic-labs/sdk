@@ -303,11 +303,26 @@ fn trace_mapping(source: &str, inventory: &Inventory) -> Result<(), String> {
 /// Snapshot, call and record are consecutive statements, so no binding or
 /// assignment can invalidate that ownership between them.
 fn trace_call_sites(source: &str, inventory: &Inventory) -> Result<(), String> {
+    // A binding or a constant path such as `Admit::Cancel`: neither can change
+    // between the adjacent call and record, so both are recorded exactly.
     fn name(expr: &Expr) -> Option<String> {
-        match expr {
-            Expr::Path(path) => path.path.get_ident().map(ToString::to_string),
-            _ => None,
+        let Expr::Path(path) = expr else {
+            return None;
+        };
+        if path.qself.is_some() || path.path.leading_colon.is_some() {
+            return None;
         }
+        path.path
+            .segments
+            .iter()
+            .map(|segment| {
+                segment
+                    .arguments
+                    .is_none()
+                    .then(|| segment.ident.to_string())
+            })
+            .collect::<Option<Vec<_>>>()
+            .map(|segments| segments.join("::"))
     }
     fn bound(pattern: &syn::Pat) -> Option<Vec<String>> {
         match pattern {
@@ -552,6 +567,11 @@ fn agent_control_mapping_is_bidirectional() -> Result<(), String> {
             "admit",
         ),
         (
+            "Decision::Admit(before, Admit::Cancel, next)",
+            "Decision::Admit(before, Admit::Input, next)",
+            "admit",
+        ),
+        (
             "control_trace::record(state, Decision::Report(before, (next, send)));",
             "control_trace::lost(state, Decision::Report(before, (next, send)));",
             "report",
@@ -567,33 +587,33 @@ fn agent_control_mapping_is_bidirectional() -> Result<(), String> {
             "report",
         ),
         (
-            "let before = control(&state);",
-            "let before = control(&foreign);",
+            "let before = control(&state);\n    let alarm = kernel::alarm(",
+            "let before = control(&foreign);\n    let alarm = kernel::alarm(",
             "alarm",
         ),
         (
-            "let before = control(&state);",
-            "let before = control(&state); let mut state = foreign;",
+            "let before = control(&state);\n    let alarm = kernel::alarm(",
+            "let before = control(&state); let mut state = foreign;\n    let alarm = kernel::alarm(",
             "alarm",
         ),
         (
-            "let before = control(&state);",
-            "let before = control(&state); let (mut state, _) = (foreign, ());",
+            "let before = control(&state);\n    let alarm = kernel::alarm(",
+            "let before = control(&state); let (mut state, _) = (foreign, ());\n    let alarm = kernel::alarm(",
             "alarm",
         ),
         (
-            "let before = control(&state);",
-            "let before = control(&state); let state: AgentState = foreign;",
+            "let before = control(&state);\n    let alarm = kernel::alarm(",
+            "let before = control(&state); let state: AgentState = foreign;\n    let alarm = kernel::alarm(",
             "alarm",
         ),
         (
-            "let before = control(&state);",
-            "let before = control(&state); let before: Control = foreign;",
+            "let before = control(&state);\n    let alarm = kernel::alarm(",
+            "let before = control(&state); let before: Control = foreign;\n    let alarm = kernel::alarm(",
             "alarm",
         ),
         (
-            "let before = control(&state);",
-            "let before = control(&state); state = foreign;",
+            "let before = control(&state);\n    let alarm = kernel::alarm(",
+            "let before = control(&state); state = foreign;\n    let alarm = kernel::alarm(",
             "alarm",
         ),
     ] {

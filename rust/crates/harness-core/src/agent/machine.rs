@@ -1655,7 +1655,6 @@ async fn run<T: TurnDriver + ?Sized>(
     let waking_input = wake_input(state);
     let queued = waking_input.is_some();
     let approval_ready = approval.is_some();
-    let before = control(state);
     // A review continuation shares the one actor alarm with the worker deadline.
     // Only the original due deadline is a worker alarm while that wait is parked.
     let alarm_wake = alarm_wake
@@ -1670,6 +1669,7 @@ async fn run<T: TurnDriver + ?Sized>(
             } => false,
             _ => true,
         };
+    let before = control(state);
     let picked = kernel::pick(before, alarm_wake, queued, approval_ready);
     #[cfg(feature = "test-support")]
     control_trace::record(
@@ -1958,16 +1958,16 @@ async fn run<T: TurnDriver + ?Sized>(
             let reachable = open.len().saturating_add(until.replies.len());
             let input = until.input;
             let wait = kernel::until(need, reachable, sleep, deadline, input);
-            if matches!(wait, kernel::Wait::Continue)
-                && let Some(resume) = &mut state.wait_resume
-            {
-                resume.reason = Some(WaitReason::NeedMet);
-            }
             #[cfg(feature = "test-support")]
             control_trace::record(
                 state,
                 Decision::Until(need, reachable, sleep, deadline, input, wait),
             );
+            if matches!(wait, kernel::Wait::Continue)
+                && let Some(resume) = &mut state.wait_resume
+            {
+                resume.reason = Some(WaitReason::NeedMet);
+            }
             if matches!(wait, kernel::Wait::Await { .. }) {
                 outs.push(Out::AwaitReplies(until.replies));
                 outs.extend(open.iter().map(|child| Out::Send {
