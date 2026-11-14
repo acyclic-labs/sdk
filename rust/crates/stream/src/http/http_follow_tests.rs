@@ -6,7 +6,7 @@
     reason = "Test fixtures and assertions must fail immediately on malformed inputs or violated expectations"
 )]
 use super::*;
-use acyclic_grpc_observability::tests::Capture;
+
 use serde_json::json;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -281,45 +281,46 @@ async fn missing_idempotency() -> (IdempotencyKey, Reply) {
 }
 
 #[tokio::test]
-async fn request_path_typed_append_preserves_json_responses_and_validation_trace() {
-    use tracing::instrument::WithSubscriber;
-    use tracing_subscriber::prelude::*;
-
-    let captured = Capture::default();
-    let subscriber = tracing_subscriber::registry().with(captured.clone());
-    async {
-        let server = Server::new(vec![
+async fn request_path_typed_append_preserves_json_responses_and_validation() {
+    let server = Server::new(vec![
             Reply::ok(json!({"ok":true,"start":"0","end":"1","tail":"1","commitId":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","revision":{"scope":"AQ==","incarnation":"AAAAAAAAAAAAAAAAAAAAAQ==","index":"1"}})),
             Reply::ok(json!({"ok":false,"code":"tail_conflict","actualTail":"1"})),
         ]).await;
-        let mut request = AppendRequest {
-            path: path(),
-            records: Vec::new(),
-            if_tail: Some(0),
-            idempotency_key: IdempotencyKey::new(bytes::Bytes::from_static(b"key")).unwrap(),
-        };
-        assert_eq!(server.client.append(request.clone()).await, Err(StreamError::LimitExceeded));
-        assert!(server.requests().is_empty());
-        request.records.push((OwnedBytes::from_static(b"\x00\xff")).into());
-        assert!(matches!(server.client.append(request.clone()).await.unwrap(), AppendOutcome::Committed(AppendReceipt { start: 0, end: 1, tail: 1, .. })));
-        assert_eq!(server.client.append(request).await.unwrap(), AppendOutcome::TailConflict { actual_tail: 1 });
-        let expected = ("/v1/stream/append".into(), json!({
+    let mut request = AppendRequest {
+        path: path(),
+        records: Vec::new(),
+        if_tail: Some(0),
+        idempotency_key: IdempotencyKey::new(bytes::Bytes::from_static(b"key")).unwrap(),
+    };
+    assert_eq!(
+        server.client.append(request.clone()).await,
+        Err(StreamError::LimitExceeded)
+    );
+    assert!(server.requests().is_empty());
+    request
+        .records
+        .push((OwnedBytes::from_static(b"\x00\xff")).into());
+    assert!(matches!(
+        server.client.append(request.clone()).await.unwrap(),
+        AppendOutcome::Committed(AppendReceipt {
+            start: 0,
+            end: 1,
+            tail: 1,
+            ..
+        })
+    ));
+    assert_eq!(
+        server.client.append(request).await.unwrap(),
+        AppendOutcome::TailConflict { actual_tail: 1 }
+    );
+    let expected = (
+        "/v1/stream/append".into(),
+        json!({
             "path":"follow/test", "records":[{"value":"AP8=","keys":[],"attributes":[]}],
             "options":{"ifTail":"0","idempotencyKey":"a2V5"},
-        }));
-        assert_eq!(server.requests(), vec![expected.clone(), expected]);
-    }.with_subscriber(subscriber).await;
-    let evidence = captured.0.lock().unwrap();
-    let calls: Vec<_> = evidence
-        .spans
-        .iter()
-        .filter(|span| span.name == "acyclic.stream.http.call")
-        .collect();
-    assert_eq!(calls.len(), 3);
-    assert!(calls.iter().all(|span| span.closed));
-    assert_eq!(calls[0].fields["outcome"], "err");
-    assert_eq!(calls[0].fields["error.kind"], "limit_exceeded");
-    assert!(calls[1..].iter().all(|span| span.fields["outcome"] == "ok"));
+        }),
+    );
+    assert_eq!(server.requests(), vec![expected.clone(), expected]);
 }
 
 #[tokio::test]
@@ -369,4 +370,92 @@ async fn cancelling_a_pending_unary_body_closes_the_connection() {
     }
     closed.await.unwrap();
     assert_eq!(server.requests().len(), 1);
+}
+
+#[cfg(feature = "serde")]
+#[tokio::test]
+async fn physical_http_exchange_has_owned_round_trip_and_original_body_bytes()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
+    let response = json!({"ok":false,"code":"tail_conflict","actualTail":"1"});
+    let response_bytes = serde_json::to_vec(&response)?.len() as u64;
+    let server = Server::new(vec![
+        Reply::ok(response.clone()),
+        Reply::ok(response.clone()),
+    ])
+    .await;
+    let trace = Stream::new(Arc::new(MemoryStream::default()), "agents/http/trace")?;
+    // No active owner: no diagnostic publication, even for an actual exchange.
+    assert_eq!(
+        server
+            .client
+            .request_json("append", || Ok("{}".into()))
+            .await?,
+        response
+    );
+    assert!(matches!(trace.tail().await, Err(StreamError::NotFound)));
+    let recorder = Arc::new(Recorder::new(trace.clone(), [94; 16]));
+    let root = recorder
+        .start(
+            "http-owner",
+            Mechanism::ToolCall,
+            None,
+            Some("original_request"),
+        )
+        .await?
+        .into_owned();
+    let parent = root.id();
+    assert!(
+        root.within(
+            server
+                .client
+                .request_json("append", || Err("limit_exceeded"))
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(
+        server.requests().len(),
+        1,
+        "encoding refusal must not make a round trip"
+    );
+    assert_eq!(
+        root.within(server.client.request_json("append", || Ok("{}".into())))
+            .await?,
+        response
+    );
+    assert_eq!(server.requests().len(), 2);
+    let _completion = root.finish_submitted(None, Outcome::Succeeded)?;
+    let mut query = TraceQuery::new(
+        trace.follow(0, Default::default()).await?,
+        Default::default(),
+    );
+    let mut completed = 0;
+    let mut exchanges = 0;
+    while completed < 2 {
+        if let Some(Observation::Completed {
+            id,
+            start,
+            bytes,
+            result,
+            ..
+        }) = query.next().await?
+        {
+            completed += 1;
+            assert_eq!(result, Outcome::Succeeded);
+            if id != parent {
+                exchanges += 1;
+                assert_eq!(start.parent, Some(parent));
+                assert_eq!(start.name, "stream.http.request");
+                assert_eq!(start.mechanism, Mechanism::RoundTrip);
+                assert_eq!(
+                    start.guarantee.as_deref(),
+                    Some("authenticated_bounded_json_response_at_original_route")
+                );
+                assert_eq!(bytes, Some(response_bytes));
+            }
+        }
+    }
+    assert_eq!(exchanges, 1);
+    Ok(())
 }
