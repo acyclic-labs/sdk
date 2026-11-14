@@ -17,6 +17,9 @@ pub enum LazyWorkspaceError {
     /// Companion-store failure.
     #[error("lazy state failed: {0}")]
     Store(String),
+    /// Original durable companion publication, including uncertain custody.
+    #[error(transparent)]
+    StatePublication(#[from] Box<crate::StreamStateStoreError>),
     /// Durable state conflicts with the requested identity or expected revision.
     #[error("lazy state changed concurrently")]
     Concurrent,

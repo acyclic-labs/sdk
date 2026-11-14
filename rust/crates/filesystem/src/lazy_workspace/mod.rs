@@ -83,6 +83,8 @@ mod hash;
 pub(crate) use hash::hash_lazy_value;
 mod lookup;
 mod store;
+#[cfg(not(target_arch = "wasm32"))]
+mod stream_store;
 mod treap;
 pub(crate) use lookup::InspectBasis;
 mod read;

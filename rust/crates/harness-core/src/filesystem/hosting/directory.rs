@@ -6,11 +6,12 @@ use crate::{
     resources::GenerationRef,
 };
 
-struct DirectoryBinding {
+struct DirectoryBinding<P: ?Sized + 'static, O: 'static> {
     volume: crate::conversation::VolumeRef,
     path: String,
     grant: ContentGrant,
     scope: Scope,
+    host: Arc<Host<P, O>>,
 }
 
 impl<P, O> Bound<P, O>
@@ -23,7 +24,7 @@ where
         agent: &AgentPath,
         target: DirectoryTarget,
         path: &str,
-    ) -> Result<DirectoryBinding, Error> {
+    ) -> Result<DirectoryBinding<P, O>, Error> {
         self.admit_path(agent)?;
         if !path.is_empty() {
             crate::conversation::validate_content_path(path, &mut None).map_err(turn)?;
@@ -68,11 +69,29 @@ where
             &mut None,
         )
         .map_err(turn)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let host = if binding.role == WorkspaceRole::Private {
+            self.volumes
+                .for_agent_views(
+                    self.agents.provider().clone(),
+                    agent,
+                    &volume,
+                    &authority.verifier,
+                    &authority.scope,
+                )
+                .await
+                .map_err(turn)?
+        } else {
+            self.volumes.clone()
+        };
+        #[cfg(target_arch = "wasm32")]
+        let host = self.volumes.clone();
         Ok(DirectoryBinding {
             volume,
             path,
             grant,
             scope: authority.scope,
+            host,
         })
     }
 
@@ -88,8 +107,8 @@ where
         range: acyclic_fs::ByteRange,
     ) -> Result<(acyclic_stream::OwnedBytes, u64), Error> {
         let binding = self.directory_binding(agent, target, path).await?;
-        let (bytes, _selected, length) = self
-            .volumes
+        let (bytes, _selected, length) = binding
+            .host
             .read_private_range(
                 &binding.volume,
                 &binding.grant,
@@ -137,8 +156,8 @@ where
             maximum_entries: query.maximum_entries,
             ceiling: Some(binding.scope.capabilities()),
         };
-        let page = self
-            .volumes
+        let page = binding
+            .host
             .list_private_directory_with_credit(
                 &binding.volume,
                 &binding.grant,

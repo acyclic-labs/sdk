@@ -1405,6 +1405,26 @@ where
                 )?;
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let host = self
+                .host
+                .for_agent_views(
+                    self.stream.clone(),
+                    trace_owner,
+                    private.volume()?,
+                    &verifier,
+                    &scope,
+                )
+                .await?;
+            reader = FilesystemContentVerifier::new(
+                host,
+                &verifier,
+                &scope,
+                crate::conversation::MAX_EXACT_JS_INTEGER,
+                None,
+            )?;
+        }
         let writer = FilesystemContentPublisher::new(
             Arc::clone(&self.host),
             private.volume()?,
