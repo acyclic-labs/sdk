@@ -569,11 +569,14 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         "A source retained by the request",
     )
     .map_err(|error| Error::Storage(error.to_string()))?;
+    std::fs::write(directory.path().join("AGENTS.md"), "Initial instruction.\n")
+        .map_err(|error| Error::Storage(error.to_string()))?;
     let pause = Arc::new(PauseBeforeReply::default());
     let first = pause.provider(ScriptedModelProvider::new([
         ScriptedTurn::Text("ready".into()),
         code("select-settings", r#"
             import {write} from 'acyclic';
+            await write('volume:///project/AGENTS.md', 'Updated instruction.\n', 'any');
             await write('volume:///home/plugins/step-guard/plugin.ts', "export default {name:'step-guard',description:'Selected tool context',matcher:{tool:{action:['exec'],command:'selected-native'}}};", 'any');
             await write('volume:///home/plugins/step-guard/hooks/before-tool.sh', `printf '%s' '{"hookSpecificOutput":{"additionalContext":"selected-step-hook"}}'`, 'any');
             await write('volume:///home/plugins/step-guard/hooks/before-tool.ps1', `[Console]::Out.Write('{"hookSpecificOutput":{"additionalContext":"selected-step-hook"}}')`, 'any');
@@ -699,6 +702,21 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
     };
     assert_eq!(hook_contexts(&after), 0);
     assert_eq!(hook_contexts(&finished), 1);
+    assert!(
+        super::request_text(&harness, &before)
+            .await?
+            .contains("Initial instruction.")
+    );
+    let instruction_updates = after
+        .messages
+        .iter()
+        .filter_map(|message| message.content.notice_parts())
+        .flat_map(|(notices, _)| notices)
+        .filter(|notice| notice.kind == crate::context::CONTEXT_CHANGED)
+        .filter_map(|notice| notice.body.get("text").and_then(serde_json::Value::as_str))
+        .filter(|text| text.contains("Updated instruction."))
+        .count();
+    assert_eq!(instruction_updates, 1);
     assert_eq!(result(&after, "select-settings")?, "selected");
     assert_eq!(after.model.name, "second");
     assert_eq!(after.sampling.temperature, Some(0.75));
