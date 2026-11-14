@@ -138,21 +138,20 @@ impl ProcessExitAction {
     pub fn finish(&mut self) -> io::Result<()> {
         drop(self.activity.take());
         drop(self.release.take());
-        let status = match self.terminal {
-            Some(status) => status,
-            None => {
-                let mut credit = self.wait.take().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "owner-exit physical completion was lost",
-                    )
-                })?;
-                let (status, recorded) = credit.attempt(|| self.child.wait());
-                let status = status?;
-                self.terminal = Some(status);
-                recorded?;
-                status
-            }
+        let status = if let Some(status) = self.terminal {
+            status
+        } else {
+            let mut credit = self.wait.take().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "owner-exit physical completion was lost",
+                )
+            })?;
+            let (status, recorded) = credit.attempt(|| self.child.wait());
+            let status = status?;
+            self.terminal = Some(status);
+            recorded?;
+            status
         };
         if status.success() {
             Ok(())

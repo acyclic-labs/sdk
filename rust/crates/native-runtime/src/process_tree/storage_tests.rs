@@ -113,7 +113,7 @@ fn recording_refusal_cannot_extend_sealed_capture() {
         assert!(slot.io(&refused).unwrap().read_stderr(&mut prefix).is_err());
         assert_eq!(
             &prefix,
-            &expected[..prefix.len()],
+            expected.get(..prefix.len()).unwrap(),
             "the refused read physically consumed bytes"
         );
         let mut remaining = [0; 64];
@@ -123,8 +123,8 @@ fn recording_refusal_cannot_extend_sealed_capture() {
             Some(expected.len() - prefix.len())
         );
         assert_eq!(
-            &remaining[..expected.len() - prefix.len()],
-            &expected[prefix.len()..]
+            remaining.get(..expected.len() - prefix.len()).unwrap(),
+            expected.get(prefix.len()..).unwrap()
         );
         assert_eq!(
             io.read_stderr(&mut remaining).unwrap(),

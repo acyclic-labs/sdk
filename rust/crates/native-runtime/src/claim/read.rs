@@ -59,8 +59,9 @@ impl ReadRecord {
         let mut magic = [0_u8; MAGIC.len()];
         let prefix = usize::try_from(length.min(MAGIC.len() as u64))
             .map_err(|_| io::ErrorKind::InvalidData)?;
-        read_exact(file, &mut magic[..prefix], meter)?;
-        if magic[..prefix] != MAGIC[..prefix] {
+        let prefix_bytes = magic.get_mut(..prefix).ok_or(io::ErrorKind::InvalidData)?;
+        read_exact(file, prefix_bytes, meter)?;
+        if !MAGIC.starts_with(prefix_bytes) {
             result.status = Some(Status::Malformed);
             return Ok(result);
         }
@@ -110,11 +111,12 @@ impl ReadRecord {
         while remaining != 0 {
             let count = usize::try_from(remaining.min(scratch.len() as u64))
                 .map_err(|_| io::ErrorKind::InvalidData)?;
-            read_exact(file, &mut scratch[..count], meter)?;
+            let chunk = scratch.get_mut(..count).ok_or(io::ErrorKind::InvalidData)?;
+            read_exact(file, chunk, meter)?;
             if let Some(meter) = meter {
                 meter.admit_codec(0, 0, count as u64)?;
             }
-            hash = checksum_chunk(hash, &scratch[..count]);
+            hash = checksum_chunk(hash, chunk);
             if let Some(meter) = meter {
                 meter.record_codec(0, 0, count as u64)?;
             }
@@ -126,39 +128,51 @@ impl ReadRecord {
             result.status = Some(Status::Torn);
             return Ok(result);
         }
+        result.load_snapshot(file, length, meter)
+    }
+
+    fn load_snapshot(
+        mut self,
+        file: &mut (impl std::io::Read + std::io::Seek),
+        length: u64,
+        meter: Option<&std::sync::Arc<dyn crate::NativeReadMeter>>,
+    ) -> std::io::Result<Self> {
+        use std::io::{self, SeekFrom};
         let count = usize::try_from(length).map_err(|_| io::ErrorKind::InvalidData)?;
-        result._allocation = meter
+        self._allocation = meter
             .map(|meter| crate::ReadAllocation::new(meter, count))
             .transpose()?;
-        result
-            .bytes
+        self.bytes
             .try_reserve_exact(count)
             .map_err(|error| match meter {
                 Some(meter) => meter.allocation_failed(error),
                 None => io::Error::from(io::ErrorKind::OutOfMemory),
             })?;
-        if let Some(allocation) = &mut result._allocation {
-            allocation.reconcile_capacity(result.bytes.capacity())?;
+        if let Some(allocation) = &mut self._allocation {
+            allocation.reconcile_capacity(self.bytes.capacity())?;
         }
-        result.bytes.resize(count, 0);
+        self.bytes.resize(count, 0);
         native_operation(meter, || file.seek(SeekFrom::Start(0)))?;
-        read_exact(file, &mut result.bytes, meter)?;
+        read_exact(file, &mut self.bytes, meter)?;
         // Revalidate the owned snapshot too, even if an external writer ignores
         // the protocol lock. Contents then borrows only this verified buffer.
-        let body = result.bytes.len() - CHECKSUM_BYTES;
+        let (body, sum) = self
+            .bytes
+            .split_last_chunk::<CHECKSUM_BYTES>()
+            .ok_or(io::ErrorKind::InvalidData)?;
         if let Some(meter) = meter {
-            meter.admit_codec(0, 0, body as u64)?;
+            meter.admit_codec(0, 0, body.len() as u64)?;
         }
-        let valid = checksum(&result.bytes[..body]) == result.bytes[body..];
+        let valid = checksum(body) == *sum;
         if let Some(meter) = meter {
-            meter.record_codec(0, 0, body as u64)?;
+            meter.record_codec(0, 0, body.len() as u64)?;
         }
-        result.status = Some(if valid {
+        self.status = Some(if valid {
             Status::Verified
         } else {
             Status::Torn
         });
-        Ok(result)
+        Ok(self)
     }
 }
 
@@ -191,7 +205,7 @@ fn read_exact(
         }
         match result {
             Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
-            Ok(count) => bytes = &mut bytes[count..],
+            Ok(count) => bytes = bytes.get_mut(count..).ok_or(io::ErrorKind::InvalidData)?,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(error) => return Err(error),
         }

@@ -18,8 +18,11 @@ use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
 mod tests;
 
 #[cfg(test)]
+type AdmissionProbe = Box<dyn FnOnce(&File)>;
+
+#[cfg(test)]
 thread_local! {
-    static BEFORE_ADMISSION: std::cell::RefCell<Option<Box<dyn FnOnce(&File)>>> = const { std::cell::RefCell::new(None) };
+    static BEFORE_ADMISSION: std::cell::RefCell<Option<AdmissionProbe>> = const { std::cell::RefCell::new(None) };
     static BEFORE_CONNECT: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
     static BEFORE_LISTEN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
     static WITHOUT_ADMISSION_LOCK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -113,7 +116,9 @@ impl PacketDevice {
         let mut request = [0; 20];
         for (slot, word) in
             request
-                .chunks_exact_mut(4)
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
                 .zip([1, mode, uid, gid, u32::from(writable)])
         {
             slot.copy_from_slice(&word.to_ne_bytes());
@@ -269,10 +274,10 @@ impl PacketDeviceRetirement {
                     None
                 }
             };
-            if let Some((class, receipt)) = completed {
-                if state.slot(class).replace(receipt).is_some() {
-                    state.failure = Some((io::ErrorKind::InvalidData, None));
-                }
+            if let Some((class, receipt)) = completed
+                && state.slot(class).replace(receipt).is_some()
+            {
+                state.failure = Some((io::ErrorKind::InvalidData, None));
             }
             self.receipt_ready.notify_all();
         }

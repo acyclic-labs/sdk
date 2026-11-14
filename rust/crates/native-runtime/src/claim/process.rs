@@ -58,7 +58,7 @@ impl ProcessOwner {
         // exclude them: a filesystem whose locks always succeed cannot hold it.
         match FileLock::try_acquire(File::open(&path)?, FileLockMode::Shared) {
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-            _ => return Err(io::Error::from(io::ErrorKind::Unsupported).into()),
+            _ => return Err(io::Error::from(io::ErrorKind::Unsupported)),
         }
         let process = Process {
             pid,
@@ -248,7 +248,7 @@ fn path_bytes(path: &Path) -> io::Result<Vec<u8>> {
     #[cfg(not(any(unix, windows)))]
     {
         let _ = path;
-        Err(io::Error::from(io::ErrorKind::Unsupported).into())
+        Err(io::Error::from(io::ErrorKind::Unsupported))
     }
 }
 
@@ -386,7 +386,7 @@ fn user_id() -> io::Result<u32> {
     #[cfg(target_vendor = "apple")]
     return Ok(rustix::process::getuid().as_raw());
     #[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
-    Err(io::Error::from(io::ErrorKind::Unsupported).into())
+    Err(io::Error::from(io::ErrorKind::Unsupported))
 }
 
 /// Removes the process locks of processes that have died. A lock is removed

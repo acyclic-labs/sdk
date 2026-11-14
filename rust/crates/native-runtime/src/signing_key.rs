@@ -63,10 +63,12 @@ pub struct ProvisionalSigningKey {
 }
 
 impl ProvisionalSigningKey {
+    /// Identifies the unpublished credential without exposing its secret.
     pub fn reference(&self) -> SigningKeyReference {
         self.reference
     }
 
+    /// Transfers cleanup custody once namespace installation is observed.
     pub fn observe_publication(&self, stage: crate::private_file::PublicationStage) {
         if stage == crate::private_file::PublicationStage::Installed {
             self.cleanup.store(false, Ordering::Release);
@@ -197,6 +199,7 @@ impl SigningKeyReference {
         Ok(provisional)
     }
 
+    /// Rejects custody from a store other than the credential's original store.
     pub fn validate_custody(&self, custody: SigningCustody<'_>) -> io::Result<()> {
         self.validate_store(&custody.resolve()?)
     }

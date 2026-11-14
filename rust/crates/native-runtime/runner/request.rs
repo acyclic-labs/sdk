@@ -219,6 +219,69 @@ pub(super) fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno
     {
         return Err(invalid);
     }
+    let Arguments {
+        program,
+        cwd,
+        path,
+        argv,
+        envp,
+        search,
+    } = arguments(body, length, strings, argc, envc, flags)?;
+    let base = body.base;
+    Ok(Spec {
+        reply: descriptor(1)?,
+        completion_report: if policy.is_some() {
+            descriptor(next + 1)?
+        } else {
+            -1
+        },
+        directory: if flags & UNRECORDED != 0 {
+            -1
+        } else {
+            descriptor(0)?
+        },
+        here: descriptor(2)?,
+        owner,
+        slots: streams,
+        cwd,
+        uid: (flags & HAS_UID != 0).then_some(uid),
+        gid: (flags & HAS_GID != 0).then_some(gid),
+        mask,
+        signals,
+        ignored,
+        limits,
+        program,
+        search,
+        path,
+        argv,
+        envp,
+        boundary: policy.map(|(ruleset, start, count)| Boundary {
+            ruleset,
+            filter: base.wrapping_add(start).cast(),
+            count,
+        }),
+        activity,
+    })
+}
+
+struct Arguments {
+    program: *const c_char,
+    cwd: Option<*const c_char>,
+    path: Option<*const c_char>,
+    argv: *const *const c_char,
+    envp: *const *const c_char,
+    search: bool,
+}
+
+fn arguments(
+    body: &mut Mapped,
+    length: usize,
+    strings: usize,
+    argc: usize,
+    envc: usize,
+    flags: u8,
+) -> Result<Arguments, Errno> {
+    let invalid = Errno(sys::EINVAL);
     // Every argument and environment entry needs at least its NUL byte.
     // Validate that input-backed bound before allocating pointer storage.
     let strings_required = argc
@@ -287,39 +350,13 @@ pub(super) fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno
     if offset != length {
         return Err(invalid);
     }
-    Ok(Spec {
-        reply: descriptor(1)?,
-        completion_report: if policy.is_some() {
-            descriptor(next + 1)?
-        } else {
-            -1
-        },
-        directory: if flags & UNRECORDED != 0 {
-            -1
-        } else {
-            descriptor(0)?
-        },
-        here: descriptor(2)?,
-        owner,
-        slots: streams,
-        cwd,
-        uid: (flags & HAS_UID != 0).then_some(uid),
-        gid: (flags & HAS_GID != 0).then_some(gid),
-        mask,
-        signals,
-        ignored,
-        limits,
+    Ok(Arguments {
         program,
-        search,
+        cwd,
         path,
         argv: vector.cast_const(),
         envp: environment.cast_const(),
-        boundary: policy.map(|(ruleset, start, count)| Boundary {
-            ruleset,
-            filter: base.wrapping_add(start).cast(),
-            count,
-        }),
-        activity,
+        search,
     })
 }
 

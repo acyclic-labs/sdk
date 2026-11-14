@@ -31,12 +31,12 @@ async fn scoped_custody(
             let cause = error
                 .get_ref()
                 .and_then(|cause| cause.downcast_ref::<JoinFailure>())
-                .expect("task cancellation lost its original typed cause");
+                .ok_or("task cancellation lost its original typed cause")?;
             match cause {
                 JoinFailure::Native(error) => assert!(error.is_cancelled()),
                 #[cfg(feature = "test-support")]
                 JoinFailure::Cancelled(_) => {}
-                JoinFailure::Panicked { .. } => panic!("cancellation became a panic"),
+                JoinFailure::Panicked { .. } => return Err("cancellation became a panic".into()),
             }
         } else {
             drop(task);

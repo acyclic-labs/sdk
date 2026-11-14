@@ -153,10 +153,11 @@ pub fn minimize<T: Clone>(mut choices: Vec<T>, mut fails: impl FnMut(&[T]) -> bo
         let chunk = choices.len().div_ceil(parts);
         let reduced = (0..choices.len()).step_by(chunk).find_map(|start| {
             let end = (start + chunk).min(choices.len());
-            let candidate: Vec<T> = choices[..start]
+            let candidate: Vec<T> = choices
                 .iter()
-                .chain(&choices[end..])
-                .cloned()
+                .enumerate()
+                .filter(|(index, _)| *index < start || *index >= end)
+                .map(|(_, choice)| choice.clone())
                 .collect();
             fails(&candidate).then_some(candidate)
         });
@@ -216,7 +217,7 @@ mod tests {
         ) {
             let fails = |candidate: &[u8]| needed.iter().all(|value| candidate.contains(value));
             proptest::prop_assume!(fails(&choices));
-            let minimal = minimize(choices.clone(), fails);
+            let minimal = minimize(choices, fails);
             proptest::prop_assert!(fails(&minimal));
             proptest::prop_assert_eq!(minimal.len(), needed.len());
         }
