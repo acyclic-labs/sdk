@@ -1482,10 +1482,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         slot: &Arc<Slot>,
         work: Option<Work<ActorReference>>,
     ) -> Result<bool, Error> {
-        acyclic_observability::async_operation!(
-            "acyclic.actors.deliver",
-            Error::kind,
-            acyclic_native_runtime::obs::OperationSpan::new,
+        acyclic_stream::trace::observe(
+            acyclic_stream::trace::Request {
+                name: "actors.delivery",
+                mechanism: acyclic_stream::trace::Mechanism::ActorDelivery,
+                parent: None,
+                guarantee: Some("settled_actor_input_or_retained_delivery_wake"),
+            },
             async {
                 // Duplicate events for one actor wait outside global admission. Only
                 // an actor that can make progress may occupy an active delivery slot.
@@ -1562,8 +1565,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     slot.evict.store(false, Ordering::Release);
                 }
                 result
-            }
+            },
+            |_| None,
         )
+        .await
     }
 
     /// The one entry point of every delivery, activation replays included.

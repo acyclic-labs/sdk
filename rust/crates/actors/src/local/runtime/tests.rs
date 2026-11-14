@@ -722,19 +722,32 @@ async fn a_deleted_actor_is_terminal_and_leaves_no_orphans() -> TestResult {
         trace.read(0, u32::try_from(trace.tail().await?)?).await?,
         Default::default(),
     );
+    let mut delivery = None;
+    let mut child_parents = Vec::new();
     let mut locks = 0;
     let mut admissions = 0;
     let mut handlers = 0;
     while let Some(observation) = query.next().await? {
         if let Observation::Completed {
+            id,
             start,
             bytes,
             result,
             ..
         } = observation
         {
-            if start.name == "actors.delivery_lock" {
+            if start.name == "actors.delivery" {
                 assert_eq!(start.parent, Some(parent));
+                assert_eq!(start.mechanism, Mechanism::ActorDelivery);
+                assert_eq!(
+                    start.guarantee.as_deref(),
+                    Some("settled_actor_input_or_retained_delivery_wake")
+                );
+                assert_eq!(bytes, None);
+                assert_eq!(result, Outcome::Succeeded);
+                delivery = Some(id);
+            } else if start.name == "actors.delivery_lock" {
+                child_parents.push(start.parent);
                 assert_eq!(start.mechanism, Mechanism::Lock);
                 assert_eq!(
                     start.guarantee.as_deref(),
@@ -744,7 +757,7 @@ async fn a_deleted_actor_is_terminal_and_leaves_no_orphans() -> TestResult {
                 assert_eq!(result, Outcome::Succeeded);
                 locks += 1;
             } else if start.name == "actors.delivery_admission" {
-                assert_eq!(start.parent, Some(parent));
+                child_parents.push(start.parent);
                 assert_eq!(start.mechanism, Mechanism::Wait);
                 assert_eq!(
                     start.guarantee.as_deref(),
@@ -754,7 +767,7 @@ async fn a_deleted_actor_is_terminal_and_leaves_no_orphans() -> TestResult {
                 assert_eq!(result, Outcome::Succeeded);
                 admissions += 1;
             } else if start.name == "actors.handler" {
-                assert_eq!(start.parent, Some(parent));
+                child_parents.push(start.parent);
                 assert_eq!(start.mechanism, Mechanism::ActorDelivery);
                 assert_eq!(
                     start.guarantee.as_deref(),
@@ -776,6 +789,8 @@ async fn a_deleted_actor_is_terminal_and_leaves_no_orphans() -> TestResult {
         "configured delivery credit was not observed"
     );
     assert!(handlers > 0, "original handler entry was not observed");
+    let delivery = delivery.ok_or("original actor delivery span absent")?;
+    assert!(child_parents.iter().all(|parent| *parent == Some(delivery)));
     let live = store.load(&actor).await?;
     assert!(
         live.state()
