@@ -78,8 +78,31 @@ fn executor() -> Result<(StockExecutor, Arc<ScriptedModelProvider>)> {
     Ok((executor, provider))
 }
 
-#[tokio::test]
-async fn first_step_reuses_preceding_turn_and_writes_only_appended_content() -> Result<()> {
+#[test]
+fn first_step_reuses_preceding_turn_and_writes_only_appended_content() -> Result<()> {
+    // How much the log grows depends on the identities the run draws. A seeded
+    // world draws the same ones in every run, so the bound below compares the
+    // same writes every time.
+    let seed = 0x5052_4546;
+    acyclic_native_runtime::testing::seeded_runtime(seed)
+        .map_err(|error| Error::Storage(error.to_string()))?
+        .block_on(async {
+            tokio::time::pause();
+            let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::seeded(seed);
+            let appended = schedule.scope(first_step_appends_only_new_content());
+            tokio::pin!(appended);
+            loop {
+                tokio::select! {
+                    result = &mut appended => return result,
+                    event = events.recv() => event
+                        .ok_or_else(|| Error::Storage("lost native boundary".into()))?
+                        .release(),
+                }
+            }
+        })
+}
+
+async fn first_step_appends_only_new_content() -> Result<()> {
     let failed = |error: &dyn std::fmt::Display| Error::Storage(error.to_string());
     acyclic_native_runtime::initialize_native_io_services().map_err(|error| failed(&error))?;
     let directory = tempfile::tempdir().map_err(|error| failed(&error))?;
