@@ -137,6 +137,13 @@ impl MemoryStream {
     /// outside any adapter publication lock. There is no boxed inner dispatch.
     /// Durable providers confirm the captured state. Deferred providers reserve
     /// later watermark fields without claiming durability during capture.
+    // Only the durable providers (postgres, browser and journal) capture
+    // through here; the memory provider's own heads fills its view directly.
+    #[cfg(any(
+        not(target_arch = "wasm32"),
+        feature = "wasm",
+        feature = "wasm-journal"
+    ))]
     pub(crate) async fn capture_heads(
         &self,
         request: &crate::HeadsRequest,
