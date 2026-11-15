@@ -731,20 +731,20 @@ impl<'io> StockExecution<'io> {
                             return Ok(ExecutionProgress::Pending(invocation.operation_id));
                         }
                         Some(Err(error)) => return Err(error),
+                        // The turn's own stop: record the call and end the turn.
                         None => {
-                            let content = self
-                                .reject_tool_call(
-                                    journal,
-                                    operation_id,
-                                    step,
-                                    &invocation.call_id,
-                                    ToolFailureKind::Interrupted,
-                                    Error::InteractionRejected(
-                                        crate::InteractionRejection::Cancelled,
-                                    ),
-                                )
-                                .await?;
-                            return Ok(settled_call(invocation, content, None));
+                            self.reject_tool_call(
+                                journal,
+                                operation_id,
+                                step,
+                                &invocation.call_id,
+                                ToolFailureKind::Interrupted,
+                                Error::InteractionRejected(crate::InteractionRejection::Cancelled),
+                            )
+                            .await?;
+                            return Err(Error::InteractionRejected(
+                                crate::InteractionRejection::Cancelled,
+                            ));
                         }
                     }
                 }

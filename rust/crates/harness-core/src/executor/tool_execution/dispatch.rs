@@ -402,7 +402,8 @@ impl<'io> StockExecution<'io> {
 
     /// A call whose run ended without a recorded outcome is the model's
     /// failed result, never the turn's: the model learns the effect may have
-    /// run, and the turn continues unless its own stop ended it.
+    /// run, and the turn continues. When the turn's own stop has fired, the
+    /// failure is recorded and the turn ends before another call can start.
     async fn interrupted(
         &self,
         journal: &dyn ExecutionJournal,
@@ -410,16 +411,23 @@ impl<'io> StockExecution<'io> {
         call_id: &str,
         error: Error,
     ) -> Result<ToolInvocationOutcome<'io>> {
-        self.reject_tool_call(
-            journal,
-            operation_id,
-            step,
-            call_id,
-            ToolFailureKind::Interrupted,
-            error,
-        )
-        .await
-        .map(|content| ToolInvocationOutcome::Settled(content, None))
+        use futures::FutureExt as _;
+        let content = self
+            .reject_tool_call(
+                journal,
+                operation_id,
+                step,
+                call_id,
+                ToolFailureKind::Interrupted,
+                error,
+            )
+            .await?;
+        match journal.model_cancellation().now_or_never() {
+            Some(stopped) => stopped.and(Err(Error::InteractionRejected(
+                crate::InteractionRejection::Cancelled,
+            ))),
+            None => Ok(ToolInvocationOutcome::Settled(content, None)),
+        }
     }
 
     async fn observe_tool_cancellation<T>(

@@ -553,11 +553,13 @@ async fn semantic_tool_preflight_replays_a_failure_but_native_infrastructure_sta
 // GC-309: an interaction cancelled during a call, or a call whose run ended
 // before its outcome was recorded, is the model's failed tool result. The turn
 // goes on to its next model request, and a replay settles the same result
-// without dispatching or reconciling again. Only the turn's own stop ends it.
+// without dispatching or reconciling again. Only the turn's own stop ends it,
+// before another call or model request can start.
 #[tokio::test]
 async fn interrupted_and_cancelled_calls_settle_and_the_turn_continues() -> Result<()> {
     struct Interrupted {
         execute: fn() -> Error,
+        stop: Option<tokio_util::sync::CancellationToken>,
         calls: AtomicUsize,
         reconciles: AtomicUsize,
     }
@@ -568,6 +570,9 @@ async fn interrupted_and_cancelled_calls_settle_and_the_turn_continues() -> Resu
             _: Option<crate::runtime::ToolContext>,
         ) -> BoxFuture<'a, Result<ToolResult>> {
             self.calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(stop) = &self.stop {
+                stop.cancel();
+            }
             let error = (self.execute)();
             Box::pin(async move { Err(error) })
         }
@@ -590,7 +595,13 @@ async fn interrupted_and_cancelled_calls_settle_and_the_turn_continues() -> Resu
     // A lost response leaves the effect uncertain: the delivery ends and the
     // next one reconciles the started call.
     let lost: fn() -> Error = || Error::Cancelled;
-    for (execute, executions, expected) in [(cancelled, 1, (1, 0)), (lost, 2, (1, 1))] {
+    for (execute, executions, expected, stops) in [
+        (cancelled, 1, (1, 0), false),
+        (lost, 2, (1, 1), false),
+        // The turn is stopped while the call runs.
+        (cancelled, 1, (1, 0), true),
+    ] {
+        let journal = Journal::default();
         let scope = RuntimeScope::new(
             crate::Capabilities::new(["model:generate", "tool:call:example.echo"]),
             Limits::default(),
@@ -598,6 +609,7 @@ async fn interrupted_and_cancelled_calls_settle_and_the_turn_continues() -> Resu
         let original = admitted_context(scope.clone())?;
         let tool = Arc::new(Interrupted {
             execute,
+            stop: stops.then(|| journal.10.clone()),
             calls: AtomicUsize::new(0),
             reconciles: AtomicUsize::new(0),
         });
@@ -624,20 +636,29 @@ async fn interrupted_and_cancelled_calls_settle_and_the_turn_continues() -> Resu
             input: ModelContent::Text("input".into()),
             selected_context: None,
         };
-        let journal = Journal::default();
         for _ in 1..executions {
             assert!(executor.execute(input.clone(), &journal).await.is_err());
         }
-        let settled = executor.execute(input.clone(), &journal).await?;
-        assert_eq!(settled.text, "done");
-        assert_eq!(settled, executor.execute(input, &journal).await?);
-        let text = super::tools_1::tool_error_text(&model.requests()[1].messages, "call-1")
-            .expect("the next model request carries the call's failure");
-        assert!(
-            text.starts_with(ToolFailureKind::Interrupted.message())
-                && text.ends_with("interaction cancelled"),
-            "{text}"
-        );
+        if stops {
+            assert!(matches!(
+                executor.execute(input, &journal).await,
+                Err(Error::InteractionRejected(
+                    crate::InteractionRejection::Cancelled
+                ))
+            ));
+            assert_eq!(model.requests().len(), 1, "a stopped turn asks no more");
+        } else {
+            let settled = executor.execute(input.clone(), &journal).await?;
+            assert_eq!(settled.text, "done");
+            assert_eq!(settled, executor.execute(input, &journal).await?);
+            let text = super::tools_1::tool_error_text(&model.requests()[1].messages, "call-1")
+                .expect("the next model request carries the call's failure");
+            assert!(
+                text.starts_with(ToolFailureKind::Interrupted.message())
+                    && text.ends_with("interaction cancelled"),
+                "{text}"
+            );
+        }
         assert!(journal.0.lock().unwrap().iter().any(|record| matches!(
             &record.event,
             ExecutionEvent::ToolFailed { call_id, reason: ToolFailureKind::Interrupted, .. }
