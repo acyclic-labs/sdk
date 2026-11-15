@@ -717,10 +717,13 @@ mod tests {
     }
 
     /// A caller that stops reading must not leave a running tool behind:
-    /// the headless root's whole tree is stopped before capture.
+    /// the headless root's whole tree is stopped and reaped before capture.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_failed_headless_copy_stops_the_roots_tools() -> Result<()> {
+        // Orphans of this test process reparent to it, and it never reaps
+        // them: only the tree's own join can remove the tool's /proc entry.
+        rustix::process::set_child_subreaper(Some(rustix::process::getpid())).map_err(storage)?;
         struct ClosedAfterContext(bool);
         impl std::io::Write for ClosedAfterContext {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -751,11 +754,8 @@ mod tests {
         assert!(matches!(error, Error::Storage(_)), "{error}");
         let tool = std::fs::read_to_string(&pid_file).map_err(storage)?;
         let stat = std::fs::read_to_string(format!("/proc/{}/stat", tool.trim())).ok();
-        // The tool is gone, or at most an unreaped zombie of a foreign reaper.
         assert!(
-            stat.as_deref().is_none_or(|stat| stat
-                .rsplit_once(") ")
-                .is_some_and(|(_, rest)| rest.starts_with(['Z', 'X']))),
+            stat.is_none(),
             "the root's tool outlived its failed copy: {stat:?}"
         );
         Ok(())
