@@ -4,6 +4,21 @@ export type {
   Plugins, Policy, Rule,
 } from './config';
 
+/** A plugin before-hook's decision about one request. */
+export type HookDecision =
+  | { allow: true; input?: Record<string, unknown> }
+  | { allow: false; reason: string }
+  | { ask: string; to: 'person' | 'model' | 'parent' };
+/**
+ * The default export of a plugin's `hooks/before-<event>.ts`: a pure
+ * function of the normalized request and the plugin's settings.
+ */
+export type BeforeHook<C = unknown> = (input: { request: unknown; config: C }) => HookDecision;
+/** Each seed plugin's settings, by plugin name. */
+export interface PluginConfigs {
+  approvals: { mode: 'ask' | 'model' | 'parent' };
+}
+
 export type Path = string;
 /** Opaque immutable file or namespace selection; pass it back unchanged. */
 export type Version = string & { readonly __brand: 'Version' };

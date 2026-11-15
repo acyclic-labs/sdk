@@ -59,6 +59,7 @@ async fn an_enabled_shell_hook_becomes_a_pinned_before_tool_rule()
         hook.run,
         HookRun::Plugin {
             instance: "root:plugins.ts#guard:hooks/before-tool".into(),
+            ts: Vec::new(),
             sh: Some("exit 2".into()),
             ps1: Some("exit 2".into()),
             config: r#"{"force":false}"#.into(),
@@ -156,7 +157,28 @@ async fn an_unrunnable_or_unsatisfied_plugin_makes_plugins_ts_invalid() {
                 ("plugins/p/plugin.ts", manifest),
                 ("plugins/p/hooks/before-tool.ts", ""),
             ],
-            "TypeScript hooks",
+            "hook command",
+        ),
+        (
+            vec![
+                ("plugins/p/plugin.ts", manifest),
+                (
+                    "plugins/p/hooks/before-tool.ts",
+                    r#"import a from "./absent.ts"; export default a;"#,
+                ),
+            ],
+            "which does not exist",
+        ),
+        (
+            vec![
+                ("plugins/p/plugin.ts", manifest),
+                (
+                    "plugins/p/hooks/before-tool.ts",
+                    "export default () => ({ allow: true });",
+                ),
+                ("plugins/p/hooks/before-tool.sh", "exit 0"),
+            ],
+            "TypeScript or scripts, not both",
         ),
         (
             vec![
@@ -480,6 +502,135 @@ async fn native_plugin_retains_only_settings_used_by_installed_rules() -> Result
             drop(admitted);
             assert_eq!(work.live_allocation_bytes(), baseline);
         }
+    }
+    Ok(())
+}
+
+/// The seed approvals plugin, exactly as it ships.
+const APPROVALS: [(&str, &str); 5] = [
+    (
+        "plugins/approvals/plugin.ts",
+        include_str!("../seed/plugins/approvals/plugin.ts"),
+    ),
+    (
+        "plugins/approvals/hooks/before-tool.ts",
+        include_str!("../seed/plugins/approvals/hooks/before-tool.ts"),
+    ),
+    (
+        "plugins/approvals/modes/ask.ts",
+        include_str!("../seed/plugins/approvals/modes/ask.ts"),
+    ),
+    (
+        "plugins/approvals/modes/model.ts",
+        include_str!("../seed/plugins/approvals/modes/model.ts"),
+    ),
+    (
+        "plugins/approvals/modes/parent.ts",
+        include_str!("../seed/plugins/approvals/modes/parent.ts"),
+    ),
+];
+
+/// Runs every pre-tool rule `enabled` admitted on one `read` call.
+async fn judge(enabled: &Enabled) -> Result<crate::hooks::HookOutput> {
+    let root = tempfile::tempdir().map_err(Error::process_io)?;
+    let call = crate::tool::ToolInvocation {
+        operation_id: crate::OperationId::new(),
+        call_id: "read".into(),
+        name: "read".into(),
+        arguments: serde_json::json!({"path": "notes.md"}),
+    };
+    enabled
+        .rules
+        .run(
+            HookEvent::PreToolUse,
+            root.path(),
+            root.path(),
+            crate::hooks::HookInput::Tool {
+                binding: None,
+                invocation: &call,
+                response: None,
+                session_id: None,
+            },
+            &crate::tools::defaults()?,
+        )
+        .await
+}
+
+#[tokio::test]
+async fn each_approvals_mode_asks_its_own_approver_and_an_unknown_mode_refuses()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    use crate::interaction::ApprovalRoute;
+    for (manifest, route) in [
+        (
+            r#"export default { approvals: { enabled: true } };"#,
+            Some(ApprovalRoute::Human),
+        ),
+        (
+            r#"export default { approvals: { enabled: true, config: { mode: "ask" } } };"#,
+            Some(ApprovalRoute::Human),
+        ),
+        (
+            r#"export default { approvals: { enabled: true, config: { mode: "model" } } };"#,
+            Some(ApprovalRoute::Model),
+        ),
+        (
+            r#"export default { approvals: { enabled: true, config: { mode: "parent" } } };"#,
+            Some(ApprovalRoute::Parent),
+        ),
+        (
+            r#"export default { approvals: { enabled: true, config: { mode: "anyone" } } };"#,
+            None,
+        ),
+    ] {
+        let output = judge(&enable(manifest, &APPROVALS).await?).await?;
+        match route {
+            Some(route) => {
+                assert_eq!(
+                    output.approval,
+                    Some(crate::hooks::HookApproval {
+                        prompt: "Approve this request?".into(),
+                        route,
+                    }),
+                    "{manifest}: {output:?}"
+                );
+                assert!(!output.blocks(), "{manifest}: {output:?}");
+            }
+            None => {
+                assert_eq!(output.approval, None, "{output:?}");
+                assert!(
+                    output
+                        .blocked
+                        .as_deref()
+                        .is_some_and(|reason| reason.contains("unknown approvals mode")),
+                    "an unknown mode did not refuse: {output:?}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_typescript_hook_that_throws_or_returns_no_decision_blocks()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    for hook in [
+        r#"export default () => { throw new Error("no decision"); };"#,
+        r#"export default () => 7;"#,
+    ] {
+        let enabled = enable(
+            r#"export default { p: { enabled: true } };"#,
+            &[
+                (
+                    "plugins/p/plugin.ts",
+                    r#"export default { name: "p", description: "d" };"#,
+                ),
+                ("plugins/p/hooks/before-tool.ts", hook),
+            ],
+        )
+        .await?;
+        let output = judge(&enabled).await?;
+        assert!(output.blocks(), "{hook}: {output:?}");
+        assert_eq!(output.approval, None, "{hook}: {output:?}");
     }
     Ok(())
 }

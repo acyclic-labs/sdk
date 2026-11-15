@@ -148,13 +148,20 @@ pub enum HookRun {
         /// Explicit shell, or the platform default.
         shell: Option<String>,
     },
-    /// A plugin's `hooks/before-<event>.{sh,ps1}`, pinned by their exact
-    /// bytes at the enabling agent's admitted generation. The target runs
-    /// the form it can: `sh` on POSIX, PowerShell on Windows. It reads
-    /// `{request, config}` on stdin and writes a decision on stdout.
+    /// A plugin's `hooks/before-<event>.{ts,sh,ps1}`, pinned by their exact
+    /// bytes at the enabling agent's admitted generation. A TypeScript hook
+    /// runs on every target in the shared settings evaluator: its default
+    /// export is called with `{request, config}` and returns the decision.
+    /// Otherwise the target runs the script form it can: `sh` on POSIX,
+    /// PowerShell on Windows, reading `{request, config}` on stdin and
+    /// writing the decision on stdout.
     Plugin {
         /// The instance: enabling agent, contributing entry and hook path.
         instance: String,
+        /// `before-<event>.ts` and every module it statically imports, as
+        /// `(resolved path, source)`, the hook itself first. Empty when the
+        /// plugin ships scripts instead.
+        ts: Vec<(String, String)>,
         /// `before-<event>.sh`, if the plugin ships one.
         sh: Option<String>,
         /// `before-<event>.ps1`, if the plugin ships one.
@@ -215,7 +222,11 @@ impl HookSpec {
                 (command, true)
             }
             HookRun::Plugin {
-                sh, ps1, config, ..
+                ts,
+                sh,
+                ps1,
+                config,
+                ..
             } => {
                 // A plugin hook that cannot run denies its request.
                 if self.failure != HookFailure::Block {
@@ -223,15 +234,26 @@ impl HookSpec {
                 }
                 serde_json::from_str::<serde::de::IgnoredAny>(config)
                     .map_err(|error| Error::Invalid(format!("plugin hook settings: {error}")))?;
-                let script = sh
-                    .as_ref()
+                // One form judges a request on every target, never two that
+                // could disagree.
+                if !ts.is_empty() && (sh.is_some() || ps1.is_some()) {
+                    return Err(Error::Invalid(
+                        "a plugin hook ships TypeScript or scripts, not both".into(),
+                    ));
+                }
+                let script = ts
+                    .first()
+                    .map(|(_, source)| source)
+                    .or(sh.as_ref())
                     .or(ps1.as_ref())
                     .ok_or_else(|| Error::Invalid("a plugin hook has a script".into()))?;
                 (
                     script,
-                    sh.iter()
+                    ts.iter()
+                        .flat_map(|(path, source)| [path, source])
+                        .chain(sh)
                         .chain(ps1)
-                        .all(|script| !script.trim().is_empty() && !script.contains('\0')),
+                        .all(|text| !text.trim().is_empty() && !text.contains('\0')),
                 )
             }
         };
