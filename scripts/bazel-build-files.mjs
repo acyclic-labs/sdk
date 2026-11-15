@@ -123,8 +123,9 @@ function closure(crateDir, rootFile) {
 // What a test reads at run time, from the string literals of a module closure: a literal naming
 // a tracked file, or a directory holding tracked files, either repository-relative (test-support's
 // source_path) or relative to the crate that spells it (crate_path!, CARGO_MANIFEST_DIR joins).
-// A read this misses fails the sandboxed test loudly with a missing file; a literal that only
-// looks like a path adds an unread input.
+// A test therefore spells each path it reads whole, not assembled from parts: a read this misses
+// fails the sandboxed test loudly with a missing file. A literal that only looks like a path adds
+// an unread input. An ancestor of the crate is never an input: "../" would name the whole tree.
 const LITERAL = /"([^"\\\n]*\/[^"\\\n]*)"/g;
 const literalReads = new Map();
 function readsOf(crateDir, rootFile) {
