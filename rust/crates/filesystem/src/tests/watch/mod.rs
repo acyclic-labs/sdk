@@ -447,6 +447,7 @@ fn linux_a_move_across_the_watched_tree_is_an_exact_arrival_or_departure()
     options.recursive = false;
     let mut watch = NativeWatch::open(root.path(), options)?;
     watch.accept_lazy_baseline()?;
+    watch.watch_tree()?;
 
     std::fs::write(outside.path().join("staged"), b"arriving")?;
     std::fs::rename(outside.path().join("staged"), root.path().join("arrived"))?;
