@@ -59,6 +59,10 @@ pub struct NativeWatchCapabilities {
     pub persistent_restart: bool,
     /// Whether every poll fences replacement of the admitted root identity.
     pub root_identity_fencing: bool,
+    /// Whether a fence proves delivery complete without writing into the
+    /// watched tree. Without it, a consumer that forbids fence writes must
+    /// revalidate the tree before trusting the absence of a hint.
+    pub read_only_fence: bool,
 }
 
 /// Returns compile-time native watcher guarantees without touching a user path.
@@ -78,6 +82,9 @@ pub const fn native_watch_capabilities() -> NativeWatchCapabilities {
         recursive: cfg!(any(target_os = "linux", target_os = "macos", windows)),
         persistent_restart: false,
         root_identity_fencing: cfg!(any(unix, windows)),
+        // inotify and ReadDirectoryChangesW fence the host's own delivery
+        // queue. FSEvents can prove delivery only through a cookie it writes.
+        read_only_fence: cfg!(any(target_os = "linux", windows)),
     }
 }
 
