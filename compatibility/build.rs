@@ -11,9 +11,9 @@
 //! The crate's own shared protocols travel the same way. The bundle is copied
 //! into `OUT_DIR`, so the library embeds bytes, never a path that is valid only
 //! while this script runs or only inside this package.
-//! Each copy carries bytes, never the source's mode, and is renamed over the
-//! previous run's file, so the script reruns over its own output even when a
-//! source, and so an earlier copy, is read-only.
+//! Every file the script writes carries bytes, never a source's mode, and is
+//! renamed over the previous run's file, so the script reruns over its own
+//! output whatever mode that output has.
 use std::{
     env, fs, io,
     path::{Path, PathBuf},
@@ -47,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut source = match executable {
         Some(path) => {
             println!("cargo:rerun-if-changed={}", path.display());
-            place(&path, &out.join("protoc"))?;
+            place(&out.join("protoc"), &fs::read(path)?)?;
             "const EXECUTABLE: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/protoc\"));\n"
                 .to_owned()
         }
@@ -65,7 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .join("proto");
     embed(&shared, &shared, &out, "shared", &mut source)?;
     source.push_str("];\n");
-    fs::write(out.join("compiler.rs"), source)?;
+    place(&out.join("compiler.rs"), source.as_bytes())?;
     Ok(())
 }
 
@@ -101,15 +101,15 @@ fn runnable(candidate: &Path) -> bool {
     })
 }
 
-/// Writes the bytes of `from` to `to`: a new file beside it, created with the
-/// default mode rather than `from`'s, renamed into place. `fs::copy` would carry
-/// a read-only source's mode to `to` and then fail to open that file on the
-/// next run.
-fn place(from: &Path, to: &Path) -> io::Result<()> {
+/// Writes `bytes` to `to` as a new file beside it, created with the default
+/// mode, renamed into place: whatever mode a previous run's file has, it is
+/// replaced, never opened. `fs::copy` would instead carry a read-only source's
+/// mode to `to` and then fail to open that file on the next run.
+fn place(to: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut partial = to.as_os_str().to_owned();
     partial.push(".partial");
     let partial = PathBuf::from(partial);
-    fs::write(&partial, fs::read(from)?)?;
+    fs::write(&partial, bytes)?;
     fs::rename(&partial, to)
 }
 
@@ -137,7 +137,7 @@ fn embed(
                     .parent()
                     .ok_or_else(|| io::Error::other("embedded file parent"))?,
             )?;
-            place(&path, &target)?;
+            place(&target, &fs::read(&path)?)?;
             source.push_str(&format!(
                 "({relative:?}, include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{name}/\", {relative:?}))),\n"
             ));
