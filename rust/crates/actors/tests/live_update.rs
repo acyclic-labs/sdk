@@ -327,6 +327,7 @@ fn host<P: StreamProvider + 'static>(
     fence: &SelectionFence,
     publications: &[Publication],
 ) -> Result<(Host<P>, Arc<FencedHandler>)> {
+    let a = std::time::Instant::now();
     let route = routes.get(target).ok_or("route")?;
     let version = selection.version(&route.pin)?;
     let publication = publications
@@ -337,6 +338,9 @@ fn host<P: StreamProvider + 'static>(
                 .is_ok_and(|identity| identity == *version)
         })
         .ok_or("publication")?;
+    let b = std::time::Instant::now();
+    let built_envelope = envelope(selection, route, publication)?;
+    let c = std::time::Instant::now();
     let namespace = route.actor.namespace().as_str();
     let code = publication.artifacts.get(namespace).ok_or("artifact")?.code;
     let package = Arc::new(VersionedHandler::new(
@@ -350,18 +354,27 @@ fn host<P: StreamProvider + 'static>(
                 limits: ActorLimits::new(1_000, 1_048_576, 1_048_576)?,
             },
             routes: Arc::clone(routes),
-            envelope: envelope(selection, route, publication)?,
+            envelope: built_envelope,
             audit: path("proof/audit")?,
         }),
         publication,
         namespace,
     )?);
+    let d = std::time::Instant::now();
     let handler = Arc::new(FencedHandler::new(
         package,
         selection,
         route.pin.clone(),
         fence.clone(),
     )?);
+    let e = std::time::Instant::now();
+    eprintln!(
+        "DIAGH find={:?} envelope={:?} versioned={:?} fenced={:?}",
+        b - a,
+        c - b,
+        d - c,
+        e - d
+    );
     Ok((
         Host::new(
             acyclic_actors::guest::Requests::default(),
