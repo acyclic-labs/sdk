@@ -45,14 +45,8 @@ where
                 .map_err(|error| Error::from(work.runtime_error(error)))?;
             return crate::conversation::BoundedContentFuture::new(io, || async move {
                 authority.await.map_err(acyclic_fs::FsError::from)?;
-                crate::distributed::native_call_result(work, stream.await)?.map_err(|source| {
-                    Error::StreamFailure {
-                        native: true,
-                        code: crate::wire::ErrorCode::Storage,
-                        source,
-                        custody: None,
-                    }
-                })?;
+                crate::distributed::native_call_result(work, stream.await)?
+                    .map_err(Error::native_stream)?;
                 Ok(())
             });
         }

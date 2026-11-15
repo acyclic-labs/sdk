@@ -568,6 +568,9 @@ fn filesystem_error_code(source: &acyclic_fs::FsError) -> ErrorCode {
         FsError::InvalidAccessPolicy => ErrorCode::Unauthorized,
         FsError::UnauthenticatedAccessFacts => ErrorCode::Unsupported,
         FsError::Authority(AuthorityStoreError::Missing) => ErrorCode::NotFound,
+        FsError::Authority(AuthorityStoreError::NativeStream(source)) => {
+            stream_refusal_code(source)
+        }
         FsError::Cancelled(_) => ErrorCode::Cancelled,
         FsError::Path(acyclic_fs::kernel::PathLookupError::NamespacePath(source)) => {
             namespace_path_error_code(source)
@@ -1772,6 +1775,36 @@ impl From<acyclic_stream::StreamError> for Error {
 /// Harness result type.
 pub type Result<T> = std::result::Result<T, Error>;
 
+impl Error {
+    /// A Stream failure on a native SDK request, classified once from its
+    /// category. Only a cause that may still succeed is storage, so a request
+    /// the provider definitively refused never retains its guest input.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn native_stream(source: acyclic_stream::StreamError) -> Self {
+        Self::StreamFailure {
+            native: true,
+            code: stream_refusal_code(&source),
+            source,
+            custody: None,
+        }
+    }
+}
+
+/// Wire classification of a Stream refusal that reached a native request or a
+/// filesystem authority: the request's own shape, access and retry identity are
+/// definitive; every other cause is storage.
+fn stream_refusal_code(source: &acyclic_stream::StreamError) -> ErrorCode {
+    use acyclic_stream::StreamError;
+    match source.category() {
+        StreamError::IdempotencyMismatch => ErrorCode::Conflict,
+        StreamError::AccessDenied => ErrorCode::Unauthorized,
+        StreamError::InvalidArgument | StreamError::InvalidPath | StreamError::InvalidResponse => {
+            ErrorCode::Invalid
+        }
+        _ => ErrorCode::Storage,
+    }
+}
+
 fn stream_state_error_code<C>(source: &acyclic_fs::StreamStateStoreError<C>) -> ErrorCode {
     match source {
         acyclic_fs::StreamStateStoreError::Authority(acyclic_fs::AuthorityStoreError::Missing) => {
@@ -1791,6 +1824,41 @@ fn stream_state_error_code<C>(source: &acyclic_fs::StreamStateStoreError<C>) -> 
 #[cfg(test)]
 mod cleanup_tests {
     use super::*;
+
+    /// A native request the provider refused for its own shape fails the
+    /// guest definitively; only an undecided cause keeps its input pending.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_stream_refusals_are_definitive_and_only_uncertain_causes_stay_pending() {
+        use acyclic_actors::guest::GuestError;
+        use acyclic_stream::StreamError;
+        for definitive in [
+            StreamError::InvalidArgument,
+            StreamError::InvalidPath,
+            StreamError::InvalidResponse,
+            StreamError::AccessDenied,
+            StreamError::IdempotencyMismatch,
+        ] {
+            let native = Error::guest(Error::native_stream(definitive.clone()));
+            // The filesystem authority's own refusal, as a spawn seal returns it.
+            let authority = Error::guest(acyclic_fs::FsError::Authority(
+                acyclic_fs::AuthorityStoreError::NativeStream(definitive.clone()),
+            ));
+            for guest in [native, authority] {
+                assert!(
+                    matches!(guest.category(), GuestError::Handler(_)),
+                    "{definitive:?} retained its guest input: {guest}"
+                );
+            }
+        }
+        let native = Error::guest(Error::native_stream(StreamError::Unavailable));
+        let authority = Error::guest(acyclic_fs::FsError::Authority(
+            acyclic_fs::AuthorityStoreError::NativeStream(StreamError::Unavailable),
+        ));
+        for guest in [native, authority] {
+            assert!(matches!(guest.category(), GuestError::Pending(_)));
+        }
+    }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
