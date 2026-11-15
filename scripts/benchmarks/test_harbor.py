@@ -162,11 +162,16 @@ class HarborContracts(unittest.IsolatedAsyncioTestCase):
                     await agent.setup(environment)
                     await agent.run("hello", environment, None)
                 else:
-                    with self.assertRaisesRegex(ValueError, "expected graphcoder <version>") as error:
+                    # Harbor reports a failed install as RuntimeError, caused by
+                    # the adapter's own refusal.
+                    with self.assertRaisesRegex(RuntimeError, "Agent install failed: expected graphcoder <version>") as error:
                         await agent.setup(environment)
-                    self.assertIn(str(binary), str(error.exception))
-                    self.assertIn(agent.binary, str(error.exception))
-                    self.assertIn(repr(version + "\n"), str(error.exception))
+                    refusal = error.exception.__cause__
+                    self.assertIsInstance(refusal, ValueError)
+                    self.assertRegex(str(refusal), "^expected graphcoder <version>")
+                    self.assertIn(str(binary), str(refusal))
+                    self.assertIn(agent.binary, str(refusal))
+                    self.assertIn(repr(version + "\n"), str(refusal))
                     self.assertNotIn("doctor", environment.commands[-1])
                     with self.assertRaisesRegex(RuntimeError, "not installed"):
                         await agent.run("hello", environment, None)
