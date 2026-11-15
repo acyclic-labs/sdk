@@ -235,23 +235,21 @@ fn record_frame(
 }
 
 async fn unary<T>(
-    _name: &'static str,
+    name: &'static str,
     response: impl Future<Output = Result<T, Status>>,
 ) -> Result<Response<T>, Status> {
-    #[cfg(feature = "serde")]
     let result = crate::trace::observe(
         crate::trace::Request {
-            name: _name,
+            name,
             mechanism: crate::trace::Mechanism::ProviderCall,
             parent: None,
             guarantee: Some("original_provider_result_encoded_for_rpc"),
+            key: None,
         },
         response,
         |_| None,
     )
     .await;
-    #[cfg(not(feature = "serde"))]
-    let result = response.await;
     result.map(Response::new)
 }
 
@@ -268,6 +266,7 @@ async fn streaming<T: Send + 'static>(
                 mechanism: crate::trace::Mechanism::ProviderCall,
                 parent: None,
                 guarantee: Some("original_finite_read_cut_delivered_through_body_eof"),
+                key: None,
             },
             response,
         )

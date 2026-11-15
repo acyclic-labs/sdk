@@ -582,10 +582,10 @@ async fn a_blocked_session_follow_is_a_reported_wait_until_its_record_arrives() 
         .map_ok(crate::records_only)
         .await?;
     assert!(futures::poll!(follow.next()).is_pending());
-    assert!(report()?.contains("waiting: session-follow "));
+    assert!(report()?.contains("waiting: stream.session_delivery_wait "));
     append(&provider, "waits", 1).await?;
     assert_eq!(next(&mut follow).await?.sequence, 1);
-    assert!(!report()?.contains("waiting: session-follow "));
+    assert!(!report()?.contains("waiting: stream.session_delivery_wait "));
     Ok(())
 }
 
@@ -627,7 +627,17 @@ async fn blocked_registration_and_one_shot_reply_are_reported_waits() -> TestRes
     // executor. Cancelling it must retire the wait and its original interest.
     let mut opening = Box::pin(open(kind.clone()));
     assert!(futures::poll!(opening.as_mut()).is_pending());
-    assert_eq!(report()?.matches("waiting: session-open ").count(), 1);
+    // Registration queues, then awaits its receipt: exactly one is pending.
+    let registering = report()?;
+    assert_eq!(
+        registering
+            .matches("waiting: stream.session_open_queue ")
+            .count()
+            + registering
+                .matches("waiting: stream.session_registration ")
+                .count(),
+        1
+    );
     drop(opening);
     assert_eq!(report()?, "");
     assert_eq!(client.pool.active.load(Ordering::Acquire), 0);
@@ -638,7 +648,12 @@ async fn blocked_registration_and_one_shot_reply_are_reported_waits() -> TestRes
     assert_eq!(report()?, "");
     let mut reply = Box::pin(opened.receive());
     assert!(futures::poll!(reply.as_mut()).is_pending());
-    assert_eq!(report()?.matches("waiting: session-reply ").count(), 1);
+    assert_eq!(
+        report()?
+            .matches("waiting: stream.session_delivery_wait ")
+            .count(),
+        1
+    );
     drop(reply);
     assert_eq!(report()?, "");
     let mut reply = Box::pin(opened.receive());

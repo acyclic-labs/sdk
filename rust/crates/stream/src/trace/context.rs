@@ -119,40 +119,9 @@ pub async fn accompany<T>(
 ) -> (T, Option<OwnedRecording>) {
     OwnedRecording::accompany(child(request), work).await
 }
-/// Invoke the original work under the active owner's child span. Without an
-/// admitted owner this performs one local context check, with no allocation,
-/// clock, subscription lookup or diagnostic IO. Publication errors never replace
-/// the original result; unretained failures remain explicitly unfinished.
-pub fn observe<T, E>(
-    request: Request,
-    work: impl Future<Output = Result<T, E>>,
-    bytes: impl FnOnce(&T) -> Option<u64>,
-) -> impl Future<Output = Result<T, E>> {
-    observe_outcome(request, work, |result| {
-        result
-            .as_ref()
-            .ok()
-            .map(|value| (bytes(value), super::Outcome::Succeeded))
-    })
-}
-
-/// Classify the original result only for an admitted span. Failed classification
-/// still requires the original retained cause through Outcome's type. No
-/// classifier or terminal publication is evaluated on an unobserved request.
-pub fn observe_outcome<T, E>(
-    request: Request,
-    work: impl Future<Output = Result<T, E>>,
-    outcome: impl FnOnce(&Result<T, E>) -> Option<(Option<u64>, super::Outcome)>,
-) -> impl Future<Output = Result<T, E>> {
-    observe_value(request, work, outcome)
-}
-
-/// Observe an original result or value, including a borrowed lock guard, without
-/// wrapping an infallible mechanism in a fabricated error type. The classifier
-/// runs only for an admitted span and no terminal publication delays return.
-/// The observed future holds the work once: observation adds a constant size
-/// and one type level, however deeply observations nest.
-pub fn observe_value<T>(
+/// Record [`super::observe_value`]'s already live work under the active
+/// owner's child span. The classifier runs only for an admitted span.
+pub(super) fn record_value<T>(
     request: Request,
     work: impl Future<Output = T>,
     _outcome: impl FnOnce(&T) -> Option<(Option<u64>, super::Outcome)>,
@@ -192,6 +161,7 @@ pub(crate) fn records(records: crate::RecordStream) -> crate::RecordStream {
                         mechanism: super::Mechanism::Wait,
                         parent: Some(active.id),
                         guarantee: Some("ordered_cursor_delivery"),
+                        key: None,
                     })
                 });
                 let (next, recording) = OwnedRecording::accompany(admission, cursor.next()).await;
@@ -254,10 +224,9 @@ pub fn accompany_sync<T>(
     };
     (result, recording)
 }
-/// Observe original synchronous work with optional original comparison evidence.
-/// The classifier runs only after admission. Terminal and comparison share one
-/// bounded append; neither waits for diagnostic IO before returning the value.
-pub fn observe_sync<T>(
+/// Record [`super::observe_sync`]'s already live work. The classifier runs
+/// only after admission.
+pub(super) fn record_sync<T>(
     request: Request,
     work: impl FnOnce() -> T,
     _outcome: impl FnOnce(&T) -> Option<(Option<u64>, super::Outcome, Option<super::Comparison>)>,

@@ -38,7 +38,7 @@ fn native_pipe_keeps_request_ack_and_producer_loss_on_the_selected_owner() {
             }
             let (_producer, completion) = tokio::sync::oneshot::channel::<()>();
             let _wait = (mode == "live")
-                .then(|| crate::obs::waiting("channel-close", "report-control", completion));
+                .then(|| crate::obs::blocked("channel-close", "report-control", completion));
             port.ready().await.unwrap();
             let request = port.request().await.unwrap();
             if mode == "withdrawn" {

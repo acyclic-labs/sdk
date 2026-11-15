@@ -120,6 +120,7 @@ pub trait StreamProviderExt: StreamProvider {
                         mechanism: crate::trace::Mechanism::ProviderCall,
                         parent: None,
                         guarantee: Some("native_indexed_record_strictly_before_original_cut"),
+                        key: None,
                     },
                     work,
                     |result| match result {
@@ -220,6 +221,7 @@ pub trait StreamProviderExt: StreamProvider {
                         mechanism: crate::trace::Mechanism::Commit,
                         parent: None,
                         guarantee: Some("original_accepted_envelope_at_atomic_publication"),
+                        key: None,
                     },
                     work,
                     |_| None,
@@ -289,13 +291,13 @@ pub trait StreamProviderExt: StreamProvider {
             if diagnostic {
                 return work.await;
             }
-            #[cfg(feature = "serde")]
-            return crate::trace::observe(
+            crate::trace::observe(
                 crate::trace::Request {
                     name: "stream.latest_before",
                     mechanism: crate::trace::Mechanism::ProviderCall,
                     parent: None,
                     guarantee: Some("indexed_record_strictly_before_original_cut"),
+                    key: None,
                 },
                 work,
                 |record| {
@@ -306,9 +308,7 @@ pub trait StreamProviderExt: StreamProvider {
                     )
                 },
             )
-            .await;
-            #[cfg(not(feature = "serde"))]
-            work.await
+            .await
         }
     }
 
@@ -365,6 +365,7 @@ pub trait StreamProviderExt: StreamProvider {
                         mechanism: crate::trace::Mechanism::ProviderCall,
                         parent: None,
                         guarantee: Some("original_head_cut_for_optimistic_publication_fence"),
+                        key: None,
                     },
                     work,
                     |_| None,
@@ -439,6 +440,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
                         mechanism: crate::trace::Mechanism::Commit,
                         parent: None,
                         guarantee: Some("native_funded_atomic_contiguous_append_decision"),
+                        key: None,
                     },
                     work,
                     |result| match result {
@@ -499,6 +501,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
                     mechanism: crate::trace::Mechanism::Commit,
                     parent: None,
                     guarantee: Some("atomic_contiguous_append_decision"),
+                    key: None,
                 },
                 work,
                 |_| None,
@@ -527,6 +530,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
                     mechanism: crate::trace::Mechanism::Commit,
                     parent: None,
                     guarantee: Some("immutable_selected_prefix_and_origin"),
+                    key: None,
                 },
                 work,
                 |_| None,
@@ -553,6 +557,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
                     mechanism: crate::trace::Mechanism::Commit,
                     parent: None,
                     guarantee: Some("atomic_keyed_multi_path_publication_decision"),
+                    key: None,
                 },
                 work,
                 |_| None,
@@ -595,6 +600,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
                     mechanism: crate::trace::Mechanism::ProviderCall,
                     parent: None,
                     guarantee: Some("original_irreversible_prefix_confirmation"),
+                    key: None,
                 },
                 work,
                 |result| match result {
@@ -656,6 +662,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
                     mechanism: crate::trace::Mechanism::ProviderCall,
                     parent: None,
                     guarantee: Some("bounded_direct_children_at_namespace_cut"),
+                    key: None,
                 },
                 work,
                 |_| None,
@@ -704,6 +711,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
                 mechanism: crate::trace::Mechanism::Wait,
                 parent: None,
                 guarantee: Some("original_revision_cut_visible_before_return"),
+                key: None,
             },
             work,
             |_| None,
@@ -752,6 +760,7 @@ async fn named_head<P: StreamProvider + ?Sized>(
                 mechanism: crate::trace::Mechanism::ProviderCall,
                 parent: None,
                 guarantee: Some(guarantee),
+                key: None,
             },
             work,
             |_| None,

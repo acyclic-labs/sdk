@@ -186,8 +186,9 @@ fn original_queue_and_terminal_survive_detachment_racing_consumers_and_blocked_e
     );
     let receive = crate::sync::Mutex::new(receive);
     tracing::dispatcher::with_default(&dispatch, || -> io::Result<()> {
-        let waiting = obs::waiting("persistence-completion", 7, std::future::pending::<()>());
-        let _entered = waiting.context().enter();
+        let (_waiting, context) =
+            obs::waiting_now("persistence-completion", 7, std::future::pending::<()>());
+        let _entered = context.enter();
         {
             let mut scenario = QueueScenario {
                 workers: &workers,
@@ -197,7 +198,7 @@ fn original_queue_and_terminal_survive_detachment_racing_consumers_and_blocked_e
                 export: &export,
                 output: &mut output,
             };
-            scenario.backpressure(waiting.context().id().as_ref())?;
+            scenario.backpressure(context.id().as_ref())?;
             scenario.racing_terminal()?;
             scenario.lost_and_panicked_producers(|| panic!("original producer control"))?;
             scenario.independent_result_and_panic(|| {
@@ -674,8 +675,9 @@ fn subscriber_unwind_case(
     };
     let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(probe.clone()));
     tracing::dispatcher::with_default(&dispatch, || -> io::Result<()> {
-        let waiting = obs::waiting("persistence-completion", 9, std::future::pending::<()>());
-        let entered = waiting.context().enter();
+        let (waiting, context) =
+            obs::waiting_now("persistence-completion", 9, std::future::pending::<()>());
+        let entered = context.enter();
         let actual = std::fs::File::open(tempfile::tempdir()?.path().join("absent"))
             .err()
             .ok_or_else(|| io::Error::other("missing-file control succeeded"))?;
@@ -693,7 +695,7 @@ fn subscriber_unwind_case(
         // Release the caller's span references so only the SAME
         // accepted producer can close them during physical retirement.
         drop(entered);
-        drop(waiting);
+        drop((waiting, context));
         let wake = Arc::new(CountWake(AtomicUsize::new(0)));
         let waker = Waker::from(Arc::clone(&wake));
         let original = task.state.as_ref().ok_or(io::ErrorKind::InvalidData)?;

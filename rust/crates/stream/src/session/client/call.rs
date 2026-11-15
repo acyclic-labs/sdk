@@ -221,13 +221,13 @@ impl Client {
                 reply
                     .try_reserve(chunk.as_ref().len())
                     .map_err(|source| StreamError::Capacity.with_source(source))?;
-                #[cfg(feature = "serde")]
                 crate::trace::observe_sync(
                     crate::trace::Request {
                         name: "stream.reply_copy",
                         mechanism: crate::trace::Mechanism::Copy,
                         parent: None,
                         guarantee: Some("contiguous_complete_reply_ownership"),
+                        key: None,
                     },
                     || reply.extend_from_slice(chunk.as_ref()),
                     |_| {
@@ -238,8 +238,6 @@ impl Client {
                         ))
                     },
                 );
-                #[cfg(not(feature = "serde"))]
-                reply.extend_from_slice(chunk.as_ref());
                 if reply.len() == length {
                     return Ok(reply.into());
                 }
@@ -254,6 +252,7 @@ impl Client {
                     mechanism: crate::trace::Mechanism::RoundTrip,
                     parent: None,
                     guarantee: Some("complete_bounded_reply_on_original_session"),
+                    key: None,
                 },
                 work,
                 |reply: &Bytes| u64::try_from(reply.len()).ok(),

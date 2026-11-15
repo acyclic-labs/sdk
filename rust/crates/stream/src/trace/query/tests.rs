@@ -27,6 +27,7 @@ async fn owned_executor_preserves_parent_after_submission_scope_returns()
         mechanism: Mechanism::Lock,
         parent: None,
         guarantee: Some("exclusive_original_state"),
+        key: None,
     };
     let (release, resumed) = futures::channel::oneshot::channel::<()>();
     let (complete, finished) = futures::channel::oneshot::channel();
@@ -102,6 +103,7 @@ async fn original_guard_unlock_precedes_its_trace_settlement()
         mechanism: Mechanism::Lock,
         parent: None,
         guarantee: Some("exclusive_original_state"),
+        key: None,
     };
     drop(observe_guard(request(), mutex.lock()).await);
     assert!(
@@ -205,6 +207,7 @@ async fn concurrent_original_publications_have_no_default_credit_ceiling()
         mechanism: Mechanism::Io,
         parent: None,
         guarantee: Some("original_publication_custody"),
+        key: None,
     };
     let stream = crate::Stream::new(Arc::new(MemoryStream::default()), "agents/concurrent/trace")?;
     let recorder = Arc::new(Recorder::new(stream.clone(), [71; 16]));
@@ -267,6 +270,7 @@ async fn admitted_future_parentage_survives_suspension_without_leaking_to_other_
         mechanism: Mechanism::Io,
         parent: None,
         guarantee: Some("original_causal_request"),
+        key: None,
     };
     let (release, resumed) = futures::channel::oneshot::channel::<()>();
     let mut observed = Box::pin(Recorder::observe(

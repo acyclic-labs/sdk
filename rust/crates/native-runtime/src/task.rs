@@ -119,12 +119,11 @@ where
     let task = if PERSISTENCE_JOB.with(|job| job.borrow().is_some()) {
         Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
     } else {
-        let waiting = crate::obs::waiting(
+        let (waiting, progress) = crate::obs::waiting_now(
             "persistence-completion",
             format_args!("{medium}/{operation}/{:x}/{:x}", key.owner, key.position),
             std::future::pending::<()>(),
         );
-        let progress = waiting.context().clone();
         progress
             .in_scope(|| {
                 crate::task_completion(

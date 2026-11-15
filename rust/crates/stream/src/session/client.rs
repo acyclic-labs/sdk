@@ -843,20 +843,18 @@ impl Client {
                 observation: operation.clone(),
                 input: input.map(input::Owner),
             })));
-            #[cfg(feature = "serde")]
             let sent = crate::trace::observe(
                 crate::trace::Request {
                     name: "stream.session_open_queue",
                     mechanism: crate::trace::Mechanism::Wait,
                     parent: None,
                     guarantee: Some("queued_original_session_open"),
+                    key: Some(crate::trace::Key::Sequence(id)),
                 },
                 sending,
                 |_| Some(0),
             )
             .await;
-            #[cfg(not(feature = "serde"))]
-            let sent = sending.await;
             // Release the unqueued command and its original ownership on failure;
             // the cause retains the observed closure and original request identity.
             sent.map_err(|_| {
@@ -875,22 +873,18 @@ impl Client {
                 cursor.opened = receipt;
                 Ok(())
             };
-            #[cfg(feature = "serde")]
-            {
-                crate::trace::observe(
-                    crate::trace::Request {
-                        name: "stream.session_registration",
-                        mechanism: crate::trace::Mechanism::Wait,
-                        parent: None,
-                        guarantee: Some("original_session_open_receipt"),
-                    },
-                    receipt,
-                    |_| Some(0),
-                )
-                .await
-            }
-            #[cfg(not(feature = "serde"))]
-            receipt.await
+            crate::trace::observe(
+                crate::trace::Request {
+                    name: "stream.session_registration",
+                    mechanism: crate::trace::Mechanism::Wait,
+                    parent: None,
+                    guarantee: Some("original_session_open_receipt"),
+                    key: Some(crate::trace::Key::Sequence(id)),
+                },
+                receipt,
+                |_| Some(0),
+            )
+            .await
         };
         let registered = operation.clone().scope(registration).await;
         if let Err(error) = registered {
@@ -948,7 +942,6 @@ impl Cursor {
             Ok(received) => Some(received),
             Err(_) => {
                 let work = self.receiver.recv();
-                #[cfg(feature = "serde")]
                 {
                     let progress = &self.progress;
                     crate::trace::observe_value(
@@ -957,6 +950,7 @@ impl Cursor {
                             mechanism: crate::trace::Mechanism::Wait,
                             parent: None,
                             guarantee: Some("queued_delivery_or_confirmed_session_end"),
+                            key: Some(crate::trace::Key::Sequence(self.id)),
                         },
                         work,
                         |result| match result {
@@ -969,8 +963,6 @@ impl Cursor {
                     )
                     .await
                 }
-                #[cfg(not(feature = "serde"))]
-                work.await
             }
         }
     }

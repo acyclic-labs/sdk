@@ -1,5 +1,7 @@
 //! Explicit producer admission through original owned appends, without a second store.
-use super::{Comparison, ComparisonKind, Mechanism, Outcome, SpanEvent, SpanId, TraceRecord};
+use super::{
+    Comparison, ComparisonKind, Mechanism, Outcome, Request, SpanEvent, SpanId, TraceRecord,
+};
 use crate::StreamProviderExt as _;
 use crate::{AppendOutcome, IdempotencyKey, RetainedRecord, Stream, StreamError, StreamProvider};
 use std::sync::{
@@ -7,18 +9,6 @@ use std::sync::{
     atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 use web_time::Instant;
-
-/// Static request contract, without payloads, credentials or resource labels.
-pub struct Request {
-    /// Stable operation name.
-    pub name: &'static str,
-    /// Logical mechanism, independent of backend placement.
-    pub mechanism: Mechanism,
-    /// Original causal parent, if known.
-    pub parent: Option<SpanId>,
-    /// Public guarantee the request buys.
-    pub guarantee: Option<&'static str>,
-}
 
 /// Original operation output and independent observation-publication result.
 /// A diagnostic failure never replaces a successful read or its native cause.

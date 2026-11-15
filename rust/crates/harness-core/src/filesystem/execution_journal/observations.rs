@@ -329,6 +329,7 @@ where
                     mechanism: acyclic_stream::trace::Mechanism::Commit,
                     parent: None,
                     guarantee: Some("original_execution_publication_decision"),
+                    key: None,
                 },
                 async move {
                     #[cfg(not(target_arch = "wasm32"))]

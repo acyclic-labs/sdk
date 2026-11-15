@@ -99,6 +99,7 @@ keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sy
 futures-core = "0.3.31"
 pin-project-lite = "0.2.17"
 tracing.workspace = true
+tracing-core = { version = "0.1.36", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]

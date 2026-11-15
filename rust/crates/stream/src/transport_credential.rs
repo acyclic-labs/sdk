@@ -27,6 +27,7 @@ pub(crate) fn check(lease: &ResolvedCredential) -> Check {
             mechanism: crate::trace::Mechanism::AuthCheck,
             parent: None,
             guarantee: Some("original_credential_lease_valid_at_boundary"),
+            key: None,
         },
         || lease.check(),
     );
@@ -77,22 +78,20 @@ pub(crate) async fn reject(lease: &ResolvedCredential) -> Result<bool, Credentia
 }
 
 async fn action<T>(
-    _name: &'static str,
-    _guarantee: &'static str,
+    name: &'static str,
+    guarantee: &'static str,
     work: impl std::future::Future<Output = Result<T, CredentialError>>,
 ) -> Result<T, CredentialError> {
-    #[cfg(feature = "serde")]
-    return crate::trace::observe(
+    crate::trace::observe(
         crate::trace::Request {
-            name: _name,
+            name,
             mechanism: crate::trace::Mechanism::AuthCheck,
             parent: None,
-            guarantee: Some(_guarantee),
+            guarantee: Some(guarantee),
+            key: None,
         },
         work,
         |_| None,
     )
-    .await;
-    #[cfg(not(feature = "serde"))]
-    work.await
+    .await
 }

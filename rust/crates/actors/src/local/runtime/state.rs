@@ -164,6 +164,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     mechanism: acyclic_stream::trace::Mechanism::ActorDelivery,
                     parent: None,
                     guarantee: Some("admitted_handler_under_original_control_and_deadline"),
+                    key: None,
                 },
                 invoke(delivery.clone()),
                 |_| None,

@@ -782,10 +782,20 @@ fn request_operation_at(
         // A writable reply may predate registration. Watching before this read
         // covers both that case and publication concurrent with the read.
         bridge.shared.published(operation);
-        let result = match acyclic_native_runtime::obs::waiting_sync(
-            "native-workspace-reply",
-            operation,
+        let result = match acyclic_stream::trace::observe_sync(
+            acyclic_stream::trace::Request {
+                name: "native-workspace-reply",
+                mechanism: acyclic_stream::trace::Mechanism::Wait,
+                parent: None,
+                guarantee: Some("bridged_workspace_reply"),
+                key: Some(acyclic_stream::trace::Key::Identity(operation.into_bytes())),
+            },
             || delivery.recv(),
+            |reply| {
+                reply
+                    .is_ok()
+                    .then_some((None, acyclic_stream::trace::Outcome::Succeeded, None))
+            },
         ) {
             Ok(Delivery::Reply(reply)) => reply,
             Ok(Delivery::Gone) | Err(_) => Err(Error::Indeterminate(operation)),
@@ -1061,7 +1071,7 @@ struct CarrierIo {
 impl CarrierIo {
     async fn apply(
         mut self,
-        key: impl std::fmt::Display,
+        key: [u8; 16],
         operation: impl FnOnce(&mut Self) -> Result<()> + Send + 'static,
     ) -> Result<Self> {
         let completion = acyclic_native_runtime::run_blocking_io(
@@ -1072,9 +1082,19 @@ impl CarrierIo {
             None,
         )
         .map_err(storage)?;
-        acyclic_native_runtime::obs::waiting("native-workspace-files", key, completion.offloaded())
-            .await
-            .map_err(storage)?
+        acyclic_stream::trace::observe(
+            acyclic_stream::trace::Request {
+                name: "native-workspace-files",
+                mechanism: acyclic_stream::trace::Mechanism::Wait,
+                parent: None,
+                guarantee: Some("offloaded_workspace_file_state"),
+                key: Some(acyclic_stream::trace::Key::Identity(key)),
+            },
+            completion.offloaded(),
+            |_| None,
+        )
+        .await
+        .map_err(storage)?
     }
 }
 
@@ -1289,7 +1309,7 @@ async fn serve_requests(
         let touched = notices.take();
         if touched.rescan || !touched.names.is_empty() || touched.failure.is_some() {
             files = files
-                .apply(session, move |files| {
+                .apply(*session.as_bytes(), move |files| {
                     files
                         .served
                         .touch(&files.requests, &files.status, session, touched)
@@ -1305,7 +1325,7 @@ async fn serve_requests(
             result = &mut shutdown => return result,
             () = notices.changed.notified() => {}
             Some((operation, outcome)) = running.next(), if !running.is_empty() => {
-                files = files.apply(operation, move |files| {
+                files = files.apply(operation.into_bytes(), move |files| {
                     files.served.answer(&files.status, operation, outcome)
                 }).await?;
             }

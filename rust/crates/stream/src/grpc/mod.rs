@@ -491,6 +491,7 @@ impl Client {
                     mechanism: crate::trace::Mechanism::RoundTrip,
                     parent: None,
                     guarantee: Some("authenticated_rpc_reply_validated_at_original_call"),
+                    key: None,
                 },
                 work,
             )
@@ -525,20 +526,18 @@ impl Client {
                 acyclic_auth::operation::Backoff::new(10, 1_000, uuid::Uuid::new_v4().as_fields().0)
             });
             let wait = tokio::time::sleep(Duration::from_millis(u64::from(backoff.delay_ms())));
-            #[cfg(feature = "serde")]
             crate::trace::observe_value(
                 crate::trace::Request {
                     name: "stream.grpc.retry_backoff",
                     mechanism: crate::trace::Mechanism::Wait,
                     parent: None,
                     guarantee: Some("backpressure_after_observed_transient_transport_failure"),
+                    key: None,
                 },
                 wait,
                 |_| Some((None, crate::trace::Outcome::Succeeded)),
             )
             .await;
-            #[cfg(not(feature = "serde"))]
-            wait.await;
         }
     }
 }

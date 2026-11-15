@@ -1,21 +1,5 @@
 //! Tracing glue for `docs/observability.md`.
 
-pub(crate) fn waiting<F: Future>(
-    primitive: &'static str,
-    key: impl std::fmt::Display,
-    future: F,
-) -> impl Future<Output = F::Output> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        acyclic_native_runtime::obs::waiting(primitive, key, future)
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = (primitive, key);
-        future
-    }
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use acyclic_native_runtime::obs::OperationSpan;
 #[cfg(not(target_arch = "wasm32"))]
@@ -88,6 +72,18 @@ pub(crate) fn traced_future<'a, T: 'a>(
         let OperationSpan = span;
         future
     }
+}
+
+/// A wait keyed by an operation reports the same text as every other surface
+/// naming that operation, so a hang report correlates with its bridge reply.
+#[cfg(test)]
+#[test]
+fn an_operation_wait_key_renders_as_its_operation() {
+    let operation = crate::OperationId::new();
+    assert_eq!(
+        acyclic_stream::trace::Key::Identity(operation.into_bytes()).to_string(),
+        operation.to_string()
+    );
 }
 
 #[cfg(test)]

@@ -731,6 +731,7 @@ where
                 mechanism: acyclic_stream::trace::Mechanism::AuthCheck,
                 parent: None,
                 guarantee: Some("settled_original_tool_approval"),
+                key: None,
             },
             async {
                 self.require_operation(operation, io)?;

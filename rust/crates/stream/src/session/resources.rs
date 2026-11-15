@@ -58,6 +58,7 @@ impl ResourceAuthorization {
                     mechanism: crate::trace::Mechanism::Lock,
                     parent: None,
                     guarantee: Some("atomic_credential_snapshot_against_renewal"),
+                    key: None,
                 },
                 work,
                 |result| {
@@ -90,6 +91,7 @@ impl ResourceAuthorization {
                     mechanism: crate::trace::Mechanism::ProviderCall,
                     parent: None,
                     guarantee: Some("authenticated_trust_snapshot_with_monotonic_protected_time"),
+                    key: None,
                 },
                 work,
                 |result| {
@@ -217,6 +219,7 @@ impl ResourceAuthorization {
                         mechanism: crate::trace::Mechanism::AuthCheck,
                         parent: None,
                         guarantee: Some("current_trust_entry_facts_and_owner_policy"),
+                        key: None,
                     },
                     work,
                     |result| {
@@ -336,20 +339,18 @@ impl ResourceAuthorization {
     /// Waits on the runtime clock without polling, independently of data credit.
     pub async fn expires_at(&self, unix_seconds: u64) -> Result<(), StreamError> {
         let work = self.authority.state.expires_at(unix_seconds);
-        #[cfg(feature = "serde")]
         let result = crate::trace::observe(
             crate::trace::Request {
                 name: "stream.resource_expiry",
                 mechanism: crate::trace::Mechanism::Wait,
                 parent: None,
                 guarantee: Some("protected_clock_reached_credential_expiry"),
+                key: None,
             },
             work,
             |_| Some(0),
         )
         .await;
-        #[cfg(not(feature = "serde"))]
-        let result = work.await;
         result.map_err(|source| StreamError::Unavailable.with_source(source))
     }
     pub(super) fn renew(&self, next: Arc<VerifiedCapability>) -> Result<(), authority::Rejection> {
@@ -385,6 +386,7 @@ impl ResourceAuthorization {
                     mechanism: crate::trace::Mechanism::Lock,
                     parent: None,
                     guarantee: Some("atomic_renewal_preserves_account_principal_and_grants"),
+                    key: None,
                 },
                 work,
                 |result| {

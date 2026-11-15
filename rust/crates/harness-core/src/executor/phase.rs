@@ -214,7 +214,18 @@ impl<'a> PreparedPhase<'a> {
         if let Some(barrier) = self.barrier {
             let result = acyclic_stream::deferring_durability(future).await;
             // Includes errors and the winning branch of a cancellation race.
-            crate::obs::waiting("journal-durability", "prepared-phase", barrier).await?;
+            acyclic_stream::trace::observe(
+                acyclic_stream::trace::Request {
+                    name: "journal-durability.prepared-phase",
+                    mechanism: acyclic_stream::trace::Mechanism::Wait,
+                    parent: None,
+                    guarantee: Some("durable_prepared_phase"),
+                    key: None,
+                },
+                barrier,
+                |_| None,
+            )
+            .await?;
             return result;
         }
         let _ = self.barrier;

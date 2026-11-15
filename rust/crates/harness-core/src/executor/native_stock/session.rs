@@ -57,6 +57,7 @@ impl JournalWrites<'_> {
                 mechanism: acyclic_stream::trace::Mechanism::Lock,
                 parent: None,
                 guarantee: Some("exclusive_original_journal_tail_transition"),
+                key: None,
             },
             self.mutex().lock(),
         )

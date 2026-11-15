@@ -162,7 +162,6 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
     }
 
     async fn read_request(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        #[cfg(feature = "serde")]
         let keyed = request.key.is_some();
         #[cfg(feature = "serde")]
         let diagnostic = crate::trace::is_source(&request.path);
@@ -171,8 +170,7 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         if diagnostic {
             return work.await;
         }
-        #[cfg(feature = "serde")]
-        return crate::trace::observe(
+        crate::trace::observe(
             crate::trace::Request {
                 name: if keyed {
                     "stream.seek_open"
@@ -186,14 +184,13 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
                 } else {
                     "bounded_ordered_record_cursor"
                 }),
+                key: None,
             },
             work,
             |_| None,
         )
         .await
-        .map(crate::trace::records);
-        #[cfg(not(feature = "serde"))]
-        work.await
+        .map(crate::trace::records)
     }
     /// The latest record carrying `key`, by one indexed lookup.
     pub async fn latest(&self, key: impl Into<Bytes>) -> Result<Option<Record>, StreamError> {
@@ -262,21 +259,19 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         if diagnostic {
             return work.await;
         }
-        #[cfg(feature = "serde")]
-        return crate::trace::observe(
+        crate::trace::observe(
             crate::trace::Request {
                 name: "stream.follow_open",
                 mechanism: crate::trace::Mechanism::Io,
                 parent: None,
                 guarantee: Some("ordered_history_and_live_cursor"),
+                key: None,
             },
             work,
             |_| None,
         )
         .await
-        .map(crate::trace::records);
-        #[cfg(not(feature = "serde"))]
-        work.await
+        .map(crate::trace::records)
     }
 }
 
@@ -321,6 +316,7 @@ impl<P: StreamProvider + ?Sized> Replay<P> {
                 mechanism: crate::trace::Mechanism::Io,
                 parent,
                 guarantee: Some("gapless_committed_prefix"),
+                key: None,
             },
             self.read_page(),
             |(page, _, _)| {
