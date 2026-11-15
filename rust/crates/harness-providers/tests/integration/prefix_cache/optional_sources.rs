@@ -66,7 +66,7 @@ async fn optional_source_versions_preserve_provider_requests() -> TestResult {
                                 source,
                                 body.as_bytes(),
                                 "text/plain",
-                                source,
+                                source.rsplit('/').next().unwrap(),
                             )
                             .await?,
                     );

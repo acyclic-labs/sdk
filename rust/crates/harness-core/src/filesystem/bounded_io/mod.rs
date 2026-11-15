@@ -316,6 +316,40 @@ impl PreparationIo {
                 custody: Some(incoming),
             })
     }
+
+    /// Receives already paid native output on its original preparation owner.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::filesystem) fn adopt_native_output(
+        &self,
+        allocation: KernelOwnedAllocation,
+        bytes: u64,
+    ) -> Result<DecodeReservation<'_>> {
+        match allocation {
+            KernelOwnedAllocation::NativeOriginal(allocation) => {
+                self.absorb_native_custody(allocation)?;
+            }
+            KernelOwnedAllocation::Standalone => {
+                let Self::Owned { custody, .. } = self else {
+                    return Err(self.invalid("standalone output requires its original owner"));
+                };
+                self.account(|accounting| {
+                    let (ledger, ..) = accounting
+                        .standalone_parts()
+                        .ok_or(acyclic_fs::FsError::AccountingHandoffActive)?;
+                    let retained = custody
+                        .bytes
+                        .load(Ordering::Relaxed)
+                        .checked_add(bytes)
+                        .ok_or(acyclic_fs::WorkError::Overflow)?;
+                    if retained > ledger.scratch_bytes() {
+                        return Err(acyclic_fs::WorkError::Overflow.into());
+                    }
+                    custody.record(0, bytes).map_err(Into::into)
+                })?;
+            }
+        }
+        self.guard_owned(bytes)
+    }
     #[cfg(not(target_arch = "wasm32"))]
     /// Transfers retained output storage to its caller.
     pub fn take_native_custody(&self, bytes: u64) -> Result<acyclic_fs::NativeAllocation> {

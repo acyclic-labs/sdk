@@ -408,6 +408,18 @@ impl<
         self.journal.clone()
     }
 
+    /// Binds the host's admitted conversation selection before sharing its journal.
+    pub fn with_bound_selection(
+        mut self,
+        selected: crate::projection::SelectedModelContext,
+    ) -> Result<Self> {
+        let journal = Arc::try_unwrap(self.journal).map_err(|_| {
+            Error::Conflict("context selection must be bound before the journal is shared".into())
+        })?;
+        self.journal = Arc::new(journal.with_bound_selection(selected));
+        Ok(self)
+    }
+
     /// Keeps authored UI separate from journal-owned settled and streamed outputs.
     #[must_use]
     pub fn turn_outputs(&self) -> &dyn crate::agent::TurnOutputs {
