@@ -181,6 +181,17 @@ function devLibraries(p) {
   }
   return [...found].map(id => packages.get(id)).filter(libOf);
 }
+// A test that can mount FUSE runs outside the linux-sandbox, whose user namespace strips
+// fusermount3's setuid bit. A package declaring [package.metadata.bazel] mounts-fuse = true mounts;
+// every test whose crate reaches one through its normal or dev dependencies is tagged no-sandbox.
+const mountsFuse = new Map();
+function reachesMount(id, kinds = [null]) {
+  if (kinds.length === 1 && mountsFuse.has(id)) return mountsFuse.get(id);
+  const reached = packages.get(id).metadata?.bazel?.["mounts-fuse"] === true || nodes.some(byId => (byId.get(id)?.deps ?? [])
+    .some(dep => dep.dep_kinds.some(k => kinds.includes(k.kind)) && reachesMount(dep.pkg)));
+  if (kinds.length === 1) mountsFuse.set(id, reached);
+  return reached;
+}
 // The inputs a target reads beyond its globs, as srcs (Rust) and compile_data (other files):
 // same-package paths relative to the package, other packages' files by exported label.
 function extraInputs(crateDir, rootFile, covered) {
@@ -373,7 +384,7 @@ function buildFile(p) {
     names.add(name).add(`${name}_cases`);
     rules.push(
       ["rust_test", [["name", q(`${name}_cases`)], ...attrs, ["data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel"]), list(reads))], ["tags", q(["manual"])]]],
-      ["isolated_test", [["name", q(name)], ["binary", q(`:${name}_cases`)], ["binaries", Object.keys(binaries).length ? q(binaries) : undefined], ["limit_seconds", String(CASE_LIMIT_SECONDS)]]],
+      ["isolated_test", [["name", q(name)], ["binary", q(`:${name}_cases`)], ["binaries", Object.keys(binaries).length ? q(binaries) : undefined], ["limit_seconds", String(CASE_LIMIT_SECONDS)], ["tags", reachesMount(p.id, [null, "dev"]) ? q(["no-sandbox"]) : undefined]]],
     );
   };
   if (script) {

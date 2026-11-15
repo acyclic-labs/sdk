@@ -62,6 +62,7 @@ isolated_test(
     name = "acyclic_harness_conformance_test",
     binary = ":acyclic_harness_conformance_test_cases",
     limit_seconds = 10,
+    tags = ["no-sandbox"],
 )
 
 rust_binary(
@@ -129,6 +130,7 @@ isolated_test(
     binary = ":main_cases",
     binaries = {":scenarios":"scenarios"},
     limit_seconds = 10,
+    tags = ["no-sandbox"],
 )
 
 rust_binary(

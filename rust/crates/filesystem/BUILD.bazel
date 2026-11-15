@@ -231,6 +231,7 @@ isolated_test(
     name = "acyclic_fs_test",
     binary = ":acyclic_fs_test_cases",
     limit_seconds = 10,
+    tags = ["no-sandbox"],
 )
 
 rust_test(
@@ -359,6 +360,7 @@ isolated_test(
     name = "main",
     binary = ":main_cases",
     limit_seconds = 10,
+    tags = ["no-sandbox"],
 )
 
 rust_test(
@@ -459,6 +461,7 @@ isolated_test(
     name = "computed_folds",
     binary = ":computed_folds_cases",
     limit_seconds = 10,
+    tags = ["no-sandbox"],
 )
 
 rust_test(
@@ -559,6 +562,7 @@ isolated_test(
     name = "hosted_sources",
     binary = ":hosted_sources_cases",
     limit_seconds = 10,
+    tags = ["no-sandbox"],
 )
 
 rust_test(
@@ -659,6 +663,7 @@ isolated_test(
     name = "browser_commit",
     binary = ":browser_commit_cases",
     limit_seconds = 10,
+    tags = ["no-sandbox"],
 )
 
 rust_test(
@@ -759,6 +764,7 @@ isolated_test(
     name = "browser_blob_custody",
     binary = ":browser_blob_custody_cases",
     limit_seconds = 10,
+    tags = ["no-sandbox"],
 )
 
 rust_binary(

@@ -82,6 +82,7 @@ isolated_test(
     name = "acyclic_sdk_fuzz_test",
     binary = ":acyclic_sdk_fuzz_test_cases",
     limit_seconds = 10,
+    tags = ["no-sandbox"],
 )
 
 rust_binary(

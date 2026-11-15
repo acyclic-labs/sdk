@@ -65,6 +65,7 @@ isolated_test(
     name = "acyclic_harness_search_test",
     binary = ":acyclic_harness_search_test_cases",
     limit_seconds = 10,
+    tags = ["no-sandbox"],
 )
 
 filegroup(
