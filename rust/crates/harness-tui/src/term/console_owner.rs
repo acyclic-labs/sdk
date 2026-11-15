@@ -40,7 +40,7 @@ pub(crate) trait CloseWake: Send + Sync {
     fn close(&self) -> io::Result<()>;
 }
 
-#[cfg(test)]
+#[cfg(all(test, loom))]
 impl CloseWake for () {
     fn close(&self) -> io::Result<()> {
         Ok(())
@@ -54,7 +54,7 @@ pub(crate) struct Owner<W: Write, N = ()> {
     closed: N,
 }
 
-#[cfg(test)]
+#[cfg(all(test, loom))]
 impl<W: Write + Send + 'static> Owner<W> {
     pub(crate) fn new(guard: RestoreGuard<W>, cancel: fn(&JoinHandle<()>)) -> Arc<Self> {
         Self::notifying(guard, cancel, ())
