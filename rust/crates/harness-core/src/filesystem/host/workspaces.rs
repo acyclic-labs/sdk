@@ -546,28 +546,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .await,
         )
     }
-
-    pub(in crate::filesystem) async fn operation_generation(
-        &self,
-        reference: &WorkspaceRef,
-        key: &IdempotencyKey,
-        io: Option<&PreparationIo>,
-    ) -> Result<Option<Generation<A, O>>> {
-        let owned;
-        let io = if let Some(io) = io {
-            io
-        } else {
-            owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-            &owned
-        };
-        let workspace = self.open(reference, Some(io)).await?;
-        let key = bounded_io::operation_key(key, Some(io))?;
-        io.sdk(
-            workspace
-                .operation_generation(key, io, io.cancellation())
-                .await,
-        )
-    }
 }
 
 #[cfg(test)]

@@ -382,3 +382,64 @@ fn publication_children_retain_only_owned_polling_handles() {
         "publication embeds concrete validation or transaction lifecycle futures"
     );
 }
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
+    fn apply_generation<'a>(
+        &'a self,
+        reference: &'a WorkspaceRef,
+        expected: Option<&'a GenerationRef>,
+        mutations: &'a [WorkspaceMutation],
+        key: IdempotencyKey,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
+        self.publish_generation(
+            reference,
+            mutations,
+            key,
+            io,
+            FilePublication::Replace(expected),
+        )
+    }
+
+    fn publish_generation<'a>(
+        &'a self,
+        reference: &'a WorkspaceRef,
+        mutations: &'a [WorkspaceMutation],
+        key: IdempotencyKey,
+        io: Option<&'a PreparationIo>,
+        publication: FilePublication<'a>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
+        let expected = match publication {
+            FilePublication::Replace(expected) => expected,
+            FilePublication::Authorized(..) => None,
+        };
+        let Some(io) = io else {
+            return crate::conversation::BoundedContentFuture::new(None, || async move {
+                self.apply_generation_unmeasured(
+                    reference,
+                    expected,
+                    mutations,
+                    &key,
+                    false,
+                    publication,
+                )?
+                .await
+            });
+        };
+        crate::conversation::BoundedContentFuture::new(Some(io), || async move {
+            let workspace = self.open(reference, Some(io)).await?;
+            let operation = bounded_io::operation_key(&key, Some(io))?;
+            self.publish_selected_operation(
+                &workspace,
+                mutations,
+                move || Ok(operation),
+                io,
+                publication,
+                None,
+                None,
+                None,
+            )?
+            .await
+        })
+    }
+}

@@ -1,23 +1,6 @@
 use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
-    pub(in crate::filesystem) fn apply_generation<'a>(
-        &'a self,
-        reference: &'a WorkspaceRef,
-        expected: Option<&'a GenerationRef>,
-        mutations: &'a [WorkspaceMutation],
-        key: IdempotencyKey,
-        io: Option<&'a PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
-        self.publish_generation(
-            reference,
-            mutations,
-            key,
-            io,
-            FilePublication::Replace(expected),
-        )
-    }
-
     pub(in crate::filesystem) fn apply_authorized_generation<'a>(
         &'a self,
         workspace: &'a Workspace<A, O>,
@@ -48,48 +31,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             Some((evidence, metadata_key)),
             staged,
         )
-    }
-
-    fn publish_generation<'a>(
-        &'a self,
-        reference: &'a WorkspaceRef,
-        mutations: &'a [WorkspaceMutation],
-        key: IdempotencyKey,
-        io: Option<&'a PreparationIo>,
-        publication: FilePublication<'a>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
-        let expected = match publication {
-            FilePublication::Replace(expected) => expected,
-            FilePublication::Authorized(..) => None,
-        };
-        let Some(io) = io else {
-            return crate::conversation::BoundedContentFuture::new(None, || async move {
-                self.apply_generation_unmeasured(
-                    reference,
-                    expected,
-                    mutations,
-                    &key,
-                    false,
-                    publication,
-                )?
-                .await
-            });
-        };
-        crate::conversation::BoundedContentFuture::new(Some(io), || async move {
-            let workspace = self.open(reference, Some(io)).await?;
-            let operation = bounded_io::operation_key(&key, Some(io))?;
-            self.publish_selected_operation(
-                &workspace,
-                mutations,
-                move || Ok(operation),
-                io,
-                publication,
-                None,
-                None,
-                None,
-            )?
-            .await
-        })
     }
 
     pub(in crate::filesystem::host) fn publish_selected_operation<'a>(
