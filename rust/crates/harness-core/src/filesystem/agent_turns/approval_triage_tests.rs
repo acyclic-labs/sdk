@@ -708,7 +708,7 @@ async fn child_approval_pauses_and_resumes_its_original_operation_after_parent_r
                 "write-result".into(),
                 "write".into(),
                 serde_json::json!({
-                    "path": "volume:///private/result.txt",
+                    "path": "result.txt",
                     "content": "approved source bytes",
                     "ifVersion": "absent",
                 }),
@@ -856,13 +856,15 @@ async fn child_approval_pauses_and_resumes_its_original_operation_after_parent_r
             .iter()
             .filter(|(path, _)| path == &child.path)
             .collect::<Vec<_>>();
+        // The paused step, its approval resume and the feedback retrospective:
+        // one prepare each, all inside the one original operation.
         assert_eq!(
             child_calls.len(),
-            2,
+            3,
             "approval replay opened an extra worker step"
         );
-        assert_eq!(
-            child_calls[0].1, child_calls[1].1,
+        assert!(
+            child_calls.iter().all(|call| call.1 == child_calls[0].1),
             "approval wake replaced the operation"
         );
     }
