@@ -299,3 +299,42 @@ async fn attach_open_and_fork_demand_no_source_work() {
     assert_eq!(source.counts.pages.load(Ordering::Relaxed), 0);
     assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
 }
+
+/// A cut projects an epoch the parent has not persisted yet; forking at that
+/// cut must succeed against the older durable source it follows.
+#[tokio::test]
+async fn fork_follows_an_unpersisted_source_epoch() {
+    let fs = Fs::memory();
+    let source = Arc::new(CountingSource::new(Bytes::from_static(b"source before")));
+    let store = MemoryLazyWorkspaceStore::default();
+    let root = attach(&fs, Arc::clone(&source), store.clone())
+        .await
+        .unwrap();
+    source.replace(Bytes::from_static(b"source after"));
+    let durable = store
+        .load_lazy_workspace(root.workspace().id(), accounting!())
+        .await
+        .unwrap()
+        .unwrap()
+        .source;
+    let (child, cut) = root
+        .fork(
+            "child",
+            IdempotencyKey::new(),
+            crate::PublicationPermit::Unrestricted,
+            accounting!(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(cut.source, durable);
+    assert!(cut.source.follows(&durable));
+    assert_eq!(
+        child
+            .read("/source.txt", 64, accounting!())
+            .await
+            .unwrap()
+            .bytes
+            .as_slice(),
+        b"source after"
+    );
+}
