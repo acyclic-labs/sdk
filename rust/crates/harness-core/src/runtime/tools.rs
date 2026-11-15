@@ -71,7 +71,13 @@ pub trait ToolPolicy: acyclic_stream::ProviderPlatform {
     /// `None` means an interactive or model stage would decide, and such a
     /// caller refuses the call. Consulted only after [`Self::evaluate`]
     /// requires approval, so it never weakens an `Allow` or a `Deny`.
-    fn unattended(&self, _invocation: &ToolInvocation) -> Option<crate::approvals::RuleVerdict> {
+    /// `target` is the execution target the call is resolved to, so device
+    /// and owner rules apply exactly as they do to a model's call there.
+    fn unattended(
+        &self,
+        _invocation: &ToolInvocation,
+        _target: Option<&crate::interaction::ApprovalTarget>,
+    ) -> Option<crate::approvals::RuleVerdict> {
         None
     }
 

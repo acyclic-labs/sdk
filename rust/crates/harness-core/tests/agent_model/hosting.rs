@@ -2888,6 +2888,8 @@ async fn home_hook_programs_register_unbind_and_deliver_selected_changes() -> Re
                 ("hooks/notes/main.sh", Some("true")),
                 ("hooks/notes/main.ps1", Some("$null")),
                 ("hooks/bad1/program.ts", Some(&outside("bad1"))),
+                ("hooks/bad1/main.sh", Some("true")),
+                ("hooks/bad1/main.ps1", Some("$null")),
             ],
             1,
         )
@@ -2902,6 +2904,8 @@ async fn home_hook_programs_register_unbind_and_deliver_selected_changes() -> Re
             &[
                 ("hooks/notes/program.ts", None),
                 ("hooks/bad2/program.ts", Some(&outside("bad2"))),
+                ("hooks/bad2/main.sh", Some("true")),
+                ("hooks/bad2/main.ps1", Some("$null")),
             ],
             2,
         )
@@ -2912,6 +2916,8 @@ async fn home_hook_programs_register_unbind_and_deliver_selected_changes() -> Re
             &[
                 ("hooks/notes/program.ts", Some(&notes)),
                 ("hooks/bad3/program.ts", Some(&outside("bad3"))),
+                ("hooks/bad3/main.sh", Some("true")),
+                ("hooks/bad3/main.ps1", Some("$null")),
             ],
             3,
         )
@@ -2952,6 +2958,10 @@ async fn home_hook_programs_register_unbind_and_deliver_selected_changes() -> Re
             )
         );
         // Following the inbox or status its own deliveries write is refused.
+        // Each program is complete, so only the selector can refuse it. The
+        // sentinel has no scripts, so it is always refused; sorted after the
+        // program, it ends the publication's rejections, and a missing
+        // refusal fails here instead of waiting.
         for (number, name, stream) in [(6, "bad4", agent.inbox()?), (7, "bad5", agent.status()?)] {
             let looped = program(
                 name,
@@ -2960,9 +2970,21 @@ async fn home_hook_programs_register_unbind_and_deliver_selected_changes() -> Re
                     stream.as_str()
                 ),
             );
-            let key = format!("hooks/{name}/program.ts");
-            publish(&[(key.as_str(), Some(looped.as_str()))], number).await?;
+            let sentinel = format!("zz{name}");
+            let fence = outside(&sentinel);
+            let files = [
+                (format!("hooks/{name}/program.ts"), looped.as_str()),
+                (format!("hooks/{name}/main.sh"), "true"),
+                (format!("hooks/{name}/main.ps1"), "$null"),
+                (format!("hooks/{sentinel}/program.ts"), fence.as_str()),
+            ];
+            let changes: Vec<_> = files
+                .iter()
+                .map(|(path, text)| (path.as_str(), Some(*text)))
+                .collect();
+            publish(&changes, number).await?;
             rejected(&mut events, name).await?;
+            rejected(&mut events, &sentinel).await?;
             assert_eq!(bound_source(format!("hook/{name}").as_str()).await?, None);
         }
         Ok::<_, Box<dyn std::error::Error>>(())

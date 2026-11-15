@@ -38,7 +38,12 @@ impl StockExecutor {
                 Error::Unauthorized("source hooks require the shell capability".into())
             })?;
         let bound = program.bind_hook(shell)?;
-        self.admit_source_hook(bound.binding(), hook, &fields)
+        // The hook runs on the home target, so its device and owner rules apply.
+        let target = crate::interaction::ApprovalTarget {
+            device: home.record.name.clone(),
+            owner: home.record.owner.clone(),
+        };
+        self.admit_source_hook(bound.binding(), hook, &fields, &target)
             .await?;
         let context = crate::runtime::ToolContext::new(Arc::clone(task), hook.operation, "hook")?;
         if let Some(output) = home
@@ -67,6 +72,7 @@ impl StockExecutor {
         tool: &crate::tool::Tool,
         hook: &crate::agent::HookTrigger,
         fields: &Value,
+        target: &crate::interaction::ApprovalTarget,
     ) -> Result<()> {
         let policy = self
             .policy
@@ -85,7 +91,7 @@ impl StockExecutor {
         match decision {
             ToolPolicyDecision::Allow => Ok(()),
             ToolPolicyDecision::Deny { reason } => Err(Error::Unauthorized(reason)),
-            ToolPolicyDecision::RequireApproval { .. } => match policy.unattended(judged) {
+            ToolPolicyDecision::RequireApproval { .. } => match policy.unattended(judged, Some(target)) {
                 Some(crate::approvals::RuleVerdict::Allow) => Ok(()),
                 Some(_) => Err(Error::Unauthorized(
                     "the approval rules refuse this source hook".into(),

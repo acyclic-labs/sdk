@@ -245,13 +245,46 @@ fn unattended_calls_follow_only_leading_rules_stages() -> Result<()> {
         ),
     ] {
         let gate = ApprovalPolicy { approvers }.bind()?;
-        assert_eq!(gate.unattended(&call), expected);
+        assert_eq!(gate.unattended(&call, None), expected);
     }
-    assert_eq!(ApprovalPolicy::default().bind()?.unattended(&call), None);
+    assert_eq!(
+        ApprovalPolicy::default().bind()?.unattended(&call, None),
+        None
+    );
     assert_eq!(
         ApprovalPolicy::accept_all("rules")
             .bind()?
             .unattended(&call),
+        Some(RuleVerdict::Allow)
+    );
+    // A device rule applies to the call's resolved target, as in the chain.
+    let device = ApprovalPolicy {
+        approvers: vec![Approver::Rules {
+            principal: "devices".into(),
+            rules: vec![ApprovalRule {
+                tool: Some("shell".into()),
+                arguments: None,
+                selectors: vec![],
+                target: Some(TargetSelector {
+                    device: Some("laptop".into()),
+                    owner: None,
+                }),
+                verdict: RuleVerdict::Deny,
+            }],
+            fallback: RuleVerdict::Allow,
+        }],
+    }
+    .bind()?;
+    let target = |device: &str| crate::interaction::ApprovalTarget {
+        device: device.into(),
+        owner: "user".into(),
+    };
+    assert_eq!(
+        device.unattended(&call, Some(&target("laptop"))),
+        Some(RuleVerdict::Deny)
+    );
+    assert_eq!(
+        device.unattended(&call, Some(&target("server"))),
         Some(RuleVerdict::Allow)
     );
     Ok(())

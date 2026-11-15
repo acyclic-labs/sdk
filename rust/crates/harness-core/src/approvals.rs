@@ -342,7 +342,11 @@ impl ToolPolicy for ApprovalGate {
     /// Leading rules stages decide in chain order, exactly as the approval
     /// chain applies them; an `ask` advances. The first model, human or
     /// parent stage would need an answer, so the result is `None`.
-    fn unattended(&self, invocation: &ToolInvocation) -> Option<RuleVerdict> {
+    fn unattended(
+        &self,
+        invocation: &ToolInvocation,
+        target: Option<&crate::interaction::ApprovalTarget>,
+    ) -> Option<RuleVerdict> {
         for approver in &self.policy.approvers {
             let Approver::Rules {
                 rules, fallback, ..
@@ -354,7 +358,7 @@ impl ToolPolicy for ApprovalGate {
                 rules,
                 *fallback,
                 (&invocation.name, &invocation.arguments),
-                None,
+                target,
             ) {
                 RuleVerdict::Ask => {}
                 decided => return Some(decided),
