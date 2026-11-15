@@ -15,6 +15,8 @@ use ts_rs::TS;
 
 mod handler;
 pub use handler::{FencedHandler, VersionedHandler};
+#[cfg(test)]
+mod tests;
 
 /// Invalid declaration, incompatible retained work or exhausted monotonic space.
 #[derive(Debug, thiserror::Error)]
@@ -360,15 +362,13 @@ impl CompatibilityManifest {
     }
 
     fn validate(&self) -> Result<(), Error> {
-        let mut schemas = self
-            .messages
-            .iter()
-            .map(|(name, schema)| (name, schema))
-            .collect::<Vec<_>>();
+        let mut schemas = self.messages.iter().collect::<Vec<_>>();
         for (name, rpc) in &self.rpcs {
             schemas.extend([(name, &rpc.request), (name, &rpc.reply)]);
         }
         for (name, schema) in schemas {
+            #[cfg(test)]
+            tests::DESCRIPTOR_DECODES.with(|decodes| decodes.set(decodes.get() + 1));
             let pool = prost_reflect::DescriptorPool::decode(schema.descriptor_set.as_slice())
                 .map_err(|_| Error::Invalid("schema descriptor"))?;
             if name.is_empty() || pool.get_message_by_name(&schema.message).is_none() {
@@ -405,30 +405,69 @@ impl CompatibilityManifest {
 
 /// Immutable upload. Its monotonically assigned number uses expected_version
 /// as the conditional predecessor, independently of the selected code's age.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+///
+/// A value exists only after validation: [`Publication::new`] and decoding both
+/// validate once and keep the identity, so every later read is O(1).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct Publication {
     /// Authenticated deployment scope.
-    pub deployment: DeploymentId,
+    deployment: DeploymentId,
     /// Zero only before the first immutable upload.
     #[serde(with = "decimal")]
     #[ts(type = "string")]
-    pub expected_version: u64,
+    expected_version: u64,
     /// Namespace/service identity to immutable artifact/configuration selection.
-    pub artifacts: BTreeMap<String, Artifact>,
+    artifacts: BTreeMap<String, Artifact>,
     /// Rust-owned contract submitted for Cloud's upload gate.
-    pub compatibility: CompatibilityManifest,
+    compatibility: CompatibilityManifest,
+    #[serde(skip)]
+    #[ts(skip)]
+    schema: [u8; 32],
+    #[serde(skip)]
+    #[ts(skip)]
+    version: Version,
+}
+
+/// The wire fields of a [`Publication`], before validation.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Upload {
+    deployment: DeploymentId,
+    #[serde(with = "decimal")]
+    expected_version: u64,
+    artifacts: BTreeMap<String, Artifact>,
+    compatibility: CompatibilityManifest,
+}
+
+impl<'de> Deserialize<'de> for Publication {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let upload = Upload::deserialize(deserializer)?;
+        Self::new(
+            upload.deployment,
+            upload.expected_version,
+            upload.artifacts,
+            upload.compatibility,
+        )
+        .map_err(serde::de::Error::custom)
+    }
 }
 
 impl Publication {
-    /// Content identity for this exact immutable publication. Cloud assigns it
-    /// only after checking the predecessor and validating schemas/retained work.
-    pub fn version(&self) -> Result<Version, Error> {
-        self.deployment.validate()?;
-        self.compatibility.validate()?;
-        let schema = self.compatibility.schema_digest()?;
-        if self.artifacts.is_empty()
-            || self.artifacts.iter().any(|(name, artifact)| {
+    /// Validate the deployment scope, every schema and retained-work declaration,
+    /// and each artifact's schema, then fix the version identity. Cloud assigns
+    /// it only after checking the predecessor.
+    pub fn new(
+        deployment: DeploymentId,
+        expected_version: u64,
+        artifacts: BTreeMap<String, Artifact>,
+        compatibility: CompatibilityManifest,
+    ) -> Result<Self, Error> {
+        deployment.validate()?;
+        compatibility.validate()?;
+        let schema = compatibility.schema_digest()?;
+        if artifacts.is_empty()
+            || artifacts.iter().any(|(name, artifact)| {
                 name.is_empty()
                     || artifact.code == [0; 32]
                     || artifact.configuration == [0; 32]
@@ -437,15 +476,51 @@ impl Publication {
         {
             return Err(Error::Invalid("publication"));
         }
-        Ok(Version {
-            number: NonZeroU64::new(
-                self.expected_version
-                    .checked_add(1)
-                    .ok_or(Error::Exhausted)?,
-            )
-            .ok_or(Error::Exhausted)?,
-            digest: Sha256::digest(encode(self)?).into(),
-        })
+        let number = NonZeroU64::new(expected_version.checked_add(1).ok_or(Error::Exhausted)?)
+            .ok_or(Error::Exhausted)?;
+        let mut publication = Self {
+            deployment,
+            expected_version,
+            artifacts,
+            compatibility,
+            schema,
+            version: Version {
+                number,
+                digest: [0; 32],
+            },
+        };
+        publication.version.digest = Sha256::digest(encode(&publication)?).into();
+        Ok(publication)
+    }
+
+    /// Content identity for this exact immutable publication.
+    pub fn version(&self) -> &Version {
+        &self.version
+    }
+
+    /// Identity of the declared RPC requests/replies and durable messages.
+    pub fn schema_digest(&self) -> [u8; 32] {
+        self.schema
+    }
+
+    /// Authenticated deployment scope.
+    pub fn deployment(&self) -> &DeploymentId {
+        &self.deployment
+    }
+
+    /// Zero only before the first immutable upload.
+    pub fn expected_version(&self) -> u64 {
+        self.expected_version
+    }
+
+    /// Namespace/service identity to immutable artifact/configuration selection.
+    pub fn artifacts(&self) -> &BTreeMap<String, Artifact> {
+        &self.artifacts
+    }
+
+    /// Rust-owned contract submitted for Cloud's upload gate.
+    pub fn compatibility(&self) -> &CompatibilityManifest {
+        &self.compatibility
     }
 }
 
