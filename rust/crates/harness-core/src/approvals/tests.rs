@@ -194,3 +194,65 @@ fn approval_rules_match_the_resolved_device_and_owner() {
         RuleVerdict::Allow
     );
 }
+
+#[test]
+fn unattended_calls_follow_only_leading_rules_stages() -> Result<()> {
+    let call = ToolInvocation {
+        operation_id: crate::OperationId::from_bytes([7; 16]),
+        call_id: "hooks/notes".into(),
+        name: "shell".into(),
+        arguments: serde_json::json!({"command":"true"}),
+    };
+    let rules = |principal: &str, verdict| Approver::Rules {
+        principal: principal.into(),
+        rules: vec![ApprovalRule {
+            tool: Some("shell".into()),
+            arguments: None,
+            selectors: vec![],
+            target: None,
+            verdict,
+        }],
+        fallback: RuleVerdict::Ask,
+    };
+    let human = || Approver::Human {
+        principal: HUMAN_APPROVER.into(),
+    };
+    for (approvers, expected) in [
+        (
+            vec![rules("allow", RuleVerdict::Allow)],
+            Some(RuleVerdict::Allow),
+        ),
+        (
+            vec![rules("deny", RuleVerdict::Deny)],
+            Some(RuleVerdict::Deny),
+        ),
+        // An ask advances; a later rules stage still decides.
+        (
+            vec![
+                rules("ask", RuleVerdict::Ask),
+                rules("allow", RuleVerdict::Allow),
+            ],
+            Some(RuleVerdict::Allow),
+        ),
+        // A stage that needs an answer ends the unattended decision.
+        (vec![rules("ask", RuleVerdict::Ask), human()], None),
+        (vec![human(), rules("allow", RuleVerdict::Allow)], None),
+        (vec![Approver::Parent], None),
+        // Exhaustion refuses, as the approval chain does.
+        (
+            vec![rules("ask", RuleVerdict::Ask)],
+            Some(RuleVerdict::Deny),
+        ),
+    ] {
+        let gate = ApprovalPolicy { approvers }.bind()?;
+        assert_eq!(gate.unattended(&call), expected);
+    }
+    assert_eq!(ApprovalPolicy::default().bind()?.unattended(&call), None);
+    assert_eq!(
+        ApprovalPolicy::accept_all("rules")
+            .bind()?
+            .unattended(&call),
+        Some(RuleVerdict::Allow)
+    );
+    Ok(())
+}

@@ -66,6 +66,15 @@ pub trait ToolPolicy: acyclic_stream::ProviderPlatform {
         crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, acyclic_fs::NativeCustody)>,
     >;
 
+    /// The decision of this policy's automatic stages for a call that no
+    /// person, model or parent can answer, such as a source hook's command.
+    /// `None` means an interactive or model stage would decide, and such a
+    /// caller refuses the call. Consulted only after [`Self::evaluate`]
+    /// requires approval, so it never weakens an `Allow` or a `Deny`.
+    fn unattended(&self, _invocation: &ToolInvocation) -> Option<crate::approvals::RuleVerdict> {
+        None
+    }
+
     /// Selects physical authority after this exact invocation's policy and
     /// approval have allowed it, before its first dispatch. The host must
     /// authenticate roots, actions and network authority; tool names, roles

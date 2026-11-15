@@ -58,9 +58,10 @@ impl StockExecutor {
         Ok(())
     }
 
-    /// The pinned policy judges the hook's canonical shell call, exactly as
-    /// it judges an authored tool. No person answers a source event, so a
-    /// call that would need approval is refused rather than queued.
+    /// The hook's canonical shell call passes the same admission as a
+    /// model's call (the turn's tool grants, schema and resources), then the
+    /// pinned policy. No person, model or parent answers a source event, so
+    /// a call the policy's automatic rules do not allow is refused.
     async fn admit_source_hook(
         &self,
         tool: &crate::tool::Tool,
@@ -77,15 +78,23 @@ impl StockExecutor {
             name: tool.definition.name.clone(),
             arguments: fields.clone(),
         };
+        StockExecution::ordinary(self).admit_unattended(tool, &invocation)?;
         let canonical = tool.executor.canonical(&invocation, None)?;
         let judged = canonical.as_deref().unwrap_or(&invocation);
         let (decision, _custody) = policy.evaluate(judged, &self.tool_scope, None)?.await?;
         match decision {
             ToolPolicyDecision::Allow => Ok(()),
             ToolPolicyDecision::Deny { reason } => Err(Error::Unauthorized(reason)),
-            ToolPolicyDecision::RequireApproval { .. } => Err(Error::Unauthorized(
-                "a source hook runs only when policy allows its command without approval".into(),
-            )),
+            ToolPolicyDecision::RequireApproval { .. } => match policy.unattended(judged) {
+                Some(crate::approvals::RuleVerdict::Allow) => Ok(()),
+                Some(_) => Err(Error::Unauthorized(
+                    "the approval rules refuse this source hook".into(),
+                )),
+                None => Err(Error::Unauthorized(
+                    "a source hook runs only when the approval policy's rules allow its command;                      a model, human or parent approver cannot answer a background event"
+                        .into(),
+                )),
+            },
         }
     }
 }

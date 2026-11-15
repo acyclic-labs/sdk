@@ -2951,6 +2951,20 @@ async fn home_hook_programs_register_unbind_and_deliver_selected_changes() -> Re
                 "hooks/notes",
             )
         );
+        // Following the inbox or status its own deliveries write is refused.
+        for (number, name, stream) in [(6, "bad4", agent.inbox()?), (7, "bad5", agent.status()?)] {
+            let looped = program(
+                name,
+                &format!(
+                    "{{kind: 'stream', path: '{}', from: 'start'}}",
+                    stream.as_str()
+                ),
+            );
+            let key = format!("hooks/{name}/program.ts");
+            publish(&[(key.as_str(), Some(looped.as_str()))], number).await?;
+            rejected(&mut events, name).await?;
+            assert_eq!(bound_source(format!("hook/{name}").as_str()).await?, None);
+        }
         Ok::<_, Box<dyn std::error::Error>>(())
     };
     let result: Result = tokio::select! {

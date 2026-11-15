@@ -256,6 +256,15 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                         "hook streams stay within the agent's subtree".into(),
                     ));
                 }
+                // Delivery appends to the inbox, and the hook's step moves the
+                // status; following either would feed the hook its own output.
+                if *path == *state.agent.inbox()?.as_str()
+                    || *path == *state.agent.status()?.as_str()
+                {
+                    return Err(crate::Error::Invalid(
+                        "a hook cannot follow the inbox or status its deliveries write".into(),
+                    ));
+                }
                 Ok(Some((
                     Registered {
                         path: StreamPath::new(path)
