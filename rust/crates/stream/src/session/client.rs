@@ -438,7 +438,7 @@ impl Client {
             credentials: BTreeMap::new(),
             credential_bytes: 0,
             connections: connections.clone(),
-            executor: Arc::clone(&executor),
+            executor,
             identity: crate::new_identity_bytes(),
             connect,
             home: String::new(),
@@ -459,7 +459,7 @@ impl Client {
             released: Arc::clone(&release_sender),
             release_sender,
         };
-        executor.spawn(Box::pin(async move {
+        pool.executor.spawn(Box::pin(async move {
             let result = {
                 let running = pool.run();
                 let running = core::pin::pin!(running);

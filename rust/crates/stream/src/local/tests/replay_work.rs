@@ -72,8 +72,10 @@ proptest! {
         let (before, control_before) = runtime.block_on(async {
             futures::join!(replay::<true>(count, bytes.clone()), replay::<false>(count, bytes))
         });
-        let (before, after) = before?;
-        let (control_before, control_after) = control_before?;
+        let (before, after) =
+            before.map_err(|error| TestCaseError::fail(error.to_string()))?;
+        let (control_before, control_after) =
+            control_before.map_err(|error| TestCaseError::fail(error.to_string()))?;
         unchanged_frames(before, after)?;
         prop_assert!(unchanged_frames(control_before, control_after).is_err(), "replay-write control escaped the same bound");
     }
