@@ -497,7 +497,7 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
     assert_eq!(input.trailers(), Some(trailers.as_slice()));
     assert_eq!(third.as_ref(), third_original.as_ref());
     assert_eq!(fourth.as_ref(), fourth_original.as_ref());
-    Ok(())
+    Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     };
     input_credit.await?;
 
@@ -531,7 +531,7 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
     assert_eq!(cancelled_first.as_ref().as_ptr(), original.as_ptr());
     assert_eq!(cancelled_second.as_ref().as_ptr(), second_original.as_ptr());
     drop(cancelled);
-    Ok(())
+    Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     };
     cancellation.await?;
 
@@ -615,7 +615,7 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
         Err(StreamCategory::InvalidArgument)
     );
     assert!(wire_codec::session::actor_call_sequence(0, &[], &data).is_err());
-    Ok(())
+    Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     };
     authorization.await?;
     Ok(())
