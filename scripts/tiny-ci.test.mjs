@@ -26,8 +26,9 @@ test('Host qualification runs on each platform and retains every scenario',()=>{
  const scenarios=[
   ['Build shared host scenarios',undefined,'cargo test --locked -p acyclic-plugin -p acyclic-harness --all-features --lib --bins --no-run'],
   ['Run plugin unit tests',undefined,'cargo test --locked -p acyclic-plugin --all-features --bin acyclic -- --test-threads=4'],
-  ['Run shared native host lifecycle',undefined,'cargo test --locked -p acyclic-harness --all-features --lib local::host_owner:: -- --test-threads=4'],
-  ['Run shared fork and merge recovery',undefined,'cargo test --locked -p acyclic-harness --all-features --lib local::tests::merge_recovery:: -- --test-threads=4'],
+  ['Install pinned nextest',undefined,'bash scripts/ensure-nextest.sh >> "$GITHUB_PATH"'],
+  ['Run shared native host lifecycle',undefined,'cargo nextest run --locked -p acyclic-harness --all-features --lib --test-threads 4 local::host_owner::'],
+  ['Run shared fork and merge recovery',undefined,'cargo nextest run --locked -p acyclic-harness --all-features --lib --test-threads 4 local::tests::merge_recovery::'],
   ['Run host manifest and shim contracts',undefined,shimCommands],
   ['Run scripted native sessions in the Codex sandbox',linux,'node plugin/tests/hosts/qualify-scripted.mjs "$ACYCLIC_E2E_RECEIPT_DIR/normal-cargo.jsonl" "$ACYCLIC_E2E_RECEIPT_DIR/managed" "${{ steps.codex.outputs.binary }}" managed'],
   ['Run shared mount scale through every host adapter',linux,'node plugin/tests/hosts/qualify-scripted.mjs "$ACYCLIC_E2E_RECEIPT_DIR/scale-cargo.jsonl" "$ACYCLIC_E2E_RECEIPT_DIR/scale" "${{ steps.codex.outputs.binary }}" scale'],

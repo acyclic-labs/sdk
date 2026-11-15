@@ -70,13 +70,14 @@ runs:
 
     # Every tool is installed under a versioned path or verified by its version
     # before use, so the first saved tools cache stays a safe starting point.
-    # Bump the version when a pinned tool changes to refresh it.
+    # The nextest installer's digest refreshes it when that pin changes; bump
+    # the version when another pinned tool changes.
     - name: Restore lane tools
       id: tools
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}/tools
-        key: sdk-tools-v7-${{ inputs.lane }}-${{ runner.os }}-${{ runner.arch }}${{ inputs.lane == 'windows-rust' && '-nextest-0.9.146' || '' }}
+        key: sdk-tools-v7-${{ inputs.lane }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/ensure-nextest.sh') }}
 
     # Reuse compiler output within the job without retaining off-critical
     # multi-gigabyte snapshots that compete with native release builds.
@@ -122,37 +123,13 @@ runs:
       shell: pwsh
       run: .\scripts\windows-rust-setup.ps1 -Phase finish -Lane '${{ inputs.lane }}'
 
-    - name: Install Windows nextest
+    # Unix lanes install nextest inside qualify-ci.sh with the same script.
+    - name: Install pinned nextest
       if: inputs.lane == 'windows-rust'
-      shell: pwsh
-      run: |
-        $ErrorActionPreference = 'Stop'
-        $PSNativeCommandUseErrorActionPreference = $true
-        $bin = Join-Path $env:RUNNER_TEMP 'tools/cargo/bin'
-        $nextest = Join-Path $bin 'cargo-nextest.exe'
-        if (-not (Test-Path -LiteralPath $nextest) -or
-            ((& $nextest nextest --version) -join "`n") -notmatch '^cargo-nextest 0\.9\.146(?:\s|$)') {
-          New-Item -ItemType Directory -Force -Path $bin | Out-Null
-          $archive = Join-Path $env:RUNNER_TEMP 'cargo-nextest-0.9.146-windows.tar.gz'
-          $expected = '809b01f2c94d031ab6cf5f4d4a4f477c8f51b69c96ab3cb2fe4db7ecb222d0d3'
-          $url = 'https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-x86_64-pc-windows-msvc.tar.gz'
-          if (-not [string]::IsNullOrWhiteSpace($env:PINNED_ASSET_FETCHER)) {
-            & $env:PINNED_ASSET_FETCHER $expected $url $archive
-            if ($LASTEXITCODE -ne 0) {
-              throw 'step=fetch pinned nextest: asset provider refused; recovery: rerun Install Windows nextest after seeding the pinned asset'
-            }
-          } else {
-            Invoke-WebRequest -OutFile $archive -Uri $url
-          }
-          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
-            throw 'Windows nextest archive digest mismatch'
-          }
-          tar -xzf $archive -C $bin
-        }
-        if (((& $nextest nextest --version) -join "`n") -notmatch '^cargo-nextest 0\.9\.146(?:\s|$)') {
-          throw 'Windows qualification requires cargo-nextest 0.9.146'
-        }
-        Add-Content -LiteralPath $env:GITHUB_PATH -Value $bin
+      shell: bash
+      env:
+        TOOLS_DIR: ${{ runner.temp }}/tools/${{ inputs.lane }}-${{ runner.arch }}
+      run: bash scripts/ensure-nextest.sh >> "$GITHUB_PATH"
 
     - name: Restore Windows Rust dependency builds
       if: inputs.lane == 'windows-rust'

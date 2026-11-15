@@ -119,6 +119,10 @@ jobs:
           . ./scripts/ensure-bun.ps1
           Split-Path -Parent (Get-Command bun).Source >> $env:GITHUB_PATH
 
+      - name: Install pinned nextest
+        shell: bash
+        run: bash scripts/ensure-nextest.sh >> "$GITHUB_PATH"
+
       - name: Install locked host binaries
         shell: bash
         env:
@@ -154,12 +158,12 @@ jobs:
       - name: Run shared native host lifecycle
         shell: bash
         run: |
-          cargo test --locked -p acyclic-harness --all-features --lib local::host_owner:: -- --test-threads=4
+          cargo nextest run --locked -p acyclic-harness --all-features --lib --test-threads 4 local::host_owner::
 
       - name: Run shared fork and merge recovery
         shell: bash
         run: |
-          cargo test --locked -p acyclic-harness --all-features --lib local::tests::merge_recovery:: -- --test-threads=4
+          cargo nextest run --locked -p acyclic-harness --all-features --lib --test-threads 4 local::tests::merge_recovery::
 
       - name: Run host manifest and shim contracts
         shell: bash

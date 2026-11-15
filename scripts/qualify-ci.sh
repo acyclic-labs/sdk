@@ -90,25 +90,10 @@ install_tool() {
     --strip-components="$strip" "$member"
 }
 
-# Both Rust qualification and the real-tool policy control need this release.
+# Both Rust qualification and the real-tool policy control need this release;
+# it lands in $TOOLS_DIR/cargo/bin, already first on PATH.
 ensure_nextest() {
-  local target checksum
-  if [[ "$(cargo-nextest nextest --version 2>/dev/null)" != "cargo-nextest 0.9.146 "* ]]; then
-    case "$(uname -s):$(uname -m)" in
-      Linux:x86_64)
-        target=x86_64-unknown-linux-gnu
-        checksum=682c21b777c333e96fd532e114d3a5a894e0729ab88d94c0a9f20f8419695428 ;;
-      Linux:aarch64)
-        target=aarch64-unknown-linux-gnu
-        checksum=b2e33d7c72de7ade0ff7b3a948ac37516b24f8a836b7a8870c1f634a94be9de9 ;;
-      Darwin:*)
-        target=universal-apple-darwin
-        checksum=39785160b3c2f6ed9a765049cf4fa79f3b39aa02eb7598a5a0e2a1a0b9ffb9a8 ;;
-    esac
-    install_tool "cargo-nextest-0.9.146-$target.tar.gz" \
-      "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-$target.tar.gz" \
-      "$checksum" "$TOOLS_DIR/cargo/bin" cargo-nextest
-  fi
+  bash scripts/ensure-nextest.sh >/dev/null
 }
 
 # Runs Rust tests with the pinned cargo-nextest: one process per test, test
@@ -424,6 +409,7 @@ case "$lane" in
     bash scripts/test-qualify-ci-preflight.sh
     node --test scripts/wasm-size-report.test.mjs
     bash scripts/test-ensure-rust-target.sh
+    bash scripts/test-ensure-nextest.sh
     node scripts/check-workflow-runners.mjs
     node --test scripts/harness-provider-evidence.test.mjs
     node --test scripts/qualify-main-green-debts.test.mjs scripts/test-support/libtest.test.mjs

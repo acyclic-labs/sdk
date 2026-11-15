@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
@@ -76,17 +77,31 @@ test("Windows Rust restores dependency builds after toolchain setup and skips un
   assert.ok(action.includes('if [[ "$LANE" != windows-rust ]]; then'));
 });
 
-test("Windows Rust nextest is pinned, verified and cached without changing other lanes", () => {
+test("every host installs nextest through the one pinned installer", () => {
   const action = readFileSync(".github/actions/qualification-lane/action.yml", "utf8");
-  const install = action.split("    - name: Install Windows nextest")[1]?.split("    - name:")[0] ?? assert.fail("missing nextest installation");
+  const install = action.split("    - name: Install pinned nextest")[1]?.split("    - name:")[0] ?? assert.fail("missing nextest installation");
   assert.ok(install.includes("if: inputs.lane == 'windows-rust'"));
-  assert.ok(install.includes("cargo-nextest-0.9.146-x86_64-pc-windows-msvc.tar.gz"));
-  assert.ok(install.includes("809b01f2c94d031ab6cf5f4d4a4f477c8f51b69c96ab3cb2fe4db7ecb222d0d3"));
-  assert.ok(install.includes("Get-FileHash -LiteralPath $archive -Algorithm SHA256"));
-  assert.ok(install.includes("Add-Content -LiteralPath $env:GITHUB_PATH -Value $bin"));
-  assert.equal((install.match(/-join "`n"/g) ?? []).length, 2);
-  assert.equal((install.match(/-notmatch/g) ?? []).length, 2);
-  assert.doesNotMatch(install, /-notlike/);
-  assert.ok(action.includes("inputs.lane == 'windows-rust' && '-nextest-0.9.146' || ''"));
-  assert.doesNotMatch(install, /cargo install|latest|nightly/);
+  assert.ok(install.includes("shell: bash"));
+  assert.ok(install.includes('run: bash scripts/ensure-nextest.sh >> "$GITHUB_PATH"'));
+  // The installer and the lane share one cached tool directory.
+  const toolsDir = "TOOLS_DIR: ${{ runner.temp }}/tools/${{ inputs.lane }}-${{ runner.arch }}";
+  assert.ok(install.includes(toolsDir));
+  const lane = action.split("    - name: Run Windows qualification lane")[1]?.split("    - name:")[0] ?? assert.fail("missing Windows lane");
+  assert.ok(lane.includes(toolsDir));
+  assert.ok(action.includes("key: sdk-tools-v7-${{ inputs.lane }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/ensure-nextest.sh') }}"));
+  assert.match(readFileSync("scripts/qualify-ci.sh", "utf8"), /^ensure_nextest\(\) \{\n  bash scripts\/ensure-nextest\.sh >\/dev\/null\n\}$/m);
+  const hosts = readFileSync(".github/workflows/agent-host-qualification.yml", "utf8");
+  assert.ok(hosts.includes('run: bash scripts/ensure-nextest.sh >> "$GITHUB_PATH"'));
+  // No second copy of the pin: only the installer's code names the release assets.
+  const release = "nextest-rs/nextest/" + "releases";
+  const code = ["*.sh", "*.ps1", "*.psm1", "*.yml", "*.yaml", "*.mjs", "*.js", "*.ts", "*.py", "*.toml", "*.json", "*.bzl", "*.bazel"];
+  const holders = spawnSync("git", ["grep", "-l", "-F", release, "--", ...code], { encoding: "utf8" });
+  assert.equal(holders.status, 0, holders.stderr);
+  assert.deepEqual(holders.stdout.split("\n").filter(Boolean), ["scripts/ensure-nextest.sh"]);
+  const installer = readFileSync("scripts/ensure-nextest.sh", "utf8");
+  for (const target of ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "universal-apple-darwin", "x86_64-pc-windows-msvc"])
+    assert.ok(installer.includes(`target=${target}\n`), target);
+  assert.ok(installer.includes("809b01f2c94d031ab6cf5f4d4a4f477c8f51b69c96ab3cb2fe4db7ecb222d0d3"));
+  assert.ok(installer.includes('"$PINNED_ASSET_FETCHER" "$expected" "$url"'));
+  assert.doesNotMatch(installer, /cargo install|latest|nightly/);
 });
