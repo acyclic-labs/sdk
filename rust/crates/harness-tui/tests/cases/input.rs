@@ -6,7 +6,7 @@
 mod args;
 
 #[path = "../input/input.rs"]
-mod input;
+mod prompt;
 #[path = "../input/keys.rs"]
 mod keys;
 #[path = "../input/native.rs"]

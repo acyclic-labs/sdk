@@ -149,7 +149,7 @@ fn failed_abort_and_writer_unwind_reset_margins_before_same_size_repaint() {
             let (bytes, control, expected) = recovered(panic, at);
             assert_eq!(
                 screens(&[bytes]),
-                screens(&[expected.clone()]),
+                screens(std::slice::from_ref(&expected)),
                 "panic={panic}, at={at}"
             );
             assert_ne!(

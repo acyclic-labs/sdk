@@ -410,9 +410,8 @@ fn read_available(reader: &mut impl Read, output: &mut Vec<u8>) -> io::Result<bo
 #[test]
 fn readiness_retains_output_and_reports_original_child_exit()
 -> Result<(), Box<dyn std::error::Error>> {
-    let error = match Process::start("early-exit") {
-        Ok(_) => return Err("child without a readiness producer was accepted".into()),
-        Err(error) => error,
+    let Err(error) = Process::start("early-exit") else {
+        return Err("child without a readiness producer was accepted".into());
     };
     assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
     let mut process = Process::start("ready-exit")?;

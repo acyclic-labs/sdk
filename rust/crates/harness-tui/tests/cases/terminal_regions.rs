@@ -167,9 +167,9 @@ fn screens_sized(frames: &[(Size, Vec<u8>)], supported: bool) -> Vec<String> {
                 parser.advance(&mut term, &without_scrolling(bytes));
             }
             let mut text = String::new();
-            for row in 0..usize::from(size.height) {
+            for row in 0..i32::from(size.height) {
                 for column in 0..usize::from(size.width) {
-                    let cell = &term.grid()[Point::new(Row(row as i32), Column(column))];
+                    let cell = &term.grid()[Point::new(Row(row), Column(column))];
                     text.push(cell.c);
                     let styles = cell.flags
                         - (Flags::WRAPLINE
@@ -201,11 +201,11 @@ fn without_scrolling(bytes: &[u8]) -> Vec<u8> {
     let mut result = Vec::new();
     let mut at = 0;
     while at < bytes.len() {
-        if bytes[at..].starts_with(b"\x1b[") {
-            if let Some(end) = bytes[at + 2..]
+        if bytes[at..].starts_with(b"\x1b[")
+            && let Some(end) = bytes[at + 2..]
                 .iter()
                 .position(|byte| (0x40..=0x7e).contains(byte))
-            {
+        {
                 let end = at + 2 + end;
                 if matches!(bytes[end], b'S' | b'T' | b'r') {
                     at = end + 1;
@@ -275,8 +275,12 @@ fn styled_blanks_and_moved_colours_match_the_independent_screen() {
         let rows = (top..top + usize::from(HEIGHT))
             .map(|row| {
                 let style = Style::default()
-                    .fg(Color::Indexed((row % 8) as u8))
-                    .bg(Color::Indexed((row % 7 + 1) as u8));
+                    .fg(Color::Indexed(
+                        u8::try_from(row % 8).expect("row modulo eight fits a byte"),
+                    ))
+                    .bg(Color::Indexed(
+                        u8::try_from(row % 7 + 1).expect("row modulo seven fits a byte"),
+                    ));
                 Line::styled(
                     if row % 2 == 0 {
                         format!("row {row}")
@@ -872,7 +876,7 @@ fn a_band_meeting_fixed_rows_scrolls_exactly_and_off_by_one_margins_are_caught()
         (margins.clone(), format!("\x1b[{};{bottom}r", top - 1)),
         (margins.clone(), format!("\x1b[{};{bottom}r", top + 1)),
         (margins.clone(), format!("\x1b[{top};{}r", bottom + 1)),
-        (margins.clone(), format!("\x1b[{top};{}r", bottom - 1)),
+        (margins, format!("\x1b[{top};{}r", bottom - 1)),
         ("\x1b[3S".into(), "\x1b[4S".into()),
         ("\x1b[3S".into(), "\x1b[2S".into()),
         ("\x1b[2T".into(), "\x1b[3T".into()),
