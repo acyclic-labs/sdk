@@ -16,13 +16,9 @@ async fn concurrent_publications_preserve_each_volume_payload() -> Result<()> {
     Ok(())
 }
 
-/// Every file publication stages outside the checkout and renames into it.
-/// Each such write is one arrival: concurrent writers over a populated
-/// checkout must never fall back to scanning the whole tree, wherever the
-/// checkout's watch proves delivery without writing into the checkout. Where
-/// it cannot (FSEvents, or the notify adapter), the checkout forbids fence
-/// writes, so each capture revalidates by contract and the claim does not
-/// apply.
+/// A writer captures exactly the paths it wrote: concurrent writers over a
+/// populated checkout never scan the whole tree, on every platform and
+/// whatever the watcher can prove about its delivery.
 #[tokio::test]
 async fn concurrent_checkout_writes_never_rescan_the_tree() -> Result<()> {
     let (_directory, _state, harness, publisher) = seeded_cost_fixture(publication_source).await?;
@@ -40,19 +36,100 @@ async fn concurrent_checkout_writes_never_rescan_the_tree() -> Result<()> {
         .await?;
     let before = crate::local::checkout_tools::capture::BASELINE_SCANS.get();
     measure_writer_batch(&[&publisher; 8], "rescan").await?;
-    let proven =
-        crate::sync::owned::lock_owned(crate::sync::owned::Arc::clone(&publisher.tools.state))
-            .await
-            .watcher
+    assert_eq!(
+        crate::local::checkout_tools::capture::BASELINE_SCANS.get(),
+        before,
+        "a checkout write rescanned the whole tree"
+    );
+    harness.disconnect().await?;
+    Ok(())
+}
+
+/// A watch that lost continuity (a dropped batch, or a hint whose other half
+/// never came) owes the checkout one revalidation. No writer pays it, and no
+/// writer waits behind it: each captures only the paths it wrote. The next
+/// whole-checkout capture revalidates once and still records the native edit
+/// the lost watch never reported.
+#[tokio::test]
+async fn writes_never_pay_for_a_lost_watch() -> Result<()> {
+    use crate::local::checkout_tools::capture::{BASELINE_SCANS, PATH_CAPTURES};
+    let (directory, _state, harness, publisher) = seeded_cost_fixture(publication_source).await?;
+    publisher.tools.publish_baseline().await?;
+    let (_, _) = publisher
+        .stage_once(
+            OperationId::new(),
+            "warm.txt",
+            b"warm\n",
+            "text/plain",
+            "warm.txt",
+            Default::default(),
+        )?
+        .await?;
+    std::fs::write(directory.path().join("source-0.txt"), b"native edit\n").map_err(storage)?;
+    crate::sync::owned::lock_owned(crate::sync::owned::Arc::clone(&publisher.tools.state))
+        .await
+        .watcher
+        .as_mut()
+        .ok_or_else(|| Error::Storage("the checkout has no cursor".into()))?
+        .lose_continuity()?;
+    let (scans, paths) = (BASELINE_SCANS.get(), PATH_CAPTURES.get());
+    measure_writer_batch(&[&publisher; 8], "lost-watch").await?;
+    assert_eq!(
+        BASELINE_SCANS.get(),
+        scans,
+        "a write paid for the checkout's lost watch"
+    );
+    assert!(
+        PATH_CAPTURES.get() > paths,
+        "the writes were not captured by path"
+    );
+
+    let operation = OperationId::new();
+    {
+        let mut state =
+            crate::sync::owned::lock_owned(crate::sync::owned::Arc::clone(&publisher.tools.state))
+                .await;
+        let State {
+            active, watcher, ..
+        } = &mut *state;
+        let view = active
             .as_ref()
-            .is_some_and(|cursor| cursor.fence_proves_delivery());
-    if proven {
-        assert_eq!(
-            crate::local::checkout_tools::capture::BASELINE_SCANS.get(),
-            before,
-            "a checkout write rescanned the whole tree"
-        );
+            .unwrap_or_else(|| publisher.tools.workspace.view());
+        publisher
+            .tools
+            .capture(
+                (&publisher.tools.workspace, view),
+                watcher,
+                operation,
+                0,
+                PublicationPermit::Unrestricted,
+            )?
+            .await?;
     }
+    assert_eq!(
+        BASELINE_SCANS.get(),
+        scans + 1,
+        "the lost watch was not revalidated exactly once"
+    );
+    let revalidated = publisher
+        .tools
+        .workspace
+        .view()
+        .workspace()
+        .operation_generation(
+            acyclic_fs::IdempotencyKey::from_bytes(
+                crate::local::checkout_tools::capture::capture_operation(operation, 0).into_bytes(),
+            ),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(storage)?
+        .value;
+    assert!(
+        revalidated.is_some(),
+        "the revalidation did not record the unreported native edit"
+    );
     harness.disconnect().await?;
     Ok(())
 }
@@ -102,6 +179,129 @@ async fn independent_agent_views_preserve_concurrent_project_and_home_writes() -
         .map(|(_, _, publisher)| publisher)
         .collect::<Vec<_>>();
     measure_publications(&publishers, "agent_views").await
+}
+
+/// A native move the watch has not delivered still binds the moved file's
+/// identity at its old name, and a linked file's other names are unknown, so
+/// a write to either cannot be captured by its paths alone. It takes the
+/// ordinary capture and still publishes exactly.
+#[tokio::test]
+async fn writes_over_unobserved_moves_and_links_publish() -> Result<()> {
+    let (directory, _state, harness, publisher) = seeded_cost_fixture(publication_source).await?;
+    publisher.tools.publish_baseline().await?;
+    let root = directory.path();
+    std::fs::rename(root.join("source-1.txt"), root.join("moved.txt")).map_err(storage)?;
+    std::fs::hard_link(root.join("source-2.txt"), root.join("linked.txt")).map_err(storage)?;
+    for path in ["moved.txt", "source-2.txt"] {
+        let bytes = format!("{path} written\n");
+        publisher
+            .stage_once(
+                OperationId::new(),
+                path,
+                bytes.as_bytes(),
+                "text/plain",
+                path,
+                Default::default(),
+            )?
+            .await?;
+        assert_eq!(
+            std::fs::read(root.join(path)).map_err(storage)?,
+            bytes.as_bytes()
+        );
+    }
+    harness.disconnect().await?;
+    Ok(())
+}
+
+/// A native rename the watch has not delivered still describes the identity
+/// the head binds at its source. A write that publishes a new file at that
+/// source leaves the identity to the move: once the rename is captured, the
+/// moved file keeps it at its destination and the new file has its own.
+#[tokio::test]
+async fn a_write_over_an_unobserved_rename_source_leaves_its_identity_to_the_move() -> Result<()> {
+    let (directory, _state, harness, publisher) = seeded_cost_fixture(publication_source).await?;
+    publisher.tools.publish_baseline().await?;
+    let root = directory.path();
+    let original = head_identity(&publisher, "source-3.txt")
+        .await?
+        .ok_or_else(|| Error::NotFound("the baseline lacks source-3.txt".into()))?;
+    std::fs::rename(root.join("source-3.txt"), root.join("renamed.txt")).map_err(storage)?;
+    publisher
+        .stage_once(
+            OperationId::new(),
+            "source-3.txt",
+            b"replacement\n",
+            "text/plain",
+            "source-3.txt",
+            Default::default(),
+        )?
+        .await?;
+    {
+        let mut state =
+            crate::sync::owned::lock_owned(crate::sync::owned::Arc::clone(&publisher.tools.state))
+                .await;
+        let State {
+            active, watcher, ..
+        } = &mut *state;
+        let view = active
+            .as_ref()
+            .unwrap_or_else(|| publisher.tools.workspace.view());
+        publisher
+            .tools
+            .capture(
+                (&publisher.tools.workspace, view),
+                watcher,
+                OperationId::new(),
+                0,
+                PublicationPermit::Unrestricted,
+            )?
+            .await?;
+    }
+    assert_eq!(
+        head_identity(&publisher, "renamed.txt").await?,
+        Some(original),
+        "the moved file lost its identity"
+    );
+    let replacement = head_identity(&publisher, "source-3.txt").await?;
+    assert!(
+        replacement.is_some_and(|identity| identity != original),
+        "the new file took the moved file's identity: {replacement:?}"
+    );
+    harness.disconnect().await?;
+    Ok(())
+}
+
+async fn head_identity(
+    publisher: &CheckoutPublisher,
+    path: &str,
+) -> Result<Option<acyclic_fs::FileId>> {
+    let workspace = publisher.tools.workspace.view().workspace();
+    let config = workspace.volume_config();
+    let portable = acyclic_fs::path::PortablePath::parse(&format!("/{path}"), config.limits)
+        .map_err(storage)?;
+    let name = acyclic_fs::kernel::NamespacePath::from_portable_in_profile(
+        &portable,
+        config.profile,
+        config.limits,
+    )
+    .map_err(storage)?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let mut checkout = workspace
+        .checkout(
+            acyclic_fs::model::GenerationSelector::Head,
+            acyclic_fs::model::CheckoutMode::tracking_transaction(),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(storage)?
+        .value;
+    let lookup = checkout
+        .lookup_no_follow(&name, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value;
+    Ok(lookup.record.map(|record| record.file_id))
 }
 
 async fn measure_publications(publishers: &[&CheckoutPublisher], layout: &str) -> Result<()> {

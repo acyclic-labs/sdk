@@ -3658,20 +3658,6 @@ impl NativeWatch {
         Ok(())
     }
 
-    /// Whether a fence of this watch, as opened, proves delivery complete.
-    /// The inotify and ReadDirectoryChangesW sources fence the host's own
-    /// delivery queue. The notify adapter and FSEvents prove delivery only
-    /// through a cookie written into the tree, so where fence writes are
-    /// forbidden a fence requests a rescan instead.
-    #[must_use]
-    pub fn fence_proves_delivery(&self) -> bool {
-        #[cfg(target_os = "macos")]
-        let read_only = false;
-        #[cfg(not(target_os = "macos"))]
-        let read_only = matches!(self.watcher, NativeWatchDriver::Source(_));
-        self.permit_fence_writes || read_only
-    }
-
     /// Waits for native delivery to settle. The next batch either contains
     /// the changes completed before this call or requires a rescan.
     pub fn fence(&mut self) -> Result<(), NativeWatchError> {
