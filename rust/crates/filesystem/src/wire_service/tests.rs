@@ -17,8 +17,13 @@ struct TestSourceProvider {
 }
 
 #[tonic::async_trait]
-impl FilesystemSourceProvider for TestSourceProvider {
-    async fn state(&self, _scope: HostedSourceScope) -> Result<HostedSourceResult, Status> {
+impl FilesystemSourceProvider<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>
+    for TestSourceProvider
+{
+    async fn state(
+        &self,
+        _workspace: &Workspace<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>,
+    ) -> Result<HostedSourceResult, Status> {
         Ok(HostedSourceResult {
             state: HostedSourceState::NeedsRescan(HostedSourceInvalidation::QueueOverflow),
             generation_id: None,
@@ -27,9 +32,10 @@ impl FilesystemSourceProvider for TestSourceProvider {
 
     async fn reconcile(
         &self,
-        operation: HostedSourceOperation,
+        _workspace: &Workspace<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>,
+        key: IdempotencyKey,
     ) -> Result<HostedSourceResult, Status> {
-        if operation.idempotency_key != IdempotencyKey::from_bytes([9; 16]) {
+        if key != IdempotencyKey::from_bytes([9; 16]) {
             return Err(Status::invalid_argument(
                 "unexpected reconciliation identity",
             ));
@@ -45,7 +51,8 @@ impl FilesystemSourceProvider for TestSourceProvider {
 
     async fn rescan(
         &self,
-        _operation: HostedSourceOperation,
+        _workspace: &Workspace<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>,
+        _key: IdempotencyKey,
     ) -> Result<HostedSourceResult, Status> {
         Ok(HostedSourceResult {
             state: HostedSourceState::Clean,
@@ -56,7 +63,11 @@ impl FilesystemSourceProvider for TestSourceProvider {
         })
     }
 
-    async fn seal(&self, _operation: HostedSourceOperation) -> Result<HostedSourceResult, Status> {
+    async fn seal(
+        &self,
+        _workspace: &Workspace<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>,
+        _key: IdempotencyKey,
+    ) -> Result<HostedSourceResult, Status> {
         Ok(HostedSourceResult {
             state: HostedSourceState::Sealed,
             generation_id: *self
