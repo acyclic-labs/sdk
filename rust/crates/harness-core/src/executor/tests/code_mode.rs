@@ -351,7 +351,23 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
     assert!(tool_notice_table(&before[0]).as_array().unwrap().is_empty());
     assert_eq!(binding_notice_table(&before[0])[0]["name"], "code");
 
-    for native in [false, true] {
+    // A render bound buys a framing count, so only a bounded executor pays it.
+    let (bounded, _, _) = executor("export default typeof tools.late", allowed()?, false)?;
+    let bounded = bounded.with_limits(Limits {
+        render_bytes: Some(1 << 20),
+        ..Limits::default()
+    });
+    use json::CodecOperation::{DecodeBytes, Serialize};
+    // One schema encoding, notice encoding and typed decode.
+    let unbounded_codec = [Serialize, Serialize, DecodeBytes];
+    // A bounded render adds one framing count before the notice encoding.
+    let bounded_codec = [Serialize, Serialize, Serialize, DecodeBytes];
+    for (native, stock, expected) in [false, true].into_iter().flat_map(|native| {
+        [
+            (native, &first, &unbounded_codec[..]),
+            (native, &bounded, &bounded_codec[..]),
+        ]
+    }) {
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024);
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
@@ -363,7 +379,7 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
         };
         let execution = StockExecution {
             io: Some(&io),
-            ..StockExecution::ordinary(&first)
+            ..StockExecution::ordinary(stock)
         };
         let mut context = crate::context::Context::default();
         let initial = io.remaining()?;
@@ -373,9 +389,6 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
                 |()| execution.tools_notice(&mut context, &before[0].tools),
             );
         notice?;
-        use json::CodecOperation::{DecodeBytes, Serialize};
-        // One schema encoding, framing count, notice encoding and typed decode.
-        let expected = [Serialize, Serialize, Serialize, DecodeBytes];
         assert_eq!(codec, expected);
         let remaining = io.remaining()?;
         assert_eq!(context.messages.len(), 1);
