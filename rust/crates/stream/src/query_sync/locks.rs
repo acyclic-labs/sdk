@@ -109,6 +109,15 @@ impl Gate {
                 } else {
                     access.readers += 1;
                 }
+                // Negative control: Tokio's semaphore takes the permits, then
+                // yields on an exhausted budget while keeping them.
+                if super::budgeted::budget::after_acquire() && super::budgeted::budget::yields(cx) {
+                    let id = access.next;
+                    access.next += 1;
+                    registration.id = Some(id);
+                    access.granted.push((id, write));
+                    return Poll::Pending;
+                }
                 return Poll::Ready(Permit { gate: self, write });
             } else {
                 let id = access.next;

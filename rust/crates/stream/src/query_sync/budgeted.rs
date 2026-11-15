@@ -7,6 +7,12 @@
 //! Spending the budget first means a budget yield holds nothing; the
 //! acquisition itself then runs unconstrained, waiting only on the lock.
 
+use std::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+};
+
 #[cfg(loom)]
 use super::locks as inner;
 #[cfg(not(loom))]
@@ -25,8 +31,8 @@ impl<T> Mutex<T> {
     }
 
     /// Acquires exclusive ownership.
-    pub async fn lock(&self) -> impl std::ops::DerefMut<Target = T> + '_ {
-        acquire(self.0.lock()).await
+    pub fn lock(&self) -> impl Future<Output = impl std::ops::DerefMut<Target = T> + '_> + '_ {
+        Acquire::new(self.0.lock())
     }
 
     /// Attempts immediate exclusive ownership without registering a waiter.
@@ -52,13 +58,13 @@ impl<T> RwLock<T> {
     }
 
     /// Acquires shared ownership.
-    pub async fn read(&self) -> impl std::ops::Deref<Target = T> + '_ {
-        acquire(self.0.read()).await
+    pub fn read(&self) -> impl Future<Output = impl std::ops::Deref<Target = T> + '_> + '_ {
+        Acquire::new(self.0.read())
     }
 
     /// Acquires exclusive ownership.
-    pub async fn write(&self) -> impl std::ops::DerefMut<Target = T> + '_ {
-        acquire(self.0.write()).await
+    pub fn write(&self) -> impl Future<Output = impl std::ops::DerefMut<Target = T> + '_> + '_ {
+        Acquire::new(self.0.write())
     }
 
     /// Attempts immediate exclusive ownership without registering a waiter.
@@ -67,33 +73,67 @@ impl<T> RwLock<T> {
     }
 }
 
-/// Spends one unit of cooperative budget, yielding while holding nothing,
-/// then acquires without a second budget check.
-async fn acquire<F: std::future::Future>(acquisition: F) -> F::Output {
-    #[cfg(all(loom, not(target_arch = "wasm32")))]
-    if crate::verification::fault_is(crate::verification::Fault::BudgetAfterAcquire) {
-        // Negative control: the order Tokio's semaphore uses.
-        let guard = acquisition.await;
-        budget::spend().await;
-        return guard;
+pin_project_lite::pin_project! {
+    /// Spends one unit of cooperative budget, yielding while holding nothing,
+    /// then polls the acquisition without a second budget check. The
+    /// acquisition is stored once, in place, so wrapping adds no frame.
+    #[must_use = "futures do nothing unless polled"]
+    struct Acquire<F> {
+        spent: bool,
+        #[pin]
+        acquisition: budget::Unconstrained<F>,
     }
-    budget::spend().await;
-    budget::unconstrained(acquisition).await
+}
+
+impl<F> Acquire<F> {
+    fn new(acquisition: F) -> Self {
+        Self {
+            spent: false,
+            acquisition: budget::unconstrained(acquisition),
+        }
+    }
+}
+
+impl<F: Future> Future for Acquire<F> {
+    type Output = F::Output;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
+        let this = self.project();
+        if !*this.spent {
+            std::task::ready!(budget::proceed(cx));
+            *this.spent = true;
+        }
+        this.acquisition.poll(cx)
+    }
 }
 
 #[cfg(not(loom))]
 mod budget {
-    pub(super) use tokio::task::coop::{consume_budget as spend, unconstrained};
+    use std::task::{Context, Poll};
+    pub(super) use tokio::task::coop::{Unconstrained, unconstrained};
+
+    pub(super) fn proceed(cx: &mut Context<'_>) -> Poll<()> {
+        tokio::task::coop::poll_proceed(cx).map(|spent| spent.made_progress())
+    }
 }
 
 /// Loom has no cooperative budget, so the model owns one: an exhausted task
 /// yields exactly once, waking itself as Tokio does, and is then refilled.
 #[cfg(loom)]
 pub(crate) mod budget {
-    use std::{cell::Cell, task::Poll};
+    use std::{
+        cell::Cell,
+        task::{Context, Poll},
+    };
 
     loom::thread_local! {
         static EXHAUSTED: Cell<bool> = Cell::new(false);
+    }
+
+    pub(super) type Unconstrained<F> = F;
+
+    pub(super) fn unconstrained<F>(future: F) -> F {
+        future
     }
 
     /// Makes this model thread's next budget check yield.
@@ -101,20 +141,32 @@ pub(crate) mod budget {
         EXHAUSTED.with(|exhausted| exhausted.set(true));
     }
 
-    pub(super) async fn spend() {
-        std::future::poll_fn(|cx| {
-            if EXHAUSTED.with(|exhausted| exhausted.replace(false)) {
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            } else {
-                Poll::Ready(())
-            }
-        })
-        .await;
+    /// Consumes an exhausted budget, waking the task as Tokio does.
+    pub(in crate::query_sync) fn yields(cx: &mut Context<'_>) -> bool {
+        let exhausted = EXHAUSTED.with(|exhausted| exhausted.replace(false));
+        if exhausted {
+            cx.waker().wake_by_ref();
+        }
+        exhausted
     }
 
-    pub(super) fn unconstrained<F>(future: F) -> F {
-        future
+    /// Negative control: no budget check before acquiring; the modeled lock
+    /// checks after taking its permits, the order Tokio's semaphore uses.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::query_sync) fn after_acquire() -> bool {
+        crate::verification::fault_is(crate::verification::Fault::BudgetAfterAcquire)
+    }
+    #[cfg(target_arch = "wasm32")]
+    pub(in crate::query_sync) fn after_acquire() -> bool {
+        false
+    }
+
+    pub(super) fn proceed(cx: &mut Context<'_>) -> Poll<()> {
+        if !after_acquire() && yields(cx) {
+            Poll::Pending
+        } else {
+            Poll::Ready(())
+        }
     }
 }
 
