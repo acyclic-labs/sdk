@@ -139,6 +139,19 @@ pub(crate) trait AccountingRebaseProbe {
         cancellation: &CancellationToken,
     ) -> impl Future<Output = Result<Option<(FileId, FileId)>, ClassifyRebaseFailure<Self::Error>>>;
 
+    /// The directory the checkout added at `parents[0]`/`name` and the
+    /// directory the candidate added at `parents[1]`/`name`, when the base
+    /// bound nothing there and neither generation has the checkout's
+    /// directory: the kernel merge folds the two into one.
+    fn added_directories_with_accounting(
+        &self,
+        generations: [GenerationId; 2],
+        parents: [FileId; 2],
+        name: &LogicalName,
+        accounting: &mut super::allocation::KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = Result<Option<(FileId, FileId)>, ClassifyRebaseFailure<Self::Error>>>;
+
     /// Whether the checkout's own working tree no longer has `file`.
     fn removed_locally_with_accounting(
         &self,
@@ -196,6 +209,17 @@ impl<P: AsyncRebaseProbe> AccountingRebaseProbe for StandaloneClassificationProb
         _base: GenerationId,
         _candidate: GenerationId,
         _directory: FileId,
+        _name: &LogicalName,
+        _accounting: &mut super::allocation::KernelAccounting<'_>,
+        _cancellation: &CancellationToken,
+    ) -> Result<Option<(FileId, FileId)>, ClassifyRebaseFailure<Self::Error>> {
+        Ok(None)
+    }
+
+    async fn added_directories_with_accounting(
+        &self,
+        _generations: [GenerationId; 2],
+        _parents: [FileId; 2],
         _name: &LogicalName,
         _accounting: &mut super::allocation::KernelAccounting<'_>,
         _cancellation: &CancellationToken,
@@ -347,9 +371,43 @@ fn region_file(region: &DependencyRegion) -> Option<FileId> {
     }
 }
 
+fn region_directory(region: &DependencyRegion) -> Option<FileId> {
+    match region {
+        DependencyRegion::DirectoryName { directory_id, .. }
+        | DependencyRegion::DirectoryRange { directory_id, .. } => Some(*directory_id),
+        _ => None,
+    }
+}
+
+/// [`AccountingRebaseProbe::added_directories_with_accounting`] in a charged
+/// heap frame, so its state machine stays out of the classifier's.
+async fn added_directories_framed<P: AccountingRebaseProbe>(
+    probe: &P,
+    generations: [GenerationId; 2],
+    parents: [FileId; 2],
+    name: &LogicalName,
+    accounting: &mut super::allocation::KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<Option<(FileId, FileId)>, ClassifyRebaseFailure<P::Error>> {
+    let framed: Result<_, crate::FsError> = async {
+        Ok(crate::heap_future::in_borrowed_frame!(
+            generic accounting,
+            |accounting| probe.added_directories_with_accounting(
+                generations,
+                parents,
+                name,
+                accounting,
+                cancellation,
+            )
+        ))
+    }
+    .await;
+    framed.map_err(ClassifyRebaseFailure::Accounting)?
+}
+
 impl DependencyRegion {
-    /// The same file region of another identity; directory regions are keyed
-    /// by their directory and stay as they are.
+    /// The same region of another identity: a file region of its
+    /// replacement, or a directory region of the directory it folds into.
     pub(crate) fn of_file(&self, file: FileId) -> Self {
         match self {
             Self::FileRecord(_) => Self::FileRecord(file),
@@ -365,7 +423,19 @@ impl DependencyRegion {
                 offset: *offset,
                 target: *target,
             },
-            Self::DirectoryName { .. } | Self::DirectoryRange { .. } => self.clone(),
+            Self::DirectoryName { name, .. } => Self::DirectoryName {
+                directory_id: file,
+                name: name.clone(),
+            },
+            Self::DirectoryRange {
+                after,
+                maximum_entries,
+                ..
+            } => Self::DirectoryRange {
+                directory_id: file,
+                after: after.clone(),
+                maximum_entries: *maximum_entries,
+            },
         }
     }
 }
@@ -431,6 +501,12 @@ impl ConflictSink {
 /// - A compare-before-write of an identity that the candidate or the checkout
 ///   removed settles for the candidate merge to decide, whose replacement
 ///   pairing and byte merge are exact; it then expects the candidate state.
+/// - A name where the checkout and the candidate each added a directory
+///   settles too: the merge folds the checkout's directory into the
+///   candidate's, name by name. Each region of the checkout's directory is
+///   checked against the same region of the candidate's; a read follows it
+///   when it agrees, and a compare-before-write follows it for the merge to
+///   decide.
 ///
 /// Every other mismatch conflicts as before.
 pub(crate) async fn classify_rebase_settling_with_accounting<'d, P: AccountingRebaseProbe>(
@@ -483,7 +559,26 @@ pub(crate) async fn classify_rebase_settling_with_accounting<'d, P: AccountingRe
         )
         .await?;
         work.deferred_regions(probe, candidate, ledger, accounting, cancellation)
-            .await
+            .await?;
+        if work.folds.value.is_empty() {
+            return Ok(());
+        }
+        // A charged heap frame: the fold pass's state machine stays out of
+        // every caller's.
+        let framed: Result<Result<(), ClassifyRebaseFailure<P::Error>>, crate::FsError> = async {
+            Ok(crate::heap_future::in_borrowed_frame!(
+                generic accounting,
+                |accounting| work.folded_regions(
+                    probe,
+                    [base, candidate],
+                    dependencies,
+                    accounting,
+                    cancellation,
+                )
+            ))
+        }
+        .await;
+        framed.map_err(ClassifyRebaseFailure::Accounting)?
     }
     .await;
     let Classification {
@@ -491,8 +586,12 @@ pub(crate) async fn classify_rebase_settling_with_accounting<'d, P: AccountingRe
         settled,
         pairs,
         deferred,
+        folds,
     } = work;
-    let retired = pairs.retire(accounting).and(deferred.retire(accounting));
+    let retired = pairs
+        .retire(accounting)
+        .and(deferred.retire(accounting))
+        .and(folds.retire(accounting));
     if let Err(error) = result.and_then(|()| retired.map_err(ClassifyRebaseFailure::Accounting)) {
         let retired = conflicts.conflicts.retire(accounting);
         settled
@@ -547,6 +646,8 @@ struct Classification<'d> {
     /// Regions of an identity the candidate removed, settled once every
     /// replaced name is known.
     deferred: super::persistent_point::Owned<Vec<(&'d DependencyRegion, States)>>,
+    /// The checkout's added directory and the candidate's, from settled names.
+    folds: super::persistent_point::Owned<Vec<(FileId, FileId)>>,
 }
 
 impl Classification<'_> {
@@ -583,14 +684,25 @@ impl Classification<'_> {
                 return Err(error);
             }
         };
+        let deferred = match Owned::allocate(0, accounting) {
+            Ok(deferred) => deferred,
+            Err(error) => {
+                pairs.retire(accounting)?;
+                settled.retire(accounting)?;
+                conflicts.conflicts.retire(accounting)?;
+                return Err(error);
+            }
+        };
         match Owned::allocate(0, accounting) {
-            Ok(deferred) => Ok(Self {
+            Ok(folds) => Ok(Self {
                 conflicts,
                 settled,
                 pairs,
                 deferred,
+                folds,
             }),
             Err(error) => {
+                deferred.retire(accounting)?;
                 pairs.retire(accounting)?;
                 settled.retire(accounting)?;
                 conflicts.conflicts.retire(accounting)?;
@@ -647,7 +759,26 @@ impl<'d> Classification<'d> {
                             .map_err(ClassifyRebaseFailure::Accounting)?;
                         self.pairs.value.push(pair);
                     }
-                    pair.map(|_| Settlement::Expect(actual))
+                    let fold = if pair.is_none() && captured.expected == DependencyState::Absent {
+                        added_directories_framed(
+                            probe,
+                            [base, candidate],
+                            [*directory_id; 2],
+                            name,
+                            accounting,
+                            cancellation,
+                        )
+                        .await?
+                    } else {
+                        None
+                    };
+                    if let Some(fold) = fold {
+                        self.folds
+                            .ensure_for_push(ledger, accounting)
+                            .map_err(ClassifyRebaseFailure::Accounting)?;
+                        self.folds.value.push(fold);
+                    }
+                    pair.or(fold).map(|_| Settlement::Expect(actual))
                 }
                 (_, Some(_)) if actual == DependencyState::Absent => {
                     self.deferred
@@ -734,6 +865,113 @@ impl<'d> Classification<'d> {
                 accounting,
             )
             .map_err(ClassifyRebaseFailure::Accounting)?;
+        }
+        Ok(())
+    }
+
+    /// Carries each region of a directory the checkout added to the same
+    /// region of the candidate's directory it folds into. Neither generation
+    /// has the checkout's directory, so the ledger pass found these regions
+    /// unchanged; against the candidate's directory, a read must still see
+    /// what it saw, and a compare-before-write follows for the merge to
+    /// decide. A name under which both sides added a directory folds in turn.
+    async fn folded_regions<P: AccountingRebaseProbe>(
+        &mut self,
+        probe: &P,
+        [base, candidate]: [GenerationId; 2],
+        dependencies: &'d CheckoutDependencies,
+        accounting: &mut super::allocation::KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), ClassifyRebaseFailure<P::Error>> {
+        let ledger = dependencies.len();
+        // One charged pass over the ledger per nesting level: the folds a pass
+        // finds are the next level's.
+        let mut level = 0;
+        while level < self.folds.value.len() {
+            let next = self.folds.value.len();
+            let pending =
+                self.folds
+                    .value
+                    .get_mut(level..next)
+                    .ok_or(ClassifyRebaseFailure::Accounting(
+                        WorkError::Overflow.into(),
+                    ))?;
+            pending.sort_unstable();
+            for (region, captured) in dependencies.captured.entries.iter() {
+                cancellation
+                    .check()
+                    .map_err(|error| ClassifyRebaseFailure::Accounting(error.into()))?;
+                accounting
+                    .charge(WorkCounters {
+                        items_examined: 1,
+                        ..WorkCounters::UNCHARGED
+                    })
+                    .map_err(ClassifyRebaseFailure::Accounting)?;
+                let Some(&(added, folded)) = region_directory(region).and_then(|directory| {
+                    let pending = self.folds.value.get(level..next)?;
+                    let index = pending
+                        .binary_search_by_key(&directory, |(added, _)| *added)
+                        .ok()?;
+                    pending.get(index)
+                }) else {
+                    continue;
+                };
+                // The same region of the candidate's directory, as a charged copy.
+                let (mut followed, allocation, bytes) =
+                    clone_conflict_region(region, accounting)
+                        .map_err(ClassifyRebaseFailure::Accounting)?;
+                if let DependencyRegion::DirectoryName { directory_id, .. }
+                | DependencyRegion::DirectoryRange { directory_id, .. } = &mut followed
+                {
+                    *directory_id = folded;
+                }
+                let actual = probe
+                    .probe_with_accounting(candidate, &followed, accounting, cancellation)
+                    .await;
+                drop(followed);
+                super::persistent_point::retire_allocation(allocation, bytes, accounting)
+                    .map_err(ClassifyRebaseFailure::Accounting)?;
+                let actual = actual?;
+                let nested = match region {
+                    DependencyRegion::DirectoryName { name, .. }
+                        if actual != captured.expected
+                            && captured.expected == DependencyState::Absent =>
+                    {
+                        added_directories_framed(
+                            probe,
+                            [base, candidate],
+                            [added, folded],
+                            name,
+                            accounting,
+                            cancellation,
+                        )
+                        .await?
+                    }
+                    _ => None,
+                };
+                if let Some(nested) = nested {
+                    self.folds
+                        .ensure_for_push(ledger, accounting)
+                        .map_err(ClassifyRebaseFailure::Accounting)?;
+                    self.folds.value.push(nested);
+                }
+                let follows = nested.is_some()
+                    || captured.usage == DependencyUse::Mutation
+                    || actual == captured.expected;
+                let settlement = follows.then_some(Settlement::Follow {
+                    file: folded,
+                    expected: actual,
+                });
+                self.record(
+                    region,
+                    (captured.usage, captured.expected, actual),
+                    settlement,
+                    ledger,
+                    accounting,
+                )
+                .map_err(ClassifyRebaseFailure::Accounting)?;
+            }
+            level = next;
         }
         Ok(())
     }

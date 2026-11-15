@@ -151,6 +151,71 @@ async fn retained_transaction_rebases_disjoint_work_and_rejects_overlap()
 }
 
 #[tokio::test]
+async fn concurrent_directory_creations_fold_and_equal_new_names_still_conflict()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = unbounded!(fs, create_workspace("directory-fold"))?;
+
+    // Each side creates the same missing directories for its own file.
+    let mut first = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    let mut second = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    for (transaction, name) in [(&mut first, "one"), (&mut second, "two")] {
+        unbounded!(transaction, create_dir_all("/inputs/messages"))?;
+        transaction
+            .write_text(&format!("/inputs/messages/{name}"), name)
+            .await?;
+    }
+    assert!(matches!(
+        commit(&mut first).await?,
+        TransactionCommit::Committed(_)
+    ));
+    assert!(matches!(
+        commit(&mut second).await?,
+        TransactionCommit::Conflict { .. }
+    ));
+    assert!(matches!(
+        unbounded!(second, rebase(16))?,
+        TransactionRebase::Rebased(_)
+    ));
+    assert!(matches!(
+        commit(&mut second).await?,
+        TransactionCommit::Committed(_)
+    ));
+    for name in ["one", "two"] {
+        assert_eq!(
+            unbounded!(workspace, read(&format!("/inputs/messages/{name}"), 8))?.as_ref(),
+            name.as_bytes()
+        );
+    }
+
+    // The same new name with different bytes in both new directories is a
+    // real conflict: folding never chooses one side's file.
+    let mut winner = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    let mut loser = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    for (transaction, text) in [(&mut winner, "winner"), (&mut loser, "loser")] {
+        unbounded!(transaction, create_dir_all("/outputs"))?;
+        transaction.write_text("/outputs/report", text).await?;
+    }
+    assert!(matches!(
+        commit(&mut winner).await?,
+        TransactionCommit::Committed(_)
+    ));
+    assert!(matches!(
+        commit(&mut loser).await?,
+        TransactionCommit::Conflict { .. }
+    ));
+    assert!(matches!(
+        unbounded!(loser, rebase(16))?,
+        TransactionRebase::Conflicted { .. }
+    ));
+    assert_eq!(
+        unbounded!(workspace, read("/outputs/report", 8))?.as_ref(),
+        b"winner"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn exact_generation_transaction_is_stateless_and_rebases_safely() -> Result<(), Box<dyn Error>>
 {
     let fs = Fs::memory();

@@ -256,8 +256,10 @@ pub(crate) fn in_heap_admitted<C, F: Future, E>(
 // One expansion owns admission, destruction order and retirement for every
 // borrowed phase. Erase the same funded allocation at the executor boundary,
 // rather than wrapping it in another box to stop concrete type growth.
+// A generic body keeps its concrete type: erasing it would fix auto traits
+// that only the caller's concrete types decide.
 macro_rules! in_borrowed_frame {
-    ($context:expr, |$accounting:ident| $future:expr) => {{
+    (@frame $context:expr, |$accounting:ident| $future:expr $(, $erase:ident)?) => {{
         let mut frame = $crate::heap_future::AdmittedFrame::new($context);
         let (future, _) = $crate::heap_future::in_heap_admitted(
             &mut frame,
@@ -267,12 +269,18 @@ macro_rules! in_borrowed_frame {
                 $future
             },
         )?;
-        let mut future = future.erase_task();
+        let mut future = future $(.$erase())?;
         let result = future.as_mut().await;
         drop(future);
         frame.finish(Ok(()))?;
         result
     }};
+    (generic $context:expr, |$accounting:ident| $future:expr) => {
+        $crate::heap_future::in_borrowed_frame!(@frame $context, |$accounting| $future)
+    };
+    ($context:expr, |$accounting:ident| $future:expr) => {
+        $crate::heap_future::in_borrowed_frame!(@frame $context, |$accounting| $future, erase_task)
+    };
 }
 pub(crate) use in_borrowed_frame;
 
