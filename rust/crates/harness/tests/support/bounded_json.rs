@@ -14,7 +14,7 @@ pub fn check(input: &[u8]) {
         maximum_depth: 256,
     };
     // Record seeds are generated internal format values, not provider captures.
-    // The signing payload reuses the native-runtime internal v1 corpus seed.
+    // The signing payload reuses the native-runtime internal v2 corpus seed.
     #[cfg(not(target_arch = "wasm32"))]
     check_record::<acyclic_native_runtime::signing_key::SigningKeyReference>(input, bounds);
     check_record::<acyclic_harness::conversation::wire::Notice>(input, bounds);

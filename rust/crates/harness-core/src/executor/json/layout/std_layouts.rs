@@ -402,7 +402,7 @@ impl HeapLayout for acyclic_fs::LazySnapshotRef {
 #[cfg(not(target_arch = "wasm32"))]
 impl HeapLayout for acyclic_native_runtime::signing_key::SigningKeyReference {
     const LAYOUT: &'static JsonLayout =
-        &JsonLayout::record(&[("v1", <([u8; 32], [u8; 32])>::LAYOUT)]);
+        &JsonLayout::record(&[("v2", <([u8; 32], [u8; 32])>::LAYOUT)]);
 }
 
 /// An externally tagged enum: an object of one member per variant.
