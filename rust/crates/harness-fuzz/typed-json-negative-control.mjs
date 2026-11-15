@@ -14,13 +14,13 @@ let step = "select typed JSON control";
 let out;
 try {
   const { values: args } = parseArgs({ options: {
-    "raw-domain-prior": { type: "string" }, "depth-prior": { type: "string" },
-    "first-cause-prior": { type: "string" }, "hidden-items": { type: "boolean" },
+    "raw-domain-prior": { type: "boolean" }, "depth-prior": { type: "boolean" },
+    "first-cause-prior": { type: "boolean" }, "hidden-items": { type: "boolean" },
     "record-sequence": { type: "boolean" },
     help: { type: "boolean" },
   } });
   if (args.help) {
-    console.log(`Usage: ${recovery} [--raw-domain-prior REVISION | --depth-prior REVISION | --first-cause-prior REVISION | --hidden-items | --record-sequence]\nPlants the actual selected production omission, checks its semantic assertion, and restores exact source and oracle bytes. Prior controls also retain the original oracle miss or false positive.`);
+    console.log(`Usage: ${recovery} [--raw-domain-prior | --depth-prior | --first-cause-prior | --hidden-items | --record-sequence]\nPlants the actual selected production omission, checks its semantic assertion, and restores exact source and oracle bytes. Prior controls also retain the original oracle miss or false positive.`);
   } else {
     const selected = Object.keys(args).filter((key) => args[key]);
     if (selected.length > 1) throw new Error("select at most one admission control");
@@ -74,10 +74,14 @@ try {
       const positive = nextest ? "1 test run: 1 passed" : "test result: ok. 1 passed; 0 failed";
       let phases = [["diagnostic-admission-refusal-red", 101, "typed JSON decode must preserve caller charge refusal at frontier 5"],
         ["restored-original-corpus", 0, positive]];
-      if (typeof args[mode] === "string") {
-        step = "read prior shared oracle from the selected revision";
-        prior = git("show", `${args[mode]}:${portable(oracle)}`);
-        result.prior_oracle = { revision: args[mode], sha256: digest(prior) };
+      if (mode?.endsWith("-prior")) {
+        step = "apply prior shared oracle patch";
+        const priorPatch = join(root, `rust/crates/harness-fuzz/negative-controls/typed-json-prior-oracle-${label}.patch`);
+        git("apply", "--check", priorPatch);
+        git("apply", priorPatch);
+        prior = readFileSync(oracle);
+        writeFileSync(oracle, originalOracle);
+        result.prior_oracle = { patch: digest(readFileSync(priorPatch)), sha256: digest(prior) };
       }
       if (mode === "raw-domain-prior") phases = [["prior-oracle-mutant-miss", 0, positive],
         ["raw-domain-red", 101, "typed raw JSON must admit independently valid raw input"], ["restored-original-corpus", 0, positive]];

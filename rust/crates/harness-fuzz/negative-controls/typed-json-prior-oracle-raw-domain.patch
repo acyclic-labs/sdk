@@ -1,0 +1,24 @@
+--- a/rust/crates/harness/tests/support/bounded_json.rs
++++ b/rust/crates/harness/tests/support/bounded_json.rs
+@@ -45,6 +45,10 @@ pub fn check(input: &[u8]) {
+         );
+         return;
+     };
++    let Ok(mut expected) = serde_json::from_slice::<Value>(input) else {
++        return;
++    };
++    expected.sort_all_objects();
+     if exceeds_depth(raw.get().as_bytes(), bounds.maximum_depth) {
+         assert!(
+             decoded.is_err(),
+@@ -58,10 +62,6 @@ pub fn check(input: &[u8]) {
+     for frontier in 0..5 {
+         check_refusal(input, bounds, frontier);
+     }
+-    let Ok(mut expected) = serde_json::from_slice::<Value>(input) else {
+-        return;
+-    };
+-    expected.sort_all_objects();
+     let mut compact = json_bytes_bounded(&raw, bounds, None, &mut |_| Ok(())).unwrap();
+     assert_eq!(serde_json::from_slice::<Value>(&compact).unwrap(), expected);
+     let bytes = canonical_json_bytes_bounded(&raw, bounds, None, &mut |_| Ok(())).unwrap();
