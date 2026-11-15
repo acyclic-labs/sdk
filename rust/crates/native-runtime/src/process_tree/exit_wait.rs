@@ -70,13 +70,6 @@ pub(super) fn observed() {
     OBSERVATIONS.with(|count| count.set(count.get() + 1));
 }
 
-fn timeout() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::TimedOut,
-        "process exit deadline exceeded; termination may be unresolved",
-    )
-}
-
 pub(super) fn wait_metered(
     id: libc::id_t,
     deadline: Instant,
@@ -86,7 +79,7 @@ pub(super) fn wait_metered(
         return Ok(status);
     }
     if Instant::now() >= deadline {
-        return Err(timeout());
+        return Err(exit_timeout());
     }
     let watch = open(id, meter)?;
     // Close registration's race with exit; no wait/reap releases the PID.
@@ -280,7 +273,7 @@ fn wait_event(watch: &ExitWatch<'_>, deadline: Instant) -> io::Result<()> {
             return Ok(());
         }
         if Instant::now() >= deadline {
-            return Err(timeout());
+            return Err(exit_timeout());
         }
     }
 }
@@ -297,7 +290,7 @@ fn wait_ready(watch: &ExitWatch<'_>, id: libc::id_t, deadline: Instant) -> io::R
         Some(event) => Ok(ExitStatus::from_raw(
             event.data.try_into().map_err(io::Error::other)?,
         )),
-        None => platform::observe_exit_id(id, watch.meter)?.ok_or_else(timeout),
+        None => platform::observe_exit_id(id, watch.meter)?.ok_or_else(exit_timeout),
     }
 }
 

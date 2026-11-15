@@ -107,10 +107,18 @@ impl ProcessWake {
         self.0.stopped.load(Ordering::Acquire)
     }
 
-    #[cfg(unix)]
-    pub(super) fn raw(&self) -> std::os::fd::RawFd {
-        use std::os::fd::AsRawFd;
-        self.0.reader.as_raw_fd()
+    /// This signal as one readiness source of a capture wait.
+    pub(super) fn source(&self) -> super::events::Source<'_> {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsFd as _;
+            super::events::Source::Readable(self.as_fd())
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsHandle as _;
+            super::events::Source::Exit(self.0.event.as_handle())
+        }
     }
 
     #[cfg(windows)]
@@ -175,7 +183,7 @@ mod tests {
         #[cfg(unix)]
         {
             let mut event = libc::pollfd {
-                fd: wake.raw(),
+                fd: std::os::fd::AsRawFd::as_raw_fd(&wake.0.reader),
                 events: libc::POLLIN,
                 revents: 0,
             };

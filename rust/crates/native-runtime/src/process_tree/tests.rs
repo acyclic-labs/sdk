@@ -1344,26 +1344,6 @@ fn streaming_output_observes_both_pipes_before_exit_without_an_exchange() -> io:
     Ok(())
 }
 
-/// Holds this thread's capture clock at a chosen instant until dropped.
-struct FrozenCaptureClock;
-
-impl FrozenCaptureClock {
-    fn at(now: std::time::Instant) -> Self {
-        super::set_capture_clock(Some(now));
-        Self
-    }
-
-    fn advance_to(&self, now: std::time::Instant) {
-        super::set_capture_clock(Some(now));
-    }
-}
-
-impl Drop for FrozenCaptureClock {
-    fn drop(&mut self) {
-        super::set_capture_clock(None);
-    }
-}
-
 #[test]
 fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
     use super::ProcessInput;
@@ -1422,41 +1402,59 @@ fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
     }
 }
 
+/// The capture deadline is an hour of paused time, which moves only inside
+/// the second check, so expiry is ordered after two full capture iterations
+/// no matter how late the scheduler runs the capture thread. The advance
+/// expires it at that iteration's own deadline check, with no real wait.
+#[cfg(all(feature = "test-support", not(loom)))]
 #[test]
-fn stalled_streaming_input_preserves_deadline_and_cleanup() {
+fn stalled_streaming_input_preserves_deadline_and_cleanup() -> io::Result<()> {
+    use super::clock::tests::{HOUR, seeded, unscoped};
     let temporary = tempfile::tempdir().expect("temporary directory");
     let mut command = command("stdin-stall", temporary.path());
     command.stdin(ProcessStdio::piped());
     let mut tree = ProcessTree::spawn(&mut command).expect("spawn stalled exchange");
     stderr_ready(&mut tree).expect("original stalled input readiness event");
-    // The capture clock is frozen and only reaches the deadline inside the
-    // second check, so expiry is ordered after two full capture iterations no
-    // matter how late the scheduler runs this thread.
-    let timeout = Duration::from_millis(20);
-    let started = std::time::Instant::now();
-    let clock = FrozenCaptureClock::at(started);
-    let mut checks = 0;
-    let failure = tree
-        .wait_with_output(
-            timeout,
-            4096,
-            Some(crate::CaptureInput::Exchange {
-                initial: &vec![b'i'; BULK_BYTES],
-                maximum: BULK_BYTES,
-            }),
-            || {
-                checks += 1;
-                if checks == 2 {
-                    clock.advance_to(started + timeout);
-                }
-                Ok(())
-            },
-            |_| Ok(crate::ProcessInput::default()),
-            None,
-            None,
-            None,
-        )
-        .expect_err("original stalled input deadline was lost");
+    let (reached, second) = tokio::sync::oneshot::channel();
+    let (advanced, resume) = std::sync::mpsc::channel();
+    let (tree, checks, failure) = seeded(async move |schedule: &crate::testing::Schedule| {
+        let capture = unscoped(move || {
+            let mut tree = tree;
+            let mut reached = Some(reached);
+            let mut checks = 0;
+            let input = vec![b'i'; BULK_BYTES];
+            let result = tree.wait_with_output(
+                HOUR,
+                4096,
+                Some(crate::CaptureInput::Exchange {
+                    initial: &input,
+                    maximum: BULK_BYTES,
+                }),
+                || {
+                    checks += 1;
+                    if checks == 2
+                        && let Some(reached) = reached.take()
+                    {
+                        reached
+                            .send(())
+                            .map_err(|()| io::Error::from(io::ErrorKind::BrokenPipe))?;
+                        resume.recv().map_err(io::Error::other)?;
+                    }
+                    Ok(())
+                },
+                |_| Ok(crate::ProcessInput::default()),
+                None,
+                None,
+                None,
+            );
+            (tree, checks, result)
+        });
+        second.await.map_err(io::Error::other)?;
+        schedule.advance(HOUR).await;
+        advanced.send(()).map_err(io::Error::other)?;
+        capture.await
+    })?;
+    let failure = failure.expect_err("original stalled input deadline was lost");
     assert_eq!(
         failure.error.kind(),
         std::io::ErrorKind::TimedOut,
@@ -1467,13 +1465,13 @@ fn stalled_streaming_input_preserves_deadline_and_cleanup() {
         failure.stderr, b"R",
         "original stalled input readiness byte was lost"
     );
-    drop(clock);
     assert_eq!(
         checks, 2,
         "the deadline expired only once the clock reached it"
     );
     assert!(failure.cleanup_completed);
     assert!(tree.is_reaped());
+    Ok(())
 }
 
 #[test]

@@ -13,12 +13,12 @@ const CONTROL: &str = "process_tree::scale_tests::a_thread_per_wait_starves_the_
 const HELD: &str = "process_tree::scale_tests::held_host_io_never_delays_process_control";
 
 /// One blocked child and the writer whose close releases it.
-struct Blocked {
-    tree: ProcessTree,
-    release: std::io::PipeWriter,
+pub(super) struct Blocked {
+    pub(super) tree: ProcessTree,
+    pub(super) release: std::io::PipeWriter,
 }
 
-fn blocked() -> io::Result<Blocked> {
+pub(super) fn blocked() -> io::Result<Blocked> {
     let (reader, release) = std::io::pipe()?;
     #[cfg(unix)]
     let mut command = ProcessCommand::new("cat");
