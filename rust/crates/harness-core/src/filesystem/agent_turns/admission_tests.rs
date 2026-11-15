@@ -2432,7 +2432,12 @@ impl CeilingFixture {
     }
 
     async fn derive(&self, actions: &[acyclic_fs::access::Action]) -> Result<Result<Scope>> {
-        let ceiling = acyclic_fs::access::Capability::whole_volume(None, actions)
+        self.derive_from(acyclic_fs::access::Capability::whole_volume(None, actions))
+            .await
+    }
+
+    async fn derive_from(&self, ceiling: acyclic_fs::access::Capability) -> Result<Result<Scope>> {
+        let ceiling = ceiling
             .to_scope_label()
             .map_err(|error| Error::Invalid(error.to_string()))?;
         let parent =
@@ -2526,6 +2531,34 @@ async fn workload_labels_keep_every_operation_their_ceiling_allows() -> Result<(
             );
         }
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_exact_volume_ceiling_carries_to_its_workload_unchanged() -> Result<()> {
+    use acyclic_fs::access::{Action, Capability};
+    let fixture = CeilingFixture::new(239)?;
+    let exact = Capability::whole_volume(Some("exact".into()), &Action::ALL);
+    let label = exact
+        .to_scope_label()
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    // It reaches only the volume it names, so the workload holds the
+    // parent's label and nothing more.
+    let derived = fixture.derive_from(exact.clone()).await??;
+    assert_eq!(derived.capabilities(), &Capabilities::new([label]));
+    // Beside the host's selection by role, explicit labels can carry neither.
+    let mut mixed = exact;
+    mixed.layers[0].extend(
+        Capability::whole_volume(None, &Action::ALL)
+            .layers
+            .into_iter()
+            .flatten(),
+    );
+    let refused = fixture
+        .derive_from(mixed)
+        .await?
+        .expect_err("a ceiling mixing exact volumes with the host's selection derived");
+    assert_eq!(refused.code(), crate::wire::ErrorCode::Unauthorized);
     Ok(())
 }
 
