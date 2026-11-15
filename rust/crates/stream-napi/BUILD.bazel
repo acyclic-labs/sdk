@@ -87,7 +87,3 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
-
-exports_files([
-        "src/eager.rs",
-    ], visibility = ["//visibility:public"])

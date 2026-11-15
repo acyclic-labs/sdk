@@ -52,10 +52,9 @@ function tables(file) {
 }
 const value = (table, key) => (table?.[key] === undefined ? undefined : JSON.parse(table[key]));
 
-const metadata = (triple, flags) => JSON.parse(execFileSync("cargo", ["metadata", "--format-version", "1", "--locked", "--filter-platform", triple, ...flags], { cwd: root, encoding: "utf8", maxBuffer: 2 ** 31 - 1 }));
-const runs = TRIPLES.map(triple => metadata(triple, ["--all-features"]));
-// crate_universe resolves third-party features from the default workspace features.
-const defaults = TRIPLES.map(triple => metadata(triple, []));
+// Every target builds with every feature on, as `cargo test --all-features` does. crate_universe
+// resolves third-party features its own way, so specs() pins each crate's all-features set.
+const runs = TRIPLES.map(triple => JSON.parse(execFileSync("cargo", ["metadata", "--format-version", "1", "--locked", "--filter-platform", triple, "--all-features"], { cwd: root, encoding: "utf8", maxBuffer: 2 ** 31 - 1 })));
 const [base] = runs;
 const packages = new Map(base.packages.map(p => [p.id, p]));
 const members = new Set(base.workspace_members);
@@ -373,14 +372,13 @@ function buildFile(p) {
 
 function specs() {
   const wanted = new Map();
-  TRIPLES.forEach((triple, i) => {
-    const before = new Map(defaults[i].resolve.nodes.map(node => [node.id, new Set(node.features)]));
-    for (const node of runs[i].resolve.nodes) {
-      if (members.has(node.id) || (before.has(node.id) && node.features.every(f => before.get(node.id).has(f)))) continue;
+  for (const run of runs) {
+    for (const node of run.resolve.nodes) {
+      if (members.has(node.id) || node.features.length === 0) continue;
       if (!wanted.has(node.id)) wanted.set(node.id, new Set());
       for (const feature of node.features) wanted.get(node.id).add(feature);
     }
-  });
+  }
   const named = Map.groupBy([...wanted.keys()], id => packages.get(id).name);
   return [...wanted].sort(([a], [b]) => (a < b ? -1 : 1)).map(([id, features]) => {
     const { name, version } = packages.get(id);

@@ -72,8 +72,8 @@ isolated_test(
 )
 
 rust_test(
-    name = "demand_cases",
-    crate_root = "tests/demand.rs",
+    name = "main_cases",
+    crate_root = "tests/main.rs",
     srcs = glob(["tests/**/*.rs"], allow_empty = True),
     compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     edition = "2024",
@@ -108,50 +108,8 @@ rust_test(
 )
 
 isolated_test(
-    name = "demand",
-    binary = ":demand_cases",
-    limit_seconds = 10,
-)
-
-rust_test(
-    name = "reader_views_cases",
-    crate_root = "tests/reader_views.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    edition = "2024",
-    version = "0.2.0",
-    crate_features = FEATURES,
-    rustc_env = PACKAGE_ENV,
-    deps = [
-        ":acyclic_harness_client",
-    ] + [
-        "//rust/crates/actors:acyclic_actors",
-        "//rust/crates/auth:acyclic_auth",
-        "//rust/crates/harness-core:acyclic_harness_core",
-        "//rust/crates/stream:acyclic_stream",
-        "//rust/crates/test-support:acyclic_test_support",
-        "@crates//base64-0.22.1",
-        "@crates//blake3-1.8.7",
-        "@crates//bytes-1.12.1",
-        "@crates//futures-0.3.34",
-        "@crates//prost-0.14.4",
-        "@crates//pulldown-cmark-0.13.6",
-        "@crates//serde-1.0.229",
-        "@crates//serde_json-1.0.154",
-        "@crates//tempfile-3.27.0",
-        "@crates//thiserror-2.0.21",
-        "@crates//tokio-1.54.1",
-        "@crates//tsify-0.5.8",
-        "@crates//url-2.5.8",
-        "@crates//wasm-bindgen-0.2.117",
-    ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
-)
-
-isolated_test(
-    name = "reader_views",
-    binary = ":reader_views_cases",
+    name = "main",
+    binary = ":main_cases",
     limit_seconds = 10,
 )
 

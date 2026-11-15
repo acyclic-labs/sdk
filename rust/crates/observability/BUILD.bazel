@@ -50,8 +50,8 @@ isolated_test(
 )
 
 rust_test(
-    name = "intervals_cases",
-    crate_root = "tests/intervals.rs",
+    name = "main_cases",
+    crate_root = "tests/main.rs",
     srcs = glob(["tests/**/*.rs"], allow_empty = True),
     compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     edition = "2024",
@@ -75,70 +75,8 @@ rust_test(
 )
 
 isolated_test(
-    name = "intervals",
-    binary = ":intervals_cases",
-    limit_seconds = 10,
-)
-
-rust_test(
-    name = "operations_cases",
-    crate_root = "tests/operations.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    edition = "2024",
-    version = "0.2.0",
-    crate_features = FEATURES,
-    rustc_env = PACKAGE_ENV,
-    deps = [
-        ":acyclic_observability",
-    ] + [
-        "//rust/crates/native-runtime:acyclic_native_runtime",
-        "//rust/crates/test-support:acyclic_test_support",
-        "@crates//futures-0.3.34",
-        "@crates//serde-1.0.229",
-        "@crates//serde_json-1.0.154",
-        "@crates//tokio-1.54.1",
-        "@crates//tracing-0.1.44",
-        "@crates//tracing-subscriber-0.3.23",
-    ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
-)
-
-isolated_test(
-    name = "operations",
-    binary = ":operations_cases",
-    limit_seconds = 10,
-)
-
-rust_test(
-    name = "output_cases",
-    crate_root = "tests/output.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    edition = "2024",
-    version = "0.2.0",
-    crate_features = FEATURES,
-    rustc_env = PACKAGE_ENV,
-    deps = [
-        ":acyclic_observability",
-    ] + [
-        "//rust/crates/native-runtime:acyclic_native_runtime",
-        "//rust/crates/test-support:acyclic_test_support",
-        "@crates//futures-0.3.34",
-        "@crates//serde-1.0.229",
-        "@crates//serde_json-1.0.154",
-        "@crates//tokio-1.54.1",
-        "@crates//tracing-0.1.44",
-        "@crates//tracing-subscriber-0.3.23",
-    ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
-)
-
-isolated_test(
-    name = "output",
-    binary = ":output_cases",
+    name = "main",
+    binary = ":main_cases",
     limit_seconds = 10,
 )
 
