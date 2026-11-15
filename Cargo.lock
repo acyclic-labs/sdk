@@ -1578,6 +1578,7 @@ dependencies = [
  "futures",
  "http",
  "loom",
+ "pin-project-lite",
  "proptest",
  "thiserror 2.0.21",
  "tokio",

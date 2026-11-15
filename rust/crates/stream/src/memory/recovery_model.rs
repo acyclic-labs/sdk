@@ -421,6 +421,14 @@ pub fn memory_follow_parking(retain_pending: bool, checked: bool) {
     crate::memory::parking_model::verify(retain_pending, checked);
 }
 
+/// Races head-then-subscribe waiters with one publication while another
+/// waiter is parked on an exhausted cooperative budget and left unpolled.
+/// `drop_parked` drops that waiter before the publication. The negative
+/// control acquires before spending budget, the order Tokio's semaphore uses.
+pub fn budget_parked_waiters(drop_parked: bool, budget_after_acquire: bool) {
+    crate::memory::parking_model::budget_parked_waiters(drop_parked, budget_after_acquire);
+}
+
 /// Checks accepted reads and writer cancellation around a real pending decision.
 pub fn pending_publication(retain_state: bool, release_order: bool, cancel: bool) {
     crate::memory::parking_model::publication(retain_state, release_order, cancel);
