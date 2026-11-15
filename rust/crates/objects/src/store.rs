@@ -495,6 +495,13 @@ impl MemoryObjects {
         Self::over_memory(MemoryMedium::bounded(budget))
     }
 
+    /// The medium beneath this account, where a test injects read faults.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn medium(&self) -> &MemoryMedium {
+        &self.medium
+    }
+
     fn over_memory(medium: MemoryMedium) -> Self {
         Self {
             medium: Arc::new(medium),

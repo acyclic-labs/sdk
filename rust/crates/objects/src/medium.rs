@@ -140,7 +140,7 @@ pub enum Fault {
     Corrupt,
 }
 
-/// Counts the reads one [`MemoryMedium::inject`] call has failed, so a test
+/// Counts the reads one [`MemoryMedium::inject`] call has affected, so a test
 /// proves its fault reached the medium rather than a cache above it.
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Debug)]
