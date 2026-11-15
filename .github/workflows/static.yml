@@ -29,6 +29,8 @@ jobs:
         run: node scripts/publish-cargo-crates.mjs check
         env:
           RUSTUP_TOOLCHAIN: stable
+      - name: Check that the Bazel files match the Cargo manifests
+        run: node scripts/bazel-build-files.mjs check
       # Vendored crates keep their upstream bytes.
       - name: Check that the whole tree has no whitespace errors
         run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD -- . ':!managed-agents' ':!rust/vendor'
