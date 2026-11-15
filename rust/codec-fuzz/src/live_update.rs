@@ -143,13 +143,12 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>, &'static str)>, Box<dyn Err
         configuration: [2; 32],
         schema: compatibility.schema_digest()?,
     };
-    let publication = live::Publication {
-        deployment: deployment.clone(),
-        expected_version: 0,
-        artifacts: BTreeMap::from([("namespace".into(), artifact.clone())]),
-        compatibility: compatibility.clone(),
-    };
-    publication.version()?;
+    let publication = live::Publication::new(
+        deployment.clone(),
+        0,
+        BTreeMap::from([("namespace".into(), artifact.clone())]),
+        compatibility.clone(),
+    )?;
     let actor =
         acyclic_actors::addressing::ActorReference::new(b"account", b"namespace", b"actor")?;
     let pin = live::Pin::Actor(actor.encode());

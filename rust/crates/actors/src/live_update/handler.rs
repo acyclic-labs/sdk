@@ -22,22 +22,21 @@ impl VersionedHandler {
         publication: &Publication,
         namespace: &str,
     ) -> Result<Self, Error> {
-        let version = publication.version()?;
         let artifact = publication
-            .artifacts
+            .artifacts()
             .get(namespace)
             .ok_or(Error::Invalid("namespace"))?;
         if artifact.code != *handler.manifest().code.as_bytes()
-            || handler.manifest().codec != publication.compatibility.handoff.writes
+            || handler.manifest().codec != publication.compatibility().handoff.writes
         {
             return Err(Error::Invalid("handler differs from publication"));
         }
         Ok(Self {
             handler,
-            deployment: publication.deployment.clone(),
-            version,
+            deployment: publication.deployment().clone(),
+            version: publication.version().clone(),
             schema: artifact.schema,
-            handoff: publication.compatibility.handoff.clone(),
+            handoff: publication.compatibility().handoff.clone(),
         })
     }
 }

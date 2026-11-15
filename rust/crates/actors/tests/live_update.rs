@@ -82,13 +82,13 @@ fn publication(previous: u64) -> Result<Publication> {
     };
     let schema = compatibility.schema_digest()?;
     let code = u8::try_from(previous + 1)?;
-    Ok(Publication {
-        deployment: DeploymentId {
+    Ok(Publication::new(
+        DeploymentId {
             account: b"account".to_vec(),
             name: "proof".into(),
         },
-        expected_version: previous,
-        artifacts: ["alpha", "beta"]
+        previous,
+        ["alpha", "beta"]
             .into_iter()
             .map(|name| {
                 (
@@ -102,7 +102,7 @@ fn publication(previous: u64) -> Result<Publication> {
             })
             .collect(),
         compatibility,
-    })
+    )?)
 }
 
 #[derive(Clone)]
@@ -316,7 +316,7 @@ fn envelope(
         pin: route.pin.clone(),
         epoch: selection.epoch,
         version: selection.version(&route.pin)?.clone(),
-        contract: publication.compatibility.schema_digest()?,
+        contract: publication.schema_digest(),
     })
 }
 fn host<P: StreamProvider + 'static>(
@@ -331,14 +331,14 @@ fn host<P: StreamProvider + 'static>(
     let version = selection.version(&route.pin)?;
     let publication = publications
         .iter()
-        .find(|publication| {
-            publication
-                .version()
-                .is_ok_and(|identity| identity == *version)
-        })
+        .find(|publication| publication.version() == version)
         .ok_or("publication")?;
     let namespace = route.actor.namespace().as_str();
-    let code = publication.artifacts.get(namespace).ok_or("artifact")?.code;
+    let code = publication
+        .artifacts()
+        .get(namespace)
+        .ok_or("artifact")?
+        .code;
     let package = Arc::new(VersionedHandler::new(
         Arc::new(Package {
             manifest: Manifest {
@@ -425,10 +425,10 @@ async fn select<P: StreamProvider>(
 async fn drive<P: StreamProvider + 'static>(provider: Arc<P>) -> Result {
     let store = Store::new(Arc::clone(&provider), path("proof/actors")?);
     let publications = [publication(0)?, publication(1)?];
-    let v1 = publications[0].version()?;
-    let v2 = publications[1].version()?;
+    let v1 = publications[0].version().clone();
+    let v2 = publications[1].version().clone();
     let mut selection = Selection {
-        deployment: publications[0].deployment.clone(),
+        deployment: publications[0].deployment().clone(),
         epoch: NonZeroU64::MIN,
         split: Split {
             stable: v1.clone(),
@@ -785,9 +785,9 @@ impl Handler for Held {
 async fn late_reply<P: StreamProvider + 'static>(provider: Arc<P>, fail: bool) -> Result {
     let store = Store::new(Arc::clone(&provider), path("proof/actors")?);
     let publications = [publication(0)?, publication(1)?];
-    let old = publications[0].version()?;
+    let old = publications[0].version().clone();
     let selection = Selection {
-        deployment: publications[0].deployment.clone(),
+        deployment: publications[0].deployment().clone(),
         epoch: NonZeroU64::MIN,
         split: Split {
             stable: old.clone(),
@@ -892,7 +892,7 @@ async fn late_reply<P: StreamProvider + 'static>(provider: Arc<P>, fail: bool) -
     let next = selection
         .promote(Split {
             stable: selection.split.stable.clone(),
-            target: publications[1].version()?,
+            target: publications[1].version().clone(),
             wave: fraction(1, 1)?,
         })?
         .next;
