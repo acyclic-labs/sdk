@@ -367,9 +367,7 @@ pub(crate) fn budget_parked_waiters(drop_parked: bool, budget_after_acquire: boo
                 .is_pending(),
             "an exhausted budget did not yield"
         );
-        if drop_parked {
-            drop(parked);
-        }
+        let parked = (!drop_parked).then_some(parked);
         let AppendOutcome::Committed(_) = block_on(provider.append(AppendRequest {
             path: path.clone(),
             records: vec![Bytes::from_static(b"published").into()],
@@ -379,7 +377,7 @@ pub(crate) fn budget_parked_waiters(drop_parked: bool, budget_after_acquire: boo
         .unwrap() else {
             unreachable!("the only publication conflicted")
         };
-        if !drop_parked {
+        if let Some(parked) = parked {
             block_on(parked).unwrap();
         }
         racing.join().unwrap().unwrap();
