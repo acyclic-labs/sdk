@@ -22,12 +22,19 @@ pub enum DirectoryEntryKind {
     Dir,
     /// Symbolic link, without following its target.
     Symlink,
+    /// Named pipe.
     Fifo,
+    /// Socket node.
     Socket,
+    /// Character device.
     CharacterDevice,
+    /// Block device.
     BlockDevice,
+    /// Native reparse point.
     ReparsePoint,
+    /// Mounted namespace boundary.
     MountBoundary,
+    /// Source kind that cannot be projected losslessly.
     Unsupported,
 }
 

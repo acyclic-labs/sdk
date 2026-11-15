@@ -570,6 +570,7 @@ async fn finish_publication<'io>(
 }
 
 impl ContentBindings {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn observe_retained(
         &self,
         publisher: &dyn ContentPublisher,
@@ -603,6 +604,7 @@ impl ContentBindings {
 
     /// Publishes host-retained bytes through existing custody, without
     /// borrowing or extending a task's workspace publication grants.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn retain_once(
         &self,
         publisher: &dyn ContentPublisher,

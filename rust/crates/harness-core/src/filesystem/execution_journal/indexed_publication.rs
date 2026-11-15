@@ -1,8 +1,8 @@
 //! One owner-fenced commit publishes the journal cut and its authenticated root.
 use super::*;
-use acyclic_stream::{
-    CommitCondition, CommitMutation, CommitOutcome, OwnedBytes, StreamPath, StreamProviderExt as _,
-};
+#[cfg(any(test, not(target_arch = "wasm32")))]
+use acyclic_stream::StreamProviderExt as _;
+use acyclic_stream::{CommitCondition, CommitMutation, CommitOutcome, OwnedBytes, StreamPath};
 use checkpoint::{IndexState, Recovery};
 
 mod pages;

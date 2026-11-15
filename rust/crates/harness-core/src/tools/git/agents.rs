@@ -45,13 +45,15 @@ where
             .await
             .map_err(|failure| Error::from(failure.error))?
             .value;
-        let mut base = self
+        let base = self
             .workspace(plan.common_ancestor_workspace_id())
             .await?
             .generation(plan.common_ancestor(), WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map_err(|failure| Error::from(failure.error))?
             .value;
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut base = base;
         #[cfg(not(target_arch = "wasm32"))]
         if let OwnedView::Checkout(witness) = &target_view {
             let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);

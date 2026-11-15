@@ -14,11 +14,13 @@ impl std::ops::Deref for IndexPath<'_> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) struct OwnedIndexPath {
     path: acyclic_stream::StreamPath,
     _custody: Option<crate::filesystem::bounded_io::PreparationCustody>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl std::ops::Deref for OwnedIndexPath {
     type Target = acyclic_stream::StreamPath;
     fn deref(&self) -> &Self::Target {
@@ -325,6 +327,7 @@ fn missing(io: Option<&PreparationIo>) -> Error {
 mod tests;
 
 impl<'a> IndexPath<'a> {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn into_owned(mut self) -> Result<OwnedIndexPath> {
         // Keep the physical path before its guard on every refusal. Native paths
         // already retain their original allocation in the path itself.

@@ -53,7 +53,9 @@ macro_rules! obs_span {
 }
 pub(crate) use obs_span;
 
+#[cfg(not(target_arch = "wasm32"))]
 mod poll_trace;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use poll_trace::traced_on_poll;
 
 /// wasm32 records nothing.

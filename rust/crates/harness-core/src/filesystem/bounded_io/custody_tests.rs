@@ -117,10 +117,11 @@ fn original_index_custody_survives_issuer_drop_and_refused_mutation() -> Result<
     let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
     let cancellation = CancellationToken::new();
     let io = PreparationIo::from_budget(budget, &cancellation)?;
-    let PreparationIo::Owned { work, .. } = &io else {
-        unreachable!("standalone constructor")
+    let original = match &io {
+        PreparationIo::Owned { work, .. } => Arc::clone(work),
+        #[cfg(not(target_arch = "wasm32"))]
+        PreparationIo::Native { .. } => unreachable!("standalone constructor"),
     };
-    let original = Arc::clone(work);
     let mut index = FixedIndex::<u64, OwnedIndexAllocation>::default();
     index.get_or_try_insert_with([0; 16], &mut OwnedIndexWork(Some(&io)), |_| Ok(7))?;
     assert_eq!(io.owned_bytes()?, 0);

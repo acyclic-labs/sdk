@@ -16,10 +16,12 @@ use crate::{
     core::{AuthorityVerifier, Scope},
     resources::{GenerationRef, ProviderRef, WorkspaceRef},
 };
+#[cfg(any(test, not(target_arch = "wasm32")))]
+use acyclic_fs::Digest;
 use acyclic_fs::WorkCounters;
-use acyclic_fs::kernel::{AttributeClass, AttributeName, FileKind, LogicalName, NameEncoding};
+use acyclic_fs::kernel::{AttributeClass, AttributeName, FileKind, LogicalName};
 use acyclic_fs::{
-    AsyncAuthorityStore, AsyncObjectStore, Digest, DirectoryPage, Fs, Generation, GenerationId,
+    AsyncAuthorityStore, AsyncObjectStore, DirectoryPage, Fs, Generation, GenerationId,
     IdempotencyKey as FilesystemKey, JoinPlan, TransactionCommit, Workspace, WorkspaceError,
     WorkspaceStat,
 };
@@ -31,7 +33,7 @@ mod content_publisher;
 mod content_replacement;
 pub use content_publisher::FilesystemContentPublisher;
 mod execution_journal;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, all(feature = "test-support", not(target_arch = "wasm32"))))]
 pub(crate) use execution_journal::ExecutionReplayObservation;
 pub use execution_journal::FilesystemExecutionJournal;
 #[cfg(feature = "test-support")]
@@ -116,6 +118,7 @@ mod config;
 use config::*;
 pub use config::{FilesystemJournalBinding, WorkspaceMutation, WorkspaceObservation};
 pub(crate) mod host;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use host::content_path;
 pub(crate) use host::map_error;
 pub use host::reads::media_type::captured as captured_media_type;

@@ -16,10 +16,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
+/// The one `patch` argument, borrowed from the original invocation.
 #[derive(schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct PatchInput {
-    patch: String,
+pub(crate) struct PatchInput<'a> {
+    /// The V4A document.
+    pub(crate) patch: &'a str,
 }
 
 #[derive(Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout)]
@@ -39,15 +41,16 @@ impl crate::filesystem::UploadRecord for PatchResult {
     }
 }
 
-pub(crate) fn input(arguments: &Value) -> Result<&str> {
+pub(crate) fn input(arguments: &Value) -> Result<PatchInput<'_>> {
     let object = arguments
         .as_object()
         .filter(|object| object.len() == 1)
         .ok_or_else(|| Error::tool_rejected("apply_patch requires exactly patch"))?;
-    object
+    let patch = object
         .get("patch")
         .and_then(Value::as_str)
-        .ok_or_else(|| Error::tool_rejected("apply_patch.patch must be text"))
+        .ok_or_else(|| Error::tool_rejected("apply_patch.patch must be text"))?;
+    Ok(PatchInput { patch })
 }
 
 struct Plan<'a> {
@@ -68,7 +71,7 @@ pub fn apply_patch() -> Result<Tool> {
     let mut definition = ToolDefinition {
         name: "apply_patch".into(), revision: "openai-v4a-1".into(),
         description: "Apply exact V4A add, update, delete and move operations in one atomic publication. Start with *** Begin Patch and finish with *** End Patch; update hunks use @@ and exact context".into(),
-        input_schema: schema::input::<PatchInput>()?,
+        input_schema: schema::input::<PatchInput<'static>>()?,
         output_schema: schema::output::<PatchResult>()?,
         projection_schema: schema::text_projection_schema()?,
     };
@@ -99,7 +102,7 @@ impl ApplyPatch {
         #[cfg(target_arch = "wasm32")]
         let io = None;
         let mut meter = allocation(work, 0)?;
-        let actions = parse_document(input(&invocation.arguments)?, &mut meter)?;
+        let actions = parse_document(input(&invocation.arguments)?.patch, &mut meter)?;
         let volume = authorize_actions(context, &actions, io)?;
         if recovering {
             let observed = context
@@ -264,7 +267,7 @@ impl ToolExecutor for ApplyPatch {
     ) -> Result<()> {
         let context = admitted_context(context, invocation)?;
         let mut meter = allocation(work, 0)?;
-        let actions = parse_document(input(&invocation.arguments)?, &mut meter)?;
+        let actions = parse_document(input(&invocation.arguments)?.patch, &mut meter)?;
         #[cfg(not(target_arch = "wasm32"))]
         let owned_io = work
             .map(crate::executor::PreparationIo::from_native_work)
@@ -365,7 +368,7 @@ impl ToolProjection for ApplyPatch {
     ) -> Result<(Value, acyclic_fs::NativeCustody)> {
         let _result = crate::tool::decode::<PatchResult>(&result.value, work)?;
         let mut meter = allocation(work, 0)?;
-        let actions = parse_document(input(&invocation.arguments)?, &mut meter)?;
+        let actions = parse_document(input(&invocation.arguments)?.patch, &mut meter)?;
         let mut text = String::new();
         append_summary(
             &mut text,

@@ -10,7 +10,9 @@ use crate::{
     agent::{AgentPath, TurnEffect, TurnEffects},
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, CancellationToken};
-use acyclic_stream::{BoxProviderFuture, StreamProvider};
+use acyclic_stream::BoxProviderFuture;
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_stream::StreamProvider;
 use std::sync::Arc;
 
 /// The effects of one agent turn.

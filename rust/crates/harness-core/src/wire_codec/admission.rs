@@ -100,10 +100,8 @@ impl<'a, 'b> Quota<'a, 'b> {
         self.transfer();
         Ok(custody)
     }
-    pub(crate) fn json_error(&mut self, error: Error) -> Error {
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut error = error;
-        #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn json_error(&mut self, mut error: Error) -> Error {
         if let Error::NativeJson { custody, .. } = &mut error
             && custody.is_none()
         {

@@ -2,15 +2,15 @@
 #[cfg(not(loom))]
 acyclic_test_support::counting_allocator!();
 
-#[cfg(feature = "test-support")]
+#[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
 #[path = "support/progress_guard.rs"]
 #[cfg(not(loom))]
 mod progress_guard;
-#[cfg(feature = "test-support")]
+#[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
 #[path = "support/progress_registry.rs"]
 #[cfg(not(loom))]
 mod progress_registry;
-#[cfg(feature = "test-support")]
+#[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
 #[path = "e2e/stall.rs"]
 #[cfg(not(loom))]
 mod stall;
@@ -84,7 +84,7 @@ include!("e2e/root.rs");
 #[cfg(not(loom))]
 mod search_http_codec;
 
-#[cfg(feature = "test-support")]
+#[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
 #[path = "local_cloud_objects/mod.rs"]
 #[cfg(not(loom))]
 mod local_cloud_objects;
@@ -93,7 +93,7 @@ mod local_cloud_objects;
 #[cfg(not(loom))]
 mod client_diff;
 
-#[cfg(feature = "test-support")]
+#[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
 #[path = "local_cloud_actors/mod.rs"]
 #[cfg(not(loom))]
 mod local_cloud_actors;

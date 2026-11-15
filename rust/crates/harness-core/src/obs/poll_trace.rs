@@ -1,5 +1,4 @@
 use super::OperationSpan;
-#[cfg(not(target_arch = "wasm32"))]
 use std::pin::Pin;
 
 /// Own one payload while acquiring its tracing parent on the first poll.
@@ -7,23 +6,14 @@ pub(crate) fn traced_on_poll<'a, T: 'a>(
     build: impl FnMut() -> OperationSpan + acyclic_stream::ProviderTask + 'a,
     future: impl Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a,
 ) -> impl Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        PollTrace {
-            future: Some(future),
-            span: None,
-            completion: None,
-            build,
-        }
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = build;
-        future
+    PollTrace {
+        future: Some(future),
+        span: None,
+        completion: None,
+        build,
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pin_project_lite::pin_project! {
     struct PollTrace<F, B> {
         #[pin]
@@ -46,7 +36,6 @@ pin_project_lite::pin_project! {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl<T, F, B> Future for PollTrace<F, B>
 where
     F: Future<Output = crate::Result<T>>,
@@ -80,7 +69,7 @@ where
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 #[test]
 fn lazy_trace_owns_one_payload_and_keeps_first_poll_context_through_drop() {
     use crate::obs::capture;

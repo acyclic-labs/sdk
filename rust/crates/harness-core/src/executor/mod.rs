@@ -91,7 +91,7 @@ pub use tool_usage::ToolUsage;
 mod wait_usage;
 pub use wait_usage::WaitUsage;
 pub(crate) mod phase;
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) use model_observation::append as append_model_event;
 pub use model_observation::{
     decode_payload as decode_model_payload, matches_turn as matches_model_turn,

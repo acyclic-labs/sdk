@@ -7,10 +7,12 @@
 //! [`FilesystemCommit`], so the children and their volumes appear together.
 
 use super::FilesystemHost;
+#[cfg(any(test, not(target_arch = "wasm32")))]
+use crate::agent::{AgentRecord as _, InboxRecord};
 use crate::{
     agent::{
-        AgentPath, AgentRecord as _, AgentState, Error, InboxRecord, Out, SpawnVolumes,
-        WorkspaceEntry, WorkspaceInherit, WorkspaceSource,
+        AgentPath, AgentState, Error, Out, SpawnVolumes, WorkspaceEntry, WorkspaceInherit,
+        WorkspaceSource,
     },
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
 };

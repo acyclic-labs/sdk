@@ -74,6 +74,7 @@ pub enum ProgramTrigger {
 }
 
 impl ProgramTrigger {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn owned_bytes(&self) -> crate::Result<u64> {
         match self {
             Self::Lifecycle { .. } => Ok(0),

@@ -19,10 +19,14 @@ use crate::{
     tool::ToolApprovalVerifier,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
-use acyclic_stream::BoxProviderFuture as BoxFuture;
 #[cfg(test)]
-use acyclic_stream::{AppendOutcome, IdempotencyKey as StreamKey};
-use acyclic_stream::{StreamError, StreamProvider};
+use acyclic_stream::AppendOutcome;
+use acyclic_stream::BoxProviderFuture as BoxFuture;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+use acyclic_stream::IdempotencyKey as StreamKey;
+use acyclic_stream::StreamError;
+#[cfg(any(test, not(target_arch = "wasm32")))]
+use acyclic_stream::StreamProvider;
 #[cfg(test)]
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
@@ -105,7 +109,7 @@ mod traits;
 use summary::*;
 use summary_cache::SummaryCache;
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, all(feature = "test-support", not(target_arch = "wasm32"))))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ExecutionReplayObservation {
     Requested,

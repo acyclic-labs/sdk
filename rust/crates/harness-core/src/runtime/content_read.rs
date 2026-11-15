@@ -358,7 +358,7 @@ impl TaskContext {
             ));
         }
         for entry in &page.entries {
-            if (path.is_empty() && entry.name == ".system") {
+            if path.is_empty() && entry.name == ".system" {
                 return Err(content_error(
                     io,
                     ErrorCode::Conflict,

@@ -8,6 +8,7 @@ pub struct TaskContext {
     pub(super) output_content: ContentBindings,
     pub(super) journal_output: Option<ContentBindings>,
     /// Host custody for retained effects; never selected by guest publication.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) journal_publisher: Option<Arc<dyn ContentPublisher>>,
     pub(super) journal: Option<(Arc<dyn crate::executor::ExecutionJournal>, OperationId)>,
     /// The agent whose turn this is, with the volumes it binds.
@@ -63,11 +64,19 @@ impl TaskContext {
             .map(|content| content.volume.directory_read_capability("tools", &mut None))
             .transpose()?;
         let mut output = journal.output_content(operation)?;
+        #[cfg(not(target_arch = "wasm32"))]
         let mut publisher = None;
         let grant = output
             .as_mut()
             .map(|content| {
-                publisher = content.writer.take();
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    publisher = content.writer.take();
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    content.writer = None;
+                }
                 content.volume.directory_read_capability("tools", &mut None)
             })
             .transpose()?;
@@ -79,13 +88,17 @@ impl TaskContext {
                 .chain(grant.as_deref()),
         );
         self.journal_output = output;
-        self.journal_publisher = publisher;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.journal_publisher = publisher;
+        }
         self.journal = Some((journal, operation));
         Ok(self)
     }
 
     /// Protected host publication, independent of workspace and tool grants.
     /// A missing journal never selects the task's private publisher instead.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn retained_content(&self) -> Result<(&ContentBindings, &dyn ContentPublisher)> {
         let content = self
             .journal_output

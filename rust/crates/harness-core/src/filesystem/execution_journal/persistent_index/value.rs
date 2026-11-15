@@ -1,5 +1,6 @@
 //! Large summary cells span authenticated pages without changing record limits.
 use super::*;
+#[cfg(any(test, not(target_arch = "wasm32")))]
 use acyclic_stream::StreamProviderExt as _;
 use read::ReadNode;
 

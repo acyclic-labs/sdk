@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::filesystem::PreparationIo;
 use acyclic_fs::access::{Action as FsAction, Effect, Policy};
 use acyclic_fs::{

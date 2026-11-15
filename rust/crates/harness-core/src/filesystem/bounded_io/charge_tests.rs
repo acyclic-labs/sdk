@@ -25,12 +25,13 @@ fn standalone_charge_matches_kernel_for_every_counter_and_failure_boundary()
                             let initial: WorkCounters = serde_json::from_value(initial_json)?;
                             for io in [&fast, &reference] {
                                 io.retain_owned(live)?;
-                                let PreparationIo::Owned { work, .. } = io else {
-                                    unreachable!()
+                                let mut state = match io {
+                                    PreparationIo::Owned { work, .. } => work
+                                        .lock()
+                                        .map_err(|_| "initial accounting ledger poisoned")?,
+                                    #[cfg(not(target_arch = "wasm32"))]
+                                    PreparationIo::Native { .. } => unreachable!(),
                                 };
-                                let mut state = work
-                                    .lock()
-                                    .map_err(|_| "initial accounting ledger poisoned")?;
                                 state.0 = initial;
                                 if invalid_ledger {
                                     state.1 = Err(acyclic_fs::WorkError::Overflow);
@@ -58,18 +59,20 @@ fn standalone_charge_matches_kernel_for_every_counter_and_failure_boundary()
                                 format!("{expected:?}"),
                                 "{field} initial={initial:?} delta={delta:?} live={live} cancelled={cancelled} invalid_ledger={invalid_ledger}"
                             );
-                            let PreparationIo::Owned { work: actual, .. } = &fast else {
-                                unreachable!()
+                            let actual = match &fast {
+                                PreparationIo::Owned { work, .. } => work
+                                    .lock()
+                                    .map_err(|_| "actual accounting ledger poisoned")?,
+                                #[cfg(not(target_arch = "wasm32"))]
+                                PreparationIo::Native { .. } => unreachable!(),
                             };
-                            let PreparationIo::Owned { work: expected, .. } = &reference else {
-                                unreachable!()
+                            let expected = match &reference {
+                                PreparationIo::Owned { work, .. } => work
+                                    .lock()
+                                    .map_err(|_| "reference accounting ledger poisoned")?,
+                                #[cfg(not(target_arch = "wasm32"))]
+                                PreparationIo::Native { .. } => unreachable!(),
                             };
-                            let actual = actual
-                                .lock()
-                                .map_err(|_| "actual accounting ledger poisoned")?;
-                            let expected = expected
-                                .lock()
-                                .map_err(|_| "reference accounting ledger poisoned")?;
                             assert_eq!(
                                 actual.0, expected.0,
                                 "rejected work must leave the same counters"

@@ -21,9 +21,11 @@ use super::{
     AgentId, AgentPath, AgentRecord, Closed, Control, Error, ForkAdopted, InboxRecord, IntentId,
     Phase, Sender, StatusRecord, layout,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_stream::StreamProvider;
 use acyclic_stream::{
     CommitCondition, CommitConflict, CommitEffect, CommitMutation, CommitOutcome, CommitReceipt,
-    CommitRequest, IdempotencyKey, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
+    CommitRequest, IdempotencyKey, StreamError, StreamPath, StreamProviderExt as _,
 };
 
 /// Domain-separated idempotency key; one stable key per intent.

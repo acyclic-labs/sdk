@@ -59,6 +59,7 @@ struct CallTarget {
 }
 /// A settled call, refusals and interruptions included, is shown to the model.
 enum ToolInvocationOutcome<'a> {
+    #[cfg(not(target_arch = "wasm32"))]
     Controlled(crate::supervision::Control),
     Settled(crate::model::ToolResultContent, Option<ToolReceipt<'a>>),
     Pending(OperationId),
@@ -341,6 +342,7 @@ impl<'io> StockExecution<'io> {
         _hook_context: &mut Vec<ModelMessage>,
     ) -> Result<ExecutionProgress<Option<ToolCallSettlement<'io>>>> {
         let pinned_call = pinned.is_some();
+        #[cfg(not(target_arch = "wasm32"))]
         let invocation_limits = self.invocation_limits();
         let (_, records) = self
             .tool_records(journal, operation_id, step, &invocation.call_id)
@@ -832,6 +834,7 @@ impl<'io> StockExecution<'io> {
                     .await?
                 {
                     ToolInvocationOutcome::Settled(content, receipt) => (content, receipt),
+                    #[cfg(not(target_arch = "wasm32"))]
                     ToolInvocationOutcome::Controlled(control) => {
                         return Ok(ExecutionProgress::Controlled(control));
                     }

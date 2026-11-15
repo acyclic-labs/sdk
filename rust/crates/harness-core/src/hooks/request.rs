@@ -116,7 +116,7 @@ pub(super) fn normalized(
     let mut request = if implementation == "apply_patch" {
         // Use the publication parser, never a second interpretation of headers
         // or a model-supplied decoy path. Rewrites traverse this same boundary.
-        let patch = crate::tools::variants::patch_input(arguments)?;
+        let patch = crate::tools::variants::patch_input(arguments)?.patch;
         let changes = crate::tool::patch::parse_document(patch, &mut None)?;
         let paths = changes
             .iter()

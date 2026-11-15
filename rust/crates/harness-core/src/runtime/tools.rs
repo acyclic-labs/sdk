@@ -499,6 +499,7 @@ impl ToolContext {
             .await
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn observe_tool_path_once(
         &self,
         operation_id: OperationId,
@@ -1405,6 +1406,7 @@ impl ToolContext {
             if off_from_prefix(&bytes, selected.byte_length, io, &continuation).await? {
                 drop(bytes);
                 drop(selected);
+                #[cfg(not(target_arch = "wasm32"))]
                 drop(custody);
                 return Err(missing());
             }
@@ -1420,6 +1422,7 @@ impl ToolContext {
             if inherits_seed {
                 drop(bytes);
                 drop(selected);
+                #[cfg(not(target_arch = "wasm32"))]
                 drop(custody);
                 crate::executor::stock_retire_text(concrete, io)?;
                 continue;

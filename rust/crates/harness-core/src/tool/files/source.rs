@@ -46,6 +46,7 @@ pub enum FileReadSource {
 }
 
 impl FileReadSource {
+    #[cfg(all(test, not(target_arch = "wasm32")))]
     pub(super) fn same_source(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Authored(selected), Self::Content(file))
@@ -75,6 +76,7 @@ impl FileReadSource {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn logical_owned_bytes(&self) -> Result<u64> {
         match self {
             Self::Content(file) => file.logical_owned_bytes(),

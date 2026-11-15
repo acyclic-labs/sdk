@@ -225,6 +225,7 @@ impl AgentHarness {
             scope,
             output_content: private,
             journal_output: None,
+            #[cfg(not(target_arch = "wasm32"))]
             journal_publisher: None,
             journal: None,
             agent: None,

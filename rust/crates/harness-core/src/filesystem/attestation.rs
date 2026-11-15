@@ -24,14 +24,15 @@ use super::TurnAdmission;
 use acyclic_native_runtime::NativeReadMeter;
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_stream::NativeStreamProvider as _;
-use acyclic_stream::{
-    AppendOutcome, AppendRequest, BoxProviderFuture, CommitId, CommitOutcome, CommitRequest,
-    CommittedEnvelope, FollowStream, ForkReceipt, ForkRequest, IdempotencyKey,
-    IdempotencyObservation, ProviderPlatform, ReadRequest, RecordStream, StreamError, StreamPath,
-    StreamProvider,
-};
 #[cfg(not(target_arch = "wasm32"))]
-use acyclic_stream::{NativeProviderFuture, NativeRecordStream, PreparedNativeCommit};
+use acyclic_stream::{
+    AppendOutcome, AppendRequest, CommitOutcome, ForkReceipt, ForkRequest, NativeProviderFuture,
+    NativeRecordStream, PreparedNativeCommit, StreamPath, StreamProvider,
+};
+use acyclic_stream::{
+    BoxProviderFuture, CommitId, CommitRequest, CommittedEnvelope, FollowStream, IdempotencyKey,
+    IdempotencyObservation, ProviderPlatform, ReadRequest, RecordStream, StreamError,
+};
 use bytes::Bytes;
 use std::sync::Arc;
 

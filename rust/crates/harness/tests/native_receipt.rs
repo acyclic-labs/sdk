@@ -1,4 +1,5 @@
 //! Receipt admission through the public native workspace owner.
+#![cfg(not(target_arch = "wasm32"))]
 #[path = "support/native_receipt.rs"]
 mod contract;
 

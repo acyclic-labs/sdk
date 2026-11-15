@@ -31,6 +31,7 @@ pub(super) struct Cut<'a> {
 /// One already-encoded record and its original optimistic publication fence.
 /// This adds no submission, index or authority; its producer owns the payload.
 pub(in crate::filesystem) enum Contribution<'a> {
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     Conditioned {
         condition: CommitCondition,
         record: &'a OwnedBytes,
@@ -79,6 +80,7 @@ pub(in crate::filesystem::execution_journal) fn contribution_identity(
             Ok::<(), Error>(())
         };
         let digest = match contribution {
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             Contribution::Conditioned { condition, record } => {
                 acyclic_stream::request::conditioned_record_digest_with(condition, record, admit)?
             }
@@ -95,6 +97,7 @@ impl Contribution<'_> {
     fn target(&self) -> Result<(&StreamPath, Option<u64>)> {
         match self {
             Self::Append { path, .. } => Ok((path, None)),
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             Self::Conditioned { condition, .. } => match condition {
                 CommitCondition::Head { path, expected, .. }
                 | CommitCondition::Tail { path, expected } => Ok((path, Some(*expected))),
@@ -106,7 +109,9 @@ impl Contribution<'_> {
 
     fn record(&self) -> &OwnedBytes {
         match self {
-            Self::Conditioned { record, .. } | Self::Append { record, .. } => record,
+            #[cfg(any(test, not(target_arch = "wasm32")))]
+            Self::Conditioned { record, .. } => record,
+            Self::Append { record, .. } => record,
         }
     }
 }
@@ -162,6 +167,7 @@ impl Cut<'_> {
 
     /// Consumes the entire unsent batch on refusal. Its original request,
     /// filesystem holds and construction quota are dropped together on error.
+    #[cfg(test)]
     pub(super) fn contribute<'a, 'b>(
         &self,
         mut prepared: (
@@ -252,6 +258,7 @@ impl Cut<'_> {
                     return Err(invalid(None));
                 }
                 previous = Some(path);
+                #[cfg(any(test, not(target_arch = "wasm32")))]
                 if let Contribution::Conditioned { condition, .. } = contribution {
                     crate::distributed::add_condition(request, custody, condition.clone())?;
                 }
@@ -454,6 +461,7 @@ impl Cut<'_> {
 
     /// The original filesystem owner has already authenticated every canonical
     /// caller member. Confirm this Cut without repeating whole-request validation.
+    #[cfg(test)]
     pub(super) fn confirm_composed(
         &self,
         prepared: &acyclic_fs::PreparedFilesystemCommit,

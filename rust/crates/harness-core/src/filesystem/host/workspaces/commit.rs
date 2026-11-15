@@ -1,6 +1,7 @@
 use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
+    #[cfg(all(test, not(target_arch = "wasm32")))]
     pub(in crate::filesystem) fn apply_generation<'a>(
         &'a self,
         reference: &'a WorkspaceRef,
@@ -50,6 +51,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )
     }
 
+    #[cfg(all(test, not(target_arch = "wasm32")))]
     fn publish_generation<'a>(
         &'a self,
         reference: &'a WorkspaceRef,

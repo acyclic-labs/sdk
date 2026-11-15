@@ -2,7 +2,6 @@ use super::*;
 use acyclic_fs::LazyDirectoryListing as DirectoryPage;
 use acyclic_fs::access::{Action, PreparedPath};
 
-/// Immutable pagination and authority limits for a private directory read.
 /// Admission of one row or empty cursor advance under a consumer's byte credit.
 pub type DirectoryCredit<'a> = dyn FnMut(
         &GenerationRef,
@@ -13,6 +12,7 @@ pub type DirectoryCredit<'a> = dyn FnMut(
     + Sync
     + 'a;
 
+/// Immutable pagination and authority limits for a private directory read.
 #[derive(Clone, Copy)]
 pub struct DirectoryOptions<'a> {
     /// Exact selected generation, or the current head.

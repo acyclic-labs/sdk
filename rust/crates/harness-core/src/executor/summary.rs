@@ -250,6 +250,7 @@ impl StockExecution<'_> {
         Ok((source_bytes, source_digest, source_messages))
     }
 
+    #[cfg(test)]
     fn collect_summary_text(&self, events: Vec<ModelEvent>) -> Result<String> {
         self.summary_text(events)?
             .map_err(|defect| stock_boundary(self.io, crate::wire::ErrorCode::Invalid, defect))

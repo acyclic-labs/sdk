@@ -316,6 +316,7 @@ pub(super) fn rejection(
     let mut scratch = allocation(original, 0)?;
     let bytes = closest(source, needle, &mut scratch)?;
     // All search buffers are gone before the refusal retains its presentation.
+    #[cfg(not(target_arch = "wasm32"))]
     drop(scratch);
     charge(work, 0, source.len() as u64 + needle.len() as u64)?;
     let first = source[..bytes.start]
