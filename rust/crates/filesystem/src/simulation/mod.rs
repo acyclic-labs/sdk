@@ -1,60 +1,65 @@
-//! Deterministic fault simulator for storage backends.
+//! Storage backends as fault sites of the shared deterministic simulation.
+//!
+//! Each authority and object operation is a logical site of
+//! [`acyclic_native_runtime::testing::Schedule`]. A driver plans a
+//! [`SimulationFault`] with `Schedule::inject` at an exact call of a [`sites`]
+//! name; the schedule counts calls, traces them and holds paused calls at
+//! its boundaries. This module only defines what each fault does to a call.
 use crate::async_storage::{AsyncAuthorityStore, AsyncObjectStore, GenerationForkSource};
 use crate::foundation::{
     AuthorityId, DurableCommit, Epoch, Head, OperationId, ProposedCommit, Sequence,
 };
-use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
+use crate::kernel::allocation::KernelOwnedAllocation;
 use crate::performance::WorkCounters;
 use crate::storage::{
     AppendOutcome, AuthorityStoreError, CreateAuthorityOutcome, ObjectId, ObjectRead,
     ObjectReadRequest, ObjectReadRetention, ObjectStoreError, PublicationReservation, ReplayLimit,
     ReservationOutcome, object_digest,
 };
+use acyclic_native_runtime::testing::Schedule;
 use acyclic_stream::OwnedBytes;
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, MutexGuard};
-use thiserror::Error;
+use std::sync::{Arc, Mutex};
 
 type ReferenceAuthority = crate::distributed::StreamAuthorityStore<acyclic_stream::MemoryStream>;
 type ReferenceObjects = crate::LogicalObjectStore<acyclic_objects::MemoryObjects>;
 
-/// One exact simulator interception point.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum SimulationOperation {
-    /// Authority creation.
-    AuthorityCreate,
+/// Site names of the intercepted storage operations.
+pub mod sites {
+    /// Authority creation, including a fork's and a first record's.
+    pub const AUTHORITY_CREATE: &str = "authority.create";
     /// Linearizable authority-head read.
-    AuthorityHead,
-    /// Authority compare-and-append.
-    AuthorityAppend,
+    pub const AUTHORITY_HEAD: &str = "authority.head";
+    /// Authority compare-and-append, single or grouped.
+    pub const AUTHORITY_APPEND: &str = "authority.append";
     /// Bounded authority replay.
-    AuthorityReplay,
+    pub const AUTHORITY_REPLAY: &str = "authority.replay";
     /// Authority epoch fence.
-    AuthorityFence,
+    pub const AUTHORITY_FENCE: &str = "authority.fence";
     /// Idempotent operation lookup.
-    AuthorityFindOperation,
+    pub const AUTHORITY_FIND_OPERATION: &str = "authority.find-operation";
     /// Existing publication reservation lookup.
-    AuthorityReservation,
+    pub const AUTHORITY_RESERVATION: &str = "authority.reservation";
     /// Publication reservation acquisition.
-    AuthorityReserve,
+    pub const AUTHORITY_RESERVE: &str = "authority.reserve";
     /// Publication reservation release.
-    AuthorityRelease,
+    pub const AUTHORITY_RELEASE: &str = "authority.release";
     /// Immutable-object admission.
-    ObjectPut,
+    pub const OBJECT_PUT: &str = "object.put";
     /// One immutable-object read.
-    ObjectRead,
+    pub const OBJECT_READ: &str = "object.read";
     /// Ordered immutable-object batch read.
-    ObjectReadMany,
+    pub const OBJECT_READ_MANY: &str = "object.read-many";
     /// Publication durability barrier over the authenticated immutable closure.
-    ObjectFlush,
+    pub const OBJECT_FLUSH: &str = "object.flush";
     /// Immutable-object presence probe.
-    ObjectContains,
+    pub const OBJECT_CONTAINS: &str = "object.contains";
 }
 
-/// One exact injected backend behavior.
+/// What a planned fault does to one storage call.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SimulationFault {
-    /// Signal the selected object await and suspend until its caller drops it.
+    /// Hold the object call at a schedule boundary; dropping it crashes the call.
     PauseBefore,
     /// Reject before touching the wrapped primitive.
     RejectBefore,
@@ -77,232 +82,118 @@ pub enum SimulationFault {
 }
 
 impl SimulationFault {
-    const fn compatible(self, operation: SimulationOperation) -> bool {
+    fn applies_at(self, site: &str) -> bool {
+        use sites::*;
         match self {
             Self::PauseBefore => matches!(
-                operation,
-                SimulationOperation::ObjectPut
-                    | SimulationOperation::ObjectRead
-                    | SimulationOperation::ObjectReadMany
-                    | SimulationOperation::ObjectContains
-                    | SimulationOperation::ObjectFlush
+                site,
+                OBJECT_PUT | OBJECT_READ | OBJECT_READ_MANY | OBJECT_CONTAINS | OBJECT_FLUSH
             ),
             Self::RejectBefore | Self::PartitionBefore => true,
-            Self::DelayObjectVisibility => matches!(operation, SimulationOperation::ObjectPut),
-            Self::CorruptObjectRead | Self::PartialObjectRead => matches!(
-                operation,
-                SimulationOperation::ObjectRead | SimulationOperation::ObjectReadMany
-            ),
-            Self::StaleAuthorityHead(_) => {
-                matches!(operation, SimulationOperation::AuthorityHead)
+            Self::DelayObjectVisibility => site == OBJECT_PUT,
+            Self::CorruptObjectRead | Self::PartialObjectRead => {
+                matches!(site, OBJECT_READ | OBJECT_READ_MANY)
             }
-            Self::DuplicateAuthorityReplay => {
-                matches!(operation, SimulationOperation::AuthorityReplay)
-            }
+            Self::StaleAuthorityHead(_) => site == AUTHORITY_HEAD,
+            Self::DuplicateAuthorityReplay => site == AUTHORITY_REPLAY,
             Self::AmbiguousAuthorityAppend => matches!(
-                operation,
-                SimulationOperation::AuthorityCreate
-                    | SimulationOperation::AuthorityAppend
-                    | SimulationOperation::AuthorityReserve
-                    | SimulationOperation::AuthorityRelease
+                site,
+                AUTHORITY_CREATE | AUTHORITY_APPEND | AUTHORITY_RESERVE | AUTHORITY_RELEASE
             ),
-            Self::FenceBeforeAuthorityAppend => {
-                matches!(operation, SimulationOperation::AuthorityAppend)
-            }
+            Self::FenceBeforeAuthorityAppend => site == AUTHORITY_APPEND,
         }
     }
 }
 
-/// One exact operation occurrence and its injected behavior.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ScheduledSimulationFault {
-    /// Intercepted operation family.
-    pub operation: SimulationOperation,
-    /// One-based occurrence within that operation family.
-    pub occurrence: u64,
-    /// Behavior injected at the exact occurrence.
-    pub fault: SimulationFault,
+/// Counts one call at `site` and returns its planned fault.
+///
+/// # Panics
+///
+/// Panics when the planned fault cannot apply at `site`, so a plan never
+/// silently injects nothing.
+fn intercept(schedule: &Schedule, site: &'static str) -> Option<SimulationFault> {
+    let fault = schedule.intercept::<SimulationFault>(site);
+    if let Some(fault) = fault {
+        assert!(fault.applies_at(site), "{fault:?} cannot apply at {site}");
+    }
+    fault
 }
 
-/// One retained deterministic interception trace.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SimulationTrace {
-    /// Intercepted operation family.
-    pub operation: SimulationOperation,
-    /// One-based occurrence within the operation family.
-    pub occurrence: u64,
-    /// Injected behavior, when this operation matched a schedule entry.
-    pub fault: Option<SimulationFault>,
+/// Objects acknowledged under [`SimulationFault::DelayObjectVisibility`].
+struct Delayed {
+    pending_objects: BTreeMap<ObjectId, OwnedBytes>,
+    pending_object_bytes: u64,
 }
 
-/// Simulator configuration or state failure.
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-pub enum SimulationError {
-    /// Fault occurrence identities are one-based.
-    #[error("simulation fault occurrence must be positive")]
-    ZeroOccurrence,
-    /// The selected fault cannot apply to the selected operation family.
-    #[error("simulation fault is incompatible with its operation family")]
-    IncompatibleFault,
-    /// The exact operation occurrence already has a scheduled fault.
-    #[error("simulation operation occurrence already has a fault")]
-    DuplicateFault,
-    /// The selected operation occurrence has already completed.
-    #[error("simulation operation occurrence has already completed")]
-    PastOccurrence,
-    /// A simulator lock was poisoned by a failed host thread.
-    #[error("simulation state is poisoned")]
-    Poisoned,
-}
-
-const SIMULATION_OPERATION_COUNT: usize = SimulationOperation::ObjectContains as usize + 1;
-
-/// Shared deterministic simulator and its two backend handles.
+/// Two backends whose operations are fault sites of one schedule.
 #[derive(Clone)]
 pub struct Simulation<
     A = crate::distributed::StreamAuthorityStore<acyclic_stream::MemoryStream>,
     O = crate::LogicalObjectStore<acyclic_objects::MemoryObjects>,
 > {
-    state: Arc<Mutex<State>>,
+    schedule: Schedule,
+    state: Arc<Mutex<Delayed>>,
     authority: Arc<A>,
     objects: Arc<O>,
-    paused: Arc<tokio::sync::Notify>,
 }
 
 impl Simulation<ReferenceAuthority, ReferenceObjects> {
-    /// Creates a simulator over fresh deterministic memory primitives.
+    /// Fresh deterministic memory primitives under `schedule`.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(schedule: &Schedule) -> Self {
         let (authority, objects) = reference_backends();
-        Self::wrap(authority, objects)
+        Self::wrap(schedule, authority, objects)
     }
 }
 
 impl<A, O> Simulation<A, O> {
-    /// Wraps explicit backends with one deterministic schedule.
+    /// Explicit backends under `schedule`.
     #[must_use]
-    pub fn wrap(authority: A, objects: O) -> Self {
+    pub fn wrap(schedule: &Schedule, authority: A, objects: O) -> Self {
         Self {
-            state: Arc::new(Mutex::new(State {
-                occurrences: [0; SIMULATION_OPERATION_COUNT],
-                faults: BTreeMap::new(),
-                trace: Vec::new(),
-                trace_allocation: KernelOwnedAllocation::Standalone,
+            schedule: schedule.observer(),
+            state: Arc::new(Mutex::new(Delayed {
                 pending_objects: BTreeMap::new(),
                 pending_object_bytes: 0,
             })),
             authority: Arc::new(authority),
             objects: Arc::new(objects),
-            paused: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
-    /// Returns independently cloneable authority and object handles sharing one schedule.
+    /// Independently cloneable authority and object handles.
     #[must_use]
     pub fn stores(&self) -> (SimulatedStore<A>, SimulatedStore<O>) {
         (
             SimulatedStore {
+                schedule: self.schedule.observer(),
                 state: self.state.clone(),
                 inner: self.authority.clone(),
-                paused: self.paused.clone(),
             },
             SimulatedStore {
+                schedule: self.schedule.observer(),
                 state: self.state.clone(),
                 inner: self.objects.clone(),
-                paused: self.paused.clone(),
             },
         )
     }
-
-    /// Schedules one exact one-based interception point.
-    pub fn schedule(&self, scheduled: ScheduledSimulationFault) -> Result<(), SimulationError> {
-        if scheduled.occurrence == 0 {
-            return Err(SimulationError::ZeroOccurrence);
-        }
-        if !scheduled.fault.compatible(scheduled.operation) {
-            return Err(SimulationError::IncompatibleFault);
-        }
-        let mut state = self.lock_state()?;
-        schedule_locked(&mut state, scheduled)
-    }
-
-    /// Atomically schedules the next occurrence of one operation family.
-    pub fn schedule_next(
-        &self,
-        operation: SimulationOperation,
-        fault: SimulationFault,
-    ) -> Result<ScheduledSimulationFault, SimulationError> {
-        if !fault.compatible(operation) {
-            return Err(SimulationError::IncompatibleFault);
-        }
-        let mut state = self.lock_state()?;
-        let occurrence = state
-            .occurrences
-            .get(operation as usize)
-            .ok_or(SimulationError::PastOccurrence)?
-            .checked_add(1)
-            .ok_or(SimulationError::PastOccurrence)?;
-        let scheduled = ScheduledSimulationFault {
-            operation,
-            occurrence,
-            fault,
-        };
-        schedule_locked(&mut state, scheduled)?;
-        Ok(scheduled)
-    }
-
-    /// Returns the complete trace collected so far.
-    pub fn trace(&self) -> Result<Vec<SimulationTrace>, SimulationError> {
-        Ok(self.lock_state()?.trace.clone())
-    }
-
-    /// Wait for a scheduled pause at an actual object-store await. The caller
-    /// can then drop the interrupted future to simulate a process crash.
-    pub async fn wait_for_pause(&self) {
-        self.paused.notified().await;
-    }
-
-    fn lock_state(&self) -> Result<MutexGuard<'_, State>, SimulationError> {
-        self.state.lock().map_err(|_| SimulationError::Poisoned)
-    }
 }
 
-fn schedule_locked(
-    state: &mut State,
-    scheduled: ScheduledSimulationFault,
-) -> Result<(), SimulationError> {
-    if state
-        .faults
-        .contains_key(&(scheduled.operation, scheduled.occurrence))
-    {
-        return Err(SimulationError::DuplicateFault);
-    }
-    if *state
-        .occurrences
-        .get(scheduled.operation as usize)
-        .ok_or(SimulationError::PastOccurrence)?
-        >= scheduled.occurrence
-    {
-        return Err(SimulationError::PastOccurrence);
-    }
-    state
-        .faults
-        .insert((scheduled.operation, scheduled.occurrence), scheduled.fault);
-    Ok(())
-}
-
-impl Default for Simulation {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Backend handle controlled by one [`Simulation`].
-#[derive(Clone)]
+/// Backend handle whose operations are sites of one [`Simulation`].
 pub struct SimulatedStore<T> {
-    state: Arc<Mutex<State>>,
+    schedule: Schedule,
+    state: Arc<Mutex<Delayed>>,
     inner: Arc<T>,
-    paused: Arc<tokio::sync::Notify>,
+}
+
+impl<T> Clone for SimulatedStore<T> {
+    fn clone(&self) -> Self {
+        Self {
+            schedule: self.schedule.observer(),
+            state: self.state.clone(),
+            inner: self.inner.clone(),
+        }
+    }
 }
 
 fn reference_backends() -> (ReferenceAuthority, ReferenceObjects) {
@@ -314,8 +205,6 @@ fn reference_backends() -> (ReferenceAuthority, ReferenceObjects) {
     )
 }
 
-mod state;
-use state::State;
 mod authority;
 mod objects;
 
@@ -324,5 +213,4 @@ mod objects;
 mod tests;
 
 #[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
 mod native_write_controls;

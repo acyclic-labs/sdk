@@ -235,7 +235,8 @@ mod tests {
     async fn public_seal_retains_lost_ack_cause_and_resumes_original_operation()
     -> Result<(), Box<dyn std::error::Error>> {
         let cancellation = CancellationToken::new();
-        let simulation = crate::Simulation::default();
+        let (schedule, _events) = acyclic_native_runtime::testing::Schedule::new();
+        let simulation = crate::Simulation::new(&schedule);
         let (authority, objects) = simulation.stores();
         let fs = Fs::new(authority, objects, crate::EmbeddedCapabilities::MEMORY);
         let volume = fs
@@ -271,10 +272,10 @@ mod tests {
             )
             .await?;
         let operation = OperationId::from_bytes([0x67; 16]);
-        simulation.schedule_next(
-            crate::SimulationOperation::AuthorityAppend,
+        schedule.inject_next(
+            crate::simulation::sites::AUTHORITY_APPEND,
             crate::SimulationFault::AmbiguousAuthorityAppend,
-        )?;
+        );
         let error = seal_checkout(
             &mut checkout,
             operation,
@@ -290,11 +291,11 @@ mod tests {
             )) if source.kind() == std::io::ErrorKind::ConnectionReset
         ));
         assert_eq!(
-            simulation
-                .trace()?
+            schedule
+                .site_calls()
                 .iter()
                 .filter(
-                    |entry| entry.fault == Some(crate::SimulationFault::AmbiguousAuthorityAppend)
+                    |call| call.fault() == Some(&crate::SimulationFault::AmbiguousAuthorityAppend)
                 )
                 .count(),
             1
@@ -302,12 +303,12 @@ mod tests {
 
         let cancelled = CancellationToken::new();
         cancelled.cancel();
-        let before = simulation.trace()?;
+        let before = schedule.site_calls().len();
         assert!(matches!(
             seal_checkout(&mut checkout, operation, WorkBudget::UNBOUNDED, &cancelled).await,
             Err(MountSourceError::Cancelled)
         ));
-        assert_eq!(simulation.trace()?, before);
+        assert_eq!(schedule.site_calls().len(), before);
         seal_checkout(
             &mut checkout,
             operation,
@@ -472,7 +473,8 @@ mod tests {
     async fn native_source_lost_ack_reuses_original_context_and_evidence()
     -> Result<(), Box<dyn std::error::Error>> {
         let cancellation = CancellationToken::new();
-        let simulation = crate::Simulation::default();
+        let (schedule, _events) = acyclic_native_runtime::testing::Schedule::new();
+        let simulation = crate::Simulation::new(&schedule);
         let (authority, objects) = simulation.stores();
         let fs = Fs::new(authority, objects, crate::EmbeddedCapabilities::MEMORY);
         let volume = fs
@@ -503,10 +505,10 @@ mod tests {
             original.runtime_meter(),
         )
         .map_err(|failure| format!("{:?}", failure.into_error()))?;
-        simulation.schedule_next(
-            crate::SimulationOperation::AuthorityAppend,
+        schedule.inject_next(
+            crate::simulation::sites::AUTHORITY_APPEND,
             crate::SimulationFault::AmbiguousAuthorityAppend,
-        )?;
+        );
         let lost = seal_checkout_with_permit_guarded_with_native_work(
             &mut checkout,
             operation,

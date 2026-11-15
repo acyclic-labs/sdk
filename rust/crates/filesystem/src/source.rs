@@ -1729,19 +1729,6 @@ mod tests {
         }
     }
 
-    fn next_authority_append<A, O>(
-        simulation: &crate::Simulation<A, O>,
-    ) -> Result<u64, crate::SimulationError> {
-        Ok(simulation
-            .trace()?
-            .iter()
-            .filter(|entry| entry.operation == crate::SimulationOperation::AuthorityAppend)
-            .map(|entry| entry.occurrence)
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1))
-    }
-
     fn clean_generation<A, O>(
         outcome: ReconcileOutcome<A, O>,
     ) -> Result<Generation<A, O>, &'static str> {
@@ -3396,7 +3383,8 @@ mod tests {
     async fn ambiguous_volume_and_terminal_appends_recover_the_exact_source_generation()
     -> Result<(), Box<dyn std::error::Error>> {
         for terminal_fault in [false, true] {
-            let simulation = crate::Simulation::default();
+            let (schedule, _events) = acyclic_native_runtime::testing::Schedule::new();
+            let simulation = crate::Simulation::new(&schedule);
             let (authority, objects) = simulation.stores();
             let fs = Fs::new(
                 authority.clone(),
@@ -3422,11 +3410,17 @@ mod tests {
                 begin_source_operation(&mut session, key, SourceOperation::Rescan).await?;
             }
             std::fs::write(root.path().join("value.txt"), b"two")?;
-            simulation.schedule(crate::ScheduledSimulationFault {
-                operation: crate::SimulationOperation::AuthorityAppend,
-                occurrence: next_authority_append(&simulation)? + u64::from(terminal_fault),
-                fault: crate::SimulationFault::AmbiguousAuthorityAppend,
-            })?;
+            let append = crate::simulation::sites::AUTHORITY_APPEND;
+            let appended = schedule
+                .site_calls()
+                .iter()
+                .filter(|call| call.site == append)
+                .count();
+            schedule.inject(
+                append,
+                u64::try_from(appended)? + u64::from(terminal_fault),
+                crate::SimulationFault::AmbiguousAuthorityAppend,
+            );
             {
                 let source = workspace.source().ok_or("source missing")?;
                 assert!(matches!(

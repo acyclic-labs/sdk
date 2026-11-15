@@ -2,12 +2,9 @@ use super::*;
 
 #[tokio::test]
 async fn delayed_objects_are_invisible_until_flush() -> Result<(), Box<dyn std::error::Error>> {
-    let simulation = Simulation::default();
-    simulation.schedule(ScheduledSimulationFault {
-        operation: SimulationOperation::ObjectPut,
-        occurrence: 1,
-        fault: SimulationFault::DelayObjectVisibility,
-    })?;
+    let (schedule, _events) = Schedule::new();
+    let simulation = crate::Simulation::new(&schedule);
+    schedule.inject(sites::OBJECT_PUT, 0, SimulationFault::DelayObjectVisibility);
     let (_, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let (object_id, bytes) = object(b"delayed");
@@ -27,17 +24,10 @@ async fn delayed_objects_are_invisible_until_flush() -> Result<(), Box<dyn std::
 #[tokio::test]
 async fn corrupt_and_partial_reads_are_exactly_scheduled() -> Result<(), Box<dyn std::error::Error>>
 {
-    let simulation = Simulation::default();
-    simulation.schedule(ScheduledSimulationFault {
-        operation: SimulationOperation::ObjectRead,
-        occurrence: 1,
-        fault: SimulationFault::CorruptObjectRead,
-    })?;
-    simulation.schedule(ScheduledSimulationFault {
-        operation: SimulationOperation::ObjectRead,
-        occurrence: 2,
-        fault: SimulationFault::PartialObjectRead,
-    })?;
+    let (schedule, _events) = Schedule::new();
+    let simulation = crate::Simulation::new(&schedule);
+    schedule.inject(sites::OBJECT_READ, 0, SimulationFault::CorruptObjectRead);
+    schedule.inject(sites::OBJECT_READ, 1, SimulationFault::PartialObjectRead);
     let (_, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let (object_id, bytes) = object(b"authenticated");
@@ -52,13 +42,14 @@ async fn corrupt_and_partial_reads_are_exactly_scheduled() -> Result<(), Box<dyn
 #[tokio::test]
 async fn delayed_object_admission_is_idempotent_and_digest_checked()
 -> Result<(), Box<dyn std::error::Error>> {
-    let simulation = Simulation::new();
-    for occurrence in 1..=4 {
-        simulation.schedule(ScheduledSimulationFault {
-            operation: SimulationOperation::ObjectPut,
-            occurrence,
-            fault: SimulationFault::DelayObjectVisibility,
-        })?;
+    let (schedule, _events) = Schedule::new();
+    let simulation = crate::Simulation::new(&schedule);
+    for ordinal in 0..4 {
+        schedule.inject(
+            sites::OBJECT_PUT,
+            ordinal,
+            SimulationFault::DelayObjectVisibility,
+        );
     }
     let (_, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
@@ -103,12 +94,9 @@ async fn delayed_object_admission_is_idempotent_and_digest_checked()
 #[tokio::test]
 async fn empty_corrupt_reads_and_authority_passthroughs_remain_typed()
 -> Result<(), Box<dyn std::error::Error>> {
-    let simulation = Simulation::default();
-    simulation.schedule(ScheduledSimulationFault {
-        operation: SimulationOperation::ObjectRead,
-        occurrence: 1,
-        fault: SimulationFault::CorruptObjectRead,
-    })?;
+    let (schedule, _events) = Schedule::new();
+    let simulation = crate::Simulation::new(&schedule);
+    schedule.inject(sites::OBJECT_READ, 0, SimulationFault::CorruptObjectRead);
     let (authority, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let (empty_id, empty_bytes) = object(b"");
@@ -147,55 +135,13 @@ async fn empty_corrupt_reads_and_authority_passthroughs_remain_typed()
 }
 
 #[tokio::test]
-async fn poisoned_simulation_authority_and_object_surfaces_fail_closed()
--> Result<(), Box<dyn std::error::Error>> {
-    let simulation = Simulation::default();
-    let state = Arc::clone(&simulation.state);
-    let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let Ok(_guard) = state.lock() else {
-            return;
-        };
-        std::panic::resume_unwind(Box::new("poison simulation state"));
-    }));
-    assert!(poisoned.is_err());
-    assert_eq!(
-        simulation.schedule(ScheduledSimulationFault {
-            operation: SimulationOperation::ObjectRead,
-            occurrence: 1,
-            fault: SimulationFault::RejectBefore,
-        }),
-        Err(SimulationError::Poisoned)
-    );
-
-    let (authority, objects) = simulation.stores();
-    let cancellation = CancellationToken::new();
-    let authority_failure = (work!(
-        authority,
-        head(AuthorityId::from_bytes([80; 16])),
-        B,
-        &cancellation
-    ))
-    .await
-    .err()
-    .ok_or("poisoned authority lookup unexpectedly succeeded")?;
-    assert!(matches!(
-        authority_failure.error,
-        AuthorityStoreError::CorruptStatic(_)
-    ));
-    let object_failure = (work!(objects, contains(object(b"poisoned").0), B, &cancellation))
-        .await
-        .err()
-        .ok_or("poisoned object lookup unexpectedly succeeded")?;
-    assert!(matches!(object_failure.error, ObjectStoreError::Corrupt));
-    Ok(())
-}
-
-#[tokio::test]
 async fn corrupt_delayed_visibility_state_preserves_nested_failure_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
 
-    let simulation = Simulation::default();
+    let (schedule, _events) = Schedule::new();
+
+    let simulation = crate::Simulation::new(&schedule);
     let (object_id, _) = object(b"authentic");
     {
         let mut state = simulation
@@ -214,7 +160,9 @@ async fn corrupt_delayed_visibility_state_preserves_nested_failure_work()
     assert!(matches!(failure.error, ObjectStoreError::DigestMismatch));
     assert_eq!(failure.work.backend_write_operations, 0);
 
-    let simulation = Simulation::default();
+    let (schedule, _events) = Schedule::new();
+
+    let simulation = crate::Simulation::new(&schedule);
     let (object_id, bytes) = object(b"underflow");
     {
         let mut state = simulation

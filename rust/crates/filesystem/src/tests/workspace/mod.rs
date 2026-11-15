@@ -118,6 +118,9 @@ mod sibling_files;
 
 mod transactions;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod simulation;
+
 fn selected_transaction_budget() -> WorkBudget {
     WorkBudget {
         authority_records_read: 1_000_000,

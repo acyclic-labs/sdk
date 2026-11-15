@@ -3,12 +3,13 @@ use super::*;
 #[tokio::test]
 async fn ambiguous_append_is_durable_and_retry_resolves_identity()
 -> Result<(), Box<dyn std::error::Error>> {
-    let simulation = Simulation::default();
-    simulation.schedule(ScheduledSimulationFault {
-        operation: SimulationOperation::AuthorityAppend,
-        occurrence: 1,
-        fault: SimulationFault::AmbiguousAuthorityAppend,
-    })?;
+    let (schedule, _events) = Schedule::new();
+    let simulation = crate::Simulation::new(&schedule);
+    schedule.inject(
+        sites::AUTHORITY_APPEND,
+        0,
+        SimulationFault::AmbiguousAuthorityAppend,
+    );
     let (authority, _) = simulation.stores();
     let cancellation = CancellationToken::new();
     let authority_id = AuthorityId::from_bytes([7; 16]);
@@ -51,17 +52,18 @@ async fn ambiguous_append_is_durable_and_retry_resolves_identity()
 #[tokio::test]
 async fn duplicate_replay_and_fence_change_are_observable_without_hidden_repair()
 -> Result<(), Box<dyn std::error::Error>> {
-    let simulation = Simulation::default();
-    simulation.schedule(ScheduledSimulationFault {
-        operation: SimulationOperation::AuthorityAppend,
-        occurrence: 2,
-        fault: SimulationFault::FenceBeforeAuthorityAppend,
-    })?;
-    simulation.schedule(ScheduledSimulationFault {
-        operation: SimulationOperation::AuthorityReplay,
-        occurrence: 1,
-        fault: SimulationFault::DuplicateAuthorityReplay,
-    })?;
+    let (schedule, _events) = Schedule::new();
+    let simulation = crate::Simulation::new(&schedule);
+    schedule.inject(
+        sites::AUTHORITY_APPEND,
+        1,
+        SimulationFault::FenceBeforeAuthorityAppend,
+    );
+    schedule.inject(
+        sites::AUTHORITY_REPLAY,
+        0,
+        SimulationFault::DuplicateAuthorityReplay,
+    );
     let (authority, _) = simulation.stores();
     let cancellation = CancellationToken::new();
     let authority_id = AuthorityId::from_bytes([8; 16]);
@@ -123,12 +125,13 @@ async fn duplicate_replay_and_fence_change_are_observable_without_hidden_repair(
 #[tokio::test]
 async fn fence_before_append_preserves_nested_budget_failure_work()
 -> Result<(), Box<dyn std::error::Error>> {
-    let simulation = Simulation::default();
-    simulation.schedule(ScheduledSimulationFault {
-        operation: SimulationOperation::AuthorityAppend,
-        occurrence: 1,
-        fault: SimulationFault::FenceBeforeAuthorityAppend,
-    })?;
+    let (schedule, _events) = Schedule::new();
+    let simulation = crate::Simulation::new(&schedule);
+    schedule.inject(
+        sites::AUTHORITY_APPEND,
+        0,
+        SimulationFault::FenceBeforeAuthorityAppend,
+    );
     let (authority, _) = simulation.stores();
     let cancellation = CancellationToken::new();
     let authority_id = AuthorityId::from_bytes([81; 16]);
@@ -180,17 +183,18 @@ async fn stale_head_and_batch_read_faults_are_budgeted_and_exact()
         sequence: Sequence::GENESIS,
         digest: Digest::from_bytes([51; 32]),
     };
-    let simulation = Simulation::default();
-    simulation.schedule(ScheduledSimulationFault {
-        operation: SimulationOperation::AuthorityHead,
-        occurrence: 1,
-        fault: SimulationFault::StaleAuthorityHead(stale),
-    })?;
-    simulation.schedule(ScheduledSimulationFault {
-        operation: SimulationOperation::AuthorityHead,
-        occurrence: 2,
-        fault: SimulationFault::StaleAuthorityHead(stale),
-    })?;
+    let (schedule, _events) = Schedule::new();
+    let simulation = crate::Simulation::new(&schedule);
+    schedule.inject(
+        sites::AUTHORITY_HEAD,
+        0,
+        SimulationFault::StaleAuthorityHead(stale),
+    );
+    schedule.inject(
+        sites::AUTHORITY_HEAD,
+        1,
+        SimulationFault::StaleAuthorityHead(stale),
+    );
     let (authority, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let authority_id = AuthorityId::from_bytes([52; 16]);
@@ -218,16 +222,16 @@ async fn stale_head_and_batch_read_faults_are_budgeted_and_exact()
         object_id,
         maximum_bytes: 64,
     }];
-    for (occurrence, fault) in [
-        (1, SimulationFault::CorruptObjectRead),
-        (2, SimulationFault::PartialObjectRead),
-    ] {
-        simulation.schedule(ScheduledSimulationFault {
-            operation: SimulationOperation::ObjectReadMany,
-            occurrence,
-            fault,
-        })?;
-    }
+    schedule.inject(
+        sites::OBJECT_READ_MANY,
+        0,
+        SimulationFault::CorruptObjectRead,
+    );
+    schedule.inject(
+        sites::OBJECT_READ_MANY,
+        1,
+        SimulationFault::PartialObjectRead,
+    );
     let corrupt = (work!(objects, read_many(&requests), B, &cancellation)).await?;
     assert_ne!(object_digest(&corrupt.value[0].bytes), object_id.digest);
     let partial = (work!(objects, read_many(&requests), B, &cancellation)).await?;
