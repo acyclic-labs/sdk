@@ -106,22 +106,32 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         work: &mut AuthorityWork<'_>,
     ) -> Result<(acyclic_stream::Heads, ProviderAllocation), AuthorityStoreError> {
         work.check()?;
-        let make_request = |work: &mut AuthorityWork<'_>| {
-            let mut selected = acyclic_stream::HeadSet::new();
-            if paths.len() > selected.inline_size() {
-                selected = acyclic_stream::HeadSet::from_vec(work.vec(paths.len())?);
-            }
+        let limit = u32::try_from(paths.len()).map_err(|_| crate::WorkError::Overflow)?;
+        let spill = |work: &mut AuthorityWork<'_>| {
+            Ok::<_, AuthorityStoreError>(
+                if paths.len() > acyclic_stream::HeadSet::<StreamPath>::new().inline_size() {
+                    Some(work.vec(paths.len())?)
+                } else {
+                    None
+                },
+            )
+        };
+        let make_request = |spill: Option<Vec<StreamPath>>| {
+            let mut selected = spill.map_or_else(
+                acyclic_stream::HeadSet::new,
+                acyclic_stream::HeadSet::from_vec,
+            );
             selected.extend(paths.iter().cloned());
-            Ok::<_, AuthorityStoreError>(acyclic_stream::HeadsRequest {
+            acyclic_stream::HeadsRequest {
                 at: None,
                 retained: Default::default(),
                 durable_through: None,
                 projection,
                 paths: selected,
                 children: None,
-                limit: u32::try_from(paths.len()).map_err(|_| crate::WorkError::Overflow)?,
+                limit,
                 at_least: Default::default(),
-            })
+            }
         };
         let read = WorkCounters {
             backend_read_operations: u64::from(!work.is_native()),
@@ -135,10 +145,11 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             },
             ..read
         })?;
-        // Keep the selection for boundary validation; fund its forwarded copy
-        // before allocating, including the multi-path SmallVec spill.
-        let request = make_request(work)?;
-        let forwarded = make_request(work)?;
+        // Fund both copies of the selection before the provider call, including
+        // the multi-path SmallVec spill. The validation copy is built after the
+        // await from its funded storage, so the request never sits in this future.
+        let forwarded = make_request(spill(work)?);
+        let validation = spill(work)?;
         let observed = {
             #[cfg(not(target_arch = "wasm32"))]
             if work.is_native() {
@@ -161,7 +172,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             }
         };
         let heads = &observed.0;
-        heads.validate_for(&request).map_err(map_stream_error)?;
+        heads
+            .validate_for(&make_request(validation))
+            .map_err(map_stream_error)?;
         if !work.is_native() && heads.heads.spilled() {
             work.hold_opaque(
                 (heads.heads.capacity() as u64)
