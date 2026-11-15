@@ -1,5 +1,6 @@
 //! Full-screen goldens through the shipping encoder and an independent terminal.
 #![cfg(not(target_arch = "wasm32"))]
+#![cfg(test)]
 use acyclic_harness_tui::{
     BlockKind, Editor, Hyperlinks, PromptInput, RowLink, Screen, TranscriptRows, Viewport,
     config::ConfigView,

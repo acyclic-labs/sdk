@@ -220,6 +220,7 @@ fn negative_control_per_command_repeats_restate_the_cursor() {
 }
 
 /// Device writes and bytes of each frame after the first, exactly.
+#[cfg(test)]
 fn costs(scenes: &[Scene]) -> Vec<(usize, Vec<u8>)> {
     per_frame(scenes, false)
         .unwrap()
@@ -717,6 +718,7 @@ impl Present for Shared {
 
 /// The screen after a frame, an outside access, and the same frame again
 /// (at `resized` size when given).
+#[cfg(test)]
 fn after_outside_access(
     scene: &Scene,
     tracked: bool,
@@ -840,6 +842,7 @@ proptest! {
     }
 }
 
+#[cfg(test)]
 fn resume_inside_render<const CHECKED: bool>(hidden: bool, changed: bool) {
     let device = Device::default();
     let guard = Rc::new(RefCell::new(RestoreGuard::new(device.clone(), &caps(true))));

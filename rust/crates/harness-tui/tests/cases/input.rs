@@ -1,5 +1,6 @@
 //! Typed prompt events, persistence and presentation checks.
 #![cfg(not(target_arch = "wasm32"))]
+#![cfg(test)]
 
 #[path = "../input/args.rs"]
 mod args;

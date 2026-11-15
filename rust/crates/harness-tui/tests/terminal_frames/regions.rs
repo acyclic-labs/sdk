@@ -1,3 +1,4 @@
+#![cfg(test)]
 use super::*;
 use acyclic_harness_tui::term::RegionScroll;
 use std::{cell::Cell as Count, time::Instant};

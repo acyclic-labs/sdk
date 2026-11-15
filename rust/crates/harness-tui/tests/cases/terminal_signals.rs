@@ -1,5 +1,6 @@
 //! Real subprocesses and PTYs exercise the production signal lifecycle.
 #![cfg(all(unix, not(target_arch = "wasm32"), not(loom)))]
+#![cfg(test)]
 
 use std::fs::File;
 use std::io::{self, Read, Write};

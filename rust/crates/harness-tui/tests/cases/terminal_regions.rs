@@ -2,6 +2,7 @@
 //! place (DECSTBM + SU/SD) inside the frame, and only rows that still differ
 //! are repainted. The screen is always the one the per-command path shows.
 #![cfg(not(target_arch = "wasm32"))]
+#![cfg(test)]
 
 use std::cell::RefCell;
 use std::collections::BTreeSet;
