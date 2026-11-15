@@ -26,5 +26,6 @@ jobs:
         run: node scripts/check-cargo-lock.mjs
       - name: Check Cargo publication inventory without compiling
         run: node scripts/publish-cargo-crates.mjs check
+      # Vendored crates keep their upstream bytes.
       - name: Check that the whole tree has no whitespace errors
-        run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD -- . ':!managed-agents'
+        run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD -- . ':!managed-agents' ':!rust/vendor'
