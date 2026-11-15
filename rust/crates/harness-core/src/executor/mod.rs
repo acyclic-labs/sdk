@@ -543,6 +543,7 @@ pub enum ToolFailureKind {
     InvalidInput,
     /// The executing process ended before the outcome was recorded, and the
     /// executor cannot reconcile it. The effect may have run, partly or fully.
+    /// Like every settled failure, it is the call's result and the turn goes on.
     Interrupted,
 }
 
@@ -663,8 +664,6 @@ pub enum ExecutionProgress<T> {
     Ready(T),
     /// The original approval operation is pending.
     Pending(OperationId),
-    /// A recorded tool failure ended the turn.
-    Failed(ToolFailureKind),
 }
 
 impl<T> ExecutionProgress<T> {
@@ -682,7 +681,6 @@ impl<T> ExecutionProgress<T> {
             Self::Ready(value) => ExecutionProgress::Ready(ready(value)),
             Self::PreDispatchFailed(failure) => ExecutionProgress::PreDispatchFailed(failure),
             Self::Pending(operation) => ExecutionProgress::Pending(operation),
-            Self::Failed(reason) => ExecutionProgress::Failed(reason),
         }
     }
 }
@@ -694,7 +692,6 @@ impl ExecutionProgress<TurnOutput> {
             Self::PreDispatchFailed(failure) => Err(failure.into_error()),
             Self::Ready(output) => Ok(output),
             Self::Pending(operation) => Err(Error::Indeterminate(operation)),
-            Self::Failed(reason) => Err(Error::Invalid(reason.message().into())),
         }
     }
 }

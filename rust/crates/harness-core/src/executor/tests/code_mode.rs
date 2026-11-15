@@ -1513,9 +1513,12 @@ async fn cancelling_the_parent_interrupts_cpu_code_and_records_retirement() -> R
         ready.await.unwrap();
         journal.10.cancel();
     });
+    // The program settles as interrupted; the turn's own stop then ends it.
     assert!(matches!(
-        execution?,
-        ExecutionProgress::Failed(ToolFailureKind::Interrupted)
+        execution,
+        Err(Error::InteractionRejected(
+            crate::InteractionRejection::Cancelled
+        ))
     ));
     assert!(journal.0.lock().unwrap().iter().any(|record| matches!(&record.event, ExecutionEvent::ToolFailed { call_id, reason: ToolFailureKind::Interrupted, .. } if call_id == "program")));
     Ok(())

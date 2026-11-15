@@ -142,9 +142,6 @@ impl<'io> StockExecution<'io> {
                     )
                     .await;
                 let (preparation, custody) = match preparation {
-                    Err(Error::InteractionRejected(crate::InteractionRejection::Cancelled)) => {
-                        return Ok(ToolInvocationOutcome::Interrupted);
-                    }
                     Err(error) => return Err(error),
                     Ok(Err(error)) if error.settles_tool_call() => {
                         return self
@@ -190,10 +187,9 @@ impl<'io> StockExecution<'io> {
             (claimed, prepared)
         };
         let (replayed, hold) = match replayed {
-            // A recorded failure settles again; an interruption also stops
-            // the turn where the source's stopped.
+            // A recorded failure, an interruption included, settles again.
             Some((crate::model::RecordedToolOutcome::Failed { reason, cause }, _hold)) => {
-                let content = self
+                return self
                     .settle_tool_cause(
                         journal,
                         operation_id,
@@ -202,12 +198,8 @@ impl<'io> StockExecution<'io> {
                         reason,
                         cause,
                     )
-                    .await?;
-                return Ok(if reason == ToolFailureKind::Interrupted {
-                    ToolInvocationOutcome::Interrupted
-                } else {
-                    ToolInvocationOutcome::Settled(content, None)
-                });
+                    .await
+                    .map(|content| ToolInvocationOutcome::Settled(content, None));
             }
             Some((crate::model::RecordedToolOutcome::Completed(result), hold)) => {
                 (Some(result), hold)
@@ -227,32 +219,13 @@ impl<'io> StockExecution<'io> {
                 Ok(ExecutionProgress::Pending(operation)) => {
                     return Ok(ToolInvocationOutcome::Pending(operation));
                 }
-                Ok(ExecutionProgress::Failed(reason)) => {
-                    self.reject_tool_call(
-                        journal,
-                        operation_id,
-                        step,
-                        &invocation.call_id,
-                        reason,
-                        Error::InteractionRejected(crate::InteractionRejection::Cancelled),
-                    )
-                    .await?;
-                    return Ok(ToolInvocationOutcome::Interrupted);
-                }
                 Ok(ExecutionProgress::PreDispatchFailed(failure)) => {
                     return Err(failure.into_error());
                 }
                 Err(error @ Error::InteractionRejected(crate::InteractionRejection::Cancelled)) => {
-                    self.reject_tool_call(
-                        journal,
-                        operation_id,
-                        step,
-                        &invocation.call_id,
-                        ToolFailureKind::Interrupted,
-                        error,
-                    )
-                    .await?;
-                    return Ok(ToolInvocationOutcome::Interrupted);
+                    return self
+                        .interrupted(journal, identity, &invocation.call_id, error)
+                        .await;
                 }
                 Err(error) => return Err(error),
             }
@@ -292,16 +265,9 @@ impl<'io> StockExecution<'io> {
         let result = match execution {
             Ok(Some(result)) => result,
             Err(error @ Error::InteractionRejected(crate::InteractionRejection::Cancelled)) => {
-                self.reject_tool_call(
-                    journal,
-                    operation_id,
-                    step,
-                    &invocation.call_id,
-                    ToolFailureKind::Interrupted,
-                    error,
-                )
-                .await?;
-                return Ok(ToolInvocationOutcome::Interrupted);
+                return self
+                    .interrupted(journal, identity, &invocation.call_id, error)
+                    .await;
             }
             // Unknown completion retains the original invocation for later
             // reconciliation; it does not establish a terminal tool failure.
@@ -432,6 +398,28 @@ impl<'io> StockExecution<'io> {
             )
             .await
         }
+    }
+
+    /// A call whose run ended without a recorded outcome is the model's
+    /// failed result, never the turn's: the model learns the effect may have
+    /// run, and the turn continues unless its own stop ended it.
+    async fn interrupted(
+        &self,
+        journal: &dyn ExecutionJournal,
+        (operation_id, step): (OperationId, u32),
+        call_id: &str,
+        error: Error,
+    ) -> Result<ToolInvocationOutcome<'io>> {
+        self.reject_tool_call(
+            journal,
+            operation_id,
+            step,
+            call_id,
+            ToolFailureKind::Interrupted,
+            error,
+        )
+        .await
+        .map(|content| ToolInvocationOutcome::Settled(content, None))
     }
 
     async fn observe_tool_cancellation<T>(
