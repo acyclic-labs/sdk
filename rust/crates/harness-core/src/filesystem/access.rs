@@ -240,6 +240,37 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 volume.storage_name(&mut None).ok(),
                 label.is_some()
             );
+            let storage = volume.storage_name(&mut None).unwrap_or_default();
+            eprintln!("DIAGSCOPE agent={:?}", scope.agent());
+            if let Some(text) = label
+                && let Ok(Some(capability)) = acyclic_fs::access::Capability::from_scope_label(text)
+            {
+                for (index, layer) in capability.layers.iter().enumerate() {
+                    let reaches = layer.iter().any(|grant| {
+                        grant
+                            .resource
+                            .volume
+                            .as_deref()
+                            .is_none_or(|name| name == storage)
+                    });
+                    let names: Vec<String> = layer
+                        .iter()
+                        .map(|grant| {
+                            format!(
+                                "{}:{}:{}",
+                                grant
+                                    .resource
+                                    .volume
+                                    .as_deref()
+                                    .map_or("*", |name| name.get(..20).unwrap_or(name)),
+                                grant.resource.path,
+                                grant.actions.len()
+                            )
+                        })
+                        .collect();
+                    eprintln!("DIAGLAYER {index} reaches={reaches} {names:?}");
+                }
+            }
         }
         require(&compiled.0, Action::Read, reference.path(), io)?;
         let mut observation =
