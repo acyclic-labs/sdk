@@ -162,7 +162,6 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
     }
 
     async fn read_request(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        #[cfg(feature = "serde")]
         let keyed = request.key.is_some();
         #[cfg(feature = "serde")]
         let diagnostic = crate::trace::is_source(&request.path);
