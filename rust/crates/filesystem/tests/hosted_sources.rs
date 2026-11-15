@@ -1,12 +1,14 @@
 //! Real native sources retain observation and bind each operation to public providers.
 #![cfg(not(target_arch = "wasm32"))]
 
+use acyclic_fs::simulation::sites;
 use acyclic_fs::{
     CancellationToken, FilesystemNativeSources, FilesystemSourceProvider, FilesystemWireLimits,
     FilesystemWireService, Fs, IdempotencyKey, ReconcileOutcome, SourceError, SourceOptions,
     SourceState, WorkBudget,
 };
 use acyclic_fs_wire::wire::filesystem::v2 as wire;
+use acyclic_native_runtime::testing::Schedule;
 use std::{collections::BTreeMap, sync::Arc};
 
 #[tokio::test]
@@ -15,7 +17,10 @@ async fn source_rebinding_preserves_pending_watch_changes_and_rejects_another_wo
     acyclic_native_runtime::initialize_native_io_services()?;
     let streams = Arc::new(acyclic_stream::MemoryStream::default());
     let objects = Arc::new(acyclic_objects::MemoryObjects::memory());
+    // Separate schedules attribute every storage call to exactly one store.
+    let (original_schedule, _original_events) = Schedule::new();
     let original_store = acyclic_fs::Simulation::wrap(
+        &original_schedule,
         acyclic_fs::StreamAuthorityStore::new(streams.clone()),
         acyclic_fs::LogicalObjectStore::new(objects.clone()),
     );
@@ -30,7 +35,9 @@ async fn source_rebinding_preserves_pending_watch_changes_and_rejects_another_wo
     ))
     .await?;
     let source = workspace.source().ok_or("source missing")?.clone();
+    let (fresh_schedule, _fresh_events) = Schedule::new();
     let fresh_store = acyclic_fs::Simulation::wrap(
+        &fresh_schedule,
         acyclic_fs::StreamAuthorityStore::new(streams),
         acyclic_fs::LogicalObjectStore::new(objects),
     );
@@ -62,16 +69,16 @@ async fn source_rebinding_preserves_pending_watch_changes_and_rejects_another_wo
     let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
     source.changed_with_native_work(&work).await?;
-    for operation in [
-        acyclic_fs::SimulationOperation::AuthorityHead,
-        acyclic_fs::SimulationOperation::AuthorityAppend,
-        acyclic_fs::SimulationOperation::ObjectPut,
-        acyclic_fs::SimulationOperation::ObjectRead,
-        acyclic_fs::SimulationOperation::ObjectReadMany,
+    for site in [
+        sites::AUTHORITY_HEAD,
+        sites::AUTHORITY_APPEND,
+        sites::OBJECT_PUT,
+        sites::OBJECT_READ,
+        sites::OBJECT_READ_MANY,
     ] {
-        original_store.schedule_next(operation, acyclic_fs::SimulationFault::RejectBefore)?;
+        original_schedule.inject_next(site, acyclic_fs::SimulationFault::RejectBefore);
     }
-    let fresh_before = fresh_store.trace()?.len();
+    let fresh_before = fresh_schedule.site_calls().len();
     let mut bound = source.bind_workspace(admitted).await?;
     let key = IdempotencyKey::new();
     let ReconcileOutcome::Clean(generation) = bound.reconcile_with_key(key).await? else {
@@ -91,15 +98,15 @@ async fn source_rebinding_preserves_pending_watch_changes_and_rejects_another_wo
     assert_eq!(generation.id(), replayed.id());
     assert_eq!(bound.state(), SourceState::Clean);
     assert!(
-        fresh_store.trace()?[fresh_before..]
+        fresh_schedule.site_calls()[fresh_before..]
             .iter()
-            .any(|entry| { entry.operation == acyclic_fs::SimulationOperation::AuthorityAppend })
+            .any(|call| call.site == sites::AUTHORITY_APPEND)
     );
     assert!(
-        original_store
-            .trace()?
+        original_schedule
+            .site_calls()
             .iter()
-            .all(|entry| entry.fault.is_none())
+            .all(|call| call.fault::<acyclic_fs::SimulationFault>().is_none())
     );
     Ok(())
 }
