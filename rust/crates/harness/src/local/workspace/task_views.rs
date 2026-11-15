@@ -165,6 +165,17 @@ impl LocalWorkspace {
                         )
                         .await
                         .map_err(storage)?;
+                    // These aliases are reconstructible native bindings, not
+                    // SDK content. They publish with the view in one rename,
+                    // so the binding is applied exactly once: the directory
+                    // is then the agent's own, and a later binding never
+                    // replays the alias over what its commands made there.
+                    // The alias retains the original root across forks,
+                    // without traversing the omitted subtree or chaining
+                    // through another task's transient view.
+                    for (root, target) in self.opaque_native_directories()? {
+                        volumes::bind_alias(&staging.join(root), &target, None)?;
+                    }
                     Ok(())
                 },
                 || {
@@ -181,12 +192,6 @@ impl LocalWorkspace {
                 },
             )
             .await?;
-        }
-        // These aliases are reconstructible native bindings, not SDK content.
-        // Retain the original root across forks, without traversing the omitted
-        // subtree or chaining aliases through another task's transient view.
-        for (root, target) in self.opaque_native_directories()? {
-            volumes::bind_alias(&path.join(root), &target, None)?;
         }
         std::fs::canonicalize(&path).map_err(storage)
     }

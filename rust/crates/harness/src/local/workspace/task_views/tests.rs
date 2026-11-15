@@ -1047,3 +1047,77 @@ async fn native_guard_retains_the_original_binding_until_physical_retirement() -
     );
     Ok(())
 }
+
+/// A physical view's opaque alias is installed once, with the view. Whatever
+/// the agent's commands later make at that path is its own; rebinding the view
+/// (as a redelivered handler does) converges instead of failing every attempt.
+#[tokio::test]
+async fn rebinding_a_physical_view_keeps_what_replaced_its_alias() -> Result<()> {
+    let checkout = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
+    std::fs::create_dir(checkout.path().join(".git")).map_err(storage)?;
+    std::fs::write(checkout.path().join(".git/HEAD"), b"source").map_err(storage)?;
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(
+            checkout.path(),
+            (
+                crate::model::Model::new("scripted".into(), "alias".into(), "1".into())?,
+                Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+            ),
+        )?
+        .state_directory(state.path())
+        .workspace_mounting(WorkspaceMounting::Physical)
+        .without_default_tools(),
+    )
+    .await?;
+    let root = harness.workspace.as_ref().unwrap();
+    let authority = crate::filesystem::NativeMountAuthority::admitted(
+        harness.verifier.clone(),
+        harness.signed.copy(&mut None)?,
+    );
+    let cancellation = CancellationToken::new();
+    let project = VolumeRef::new(
+        harness.project.provider().clone(),
+        "child".into(),
+        VolumeClass::Project,
+        crate::conversation::VolumeOwner::Project("alias".into()),
+        &mut None,
+    )?;
+    root.view()
+        .fork(
+            &project.storage_name(&mut None)?,
+            acyclic_fs::IdempotencyKey::from_bytes([1; 16]),
+            acyclic_fs::PublicationPermit::Unrestricted,
+            &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
+        )
+        .await
+        .map_err(storage)?;
+    let bind = || async {
+        root.bound_task_view(
+            root.spawned_project_view(&project).await?,
+            &project,
+            &[],
+            &AgentOwner,
+            &authority,
+        )
+        .await
+    };
+    let first = bind().await?;
+    let path = first.path.clone();
+    assert_eq!(
+        std::fs::read(path.join(".git/HEAD")).map_err(storage)?,
+        b"source"
+    );
+    drop(first);
+    // The agent moves the alias aside and puts a real repository in its place.
+    std::fs::rename(path.join(".git"), path.join(".git-link")).map_err(storage)?;
+    std::fs::create_dir(path.join(".git")).map_err(storage)?;
+    std::fs::write(path.join(".git/HEAD"), b"agent").map_err(storage)?;
+    let again = bind().await?;
+    assert_eq!(again.path, path);
+    assert_eq!(
+        std::fs::read(path.join(".git/HEAD")).map_err(storage)?,
+        b"agent"
+    );
+    Ok(())
+}
