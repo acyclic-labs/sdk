@@ -93,6 +93,21 @@ pub struct PreparationTimeout {
     pub observe_on_expiry: bool,
 }
 
+/// The decision for a started call whose producer was fenced, once
+/// reconciliation cannot settle it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FencedStart {
+    /// Unknown until the call's own outcome or cancellation settles it.
+    Retained,
+    /// The producer ran only inside its fenced owner and ended with it, so the
+    /// call settles as the model-visible interrupted failure.
+    Interrupted,
+    /// Its effect is published only under the call's operation ID, so running
+    /// it again under that ID is its one effect: the fenced original never
+    /// lands, and an original that landed is first settled from its receipt.
+    Reexecuted,
+}
+
 /// Replaceable execution behavior for a tool.
 pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     /// Bounds reversible preparation from the original durable call start.
@@ -303,15 +318,12 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         Ok(None)
     }
 
-    /// Whether executing this started invocation again, under its original
-    /// operation ID, is its one effect once its producer is fenced. An effect
-    /// published only under that ID qualifies: the fenced original never lands,
-    /// so the second execution publishes it once, or replays the receipt of an
-    /// original that landed. Reconciliation itself never executes; the caller
-    /// asks this only for a fenced call reconciliation could not settle, and
-    /// otherwise settles that call as interrupted.
-    fn reexecutes_fenced(&self, _invocation: &ToolInvocation) -> bool {
-        false
+    /// How a started call is decided once its producer is fenced and
+    /// reconciliation cannot settle it. The default retains it: a producer
+    /// outside the owner's process, such as a queued device command, may still
+    /// run it, so only its own outcome or cancellation can settle it.
+    fn fenced_start(&self) -> FencedStart {
+        FencedStart::Retained
     }
 
     /// Whether dropping an invocation future retires all its I/O before return.
@@ -355,8 +367,7 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     /// invocation without recording a terminal failure or executing it again, so
     /// a later result can settle that invocation. Once its producer is fenced (a
     /// predecessor started it and this owner took the actor's delivery), no
-    /// later result can come: the caller decides the call, by
-    /// [`Self::reexecutes_fenced`] or as interrupted.
+    /// later result can come from it, and [`Self::fenced_start`] decides the call.
     /// A cancellation rejection proves the call no longer runs and has no
     /// recorded result; the caller settles it as interrupted.
     fn reconcile<'a>(

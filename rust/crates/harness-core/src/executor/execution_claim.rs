@@ -52,15 +52,16 @@ impl ExecutionClaim<'_> {
 /// reopened owner begins with none: a call that was started but unsettled when
 /// it took the actor's delivery was started by a predecessor, whose producer
 /// that acquisition fenced. No later result can come from that producer, so
-/// its call is decided rather than retained. An entry leaves when its call
-/// settles; the set holds only this owner's open calls.
+/// the call's executor decides it. An entry keeps the funding of the start
+/// that recorded it until its call settles; the set holds only open calls.
 #[derive(Default)]
-pub struct StartedCalls(crate::sync::SyncMutex<std::collections::BTreeSet<OperationId>>);
+pub struct StartedCalls(crate::sync::SyncMutex<std::collections::BTreeMap<OperationId, Storage>>);
 
 impl StartedCalls {
     fn calls(
         &self,
-    ) -> impl std::ops::DerefMut<Target = std::collections::BTreeSet<OperationId>> + '_ {
+    ) -> impl std::ops::DerefMut<Target = std::collections::BTreeMap<OperationId, Storage>> + '_
+    {
         self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -68,8 +69,13 @@ impl StartedCalls {
 
     /// Records a start before it is published, so a start of this owner is
     /// never mistaken for a fenced predecessor's.
-    pub(crate) fn start(&self, call: OperationId) {
-        self.calls().insert(call);
+    pub(crate) fn start(&self, call: OperationId, io: Option<&PreparationIo>) -> Result<()> {
+        let mut calls = self.calls();
+        if !calls.contains_key(&call) {
+            let bytes = std::mem::size_of::<(OperationId, Storage)>() as u64;
+            calls.insert(call, fund(io, bytes, 1)?);
+        }
+        Ok(())
     }
 
     /// Retires a call whose settlement this owner observed.
@@ -79,26 +85,42 @@ impl StartedCalls {
 
     /// Whether a recorded start belongs to a producer this owner fenced.
     pub(crate) fn fenced(&self, call: OperationId) -> bool {
-        !self.calls().contains(&call)
+        !self.calls().contains_key(&call)
     }
 }
 
 /// The started-call set of the provider owner that `claims` belongs to.
 pub(crate) fn started_calls(
     claims: &acyclic_fs::OperationClaims,
+    io: Option<&PreparationIo>,
 ) -> Result<std::sync::Arc<StartedCalls>> {
     claims.shared_resource(
         &mut (),
-        |_| Ok(()),
-        |_, _| Ok(()),
-        |_| Ok(std::sync::Arc::new(StartedCalls::default())),
+        |()| crate::model::charge_items(io, 1),
+        |bytes, ()| fund(io, bytes, 1),
+        |()| Ok(std::sync::Arc::new(StartedCalls::default())),
     )
+}
+
+/// Funds owner-retained bytes from the caller's original work.
+fn fund(io: Option<&PreparationIo>, bytes: u64, allocations: u64) -> Result<Storage> {
+    io.map(|io| {
+        for _ in 0..allocations {
+            io.allocation_attempt(bytes)?;
+        }
+        io.retain_owned(bytes)?;
+        io.take_owned_custody(bytes)
+    })
+    .transpose()
 }
 
 impl ExecutionClaims {
     /// The started-call set shared by every handle of this journal's owner.
-    pub fn started_calls(&self) -> Result<std::sync::Arc<StartedCalls>> {
-        started_calls(&self.0)
+    pub fn started_calls(
+        &self,
+        io: Option<&PreparationIo>,
+    ) -> Result<std::sync::Arc<StartedCalls>> {
+        started_calls(&self.0, io)
     }
 
     /// Claims an operation before inspecting its replay observations.
@@ -124,18 +146,7 @@ pub(crate) fn acquire<'a>(
     let claim = claims.claim(
         key,
         || crate::model::charge_items(io, 1),
-        |bytes, allocations| -> Result<Storage> {
-            {
-                io.map(|io| {
-                    for _ in 0..allocations {
-                        io.allocation_attempt(bytes)?;
-                    }
-                    io.retain_owned(bytes)?;
-                    io.take_owned_custody(bytes)
-                })
-                .transpose()
-            }
-        },
+        |bytes, allocations| fund(io, bytes, allocations),
     )?;
     Ok(match claim {
         acyclic_fs::OperationAttempt::Owned(claim) => {

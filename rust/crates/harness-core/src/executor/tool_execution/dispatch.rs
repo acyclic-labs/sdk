@@ -21,11 +21,14 @@ impl<'io> StockExecution<'io> {
     ) -> Result<ToolInvocationOutcome<'io>> {
         let (operation_id, step) = identity;
         let invocation = record.invocation;
-        // A fenced start's producer can no longer settle it. An effect keyed
-        // by the call's operation runs again as that one effect; any other
-        // call that reconciliation cannot settle is the model's interrupted
-        // failure. A start of this owner is never fenced.
-        let reexecuted = fenced && tool.executor.reexecutes_fenced(invocation);
+        // A fenced start's producer is not this owner, which is never fenced
+        // itself; the executor declares how reconciliation's unknown decides.
+        let decision = if fenced {
+            tool.executor.fenced_start()
+        } else {
+            crate::tool::FencedStart::Retained
+        };
+        let reexecuted = decision == crate::tool::FencedStart::Reexecuted;
         let completion = crate::executor::phase::PreparedPhase::new(journal, self.io)?;
         // A remote target's run is queued in the claim's own commit.
         // A target that went away since resolution refuses it unstarted.
@@ -304,7 +307,9 @@ impl<'io> StockExecution<'io> {
                     .await;
             }
             // The fence proves the call no longer runs, as a cancellation does.
-            Ok(None) | Err(Error::Indeterminate(_)) if fenced && !reexecuted => {
+            Ok(None) | Err(Error::Indeterminate(_))
+                if decision == crate::tool::FencedStart::Interrupted =>
+            {
                 return self
                     .interrupted(
                         journal,
@@ -575,8 +580,8 @@ impl<'io> StockExecution<'io> {
                 return Err(Error::Indeterminate(operation_id));
             }
             // This owner's start is never mistaken for a fenced one.
-            if let Some(started) = journal.started_calls()? {
-                started.start(invocation.operation_id);
+            if let Some(started) = journal.started_calls(self.io)? {
+                started.start(invocation.operation_id, self.io)?;
             }
             // A claim acquires the dispatch: its key names this attempt, so a
             // racer at the same tail is refused instead of recognised as a

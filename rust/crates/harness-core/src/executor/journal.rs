@@ -251,7 +251,10 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     /// it was recorded by a predecessor that this owner's acquisition of the
     /// actor's delivery fenced. `None` names no owner: every start is then
     /// treated as possibly live, and an unknown outcome is retained.
-    fn started_calls(&self) -> Result<Option<std::sync::Arc<super::StartedCalls>>> {
+    fn started_calls(
+        &self,
+        _io: Option<&PreparationIo>,
+    ) -> Result<Option<std::sync::Arc<super::StartedCalls>>> {
         Ok(None)
     }
 
