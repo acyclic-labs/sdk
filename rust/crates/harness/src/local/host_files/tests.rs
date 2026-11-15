@@ -334,15 +334,16 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
     }
     fn owner() -> Result<(EndpointFixture, PathBuf, acyclic_native_runtime::FileLock)> {
         let checkout = tempfile::tempdir().map_err(storage)?;
-        let workspace = checkout.path().join("workspace");
+        let checkout_root = std::fs::canonicalize(checkout.path()).map_err(storage)?;
+        let workspace = checkout_root.join("workspace");
         std::fs::create_dir(&workspace).map_err(storage)?;
         let workspace = std::fs::canonicalize(workspace).map_err(storage)?;
-        let directory = checkout.path().join(DIRECTORY);
+        let directory = checkout_root.join(DIRECTORY);
         std::fs::create_dir_all(directory.join("requests")).map_err(storage)?;
         std::fs::create_dir(directory.join("status")).map_err(storage)?;
         let endpoint = LocalEndpoint::register(
             workspace.clone(),
-            checkout.path().join(workspace::HOST_VIEW_ROOT),
+            checkout_root.join(workspace::HOST_VIEW_ROOT),
             directory.clone(),
         );
         let ownership = ownership(&workspace)?;
@@ -638,10 +639,11 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
 
 fn rejected_requests_end_without_owner_exit() -> Result<()> {
     let checkout = tempfile::tempdir().map_err(storage)?;
-    let workspace = checkout.path().join("workspace");
+    let checkout_root = std::fs::canonicalize(checkout.path()).map_err(storage)?;
+    let workspace = checkout_root.join("workspace");
     std::fs::create_dir(&workspace).map_err(storage)?;
     let workspace = std::fs::canonicalize(workspace).map_err(storage)?;
-    let directory = checkout.path().join(DIRECTORY);
+    let directory = checkout_root.join(DIRECTORY);
     let requests = directory.join("requests");
     std::fs::create_dir_all(&requests).map_err(storage)?;
     std::fs::create_dir(directory.join("status")).map_err(storage)?;
