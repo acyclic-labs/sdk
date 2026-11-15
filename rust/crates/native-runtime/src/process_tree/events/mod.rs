@@ -423,6 +423,9 @@ pub(super) struct Wait<'a> {
     // The common single-source/deadline wait needs no registration allocation.
     first: Option<Registration<'a>>,
     other: Vec<Registration<'a>>,
+    // Woken by a simulated clock, which only its runtime's thread advances.
+    #[cfg(feature = "test-support")]
+    simulated: bool,
 }
 
 struct Registration<'a> {
@@ -517,6 +520,8 @@ fn arm_with<'a>(
         signal: Arc::new(Signal::default()),
         first: None,
         other: Vec::with_capacity(sources.len().saturating_sub(1)),
+        #[cfg(feature = "test-support")]
+        simulated: false,
     };
     if sources.is_empty() {
         wait.register(owner(None), None, wake_at)?;
@@ -614,8 +619,24 @@ impl Wait<'_> {
             .is_ready()
     }
 
+    /// Marks this wait as woken by a simulated clock's alarm.
+    #[cfg(feature = "test-support")]
+    pub(super) fn simulated(mut self) -> Self {
+        self.simulated = true;
+        self
+    }
+
     /// Parks the calling thread until readiness or its producer's failure.
+    ///
+    /// A wait on a simulated clock hands its pending state to the simulation
+    /// host instead. That clock moves only on its runtime's thread, which a
+    /// controlled worker holds while it runs; a parked worker would keep the
+    /// alarm from ever firing.
     pub(super) fn block(mut self) -> ProcessWaitOutcome {
+        #[cfg(feature = "test-support")]
+        if self.simulated {
+            return crate::testing::blocking_on(self);
+        }
         struct Unpark(std::thread::Thread);
         impl Wake for Unpark {
             fn wake(self: Arc<Self>) {

@@ -113,30 +113,22 @@ mod sys;
 #[cfg(target_vendor = "apple")]
 mod warden;
 
-/// The clock the capture deadline reads. Tests freeze it so that expiry is
-/// ordered by the capture loop's own checks instead of scheduler latency.
-#[cfg(not(test))]
+mod clock;
+use clock::CaptureClock;
+
+/// The current time on the clock a deadline created here would read.
 fn capture_now() -> Instant {
-    Instant::now()
+    CaptureClock::current().now()
 }
 
-#[cfg(test)]
-thread_local! {
-    static CAPTURE_CLOCK: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+/// The one refusal of a direct-child exit wait whose deadline passed.
+fn exit_timeout() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        "process exit deadline exceeded; termination may be unresolved",
+    )
 }
 
-#[cfg(test)]
-fn capture_now() -> Instant {
-    CAPTURE_CLOCK
-        .with(std::cell::Cell::get)
-        .unwrap_or_else(Instant::now)
-}
-
-/// Freezes this thread's capture clock at `now`, or restores wall time.
-#[cfg(test)]
-fn set_capture_clock(now: Option<Instant>) {
-    CAPTURE_CLOCK.with(|clock| clock.set(now));
-}
 pub use capture::{CaptureInput, ProcessCaptureFailure, ProcessInput, ProcessOutput};
 use capture::{PendingStdin, drain_pipe_observed, observe_output};
 #[cfg(unix)]
@@ -955,9 +947,11 @@ impl ProcessTree {
 
     /// Observes direct-child exit on the caller's original schedule, retaining
     /// descendant ownership. An unbounded schedule waits only on OS exit.
+    /// The deadline reads the clock bound here, on the caller's side.
     pub fn wait(&mut self, schedule: impl Into<CaptureSchedule>) -> io::Result<ExitStatus> {
-        let deadline = schedule.into().deadline()?;
-        self.wait_exit_until(deadline, None, &mut None)
+        let clock = CaptureClock::current();
+        let deadline = schedule.into().deadline(&clock)?;
+        self.wait_exit_until(deadline.map(|deadline| (deadline, &clock)), None, &mut None)
     }
 
     /// Waits for direct-child exit, retaining descendant ownership.
@@ -971,7 +965,7 @@ impl ProcessTree {
 
     fn wait_exit_until(
         &mut self,
-        deadline: Option<Instant>,
+        deadline: Option<(Instant, &CaptureClock)>,
         meter: Option<&dyn crate::NativeReadMeter>,
         retained: &mut Option<ExitStatus>,
     ) -> io::Result<ExitStatus> {
@@ -987,6 +981,11 @@ impl ProcessTree {
                     return Err(io::Error::other("process output was already collected"));
                 }
                 self.capture_close_stdin(meter)?;
+                #[cfg(feature = "test-support")]
+                if let Some((deadline, clock @ CaptureClock::Simulated(_))) = deadline {
+                    return self.wait_exit_alarmed(deadline, clock, meter, retained);
+                }
+                let deadline = deadline.map(|(deadline, _)| deadline);
                 #[cfg(windows)]
                 {
                     let child = self.child.as_mut().ok_or(io::ErrorKind::NotFound)?;
@@ -1009,6 +1008,41 @@ impl ProcessTree {
                 }
             })())
         })
+    }
+
+    /// Waits for direct-child exit until a simulated deadline, over the same
+    /// events hub as capture on every OS: the child's exit source plus the
+    /// deadline's alarm, which the simulated clock notifies. Exit observed by
+    /// the alarm's wake still wins over the deadline.
+    #[cfg(feature = "test-support")]
+    fn wait_exit_alarmed(
+        &mut self,
+        deadline: Instant,
+        clock: &CaptureClock,
+        meter: Option<&dyn crate::NativeReadMeter>,
+        retained: &mut Option<ExitStatus>,
+    ) -> io::Result<ExitStatus> {
+        let alarm = clock.alarm(deadline)?;
+        loop {
+            if let Some(status) = self.try_wait(meter)? {
+                *retained = Some(status);
+                return Ok(status);
+            }
+            if clock.now() >= deadline {
+                return Err(exit_timeout());
+            }
+            #[cfg(unix)]
+            self.prepare_exit_source()?;
+            let mut sources = Vec::with_capacity(2);
+            #[cfg(unix)]
+            sources.extend(self.exit_source()?);
+            #[cfg(windows)]
+            if let Some(child) = &self.child {
+                use std::os::windows::io::AsHandle as _;
+                sources.push(events::Source::Exit(child.as_handle()));
+            }
+            clock::arm(&sources, Some(&alarm))?.block().into_result()?;
+        }
     }
 
     /// Captures bounded output and optional input, preserving partial output

@@ -141,7 +141,7 @@ impl<H: CaptureHandler> CaptureHandler for ControlledCapture<H> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::events::{self, Source};
+    use super::super::events;
     use super::*;
 
     #[test]
@@ -155,17 +155,8 @@ mod tests {
         .map_err(io::Error::other)?;
         let control = ProcessControl::open(now + 50)?;
         let wake = control.wake();
-        #[cfg(unix)]
-        let source = {
-            use std::os::fd::AsFd;
-            Source::Readable(wake.as_fd())
-        };
-        #[cfg(windows)]
-        // SAFETY: wake retains this event until the registered wait completes.
-        let source =
-            Source::Exit(unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(wake.raw()) });
         // Only the actual expiry producer can complete this wait.
-        events::arm(&[source], None)?.block().into_result()?;
+        events::arm(&[wake.source()], None)?.block().into_result()?;
         assert_eq!(
             control.check().unwrap_err().kind(),
             io::ErrorKind::Interrupted

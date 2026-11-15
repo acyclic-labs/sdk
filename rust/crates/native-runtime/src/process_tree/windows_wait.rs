@@ -1,6 +1,6 @@
 use super::super::cleanup::{Cleanup, Resource};
 use super::super::windows_event::Event;
-use crate::process_tree::Child;
+use crate::process_tree::{Child, exit_timeout};
 use std::ffi::c_void;
 use std::io;
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
@@ -195,11 +195,4 @@ pub(in crate::process_tree) fn wait_with_resume(
             _ => return Err(io::Error::other("unexpected process wait result")),
         }
     }
-}
-
-fn exit_timeout() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::TimedOut,
-        "process exit deadline exceeded; termination may be unresolved",
-    )
 }

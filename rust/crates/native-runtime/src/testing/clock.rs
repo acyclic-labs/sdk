@@ -15,17 +15,10 @@ pub struct CapturedClock {
 impl CapturedClock {
     /// Captures the active seed and runtime, or returns None outside simulation.
     pub fn capture() -> Option<Self> {
-        let context = Context::simulation()?;
-        if !context.schedule.is_seeded() {
-            return None;
-        }
-        let runtime = context.schedule.0.state().wall.runtime.clone()?;
-        let origin = {
-            let _runtime = runtime.enter();
-            tokio::time::Instant::now().into_std()
-        };
+        let (schedule, runtime) = simulation_clock()?;
+        let origin = monotonic(&runtime);
         Some(Self {
-            schedule: context.schedule,
+            schedule,
             runtime,
             origin,
         })
@@ -39,14 +32,34 @@ impl CapturedClock {
 
     /// Reads the creating runtime's monotonic clock on any callback thread.
     pub fn instant(&self) -> std::time::Instant {
-        let _runtime = self.runtime.enter();
-        tokio::time::Instant::now().into_std()
+        monotonic(&self.runtime)
     }
 
     /// Monotonic time since capture; wall-clock jumps do not affect it.
     pub fn elapsed(&self) -> Duration {
         self.instant().duration_since(self.origin)
     }
+
+    /// The runtime whose paused timers fire on this clock's simulated time.
+    pub(crate) fn runtime(&self) -> &tokio::runtime::Handle {
+        &self.runtime
+    }
+}
+
+/// The active seeded simulation and the runtime whose paused clock it reads.
+/// This is the one lookup behind every simulated monotonic reading.
+fn simulation_clock() -> Option<(Schedule, tokio::runtime::Handle)> {
+    let context = Context::simulation()?;
+    if !context.schedule.is_seeded() {
+        return None;
+    }
+    let runtime = context.schedule.0.state().wall.runtime.clone()?;
+    Some((context.schedule, runtime))
+}
+
+fn monotonic(runtime: &tokio::runtime::Handle) -> std::time::Instant {
+    let _runtime = runtime.enter();
+    tokio::time::Instant::now().into_std()
 }
 
 pub(super) struct Wall {

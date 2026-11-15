@@ -235,12 +235,12 @@ impl CaptureRequest {
             return Err(LaunchFailure::Control { error, handler });
         }
         // A relative timeout starts here, at launch: no wait before the
-        // process exists counts against it.
-        #[cfg(test)]
-        tests::preparation_finished();
-        let schedule = self.schedule.launched();
+        // process exists counts against it. Its start and the elapsed check
+        // read one clock, bound on this launching side.
+        let clock = CaptureClock::current();
+        let schedule = self.schedule.launched_on(&clock);
         match schedule {
-            CaptureSchedule::Deadline(deadline) if capture_now() >= deadline => {
+            CaptureSchedule::Deadline(deadline) if clock.now() >= deadline => {
                 return refused(io::ErrorKind::TimedOut.into(), handler);
             }
             CaptureSchedule::FromLaunch(_) | CaptureSchedule::Overflow => {

@@ -7,6 +7,7 @@
 //! control signal or the caller's deadline. A synchronous caller parks on that
 //! wait; an async caller awaits it, holding no thread while the child runs.
 
+use super::clock::{self, Alarm};
 #[cfg(unix)]
 use super::events::OwnedSource as OutputPipe;
 use super::events::{self, Source};
@@ -34,7 +35,11 @@ impl CaptureSchedule {
     /// A capture bounded by `timeout` that checks only on its own events.
     #[must_use]
     pub fn new(timeout: Duration) -> Self {
-        match capture_now().checked_add(timeout) {
+        Self::after(capture_now(), timeout)
+    }
+
+    fn after(now: Instant, timeout: Duration) -> Self {
+        match now.checked_add(timeout) {
             Some(deadline) => Self::Deadline(deadline),
             None => Self::Overflow,
         }
@@ -49,15 +54,20 @@ impl CaptureSchedule {
     /// The absolute schedule of a process launched now.
     #[must_use]
     pub fn launched(self) -> Self {
+        self.launched_on(&CaptureClock::current())
+    }
+
+    /// The absolute schedule of a process launched now on `clock`.
+    pub(super) fn launched_on(self, clock: &CaptureClock) -> Self {
         match self {
-            Self::FromLaunch(timeout) => Self::new(timeout),
+            Self::FromLaunch(timeout) => Self::after(clock.now(), timeout),
             schedule => schedule,
         }
     }
 
-    /// The absolute deadline of a process launched now, if any.
-    pub(super) fn deadline(self) -> io::Result<Option<Instant>> {
-        match self.launched() {
+    /// The absolute deadline on `clock` of a process launched now, if any.
+    pub(super) fn deadline(self, clock: &CaptureClock) -> io::Result<Option<Instant>> {
+        match self.launched_on(clock) {
             Self::Unbounded => Ok(None),
             Self::Deadline(deadline) => Ok(Some(deadline)),
             Self::FromLaunch(_) | Self::Overflow => Err(io::Error::new(
@@ -227,7 +237,12 @@ pub(super) fn retire<H: CaptureHandler>(
 }
 
 pub(super) struct Pump<'a> {
+    // Bound at construction: every turn and wait of this capture reads it,
+    // on whichever worker runs them.
+    clock: CaptureClock,
     deadline: Option<Instant>,
+    // Created once per capture and retained across all of its waits.
+    alarm: Option<Alarm>,
     remaining: Option<usize>,
     output: [Vec<u8>; 2],
     input: Option<PendingStdin<'a>>,
@@ -285,8 +300,13 @@ impl<'a> Pump<'a> {
                 "queued stdin already belongs to the native session",
             )));
         }
+        let clock = CaptureClock::current();
         let deadline = schedule
-            .deadline()
+            .deadline(&clock)
+            .map_err(ProcessCaptureFailure::before_capture)?;
+        let alarm = deadline
+            .map(|deadline| clock.alarm(deadline))
+            .transpose()
             .map_err(ProcessCaptureFailure::before_capture)?;
         let closed_stdin_on_start = input.is_none()
             && tree
@@ -309,7 +329,9 @@ impl<'a> Pump<'a> {
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         Ok(Self {
+            clock,
             deadline,
+            alarm,
             remaining: max_bytes,
             output,
             input,
@@ -340,30 +362,14 @@ impl<'a> Pump<'a> {
         if wakes.is_empty() && self.deadline.is_none() {
             return Ok(None);
         }
-        let sources = wakes
-            .iter()
-            .map(|wake| {
-                #[cfg(unix)]
-                {
-                    use std::os::fd::AsFd;
-                    Source::Readable(wake.as_fd())
-                }
-                #[cfg(windows)]
-                {
-                    // SAFETY: the capture handler retains each event until this wait ends.
-                    Source::Exit(unsafe {
-                        std::os::windows::io::BorrowedHandle::borrow_raw(wake.raw())
-                    })
-                }
-            })
-            .collect::<Vec<_>>();
-        events::arm(&sources, self.wake_at()).map(Some)
+        let sources = wakes.iter().map(ProcessWake::source).collect::<Vec<_>>();
+        clock::arm(&sources, self.alarm.as_ref()).map(Some)
     }
 
     pub(super) fn check_deadline(&self) -> io::Result<()> {
         if self
             .deadline
-            .is_some_and(|deadline| capture_now() >= deadline)
+            .is_some_and(|deadline| self.clock.now() >= deadline)
         {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
@@ -371,12 +377,6 @@ impl<'a> Pump<'a> {
             ));
         }
         Ok(())
-    }
-
-    fn wake_at(&self) -> Option<Instant> {
-        // Tests can freeze the capture clock; native events use wall time.
-        self.deadline
-            .map(|deadline| Instant::now() + deadline.saturating_duration_since(capture_now()))
     }
 
     /// Moves everything that is ready. Never waits.
@@ -524,7 +524,6 @@ impl<'a> Pump<'a> {
         tree: &mut ProcessTree,
         wakes: Option<&[ProcessWake]>,
     ) -> io::Result<events::Wait<'static>> {
-        let wake_at = self.wake_at();
         let writing = self.input.as_ref().is_some_and(PendingStdin::writing);
         #[cfg(unix)]
         let wait = {
@@ -551,19 +550,8 @@ impl<'a> Pump<'a> {
             if self.status.is_none() {
                 sources.extend(tree.exit_source()?);
             }
-            for wake in wakes.unwrap_or_default() {
-                #[cfg(unix)]
-                // SAFETY: each retained wake owns this descriptor through registration.
-                sources.push(Source::Readable(unsafe {
-                    std::os::fd::BorrowedFd::borrow_raw(wake.raw())
-                }));
-                #[cfg(windows)]
-                // SAFETY: each retained wake owns this handle through registration.
-                sources.push(Source::Exit(unsafe {
-                    std::os::windows::io::BorrowedHandle::borrow_raw(wake.raw())
-                }));
-            }
-            events::arm(&sources, wake_at)?
+            sources.extend(wakes.unwrap_or_default().iter().map(ProcessWake::source));
+            clock::arm(&sources, self.alarm.as_ref())?
         };
         #[cfg(windows)]
         let wait = {
@@ -588,19 +576,8 @@ impl<'a> Pump<'a> {
                 use std::os::windows::io::AsHandle as _;
                 sources.push(Source::Exit(child.as_handle()));
             }
-            for wake in wakes.unwrap_or_default() {
-                #[cfg(unix)]
-                // SAFETY: each retained wake owns this descriptor through registration.
-                sources.push(Source::Readable(unsafe {
-                    std::os::fd::BorrowedFd::borrow_raw(wake.raw())
-                }));
-                #[cfg(windows)]
-                // SAFETY: each retained wake owns this handle through registration.
-                sources.push(Source::Exit(unsafe {
-                    std::os::windows::io::BorrowedHandle::borrow_raw(wake.raw())
-                }));
-            }
-            events::arm(&sources, wake_at)?
+            sources.extend(wakes.unwrap_or_default().iter().map(ProcessWake::source));
+            clock::arm(&sources, self.alarm.as_ref())?
         };
         // Report the original registration only after every source is armed.
         // Failed setup or owner loss drops the sender with the original tree.
