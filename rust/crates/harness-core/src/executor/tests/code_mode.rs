@@ -964,9 +964,10 @@ async fn console_values_are_readable_from_the_original_tool_output_directory() -
         ..Bindings::local()
     }
     .build()?
-    .agent_context(&Capabilities::default(), content)?;
+    .agent_context(&Capabilities::default(), content)?
+    .with_execution_journal(journal.clone(), operation)?;
     executor = executor
-        .with_tool_authority(scope, policy)?
+        .with_tool_authority(task.scope().clone(), policy)?
         .with_task_context(&task, operation)?;
     let execution = StockExecution {
         io: Some(&io),
@@ -990,6 +991,14 @@ async fn console_values_are_readable_from_the_original_tool_output_directory() -
     )
     .await?;
     assert!(internal.path().starts_with(".system/execution/"));
+    let hidden = crate::runtime::ToolContext::new(Arc::new(task.clone()), operation, "private-output")?;
+    let hidden_path = format!("{}{}", crate::layers::OUTPUT_PATH, internal.path());
+    let denied = hidden
+        .read_tool_path(&hidden_path, None, Some(&io))
+        .await
+        .err()
+        .expect("the output route must not expose execution records");
+    assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
     let invocation = ToolInvocation::for_model_call(
         operation,
         0,
@@ -1020,6 +1029,7 @@ async fn console_values_are_readable_from_the_original_tool_output_directory() -
         .turn_outputs()
         .tool_results(operation)
         .expect("host tool-output locator");
+    let directory = format!("{}{directory}", crate::layers::OUTPUT_PATH);
     let select = format!(
         r#"import {{list, read}} from 'acyclic';
         const values = [];
