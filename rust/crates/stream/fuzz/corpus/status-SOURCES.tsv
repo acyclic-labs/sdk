@@ -15,3 +15,4 @@ hierarchy_changed	d3932cd3dd351b40f8900c1ab072a3b348d6a0be2a66bb6b4dcf215e55974c
 deadline_elapsed	a848ef8d5ea671a8f49124a337bd28b9709afdbb2911ba7efef68978a95d70ae	tonic::Status::from(&StreamError) -> tonic::Status::add_header -> grpc-message
 unsupported	0108bc000a36d248a171b8518a10678c591676c01ea596302bcdac1149440c18	tonic::Status::from(&StreamError) -> tonic::Status::add_header -> grpc-message
 revision_foreign	1bcc3eb6217addda279af4722f3646b17ca3cf98c9c1e87b306c0b58fd558335	tonic::Status::from(&StreamError) -> tonic::Status::add_header -> grpc-message
+failed	5d28a90f4498a81461efbaf6f628a19d9778390bb5c81a393dd936181cc3d826	tonic::Status::from(&StreamError) -> tonic::Status::add_header -> grpc-message

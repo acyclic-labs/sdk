@@ -559,6 +559,8 @@ pub enum ErrorCode {
     CheckpointFailed = 9,
     /// A required dependency was unavailable.
     DependencyUnavailable = 10,
+    /// The request failed definitively; repeating it cannot succeed.
+    Failed = 11,
 }
 
 /// A service error with a typed known code and lossless message.

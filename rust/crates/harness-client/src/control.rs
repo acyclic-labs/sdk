@@ -513,6 +513,10 @@ pub enum AgentExchangeError {
     /// The actor rejected the invocation before an agent reply was decoded.
     #[error("actor invocation refused with status {0}")]
     ActorStatus(u32),
+    /// The actor's handler failed and the host committed that failure as the
+    /// reply. Read the variant and its structured fields, never its text.
+    #[error("actor invocation failed: {}", .0.kind())]
+    ActorFailed(acyclic_actors::guest::GuestError),
 }
 
 impl AgentExchangeError {
@@ -523,6 +527,7 @@ impl AgentExchangeError {
             Self::Command(cause) => cause.code(),
             Self::Control(cause) => cause.code(),
             Self::ActorStatus(_) => "actor_invocation_refused",
+            Self::ActorFailed(_) => "actor_failed",
         }
     }
 }
@@ -620,6 +625,9 @@ fn response(
     let response = wire::InvokeActorResponse::decode(bytes).map_err(|_| CommandError::Invalid)?;
     if response.encode_to_vec().as_slice() != bytes {
         return Err(CommandError::Invalid.into());
+    }
+    if let Some(failure) = wire::guest_failure(&response) {
+        return Err(AgentExchangeError::ActorFailed(failure));
     }
     let response =
         domain::InvokeActorResponse::try_from(response).map_err(|_| CommandError::Invalid)?;
@@ -873,6 +881,33 @@ mod tests {
             AgentBinding::new(&ordered.encode_to_vec()),
             Err(CommandError::Invalid)
         ));
+    }
+
+    #[test]
+    fn a_committed_guest_failure_reaches_the_caller_typed() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use acyclic_actors::guest::GuestError;
+        let failure = GuestError::dependency_unavailable("machinesWorkspace")
+            .ok_or("binding name refused")?;
+        let mut reply = wire::guest_failure_reply(&failure);
+        let command = AgentCommand::Root {};
+        let Err(error) = response(&reply.encode_to_vec(), &command) else {
+            return Err("a guest failure decoded as an agent reply".into());
+        };
+        assert_eq!(error.code(), "actor_failed");
+        assert!(matches!(
+            &error,
+            AgentExchangeError::ActorFailed(GuestError::DependencyUnavailable { dependency })
+                if dependency == "machinesWorkspace"
+        ));
+        // Negative control: without the reserved marker the same reply is an
+        // ordinary guest 5xx and carries no cause.
+        reply.headers.clear();
+        assert!(matches!(
+            response(&reply.encode_to_vec(), &command),
+            Err(AgentExchangeError::ActorStatus(500))
+        ));
+        Ok(())
     }
 
     #[test]

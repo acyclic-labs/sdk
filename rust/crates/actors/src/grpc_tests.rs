@@ -284,3 +284,30 @@ async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Err
     assert!(!format!("{:?}{:?}", seen.spans, seen.records).contains("private-token"));
     Ok(())
 }
+
+#[test]
+fn retryable_reads_the_actors_detail_not_the_grpc_code() {
+    use wire::ErrorCode as E;
+    let conflict = error_status(E::Conflict, None);
+    let failed = error_status(E::Failed, None);
+    assert_eq!(failed.code(), tonic::Code::FailedPrecondition);
+    assert_eq!(failed.message(), "ERROR_CODE_FAILED");
+    // Both share one gRPC code; only the detail separates them.
+    assert_eq!(conflict.code(), failed.code());
+    assert!(retryable(&conflict));
+    assert!(!retryable(&failed));
+    assert!(retryable(&error_status(E::DependencyUnavailable, None)));
+    // Negative control: without the detail the two are indistinguishable,
+    // so neither is classified as retryable.
+    for status in [&conflict, &failed] {
+        let bare = Status::new(status.code(), status.message());
+        assert!(!retryable(&bare));
+    }
+    // A detail that contradicts its gRPC code is not canonical.
+    let forged = Status::with_details(
+        tonic::Code::Unavailable,
+        "ERROR_CODE_CONFLICT",
+        conflict.details().to_vec().into(),
+    );
+    assert!(!retryable(&forged));
+}

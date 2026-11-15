@@ -25,6 +25,10 @@
     "./client": {
       "default": "./dist/client.js",
       "types": "./dist/client.d.ts"
+    },
+    "./guest": {
+      "types": "./dist/guest.d.ts",
+      "default": "./dist/guest.js"
     }
   },
   "types": "./dist/index.d.ts",

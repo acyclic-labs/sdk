@@ -38,8 +38,9 @@ producer or scheduling assumption. Work is bounded by input bytes and the two
 fixed invocation captures or one fixed failure value, with no I/O per input.
 They do not establish transport, storage, or executor progress.
 
-The sixteen retained failure seeds were captured on Linux x86_64 using the
-command above at source `365a0a114659a59036801b729f07d88d0f78e512`.
+The sixteen original failure seeds were captured on Linux x86_64 using the
+command above at source `365a0a114659a59036801b729f07d88d0f78e512`. The
+`failed` seed is the same serializer's output for `StreamError::Failed`.
 Each file contains the original serializer output without a newline:
 
 | Seed | Bytes | SHA-256 |
@@ -60,6 +61,7 @@ Each file contains the original serializer output without a newline:
 | deadline_elapsed | 18 | `38710b3fb214a0a97eea66a9f003ba0a11873022ee6e6b2749e0bd3153abb8eb` |
 | unsupported | 13 | `0bc6f540bbf1d48a52b38b78f201053bc6ac6a49a3bd6105deccacea34c8b9b8` |
 | revision_foreign | 18 | `e9c4efa792081a5bbd7d5a0d180ab5183dd169b8ca5edf98c9b6b6b68051f3ba` |
+| failed | 8 | `33d04bd775e7b6c6436742508b41fa693a15bd2c902fcd994253392abd717740` |
 
 The qualifier selects the compiler host explicitly as its Cargo target.
 This confines coverage instrumentation to target code and keeps host build

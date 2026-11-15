@@ -337,6 +337,23 @@ failures remain queued and retain the runtime's existing error behavior. Provide
 errors keep their storage or unknown-outcome classification; an absent reply
 after proven consumption is an invalid publication, not a successful response.
 
+A host answers a caller with that committed failure through
+`wire::guest_failure_reply`, and a caller reads it back with
+`wire::guest_failure`. The reply has status 500, exactly one header,
+`acyclic-guest-failure: 1` (`wire::GUEST_FAILURE_HEADER`), and a body that is
+the canonical `GuestError` JSON category, such as
+`{"type":"dependencyUnavailable","detail":{"dependency":"objects"}}`. A
+retained local cause contributes only its classification. The guest response
+encoder refuses the reserved header on a guest's own HTTP response, so an
+ordinary guest 5xx is never read as a guest failure. `guest_failure` refuses a
+reply with another status, another header set or a non-canonical body.
+
+`GuestError::DependencyUnavailable { dependency }` names the manifest binding or
+host endpoint that failed. The name follows the environment name grammar
+(`[A-Za-z_][A-Za-z0-9_]{0,62}`); decoding refuses anything else, so the field
+never carries prose. `GuestError::kind` gives each variant's stable snake_case
+name. Like every committed invocation failure, it is not retryable.
+
 ### Guest durable state binding
 
 Durable alarms are activation events carrying the original context delivery

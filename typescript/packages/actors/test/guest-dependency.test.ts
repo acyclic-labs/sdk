@@ -1,0 +1,46 @@
+import { describe, expect, test } from "bun:test";
+import { DependencyUnavailableError, dependencyBinding, requireBinding } from "../src/guest.js";
+
+const wire = (error: DependencyUnavailableError) => JSON.stringify({ type: error.type, detail: error.detail });
+
+describe("guest dependency failures", () => {
+  test("an absent binding is the GuestError wire form naming it", () => {
+    const present = { objects: { open() {} } };
+    expect(requireBinding(present, "objects")).toBe(present.objects);
+    let thrown: unknown;
+    try { requireBinding({ objects: null }, "objects"); } catch (error) { thrown = error; }
+    expect(thrown).toBeInstanceOf(DependencyUnavailableError);
+    // The exact canonical Rust serde form of DependencyUnavailable.
+    expect(wire(thrown as DependencyUnavailableError)).toBe('{"type":"dependencyUnavailable","detail":{"dependency":"objects"}}');
+  });
+
+  test("a dependency name is never prose", () => {
+    for (const name of ["", "objects is down", "1objects", "a".repeat(64), "objects\n"])
+      expect(() => new DependencyUnavailableError(name)).toThrow(TypeError);
+    expect(() => dependencyBinding("machines workspace", {})).toThrow(TypeError);
+    expect(new DependencyUnavailableError("_".padEnd(63, "a")).detail.dependency).toHaveLength(63);
+  });
+
+  test("every failure of a wrapped binding names it and keeps its cause", async () => {
+    const original = new Error("connection reset");
+    const workspace = dependencyBinding("machinesWorkspace", {
+      admit: async (request: bigint) => { if (request === 0n) throw original; return { request }; },
+      check(): never { throw original; },
+    });
+    expect(await workspace.admit(1n)).toEqual({ request: 1n });
+    const rejected = await workspace.admit(0n).then(() => undefined, (error: unknown) => error);
+    expect(rejected).toBeInstanceOf(DependencyUnavailableError);
+    expect((rejected as DependencyUnavailableError).detail.dependency).toBe("machinesWorkspace");
+    expect((rejected as Error).cause).toBe(original);
+    expect(() => workspace.check()).toThrow(DependencyUnavailableError);
+    const resolve = dependencyBinding("modelFetch", (fail: boolean) => { if (fail) throw original; return 7; });
+    expect(resolve(false)).toBe(7);
+    expect(() => resolve(true)).toThrow(DependencyUnavailableError);
+  });
+
+  test("cancellation is not a dependency failure", async () => {
+    const abort = new DOMException("stopped", "AbortError");
+    const workspace = dependencyBinding("machinesWorkspace", { admit: async () => { throw abort; } });
+    expect(await workspace.admit().then(() => undefined, (error: unknown) => error)).toBe(abort);
+  });
+});

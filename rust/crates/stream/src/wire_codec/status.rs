@@ -58,6 +58,7 @@ pub(super) fn canonical(category: StreamCategory) -> Canonical<'static> {
         StreamCategory::DeadlineElapsed => (Code::FailedPrecondition, "deadline_elapsed"),
         StreamCategory::Unsupported => (Code::Unimplemented, "unsupported_capability"),
         StreamCategory::RevisionForeign => (Code::FailedPrecondition, "revision_foreign"),
+        StreamCategory::Failed => (Code::FailedPrecondition, "failed"),
     };
     Canonical {
         code: code as i32,

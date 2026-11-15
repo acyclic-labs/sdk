@@ -29,8 +29,45 @@ pub struct AgentGuest {
     registry: WasmAgentRegistry,
 }
 
+/// A dependency failure leaves the guest as the same typed JavaScript error a
+/// shared binding raises, so its host's [`rejected`] reads it back as the same
+/// category; every other failure keeps its harness error code.
 fn guest_error(error: GuestError) -> JsValue {
-    js_error(Error::Invalid(error.to_string()))
+    let GuestError::DependencyUnavailable { dependency } = error.category() else {
+        return js_error(Error::Invalid(error.to_string()));
+    };
+    let thrown: JsValue = js_sys::Error::new("guest dependency is unavailable").into();
+    let detail: JsValue = js_sys::Object::new().into();
+    for (target, name, value) in [
+        (&detail, "dependency", JsValue::from_str(dependency)),
+        (&thrown, "type", JsValue::from_str(DEPENDENCY_UNAVAILABLE)),
+        (&thrown, "detail", detail.clone()),
+    ] {
+        if let Err(cause) = js_sys::Reflect::set(target, &JsValue::from_str(name), &value) {
+            return cause;
+        }
+    }
+    thrown
+}
+
+/// The `GuestError` wire tag of a dependency failure, as a JavaScript guest
+/// raises it: `{ type: "dependencyUnavailable", detail: { dependency } }`.
+const DEPENDENCY_UNAVAILABLE: &str = "dependencyUnavailable";
+
+/// The typed dependency failure a JavaScript rejection carries, admitted only
+/// with a binding or endpoint name. Any other rejection is not one.
+fn dependency(error: &JsValue) -> Option<GuestError> {
+    let field = |target: &JsValue, name: &str| {
+        target
+            .is_object()
+            .then(|| js_sys::Reflect::get(target, &JsValue::from_str(name)).ok())
+            .flatten()
+    };
+    if field(error, "type")?.as_string()? != DEPENDENCY_UNAVAILABLE {
+        return None;
+    }
+    let detail = field(error, "detail")?;
+    GuestError::dependency_unavailable(&field(&detail, "dependency")?.as_string()?)
 }
 
 #[wasm_bindgen]
@@ -144,7 +181,8 @@ impl AgentGuest {
 }
 
 fn rejected(error: JsValue) -> GuestError {
-    GuestError::Handler(format!("agent guest failed: {error:?}"))
+    dependency(&error)
+        .unwrap_or_else(|| GuestError::Handler(format!("agent guest failed: {error:?}")))
 }
 
 /// The host's call of a guest's `onRecord`, for [`wire::Remote`]. Dropping

@@ -434,3 +434,172 @@ fn admitted_actor_audiences_include_namespace_and_legacy_default()
     assert!(serde_json::from_value::<AdmittedCaller>(raw).is_err());
     Ok(())
 }
+
+/// One value of every variant, so a new variant fails to compile here until
+/// it is covered.
+fn every_guest_error() -> Vec<GuestError> {
+    let all = vec![
+        GuestError::PreconditionChanged,
+        GuestError::UnsupportedAbi(9),
+        GuestError::UnsupportedFormat,
+        GuestError::NestedMutation,
+        GuestError::MissingIdentity,
+        GuestError::IncompatibleCodec,
+        GuestError::Decode("d".into()),
+        GuestError::Encode("e".into()),
+        GuestError::Handler("h".into()),
+        GuestError::Pending("p".into()),
+        GuestError::Revoked,
+        GuestError::DependencyUnavailable {
+            dependency: "objects".into(),
+        },
+    ];
+    for error in &all {
+        match error {
+            GuestError::PreconditionChanged
+            | GuestError::UnsupportedAbi(_)
+            | GuestError::UnsupportedFormat
+            | GuestError::NestedMutation
+            | GuestError::MissingIdentity
+            | GuestError::IncompatibleCodec
+            | GuestError::Decode(_)
+            | GuestError::Encode(_)
+            | GuestError::Handler(_)
+            | GuestError::Pending(_)
+            | GuestError::Revoked
+            | GuestError::DependencyUnavailable { .. }
+            | GuestError::Caused(_) => {}
+        }
+    }
+    all
+}
+
+#[test]
+fn guest_error_kind_is_the_snake_case_of_its_wire_tag() -> Result<(), Box<dyn std::error::Error>> {
+    let snake = |tag: &str| {
+        tag.chars().fold(String::new(), |mut name, c| {
+            if c.is_ascii_uppercase() {
+                name.push('_');
+            }
+            name.push(c.to_ascii_lowercase());
+            name
+        })
+    };
+    let mut kinds = std::collections::BTreeSet::new();
+    for error in every_guest_error() {
+        let wire = serde_json::to_value(&error)?;
+        let tag = wire["type"].as_str().ok_or("guest error has no wire tag")?;
+        assert_eq!(error.kind(), snake(tag), "{tag}");
+        let caused = error.clone().with_source(std::io::Error::other("local"));
+        assert_eq!(
+            caused.kind(),
+            error.kind(),
+            "a cause changed the kind of {tag}"
+        );
+        assert!(
+            kinds.insert(error.kind()),
+            "two variants share {}",
+            error.kind()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn dependency_unavailable_has_one_canonical_form_and_names_only_bindings()
+-> Result<(), Box<dyn std::error::Error>> {
+    let failure =
+        GuestError::dependency_unavailable("machinesWorkspace").ok_or("binding name refused")?;
+    let canonical =
+        r#"{"type":"dependencyUnavailable","detail":{"dependency":"machinesWorkspace"}}"#;
+    assert_eq!(serde_json::to_string(&failure)?, canonical);
+    assert_eq!(serde_json::from_str::<GuestError>(canonical)?, failure);
+    assert!(!failure.retryable());
+    assert_eq!(failure.clone().with_context("bind"), failure);
+    let caused = failure
+        .clone()
+        .with_source(std::io::Error::other("connection reset"));
+    assert_eq!(serde_json::to_string(&caused)?, canonical);
+    // Negative control: non-identifier text is refused by both entrances.
+    let long = "a".repeat(64);
+    for prose in [
+        "",
+        "objects is down",
+        "1objects",
+        "objects\n",
+        "objects.endpoint",
+        long.as_str(),
+    ] {
+        assert_eq!(GuestError::dependency_unavailable(prose), None, "{prose:?}");
+        let wire =
+            serde_json::json!({"type": "dependencyUnavailable", "detail": {"dependency": prose}});
+        assert!(
+            serde_json::from_value::<GuestError>(wire).is_err(),
+            "decoded {prose:?}"
+        );
+    }
+    assert!(GuestError::dependency_unavailable(&"_".repeat(63)).is_some());
+    // Negative control: free text naming a dependency stays a handler failure.
+    let handler: GuestError = serde_json::from_str(
+        r#"{"type":"handler","detail":"dependencyUnavailable: machinesWorkspace"}"#,
+    )?;
+    assert_eq!(handler.kind(), "handler");
+    assert!(!matches!(
+        handler.category(),
+        GuestError::DependencyUnavailable { .. }
+    ));
+    Ok(())
+}
+
+#[test]
+fn guest_failure_replies_round_trip_and_refuse_every_other_reply()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_actors::wire;
+    for error in every_guest_error() {
+        let reply = wire::guest_failure_reply(&error);
+        assert_eq!(wire::guest_failure(&reply), Some(error.clone()));
+        // A retained cause crosses as its classification only.
+        let caused = error
+            .clone()
+            .with_source(std::io::Error::other("local detail"));
+        let caused_reply = wire::guest_failure_reply(&caused);
+        assert_eq!(caused_reply, reply);
+        assert_eq!(wire::guest_failure(&caused_reply), Some(error));
+    }
+    let failure = GuestError::dependency_unavailable("objects").ok_or("binding name refused")?;
+    let reply = wire::guest_failure_reply(&failure);
+    // Negative control: the same reply without its reserved marker is an
+    // ordinary guest 5xx, never a guest failure.
+    let mut unmarked = reply.clone();
+    unmarked.headers.clear();
+    assert_eq!(wire::guest_failure(&unmarked), None);
+    let marker = reply.headers.first().ok_or("reply has no marker")?.clone();
+    let mut renamed = reply.clone();
+    renamed.headers = vec![wire::Header {
+        name: "content-type".into(),
+        ..marker.clone()
+    }];
+    assert_eq!(wire::guest_failure(&renamed), None);
+    let mut version = reply.clone();
+    version.headers = vec![wire::Header {
+        value: "2".into(),
+        ..marker.clone()
+    }];
+    assert_eq!(wire::guest_failure(&version), None);
+    let mut extra = reply.clone();
+    extra.headers = vec![marker.clone(), marker];
+    assert_eq!(wire::guest_failure(&extra), None);
+    let mut status = reply.clone();
+    status.status = 503;
+    assert_eq!(wire::guest_failure(&status), None);
+    // Canonical form refusal: the same category spelled another way.
+    let mut spaced = reply.clone();
+    spaced.body =
+        br#"{ "type":"dependencyUnavailable","detail":{"dependency":"objects"}}"#.to_vec();
+    assert_eq!(wire::guest_failure(&spaced), None);
+    let mut prose = reply;
+    prose.body =
+        br#"{"type":"dependencyUnavailable","detail":{"dependency":"objects down"}}"#.to_vec();
+    assert_eq!(wire::guest_failure(&prose), None);
+    Ok(())
+}

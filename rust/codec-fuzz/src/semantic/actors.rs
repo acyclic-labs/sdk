@@ -342,6 +342,7 @@ mod tests {
                 C::Unavailable,
                 "ERROR_CODE_DEPENDENCY_UNAVAILABLE",
             ),
+            (E::Failed, C::FailedPrecondition, "ERROR_CODE_FAILED"),
         ] {
             let status = acyclic_actors::grpc::error_status(code, None);
             assert_eq!(status.code(), transport);

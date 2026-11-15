@@ -46,6 +46,24 @@ fn exchange_error(cause: AgentExchangeError) -> JsValue {
             }
             error.into()
         }
+        AgentExchangeError::ActorFailed(failure) => {
+            let error = js_sys::Error::new("actor invocation failed");
+            error.set_name("actor_failed");
+            let mut fields = vec![("kind", JsValue::from_str(failure.kind()))];
+            if let acyclic_actors::guest::GuestError::DependencyUnavailable { dependency } =
+                failure.category()
+            {
+                fields.push(("dependency", JsValue::from_str(dependency)));
+            }
+            for (name, value) in fields {
+                if let Err(cause) =
+                    js_sys::Reflect::set(error.as_ref(), &JsValue::from_str(name), &value)
+                {
+                    return cause;
+                }
+            }
+            error.into()
+        }
         cause => {
             let error = js_sys::Error::new(&cause.to_string());
             error.set_name(cause.code());
@@ -61,6 +79,14 @@ const SESSION_FAILURE: &str = r#"
  * and authorization refusals; this does not assert mutation settlement. */
 export interface WasmAgentSessionError extends Error {
     readonly source: 'session';
+}
+/** The actor's handler failed and its host committed that failure as the reply.
+ * `name` is `actor_failed`; `kind` is the stable guest failure kind, and
+ * `dependency` names the unavailable binding or host endpoint when `kind` is
+ * `dependency_unavailable`. No guest text is carried. */
+export interface WasmAgentActorFailure extends Error {
+    readonly kind: string;
+    readonly dependency?: string;
 }
 "#;
 

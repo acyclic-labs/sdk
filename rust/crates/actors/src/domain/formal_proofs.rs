@@ -50,7 +50,8 @@ fn assert_error_code_mapping(raw: i32) {
         || raw == ErrorCode::Conflict as i32
         || raw == ErrorCode::AdmissionDenied as i32
         || raw == ErrorCode::CheckpointFailed as i32
-        || raw == ErrorCode::DependencyUnavailable as i32;
+        || raw == ErrorCode::DependencyUnavailable as i32
+        || raw == ErrorCode::Failed as i32;
     let result = ErrorCode::try_from(raw);
     assert_eq!(result.is_ok(), expected);
     match result {

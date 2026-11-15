@@ -1,5 +1,6 @@
 /** One namespace guest over the shared Actors Handler ABI. */
 import type { GuestContext } from "@acyclic-labs/actors";
+import { dependencyBinding, requireBinding } from "@acyclic-labs/actors/guest";
 import { initializeHosting, WasmObjects, WasmStream, streamLedgerPort,
   type StreamLedger, type WasmObjectsPort } from "@acyclic-labs/harness/hosting";
 import { AgentGuest, BrowserAgentAuthority, BrowserAgentRegistry, BrowserAgentProviders, type BrowserAgentOptions,
@@ -31,14 +32,13 @@ export type HarnessBindings = { readonly [K in keyof Values as (typeof HARNESS_B
   & { readonly [MODEL_FETCH]: ModelCredentialResolver };
 const required: readonly (readonly [keyof Bound, string])[] = [
   ...(Object.entries(HARNESS_BINDINGS) as [keyof Values, string][]), ["model", MODEL_FETCH]];
+/** Every selected binding is required. The Machines workspace is only ever
+ * called at delivery admission, so any failure of it is that dependency's. */
 function bindings(env: Partial<HarnessBindings>): Bound {
   const values: Partial<Record<keyof Bound, unknown>> = {};
-  for (const [key, name] of required) {
-    const value: unknown = (env as Record<string, unknown>)[name];
-    if (value === undefined || value === null) throw new HarnessActorError("failed_precondition", name);
-    values[key] = value;
-  }
-  return values as Bound;
+  for (const [key, name] of required) values[key] = requireBinding<object>(env, name);
+  const bound = values as Bound;
+  return { ...bound, workspace: dependencyBinding(HARNESS_BINDINGS.workspace, bound.workspace) };
 }
 declare const HARNESS_ACTOR: { readonly config: HarnessActorConfig };
 let heap: Promise<AgentGuest> | undefined;
@@ -77,7 +77,10 @@ async function open(env: Bound): Promise<AgentGuest> {
 export async function manifest(context?: Pick<GuestContext<HarnessBindings>, "env">): Promise<Uint8Array> {
   if (heap === undefined) {
     if (context === undefined) throw new HarnessActorError("failed_precondition", "environment");
-    heap = open(bindings(context.env));
+    // A refused binding is retained as the heap's outcome, so every delivery
+    // reports the same typed dependency instead of an unopened environment.
+    const env = context.env;
+    heap = Promise.resolve().then(() => open(bindings(env)));
   }
   return (await heap).manifest();
 }
