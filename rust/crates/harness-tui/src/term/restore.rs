@@ -146,12 +146,11 @@ impl<W: Write> RestoreGuard<W> {
         // One record per exclusive selection, installed before writing. Keeping
         // intermediate switches as separate undos could replay a failed inner
         // undo AFTER the original selection had already been restored.
-        let index = match existing {
-            Some(index) => index,
-            None => {
-                self.undo.push((mode, Cow::Owned(Vec::new()), original));
-                self.undo.len() - 1
-            }
+        let index = if let Some(index) = existing {
+            index
+        } else {
+            self.undo.push((mode, Cow::Owned(Vec::new()), original));
+            self.undo.len() - 1
         };
         let Some((journaled, pending, _)) = self.undo.get_mut(index) else {
             return Err(io::ErrorKind::InvalidData.into());

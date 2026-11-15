@@ -303,22 +303,21 @@ impl TranscriptRows {
                 );
                 *columns = width;
             }
-            let delta = match self
+            let delta = if let Some(delta) = self
                 .tail_parser
                 .as_ref()
                 .and_then(|(_, parser)| text.strip_prefix(parser.source()))
             {
-                Some(delta) => delta,
-                None => {
-                    self.tail_parser = Some((
-                        width,
-                        acyclic_markdown::Markdown::with_deferred_code_in(
-                            u16::try_from(width.saturating_sub(1).max(1)).unwrap_or(u16::MAX),
-                            self.code_cache.clone(),
-                        ),
-                    ));
-                    text
-                }
+                delta
+            } else {
+                self.tail_parser = Some((
+                    width,
+                    acyclic_markdown::Markdown::with_deferred_code_in(
+                        u16::try_from(width.saturating_sub(1).max(1)).unwrap_or(u16::MAX),
+                        self.code_cache.clone(),
+                    ),
+                ));
+                text
             };
             let rows = match &mut self.tail_parser {
                 Some((_, parser)) => {

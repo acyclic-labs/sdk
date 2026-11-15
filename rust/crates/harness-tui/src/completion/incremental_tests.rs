@@ -259,12 +259,12 @@ fn press(editor: &mut Editor, key: usize, typed: &[&str]) {
         .map(|(at, _)| at)
         .take_while(|at| *at < cursor)
         .last()
-        .map_or(0, |at| at);
+        .unwrap_or(0);
     let right = text
         .char_indices()
         .map(|(at, _)| at)
         .find(|at| *at > cursor)
-        .map_or(text.len(), |at| at);
+        .unwrap_or(text.len());
     match key.checked_sub(typed.len()) {
         None => editor.insert(typed[key], 0),
         Some(0) => editor.delete(true, 0),
