@@ -128,6 +128,11 @@ pub(in crate::filesystem) fn require(
     if view.decide(action, path, access_now()?).allowed {
         Ok(())
     } else {
+        eprintln!(
+            "DIAGDENY action={action:?} path={path:?}
+{}",
+            std::backtrace::Backtrace::force_capture()
+        );
         Err(stock_boundary(
             Some(io),
             crate::wire::ErrorCode::Unauthorized,
@@ -220,6 +225,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             io,
         )
         .await?;
+        if !compiled
+            .0
+            .decide(Action::Read, reference.path(), access_now()?)
+            .allowed
+        {
+            let volume = reference.volume();
+            eprintln!(
+                "DIAGREAD workspace={} volume_id={} class={:?} owner={:?} storage={:?} inherited={inherited_reference} label={}",
+                workspace.name().as_str(),
+                volume.id(),
+                volume.class(),
+                volume.owner(),
+                volume.storage_name(&mut None).ok(),
+                label.is_some()
+            );
+        }
         require(&compiled.0, Action::Read, reference.path(), io)?;
         let mut observation =
             ReadObservation::new(workspace.clone(), selected, compiled, reference, io);
