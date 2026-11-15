@@ -110,4 +110,11 @@ filegroup(
 
 exports_files([
         "descriptors/actors-v1.bin",
+        "descriptors/auth-v1.bin",
+        "descriptors/filesystem-v2.bin",
+        "descriptors/harness-v2.bin",
+        "descriptors/inference-v1.bin",
+        "descriptors/machines-v1.bin",
+        "descriptors/objects-v1.bin",
+        "descriptors/stream-v1.bin",
     ], visibility = ["//visibility:public"])

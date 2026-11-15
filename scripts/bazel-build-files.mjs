@@ -75,7 +75,7 @@ const within = (owner, file) => (owner ? file.slice(owner.length + 1) : file);
 // extra input only. A `concat!` whose first literal names no file is a path prefix completed by
 // later arguments (a macro's name, say): every tracked file under that prefix is an input.
 // A file this misses fails the sandboxed compile loudly; it is never read stale.
-const EMBED = /include(?:_str|_bytes)?!\(\s*(concat!\(\s*env!\(\s*"CARGO_MANIFEST_DIR"\s*\)\s*,\s*)?"([^"]+)"|#\[path\s*=\s*()"([^"]+)"\]/g;
+const EMBED = /include(?:_str|_bytes)?!\(\s*(concat!\(\s*)?(env!\(\s*"CARGO_MANIFEST_DIR"\s*\)\s*,\s*)?"([^"]+)"|#\[path\s*=\s*()"([^"]+)"\]/g;
 const MOD = /^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?mod[ \t]+(?:r#)?(\w+)[ \t]*;/gm;
 const TEST_DIRS = /^(tests|benches|examples)\//;
 const trackedSet = new Set(tracked);
@@ -94,9 +94,9 @@ function closure(crateDir, rootFile) {
     const text = fs.readFileSync(path.join(root, file), "utf8");
     const stem = path.posix.join(here, path.posix.basename(file, ".rs"));
     const found = [];
-    for (const [, manifestRelative, literal, , module] of text.matchAll(EMBED)) {
+    for (const [, concat, manifestRelative, literal, , module] of text.matchAll(EMBED)) {
       const named = path.posix.normalize(path.posix.join(manifestRelative ? crateDir : here, literal ?? module));
-      found.push(...(manifestRelative && !trackedSet.has(named) ? tracked.filter(file => file.startsWith(named)) : [named]));
+      found.push(...(concat && !trackedSet.has(named) ? tracked.filter(file => file.startsWith(named)) : [named]));
     }
     for (const [, name] of text.matchAll(MOD)) {
       for (const base of [here, stem]) found.push(`${base}/${name}.rs`, `${base}/${name}/mod.rs`);
