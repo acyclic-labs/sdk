@@ -42,7 +42,9 @@ fn read(old: bool, baseline: &mut BaselineCursor, candidate: &mut HistoryCursor)
     if old {
         baseline.next_record()
     } else {
-        futures::FutureExt::now_or_never(candidate.next_record()).flatten()
+        futures::FutureExt::now_or_never(candidate.next_record())
+            .and_then(Result::ok)
+            .flatten()
     }
 }
 

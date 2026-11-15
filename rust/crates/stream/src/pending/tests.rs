@@ -63,9 +63,14 @@ async fn cancellation_keeps_exact_submission_and_shared_outcome() -> Result<(), 
     assert_eq!(retained.clone().wait().await?, outcome);
     assert_eq!(provider.commit(request.clone()).await?, outcome);
     let mut changed = request;
-    let effect = changed.effects.first_mut().ok_or("missing effect")?;
-    let CommitMutation::Append { records, .. } =
-        effect.mutations.first_mut().ok_or("missing mutation")?
+    let effect = changed
+        .effects
+        .first_mut()
+        .ok_or(StreamError::InvalidArgument)?;
+    let CommitMutation::Append { records, .. } = effect
+        .mutations
+        .first_mut()
+        .ok_or(StreamError::InvalidArgument)?
     else {
         unreachable!()
     };
@@ -86,7 +91,7 @@ async fn cancellation_keeps_exact_submission_and_shared_outcome() -> Result<(), 
     request
         .effects
         .first_mut()
-        .ok_or("missing effect")?
+        .ok_or(StreamError::InvalidArgument)?
         .conditions
         .clear();
     drop(Pending::submit(

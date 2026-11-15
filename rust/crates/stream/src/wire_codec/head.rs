@@ -261,7 +261,7 @@ mod tests {
             };
             let wire = heads_request_to_wire(request.clone());
             let decoded = wire::HeadsRequest::decode(wire.encode_to_vec().as_slice()).unwrap();
-            prop_assert_eq!(heads_from_wire(decoded).unwrap(), request);
+            prop_assert_eq!(&heads_from_wire(decoded).unwrap(), &request);
             let view = crate::Heads {
                 applied: crate::Revision { scope: crate::RevisionScope::new(Vec::new()), incarnation: 1, index: 0 },
                 retained: request.retained.iter().map(|selected| crate::RetainedRecordObservation {

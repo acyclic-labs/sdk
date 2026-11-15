@@ -201,7 +201,10 @@ fn keyed_readers_keep_independent_wakes_and_share_ready_delivery() {
                 .await
                 .unwrap();
             let pending = peers.signal.pending();
-            assert_eq!(pending, usize::try_from(count)?);
+            assert_eq!(
+                pending,
+                usize::try_from(count).map_err(|_| StreamError::InvalidArgument)?
+            );
             let Poll::Ready(Ok(Some(Ok(record)))) = peers.poll_one(original(0), &mut contexts[0])
             else {
                 panic!("original keyed follow must deliver its committed record");

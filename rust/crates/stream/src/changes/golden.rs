@@ -14,14 +14,14 @@ fn qualify_marker(
     take_marker_probes();
     assert_eq!(
         reader_format(headers).map(|format| format.is_some()),
-        expected
+        expected.clone()
     );
     let after = take_marker_probes();
     assert_eq!(
         after, probes,
         "reserved marker classification repeated an attribute probe"
     );
-    assert_eq!(filter.matches(headers), expected == Ok(true));
+    assert_eq!(filter.matches(headers), *expected == Ok(true));
     assert_eq!(take_marker_probes(), after);
     assert_eq!(FollowFilter::default().matches(headers), expected.is_ok());
     assert_eq!(take_marker_probes(), after);
@@ -40,7 +40,7 @@ fn qualify_marker(
     assert_eq!(take_marker_probes(), after);
     assert_eq!(
         validate(&[], headers),
-        if expected == Ok(false) {
+        if *expected == Ok(false) {
             Ok(())
         } else {
             Err(StreamError::InvalidArgument)
@@ -61,7 +61,7 @@ fn qualify_marker(
     .unwrap();
     assert_eq!(
         decode(value, &forged),
-        if expected == Ok(false) {
+        if *expected == Ok(false) {
             Ok(decoded.clone())
         } else {
             Err(StreamError::InvalidArgument)

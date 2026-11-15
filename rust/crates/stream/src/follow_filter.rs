@@ -806,8 +806,8 @@ mod tests {
                         let (projected, allocations, marker_probes, parsed_bytes) =
                             measure(|| filter.project(record.clone()));
                         if valid {
-                            let projected = projected.as_ref()?;
-                            let projected = projected.as_ref();
+                            let projected_ref = projected.as_ref()?;
+                            let projected = projected_ref.as_ref();
                             assert_eq!(matched, projected.is_some());
                             assert_eq!(preservation, Ok(projected == Some(&record)));
                             if let Some(projected) = projected {
@@ -853,8 +853,7 @@ mod tests {
                                 "validate the original body once"
                             );
                         } else {
-                            let output = projected
-                                .as_ref()?
+                            let output = projected_ref
                                 .as_ref()
                                 .ok_or("partial projection was not retained")?;
                             assert_eq!(marker_probes, 2 * probes);
