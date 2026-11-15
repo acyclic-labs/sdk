@@ -77,6 +77,7 @@ include!("commit_index.rs");
 include!("path_state.rs");
 
 include!("history.rs");
+include!("lineage.rs");
 include!("key_index.rs");
 
 include!("capacity.rs");

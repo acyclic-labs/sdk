@@ -255,7 +255,7 @@ impl HistoryCursor {
 struct FiniteRead {
     history: PinnedHistory,
     window: Option<HistoryWindow>,
-    key: Option<(crate::ReadKeySeek, KeyTree)>,
+    key: Option<(crate::ReadKeySeek, KeyPin)>,
     next: u64,
     remaining: u32,
 }
@@ -285,7 +285,7 @@ impl FiniteRead {
                 .is_none()
                 .then(|| path.prefix_window(request.from, tail))
                 .flatten(),
-            key: request.key.map(|key| (key, path.keys.clone())),
+            key: request.key.map(|key| (key, path.keys.key_pin(path.tail))),
             next: request.from,
             remaining: request.limit,
         }

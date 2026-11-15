@@ -25,12 +25,22 @@ impl RecordBatch {
 
 type HistoryRanges = acyclic_collections::PersistentIndex<Arc<RecordBatch>, Allocation>;
 
+impl LineageIndex for HistoryRanges {
+    fn cut(&self, before: u64) -> Self {
+        self.prefix(before.to_be_bytes())
+    }
+}
+
+/// A path version's view of its sealed-batch range lineage.
+type RangeLineage = IndexLineage<HistoryRanges>;
+
 // Only sealed ancestor batches enter this index. The newest batch remains
 // uniquely owned while prepared ingress binds its original body and headers.
-// Roots live on paths and admitted pins, never on every historical node.
+// Lineages live on paths and indexes on admitted pins, so a historical node
+// never keeps a superseded index alive.
 struct PreparedHistory {
     history: Arc<History>,
-    ranges: HistoryRanges,
+    ranges: RangeLineage,
     keys: KeyTree,
 }
 
@@ -225,7 +235,7 @@ impl PinnedHistory {
     fn new(path: &PathState, tail: u64) -> Self {
         Self {
             root: path.history.clone(),
-            ranges: path.ranges.clone(),
+            ranges: path.ranges.pin(tail),
             tail,
         }
     }

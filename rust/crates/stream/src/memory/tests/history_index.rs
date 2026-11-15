@@ -170,6 +170,57 @@ async fn releasing_a_keyed_pin_returns_superseded_index_funding() -> TestResult<
         meter.held.load(Ordering::SeqCst) < held,
         "record ancestry retained a superseded key index after its last pin"
     );
+    // A write refused at any allocation, or planned in full and then
+    // cancelled, leaves both lineages as accepted: dropping its plan refunds
+    // every index node it built and advances no generation.
+    let state = provider.state.read().await;
+    let accepted = state.paths.get(&path).ok_or(StreamError::NotFound)?;
+    let generations = |path: &PathState| {
+        (
+            path.keys
+                .shared
+                .as_ref()
+                .map(|shared| shared.with(|newest| newest.generation)),
+            path.ranges
+                .shared
+                .as_ref()
+                .map(|shared| shared.with(|newest| newest.generation)),
+        )
+    };
+    let planned_on = generations(accepted);
+    assert!(matches!(planned_on, (Some(_), Some(_))));
+    let mutations = [CommitMutation::Append {
+        path: path.clone(),
+        records: append(b"refused")?.records,
+    }];
+    let (facts, _facts) = provider.facts(
+        &state,
+        &mutations.iter().collect::<Vec<_>>(),
+        CommitId::default(),
+        0,
+    )?;
+    for allowance in 0.. {
+        let refusals = Arc::new(Meter::default());
+        let admitted = provider.with_context(Work::new(refusals.original())?);
+        refusals.limit.store(
+            refusals.allocations.load(Ordering::SeqCst) + allowance,
+            Ordering::SeqCst,
+        );
+        let planned = admitted.history(&state, &facts[0]);
+        let cancelled = planned.is_ok();
+        drop((planned, admitted));
+        assert_eq!(
+            refusals.held.load(Ordering::SeqCst),
+            0,
+            "a dropped plan left index nodes charged at allowance {allowance}"
+        );
+        refusals.assert_refunded();
+        assert_eq!(generations(accepted), planned_on);
+        if cancelled {
+            break;
+        }
+    }
+    drop(state);
     assert_records(
         &provider,
         &path,
@@ -179,6 +230,154 @@ async fn releasing_a_keyed_pin_returns_superseded_index_funding() -> TestResult<
     drop(provider);
     assert_eq!(meter.held.load(Ordering::SeqCst), 0);
     meter.assert_refunded();
+    Ok(())
+}
+
+#[tokio::test]
+async fn releasing_a_history_pin_returns_superseded_range_funding() -> TestResult<()> {
+    let provider = MemoryStream::default();
+    let path = path("indexed/range-retirement")?;
+    let meter = Arc::new(Meter::default());
+    let values: [&'static [u8]; 5] = [b"a", b"b", b"c", b"d", b"e"];
+    let append = |value: &'static [u8]| AppendRequest {
+        path: path.clone(),
+        records: vec![Bytes::from_static(value).into()],
+        if_tail: None,
+        idempotency_key: IdempotencyKey::unique(),
+    };
+    // Sealed batches 0, 1 and 2 form a branch root that the next insertion
+    // (batch 3) copies, superseding it.
+    for value in &values[..4] {
+        drop(
+            provider
+                .native_append(append(value), meter.original())
+                .await??,
+        );
+    }
+    // This ordinary cursor has no allocation on the native issuer. Any refund
+    // when it drops belongs to the range index version it alone keeps pinned.
+    let mut pinned = provider
+        .read(ReadRequest {
+            path: path.clone(),
+            from: 0,
+            limit: 1,
+            at_least: Default::default(),
+            key: None,
+        })
+        .await?;
+    drop(
+        provider
+            .native_append(append(values[4]), meter.original())
+            .await??,
+    );
+    assert_eq!(
+        futures::TryStreamExt::try_next(&mut pinned)
+            .await?
+            .ok_or(StreamError::Unavailable)?
+            .value
+            .as_ref(),
+        b"a"
+    );
+    let held = meter.held.load(Ordering::SeqCst);
+    drop(pinned);
+    assert!(
+        meter.held.load(Ordering::SeqCst) < held,
+        "record ancestry retained a superseded range index after its last pin"
+    );
+    let expected = values.map(Bytes::from_static);
+    assert_records(&provider, &path, &expected).await?;
+    drop(provider);
+    assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+    meter.assert_refunded();
+    Ok(())
+}
+
+#[tokio::test]
+async fn one_commit_extends_both_holders_of_an_inherited_lineage() -> TestResult<()> {
+    let provider = MemoryStream::default();
+    let keyed = |value: &'static [u8]| -> Result<crate::AppendRecord, StreamError> {
+        Ok(crate::AppendRecord {
+            value: Bytes::from_static(value),
+            headers: crate::RecordHeaders::new(vec![Bytes::from_static(b"selected")], Vec::new())?,
+        })
+    };
+    let source = path("inherited/source")?;
+    let child = path("inherited/source/child")?;
+    let copy = path("inherited/copy/child")?;
+    append_batch(&provider, &source, vec![Bytes::from_static(b"root")]).await?;
+    // Two keyed batches give the child a key lineage and a sealed-range one.
+    for value in [b"first".as_slice(), b"second"] {
+        provider
+            .append(AppendRequest {
+                path: child.clone(),
+                records: vec![keyed(value)?],
+                if_tail: None,
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+    }
+    // The subtree fork copies the child's view, so both children hold the
+    // newest view of the same two lineages.
+    provider
+        .fork(ForkRequest {
+            source: source.clone(),
+            destination: path("inherited/copy")?,
+            at_tail: None,
+            exclude: Vec::new(),
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
+    let outcome = provider
+        .commit(CommitRequest {
+            deadline_unix_millis: None,
+            effects: vec![crate::CommitEffect::hard(
+                Vec::new(),
+                vec![
+                    CommitMutation::Append {
+                        path: child.clone(),
+                        records: vec![keyed(b"source-third")?],
+                    },
+                    CommitMutation::Append {
+                        path: copy.clone(),
+                        records: vec![keyed(b"copy-third")?],
+                    },
+                ],
+            )],
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
+    assert!(matches!(outcome, CommitOutcome::Committed(_)));
+    for (path, third) in [(&child, "source-third"), (&copy, "copy-third")] {
+        let expected = [
+            Bytes::from_static(b"first"),
+            Bytes::from_static(b"second"),
+            Bytes::from_static(third.as_bytes()),
+        ];
+        assert_records(&provider, path, &expected).await?;
+        let selected = provider
+            .read(ReadRequest {
+                path: path.clone(),
+                from: 0,
+                limit: 3,
+                at_least: Default::default(),
+                key: Some(crate::ReadKeySeek::exact(
+                    Bytes::from_static(b"selected"),
+                    u64::MAX,
+                )),
+            })
+            .await?
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(
+            selected
+                .iter()
+                .map(|record| record.value.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
     Ok(())
 }
 
@@ -409,7 +608,7 @@ async fn pinned_ranges_preserve_cold_bounds_cuts_and_original_admission() -> Tes
             meter.allocations.load(Ordering::SeqCst) + allowance,
             Ordering::SeqCst,
         );
-        let next = selected_state.ranges.insert(
+        let next = selected_state.ranges.newest().insert(
             &20_u64.to_be_bytes(),
             Arc::clone(records),
             &mut HistoryIndexWork(&admitted),
