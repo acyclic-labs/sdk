@@ -170,6 +170,8 @@ pub struct PromptHistory {
 // Search cancellation snapshots navigation without copying the shared entries.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Navigation {
+    // Only the native prompt editor restores saved navigation.
+    #[cfg(not(target_arch = "wasm32"))]
     generation: u64,
     index: Option<usize>,
     draft: String,
@@ -204,6 +206,7 @@ impl PromptHistory {
         self.generation
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn restore_navigation(&mut self, saved: Navigation) {
         if saved.generation == self.generation {
             self.navigation = saved;
@@ -234,6 +237,7 @@ impl PromptHistory {
     /// Begin a new history navigation session.
     pub fn reset(&mut self) {
         self.navigation = Navigation {
+            #[cfg(not(target_arch = "wasm32"))]
             generation: self.generation,
             ..Navigation::default()
         };
