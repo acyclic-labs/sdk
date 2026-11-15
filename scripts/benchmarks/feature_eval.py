@@ -4,6 +4,8 @@
 `harbor run -c CONFIG -o JOBS_DIR`, `score` reads `JOBS_DIR/<job_name>/<trial>/`:
 `result.json` for the verifier outcome and `agent/usage.jsonl` (GraphCoder's
 committed per-call usage export) for tokens. It prints one verdict per feature.
+Trials are matched by the task path their own config records, never by
+`task_name`: Harbor takes that from task.toml's package name when one exists.
 """
 
 import argparse
@@ -70,11 +72,11 @@ def _tokens(path: Path):
 
 
 def trials(job: Path) -> dict:
-    """task name -> (solved, tokens). A trial that raised or has no reward of 1 failed."""
+    """task path -> (solved, tokens). A trial that raised or has no reward of 1 failed."""
     result = {}
     for directory in sorted(path for path in job.iterdir() if path.is_dir()):
         record = json.loads((directory / "result.json").read_text())
-        name = record["task_name"]
+        name = record["config"]["task"]["path"]
         if name in result:
             raise ValueError("more than one trial for task: " + name)
         rewards = (record.get("verifier_result") or {}).get("rewards") or {}
@@ -102,7 +104,7 @@ def score(plan: dict, jobs_dir: Path) -> dict:
         for side in ("on", "off"):
             observed = trials(jobs_dir / feature[side]["job_name"])
             # Both arms answer for the plan's exact tasks, or nothing is compared.
-            if sorted(observed) != sorted(plan["task_names"]):
+            if sorted(observed) != sorted(task["path"] for task in feature[side]["tasks"]):
                 raise ValueError(f"{feature['name']} {side} trials are not the plan's tasks")
             known = [tokens for _, tokens in observed.values()]
             arms[side] = {

@@ -152,7 +152,9 @@ python3 -m scripts.benchmarks.feature_eval score --plan /path/to/features-plan.j
 ```
 
 The scorer refuses arms that differ outside their feature arm, and trial sets
-that are not exactly the plan's tasks. A trial that raised, or whose verifier
+that are not exactly the plan's tasks. Trials are matched by the task path in
+their own `result.json` config: Harbor's `task_name` is task.toml's package
+name when the task declares one, not its directory. A trial that raised, or whose verifier
 reward is not 1, is a failure and stays in the denominator. Token totals are
 input plus output over completed calls. Cached input is reported but never
 decides. An unfinished call or a missing count makes the verdict INCOMPLETE,

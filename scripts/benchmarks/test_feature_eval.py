@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 
 from .contracts import Artifact, arm, arm_arguments, run_command
-from .feature_eval import decide, jobs, score
+from .feature_eval import decide, jobs, score, trials
 from .plan import feature_plan, manifest
 
 REGISTRY = json.loads((Path(__file__).resolve().parent / "features.json").read_text())
@@ -58,6 +58,7 @@ class FeatureEval(unittest.TestCase):
         """Each trial as Harbor lays it out: result.json plus agent/usage.jsonl."""
         for feature in plan["features"]:
             for side in ("on", "off"):
+                path = {config["path"].rsplit("/", 1)[-1]: config for config in feature[side]["tasks"]}
                 agent = feature[side]["agents"][0]
                 for task in plan["task_names"]:
                     trial = jobs_dir / feature[side]["job_name"] / (task + "__trial")
@@ -72,8 +73,10 @@ class FeatureEval(unittest.TestCase):
                                           arguments=tuple(arguments))
                     subprocess.run(["bash", "-c", command], check=True, cwd=self.root)
                     solved = json.loads((logs / "graphcoder.jsonl").read_text())["solved"]
+                    # Harbor names a packaged task by its task.toml name, not its directory.
                     (trial / "result.json").write_text(json.dumps({
-                        "task_name": task, "exception_info": None,
+                        "task_name": "benchmark/" + task, "exception_info": None,
+                        "config": {"task": path[task]},
                         "verifier_result": {"rewards": {"reward": 1 if solved else 0}}}))
 
     def test_mock_tier_runs_plan_commands_and_scores_paired_arms(self):
@@ -84,6 +87,9 @@ class FeatureEval(unittest.TestCase):
                          ["r44-context-management-off.json", "r44-context-management-on.json"])
         jobs_dir = self.root / "jobs"
         self.run_arms(plan, jobs_dir)
+        # Trials answer for the task paths the plan wrote, whatever Harbor names them.
+        self.assertEqual(sorted(trials(jobs_dir / "r44-context-management-on")),
+                         sorted(task["path"] for task in plan["features"][0]["on"]["tasks"]))
         (result,) = score(plan, jobs_dir)["features"]
         tasks = len(plan["task_names"])
         even = sum(int(name[-1]) % 2 == 0 for name in plan["task_names"])
