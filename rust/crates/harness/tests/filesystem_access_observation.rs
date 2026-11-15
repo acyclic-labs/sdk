@@ -93,11 +93,22 @@ async fn racing_observation(revoke: bool, range: bool) -> Result<(), Box<dyn Err
     };
     let (result, published) = futures::join!(read, publication);
     published?;
-    // Either publication invalidates the captured observation. The return
-    // fence must refuse these bytes instead of waiting for a quiet Head.
-    assert!(
-        matches!(result, Err(error) if error.code() == acyclic_harness::wire::ErrorCode::Conflict)
-    );
+    // The return fence decides at one confirming cut, never at a quiet Head.
+    // A revocation changes the selected policy and must refuse these bytes; a
+    // data-only publication leaves it unchanged and must return them.
+    if revoke {
+        let conflict = acyclic_harness::wire::ErrorCode::Conflict;
+        assert!(
+            matches!(result, Err(error) if error.code() == conflict),
+            "revocation overtaking the observation returned bytes"
+        );
+    } else {
+        assert_eq!(
+            result?.as_ref(),
+            contents.as_bytes(),
+            "data-only publication invalidated an unchanged policy"
+        );
+    }
     assert_eq!(
         objects
             .content_reads
