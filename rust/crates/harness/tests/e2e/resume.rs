@@ -21,7 +21,7 @@ use acyclic_harness::{
     test_support::{ScriptedModelProvider, ScriptedReconciliation},
     tool::ToolRegistry,
 };
-use acyclic_stream::{StreamProvider, grpc::Client};
+use acyclic_stream::grpc::Client;
 use serde_json::{Value, json};
 use std::{
     path::{Path, PathBuf},

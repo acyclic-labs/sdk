@@ -3,7 +3,7 @@ use super::{TestResult, execution, local_cloud::scenarios as cases, scenario::Sc
 use acyclic_fs::{EmbeddedCapabilities, Fs, LogicalObjectStore, StreamAuthorityStore};
 use acyclic_harness::{AgentId, filesystem::MemoryHarnessStorage};
 use acyclic_objects::{Blobs, MemoryObjects, grpc::GrpcObjects};
-use acyclic_stream::{MemoryStream, StreamProvider, grpc::Client};
+use acyclic_stream::{MemoryStream, grpc::Client};
 use serde::Deserialize;
 use serde_json::Value;
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
