@@ -146,16 +146,13 @@ pub fn sweep_parallel<T: Send>(
     std::thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| {
-                loop {
-                    // Bounded: the counter stops at the range's end, so it
-                    // never wraps past `u64::MAX` into unrequested seeds.
-                    let Ok(seed) =
-                        next.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |seed| {
-                            (seed < seeds.end).then(|| seed + 1)
-                        })
-                    else {
-                        break;
-                    };
+                // Bounded: the counter stops at the range's end, so it never
+                // wraps past `u64::MAX` into unrequested seeds.
+                while let Ok(seed) =
+                    next.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |seed| {
+                        (seed < seeds.end).then(|| seed + 1)
+                    })
+                {
                     if seed > failed_at.load(Ordering::Relaxed) {
                         break;
                     }
