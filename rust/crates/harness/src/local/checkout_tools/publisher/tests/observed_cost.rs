@@ -32,8 +32,7 @@ async fn concurrent_checkout_writes_never_rescan_the_tree() -> Result<()> {
         .stage_once(
             OperationId::new(),
             "warm.txt",
-            b"warm
-",
+            b"warm\n",
             "text/plain",
             "warm.txt",
             Default::default(),
