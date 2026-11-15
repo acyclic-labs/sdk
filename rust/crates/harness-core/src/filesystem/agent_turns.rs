@@ -266,7 +266,12 @@ impl<'v, 'p> AdmittedAgent<'v, 'p> {
             mut labels,
             layer,
             volumes,
-        } = binding_grants(self.volumes, &self.journal, external)?;
+        } = binding_grants(
+            self.volumes,
+            &self.journal,
+            &self.ancestor_journals()?,
+            external,
+        )?;
         let (grants, scope) = match self.parent {
             Some(parent) => {
                 let ceiling = parent.capabilities();
@@ -349,6 +354,22 @@ impl<'v, 'p> AdmittedAgent<'v, 'p> {
             verifier,
             private: self.private,
         })
+    }
+
+    /// The journals of this agent's ancestors, its parent first. A fork's
+    /// conversation is its ancestors' conversation up to the fork point, so
+    /// it reads what each ancestor's journal publishes for its turns.
+    fn ancestor_journals(&self) -> Result<Vec<VolumeRef>> {
+        let mut journals = Vec::new();
+        let mut ancestor = self.path.parent();
+        while let Some(path) = ancestor {
+            journals.push(crate::conversation::journal_volume(
+                self.journal.provider().clone(),
+                &path.id(),
+            )?);
+            ancestor = path.parent();
+        }
+        Ok(journals)
     }
 
     /// Host authority over this agent's journal and retained conversation files.
@@ -560,13 +581,14 @@ struct BindingGrants {
     /// The same resources as one structured layer, naming each volume by the
     /// storage reference its workspace is bound with.
     layer: Vec<acyclic_fs::access::Grant>,
-    /// Identity digest of every bound volume: seed, journal and workspaces.
+    /// Identity digest of every bound volume: seed, journals and workspaces.
     volumes: Vec<[u8; 32]>,
 }
 
 fn binding_grants(
     volumes: &[WorkspaceEntry],
     journal: &VolumeRef,
+    ancestors: &[VolumeRef],
     external: &[FileRef],
 ) -> Result<BindingGrants> {
     use acyclic_fs::access::{Action, ActionSet};
@@ -583,7 +605,7 @@ fn binding_grants(
         layer.extend(pinned.layers.into_iter().flatten());
         Ok(())
     };
-    // Only seed, journal and workspace volumes are bound; an external file or
+    // Only seed, journal, ancestor journal and workspace volumes are bound; an external file or
     // attachment on another volume is reached by its exact path alone.
     let mut bind = |volume: &VolumeRef| -> Result<()> {
         bound.push(volume.identity_digest(
@@ -607,9 +629,13 @@ fn binding_grants(
     // policy alone decides each path: what a turn publishes for its agent to
     // read (inputs, tool outputs, inherited conversation, compaction
     // summaries) is readable, and execution records stay host-private.
-    grants.push(journal.capability(VolumeOperation::Read, &mut None)?);
-    reach(journal, "", ActionSet::SourceRead.actions())?;
-    bind(journal)?;
+    // An ancestor's journal is read the same way: a fork's inherited
+    // conversation, its turns and their inputs, live there.
+    for journal in std::iter::once(journal).chain(ancestors) {
+        grants.push(journal.capability(VolumeOperation::Read, &mut None)?);
+        reach(journal, "", ActionSet::SourceRead.actions())?;
+        bind(journal)?;
+    }
     // Every agent may spawn, message and archive within its own subtree.
     grants.extend(crate::tools::AGENT_TOOLS.map(crate::contract::capability::tool_call));
     for binding in volumes
@@ -642,6 +668,7 @@ fn binding_grants(
         // bound volume. Its immutable conversation selection grants it alone.
         if seed.as_ref() != Some(file.volume())
             && file.volume() != journal
+            && !ancestors.contains(file.volume())
             && !volumes.iter().any(|binding| {
                 binding.role != crate::agent::WorkspaceRole::Internal
                     && binding.as_volume() == Some(file.volume())
