@@ -1074,7 +1074,7 @@ fn stage_namespace(
                     snapshot: subtree.clone(),
                     forked_at: fork.forked_at,
                     commit_id: envelope.commit_id,
-                    decision: state.decision.checked_add(1).ok_or(StreamError::Capacity)?,
+                    order: (changed_at, if durable { 0 } else { state.ephemeral.issued }),
                 });
                 next.put(
                     &fork.destination,
