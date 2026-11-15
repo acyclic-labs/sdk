@@ -297,8 +297,13 @@ async fn workspace_deltas_keep_local_turns_on_the_same_primary() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() -> Result<()> {
+#[test]
+fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() -> Result<()> {
+    super::seeded(approval_ranges_retain_the_original_status_until_every_chunk_flushes_world)
+}
+
+async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes_world() -> Result<()>
+{
     use crate::model::{ModelContent, ModelEvent, ToolCall};
     use crate::test_support::{ScriptedEvent, ScriptedTurn};
     use acyclic_harness_client::{AgentCommand, AgentReply, EventProjection, MAX_READ_BYTES};
@@ -890,8 +895,12 @@ async fn model_dispatch_before_settlement(
     }
 }
 
-#[tokio::test]
-async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
+#[test]
+fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
+    super::seeded(a_prompt_runs_one_root_agent_turn_and_replays_exactly_world)
+}
+
+async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly_world() -> Result<()> {
     fn future_bytes<F>(_: fn(crate::LocalHarnessConfig) -> F) -> usize {
         std::mem::size_of::<F>()
     }
@@ -1476,8 +1485,13 @@ async fn idle_usage_follows_child_lifecycle_without_a_parent_model_call() -> Res
     Ok(())
 }
 
-#[tokio::test]
-async fn session_and_subtree_prices_replay_and_preserve_unfinished_provider_work() -> Result<()> {
+#[test]
+fn session_and_subtree_prices_replay_and_preserve_unfinished_provider_work() -> Result<()> {
+    super::seeded(session_and_subtree_prices_replay_and_preserve_unfinished_provider_work_world)
+}
+
+async fn session_and_subtree_prices_replay_and_preserve_unfinished_provider_work_world()
+-> Result<()> {
     fn completed_turn(entries: Vec<Vec<u8>>) -> Result<()> {
         let entry = entries
             .last()
@@ -1682,8 +1696,12 @@ async fn names_with_scope(
         .collect())
 }
 
-#[tokio::test]
-async fn a_shell_call_stages_its_output_on_the_journal_volume() -> Result<()> {
+#[test]
+fn a_shell_call_stages_its_output_on_the_journal_volume() -> Result<()> {
+    super::seeded(a_shell_call_stages_its_output_on_the_journal_volume_world)
+}
+
+async fn a_shell_call_stages_its_output_on_the_journal_volume_world() -> Result<()> {
     use tracing_subscriber::{Layer as _, layer::SubscriberExt as _};
     let waits = acyclic_native_runtime::obs::WaitReport::default();
     let _subscriber = tracing::subscriber::set_default(
@@ -1999,8 +2017,13 @@ async fn follow_tool_output(
 /// turn from `hooks/{turn}/{op}.json`, without updating the counter again,
 /// and the model sees the identical recorded context.
 #[cfg(unix)]
-#[tokio::test]
-async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
+#[test]
+fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
+    super::seeded(a_reopened_turn_replays_its_recorded_hook_outcome_world)
+}
+
+#[cfg(unix)]
+async fn a_reopened_turn_replays_its_recorded_hook_outcome_world() -> Result<()> {
     use crate::conversation::ContentResidencyVerifier as _;
 
     let directory = tempfile::tempdir().map_err(agent)?;
@@ -2314,8 +2337,13 @@ async fn checkout_scripted(
 
 /// Archive releases a physical view through the original closing composition,
 /// while an idle sibling, root checkout and retained child history survive.
-#[tokio::test]
-async fn physical_archive_releases_only_the_closed_binding_and_retains_history() -> Result<()> {
+#[test]
+fn physical_archive_releases_only_the_closed_binding_and_retains_history() -> Result<()> {
+    super::seeded(physical_archive_releases_only_the_closed_binding_and_retains_history_world)
+}
+
+async fn physical_archive_releases_only_the_closed_binding_and_retains_history_world() -> Result<()>
+{
     use acyclic_harness_client::{AgentCommand, AgentReply, ReadTarget};
     let directory = tempfile::tempdir().map_err(agent)?;
     std::fs::create_dir(directory.path().join(".git")).map_err(agent)?;
@@ -2747,8 +2775,12 @@ async fn a_prompt_past_two_frames_is_accepted_and_reads_back_exactly() -> Result
     Ok(())
 }
 
-#[tokio::test]
-async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> {
+#[test]
+fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> {
+    super::seeded(physical_siblings_use_the_original_shared_file_binding_world)
+}
+
+async fn physical_siblings_use_the_original_shared_file_binding_world() -> Result<()> {
     use crate::model::{ModelContent, ModelEvent, ToolCall};
     use crate::test_support::{ScriptedEvent, ScriptedTurn};
     use acyclic_harness_client::{AgentCommand, AgentReply};
@@ -3247,8 +3279,12 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
 /// rebind it. Negative control: accepting only the root's binding as the
 /// alias to replace fails the second child with "volume alias names another
 /// binding".
-#[tokio::test]
-async fn a_spawn_chain_binds_its_volumes_at_every_depth() -> Result<()> {
+#[test]
+fn a_spawn_chain_binds_its_volumes_at_every_depth() -> Result<()> {
+    super::seeded(a_spawn_chain_binds_its_volumes_at_every_depth_world)
+}
+
+async fn a_spawn_chain_binds_its_volumes_at_every_depth_world() -> Result<()> {
     use acyclic_harness_client::{AgentCommand, AgentReply};
     const DEPTH: usize = 6;
     let provider = super::scripted((0..DEPTH).flat_map(|depth| {
@@ -3802,8 +3838,13 @@ async fn a_small_file_bound_never_fails_a_turn_on_its_lists() -> Result<()> {
 /// Exercise file generations, selection refusal, immutable outputs and indexed
 /// history through the actual local server/actor path. The existing text fixture
 /// supplies only the first turn; restore is model-free.
-#[tokio::test]
-async fn selected_restore_retains_files_and_settles_stale_heads_without_model_work() -> Result<()> {
+#[test]
+fn selected_restore_retains_files_and_settles_stale_heads_without_model_work() -> Result<()> {
+    super::seeded(selected_restore_retains_files_and_settles_stale_heads_without_model_work_world)
+}
+
+async fn selected_restore_retains_files_and_settles_stale_heads_without_model_work_world()
+-> Result<()> {
     use crate::agent::{
         Delivered, InboxRecord, IntentId, NoticePayload, RestoreMode, Sender, TurnOutcome,
     };
@@ -4294,8 +4335,13 @@ async fn historical_session_forks_keep_source_only_files_from_adoption() -> Resu
     Ok(())
 }
 
-#[tokio::test]
-async fn historical_child_settles_after_its_parent_has_later_context_segments() -> Result<()> {
+#[test]
+fn historical_child_settles_after_its_parent_has_later_context_segments() -> Result<()> {
+    super::seeded(historical_child_settles_after_its_parent_has_later_context_segments_world)
+}
+
+async fn historical_child_settles_after_its_parent_has_later_context_segments_world() -> Result<()>
+{
     use crate::filesystem::VolumeResources;
     use acyclic_fs::{CancellationToken, WorkBudget};
     let directory = tempfile::tempdir().map_err(agent)?;
@@ -5595,8 +5641,12 @@ async fn an_instruction_edit_appends_a_notice_and_keeps_the_cached_prefix() -> R
 
 /// A failed delivery retains its original input while the shared Session
 /// continues to serve healthy siblings and the parent.
-#[tokio::test]
-async fn failed_child_keeps_siblings_and_the_served_session_alive() -> Result<()> {
+#[test]
+fn failed_child_keeps_siblings_and_the_served_session_alive() -> Result<()> {
+    super::seeded(failed_child_keeps_siblings_and_the_served_session_alive_world)
+}
+
+async fn failed_child_keeps_siblings_and_the_served_session_alive_world() -> Result<()> {
     use acyclic_harness_client::{AgentCommand, AgentReply};
 
     let directory = tempfile::tempdir().map_err(agent)?;
