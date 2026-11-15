@@ -76,7 +76,10 @@ fn request_line(specification: Value, request: &Value) -> Result<Value, String> 
 fn bind(value: &mut Value, request: &Value, result: &Value) -> Result<(), String> {
     match value {
         Value::Object(fields) if fields.len() == 1 && fields.contains_key("$request_line") => {
-            *value = request_line(fields.remove("$request_line").unwrap(), request)?;
+            let line = fields
+                .remove("$request_line")
+                .ok_or("request line template has no value")?;
+            *value = request_line(line, request)?;
         }
         Value::Object(fields)
             if fields.len() == 1

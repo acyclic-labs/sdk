@@ -3,7 +3,6 @@
 use crate::credential::{
     CredentialAction, CredentialError, CredentialPending, CredentialProvider, ResolvedCredential,
 };
-use futures::FutureExt;
 use std::{
     future::{Future, Ready},
     pin::Pin,
@@ -105,10 +104,12 @@ enum Dispatch {
     Admission {
         check: CredentialPending<()>,
         channel: Channel,
-        request: Option<http::Request<Body>>,
+        request: http::Request<Body>,
         context: Option<crate::operation::Context>,
     },
     Transport(<Channel as Service<http::Request<Body>>>::Future),
+    /// Held only while a ready admission moves its request to the transport.
+    Moving,
 }
 
 impl Future for CredentialDispatch {
@@ -120,25 +121,32 @@ impl Future for CredentialDispatch {
                 Dispatch::Transport(result) => {
                     return Pin::new(result).poll(cx).map_err(transport_error);
                 }
-                Dispatch::Admission {
-                    check,
-                    channel,
-                    request,
-                    context,
-                } => {
+                Dispatch::Admission { check, .. } => {
                     let result = futures::ready!(check.as_mut().poll(cx));
-                    self.0 = match result {
-                        Ok(()) => {
-                            let request = request.take().expect("admission owns request");
-                            match check_context(context.as_ref()) {
-                                Ok(()) => Dispatch::Transport(channel.call(request)),
-                                Err(error) => Dispatch::Refused(std::future::ready(Err(error))),
-                            }
-                        }
-                        Err(error) => {
+                    let admission = std::mem::replace(&mut self.0, Dispatch::Moving);
+                    self.0 = match (result, admission) {
+                        (
+                            Ok(()),
+                            Dispatch::Admission {
+                                mut channel,
+                                request,
+                                context,
+                                ..
+                            },
+                        ) => match check_context(context.as_ref()) {
+                            Ok(()) => Dispatch::Transport(channel.call(request)),
+                            Err(error) => Dispatch::Refused(std::future::ready(Err(error))),
+                        },
+                        (Err(error), _) => {
                             Dispatch::Refused(std::future::ready(Err(credential_error(error))))
                         }
+                        (Ok(()), other) => other,
                     };
+                }
+                Dispatch::Moving => {
+                    return Poll::Ready(Err(Status::internal(
+                        "credential dispatch resumed after its admission panicked",
+                    )));
                 }
             }
         }
@@ -165,7 +173,7 @@ impl Service<http::Request<Body>> for CredentialChannel {
         if let Some(lease) = request.extensions().get::<ResolvedCredential>() {
             match lease.check() {
                 CredentialAction::Ready(result) => {
-                    if let Err(error) = result.now_or_never().expect("ready credential action") {
+                    if let Err(error) = result.into_inner() {
                         return CredentialDispatch(Dispatch::Refused(std::future::ready(Err(
                             credential_error(error),
                         ))));
@@ -179,7 +187,7 @@ impl Service<http::Request<Body>> for CredentialChannel {
                     return CredentialDispatch(Dispatch::Admission {
                         check,
                         channel,
-                        request: Some(request),
+                        request,
                         context: self.context.clone(),
                     });
                 }

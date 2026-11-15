@@ -328,9 +328,11 @@ pub fn valid_credential(value: &str) -> bool {
 pub fn websocket_protocol(credential: &str) -> Zeroizing<String> {
     use base64::Engine as _;
     const PREFIX: &str = "acyclic.bearer.";
+    // A str holds at most isize::MAX bytes, so its unpadded base64 length
+    // plus the prefix always fits in usize: the fallback is never taken.
     let capacity = base64::encoded_len(credential.len(), false)
         .and_then(|length| length.checked_add(PREFIX.len()))
-        .expect("credential protocol length fits the address space");
+        .unwrap_or(usize::MAX);
     // Reserve before writing any secret so growth cannot leave an old backing.
     let mut protocol = Zeroizing::new(String::with_capacity(capacity));
     protocol.push_str(PREFIX);
