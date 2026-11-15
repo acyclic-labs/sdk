@@ -449,6 +449,17 @@ pub enum ExecutionEvent {
         /// Exact original observation, without remote error text.
         observation: crate::model::ModelWait,
     },
+    /// The original attempt's live stream failed before completing, leaving
+    /// its outcome to reconciliation. If none can resume the attempt, its step
+    /// fails naming this cause rather than one nothing observed.
+    ModelInterrupted {
+        /// Zero-based executor step.
+        step: u32,
+        /// Admitted response or summary attempt.
+        purpose: ModelPurpose,
+        /// The stream failure's complete text, control characters replaced.
+        cause: String,
+    },
     /// The local model producer stopped after invocation cancellation.
     ModelStopped {
         /// Zero-based executor step.

@@ -444,13 +444,10 @@ async fn unreconciled_empty_attempt(unsettled: bool) -> Result<Vec<ModelEvent>> 
 #[tokio::test]
 async fn an_unreconciled_empty_model_attempt_fails_without_redispatch() -> Result<()> {
     match unreconciled_empty_attempt(false).await {
-        Err(
-            _error @ Error::ModelUnavailable {
-                failure: crate::ModelTransportFailure::Interrupted,
-                ..
-            },
-        ) => {
-            assert!(!_error.leaves_outcome_uncertain());
+        // Nothing recorded a cause, and nothing observed a transport failure.
+        Err(error @ Error::ModelInterrupted(_)) => {
+            assert!(!error.leaves_outcome_uncertain());
+            assert!(!error.is_model_failure(), "{error}");
             Ok(())
         }
         Err(error) => Err(error),
@@ -519,13 +516,16 @@ async fn unrecoverable_prefix(unsettled: bool) -> Result<()> {
         "retained prefix changed"
     );
     match result {
-        Err(
-            _error @ Error::ModelUnavailable {
-                failure: crate::ModelTransportFailure::Interrupted,
-                ..
-            },
-        ) => {
-            assert!(!_error.leaves_outcome_uncertain());
+        // The later delivery names the stream's own failure, not a provider
+        // transport failure that never happened.
+        Err(error @ Error::ModelInterrupted(_)) => {
+            assert!(!error.leaves_outcome_uncertain());
+            assert!(
+                error
+                    .to_string()
+                    .ends_with(": storage failure: stream lost"),
+                "{error}"
+            );
             Ok(())
         }
         Err(error) => Err(error),

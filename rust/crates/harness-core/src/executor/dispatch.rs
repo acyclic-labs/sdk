@@ -243,7 +243,9 @@ impl StockExecution<'_> {
                     _continuation_hold = None;
                 }
                 if started {
-                    return Err(self.unreconciled_attempt(input.operation_id));
+                    return Err(self
+                        .unreconciled_attempt(journal, input.operation_id, step, purpose)
+                        .await);
                 }
                 let (attempt, source) =
                     super::phase::claim(super::phase::Publication::ModelDispatch.observe(
@@ -396,15 +398,86 @@ impl StockExecution<'_> {
     /// an observed prefix. Its response dispatched no tool call, and no
     /// recovery authority may generate the uncertain request again, so the
     /// step fails definitively instead of retaining a reservation that can
-    /// never make progress. The recorded prefix is kept unchanged.
-    fn unreconciled_attempt(&self, operation: OperationId) -> Error {
+    /// never make progress. The recorded prefix is kept unchanged. The failure
+    /// names the cause the attempt recorded when its stream failed; nothing
+    /// observed a provider transport failure, so it never claims one.
+    async fn unreconciled_attempt(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation: OperationId,
+        step: u32,
+        purpose: ModelPurpose,
+    ) -> Error {
         if self.stock.reconciliation_only || super::unsettled_resume::enabled() {
-            Error::Indeterminate(operation)
-        } else {
-            Error::ModelUnavailable {
-                failure: crate::ModelTransportFailure::Interrupted,
-                excerpt: String::new(),
-            }
+            return Error::Indeterminate(operation);
+        }
+        let interrupted = self
+            .step_records(journal, operation, step, false, Some(1), |event| {
+                matches!(event, ExecutionEvent::ModelInterrupted { step: recorded, purpose: recorded_purpose, .. }
+                    if *recorded == step && *recorded_purpose == purpose)
+            })
+            .await;
+        match interrupted {
+            Ok((_, records)) => Error::ModelInterrupted(
+                records
+                    .into_iter()
+                    .find_map(|record| match record.event {
+                        ExecutionEvent::ModelInterrupted { cause, .. } => Some(cause),
+                        _ => None,
+                    })
+                    .unwrap_or_default(),
+            ),
+            Err(error) => error,
+        }
+    }
+
+    /// Records why the live stream ended this attempt before completing, when
+    /// the failure leaves the attempt to reconciliation. A later delivery that
+    /// finds nothing to resume reports this cause. Definitive, cancelled and
+    /// native failures settle or propagate as they are and record nothing.
+    async fn interrupted_attempt(
+        &self,
+        journal: &dyn ExecutionJournal,
+        (operation, step, purpose): (OperationId, u32, ModelPurpose),
+        cause: Error,
+    ) -> Error {
+        use crate::wire::ErrorCode;
+        if purpose == ModelPurpose::Count
+            || !cause.leaves_effect_uncertain()
+            || cause.is_native_failure()
+            || matches!(
+                cause.code(),
+                ErrorCode::Cancelled | ErrorCode::InteractionCancelled
+            )
+        {
+            return cause;
+        }
+        let recorded = async {
+            let purpose_key = model_purpose_key(purpose);
+            let key = with_history_io(self.io, |work| {
+                preparation_format(format_args!("{purpose_key}:{step}:interrupted"), work)
+            })?;
+            let text = with_history_io(self.io, |work| {
+                preparation_format(
+                    format_args!("{}", super::tool_failure::CauseText(&cause)),
+                    work,
+                )
+            })?;
+            let event = ExecutionEvent::ModelInterrupted {
+                step,
+                purpose,
+                cause: text,
+            };
+            let _writer = self.journal_writes.lock().await;
+            journal.append(operation, &key, &event, self.io)?.await
+        }
+        .await;
+        match Error::after_cleanup(
+            Err::<std::convert::Infallible, _>(cause),
+            recorded.map(|_| ()),
+        ) {
+            Err(error) => error,
+            Ok(never) => match never {},
         }
     }
 
@@ -615,7 +688,14 @@ impl StockExecution<'_> {
                 let Some(event) = next else {
                     break;
                 };
-                let event = event?;
+                let event = match event {
+                    Ok(event) => event,
+                    Err(cause) => {
+                        return Err(self
+                            .interrupted_attempt(journal, (operation_id, step, purpose), cause)
+                            .await);
+                    }
+                };
                 clock.observe(&event);
                 let latency_ns = matches!(event, ModelEvent::Completed { .. })
                     .then(|| clock.elapsed_ns())

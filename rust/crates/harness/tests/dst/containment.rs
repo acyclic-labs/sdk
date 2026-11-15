@@ -53,12 +53,13 @@ fn plan(origin: &str) -> Plan {
                 },
             )),
         ),
+        // A local failure inside the model stream, which leaves the attempt
+        // to reconciliation rather than settling it as a provider outcome.
         _ => (
             vec![Vec::new()],
             Some((
                 0,
-                ScriptedEvent::Refused {
-                    status: 500,
+                ScriptedEvent::Error {
                     error: "provider internal error".into(),
                 },
             )),

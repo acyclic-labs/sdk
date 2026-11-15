@@ -208,7 +208,9 @@ impl ExecutionEvent {
             | ModelWait { .. }
             | ModelOutput { .. } => (None, [None; 3]),
             ModelInline { event, usage, .. } => (Some(event), [usage.as_ref(), None, None]),
-            ModelRejected { reason, .. } => (Some(reason), [None; 3]),
+            ModelRejected { reason, .. } | ModelInterrupted { cause: reason, .. } => {
+                (Some(reason), [None; 3])
+            }
             ConversationItem {
                 envelope: projection,
                 ..
