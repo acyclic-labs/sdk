@@ -623,14 +623,11 @@ async fn counted(
     ))
 }
 
-#[tokio::test]
-async fn an_unscripted_wake_fails_naming_both_agents_and_leaves_input_replies() -> Result<()> {
-    let provider = ScriptedModelProvider::routed([ScriptedTurn::Text("input reply".into())], []);
-    let parent = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([1; 16]));
-    let child = parent
-        .child(&crate::agent::AgentId::from_bytes([2; 16]))
-        .map_err(|error| crate::Error::Invalid(error.to_string()))?;
-    let (input, input_dispatch) = request()?;
+/// `input` with a waking `child.settled` notice from `child` appended.
+fn settled_by(
+    input: &PreparedModelRequest,
+    child: &crate::agent::AgentPath,
+) -> Result<PreparedModelRequest> {
     let mut waking = input.request().clone();
     waking.messages.push(ModelMessage {
         role: ModelRole::User,
@@ -644,7 +641,64 @@ async fn an_unscripted_wake_fails_naming_both_agents_and_leaves_input_replies() 
             }],
         }),
     });
-    let waking = PreparedModelRequest::prepare(waking, Limits::default(), None)?;
+    PreparedModelRequest::prepare(waking, Limits::default(), None)
+}
+
+/// A wake turn's later step (a tool continuation or a retrospective, whose
+/// newest message is no notice) takes the next wake reply, never an input
+/// reply, and the turn counts once.
+#[tokio::test]
+async fn a_wake_turns_later_steps_take_wake_replies() -> Result<()> {
+    let provider = ScriptedModelProvider::routed(
+        [ScriptedTurn::Text("input reply".into())],
+        ["noted", "none"].map(|text| ScriptedTurn::Text(text.into())),
+    );
+    let parent = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([1; 16]));
+    let child = parent
+        .child(&crate::agent::AgentId::from_bytes([2; 16]))
+        .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+    let (input, _) = request()?;
+    let waking = settled_by(&input, &child)?;
+    let operation_id = OperationId::new();
+    for (step, request, reply) in [(0, &waking, "noted"), (1, &input, "none")] {
+        let dispatch = ModelDispatch {
+            operation_id,
+            step,
+            request_digest: request.request_digest(),
+        };
+        let events = provider
+            .generate(request, dispatch)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
+        assert_eq!(
+            events[0],
+            ModelEvent::Content {
+                delta: reply.into()
+            },
+            "step {step} of the wake turn took another reply"
+        );
+    }
+    assert_eq!(provider.woken(), vec![parent]);
+    assert_eq!(provider.input_requests(), 0);
+    assert_eq!(
+        provider.remaining(),
+        1,
+        "a wake step consumed an input reply"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_unscripted_wake_fails_naming_both_agents_and_leaves_input_replies() -> Result<()> {
+    let provider = ScriptedModelProvider::routed([ScriptedTurn::Text("input reply".into())], []);
+    let parent = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([1; 16]));
+    let child = parent
+        .child(&crate::agent::AgentId::from_bytes([2; 16]))
+        .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+    let (input, input_dispatch) = request()?;
+    let waking = settled_by(&input, &child)?;
     let wake_dispatch = ModelDispatch {
         operation_id: OperationId::new(),
         step: 0,

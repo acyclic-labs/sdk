@@ -115,8 +115,14 @@ struct State {
     /// A [routed](ScriptedModelProvider::routed) script's replies to parent
     /// turns woken by a child's settlement.
     wakes: Option<VecDeque<ScriptedTurn>>,
-    /// The agent each wake request woke, in request order.
-    woken: Vec<crate::agent::AgentPath>,
+    /// Each wake turn's operation, the agent it woke and the child whose
+    /// settlement woke it, in the order the turns began; a later step of
+    /// one of these operations is a wake too.
+    woken: Vec<(
+        crate::OperationId,
+        crate::agent::AgentPath,
+        crate::agent::AgentPath,
+    )>,
     /// Indices into `requests` of the requests no settlement woke.
     inputs: Vec<usize>,
     requests: Vec<PreparedModelRequest>,
@@ -177,11 +183,13 @@ impl ScriptedModelProvider {
     }
 
     /// Scripts a session tree in two queues. A child's settlement wakes its
-    /// parent with a `child.settled` notice, and that turn takes the next
-    /// `wakes` reply; every other request, each agent's own prompt, brief or
-    /// tool continuation, takes the next `inputs` reply. A wake can therefore
-    /// never consume a reply another agent's input was scripted to receive,
-    /// and a wake with no reply left fails naming the agent it woke.
+    /// parent with a `child.settled` notice, and every request of that turn,
+    /// its first step and each later one (a tool continuation, a
+    /// retrospective), takes the next `wakes` reply; every other request,
+    /// each agent's own prompt or brief and their later steps, takes the
+    /// next `inputs` reply. A wake can therefore never consume a reply
+    /// another agent's input was scripted to receive, and a wake with no
+    /// reply left fails naming the agent it woke and the child that woke it.
     #[must_use]
     pub fn routed(
         inputs: impl IntoIterator<Item = ScriptedTurn>,
@@ -350,13 +358,18 @@ impl ScriptedModelProvider {
         self.lock().dispatches.clone()
     }
 
-    /// The agent each request woken by a child's settlement belonged to, in
-    /// request order, whether or not the script routes wakes.
+    /// The agent each turn a child's settlement woke belonged to, one per
+    /// turn in the order the turns began, whether or not the script routes
+    /// wakes.
     pub fn woken(&self) -> Vec<crate::agent::AgentPath> {
-        self.lock().woken.clone()
+        self.lock()
+            .woken
+            .iter()
+            .map(|(_, agent, _)| agent.clone())
+            .collect()
     }
 
-    /// Requests that were not woken by a child's settlement, counted in one
+    /// Requests of turns no child's settlement woke, counted in one
     /// snapshot so a concurrent wake cannot skew the count.
     pub fn input_requests(&self) -> usize {
         self.lock().inputs.len()
@@ -427,26 +440,30 @@ impl ScriptedModelProvider {
         }
         let waking = waking_child(request.request())?;
         let mut state = self.lock();
-        if waking.is_none() {
+        let operation = dispatch.operation_id;
+        let mut woke = state
+            .woken
+            .iter()
+            .find(|(woken, ..)| *woken == operation)
+            .map(|(_, parent, child)| (parent.clone(), child.clone()));
+        if woke.is_none()
+            && let Some(child) = waking
+        {
+            let parent = child.parent().ok_or_else(|| {
+                Error::Invalid(format!("settled agent {child} has no parent to wake"))
+            })?;
+            state.woken.push((operation, parent.clone(), child.clone()));
+            woke = Some((parent, child));
+        }
+        if woke.is_none() {
             let index = state.requests.len();
             state.inputs.push(index);
         }
         state.requests.push(request);
         state.dispatches.push(dispatch);
-        let State {
-            turns,
-            wakes,
-            woken,
-            ..
-        } = &mut *state;
-        if let Some(child) = &waking {
-            woken.push(child.parent().ok_or_else(|| {
-                Error::Invalid(format!("settled agent {child} has no parent to wake"))
-            })?);
-        }
-        answer.unwrap_or_else(|| match (&waking, wakes.as_mut()) {
-            (Some(child), Some(wakes)) => wakes.pop_front().ok_or_else(|| {
-                let parent = woken.last().map_or_else(String::new, ToString::to_string);
+        let State { turns, wakes, .. } = &mut *state;
+        answer.unwrap_or_else(|| match (woke, wakes.as_mut()) {
+            (Some((parent, child)), Some(wakes)) => wakes.pop_front().ok_or_else(|| {
                 Error::Invalid(format!(
                     "scripted model has no wake turn left for {parent}, woken by {child}"
                 ))
