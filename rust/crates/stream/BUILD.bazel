@@ -1008,6 +1008,7 @@ exports_files([
         "src/pull.rs",
         "src/pull_tests.rs",
         "src/query_sync.rs",
+        "src/query_sync/budgeted.rs",
         "src/query_sync/locks.rs",
         "src/query_sync/parity.rs",
         "src/query_sync/watch.rs",

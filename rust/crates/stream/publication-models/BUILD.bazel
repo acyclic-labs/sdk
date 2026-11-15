@@ -20,6 +20,7 @@ rust_test(
         "//rust/crates/stream:src/pull.rs",
         "//rust/crates/stream:src/pull_tests.rs",
         "//rust/crates/stream:src/query_sync.rs",
+        "//rust/crates/stream:src/query_sync/budgeted.rs",
         "//rust/crates/stream:src/query_sync/locks.rs",
         "//rust/crates/stream:src/query_sync/parity.rs",
         "//rust/crates/stream:src/query_sync/watch.rs",
