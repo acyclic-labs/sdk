@@ -13,6 +13,16 @@ async fn retained(
     Ok((row.get(0), row.get(1)))
 }
 
+async fn refuse_repeatedly(
+    provider: &PostgresStream,
+    append: &AppendRequest,
+    fork: &ForkRequest,
+    commit: &CommitRequest,
+) -> Result<(), Box<dyn std::error::Error>> {
+    refuse_repeatedly(&provider, &append, &fork, &commit).await?;
+    Ok(())
+}
+
 pub(super) async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
     let namespace = uuid::Uuid::new_v4().to_string();
     let provider = PostgresStream::connect(database, &namespace).await?;
@@ -46,20 +56,7 @@ pub(super) async fn verify(database: &str) -> Result<(), Box<dyn std::error::Err
         )],
         idempotency_key: IdempotencyKey::new(b"corrected-commit".to_vec())?,
     };
-    for _ in 0..16 {
-        assert!(matches!(
-            provider.append(append.clone()).await?,
-            AppendOutcome::TailConflict { actual_tail: 0 }
-        ));
-        assert!(matches!(
-            provider.fork(fork.clone()).await,
-            Err(error) if error.category() == StreamCategory::NotFound
-        ));
-        assert!(matches!(
-            provider.commit(commit.clone()).await?,
-            CommitOutcome::Conflict(_)
-        ));
-    }
+    refuse_repeatedly(&provider, &append, &fork, &commit).await?;
     assert!(matches!(
         provider
             .commit(CommitRequest {

@@ -24,7 +24,7 @@ use wire::{session_frame::Body, session_subscription::Kind};
 /// Only live accepted sockets are retained. Reset shuts down their original
 /// OS connection; errors observed by clients come from real HTTP/2 I/O.
 #[derive(Default)]
-pub(super) struct Connections(Mutex<std::collections::HashMap<usize, std::net::TcpStream>>);
+pub(crate) struct Connections(Mutex<std::collections::HashMap<usize, std::net::TcpStream>>);
 
 pub(super) struct Socket {
     socket: tokio::net::TcpStream,
@@ -181,7 +181,7 @@ pub(super) struct Traffic {
 }
 
 #[derive(Default)]
-pub(super) struct Counts {
+pub(crate) struct Counts {
     pub(super) request_metadata: Mutex<Vec<tonic::metadata::MetadataMap>>,
     pub(super) opening_interests: AtomicUsize,
     pub(super) node: Mutex<String>,
