@@ -55,7 +55,7 @@ pub fn credential() -> Bytes {
 }
 
 /// Signs only the supplied grants for admission and projection qualification.
-pub fn credential_with_grants(grants: Vec<ResourceGrant>) -> Bytes {
+pub fn credential_with_grants(grants: &[ResourceGrant]) -> Bytes {
     signed::root(|block| {
         let Some(key) = block
             .certificates

@@ -127,7 +127,7 @@ async fn commit_custody_keeps_exact_results_and_terminates_on_producer_loss()
             Arc::clone(&provider),
             request,
             storage,
-            meter.original(),
+            &meter.original(),
         ));
     });
     let (pending, producer) = prepared.unwrap()?;
@@ -186,7 +186,7 @@ async fn commit_custody_keeps_exact_results_and_terminates_on_producer_loss()
         Arc::new(MemoryStream::default()),
         retained,
         storage,
-        meter.original(),
+        &meter.original(),
     )?;
     let mut first = Box::pin(pending.result());
     let mut second = Box::pin(pending.result());
@@ -244,7 +244,7 @@ async fn commit_custody_keeps_exact_results_and_terminates_on_producer_loss()
                 Arc::new(MemoryStream::default()),
                 retained,
                 storage,
-                meter.original(),
+                &meter.original(),
             )
             .is_err()
         );
@@ -260,7 +260,7 @@ async fn commit_custody_keeps_exact_results_and_terminates_on_producer_loss()
         Arc::new(MemoryStream::default()),
         retained,
         storage,
-        meter.original(),
+        &meter.original(),
     )?;
     meter.cancelled.store(true, Ordering::SeqCst);
     producer.await??;

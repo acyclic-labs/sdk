@@ -213,7 +213,7 @@ mod tests {
                 late.as_mut().poll(&mut second_context),
                 Poll::Ready(OperationTermination::ProducerDropped)
             );
-            let released = replacement.observe();
+            let released = replacement.observe(&);
             let mut first = Box::pin(released.terminated());
             let mut second = Box::pin(released.terminated());
             assert!(first.as_mut().poll(&mut first_context).is_pending());
@@ -244,7 +244,7 @@ mod tests {
             .unwrap()
             .into_owner()
             .unwrap();
-        let observation = owner.observe();
+        let observation = owner.observe(&);
         std::mem::forget(owner);
         drop(claims);
         let waker = futures::task::noop_waker();

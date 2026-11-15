@@ -411,7 +411,7 @@ impl Client {
         connect: std::sync::Arc<transport::Connect>,
         executor: std::sync::Arc<dyn crate::runtime::Executor>,
     ) -> Self {
-        Self::tracking(channel, connect, executor, Arc::default())
+        Self::tracking(channel, connect, &executor, Arc::default())
     }
 
     /// Like [`Self::with_transport`], raising the supplied causal context.
@@ -419,7 +419,7 @@ impl Client {
     pub fn tracking(
         channel: Endpoint,
         connect: std::sync::Arc<transport::Connect>,
-        executor: std::sync::Arc<dyn crate::runtime::Executor>,
+        executor: &std::sync::Arc<dyn crate::runtime::Executor>,
         revisions: Arc<crate::RevisionTracker>,
     ) -> Self {
         let termination = channel.termination();
@@ -437,7 +437,7 @@ impl Client {
             credentials: BTreeMap::new(),
             credential_bytes: 0,
             connections: connections.clone(),
-            executor: executor.clone(),
+            executor: Arc::clone(executor),
             identity: crate::new_identity_bytes(),
             connect,
             home: String::new(),
@@ -622,7 +622,7 @@ impl Client {
         let (from, progress, path) = (request.from, request.progress, request.path.clone());
         let mut source = self
             .open_subscription(
-                follow_kind(request),
+                follow_kind(&request),
                 cursor(from),
                 acknowledge,
                 progress,
@@ -844,7 +844,7 @@ impl Client {
                 input: input.map(input::Owner),
             })));
             let sent = crate::trace::observe(
-                crate::trace::Request {
+                &crate::trace::Request {
                     name: "stream.session_open_queue",
                     mechanism: crate::trace::Mechanism::Wait,
                     parent: None,
@@ -874,7 +874,7 @@ impl Client {
                 Ok(())
             };
             crate::trace::observe(
-                crate::trace::Request {
+                &crate::trace::Request {
                     name: "stream.session_registration",
                     mechanism: crate::trace::Mechanism::Wait,
                     parent: None,
@@ -938,14 +938,14 @@ impl Cursor {
     /// Every blocked delivery of every session call and follow is a reported
     /// wait. A queued delivery is no wait and registers none.
     async fn next(&mut self) -> Option<Result<Delivery, StreamError>> {
-        match self.receiver.try_recv() {
-            Ok(received) => Some(received),
-            Err(_) => {
+        if let Ok(received) = self.receiver.try_recv() {
+            Some(received)
+        } else {
                 let work = self.receiver.recv();
                 {
                     let progress = &self.progress;
                     crate::trace::observe_value(
-                        crate::trace::Request {
+                        &crate::trace::Request {
                             name: "stream.session_delivery_wait",
                             mechanism: crate::trace::Mechanism::Wait,
                             parent: None,
@@ -963,7 +963,6 @@ impl Cursor {
                     )
                     .await
                 }
-            }
         }
     }
     async fn receive(&mut self) -> Result<Option<Delivery>, StreamError> {
@@ -1108,7 +1107,7 @@ impl Projected for crate::Record {
     }
 }
 
-fn follow_kind(request: crate::FollowRequest) -> Kind {
+fn follow_kind(request: &crate::FollowRequest) -> Kind {
     Kind::Follow(wire::SessionFollow {
         opening_cut: request.progress && request.until.is_none(),
         key: None,

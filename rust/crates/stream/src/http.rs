@@ -180,7 +180,7 @@ impl HttpStream {
             decode(value).map(|result| (result, bytes))
         };
         let result = crate::trace::observe(
-            crate::trace::Request {
+            &crate::trace::Request {
                 name: "stream.http.request",
                 mechanism: crate::trace::Mechanism::RoundTrip,
                 parent: None,
@@ -210,12 +210,12 @@ impl HttpStream {
             .send()
             .await
             .map_err(|error| StreamError::Unavailable.with_source(error))?;
-        if response.status().as_u16() == 401 {
-            if let Some(lease) = &lease {
-                crate::transport_credential::reject(lease)
-                    .await
-                    .map_err(|error| StreamError::AccessDenied.with_source(error))?;
-            }
+        if response.status().as_u16() == 401
+            && let Some(lease) = &lease
+        {
+            crate::transport_credential::reject(lease)
+                .await
+                .map_err(|error| StreamError::AccessDenied.with_source(error))?;
         }
         let success = response.status().is_success();
 
@@ -272,14 +272,14 @@ impl HttpStream {
     }
     fn idempotency_response(
         &self,
-        key: IdempotencyKey,
-        value: Value,
+        key: &IdempotencyKey,
+        value: &Value,
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
         if value.is_null() {
             return Ok(None);
         }
         let observed = IdempotencyKey::new(parse_bytes(field(&value, "idempotencyKey")?)?)?;
-        if observed != key {
+        if &observed != key {
             return Err(StreamError::Unavailable);
         }
         let request_digest = parse_bytes(field(&value, "requestDigest")?)?
@@ -299,7 +299,7 @@ impl HttpStream {
         };
         // A recovered write floors later reads exactly like its lost reply would have.
         if let Some(revision) = &revision {
-            self.revisions()?.observe(revision);
+            self.revisions()?.observe(&revision);
         }
         Ok(Some(IdempotencyObservation {
             idempotency_key: observed,
@@ -407,7 +407,7 @@ impl StreamProvider for HttpStream {
                 idempotency_key: bytes::Bytes::copy_from_slice(key.as_bytes()),
             }
             .encode_to_vec(),
-            |value| self.idempotency_response(key, value),
+            |value| self.idempotency_response(&key, &value),
         )
         .await
     }

@@ -110,7 +110,7 @@ impl transport::Transport for Observed {
                 {
                     let commit =
                         CommitId::from_bytes(record.commit_id.as_ref().try_into().unwrap());
-                    received.observe(*generation, after.next, commit);
+                    received.observe(&*generation, after.next, commit);
                 }
                 frame
             })) as Response)

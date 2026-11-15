@@ -14,7 +14,7 @@ impl MemoryStream {
         let scope = state.ephemeral.fork_scope(&state.paths, request)?;
         if let Some(result) = self.replay_fork(state, &request.idempotency_key, digest)? {
             return Ok(Decision::Returned {
-                result: result,
+                result,
                 ephemeral: matches!(scope, Scope::Ephemeral(_)),
             });
         }

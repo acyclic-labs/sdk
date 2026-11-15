@@ -142,7 +142,7 @@ async fn dropped_consumers_leave_no_queued_publication_reservation()
         } else {
             crate::snapshot::Cut::Retired
         };
-        let (pending, settled) = crate::snapshot::observe(cut, || {
+        let (pending, settled) = crate::snapshot::observe(&cut, || {
             follow
                 .as_mut()
                 .poll_next(&mut Context::from_waker(Waker::noop()))
@@ -252,7 +252,7 @@ fn executor_retirement_ends_forked_follows_before_publication_unlocks()
             let (pending, settled) = {
                 let _entered = runtime.enter();
                 crate::snapshot::observe(
-                    if queued {
+                    &if queued {
                         crate::snapshot::Cut::Pending
                     } else {
                         crate::snapshot::Cut::Created

@@ -234,12 +234,16 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 };
                 binding = Some(authorization);
                 opaque_cursor = true;
-                let body = invocation.input.then(|| {
-                    let (producer, body) =
-                        calls::InputProducer::new(identity, sync::Arc::clone(&self.input_released));
+                let body = if invocation.input {
+                    let (producer, body) = calls::InputProducer::new(
+                        identity,
+                        sync::Arc::clone(&self.input_released),
+                    )?;
                     input = Some(producer);
-                    body
-                });
+                    Some(body)
+                } else {
+                    None
+                };
                 (
                     false,
                     calls::source(Arc::clone(provider), invocation, context, identity, body),

@@ -111,11 +111,11 @@ fn live<F: std::future::Future>(
 /// clock, subscription lookup or diagnostic IO. Publication errors never replace
 /// the original result; unretained failures remain explicitly unfinished.
 pub fn observe<T, E>(
-    request: Request,
+    request: &Request,
     work: impl std::future::Future<Output = Result<T, E>>,
     bytes: impl FnOnce(&T) -> Option<u64>,
 ) -> impl std::future::Future<Output = Result<T, E>> {
-    observe_outcome(request, work, |result| {
+    observe_outcome(&request, work, |result| {
         result
             .as_ref()
             .ok()
@@ -127,7 +127,7 @@ pub fn observe<T, E>(
 /// still requires the original retained cause through Outcome's type. No
 /// classifier or terminal publication is evaluated on an unobserved request.
 pub fn observe_outcome<T, E>(
-    request: Request,
+    request: &Request,
     work: impl std::future::Future<Output = Result<T, E>>,
     outcome: impl FnOnce(&Result<T, E>) -> Option<(Option<u64>, Outcome)>,
 ) -> impl std::future::Future<Output = Result<T, E>> {
@@ -141,11 +141,11 @@ pub fn observe_outcome<T, E>(
 /// and one type level, however deeply observations nest. Without `serde` no
 /// trace is recorded; a [`Mechanism::Wait`] is still a live reported wait.
 pub fn observe_value<T>(
-    request: Request,
+    request: &Request,
     work: impl std::future::Future<Output = T>,
     outcome: impl FnOnce(&T) -> Option<(Option<u64>, Outcome)>,
 ) -> impl std::future::Future<Output = T> {
-    let work = live(&request, work);
+    let work = live(request, work);
     #[cfg(feature = "serde")]
     {
         context::record_value(request, work, outcome)
@@ -423,9 +423,9 @@ mod tests {
             key: None,
         };
         let inner = std::mem::size_of_val(&work());
-        let once = std::mem::size_of_val(&observe(request("once"), work(), |_| None));
+        let once = std::mem::size_of_val(&observe(&request("once"), work(), |_| None));
         let twice = std::mem::size_of_val(&observe(
-            request("outer"),
+            &request("outer"),
             observe(request("inner"), work(), |_| None),
             |_| None,
         ));
@@ -612,7 +612,7 @@ mod wait_tests {
         let expected = vec![("test.wait".to_owned(), "7".to_owned())];
 
         let mut pending = Box::pin(observe_value(
-            request(Mechanism::Wait),
+            &request(Mechanism::Wait),
             std::future::pending::<()>(),
             |()| None,
         ));
@@ -626,7 +626,7 @@ mod wait_tests {
         assert!(reported().is_empty(), "a returned wait retires its report");
 
         let mut io = Box::pin(observe_value(
-            request(Mechanism::Io),
+            &request(Mechanism::Io),
             std::future::pending::<()>(),
             |()| None,
         ));

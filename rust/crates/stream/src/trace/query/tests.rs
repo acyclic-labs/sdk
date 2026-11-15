@@ -274,7 +274,7 @@ async fn admitted_future_parentage_survives_suspension_without_leaking_to_other_
     };
     let (release, resumed) = futures::channel::oneshot::channel::<()>();
     let mut observed = Box::pin(Recorder::observe(
-        Some(&recorder),
+        &Some(&recorder),
         request("outer"),
         async {
             let child = Recorder::observe(

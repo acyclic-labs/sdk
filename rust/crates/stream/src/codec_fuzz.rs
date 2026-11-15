@@ -15,7 +15,7 @@ pub fn filesystem_paths(path: &[u8]) -> Result<(), StreamError> {
     }
     static CREDENTIAL: std::sync::OnceLock<bytes::Bytes> = std::sync::OnceLock::new();
     let credential = CREDENTIAL.get_or_init(|| {
-        crate::session::testing::credential_with_grants(vec![ResourceGrant {
+        crate::session::testing::credential_with_grants(&[ResourceGrant {
             resource: ResourcePattern {
                 name: "fs:/volume".into(),
                 prefix: true,

@@ -134,7 +134,7 @@ async fn checked_move_and_reconnect_use_the_yielded_commit_instead_of_buffered_r
             bootstrap_head: false,
             until: None,
             when_absent: Default::default(),
-            path: path,
+            path,
             from: 1,
             preceding: Some(anchor(&provider, "events", 0).await?),
             filter: crate::FollowFilter::default(),

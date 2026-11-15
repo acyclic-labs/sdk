@@ -99,7 +99,7 @@ impl<P: StreamProvider + ?Sized> Registry<P> {
         bytes: impl FnOnce(&T) -> Option<u64>,
     ) -> Observed<T, E, P> {
         match self.recorder(owner) {
-            Ok(recorder) => Recorder::observe(recorder.as_ref(), request, work, bytes).await,
+            Ok(recorder) => Recorder::observe(&recorder.as_ref(), request, work, bytes).await,
             Err(error) => Observed {
                 result: work.await,
                 observation: Err(error),

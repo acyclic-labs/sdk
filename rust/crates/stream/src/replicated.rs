@@ -182,7 +182,7 @@ impl<T: ReplayObserver + ?Sized> ReplayObserver for &mut T {
         command: &'a WriteRequest,
         after: bool,
     ) -> impl Future<Output = Result<(), StreamError>> + ProviderTask + 'a {
-        (**self).observe(provider, command, after)
+        (**self).observe(&provider, command, after)
     }
 }
 #[cfg(any(not(target_arch = "wasm32"), feature = "wasm-journal"))]
@@ -259,9 +259,9 @@ impl<J: CommandJournal> Replicated<J> {
     }
 
     /// A proven stale cut refuses this proposal without invalidating the replica.
-    fn complete<T>(&mut self, attempt: AttemptResult, result: &Result<T, StreamError>) -> bool {
-        match attempt.appended {
-            Some(AppendIf::Stale { head }) if head > self.cursor => {
+    fn complete<T>(&mut self, attempt: &AttemptResult, result: &Result<T, StreamError>) -> bool {
+        match &attempt.appended {
+            Some(AppendIf::Stale { head }) if *head > self.cursor => {
                 self.stale = true;
                 return false;
             }
@@ -269,8 +269,8 @@ impl<J: CommandJournal> Replicated<J> {
                 sequence,
                 at_millis,
             }) if result.is_ok() => {
-                self.cursor = sequence;
-                self.clock.set(at_millis);
+                self.cursor = *sequence;
+                self.clock.set(*at_millis);
             }
             #[cfg(not(target_arch = "wasm32"))]
             Some(AppendIf::Refused(_)) => {}
@@ -319,7 +319,7 @@ impl<J: CommandJournal> Replicated<J> {
                 ephemeral: false,
             });
         let attempt = attempt.finish();
-        if !self.complete(attempt, &result) {
+        if !self.complete(&attempt, &result) {
             return Err(StreamError::PrefixNotRetained);
         }
         result
@@ -506,7 +506,7 @@ impl<J: CommandJournal> Replicated<J> {
                     return Err(StreamError::PrefixNotRetained);
                 }
             }
-            if !self.complete(attempt, &result) {
+            if !self.complete(&attempt, &result) {
                 return Err(StreamError::PrefixNotRetained);
             }
             if self.cursor > expected {

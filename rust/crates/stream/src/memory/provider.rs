@@ -803,7 +803,7 @@ impl crate::NativeStreamProvider for MemoryStream {
     ) -> crate::NativeProviderFuture<'_, crate::NativeRecordStream> {
         if let Err(error) = crate::native::validate_follow(&request) {
             return crate::NativeProviderFuture::ready_observed(
-                crate::native::span!("acyclic.stream.follow"),
+                &crate::native::span!("acyclic.stream.follow"),
                 Ok(Err(error)),
                 StreamError::code,
             );
@@ -811,7 +811,7 @@ impl crate::NativeStreamProvider for MemoryStream {
         let original = Arc::clone(&meter);
         crate::NativeProviderFuture::observed(
             &original,
-            crate::native::span!("acyclic.stream.follow"),
+            &crate::native::span!("acyclic.stream.follow"),
             async move {
                 let work = Work::new(meter)?;
                 let provider = self.with_context(Arc::clone(&work));
@@ -831,7 +831,7 @@ impl crate::NativeStreamProvider for MemoryStream {
     ) -> crate::NativeProviderFuture<'_, crate::Heads> {
         if let Err(error) = Self::validate_native_heads(&request) {
             return crate::NativeProviderFuture::ready_observed(
-                crate::native::span!("acyclic.stream.heads"),
+                &crate::native::span!("acyclic.stream.heads"),
                 Ok(Err(error)),
                 StreamError::code,
             );
@@ -839,7 +839,7 @@ impl crate::NativeStreamProvider for MemoryStream {
         let original = Arc::clone(&meter);
         crate::NativeProviderFuture::observed(
             &original,
-            crate::native::span!("acyclic.stream.heads"),
+            &crate::native::span!("acyclic.stream.heads"),
             async move {
                 let work = Work::inline(meter);
                 let result = async {
@@ -861,7 +861,7 @@ impl crate::NativeStreamProvider for MemoryStream {
         let original = Arc::clone(&meter);
         crate::NativeProviderFuture::observed(
             &original,
-            crate::native::span!("acyclic.stream.read"),
+            &crate::native::span!("acyclic.stream.read"),
             async move {
                 let request = match request.validate() {
                     Ok(request) => request,
@@ -881,7 +881,7 @@ impl crate::NativeStreamProvider for MemoryStream {
         let original = Arc::clone(&meter);
         crate::NativeProviderFuture::observed(
             &original,
-            crate::native::span!("acyclic.stream.tail"),
+            &crate::native::span!("acyclic.stream.tail"),
             self.native_tail_inner(path, meter),
             |result| crate::native::outcome(result, StreamError::code),
         )
@@ -895,7 +895,7 @@ impl crate::NativeStreamProvider for MemoryStream {
         let original = Arc::clone(&meter);
         crate::NativeProviderFuture::observed(
             &original,
-            crate::native::span!("acyclic.stream.inspect_idempotency"),
+            &crate::native::span!("acyclic.stream.inspect_idempotency"),
             self.native_inspect_idempotency_inner(key, meter),
             |result| crate::native::outcome(result, StreamError::code),
         )
@@ -928,7 +928,7 @@ impl crate::NativeStreamProvider for MemoryStream {
     ) -> crate::NativeProviderFuture<'_, crate::PreparedNativeCommit> {
         Work::start(
             meter,
-            crate::native::span!("acyclic.stream.prepare_commit"),
+            &crate::native::span!("acyclic.stream.prepare_commit"),
             |work, completion| {
                 completion.observe_output(
                     async move {
@@ -942,7 +942,7 @@ impl crate::NativeStreamProvider for MemoryStream {
                             let writer_work = Arc::clone(&work);
                             let future = work.record(crate::NativeProviderFuture::try_observed(
                                 &work.meter,
-                                crate::native::span!("acyclic.stream.commit"),
+                                &crate::native::span!("acyclic.stream.commit"),
                                 async move {
                                     let result = match ingress.receive().await {
                                         Ok(body) => plan.settle(body).await,
@@ -976,7 +976,7 @@ impl crate::NativeStreamProvider for MemoryStream {
             crate::WriteRequest::Append(request) => {
                 Work::start(
                     meter,
-                    crate::native::span!("acyclic.stream.append"),
+                    &crate::native::span!("acyclic.stream.append"),
                     |work, completion| {
                         completion.observe_output(
                             async move {
@@ -1029,7 +1029,7 @@ impl crate::NativeStreamProvider for MemoryStream {
                 )
             }
             crate::WriteRequest::Fork(_) => crate::NativeProviderFuture::ready_observed(
-                crate::native::span!("acyclic.stream.fork"),
+                &crate::native::span!("acyclic.stream.fork"),
                 Ok(Err(StreamError::Unsupported)),
                 StreamError::code,
             ),
@@ -1058,7 +1058,7 @@ impl MemoryStream {
     {
         Work::start(
             meter,
-            crate::native::span!("acyclic.stream.commit"),
+            &crate::native::span!("acyclic.stream.commit"),
             |work, completion| {
                 completion.observe_output(
                     async move {
@@ -1187,12 +1187,12 @@ impl MemoryStream {
             &mut children_allocation,
         )
         .await?;
-        if let Some(mut children) = children_allocation.take() {
-            if let Err(error) = output.allocation.absorb(&mut children) {
-                drop(output);
-                drop(children);
-                return work.record(Err(error));
-            }
+        if let Some(mut children) = children_allocation.take()
+            && let Err(error) = output.allocation.absorb(&mut children)
+        {
+            drop(output);
+            drop(children);
+            return work.record(Err(error));
         }
         work.record(work.meter.check())?;
         let (view, allocation) = output.into_parts();

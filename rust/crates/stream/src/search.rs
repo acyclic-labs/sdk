@@ -321,7 +321,7 @@ impl Cursor {
                 break;
             };
             if frame.tail.is_none() {
-                let observed = observe(access, cursor.at.clone(), Some(frame.path.clone()), None)
+                let observed = observe(&access, cursor.at.clone(), Some(frame.path.clone()), None)
                     .await
                     .map_err(failure)?;
                 cursor.at = Some(observed.value.snapshot.clone());
@@ -341,7 +341,11 @@ impl Cursor {
                 .ok_or(StreamError::InvalidResponse)
                 .map_err(failure)?;
             if frame.sequence < tail {
-                let count = (budget.get() - work).min(crate::MAX_ITEMS as u32);
+                let count = (budget.get() - work).min(
+                    u32::try_from(crate::MAX_ITEMS)
+                        .map_err(|_| StreamError::Capacity)
+                        .map_err(failure)?,
+                );
                 let at = cursor
                     .at
                     .clone()
@@ -361,7 +365,7 @@ impl Cursor {
                 continue;
             }
             let mut observed = observe(
-                access,
+                &access,
                 cursor.at.clone(),
                 None,
                 Some(ChildrenPageRequest {
@@ -452,7 +456,9 @@ async fn scan<P: StreamProvider + ?Sized, M: Matcher>(
             key: None,
             path: frame.path.clone(),
             from: frame.sequence,
-            limit: u64::from(count).min(tail - frame.sequence) as u32,
+            limit: u32::try_from(u64::from(count).min(tail - frame.sequence))
+                .map_err(|_| StreamError::Capacity)
+                .map_err(failure)?,
             at_least: RevisionCut::of(at),
         })
         .await

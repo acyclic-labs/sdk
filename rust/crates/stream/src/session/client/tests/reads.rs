@@ -243,7 +243,7 @@ async fn scoped_revision_waits_and_forwarded_reads_need_no_root_read_grant() -> 
     let provider = Arc::new(MemoryStream::default());
     append(&provider, "allowed/events", 1).await?;
     let cut = crate::RevisionCut::of(provider.wait_applied(&Default::default()).await?);
-    let credential = crate::session::testing::credential_with_grants(vec![ResourceGrant {
+    let credential = crate::session::testing::credential_with_grants(&[ResourceGrant {
         resource: ResourcePattern {
             name: "streams:/allowed".into(),
             prefix: true,
@@ -1092,7 +1092,7 @@ async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> Tes
     use acyclic_auth::contract::{ResourceGrant, ResourcePattern};
     client.register_credential(
         1,
-        crate::session::testing::credential_with_grants(vec![
+        crate::session::testing::credential_with_grants(&[
             ResourceGrant {
                 resource: ResourcePattern {
                     name: "streams:/tree".into(),

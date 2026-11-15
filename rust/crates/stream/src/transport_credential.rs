@@ -83,7 +83,7 @@ async fn action<T>(
     work: impl std::future::Future<Output = Result<T, CredentialError>>,
 ) -> Result<T, CredentialError> {
     crate::trace::observe(
-        crate::trace::Request {
+        &crate::trace::Request {
             name,
             mechanism: crate::trace::Mechanism::AuthCheck,
             parent: None,

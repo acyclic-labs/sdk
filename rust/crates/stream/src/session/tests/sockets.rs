@@ -99,7 +99,7 @@ async fn socket_input_rechecks_authority_after_the_wait_selects_input() -> TestR
     for (reason, now) in [("revoked", signed::NOW), ("credential_expired", 1000)] {
         let state = State::new();
         let credential =
-            testing::credential_with_grants(vec![acyclic_auth::contract::ResourceGrant {
+            testing::credential_with_grants(&[acyclic_auth::contract::ResourceGrant {
                 resource: acyclic_auth::contract::ResourcePattern {
                     name: "actors:/fixture".into(),
                     prefix: false,
@@ -413,7 +413,7 @@ async fn forwarded_owned_credential_renewal_keeps_sibling_channels_live() -> Tes
         ends: false,
         received: None,
     }));
-    let credential = testing::credential_with_grants(vec![acyclic_auth::contract::ResourceGrant {
+    let credential = testing::credential_with_grants(&[acyclic_auth::contract::ResourceGrant {
         resource: acyclic_auth::contract::ResourcePattern {
             name: "actors:/fixture".into(),
             prefix: false,
@@ -484,7 +484,7 @@ async fn forwarded_socket_renews_and_withdraws_its_original_credential() -> Test
         ends: false,
         received: None,
     }));
-    let credential = testing::credential_with_grants(vec![acyclic_auth::contract::ResourceGrant {
+    let credential = testing::credential_with_grants(&[acyclic_auth::contract::ResourceGrant {
         resource: acyclic_auth::contract::ResourcePattern {
             name: "actors:/fixture".into(),
             prefix: false,
@@ -531,7 +531,7 @@ async fn forwarding_retains_the_original_socket_and_its_send_results() -> TestRe
     }));
     client.register_credential(
         0,
-        testing::credential_with_grants(vec![acyclic_auth::contract::ResourceGrant {
+        testing::credential_with_grants(&[acyclic_auth::contract::ResourceGrant {
             resource: acyclic_auth::contract::ResourcePattern {
                 name: "actors:/fixture".into(),
                 prefix: false,
@@ -588,7 +588,7 @@ async fn socket_frames_flow_both_ways_and_dropping_the_peer_ends_the_owner() -> 
     }));
     client.register_credential(
         0,
-        testing::credential_with_grants(vec![acyclic_auth::contract::ResourceGrant {
+        testing::credential_with_grants(&[acyclic_auth::contract::ResourceGrant {
             resource: acyclic_auth::contract::ResourcePattern {
                 name: "actors:/fixture".into(),
                 prefix: false,
@@ -662,7 +662,7 @@ async fn a_socket_the_host_ends_after_its_final_frame_ends_cleanly_for_the_peer(
     }));
     client.register_credential(
         0,
-        testing::credential_with_grants(vec![acyclic_auth::contract::ResourceGrant {
+        testing::credential_with_grants(&[acyclic_auth::contract::ResourceGrant {
             resource: acyclic_auth::contract::ResourcePattern {
                 name: "actors:/fixture".into(),
                 prefix: false,
@@ -687,7 +687,7 @@ async fn host_shutdown_closes_all_channels_without_data_credit() -> TestResult {
     let Some(Body::Hello(hello)) = &mut greeting.body else {
         return Err("missing greeting".into());
     };
-    hello.credentials.push(testing::credential_with_grants(vec![
+    hello.credentials.push(testing::credential_with_grants(&[
         acyclic_auth::contract::ResourceGrant {
             resource: acyclic_auth::contract::ResourcePattern {
                 name: "actors:/fixture".into(),

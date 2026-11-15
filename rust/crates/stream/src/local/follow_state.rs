@@ -48,7 +48,7 @@ impl FollowState {
         let publication = core::pin::pin!(publication);
         let unavailable = core::pin::pin!(unavailable);
         let ready = crate::trace::observe_value(
-            crate::trace::Request {
+            &crate::trace::Request {
                 name: "stream.local_follow_wait",
                 mechanism: crate::trace::Mechanism::Wait,
                 parent: None,

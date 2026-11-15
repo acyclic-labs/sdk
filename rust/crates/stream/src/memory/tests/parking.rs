@@ -32,7 +32,7 @@ async fn snapshot_callbacks_retire_outside_the_original_job_mutex() {
             self.wake_by_ref();
         }
         fn wake_by_ref(self: &Arc<Self>) {
-            self.observe();
+            self.observe(&);
             if let Some(published) = self.published.lock().unwrap().take() {
                 let _ = published.send(());
             }
@@ -40,7 +40,7 @@ async fn snapshot_callbacks_retire_outside_the_original_job_mutex() {
     }
     impl Drop for ConsumerWake {
         fn drop(&mut self) {
-            self.observe();
+            self.observe(&);
             self.trace.retired.fetch_add(1, Ordering::SeqCst);
         }
     }
@@ -62,7 +62,7 @@ async fn snapshot_callbacks_retire_outside_the_original_job_mutex() {
             .await
             .unwrap();
         let held = provider.state.write().await;
-        let (pending, created) = crate::snapshot::observe(crate::snapshot::Cut::Created, || {
+        let (pending, created) = crate::snapshot::observe(&crate::snapshot::Cut::Created, || {
             std::pin::Pin::new(&mut follow)
                 .poll_next(&mut Context::from_waker(Waker::noop()))
                 .is_pending()
@@ -352,7 +352,7 @@ async fn dropped_consumers_leave_no_queued_snapshot_reservation() {
         } else {
             crate::snapshot::Cut::Retired
         };
-        let (pending, settled) = crate::snapshot::observe(cut, || {
+        let (pending, settled) = crate::snapshot::observe(&cut, || {
             follow
                 .as_mut()
                 .poll_next(&mut Context::from_waker(Waker::noop()))
@@ -404,7 +404,7 @@ async fn physical_snapshot_submission_keeps_the_original_executor() {
             move || {
                 assert!(tokio::runtime::Handle::try_current().is_err());
                 let (pending, observed) =
-                    crate::snapshot::observe(crate::snapshot::Cut::Pending, || {
+                    crate::snapshot::observe(&crate::snapshot::Cut::Pending, || {
                         follow
                             .as_mut()
                             .poll_next(&mut Context::from_waker(Waker::noop()))

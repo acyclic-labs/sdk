@@ -92,7 +92,7 @@ async fn local_socket_refusals_retain_the_original_error_after_prior_data() -> T
             );
             client.register_credential(
                 0,
-                testing::credential_with_grants(vec![acyclic_auth::contract::ResourceGrant {
+                testing::credential_with_grants(&[acyclic_auth::contract::ResourceGrant {
                     resource: acyclic_auth::contract::ResourcePattern {
                         name: "actors:/refusal".into(),
                         prefix: false,

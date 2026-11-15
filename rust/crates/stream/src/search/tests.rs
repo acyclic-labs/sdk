@@ -377,7 +377,7 @@ async fn search_uses_current_session_grants_even_for_a_retained_cursor()
     let client =
         crate::grpc::Client::from_channel(fixture._channel.clone(), "Bearer fixture".parse()?);
     let credential = |path: &str| {
-        crate::session::testing::credential_with_grants(vec![ResourceGrant {
+        crate::session::testing::credential_with_grants(&[ResourceGrant {
             resource: ResourcePattern {
                 name: format!("streams:/{path}"),
                 prefix: true,

@@ -60,7 +60,7 @@ async fn dependent_resources_keep_original_call_grants_and_live_trust() -> TestR
             actions: vec!["fs/read".into()],
         },
     ];
-    let credential = testing::credential_with_grants(grants.clone());
+    let credential = testing::credential_with_grants(&grants);
     let renewed = acyclic_auth::testing::root(|block| {
         if let Some(key) = block
             .certificates
@@ -912,7 +912,7 @@ async fn input_producer_loss_retains_original_terminal_receive_error() -> TestRe
             generation: 1,
         },
         released,
-    );
+    )?;
     let error = {
         let mut waiting = core::pin::pin!(input.next_chunk());
         assert!(futures::poll!(waiting.as_mut()).is_pending());

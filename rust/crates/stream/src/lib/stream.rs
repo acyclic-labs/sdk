@@ -171,7 +171,7 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
             return work.await;
         }
         crate::trace::observe(
-            crate::trace::Request {
+            &crate::trace::Request {
                 name: if keyed {
                     "stream.seek_open"
                 } else {
@@ -260,7 +260,7 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
             return work.await;
         }
         crate::trace::observe(
-            crate::trace::Request {
+            &crate::trace::Request {
                 name: "stream.follow_open",
                 mechanism: crate::trace::Mechanism::Io,
                 parent: None,
@@ -310,7 +310,7 @@ impl<P: StreamProvider + ?Sized> Replay<P> {
         parent: Option<crate::trace::SpanId>,
     ) -> crate::trace::Observed<Option<Vec<Record>>, StreamError, P> {
         let observed = crate::trace::Recorder::observe(
-            recorder,
+            &recorder,
             crate::trace::Request {
                 name: "stream.replay_page",
                 mechanism: crate::trace::Mechanism::Io,

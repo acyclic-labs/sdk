@@ -299,7 +299,7 @@ impl crate::NativeStreamProvider for LocalStream {
     ) -> crate::NativeProviderFuture<'_, crate::NativeRecordStream> {
         if let Err(error) = crate::native::validate_follow(&request) {
             return crate::NativeProviderFuture::ready_observed(
-                crate::native::span!("acyclic.stream.follow"),
+                &crate::native::span!("acyclic.stream.follow"),
                 Ok(Err(error)),
                 StreamError::code,
             );
@@ -307,7 +307,7 @@ impl crate::NativeStreamProvider for LocalStream {
         let original = Arc::clone(&meter);
         crate::NativeProviderFuture::observed(
             &original,
-            crate::native::span!("acyclic.stream.follow"),
+            &crate::native::span!("acyclic.stream.follow"),
             async move {
                 let work = crate::native::Work::new(meter)?;
                 let provider = Self {
@@ -330,7 +330,7 @@ impl crate::NativeStreamProvider for LocalStream {
     ) -> crate::NativeProviderFuture<'_, crate::Heads> {
         if let Err(error) = MemoryStream::validate_native_heads(&request) {
             return crate::NativeProviderFuture::ready_observed(
-                crate::native::span!("acyclic.stream.heads"),
+                &crate::native::span!("acyclic.stream.heads"),
                 Ok(Err(error)),
                 StreamError::code,
             );
@@ -338,7 +338,7 @@ impl crate::NativeStreamProvider for LocalStream {
         let original = Arc::clone(&meter);
         crate::NativeProviderFuture::observed(
             &original,
-            crate::native::span!("acyclic.stream.heads"),
+            &crate::native::span!("acyclic.stream.heads"),
             async move {
                 let work = crate::native::Work::inline(meter);
                 let result = async {
@@ -363,7 +363,7 @@ impl crate::NativeStreamProvider for LocalStream {
         let stream = self.clone();
         crate::native::Work::start(
             meter,
-            crate::native::span!("acyclic.stream.durability_barrier"),
+            &crate::native::span!("acyclic.stream.durability_barrier"),
             |work, completion| {
                 completion.observe_output(
                     async move {
@@ -400,7 +400,7 @@ impl crate::NativeStreamProvider for LocalStream {
         };
         crate::NativeProviderFuture::try_observed(
             &meter,
-            span,
+            &span,
             async move {
                 let result = stream.seal_accepted_with_reservation(true).await;
                 work.finish(result.map(|()| ((), None)))
@@ -416,7 +416,7 @@ impl crate::NativeStreamProvider for LocalStream {
         let original = Arc::clone(&meter);
         crate::NativeProviderFuture::observed(
             &original,
-            crate::native::span!("acyclic.stream.tail"),
+            &crate::native::span!("acyclic.stream.tail"),
             async move {
                 self.accepted(|| self.inner.provider.native_tail_inner(path, meter))
                     .await
@@ -433,7 +433,7 @@ impl crate::NativeStreamProvider for LocalStream {
         let original = Arc::clone(&meter);
         crate::NativeProviderFuture::observed(
             &original,
-            crate::native::span!("acyclic.stream.read"),
+            &crate::native::span!("acyclic.stream.read"),
             async move {
                 let request = match request.validate() {
                     Ok(request) => request,
@@ -463,7 +463,7 @@ impl crate::NativeStreamProvider for LocalStream {
         let original = Arc::clone(&meter);
         crate::NativeProviderFuture::observed(
             &original,
-            crate::native::span!("acyclic.stream.inspect_idempotency"),
+            &crate::native::span!("acyclic.stream.inspect_idempotency"),
             async move {
                 self.accepted(|| {
                     self.inner
@@ -500,7 +500,7 @@ impl crate::NativeStreamProvider for LocalStream {
                 )
             }
             crate::WriteRequest::Fork(_) => crate::NativeProviderFuture::ready_observed(
-                crate::native::span!("acyclic.stream.fork"),
+                &crate::native::span!("acyclic.stream.fork"),
                 Ok(Err(StreamError::Unsupported)),
                 StreamError::code,
             ),

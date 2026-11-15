@@ -442,7 +442,7 @@ fn product_call_targets_retain_exact_action_resource_and_live_credential() {
     ] {
         let state = State::new();
         let authority = Arc::new(authority(state.clone()));
-        let credential = testing::credential_with_grants(vec![ResourceGrant {
+        let credential = testing::credential_with_grants(&[ResourceGrant {
             resource: ResourcePattern {
                 name: resource.into(),
                 prefix: false,
@@ -489,7 +489,7 @@ fn product_call_targets_retain_exact_action_resource_and_live_credential() {
         ));
         // A slot replacement cannot substitute another action for the admitted
         // operation, even while the original provider still holds its context.
-        let replacement = testing::credential_with_grants(vec![ResourceGrant {
+        let replacement = testing::credential_with_grants(&[ResourceGrant {
             resource: ResourcePattern {
                 name: resource.into(),
                 prefix: false,

@@ -30,7 +30,8 @@ impl Window {
         }
         *balance = next;
         drop(balance);
-        self.bytes.add_permits(grant.bytes as usize);
+        self.bytes
+            .add_permits(usize::try_from(grant.bytes).map_err(|_| StreamError::Capacity)?);
         self.frames.add_permits(grant.frames as usize);
         Ok(())
     }
