@@ -12,23 +12,23 @@ async fn payload(medium: &Shared, account: &[u8]) -> Result<String, Box<dyn std:
     Ok(keys[0].0.clone())
 }
 
+struct Repair {
+    body: OwnedBytes,
+    key: String,
+    stored: OwnedBytes,
+    digest: Digest,
+    observation: crate::Availability,
+    unauthorized: crate::Availability,
+    revision: Option<acyclic_stream::Revision>,
+}
+
 async fn verify_repair(
     medium: &Shared,
     account: &crate::Account<Shared>,
     other: &crate::Account<Shared>,
     body: OwnedBytes,
     digest: Digest,
-) -> Result<
-    (
-        OwnedBytes,
-        String,
-        OwnedBytes,
-        crate::Availability,
-        crate::Availability,
-        Option<acyclic_stream::Revision>,
-    ),
-    Box<dyn std::error::Error>,
-> {
+) -> Result<Repair, Box<dyn std::error::Error>> {
     let original = account.put(body.clone(), Vec::new()).await?;
     let original = original.verified().ok_or("original put was unknown")?;
     let key = payload(medium, b"availability-repair").await?;
@@ -69,20 +69,31 @@ async fn verify_repair(
         &body
     );
 
-    Ok((body, key, stored, observation, unauthorized, original.revision.clone()))
+    Ok(Repair {
+        body,
+        key,
+        stored,
+        digest,
+        observation,
+        unauthorized,
+        revision: original.revision.clone(),
+    })
 }
 
 async fn verify_restored(
     medium: &Shared,
     account: &crate::Account<Shared>,
-    body: OwnedBytes,
-    key: String,
-    stored: OwnedBytes,
-    digest: Digest,
-    mut observation: crate::Availability,
-    unauthorized: crate::Availability,
-    revision: Option<acyclic_stream::Revision>,
+    repair: Repair,
 ) -> Result<(OwnedBytes, String, crate::Availability, crate::Availability), Box<dyn std::error::Error>> {
+    let Repair {
+        body,
+        key,
+        stored,
+        digest,
+        mut observation,
+        unauthorized,
+        revision,
+    } = repair;
     // A remote physical producer shares the same scoped source. No catalog
     // mutation is required, and the event alone never decides verification.
     assert!(medium.inner.remove(&key).await?);
@@ -105,20 +116,9 @@ pub(crate) async fn verify(medium: impl Medium + 'static) -> TestResult {
     let other = store.account(b"availability-other")?;
     let body = OwnedBytes::from_static(b"same envelope and version after physical restoration");
     let digest = Digest::of(&body);
-    let (body, key, stored, observation, unauthorized, revision) =
-        verify_repair(&medium, &account, &other, body, digest).await?;
-    let (body, key, mut observation, mut unauthorized) = verify_restored(
-        &medium,
-        &account,
-        body,
-        key,
-        stored,
-        digest,
-        observation,
-        unauthorized,
-        revision,
-    )
-    .await?;
+    let repair = verify_repair(&medium, &account, &other, body, digest).await?;
+    let (body, key, mut observation, mut unauthorized) =
+        verify_restored(&medium, &account, repair).await?;
     // Cancellation after sending the physical write leaves its acknowledgment
     // uncertain. Closing the source ends the original wait instead of hanging.
     assert!(medium.inner.remove(&key).await?);
