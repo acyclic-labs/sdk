@@ -218,18 +218,24 @@ fn hand_back(volume: &Mutex<Head>, fork: &Head, view: &Files) -> (u64, Vec<&'sta
     .unwrap()
 }
 
+// A command's acknowledged generation, its conflicts, its view, and the head
+// it forked.
 fn command(
     volume: &Mutex<Head>,
     writes: &[(&'static str, &'static str)],
-) -> (u64, Vec<&'static str>, Files) {
+) -> (u64, Vec<&'static str>, Files, Head) {
     let fork = volume.lock().unwrap().clone();
     let mut view = fork.files.clone();
     for (path, value) in writes {
         view.insert(*path, (*value).to_owned());
     }
     let (generation, conflicts) = hand_back(volume, &fork, &view);
-    (generation, conflicts, view)
+    (generation, conflicts, view, fork)
 }
+
+// Set once any execution forks both commands before either lands, so the
+// conflict branch below is proved reachable rather than vacuous.
+static OVERLAPPED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn concurrent_hand_backs() {
     let volume = StateArc::new(Mutex::new(Head::default()));
@@ -262,28 +268,29 @@ fn concurrent_hand_backs() {
         !head.files.contains_key("lost"),
         "unverified view was published"
     );
-    // Exactly the later hand-back sees the overlap, and reports it with git
-    // markers holding both sides; neither side silently overwrites the other.
     let (first, second) = if a.0 < b.0 { (&a, &b) } else { (&b, &a) };
     assert!(first.1.is_empty());
-    assert_eq!(second.1, ["shared"]);
     let shared = &head.files["shared"];
-    assert!(
-        shared.starts_with(
-            "<<<<<<< ours
-"
-        ) && shared.contains(
-            "
-a
-"
-        ) && shared.contains(
-            "
-b
-"
-        )
-    );
+    if second.3.generation < first.0 {
+        // Both forked before either landed: exactly the later hand-back sees
+        // the overlap, and reports it with git markers holding both sides.
+        OVERLAPPED.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(second.1, ["shared"], "concurrent overlap not reported");
+        assert!(
+            shared.starts_with("<<<<<<< ours\n")
+                && shared.contains("\na\n")
+                && shared.contains("\nb\n"),
+            "conflict markers lost a side: {shared:?}"
+        );
+    } else {
+        // The later command forked the earlier one's landed head, so its write
+        // replaced a value it observed: no silent overwrite, and no conflict.
+        assert_eq!(second.3.files.get("shared"), first.2.get("shared"));
+        assert!(second.1.is_empty(), "sequential write reported a conflict");
+        assert_eq!(Some(shared), second.2.get("shared"));
+    }
     // Every acknowledged hand-back's own writes remain in the final head.
-    for (_, _, view) in [&a, &b] {
+    for (_, _, view, _) in [&a, &b] {
         for (path, value) in view {
             if *path != "shared" {
                 assert_eq!(head.files.get(path), Some(value), "acknowledged write lost");
@@ -295,4 +302,8 @@ b
 #[test]
 fn hand_backs_never_wait_and_never_overwrite() {
     loom::model(concurrent_hand_backs);
+    assert!(
+        OVERLAPPED.load(std::sync::atomic::Ordering::Relaxed),
+        "no execution overlapped the two hand-backs"
+    );
 }
