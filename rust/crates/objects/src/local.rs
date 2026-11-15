@@ -1188,9 +1188,11 @@ mod isolation_tests {
         ));
         let written = std::fs::read(&log).unwrap();
         assert_eq!(written.len() as u64, states.last().unwrap().0);
-        let copy = tempfile::tempdir().unwrap();
-        std::fs::write(copy.path().join("FORMAT"), FORMAT).unwrap();
-        for cut in 0..=written.len() {
+        // Each cut recovers its own copy, so the cuts' reopens and flushes
+        // overlap instead of paying every flush latency in sequence.
+        let recover = async |cut: usize| {
+            let copy = tempfile::tempdir().unwrap();
+            std::fs::write(copy.path().join("FORMAT"), FORMAT).unwrap();
             // The owner never closed.
             std::fs::write(copy.path().join(OPEN), b"").unwrap();
             std::fs::write(copy.path().join(LOG), written.get(..cut).unwrap()).unwrap();
@@ -1228,7 +1230,12 @@ mod isolation_tests {
             );
             assert_eq!(contents(&clean).await, committed, "successor at cut {cut}");
             assert_eq!(clean.close().await.unwrap(), LocalClose::Released);
+        };
+        let mut cuts = Vec::new();
+        for cut in 0..=written.len() {
+            cuts.push(recover(cut));
         }
+        futures::future::join_all(cuts).await;
     }
 
     #[tokio::test]
