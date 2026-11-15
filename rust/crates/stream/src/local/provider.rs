@@ -75,9 +75,16 @@ impl LocalStream {
 #[async_trait]
 impl StreamProvider for LocalStream {
     fn context(&self) -> crate::ProviderContext<'_> {
-        crate::ProviderContext::new(self.inner.provider.context().operation_claims())
+        let context = crate::ProviderContext::new(self.inner.provider.context().operation_claims())
             .with_process_exclusion()
-            .with_deferred_durability()
+            .with_deferred_durability();
+        // An undeferred publication waits for its required cut at the
+        // configured strength; only a full flush makes that cut durable.
+        if self.inner.durability == LocalDurability::FullFlush && !deferred(self) {
+            context.with_durable_acknowledgement()
+        } else {
+            context
+        }
     }
 
     async fn durability_barrier(&self) -> Result<(), StreamError> {

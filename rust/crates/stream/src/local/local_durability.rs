@@ -64,8 +64,16 @@ fn deferred(provider: &LocalStream) -> bool {
     match current_deferral() {
         Deferral::Eager => false,
         Deferral::All => true,
+        // Read the owner beneath LocalStream's context, which itself asks
+        // whether this task defers.
         Deferral::Provider(owner) => {
-            provider.context().operation_claims().owner_identity() == owner
+            provider
+                .inner
+                .provider
+                .context()
+                .operation_claims()
+                .owner_identity()
+                == owner
         }
     }
 }

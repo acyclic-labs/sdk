@@ -1589,6 +1589,10 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         &self,
         mut prepared: PreparedPublish,
     ) -> Result<PreparedPublish, Error> {
+        // The writer's own acknowledgement may already be the durable cut.
+        if self.provider.context().durable_acknowledgement() {
+            return Ok(prepared);
+        }
         if let Err(source) = self.confirm_durability().await {
             prepared.acknowledgement_unknown = true;
             return Err(Error::Unknown {

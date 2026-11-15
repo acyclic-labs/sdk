@@ -98,6 +98,9 @@ async fn foreign_provider_survives_cut(scoped: bool) -> Result<u64> {
     let publication = async {
         append(&cloned, b"deferred").await?;
         assert!(synced_bytes(&selected).is_none());
+        // Only an authority this scope leaves undeferred acknowledges durably.
+        assert!(!selected.context().durable_acknowledgement());
+        assert_eq!(foreign.context().durable_acknowledgement(), scoped);
         append(&foreign, b"independent authority").await?;
         if let Some(bytes) = synced_bytes(&foreign) {
             foreign_durable = bytes;
@@ -128,6 +131,7 @@ async fn foreign_provider_survives_cut(scoped: bool) -> Result<u64> {
     }
     append(&selected, b"scope ended").await?;
     assert!(synced_bytes(&selected).is_some());
+    assert!(selected.context().durable_acknowledgement());
     let foreign = power_cut(foreign_directory.path(), foreign, foreign_durable).await?;
     Ok(foreign.tail(path()).await?)
 }
