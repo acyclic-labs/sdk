@@ -1288,8 +1288,13 @@ mod tests {
             b"native untouched\n",
         )
         .map_err(storage)?;
-        let (settlement_started, settlement) = tokio::sync::oneshot::channel();
-        let dispatches = Arc::new(Mutex::new((0, Some(settlement_started))));
+        let (child_settled, child_settlement) = tokio::sync::oneshot::channel();
+        let (grandchild_settled, grandchild_settlement) = tokio::sync::oneshot::channel();
+        let dispatches = Arc::new(Mutex::new((
+            0,
+            Some(child_settled),
+            Some(grandchild_settled),
+        )));
         let provider = Arc::new(
             ScriptedModelProvider::new([
                 super::super::tests::checked_commands::call(
@@ -1298,8 +1303,10 @@ mod tests {
                     "echo parent > parent.txt",
                 ),
                 ScriptedTurn::Text("child ready".into()),
+                ScriptedTurn::Text("child settlement received".into()),
                 ScriptedTurn::Text("grandchild ready".into()),
                 ScriptedTurn::Text("grandchild settlement received".into()),
+                ScriptedTurn::Text("descendant settlement received".into()),
                 super::super::tests::checked_commands::call(
                     1,
                     crate::tools::shell::PLATFORM.name,
@@ -1310,10 +1317,12 @@ mod tests {
             .with_dispatch_observer(move |_| {
                 let mut dispatches = dispatches.lock().unwrap();
                 dispatches.0 += 1;
-                // Two initial parent requests, the child's brief, then the
-                // parent's settlement notice precede the explicit shell read.
-                if dispatches.0 == 4 {
+                // Each completed child turn wakes its parent. Drain the root
+                // response before admitting the next scripted conversation.
+                if dispatches.0 == 3 {
                     let _ = dispatches.1.take().unwrap().send(());
+                } else if dispatches.0 == 6 {
+                    let _ = dispatches.2.take().unwrap().send(());
                 }
                 Box::pin(async { Ok(()) })
             })
@@ -1455,14 +1464,12 @@ mod tests {
         // A tree-only credential may act on its descendants, and a nested
         // merge must publish to its direct parent rather than the host checkout.
         let tree = local.connect().await?;
-        tree.execute(&crate::client::AgentCommand::Pause {
-            agent: tree.root().clone(),
-            paused: true,
-        })
-        .await?;
         let mut selected = tree.clone();
         let mut descendants = Vec::new();
-        for name in ["child", "grandchild"] {
+        for (name, settlement) in [
+            ("child", child_settlement),
+            ("grandchild", grandchild_settlement),
+        ] {
             let crate::client::AgentReply::Spawned { agent, .. } = selected
                 .execute(&crate::client::AgentCommand::Spawn {
                     parent: selected.root().clone(),
@@ -1497,9 +1504,12 @@ mod tests {
                 matches!(entries.as_slice(), [entry] if entry.outcome.is_completed()),
                 "{name} brief did not complete: {entries:?}"
             );
+            settlement.await.map_err(storage)?;
+            Conversation::open(tree.clone())
+                .wait_current_input()
+                .await?;
             descendants.push(selected.clone());
         }
-        settlement.await.map_err(storage)?;
         Conversation::open(descendants[0].clone())
             .wait_current_input()
             .await?;
@@ -1676,7 +1686,7 @@ mod tests {
         ));
         assert_eq!(
             provider.request_count(),
-            6,
+            8,
             "human filesystem actions must not dispatch a model"
         );
         Ok(())
