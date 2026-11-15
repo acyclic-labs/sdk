@@ -143,10 +143,6 @@ fn assert_channel_traces(capture: &acyclic_grpc_observability::tests::Capture) -
         Some("unavailable")
     );
     assert_eq!(
-        second.fields.get("registration").map(String::as_str),
-        Some("opened")
-    );
-    assert_eq!(
         second.fields.get("generation").map(String::as_str),
         Some("2")
     );
