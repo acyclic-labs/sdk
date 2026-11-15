@@ -169,6 +169,7 @@ pub fn volume(provider: &ProviderRef) -> Result<VolumeRef> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     #[test]
     fn tree_is_sorted_and_kernel_lists_every_layer_rule() {
@@ -177,6 +178,91 @@ mod tests {
         for rule in crate::layers::Rule::ALL {
             assert!(kernel.contains(&format!("| {} |", rule.name())), "{rule:?}");
         }
+    }
+
+    /// Command-line tools an instruction might tell a model to run, spelled
+    /// distinctly enough that a whole word in prose names the tool.
+    const COMMAND_TOOLS: &[&str] = &[
+        "ack", "ag", "awk", "bash", "bun", "cargo", "clang", "curl", "deno", "docker", "egrep",
+        "fd", "fzf", "gcc", "gh", "git", "grep", "jq", "kubectl", "node", "npm", "npx", "perl",
+        "pip", "pnpm", "pwsh", "python", "python3", "rg", "ruby", "rustc", "sed", "tsc", "wget",
+        "yarn", "yq", "zsh",
+    ];
+
+    /// The executables an instruction text tells the model to run, or an
+    /// error naming the first known tool it names outside the command form.
+    ///
+    /// An instruction names a command only as a code span `` `$ <tool> ...` ``,
+    /// whose first word is the executable, whatever that name is. A known
+    /// tool named anywhere else is refused, so a command cannot reach the
+    /// model in a form this check does not read.
+    fn commands(text: &str) -> std::result::Result<BTreeSet<&str>, String> {
+        let mut commands = BTreeSet::new();
+        let mut prose = String::new();
+        for (index, part) in text.split('`').enumerate() {
+            match part.strip_prefix("$ ").filter(|_| index % 2 == 1) {
+                Some(line) => {
+                    let tool = line.split_whitespace().next().unwrap_or_default();
+                    commands.insert(tool);
+                }
+                None => {
+                    prose.push_str(part);
+                    prose.push(' ');
+                }
+            }
+        }
+        // A word keeps its path characters, so `.git` or `src/rg` names a
+        // path, not a tool; only sentence punctuation is trimmed.
+        match prose
+            .split(|c: char| !(c.is_ascii_alphanumeric() || "_-./".contains(c)))
+            .map(|word| word.trim_end_matches('.'))
+            .find(|word| COMMAND_TOOLS.iter().any(|tool| tool == word))
+        {
+            Some(tool) => Err(format!("`{tool}` named outside a `$ ` command span")),
+            None => Ok(commands),
+        }
+    }
+
+    /// The executables `text` tells the model to run that no task
+    /// environment guarantees.
+    fn unprovided(text: &str) -> std::result::Result<Vec<&str>, String> {
+        let named = commands(text)?;
+        Ok(named
+            .into_iter()
+            .filter(|tool| {
+                !crate::context::TASK_TOOLS
+                    .iter()
+                    .any(|provided| provided == tool)
+            })
+            .collect())
+    }
+
+    // A seed instruction tells the model to run only executables every task
+    // environment provides, and names commands in no form that escapes this.
+    #[test]
+    fn seed_instructions_run_only_task_tools() {
+        for (path, bytes) in tree().iter().filter(|(path, _)| path.ends_with(".md")) {
+            let text = std::str::from_utf8(bytes).unwrap_or_else(|_| panic!("{path}"));
+            assert_eq!(unprovided(text), Ok(vec![]), "{path}");
+        }
+        // Planted controls: any executable outside the guarantee is
+        // refused, a known tool in prose is refused, and prose that only
+        // shares words with commands passes.
+        assert_eq!(unprovided("Run `$ make test` first."), Ok(vec!["make"]));
+        assert_eq!(
+            unprovided("Search with `$ rg -n x`, then `$ jq .`."),
+            Ok(vec!["jq"])
+        );
+        assert!(unprovided("Read relevant code with jq before editing.").is_err());
+        assert!(unprovided("Then use git.").is_err());
+        assert_eq!(
+            unprovided("Files under `.git` are project files."),
+            Ok(vec![])
+        );
+        assert_eq!(
+            unprovided("Make a tree of the tail and find the path."),
+            Ok(vec![])
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]

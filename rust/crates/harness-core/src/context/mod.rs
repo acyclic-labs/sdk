@@ -53,7 +53,7 @@ mod value;
 pub use value::*;
 mod environment;
 mod text;
-pub use environment::EnvironmentFacts;
+pub use environment::{EnvironmentFacts, TASK_TOOLS};
 mod pipeline;
 pub use pipeline::*;
 mod source;

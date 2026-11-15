@@ -2,6 +2,13 @@
 use super::*;
 use crate::executor::PreparationIo;
 
+/// Executables every task environment provides on the admitted tool path.
+///
+/// Model-visible seed instructions name no other command-line tool, and the
+/// environment context reports each one's presence, so an environment that
+/// breaks this contract is visible to the model instead of misleading it.
+pub const TASK_TOOLS: &[&str] = &["git", "rg"];
+
 /// Facts about the task's workspace, pinned at admission.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]

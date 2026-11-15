@@ -29,8 +29,10 @@ pub(super) fn gather(
         });
         facts.tool_path = environment.get("PATH").cloned();
         facts.tooling = Some(
-            ["git", "rg", "python", "python3", "node", "cargo"]
-                .into_iter()
+            crate::context::TASK_TOOLS
+                .iter()
+                .copied()
+                .chain(["python", "python3", "node", "cargo"])
                 .map(|name| {
                     format!(
                         "{name}: {}",
