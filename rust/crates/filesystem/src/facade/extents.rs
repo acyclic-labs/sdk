@@ -178,6 +178,7 @@ pub(crate) async fn seek_record_extent_with_accounting<
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn plan_record_extents(
         &mut self,
         record: FileRecord,

@@ -53,8 +53,12 @@ pub(super) fn durable_commit(
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) type ProviderAllocation = Option<acyclic_native_runtime::ReadAllocation>;
+// Browser providers never retain a native allocation; the uninhabited payload
+// makes that static and keeps custody move-only on every target.
 #[cfg(target_arch = "wasm32")]
-pub(super) type ProviderAllocation = Option<()>;
+pub(super) type ProviderAllocation = Option<NoProviderAllocation>;
+#[cfg(target_arch = "wasm32")]
+pub(super) enum NoProviderAllocation {}
 
 pub(super) enum AuthorityRead {
     Plain(acyclic_stream::RecordStream),

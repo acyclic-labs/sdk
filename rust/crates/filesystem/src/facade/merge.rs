@@ -116,6 +116,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) async fn apply_workspace_join_with_accounting<E, Fut>(
         &self,
         request: WorkspaceJoinRequest<'_, A, O>,

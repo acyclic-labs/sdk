@@ -329,6 +329,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> crate::Wor
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn current_access_policy_revision_accounted(
         &self,
         accounting: &mut KernelAccounting<'_>,

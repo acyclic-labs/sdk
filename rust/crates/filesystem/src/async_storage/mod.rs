@@ -47,13 +47,18 @@ mod policy;
 pub(crate) use policy::{CutEvidence, ScopedCuts};
 pub use policy::{PolicyCut, PolicyGroup, PolicyOwner};
 mod objects;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use objects::restore_plain;
 pub use objects::{AsyncObjectStore, PublicationScope};
 mod erased_objects;
 pub use erased_objects::{DynObjectStore, SharedObjectStore, shared_objects};
 mod read_batch;
+#[cfg(any(feature = "browser", not(target_arch = "wasm32")))]
+pub(crate) use read_batch::admit_read_batch;
+pub(crate) use read_batch::object_error;
 pub use read_batch::read_many_sequential;
-pub(crate) use read_batch::{Decoded, ReadRepresentation, Stored, admit_read_batch, object_error};
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use read_batch::{Decoded, ReadRepresentation, Stored};
 
 #[cfg(test)]
 #[path = "../tests/async_storage.rs"]

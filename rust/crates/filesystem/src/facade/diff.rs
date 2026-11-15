@@ -19,6 +19,7 @@ pub enum MergePreparation {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn workspace_join_changes<W: FsWork>(
         &self,
         base: GenerationId,

@@ -19,6 +19,7 @@ impl<
             .map(|(snapshot, _)| Some(snapshot))
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn selected_snapshot(
         &self,
         operation: crate::OperationId,

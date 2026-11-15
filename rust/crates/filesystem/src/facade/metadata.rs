@@ -121,6 +121,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
         budget.finish(result, &accounting)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn read_metadata_entry<W: FsWork>(
         &self,
         path: &NamespacePath,

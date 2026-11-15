@@ -2,6 +2,7 @@ use super::*;
 
 pub(crate) trait MemoryLazyNode: Serialize + Eq + Clone + Send + Sync {
     fn owned_bytes(&self) -> u64;
+    #[cfg(not(target_arch = "wasm32"))]
     fn retain_decoded(
         &mut self,
         allocation: &mut KernelOwnedAllocation,

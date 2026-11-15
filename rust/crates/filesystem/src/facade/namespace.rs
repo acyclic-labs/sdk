@@ -85,6 +85,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     }
 
     /// Proves absence when an authored non-directory hides a descendant.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn lookup_optional_no_follow_with_metadata_with_accounting(
         &mut self,
         path: &NamespacePath,
