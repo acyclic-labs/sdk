@@ -8,11 +8,11 @@ Changed paths: 1
 +++ b/shop.py
 @@ -17,7 +17,7 @@
          self.lines[item.sku] = self.lines.get(item.sku, 0) + qty
- 
+
      def remove(self, sku: str) -> None:
 -        del self.lines[sku]
 +        self.lines.pop(sku, None)
- 
+
      def count(self) -> int:
          return sum(self.lines.values())
 Test output:
@@ -28,11 +28,11 @@ Changed paths: 1
 +++ b/shop.py
 @@ -17,7 +17,7 @@
          self.lines[item.sku] = self.lines.get(item.sku, 0) + qty
- 
+
      def remove(self, sku: str) -> None:
 -        del self.lines[sku]
 +        self.lines.pop(sku, None)
- 
+
      def count(self) -> int:
          return sum(self.lines.values())
 Test output:

@@ -29,4 +29,3 @@ export async function measure(provider, name, follow = (path, options) => provid
   elapsedSamples.sort((a, b) => a - b);
   return { samples, p50_us: elapsedSamples[Math.ceil(samples * .5) - 1], p99_us: elapsedSamples[Math.ceil(samples * .99) - 1] };
 }
-

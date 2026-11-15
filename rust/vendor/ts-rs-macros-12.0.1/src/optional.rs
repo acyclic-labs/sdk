@@ -52,15 +52,15 @@ pub fn parse_optional(input: ParseStream) -> syn::Result<Optional> {
     Ok(optional)
 }
 
-/// Given a field, return a tuple `(is_optional, type)`.  
+/// Given a field, return a tuple `(is_optional, type)`.
 ///
-/// `is_optional`:  
+/// `is_optional`:
 /// An expression evaluating to bool, indicating whether the field should be annotated with `?`.
 ///
-/// `type`:  
+/// `type`:
 /// The transformed type of the field after applying the `#[ts(optional)]` annotation.
-/// This will be either  
-/// - the unmodified type of the field (no optional or `#[ts(optional = nullable)]`) or  
+/// This will be either
+/// - the unmodified type of the field (no optional or `#[ts(optional = nullable)]`) or
 /// - if the field is an `Option<T>`, its inner type `T´ (`#[ts(optional)]`)
 pub fn apply(
     crate_rename: &Path,

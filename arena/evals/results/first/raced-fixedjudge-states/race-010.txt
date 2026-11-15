@@ -8,8 +8,8 @@ Changed paths: 1
 +++ b/shop.py
 @@ -38,6 +38,13 @@
      return total
- 
- 
+
+
 +def bulk_discount_cents(cart: Cart) -> int:
 +    """Return a bulk discount if 10+ units in cart, else 0."""
 +    if cart.count() >= 10:
@@ -33,8 +33,8 @@ Changed paths: 1
 +++ b/shop.py
 @@ -43,6 +43,13 @@
      return sub + sub * tax_percent // 100
- 
- 
+
+
 +def bulk_discount_cents(cart: Cart) -> int:
 +    """Return a 5% bulk discount (in cents) if the cart holds 10+ units total, else 0."""
 +    if cart.count() >= 10:

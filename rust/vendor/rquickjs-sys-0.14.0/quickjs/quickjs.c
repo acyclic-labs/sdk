@@ -3804,9 +3804,9 @@ JSValue JS_NewSymbol(JSContext *ctx, const char *description, bool is_global)
             /* Local symbol without description: Symbol() */
             return JS_NewSymbolInternal(ctx, NULL, JS_ATOM_TYPE_SYMBOL);
         }
-        /* Global symbol without description: Symbol.for() 
+        /* Global symbol without description: Symbol.for()
            Per ES spec, ToString(undefined) becomes "undefined" */
-        description = "undefined";    
+        description = "undefined";
     }
     JSAtom atom = JS_NewAtom(ctx, description);
     if (atom == JS_ATOM_NULL)

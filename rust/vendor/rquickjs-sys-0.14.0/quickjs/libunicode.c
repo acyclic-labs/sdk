@@ -1053,7 +1053,7 @@ int unicode_normalize(uint32_t **pdst, const uint32_t *src, int src_len,
     int *buf, buf_len, i, p, starter_pos, cc, last_cc, out_len;
     bool is_compat;
     DynBuf dbuf_s, *dbuf = &dbuf_s;
-    
+
     if (src_len == 0) {
         *pdst = NULL;
         return 0;
@@ -1714,7 +1714,7 @@ static int unicode_sequence_prop1(int seq_prop_idx, UnicodeSequencePropCB *cb, v
 {
     int i, c, j;
     uint32_t seq[SEQ_MAX_LEN];
-    
+
     switch(seq_prop_idx) {
     case UNICODE_SEQUENCE_PROP_Basic_Emoji:
         if (unicode_prop1(cr, UNICODE_PROP_Basic_Emoji1) < 0)
@@ -1771,7 +1771,7 @@ static int unicode_sequence_prop1(int seq_prop_idx, UnicodeSequencePropCB *cb, v
             int len, code, pres, k, mod, mod_count, mod_pos[2], hc_pos, n_mod, n_hc, mod1;
             int mod_idx, hc_idx, i0, i1;
             const uint8_t *tab = unicode_rgi_emoji_zwj_sequence;
-            
+
             for(i = 0; i < countof(unicode_rgi_emoji_zwj_sequence);) {
                 len = tab[i++];
                 k = 0;
@@ -1829,7 +1829,7 @@ static int unicode_sequence_prop1(int seq_prop_idx, UnicodeSequencePropCB *cb, v
                     for(mod_idx = 0; mod_idx < n_mod; mod_idx++) {
                         if (hc_pos >= 0)
                             seq[hc_pos] = 0x1f9b0 + hc_idx;
-                        
+
                         switch(mod) {
                         case 1:
                             seq[mod_pos[0]] = 0x1f3fb + mod_idx;
@@ -1851,7 +1851,7 @@ static int unicode_sequence_prop1(int seq_prop_idx, UnicodeSequencePropCB *cb, v
                         for(j = 0; j < k; j++)
                             printf(" %04x", seq[j]);
                         printf("\n");
-#endif                
+#endif
                         cb(opaque, seq, k);
                     }
                 }

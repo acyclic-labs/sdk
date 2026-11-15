@@ -349,4 +349,3 @@ service ActorsService {
     option (acyclic.validation.v1.auth) = { action: "actors/delete-all" extractor: "actors.delete" };
   }
 }
-

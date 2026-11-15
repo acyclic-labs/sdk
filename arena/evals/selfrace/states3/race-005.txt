@@ -9,8 +9,8 @@ Changed paths: 2
 +++ b/shop.py
 @@ -30,7 +30,7 @@
  }
- 
- 
+
+
 -def subtotal_cents(cart: Cart) -> int:
 +def cart_subtotal_cents(cart: Cart) -> int:
      total = 0
@@ -22,11 +22,11 @@ Changed paths: 2
  import unittest
 -from shop import Cart, CATALOG, subtotal_cents
 +from shop import Cart, CATALOG, cart_subtotal_cents
- 
- 
+
+
  class BaseTests(unittest.TestCase):
 @@ -9,4 +9,4 @@
- 
+
      def test_subtotal(self):
          c = Cart(); c.add(CATALOG["apple"], 2); c.add(CATALOG["bread"])
 -        self.assertEqual(subtotal_cents(c), 350)
@@ -45,8 +45,8 @@ Changed paths: 2
 +++ b/shop.py
 @@ -30,7 +30,7 @@
  }
- 
- 
+
+
 -def subtotal_cents(cart: Cart) -> int:
 +def cart_subtotal_cents(cart: Cart) -> int:
      total = 0
@@ -58,11 +58,11 @@ Changed paths: 2
  import unittest
 -from shop import Cart, CATALOG, subtotal_cents
 +from shop import Cart, CATALOG, cart_subtotal_cents
- 
- 
+
+
  class BaseTests(unittest.TestCase):
 @@ -9,4 +9,4 @@
- 
+
      def test_subtotal(self):
          c = Cart(); c.add(CATALOG["apple"], 2); c.add(CATALOG["bread"])
 -        self.assertEqual(subtotal_cents(c), 350)
