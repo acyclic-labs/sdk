@@ -7,7 +7,7 @@ use acyclic_auth::{
     verify::{Trust as _, VerifyError},
 };
 use acyclic_stream::{
-    IdempotencyKey, MemoryStream, OwnedBytes, Stream, StreamCategory, StreamError, UnixMillisClock,
+    IdempotencyKey, MemoryStream, OwnedBytes, Stream, StreamCategory, UnixMillisClock,
     trust_feed::TrustFeed,
 };
 use ed25519_dalek::SigningKey;

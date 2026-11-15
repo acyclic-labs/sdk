@@ -68,21 +68,37 @@ pub enum StreamError {
 /// equal to its bare variant, but always has the same category.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum StreamCategory {
+    /// The category of [`StreamError::InvalidResponse`].
     InvalidResponse,
+    /// The category of [`StreamError::InvalidPath`].
     InvalidPath,
+    /// The category of [`StreamError::InvalidArgument`].
     InvalidArgument,
+    /// The category of [`StreamError::LimitExceeded`].
     LimitExceeded,
+    /// The category of [`StreamError::NotFound`].
     NotFound,
+    /// The category of [`StreamError::AlreadyExists`].
     AlreadyExists,
+    /// The category of [`StreamError::PrefixNotRetained`].
     PrefixNotRetained,
+    /// The category of [`StreamError::OutOfRange`].
     OutOfRange,
+    /// The category of [`StreamError::IdempotencyMismatch`].
     IdempotencyMismatch,
+    /// The category of [`StreamError::Capacity`].
     Capacity,
+    /// The category of [`StreamError::AccessDenied`].
     AccessDenied,
+    /// The category of [`StreamError::Unavailable`].
     Unavailable,
+    /// The category of [`StreamError::HierarchyChanged`].
     HierarchyChanged,
+    /// The category of [`StreamError::DeadlineElapsed`].
     DeadlineElapsed,
+    /// The category of [`StreamError::Unsupported`].
     Unsupported,
+    /// The category of [`StreamError::RevisionForeign`].
     RevisionForeign,
 }
 

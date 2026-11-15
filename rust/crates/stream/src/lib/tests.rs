@@ -68,7 +68,7 @@ mod error_code_tests {
                 .downcast_ref::<std::io::Error>()
                 .expect("original native error type");
             assert_eq!(cause.kind(), std::io::ErrorKind::BrokenPipe);
-            assert_eq!(cloned.category(), category);
+            assert_eq!(cloned.category(), category.category());
             assert_eq!(cloned.code(), category.code());
             assert_eq!(cloned.uncertain(), category.uncertain());
             #[cfg(feature = "serde")]

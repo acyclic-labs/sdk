@@ -38,7 +38,7 @@ fuzz_target!(|input: &[u8]| {
                         || !resume.opaque.is_empty())
                 {
                     assert_eq!(
-                        decoded.map_err(|error| error.category()),
+                        decoded.as_ref().map_err(|error| error.category()),
                         Err(acyclic_stream::StreamCategory::InvalidArgument)
                     );
                 }

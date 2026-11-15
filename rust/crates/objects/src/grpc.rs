@@ -8,9 +8,7 @@ use crate::{
 pub use acyclic_auth::credential::CredentialProvider;
 use acyclic_stream::query_sync::Arc as RevisionArc;
 use acyclic_stream::wire_codec::{cut_from_wire, revision_from_wire, revision_to_wire};
-use acyclic_stream::{
-    OwnedBytes, Revision, RevisionCut, RevisionTracker, StreamCategory, StreamError,
-};
+use acyclic_stream::{OwnedBytes, Revision, RevisionCut, RevisionTracker, StreamCategory};
 use prost::Message;
 use std::sync::Arc;
 use tonic::{
