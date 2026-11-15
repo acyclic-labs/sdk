@@ -394,24 +394,24 @@ where
             encoded_length,
             key_hash,
         )
-        .map_err(packing_error)?;
+        .map_err(Self::packing_error)?;
         Ok(Self { inner })
     }
 
     pub(crate) fn next<E: std::error::Error>(
         &mut self,
     ) -> Result<Option<(&'a [T], u64, bool)>, Error<E>> {
-        self.inner.next_page(|| Ok(())).map_err(packing_error)
+        self.inner.next_page(|| Ok(())).map_err(Self::packing_error)
     }
-}
 
-fn packing_error<E: std::error::Error>(
-    error: acyclic_collections::page::PackingError<CanonicalDecodeError>,
-) -> Error<E> {
-    match error {
-        acyclic_collections::page::PackingError::InvalidLimits => Error::InvalidLimits,
-        acyclic_collections::page::PackingError::ItemTooLarge => Error::PageItemTooLarge,
-        acyclic_collections::page::PackingError::Encode(error) => Error::Decode(error),
+    fn packing_error<E: std::error::Error>(
+        error: acyclic_collections::page::PackingError<CanonicalDecodeError>,
+    ) -> Error<E> {
+        match error {
+            acyclic_collections::page::PackingError::InvalidLimits => Error::InvalidLimits,
+            acyclic_collections::page::PackingError::ItemTooLarge => Error::PageItemTooLarge,
+            acyclic_collections::page::PackingError::Encode(error) => Error::Decode(error),
+        }
     }
 }
 
