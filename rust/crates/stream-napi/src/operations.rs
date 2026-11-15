@@ -114,7 +114,7 @@ pub(super) async fn open_follow(
     let request = wire_codec::follow_from_wire(decode::<wire::FollowRequest>(&request, "follow")?)
         .map_err(|error| stream_error(&error))?;
     if request.progress {
-        return Err(stream_error(&StreamError::InvalidArgument));
+        return Err(stream_error(&StreamError::InvalidArgument).into());
     }
     let path = request.path.clone();
     let records = run_operation!(

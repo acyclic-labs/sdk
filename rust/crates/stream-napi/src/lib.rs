@@ -193,6 +193,20 @@ impl From<NativeStreamErrorMetadata> for OperationError {
     }
 }
 
+impl From<OperationError> for NativeStreamErrorMetadata {
+    fn from(error: OperationError) -> Self {
+        *error.0
+    }
+}
+
+impl std::ops::Deref for OperationError {
+    type Target = NativeStreamErrorMetadata;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 fn napi_error(error: &NativeStreamErrorMetadata) -> Error {
     let reason = match serde_json::to_string(&error) {
         Ok(reason) => reason,
@@ -271,7 +285,7 @@ where
 {
     Ok(match operation.await {
         Ok(value) => NativeStreamOperationResult::success(value),
-        Err(error) => NativeStreamOperationResult::failure(*error),
+        Err(error) => NativeStreamOperationResult::failure(error.into()),
     })
 }
 
@@ -376,7 +390,7 @@ impl NativeStreamFollow {
                 if self.state.token.is_cancelled() {
                     records.take();
                 }
-                Ok(NativeStreamNextResult::failure(*error))
+                Ok(NativeStreamNextResult::failure(error.into()))
             }
         }
     }
@@ -482,14 +496,14 @@ impl NativeStreamClient {
                     certificate.as_deref(),
                 )
                 .await
-                .map_err(|error| connect_error(&error))
+                .map_err(|error| OperationError::from(connect_error(&error)))
             },
             cancellation_state(cancellation),
         )
         .await;
         Ok(match result {
             Ok(client) => NativeStreamConnectResult::success(Self::from_client(client)),
-            Err(error) => NativeStreamConnectResult::failure(*error),
+            Err(error) => NativeStreamConnectResult::failure(error.into()),
         })
     }
 
@@ -536,7 +550,7 @@ impl NativeStreamClient {
         let result = connect_native(endpoint, token, None, cancellation_state(cancellation)).await;
         Ok(match result {
             Ok(client) => NativeStreamConnectResult::success(Self::from_client(client)),
-            Err(error) => NativeStreamConnectResult::failure(*error),
+            Err(error) => NativeStreamConnectResult::failure(error.into()),
         })
     }
 
@@ -576,7 +590,7 @@ impl NativeStreamClient {
         .await;
         Ok(match result {
             Ok(client) => NativeStreamConnectResult::success(Self::from_client(client)),
-            Err(error) => NativeStreamConnectResult::failure(*error),
+            Err(error) => NativeStreamConnectResult::failure(error.into()),
         })
     }
 
@@ -661,7 +675,7 @@ impl NativeStreamClient {
     ) -> Result<NativeStreamFollowResult> {
         Ok(match read(&self.provider, request, cancellation).await {
             Ok(cursor) => NativeStreamFollowResult::success(cursor),
-            Err(error) => NativeStreamFollowResult::failure(*error),
+            Err(error) => NativeStreamFollowResult::failure(error.into()),
         })
     }
 
@@ -681,7 +695,7 @@ impl NativeStreamClient {
             Ok(
                 match open_follow(&client, request, cancellation.as_ref()).await {
                     Ok(follow) => NativeStreamFollowResult::success(follow),
-                    Err(error) => NativeStreamFollowResult::failure(*error),
+                    Err(error) => NativeStreamFollowResult::failure(error.into()),
                 },
             )
         };
