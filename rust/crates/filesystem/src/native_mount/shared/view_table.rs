@@ -103,7 +103,7 @@ impl<C> ViewTable<C> {
     }
 
     /// Adds a view and returns its only owner.
-    #[cfg(any(test, loom))]
+    #[cfg(all(test, not(loom)))]
     pub(crate) fn insert(table: &Arc<Self>, core: C) -> Result<ViewOwner<C>, ViewSerialsExhausted> {
         let serial = Self::reserve(table)?;
         Ok(Self::insert_reserved(table, serial, core))
@@ -180,7 +180,7 @@ impl<C> ViewTable<C> {
     }
 
     /// Serials of the live views, in issue order.
-    #[cfg(any(test, loom))]
+    #[cfg(all(test, not(loom)))]
     pub(crate) fn serials(&self) -> Vec<ViewSerial> {
         let views = self.views.read().unwrap_or_else(PoisonError::into_inner);
         let mut serials: Vec<_> = views.live.keys().copied().map(ViewSerial).collect();
@@ -188,7 +188,7 @@ impl<C> ViewTable<C> {
         serials
     }
 
-    #[cfg(any(test, loom))]
+    #[cfg(all(test, not(loom)))]
     pub(crate) fn len(&self) -> usize {
         self.views
             .read()
