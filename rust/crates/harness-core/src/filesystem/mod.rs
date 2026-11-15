@@ -32,7 +32,7 @@ mod content_publisher;
 mod content_replacement;
 pub use content_publisher::FilesystemContentPublisher;
 mod execution_journal;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub(crate) use execution_journal::ExecutionReplayObservation;
 pub use execution_journal::FilesystemExecutionJournal;
 #[cfg(feature = "test-support")]
