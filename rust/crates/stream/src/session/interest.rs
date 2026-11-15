@@ -143,6 +143,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     let prepared = match provider.follow(ResourceFollowRequest {
                         resource: follow.resource,
                         from: resume.next,
+                        until,
                         preceding,
                         filter,
                         authorization: context,
@@ -154,7 +155,13 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     terminal = Some(resources::terminal(prepared.terminal, identity));
                     (
                         false,
-                        resources::source(prepared.open, identity, preceding, follow.opening_cut),
+                        resources::source(
+                            prepared.open,
+                            identity,
+                            preceding,
+                            follow.opening_cut,
+                            until,
+                        ),
                         Some(prepared.revalidate),
                     )
                 } else {

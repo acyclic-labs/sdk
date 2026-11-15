@@ -121,6 +121,7 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
     let request = ResourceFollowRequest {
         resource: resource.clone(),
         from: cursor.next,
+        until: None,
         preceding: None,
         filter: Default::default(),
         authorization,
@@ -149,6 +150,7 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         .follow(ResourceFollowRequest {
             resource: resource.clone(),
             from: cursor.next,
+            until: None,
             preceding: None,
             filter: hidden_filter.clone(),
             authorization: acyclic_stream::session::testing::resource_authorization(
@@ -295,6 +297,7 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         .follow(ResourceFollowRequest {
             resource: resource.clone(),
             from: ready.next,
+            until: None,
             preceding: ready.preceding.map(acyclic_stream::CommitId::from_bytes),
             filter: Default::default(),
             authorization: acyclic_stream::session::testing::resource_authorization(
