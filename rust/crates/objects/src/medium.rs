@@ -164,6 +164,7 @@ type Matcher = Box<dyn Fn(&[u8]) -> bool + Send + Sync>;
 struct Armed {
     fault: Fault,
     matches: Matcher,
+    /// Calls left, never zero: a spent fault is removed.
     remaining: Option<usize>,
     hits: Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -203,15 +204,16 @@ impl MemoryMedium {
 
     /// Arms `fault` for [`Medium::read`] calls whose stored value `matching`
     /// accepts: the next `calls` of them, or every one when `calls` is `None`.
-    /// A matching read takes the earliest armed fault still live; reads it
-    /// does not match are untouched. Every adapter's failures reach the engine
+    /// A matching read takes the earliest armed fault; one whose calls are
+    /// spent is disarmed, and its handle keeps counting what it hit. Reads no
+    /// fault matches are untouched. Every adapter's failures reach the engine
     /// as these two classes, so any crate's test can prove its caller retries
     /// the one and surfaces the other.
     #[cfg(any(test, feature = "test-support"))]
     pub fn inject(
         &self,
         fault: Fault,
-        calls: Option<usize>,
+        calls: Option<std::num::NonZeroUsize>,
         matching: impl Fn(&[u8]) -> bool + Send + Sync + 'static,
     ) -> Injected {
         let hits = Arc::default();
@@ -222,7 +224,7 @@ impl MemoryMedium {
             .push(Armed {
                 fault,
                 matches: Box::new(matching),
-                remaining: calls,
+                remaining: calls.map(std::num::NonZeroUsize::get),
                 hits: Arc::clone(&hits),
             });
         Injected { hits }
@@ -236,17 +238,20 @@ impl MemoryMedium {
             .faults
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let Some(armed) = faults
-            .iter_mut()
-            .find(|armed| armed.remaining != Some(0) && (armed.matches)(&stored[..]))
-        else {
+        let Some(index) = faults.iter().position(|armed| (armed.matches)(&stored[..])) else {
             return Ok(stored.clone());
         };
-        if let Some(remaining) = &mut armed.remaining {
-            *remaining -= 1;
-        }
+        let armed = &mut faults[index];
         armed.hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        match armed.fault {
+        let fault = armed.fault;
+        let spent = armed.remaining.as_mut().is_some_and(|remaining| {
+            *remaining -= 1;
+            *remaining == 0
+        });
+        if spent {
+            faults.remove(index);
+        }
+        match fault {
             Fault::Transient => Err(MediumError::Failed(std::io::Error::other(
                 "injected transient read fault",
             ))),

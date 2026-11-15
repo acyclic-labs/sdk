@@ -116,11 +116,11 @@ async fn injected_read_faults_fail_only_the_matching_calls_in_their_class()
     let [transient, corrupt, untouched]: [Digest; 3] =
         digests.try_into().map_err(|_| "three puts")?;
     let read = |digest| blobs.get(digest, ByteRange::FULL, 64);
-    let once = blobs
-        .medium()
-        .inject(crate::Fault::Transient, Some(1), |bytes| {
-            bytes == b"transient"
-        });
+    let once = blobs.medium().inject(
+        crate::Fault::Transient,
+        Some(std::num::NonZeroUsize::MIN),
+        |bytes| bytes == b"transient",
+    );
     let always = blobs
         .medium()
         .inject(crate::Fault::Corrupt, None, |bytes| bytes == b"corrupt");
