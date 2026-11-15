@@ -200,10 +200,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     (resource.as_str(), true, read),
                 ]
             } else {
+                // A selected view pages its own children like any tree reader:
+                // discovery is `children_page` over the selection, never a
+                // second listing path, and never beyond what its selector holds.
                 vec![
                     (observed.as_str(), false, follow),
                     (inbox.as_str(), false, follow),
                     (status.as_str(), false, follow),
+                    (children.as_str(), true, observe),
                     (membership.as_str(), tree, follow),
                     (resource.as_str(), true, read),
                 ]
