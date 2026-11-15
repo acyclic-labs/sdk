@@ -169,8 +169,9 @@ impl StockExecution<'_> {
             for event in stock_into_iter(events, self.io)? {
                 stock_retire_event(event, self.io)?;
             }
-            return Err(stock_boundary(self.io, crate::wire::ErrorCode::Invalid,
-                "summary reached its output-token limit; request a shorter summary"));
+            return Err(Error::SummaryRejected {
+                reason: "summary reached its output-token limit; request a shorter summary",
+            });
         }
         let text = self.collect_summary_text(events)?;
         let output_key = with_history_io(self.io, |work| match purpose {
@@ -219,6 +220,51 @@ impl StockExecution<'_> {
         Ok((source_bytes, source_digest, source_messages))
     }
 
+    /// Parse the original provider output before it can become a rewrite.
+    /// Native accounting, cancellation and I/O errors retain their own class.
+    pub(super) fn decode_summary_output<T: PreparationRecord>(
+        &self,
+        text: &str,
+    ) -> Result<(T, Option<crate::conversation::ContentHold<'_>>)> {
+        match self.io {
+            Some(io) => io
+                .decode(
+                    std::marker::PhantomData::<T>,
+                    text.as_bytes(),
+                    crate::wire::ErrorCode::Invalid,
+                )
+                .map(|(value, hold)| (value, Some(hold)))
+                .map_err(|error| match error {
+                    Error::JsonData(_) | Error::JsonInput(_) => Error::SummaryRejected {
+                        reason: "summary output does not match its decision schema",
+                    },
+                    #[cfg(not(target_arch = "wasm32"))]
+                    Error::NativeJson {
+                        code: crate::wire::ErrorCode::Invalid,
+                        ref source,
+                        ..
+                    } if source.is_syntax() || source.is_eof() || source.is_data() => {
+                        Error::SummaryRejected {
+                            reason: "summary output does not match its decision schema",
+                        }
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    Error::NativeJsonAdmission {
+                        code: crate::wire::ErrorCode::Invalid,
+                        ..
+                    } => Error::SummaryRejected {
+                        reason: "summary output does not match its decision schema",
+                    },
+                    error => error,
+                }),
+            None => crate::contract::json_from_slice(text.as_bytes())
+                .map(|value| (value, None))
+                .map_err(|_| Error::SummaryRejected {
+                    reason: "summary output does not match its decision schema",
+                }),
+        }
+    }
+
     fn collect_summary_text(&self, events: Vec<ModelEvent>) -> Result<String> {
         let scope = crate::filesystem::PreparationScope::with_input(
             self.io,
@@ -264,11 +310,9 @@ impl StockExecution<'_> {
                     text = completed;
                 }
                 ModelEvent::ToolCall(_) => {
-                    return Err(stock_boundary(
-                        io,
-                        crate::wire::ErrorCode::Invalid,
-                        "summary requested a tool operation",
-                    ));
+                    return Err(Error::SummaryRejected {
+                        reason: "summary requested a tool operation",
+                    });
                 }
                 event @ (ModelEvent::Restarted
                 | ModelEvent::Wait(_)
@@ -282,11 +326,9 @@ impl StockExecution<'_> {
             }
         }
         if text.is_empty() {
-            return Err(stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "summary operation returned no content",
-            ));
+            return Err(Error::SummaryRejected {
+                reason: "summary operation returned no content",
+            });
         }
         scope.finish(text.capacity() as u64)?;
         Ok(text)

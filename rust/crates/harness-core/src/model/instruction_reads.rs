@@ -124,17 +124,22 @@ pub(crate) fn deduplicate_reads(
                 } else {
                     serde_json::from_str::<FileRef>(version)
                         .map(|file| (file, None))
-                        .map_err(|error| Error::Invalid(error.to_string()))
+                        .map_err(Error::JsonData)
                 };
                 let (read_file, _hold) = match decoded {
                     Ok(source) => source,
-                    Err(Error::Invalid(_)) => continue,
+                    Err(Error::JsonData(_) | Error::JsonInput(_)) => continue,
+                    #[cfg(not(target_arch = "wasm32"))]
+                    Err(Error::NativeJsonAdmission {
+                        code: crate::wire::ErrorCode::Invalid,
+                        ..
+                    }) => continue,
                     #[cfg(not(target_arch = "wasm32"))]
                     Err(Error::NativeJson {
                         code: crate::wire::ErrorCode::Invalid,
                         ref source,
                         ..
-                    }) if source.is_data() => continue,
+                    }) if source.is_data() || source.is_syntax() || source.is_eof() => continue,
                     Err(error) => return Err(error),
                 };
                 if read_file.path() != path

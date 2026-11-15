@@ -953,7 +953,7 @@ impl<'io> StockExecution<'io> {
                 Ok(canonical) => canonical,
                 // A declaration refusal is settled by admission. Resource and
                 // cancellation failures must retain the original typed error.
-                Err(Error::Invalid(_)) => None,
+                Err(Error::Invalid(_) | Error::JsonData(_) | Error::JsonInput(_)) => None,
                 #[cfg(not(target_arch = "wasm32"))]
                 Err(Error::ToolRejected {
                     code: crate::wire::ErrorCode::Invalid,

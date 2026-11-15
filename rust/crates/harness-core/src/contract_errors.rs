@@ -145,6 +145,13 @@ pub enum Error {
     /// The inference endpoint refused input exceeding its model context window.
     #[error("model context capacity exceeded")]
     ModelContextOverflow,
+    /// Model-authored summary output cannot authorize a context replacement.
+    /// Optional housekeeping keeps the original history on this outcome.
+    #[error("summary rejected: {reason}")]
+    SummaryRejected {
+        /// The invalid output's fixed semantic cause, without a new allocation.
+        reason: &'static str,
+    },
     /// The provider has no input tokenizer for this request.
     #[error("input token counting is unavailable for this model")]
     ModelTokenCountUnavailable,
@@ -214,6 +221,12 @@ pub enum Error {
     /// The request is malformed.
     #[error("invalid request: {0}")]
     Invalid(String),
+    /// Invalid JSON input, retaining the parser's source instead of its rendered text.
+    #[error("invalid request: {0}")]
+    JsonData(#[source] serde_json::Error),
+    /// A typed JSON source-shape failure, distinct from exhausted preparation work.
+    #[error("invalid request: {0}")]
+    JsonInput(#[source] crate::executor::json::JsonInputError),
     /// A definitive tool rejection; safe to journal without allocating a diagnostic.
     #[error("tool rejected: {reason}")]
     ToolRejected {
@@ -900,7 +913,11 @@ impl Error {
             | Self::GoalBlocked(_)
             | Self::UnsupportedRecordVersion(_)
             | Self::MountUnavailable { .. } => ErrorCode::Unsupported,
-            Self::Invalid(_) | Self::ModelContextOverflow => ErrorCode::Invalid,
+            Self::Invalid(_)
+            | Self::JsonData(_)
+            | Self::JsonInput(_)
+            | Self::ModelContextOverflow
+            | Self::SummaryRejected { .. } => ErrorCode::Invalid,
             Self::ToolRejected { code, .. } | Self::Boundary { code, .. } => *code,
             Self::MergeConflict { .. } => ErrorCode::Conflict,
             Self::Unauthorized(_) => ErrorCode::Unauthorized,
@@ -980,8 +997,10 @@ impl Error {
         if let Self::Command(failure) = self {
             return failure.classification.model_failure;
         }
-        matches!(self, Self::ModelUnavailable { .. })
-            || matches!(self, Self::ModelDiagnostic { code, .. }
+        matches!(
+            self,
+            Self::ModelUnavailable { .. } | Self::SummaryRejected { .. }
+        ) || matches!(self, Self::ModelDiagnostic { code, .. }
                 if !matches!(code, crate::wire::ErrorCode::Storage
                     | crate::wire::ErrorCode::Indeterminate
                     | crate::wire::ErrorCode::Cancelled))
@@ -1220,6 +1239,7 @@ impl Error {
             Self::OutputOmitted(_) | Self::ExecutionControlled(_) => true,
             Self::Cleanup(_) => true,
             Self::ModelContextOverflow
+            | Self::SummaryRejected { .. }
             | Self::ModelTokenCountUnavailable
             | Self::NotFound(_)
             | Self::Conflict(_)
@@ -1232,6 +1252,8 @@ impl Error {
             | Self::FilesystemAccessConfiguration(_)
             | Self::Unsupported(_)
             | Self::Invalid(_)
+            | Self::JsonData(_)
+            | Self::JsonInput(_)
             | Self::ToolRejected { .. }
             | Self::Boundary { .. }
             | Self::Unauthorized(_)

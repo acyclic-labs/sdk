@@ -1,0 +1,17 @@
+diff --git a/rust/crates/harness-core/src/executor/summary.rs b/rust/crates/harness-core/src/executor/summary.rs
+--- a/rust/crates/harness-core/src/executor/summary.rs
++++ b/rust/crates/harness-core/src/executor/summary.rs
+@@ -164,13 +164,1 @@
+-        if events.iter().any(|event| {
+-            matches!(event, ModelEvent::Completed { metadata } if metadata["finish_reason"] == "length")
+-        }) {
+-            // The original usage stays in the journal, but an incomplete
+-            // summary cannot authorize replacing its source history.
+-            for event in stock_into_iter(events, self.io)? {
+-                stock_retire_event(event, self.io)?;
+-            }
+-            return Err(Error::SummaryRejected {
+-                reason: "summary reached its output-token limit; request a shorter summary",
+-            });
+-        }
+         let text = self.collect_summary_text(events)?;

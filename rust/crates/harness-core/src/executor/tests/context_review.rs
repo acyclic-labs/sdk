@@ -643,13 +643,25 @@ async fn replay_preserves_review_boundaries_skipped_during_active_work() -> Resu
 
 #[tokio::test]
 async fn invalid_context_decisions_preserve_history_and_original_admissions() -> Result<()> {
-    for decision in [
+    let decisions = [
         "not JSON".to_owned(),
         json!({"version":2,"summary":"replacement","review_at_input_tokens":500}).to_string(),
         json!({"version":1,"summary":"","review_at_input_tokens":500}).to_string(),
         json!({"version":1,"summary":null,"review_at_input_tokens":250}).to_string(),
         json!({"version":1,"summary":"replacement","review_at_input_tokens":8192}).to_string(),
-    ] {
+    ].into_iter().map(ScriptedTurn::Text).chain([
+        ScriptedTurn::Text("<tool_call>invalid structured output</tool_call>".into()),
+        ScriptedTurn::Text(String::new()),
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::Content {
+                delta: json!({"version":1,"summary":"replacement","review_at_input_tokens":500}).to_string(),
+            }),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: json!({"finish_reason":"length","usage":{"prompt_tokens":250,"completion_tokens":128}}),
+            }),
+        ]),
+    ]);
+    for decision in decisions {
         let started = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
         let (seen, gate) = (started.clone(), release.clone());
@@ -659,7 +671,8 @@ async fn invalid_context_decisions_preserve_history_and_original_admissions() ->
                 ScriptedTurn::Events(vec![ScriptedEvent::Event(ModelEvent::Completed {
                     metadata: json!({"usage":{"prompt_tokens":250,"completion_tokens":1}}),
                 })]),
-                ScriptedTurn::Text(decision),
+                decision,
+                ScriptedTurn::Text("continued original work".into()),
             ])
             .with_context_capacity(crate::context::ModelContextCapacity {
                 context_tokens: 8192,
@@ -714,11 +727,13 @@ async fn invalid_context_decisions_preserve_history_and_original_admissions() ->
             started.notified().await;
             release.notify_one();
             execution.review.completed.notified().await;
-            let result = execution
+            let prepared = execution
                 .prepared_response(journal, &input, 1, &prior, None)
-                .await;
-            assert!(
-                matches!(result, Err(ref error) if error.code() == crate::wire::ErrorCode::Invalid)
+                .await?;
+            assert_eq!(
+                prepared.request().messages,
+                provider.request(0).unwrap().messages,
+                "a refused summary changed the original worker history"
             );
             let (_, records) = execution
                 .model_records(journal, input.operation_id, 1, ModelPurpose::Response)
@@ -728,7 +743,12 @@ async fn invalid_context_decisions_preserve_history_and_original_admissions() ->
                     .iter()
                     .any(|record| matches!(record.event, ExecutionEvent::ContextCompacted { .. }))
             );
-            assert_eq!(provider.request_count(), 2);
+            execution.model_step(journal, &input, 1, &prior).await?;
+            assert_eq!(
+                provider.request_count(),
+                3,
+                "a refused summary retried instead of continuing the worker"
+            );
             assert!(provider.request(1).unwrap().summary);
             Ok(ExecutionProgress::Ready(()))
         };

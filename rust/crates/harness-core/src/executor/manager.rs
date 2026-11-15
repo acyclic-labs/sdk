@@ -196,18 +196,7 @@ impl StockExecution<'_> {
             )
             .await?;
         let invalid = |reason| stock_boundary(session.io, crate::wire::ErrorCode::Invalid, reason);
-        let rewrite: ManagerRewrite = match session.io {
-            Some(io) => retain_preparation({
-                let (value, hold) = io.decode(
-                    std::marker::PhantomData,
-                    text.as_bytes(),
-                    crate::wire::ErrorCode::Invalid,
-                )?;
-                (value, Some(hold))
-            })?,
-            None => crate::contract::json_from_slice(text.as_bytes())
-                .map_err(|_| invalid("context manager returned an invalid rewrite"))?,
-        };
+        let rewrite: ManagerRewrite = retain_preparation(session.decode_summary_output(&text)?)?;
         let selected = rewrite.drop_through as usize;
         if rewrite.version != 1 || selected == 0 || selected > supplied {
             return Err(invalid("context manager selected an invalid source range"));

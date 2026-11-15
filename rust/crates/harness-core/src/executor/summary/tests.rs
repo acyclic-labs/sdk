@@ -5,6 +5,86 @@ use crate::resources::ProviderRef;
 use proptest::prelude::*;
 
 #[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn summary_output_refusals_preserve_both_ledgers_and_resource_failures() -> Result<()> {
+    #[derive(Deserialize, crate::HeapLayout)]
+    #[serde(deny_unknown_fields)]
+    struct Proposal {
+        version: u32,
+        summary: String,
+    }
+    impl PreparationRecord for Proposal {}
+    let stock = StockExecutor::new(
+        Model::new("fixture".into(), "summary-output".into(), "1".into())?,
+        Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    );
+    let execution = StockExecution::ordinary(&stock);
+    for native in [false, true] {
+        for text in [
+            r#"{"version":1,"summary":"kept"}"#,
+            "{",
+            "[]",
+            "<tool_call>",
+            r#"{"version":"wrong","summary":"kept"}"#,
+        ] {
+            let observed =
+                crate::test_support::accounted::accounted(native, 4 * 1024 * 1024, false, |io| {
+                    let scope = crate::filesystem::PreparationScope::new(Some(io)).unwrap();
+                    let session = execution.preparing(scope.io());
+                    let result = session.decode_summary_output::<Proposal>(text);
+                    if text.starts_with(r#"{"version":1"#) {
+                        let (value, hold) = result.unwrap();
+                        assert_eq!((value.version, value.summary.as_str()), (1, "kept"));
+                        drop(value);
+                        drop(hold);
+                    } else {
+                        assert!(
+                            matches!(result, Err(Error::SummaryRejected { .. })),
+                            "provider output lost its refusal class on native={native}"
+                        );
+                    }
+                })
+                .map_err(|(cause, _)| Error::Storage(cause))?;
+            assert_eq!(observed.2, 0, "refused proposal retained preparation bytes");
+            assert_eq!(
+                observed.5,
+                if native {
+                    acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
+                } else {
+                    0
+                }
+            );
+        }
+        crate::test_support::accounted::accounted(native, 4 * 1024 * 1024, true, |io| {
+            let session = execution.preparing(Some(io));
+            let error = session
+                .decode_summary_output::<Proposal>("{}")
+                .err()
+                .expect("cancelled decoder admitted a proposal");
+            assert_eq!(error.code(), crate::wire::ErrorCode::Cancelled);
+            assert!(!matches!(error, Error::SummaryRejected { .. }));
+        })
+        .map_err(|(cause, _)| Error::Storage(cause))?;
+    }
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let mut budget = acyclic_fs::performance::work_budget(1_000_000, 4 * 1024 * 1024);
+    budget.items_examined = 0;
+    let io = PreparationIo::from_budget(budget, &cancellation)?;
+    let session = execution.preparing(Some(&io));
+    let error = session
+        .decode_summary_output::<Proposal>(r#"{"version":1,"summary":"kept"}"#)
+        .err()
+        .expect("exhausted original work admitted a proposal");
+    assert!(
+        !matches!(error, Error::SummaryRejected { .. }),
+        "work refusal was relabelled as provider output"
+    );
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
 
@@ -325,7 +405,7 @@ fn completed_summary_moves_original_text_and_retires_consumed_backing() -> Resul
         ])?,
         "summary"
     );
-    for events in [
+    for (index, events) in [
         vec![ModelEvent::MessageCompleted {
             text: "too large".into(),
         }],
@@ -340,11 +420,16 @@ fn completed_summary_moves_original_text_and_retires_consumed_backing() -> Resul
             "shell".into(),
             serde_json::Value::Null,
         ))],
-    ] {
-        assert!(matches!(
-            execution.collect_summary_text(events),
-            Err(Error::Invalid(_))
-        ));
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let result = execution.collect_summary_text(events);
+        if index < 2 {
+            assert!(matches!(result, Err(Error::Invalid(_))));
+        } else {
+            assert!(matches!(result, Err(Error::SummaryRejected { .. })));
+        }
     }
     Ok(())
 }

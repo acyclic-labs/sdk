@@ -1,0 +1,7 @@
+diff --git a/rust/crates/harness-core/src/executor/summary.rs b/rust/crates/harness-core/src/executor/summary.rs
+--- a/rust/crates/harness-core/src/executor/summary.rs
++++ b/rust/crates/harness-core/src/executor/summary.rs
+@@ -238,1 +238,1 @@
+-
+                    Error::JsonData(_) | Error::JsonInput(_) => Error::SummaryRejected {
++                    Error::Invalid(_) | Error::JsonData(_) | Error::JsonInput(_) => Error::SummaryRejected {

@@ -115,7 +115,7 @@ fn input_error(kind: JsonInputError, code: Option<crate::wire::ErrorCode>) -> Er
         return Error::NativeJsonAdmission { code, kind };
     }
     let _ = code;
-    Error::Invalid(kind.to_string())
+    Error::JsonInput(kind)
 }
 
 /// Optional byte and node policies with nesting admission for one document.

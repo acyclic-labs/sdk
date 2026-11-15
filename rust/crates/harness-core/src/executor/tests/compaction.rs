@@ -107,7 +107,7 @@ async fn length_cut_summary_retains_original_usage_without_publishing_a_rewrite(
         assert!(
             matches!(executor.summarize(&journal, operation, source.clone(),
             ModelContent::Text("summarize".into())).await,
-            Err(Error::Invalid(reason)) if reason == "summary reached its output-token limit; request a shorter summary")
+            Err(Error::SummaryRejected { reason }) if reason == "summary reached its output-token limit; request a shorter summary")
         );
     }
     assert_eq!(

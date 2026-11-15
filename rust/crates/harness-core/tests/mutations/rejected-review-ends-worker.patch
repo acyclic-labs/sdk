@@ -1,0 +1,7 @@
+diff --git a/rust/crates/harness-core/src/executor/context_review.rs b/rust/crates/harness-core/src/executor/context_review.rs
+--- a/rust/crates/harness-core/src/executor/context_review.rs
++++ b/rust/crates/harness-core/src/executor/context_review.rs
+@@ -418,1 +418,1 @@
+-
+            Err(Error::SummaryRejected { .. }) => Ok(None),
++            Err(error @ Error::SummaryRejected { .. }) => Err(error),

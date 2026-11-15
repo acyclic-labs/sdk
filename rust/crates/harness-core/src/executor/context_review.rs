@@ -409,17 +409,32 @@ impl<'a> StockExecution<'a> {
         observation: Observation,
         phase: &mut DispatchPhase,
     ) -> Result<Option<Receipt<'a>>> {
+        match self
+            .prepare_context_review(journal, input, source, step, observation, phase)
+            .await
+        {
+            // This is a definitive provider-output refusal, not a failure of
+            // the worker's request, storage or original preparation owner.
+            Err(Error::SummaryRejected { .. }) => Ok(None),
+            result => result,
+        }
+    }
+
+    async fn prepare_context_review(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        source: (crate::context::Context, Option<Arc<StepBinding>>),
+        step: u32,
+        observation: Observation,
+        phase: &mut DispatchPhase,
+    ) -> Result<Option<Receipt<'a>>> {
         let (source, selected) = source;
-        let files = self.rewrite_files(journal, (input, step)).await?;
-        let files_hold = files
-            .as_ref()
-            .zip(self.io)
-            .map(|(file, io)| io.guard_owned(file.logical_owned_bytes()?))
-            .transpose()?;
         let scope = crate::filesystem::PreparationScope::new(self.io)?;
         let mut session = self.preparing(scope.io());
         session.selected = selected;
         session.configuration = None;
+        let files = session.rewrite_files(journal, (input, step)).await?;
         let capacity = session.model_capacity()?;
         let instruction = with_history_io(session.io, |work| {
             preparation_format(
@@ -451,6 +466,7 @@ impl<'a> StockExecution<'a> {
                 // No paid admission occurred. An irreducible review must not
                 // prevent ordinary work or the independent capacity backstop.
                 drop(instruction);
+                drop(files);
                 drop(session);
                 scope.finish(0)?;
                 return Ok(None);
@@ -468,44 +484,8 @@ impl<'a> StockExecution<'a> {
                 phase,
             )
             .await?;
-        let retained = summary
-            .output
-            .logical_owned_bytes()?
-            .checked_add(text.capacity() as u64)
-            .ok_or_else(|| {
-                stock_boundary(
-                    self.io,
-                    crate::wire::ErrorCode::Invalid,
-                    "review ownership overflows",
-                )
-            })?;
-        drop(instruction);
-        drop(session);
-        scope.finish(retained)?;
-        let hold = self
-            .io
-            .map(|io| io.guard_owned(summary.output.logical_owned_bytes()?))
-            .transpose()?;
-        let (decision, decision_hold): (Decision, _) = match self.io {
-            Some(io) => io
-                .decode(
-                    std::marker::PhantomData::<Decision>,
-                    text.as_bytes(),
-                    crate::wire::ErrorCode::Invalid,
-                )
-                .map(|(decision, hold)| (decision, Some(hold)))?,
-            None => (
-                crate::contract::json_from_slice(text.as_bytes()).map_err(|_| {
-                    stock_boundary(
-                        self.io,
-                        crate::wire::ErrorCode::Invalid,
-                        "context review returned an invalid decision",
-                    )
-                })?,
-                None,
-            ),
-        };
-        stock_retire_text(text, self.io)?;
+        let (decision, decision_hold): (Decision, _) = session.decode_summary_output(&text)?;
+        stock_retire_text(text, session.io)?;
         let valid = decision.version == 1
             && decision.review_at_input_tokens > 0
             && decision.review_at_input_tokens < u64::from(capacity.context_tokens)
@@ -517,20 +497,26 @@ impl<'a> StockExecution<'a> {
         drop(decision);
         drop(decision_hold);
         if !valid {
-            drop(summary);
-            drop(hold);
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Invalid,
-                "context review must supply a nonempty summary or a future input budget",
-            ));
+            return Err(Error::SummaryRejected {
+                reason: "context review must supply a nonempty summary or a future input budget",
+            });
         }
         self.review.state.lock().await.review_at = next;
         if !rewrite {
-            drop(summary);
-            drop(hold);
             return Ok(None);
         }
+        // Only parsed and admitted output escapes the proposal's preparation
+        // scope. Every refusal drops its storage with its original funding.
+        let file_bytes = files.as_ref().map_or(Ok(0), FileRef::logical_owned_bytes)?;
+        let retained = crate::core::owned_sum([summary.output.logical_owned_bytes()?, file_bytes])?;
+        drop(instruction);
+        drop(session);
+        scope.finish(retained)?;
+        let hold = self
+            .io
+            .map(|io| io.guard_owned(summary.output.logical_owned_bytes()?))
+            .transpose()?;
+        let files_hold = self.io.map(|io| io.guard_owned(file_bytes)).transpose()?;
         // Reuse the model's original output and provenance. A second copy of
         // the summary text would add storage and another publication mechanism.
         Ok(Some(Receipt {
