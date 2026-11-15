@@ -68,9 +68,7 @@ impl StreamProvider for Storage {
                 && matches!(
                     outcome,
                     WriteOutcome::Commit(acyclic_stream::CommitOutcome::Committed(_))
-                        | WriteOutcome::CommitAccepted(
-                            acyclic_stream::AcceptedCommitOutcome::Committed { .. }
-                        )
+                        | WriteOutcome::CommitAccepted(Ok(..))
                 )
             {
                 self.stalled.store(true, Ordering::SeqCst);

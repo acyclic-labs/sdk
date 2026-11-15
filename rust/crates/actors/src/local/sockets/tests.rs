@@ -1247,9 +1247,7 @@ impl StreamProvider for ControlledStream {
                         assert!(matches!(
                             outcome,
                             acyclic_stream::WriteOutcome::Commit(CommitOutcome::Committed(_))
-                                | acyclic_stream::WriteOutcome::CommitAccepted(
-                                    acyclic_stream::AcceptedCommitOutcome::Committed { .. }
-                                )
+                                | acyclic_stream::WriteOutcome::CommitAccepted(Ok(..))
                         ));
                         *self.accepted.lock().unwrap() = Some((original, outcome.clone()));
                     }

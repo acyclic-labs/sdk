@@ -1054,9 +1054,7 @@ impl ReleaseSpy {
         if matches!(
             &result,
             acyclic_stream::WriteOutcome::Commit(CommitOutcome::Conflict(_))
-                | acyclic_stream::WriteOutcome::CommitAccepted(
-                    acyclic_stream::AcceptedCommitOutcome::Conflict(_)
-                )
+                | acyclic_stream::WriteOutcome::CommitAccepted(Err(_))
         ) && let Some(next) = &self.after_conflict
         {
             let token = CancellationToken::new();

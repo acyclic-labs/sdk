@@ -62,7 +62,7 @@ async fn remote_local_receipts_flush_only_at_the_explicit_barrier() -> TestResul
 }
 
 async fn accepted_projection(provider: &impl StreamProvider) -> TestResult<CommitRequest> {
-    use crate::{AcceptedCommitOutcome, CommitCondition, CommitMutation, WriteOutcome};
+    use crate::{AcceptedCommit, CommitCondition, CommitMutation, WriteOutcome};
     let path = StreamPath::new("accepted/input")?;
     let request = CommitRequest {
         deadline_unix_millis: None,
@@ -76,7 +76,7 @@ async fn accepted_projection(provider: &impl StreamProvider) -> TestResult<Commi
         idempotency_key: IdempotencyKey::unique(),
     };
     let accepted = provider.commit_accepted(request.clone()).await?;
-    let AcceptedCommitOutcome::Committed { receipt, envelope } = &accepted else {
+    let Ok(AcceptedCommit { receipt, envelope }) = &accepted else {
         panic!("accepted original commit");
     };
     assert!(receipt.matches_envelope(envelope));
@@ -134,10 +134,7 @@ async fn accepted_projection(provider: &impl StreamProvider) -> TestResult<Commi
     );
     let mut conflict = request.clone();
     conflict.idempotency_key = IdempotencyKey::unique();
-    assert!(matches!(
-        provider.commit_accepted(conflict).await?,
-        AcceptedCommitOutcome::Conflict(_)
-    ));
+    assert!(matches!(provider.commit_accepted(conflict).await?, Err(_)));
     assert_eq!(provider.tail(path).await?, 1);
     Ok(request)
 }
@@ -165,8 +162,7 @@ async fn accepted_commit_replays_original_fact_across_projection_and_restore() -
             .await?;
         let record = records.next().await.ok_or("restored record missing")??;
         let retained = reopened.read_commit(record.commit_id).await?;
-        let crate::AcceptedCommitOutcome::Committed { envelope, .. } =
-            reopened.commit_accepted(request).await?
+        let Ok(crate::AcceptedCommit { envelope, .. }) = reopened.commit_accepted(request).await?
         else {
             panic!("original accepted fact after reopen");
         };
