@@ -1,5 +1,6 @@
 name: SDK Static
-# Reject a lockfile Cargo would change, including its serialization.
+# Reject a lockfile Cargo would change, including its serialization, and
+# any tracked Rust file rustfmt would change. Neither check compiles.
 on:
   pull_request: null
   push:
@@ -16,16 +17,24 @@ jobs:
     name: SDK Static
     runs-on: kaizen-linux
     timeout-minutes: 1
-    env:
-      RUSTUP_TOOLCHAIN: stable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Check lockfile and manifests without compiling
         run: node scripts/check-cargo-lock.mjs
+        env:
+          RUSTUP_TOOLCHAIN: stable
       - name: Check Cargo publication inventory without compiling
         run: node scripts/publish-cargo-crates.mjs check
+        env:
+          RUSTUP_TOOLCHAIN: stable
       # Vendored crates keep their upstream bytes.
       - name: Check that the whole tree has no whitespace errors
         run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD -- . ':!managed-agents' ':!rust/vendor'
+      # Formatting differs between rustfmt releases (macro bodies among
+      # them), so it is checked with the pinned toolchain the gate uses.
+      - name: Install the pinned rustfmt
+        run: rustup toolchain install
+      - name: Check formatting of every tracked Rust file without compiling
+        run: node scripts/qualify-rustfmt.mjs
