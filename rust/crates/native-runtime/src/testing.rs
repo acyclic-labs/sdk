@@ -125,9 +125,10 @@ pub fn seeded_test<F: Future>(seed: u64, world: impl FnOnce() -> F) -> std::io::
     Ok(seeded_runtime(seed)?.block_on(async {
         tokio::time::pause();
         let (schedule, mut events) = Schedule::seeded(seed);
-        // Built here and kept on the heap: a test world's future can exceed
-        // the test thread's stack, so it is never moved by value.
-        let mut world = Box::pin(schedule.scope(world()));
+        // Built inside the scope, so the constructor's own draws are seeded
+        // too, and kept on the heap: a test world's future can exceed the
+        // test thread's stack, so it is never moved by value.
+        let mut world = Box::pin(schedule.scope(async { world().await }));
         loop {
             tokio::select! {
                 output = &mut world => break output,

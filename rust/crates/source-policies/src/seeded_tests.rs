@@ -94,7 +94,8 @@ fn test_file(path: &str) -> bool {
 }
 
 /// Host runtimes and host identities: a `#[tokio::test]` without the opt-out,
-/// a direct `Uuid::new_v4`, and, in a test file, a hand-built Tokio runtime.
+/// a direct `Uuid::new_v4`, and a test's own Tokio runtime, anywhere in a test
+/// file or from a production file's first `#[cfg(test)]` on.
 fn unseeded_sites(path: &str, text: &str) -> usize {
     let mut previous = "";
     let mut count = 0;
@@ -108,10 +109,13 @@ fn unseeded_sites(path: &str, text: &str) -> usize {
         }
     }
     count += text.matches("Uuid::new_v4").count();
-    if test_file(path) {
-        count += text.matches("runtime::Builder::new_").count();
-    }
-    count
+    let tests = if test_file(path) {
+        text
+    } else {
+        text.split_once("#[cfg(test)]")
+            .map_or("", |(_, tests)| tests)
+    };
+    count + tests.matches("runtime::Builder::new_").count()
 }
 
 fn seeded_test_violations<'a>(files: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<String> {
@@ -160,8 +164,17 @@ fn harness_library_tests_cannot_draw_host_entropy() {
     }
     let runtime = "let runtime = tokio::runtime::Builder::new_current_thread().build()?;";
     assert_eq!(scan((fresh, runtime)).len(), 1);
-    // Production builds its host runtime; only a test's own runtime counts.
+    // Production builds its host runtime; only a test's own runtime counts,
+    // including one in a production file's inline test module.
     assert!(scan(("local/fresh.rs", runtime)).is_empty());
+    let inline = format!(
+        "fn main() {{}}
+#[cfg(test)]
+mod tests {{
+    {runtime}
+}}"
+    );
+    assert_eq!(scan(("local/fresh.rs", &inline)).len(), 1);
     // The seeded entry and the named opt-out stay legal.
     let entry = "#[test]\nfn drawn() -> Result<()> {\n    super::seeded(drawn_world)\n}";
     assert!(scan((fresh, entry)).is_empty());
