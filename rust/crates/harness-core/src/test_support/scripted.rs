@@ -112,6 +112,11 @@ impl<T> DispatchObserver for T where
 #[derive(Default)]
 struct State {
     turns: VecDeque<ScriptedTurn>,
+    /// A [routed](ScriptedModelProvider::routed) script's replies to parent
+    /// turns woken by a child's settlement.
+    wakes: Option<VecDeque<ScriptedTurn>>,
+    /// The agent each wake request woke, in request order.
+    woken: Vec<crate::agent::AgentPath>,
     requests: Vec<PreparedModelRequest>,
     dispatches: Vec<ModelDispatch>,
     recoveries: VecDeque<ScriptedReconciliation>,
@@ -167,6 +172,22 @@ impl ScriptedModelProvider {
             reads_content: false,
             content: None,
         }
+    }
+
+    /// Scripts a session tree in two queues. A child's settlement wakes its
+    /// parent with a `child.settled` notice, and that turn takes the next
+    /// `wakes` reply; every other request, each agent's own prompt, brief or
+    /// tool continuation, takes the next `inputs` reply. A wake can therefore
+    /// never consume a reply another agent's input was scripted to receive,
+    /// and a wake with no reply left fails naming the agent it woke.
+    #[must_use]
+    pub fn routed(
+        inputs: impl IntoIterator<Item = ScriptedTurn>,
+        wakes: impl IntoIterator<Item = ScriptedTurn>,
+    ) -> Self {
+        let provider = Self::new(inputs);
+        provider.lock().wakes = Some(wakes.into_iter().collect());
+        provider
     }
 
     /// Answers every request with `respond(request)` instead of the queued
@@ -327,6 +348,19 @@ impl ScriptedModelProvider {
         self.lock().dispatches.clone()
     }
 
+    /// The agent each request woken by a child's settlement belonged to, in
+    /// request order, whether or not the script routes wakes.
+    pub fn woken(&self) -> Vec<crate::agent::AgentPath> {
+        self.lock().woken.clone()
+    }
+
+    /// Requests that were not woken by a child's settlement, counted in one
+    /// snapshot so a concurrent wake cannot skew the count.
+    pub fn input_requests(&self) -> usize {
+        let state = self.lock();
+        state.requests.len() - state.woken.len()
+    }
+
     /// Number of responses not yet requested.
     pub fn remaining(&self) -> usize {
         self.lock().turns.len()
@@ -372,16 +406,53 @@ impl ScriptedModelProvider {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push((dispatch, turn.clone()));
         }
+        let waking = waking_child(request.request())?;
         let mut state = self.lock();
         state.requests.push(request);
         state.dispatches.push(dispatch);
-        answer.unwrap_or_else(|| {
-            state
-                .turns
+        let State {
+            turns,
+            wakes,
+            woken,
+            ..
+        } = &mut *state;
+        if let Some(child) = &waking {
+            woken.push(child.parent().ok_or_else(|| {
+                Error::Invalid(format!("settled agent {child} has no parent to wake"))
+            })?);
+        }
+        answer.unwrap_or_else(|| match (&waking, wakes.as_mut()) {
+            (Some(child), Some(wakes)) => wakes.pop_front().ok_or_else(|| {
+                let parent = woken.last().map_or_else(String::new, ToString::to_string);
+                Error::Invalid(format!(
+                    "scripted model has no wake turn left for {parent}, woken by {child}"
+                ))
+            }),
+            _ => turns
                 .pop_front()
-                .ok_or_else(|| Error::Invalid("scripted model exhausted".into()))
+                .ok_or_else(|| Error::Invalid("scripted model exhausted".into())),
         })
     }
+}
+
+/// The child whose settlement woke this request: its newest model-visible
+/// input is a waking `child.settled` notice, whose body names the child.
+fn waking_child(request: &ModelRequest) -> Result<Option<crate::agent::AgentPath>> {
+    let Some((notices, _)) = model_visible_messages(&request.messages)
+        .next_back()
+        .and_then(|message| message.content.notice_parts())
+    else {
+        return Ok(None);
+    };
+    notices
+        .iter()
+        .rev()
+        .find(|notice| notice.wake && notice.kind == "child.settled")
+        .map(|notice| {
+            serde_json::from_value(notice.body["child"].clone())
+                .map_err(|error| Error::Invalid(format!("child.settled names no child: {error}")))
+        })
+        .transpose()
 }
 
 /// Borrows messages that contribute provider-visible content. Canonical

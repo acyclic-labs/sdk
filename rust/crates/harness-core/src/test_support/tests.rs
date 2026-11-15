@@ -622,3 +622,60 @@ async fn counted(
         "counter ended without its count".into(),
     ))
 }
+
+#[tokio::test]
+async fn an_unscripted_wake_fails_naming_both_agents_and_leaves_input_replies() -> Result<()> {
+    let provider = ScriptedModelProvider::routed([ScriptedTurn::Text("input reply".into())], []);
+    let parent = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([1; 16]));
+    let child = parent
+        .child(&crate::agent::AgentId::from_bytes([2; 16]))
+        .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+    let (input, input_dispatch) = request()?;
+    let mut waking = input.request().clone();
+    waking.messages.push(ModelMessage {
+        role: ModelRole::User,
+        content: ModelContent::Part(crate::model::ModelContentPart::Notices {
+            notices: vec![crate::conversation::wire::Notice {
+                source: child.to_string(),
+                kind: "child.settled".into(),
+                body: json!({ "child": child }),
+                wake: true,
+                coalesce_key: None,
+            }],
+        }),
+    });
+    let waking = PreparedModelRequest::prepare(waking, Limits::default(), None)?;
+    let wake_dispatch = ModelDispatch {
+        operation_id: OperationId::new(),
+        step: 0,
+        request_digest: waking.request_digest(),
+    };
+    let events = provider
+        .generate(&waking, wake_dispatch)
+        .collect::<Vec<_>>()
+        .await;
+    let expected = format!("scripted model has no wake turn left for {parent}, woken by {child}");
+    assert!(
+        matches!(events.as_slice(), [Err(crate::Error::Invalid(message))] if *message == expected),
+        "an unscripted wake must fail naming both agents: {events:?}"
+    );
+    assert_eq!(provider.woken(), vec![parent]);
+    assert_eq!(provider.remaining(), 1, "the wake consumed an input reply");
+    let events = provider
+        .generate(&input, input_dispatch)
+        .collect::<Vec<_>>()
+        .await;
+    assert_eq!(
+        events.into_iter().collect::<Result<Vec<_>>>()?,
+        vec![
+            ModelEvent::Content {
+                delta: "input reply".into()
+            },
+            ModelEvent::Completed {
+                metadata: serde_json::Value::Null
+            },
+        ]
+    );
+    assert_eq!(provider.remaining(), 0);
+    Ok(())
+}

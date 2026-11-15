@@ -1374,11 +1374,21 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     Ok(())
 }
 
+/// Until #3773 an idle parent made no model call while its child ran and
+/// settled. #3773 delivers each child settlement to the parent as a waking
+/// `child.settled` notice, so the parent now makes exactly one call per child
+/// settlement, billed to its own usage, and none while it is idle.
 #[tokio::test]
-async fn idle_usage_follows_child_lifecycle_without_a_parent_model_call() -> Result<()> {
+async fn idle_usage_follows_child_lifecycle_with_one_parent_wake_per_settlement() -> Result<()> {
     use acyclic_harness_client::{AgentCommand, AgentReply};
     let directory = tempfile::tempdir().map_err(agent)?;
-    let provider = super::scripted([super::ScriptedTurn::Text("child done".into())]);
+    let provider = Arc::new(
+        ScriptedModelProvider::routed(
+            [super::ScriptedTurn::Text("child done".into())],
+            [super::ScriptedTurn::Text("parent noted".into())],
+        )
+        .with_context_capacity(super::capacity()),
+    );
     let harness = Arc::new(
         super::open_scripted(
             volume_config(
@@ -1400,6 +1410,7 @@ async fn idle_usage_follows_child_lifecycle_without_a_parent_model_call() -> Res
         usage.advance().await?;
     }
     assert_eq!(usage.open_children(), Some(0));
+    assert_eq!(usage.totals().calls, 0, "an idle parent makes no call");
     // Even a waiting selection can establish its initial metadata at an empty
     // tail. No journal record is invented to transport an actor observation.
     let (agents, _) = harness.agents().await?;
@@ -1467,11 +1478,33 @@ async fn idle_usage_follows_child_lifecycle_without_a_parent_model_call() -> Res
         Ok::<_, Error>(())
     };
     tokio::try_join!(closing, observing)?;
-    assert_eq!(usage.totals().calls, 0);
+    // The parent's only turn is the wake, answered from the script rather
+    // than failing.
+    let mut events = client.observe(Some(0)).await?;
+    let wake = loop {
+        if let crate::local::Event::Turn { entry, .. } = events.next().await? {
+            break entry;
+        }
+    };
+    assert!(matches!(wake.input, TurnInput::Notice { .. }), "{wake:?}");
+    assert_eq!(
+        wake.outcome,
+        crate::agent::TurnOutcome::Completed,
+        "the parent's wake turn failed: {wake:?}"
+    );
+    while usage.totals().calls < 1 {
+        usage.advance().await?;
+    }
+    assert_eq!(
+        usage.totals().calls,
+        1,
+        "the parent's one wake call lands in its own usage"
+    );
+    assert_eq!(provider.woken(), [root.clone()]);
     assert_eq!(
         provider.request_count(),
-        1,
-        "only the child requested a model"
+        2,
+        "the child's input, then the parent's one wake"
     );
     Ok(())
 }
@@ -1526,29 +1559,40 @@ async fn session_and_subtree_prices_replay_and_preserve_unfinished_provider_work
         })
         .map_err(agent)?,
     )?);
-    let provider = super::scripted([
-        completed(100, 20),
-        completed(200, 30),
-        ScriptedTurn::Events(vec![
-            ScriptedEvent::Event(ModelEvent::Wait(crate::model::ModelWait::Started {
-                cause: Some(crate::ModelTransportFailure::Connect),
-                delay: std::time::Duration::from_secs(2),
-                retry_after: false,
-            })),
-            ScriptedEvent::Interrupted {
-                error: "priced provider failure".into(),
-            },
-        ]),
-    ]);
+    // The child's settlement wakes the root for one priced call (#3773).
+    let provider = Arc::new(
+        ScriptedModelProvider::routed(
+            [
+                completed(100, 20),
+                completed(200, 30),
+                ScriptedTurn::Events(vec![
+                    ScriptedEvent::Event(ModelEvent::Wait(crate::model::ModelWait::Started {
+                        cause: Some(crate::ModelTransportFailure::Connect),
+                        delay: std::time::Duration::from_secs(2),
+                        retry_after: false,
+                    })),
+                    ScriptedEvent::Interrupted {
+                        error: "priced provider failure".into(),
+                    },
+                ]),
+            ],
+            [completed(50, 10)],
+        )
+        .with_context_capacity(super::capacity()),
+    );
     let directory = tempfile::tempdir().map_err(agent)?;
     let harness = Arc::new(
         super::open_scripted(
-            volume_config(directory.path(), volume(directory.path()).await?, provider)?
-                .without_default_tools()
-                .workspace_mounting(crate::local::WorkspaceMounting::Physical)
-                .compaction(crate::context::CompactionPolicy::Capacity(
-                    crate::context::CapacityCompaction {},
-                )),
+            volume_config(
+                directory.path(),
+                volume(directory.path()).await?,
+                provider.clone(),
+            )?
+            .without_default_tools()
+            .workspace_mounting(crate::local::WorkspaceMounting::Physical)
+            .compaction(crate::context::CompactionPolicy::Capacity(
+                crate::context::CapacityCompaction {},
+            )),
         )
         .await?,
     );
@@ -1569,6 +1613,12 @@ async fn session_and_subtree_prices_replay_and_preserve_unfinished_provider_work
         return Err(Error::Invalid("spawn did not return its child".into()));
     };
     completed_turn(settled(&harness, &child).await?)?;
+    let woken = conversation(&harness).await?;
+    let mut wake = woken.usage_query_with_prices(Arc::clone(&prices));
+    while wake.totals().completed < 2 {
+        wake.advance().await?;
+    }
+    assert_eq!(provider.woken(), [root.clone()]);
     let root_cost = client.usage_totals(UsageScope::Agent, &prices).await?;
     assert_eq!(
         (
@@ -1576,7 +1626,7 @@ async fn session_and_subtree_prices_replay_and_preserve_unfinished_provider_work
             root_cost.completed,
             root_cost.token_nano_units.value()
         ),
-        (1, 1, Some(140))
+        (2, 2, Some(210))
     );
     let tree_cost = client
         .usage_totals(UsageScope::Tree(&|_| false), &prices)
@@ -1587,7 +1637,7 @@ async fn session_and_subtree_prices_replay_and_preserve_unfinished_provider_work
             tree_cost.completed,
             tree_cost.token_nano_units.value()
         ),
-        (2, 2, Some(400))
+        (3, 3, Some(470))
     );
     assert_eq!(
         client
@@ -1626,8 +1676,8 @@ async fn session_and_subtree_prices_replay_and_preserve_unfinished_provider_work
         .await?
         .usage_totals(UsageScope::Tree(&|_| false), &prices)
         .await?;
-    assert_eq!((durable.calls, durable.completed), (3, 2));
-    assert_eq!(durable.token_nano_units.known, 400);
+    assert_eq!((durable.calls, durable.completed), (4, 3));
+    assert_eq!(durable.token_nano_units.known, 470);
     assert_eq!(durable.token_nano_units.unknown, 1);
     assert_eq!(durable.token_nano_units.value(), None);
     while live.waits().started == 0 {
@@ -2317,8 +2367,14 @@ async fn physical_archive_releases_only_the_closed_binding_and_retains_history()
     use acyclic_harness_client::{AgentCommand, AgentReply, ReadTarget};
     let directory = tempfile::tempdir().map_err(agent)?;
     std::fs::create_dir(directory.path().join(".git")).map_err(agent)?;
-    let provider = super::scripted(
-        ["first", "second"].map(|text| crate::test_support::ScriptedTurn::Text(text.into())),
+    // Each child's settlement wakes the root once (#3773).
+    let provider = Arc::new(
+        ScriptedModelProvider::routed(
+            ["first", "second"].map(|text| crate::test_support::ScriptedTurn::Text(text.into())),
+            ["noted archived", "noted idle"]
+                .map(|text| crate::test_support::ScriptedTurn::Text(text.into())),
+        )
+        .with_context_capacity(super::capacity()),
     );
     let harness = Arc::new(
         super::open_scripted(
@@ -2762,9 +2818,12 @@ async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> 
             }),
         ])
     };
-    let provider = super::scripted([
-        call(
-            "write",
+    // Each sibling's settlement wakes the root once (#3773).
+    let provider = Arc::new(
+        ScriptedModelProvider::routed(
+            [
+                call(
+                    "write",
             serde_json::json!({"path":"volume:///shared/board.txt", "content":"shared-board-sentinel-73dae"}),
         ),
         ScriptedTurn::Text("writer settled".into()),
@@ -2776,8 +2835,12 @@ async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> 
             "read",
             serde_json::json!({"path":"volume:///shared/board.txt"}),
         ),
-        ScriptedTurn::Text("reader settled".into()),
-    ]);
+                ScriptedTurn::Text("reader settled".into()),
+            ],
+            ["noted writer", "noted reader"].map(|text| ScriptedTurn::Text(text.into())),
+        )
+        .with_context_capacity(super::capacity()),
+    );
     let directory = tempfile::tempdir().map_err(agent)?;
     let harness = Arc::new(
         super::open_scripted(
@@ -2839,9 +2902,19 @@ async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> 
             "inspection must count the original missing-cwd refusal once"
         );
     }
-    assert_eq!(provider.request_count(), 5);
+    assert_eq!(provider.input_requests(), 5);
     let request = provider
-        .request(4)
+        .requests()
+        .into_iter()
+        .find(|request| {
+            request
+                .messages
+                .iter()
+                .flat_map(|message| message.content.parts())
+                .any(|part| {
+                    matches!(part, crate::model::ModelContentPart::ToolResult { call_id, .. } if call_id == "read")
+                })
+        })
         .ok_or_else(|| Error::NotFound("shared-board read request".into()))?;
     let refused = request
         .messages
@@ -3249,12 +3322,24 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
 async fn a_spawn_chain_binds_its_volumes_at_every_depth() -> Result<()> {
     use acyclic_harness_client::{AgentCommand, AgentReply};
     const DEPTH: usize = 6;
-    let provider = super::scripted((0..DEPTH).flat_map(|depth| {
-        [
-            super::checked_commands::call(depth, crate::tools::shell::PLATFORM.name, "echo depth"),
-            super::ScriptedTurn::Text(format!("depth {depth} done")),
-        ]
-    }));
+    // Each settlement wakes its parent (#3773), and that turn's settlement
+    // wakes the next ancestor: depth `d` settling wakes its `d + 1` ancestors.
+    let provider = Arc::new(
+        ScriptedModelProvider::routed(
+            (0..DEPTH).flat_map(|depth| {
+                [
+                    super::checked_commands::call(
+                        depth,
+                        crate::tools::shell::PLATFORM.name,
+                        "echo depth",
+                    ),
+                    super::ScriptedTurn::Text(format!("depth {depth} done")),
+                ]
+            }),
+            (0..DEPTH * (DEPTH + 1) / 2).map(|_| super::ScriptedTurn::Text("noted".into())),
+        )
+        .with_context_capacity(super::capacity()),
+    );
     let (_directory, harness, provider) = checkout_scripted(&[], provider).await?;
     let (agents, root) = harness.agents().await?;
     let (agents, mut parent) = (Arc::clone(agents), root.clone());
@@ -3294,7 +3379,7 @@ async fn a_spawn_chain_binds_its_volumes_at_every_depth() -> Result<()> {
         );
         parent = child;
     }
-    assert_eq!(provider.request_count(), 2 * DEPTH);
+    assert_eq!(provider.input_requests(), 2 * DEPTH);
     Ok(())
 }
 
