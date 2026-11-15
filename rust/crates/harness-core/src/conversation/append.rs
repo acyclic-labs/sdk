@@ -57,7 +57,7 @@ impl ConversationState {
         let history_digest = advance_history_digest(
             self.history_digest(),
             &message,
-            acyclic_stream::MAX_RECORD_BYTES as u64,
+            Some(acyclic_stream::MAX_RECORD_BYTES as u64),
             work,
         )?;
         self.adopt_existing_metadata(work)?;

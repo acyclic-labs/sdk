@@ -3,7 +3,7 @@ use super::*;
 impl ConversationState {
     pub(crate) fn from_wire(
         wire: ConversationStateWire,
-        maximum_encoded_bytes: u64,
+        maximum_encoded_bytes: Option<u64>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(Self, u64)> {
         Self {
@@ -17,7 +17,7 @@ impl ConversationState {
 
     pub(super) fn rebuild(
         self,
-        maximum_encoded_bytes: u64,
+        maximum_encoded_bytes: Option<u64>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(Self, u64)> {
         let mut cache = crate::wire_codec::CodecQuota::new(work, 0)?;
