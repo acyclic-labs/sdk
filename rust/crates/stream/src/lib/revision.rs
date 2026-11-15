@@ -95,10 +95,10 @@ impl RevisionCut {
             if next.scope != kept.scope {
                 return false;
             }
-            if !next.same_authority(kept) {
-                foreign = true;
-            } else {
+            if next.same_authority(kept) {
                 kept.index = kept.index.max(next.index);
+            } else {
+                foreign = true;
             }
             true
         });
@@ -120,7 +120,7 @@ impl RevisionCut {
             .binary_search_by(|entry| entry.scope.cmp(&revision.scope))
         {
             Ok(at) => {
-                let entry = &mut self.0[at];
+                let entry = self.0.get_mut(at).ok_or(StreamError::InvalidResponse)?;
                 if entry.incarnation != revision.incarnation {
                     return Err(StreamError::RevisionForeign);
                 } else if entry.index < revision.index {
@@ -133,7 +133,7 @@ impl RevisionCut {
                 at
             }
         };
-        Ok(&self.0[at])
+        self.0.get(at).ok_or(StreamError::InvalidResponse)
     }
 
     /// Whether this cut holds `revision`'s authority at or above its index.
@@ -166,7 +166,7 @@ impl RevisionCut {
         self.0
             .binary_search_by(|entry| entry.scope.cmp(scope))
             .ok()
-            .map(|at| &self.0[at])
+            .and_then(|at| self.0.get(at))
     }
 
     /// Whether the cut has no participant.
@@ -271,6 +271,10 @@ impl RevisionTracker {
     /// construction performs one indexed lookup and allocates one view; the
     /// participant is allocated once per scope. Views never form a chain.
     #[must_use]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "public API: callers hand over the scope they selected; a borrow would change every caller"
+    )]
     pub fn scoped(
         tracker: &crate::query_sync::Arc<Self>,
         scope: RevisionScope,
@@ -341,7 +345,6 @@ impl RevisionTracker {
     /// The floor to forward: every selected participant, raised by `explicit`.
     /// Conflicting incarnations refuse with `RevisionForeign`: neither one
     /// proves the other's writes, including after an explicit reset minimum.
-    #[must_use]
     pub fn floor(&self, explicit: &RevisionCut) -> Result<RevisionCut, StreamError> {
         fn merge(
             observed: impl Iterator<Item = Result<Option<Revision>, StreamError>>,
@@ -406,11 +409,11 @@ impl RevisionTracker {
             positions.entry(revision.scope.clone()).or_insert(index);
         }
         self.participants(|revision| {
-            match positions
-                .get(revision.scope.as_bytes())
-                .map(|index| &mut at_least[*index])
-            {
-                Some(entry) => {
+            match positions.get(revision.scope.as_bytes()).copied() {
+                Some(index) => {
+                    let entry = at_least
+                        .get_mut(index)
+                        .ok_or(StreamError::InvalidResponse)?;
                     if entry.incarnation.as_ref() != revision.incarnation.to_be_bytes() {
                         return Err(StreamError::RevisionForeign);
                     }
@@ -690,7 +693,11 @@ mod tests {
             // Same-authority duplicates retain their maximum in either order;
             // an unrelated scope remains an independent requirement.
             let next = Revision { index: next_index, ..first.clone() };
-            let other = Revision { scope: RevisionScope::new([scope, vec![0]].concat()), ..first.clone() };
+            let other = Revision {
+                scope: RevisionScope::new([scope, vec![0]].concat()),
+                incarnation: first.incarnation,
+                index: first.index,
+            };
             for revisions in [vec![first.clone(), other.clone(), next.clone()], vec![next.clone(), other.clone(), first.clone()]] {
                 let cut = RevisionCut::new(revisions).unwrap();
                 proptest::prop_assert_eq!(cut.iter().len(), 2);
@@ -819,7 +826,7 @@ mod tests {
     fn scoped_frontiers_retain_requirements_without_cloning_unrelated_authorities() {
         use prost::Message as _;
         use std::sync::Arc;
-        for count in [1_u64, 1_000, 100_000] {
+        for count in [1_usize, 1_000, 100_000] {
             let tracker = Arc::new(RevisionTracker::default());
             for index in 0..count {
                 tracker.observe(&Revision {
@@ -828,7 +835,7 @@ mod tests {
                     index: 7,
                 });
             }
-            let selected = RevisionScope::new(0_u64.to_be_bytes().to_vec());
+            let selected = RevisionScope::new(0_usize.to_be_bytes().to_vec());
             let view = RevisionTracker::scoped(&tracker, selected.clone());
             let floor = view.floor(&RevisionCut::default()).unwrap();
             assert_eq!(floor.iter().len(), 1);
@@ -841,7 +848,7 @@ mod tests {
             // all participants. Selection cannot erase that original view.
             assert_eq!(
                 tracker.floor(&RevisionCut::default()).unwrap().iter().len(),
-                count as usize
+                count
             );
             eprintln!("revision_scopes={count} selected_participants=1 floor_bytes={bytes}");
 

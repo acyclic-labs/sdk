@@ -29,6 +29,10 @@ pub enum WriteOutcome {
 /// A committed fact selected at the original publication boundary. This is
 /// observation data, not authorization to any path or resource.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Committed is the common outcome; boxing it would add an allocation to every accepted commit"
+)]
 pub enum AcceptedCommitOutcome {
     /// Both projections describe the same installed publication. Record values
     /// share their original immutable byte owners; no payload is reconstructed.
