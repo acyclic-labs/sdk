@@ -105,7 +105,7 @@ export function objectsStreamRequest(input: Uint8Array, start: (input: Uint8Arra
     void source?.return?.().catch(() => {});
   };
   return {
-    maximumFrameBytes,
+    ...(maximumFrameBytes === undefined ? {} : { maximumFrameBytes }),
     async next() {
       if (closed) return null;
       if (pulling) throw new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE);
