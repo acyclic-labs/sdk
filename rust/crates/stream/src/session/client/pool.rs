@@ -103,14 +103,13 @@ impl Pool {
                 let installed = if reused {
                     // The duplicate admission may already have effects. Only
                     // a resumable read may be submitted on the retained link.
-                    if let Some(opening) = &opening {
-                        if self
+                    if let Some(opening) = &opening
+                        && self
                             .routes
                             .get(&opening.channel_id)
                             .is_some_and(|route| !route.resumable())
-                        {
-                            self.reject(opening.channel_id, StreamError::Unavailable);
-                        }
+                    {
+                        self.reject(opening.channel_id, StreamError::Unavailable);
                     }
                     ready.0.clone()
                 } else {
@@ -270,7 +269,8 @@ impl Pool {
                 owner,
                 credential,
                 sent,
-            } => self.renew_credential(slot, owner, credential, sent),
+                // The command keeps the slot owner alive until renewal is dispatched.
+            } => self.renew_credential(slot, owner.as_deref(), credential, sent),
             Command::ReleaseCredential { slot } => {
                 if !self.credential_slots.owned(slot) {
                     return Err(StreamError::InvalidArgument);
@@ -703,16 +703,17 @@ impl Pool {
         Ok(applied)
     }
     fn opened(route: &mut Route, id: u64, opened: wire::SessionOpened) -> Result<(), StreamError> {
-        if let Kind::Follow(follow) = &route.kind {
-            if follow.bootstrap_head && route.received == 0 {
-                let (_, selected, bootstrap) = wire_codec::selection_from_opened(&opened)?;
-                route.received = route.progress.select_bootstrap(
-                    route.generation,
-                    &selected,
-                    bootstrap,
-                    follow.delivery == wire::SessionDelivery::All as i32,
-                )?;
-            }
+        if let Kind::Follow(follow) = &route.kind
+            && follow.bootstrap_head
+            && route.received == 0
+        {
+            let (_, selected, bootstrap) = wire_codec::selection_from_opened(&opened)?;
+            route.received = route.progress.select_bootstrap(
+                route.generation,
+                &selected,
+                bootstrap,
+                follow.delivery == wire::SessionDelivery::All as i32,
+            )?;
         }
         if let Some(ready) = route.ready.take() {
             let _ = ready.send(Ok((id, Some(opened))));

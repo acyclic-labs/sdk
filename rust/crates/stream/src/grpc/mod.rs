@@ -461,26 +461,22 @@ impl Client {
                 if result.as_ref().is_err_and(|error| {
                     error.code() == Code::Unauthenticated
                         && std::error::Error::source(error).is_none()
-                }) {
-                    if let Some(lease) = &lease {
-                        crate::transport_credential::reject(lease)
-                            .await
-                            .map_err(|error| {
-                                credential_failure("credential source unavailable", error)
-                            })?;
-                    }
+                }) && let Some(lease) = &lease
+                {
+                    crate::transport_credential::reject(lease)
+                        .await
+                        .map_err(|error| {
+                            credential_failure("credential source unavailable", error)
+                        })?;
                 }
-                if result.is_ok() {
-                    if let Some(lease) = &lease {
-                        crate::transport_credential::check(lease)
-                            .await
-                            .map_err(|error| {
-                                credential_failure(
-                                    "credential source unavailable or changed",
-                                    error,
-                                )
-                            })?;
-                    }
+                if result.is_ok()
+                    && let Some(lease) = &lease
+                {
+                    crate::transport_credential::check(lease)
+                        .await
+                        .map_err(|error| {
+                            credential_failure("credential source unavailable or changed", error)
+                        })?;
                 }
                 result
             };

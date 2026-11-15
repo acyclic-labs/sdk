@@ -201,7 +201,7 @@ async fn listener_failure(database: &str) -> Result<(), Box<dyn std::error::Erro
             bootstrap_head: false,
             until: None,
             when_absent: Default::default(),
-            path: path,
+            path,
             from: 1,
             preceding: None,
             filter: FollowFilter::default(),

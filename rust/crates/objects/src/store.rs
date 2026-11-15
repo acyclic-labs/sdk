@@ -1051,16 +1051,15 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         }
         let mut covered = Vec::new();
         let mut seen = HashSet::new();
-        let mut pending: Vec<Digest> = match only {
-            Some(only) => only.to_vec(),
-            None => {
-                let written = self
-                    .state
-                    .written
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                written.keys().copied().collect()
-            }
+        let mut pending: Vec<Digest> = if let Some(only) = only {
+            only.to_vec()
+        } else {
+            let written = self
+                .state
+                .written
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            written.keys().copied().collect()
         };
         {
             let written = self
@@ -2074,21 +2073,20 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
                         continue;
                     }
                     if run > issued.run {
-                        let claimed = match claimed {
-                            Some(claimed) => claimed,
-                            None => {
-                                let record = self
-                                    .medium
-                                    .read(&self.incarnation_key(), None)
-                                    .await
-                                    .map_err(medium)?
-                                    .ok_or(Error::from(ErrorCode::RevisionForeign))?;
-                                let (stored, run) = decode_incarnation(&record)?;
-                                if stored != incarnation {
-                                    return Err(ErrorCode::RevisionForeign.into());
-                                }
-                                *claimed.insert(run)
+                        let claimed = if let Some(claimed) = claimed {
+                            claimed
+                        } else {
+                            let record = self
+                                .medium
+                                .read(&self.incarnation_key(), None)
+                                .await
+                                .map_err(medium)?
+                                .ok_or(Error::from(ErrorCode::RevisionForeign))?;
+                            let (stored, run) = decode_incarnation(&record)?;
+                            if stored != incarnation {
+                                return Err(ErrorCode::RevisionForeign.into());
                             }
+                            *claimed.insert(run)
                         };
                         // A run nobody claimed issued nothing; the wait refuses it.
                         if run > claimed {

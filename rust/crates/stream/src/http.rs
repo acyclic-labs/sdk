@@ -212,12 +212,12 @@ impl HttpStream {
             .send()
             .await
             .map_err(|error| StreamError::Unavailable.with_source(error))?;
-        if response.status().as_u16() == 401 {
-            if let Some(lease) = &lease {
-                crate::transport_credential::reject(lease)
-                    .await
-                    .map_err(|error| StreamError::AccessDenied.with_source(error))?;
-            }
+        if response.status().as_u16() == 401
+            && let Some(lease) = &lease
+        {
+            crate::transport_credential::reject(lease)
+                .await
+                .map_err(|error| StreamError::AccessDenied.with_source(error))?;
         }
         let success = response.status().is_success();
 

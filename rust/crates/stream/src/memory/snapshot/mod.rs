@@ -441,34 +441,31 @@ fn restore_retained(
     {
         return None;
     }
-    let (key, digest, result, envelope) = match observation {
-        Some(observation) => {
-            let key = observation.idempotency_key;
-            let commit_id = replay_commit_id(envelope.as_ref(), &observation.outcome)?;
-            if state
-                .replay(key.as_bytes(), |_| Ok::<_, StreamError>(()))
-                .ok()?
-                .is_some()
-                || commit_id.is_some_and(|id| state.commit(&id).is_some())
-            {
-                return None;
-            }
-            (
-                Some(key),
-                observation.request_digest,
-                observation.outcome,
-                envelope,
-            )
+    let (key, digest, result, envelope) = if let Some(observation) = observation {
+        let key = observation.idempotency_key;
+        let commit_id = replay_commit_id(envelope.as_ref(), &observation.outcome)?;
+        if state
+            .replay(key.as_bytes(), |_| Ok::<_, StreamError>(()))
+            .ok()?
+            .is_some()
+            || commit_id.is_some_and(|id| state.commit(&id).is_some())
+        {
+            return None;
         }
-        None => {
-            let envelope = envelope?;
-            (
-                None,
-                [0; 32],
-                crate::IdempotencyOutcome::Commit(envelope),
-                None,
-            )
-        }
+        (
+            Some(key),
+            observation.request_digest,
+            observation.outcome,
+            envelope,
+        )
+    } else {
+        let envelope = envelope?;
+        (
+            None,
+            [0; 32],
+            crate::IdempotencyOutcome::Commit(envelope),
+            None,
+        )
     };
     // Each envelope-bearing entry is the next publication in decision order.
     if envelope.is_some() || matches!(result, crate::IdempotencyOutcome::Commit(_)) {

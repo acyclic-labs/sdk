@@ -150,16 +150,7 @@ impl Subscription {
             let Some(revision) = state.revision else {
                 return Poll::Ready(Err(StreamError::Capacity));
             };
-            if revision != self.seen {
-                self.seen = revision;
-                (
-                    state
-                        .waiters
-                        .remove_if(self.id.to_be_bytes(), |_| true)
-                        .and_then(|entry| entry.into_parts().1),
-                    Poll::Ready(Ok(())),
-                )
-            } else {
+            if revision == self.seen {
                 let entry = match state.waiters.get_or_try_insert_with(
                     self.id.to_be_bytes(),
                     &mut RegistrationWork,
@@ -169,6 +160,15 @@ impl Subscription {
                     Err(error) => return Poll::Ready(Err(error)),
                 };
                 (entry.replace(wake), Poll::Pending)
+            } else {
+                self.seen = revision;
+                (
+                    state
+                        .waiters
+                        .remove_if(self.id.to_be_bytes(), |_| true)
+                        .and_then(|entry| entry.into_parts().1),
+                    Poll::Ready(Ok(())),
+                )
             }
         };
         drop(previous);

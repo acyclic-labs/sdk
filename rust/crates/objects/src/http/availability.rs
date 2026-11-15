@@ -80,15 +80,12 @@ impl HttpObjects {
                     if let Some(frame) = frame {
                         return Ok(Some((frame, source)));
                     }
-                    match source.response.chunk().await.map_err(|_| unavailable())? {
-                        Some(chunk) => {
-                            source.chunk = chunk;
-                            source.consumed = 0;
-                        }
-                        None => {
-                            source.decoder.finish().map_err(|_| unavailable())?;
-                            return Err(unavailable());
-                        }
+                    if let Some(chunk) = source.response.chunk().await.map_err(|_| unavailable())? {
+                        source.chunk = chunk;
+                        source.consumed = 0;
+                    } else {
+                        source.decoder.finish().map_err(|_| unavailable())?;
+                        return Err(unavailable());
                     }
                 }
             });

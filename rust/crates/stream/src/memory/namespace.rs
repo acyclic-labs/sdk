@@ -562,12 +562,12 @@ impl Namespace {
             self.canonical = Some(self.roots.clone());
         }
         self.replace(path, Some(node), changed_at, build)?;
-        if let Some(node) = canonical {
-            if !shared {
-                let mut published = self.canonical();
-                published.replace(path, Some(node), changed_at, build)?;
-                self.canonical = Some(published.roots);
-            }
+        if let Some(node) = canonical
+            && !shared
+        {
+            let mut published = self.canonical();
+            published.replace(path, Some(node), changed_at, build)?;
+            self.canonical = Some(published.roots);
         }
         Ok(())
     }

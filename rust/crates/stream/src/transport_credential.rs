@@ -56,13 +56,11 @@ impl std::future::Future for Check {
         #[cfg(not(feature = "serde"))]
         let result = work();
         #[cfg(feature = "serde")]
-        if result.is_ready() {
-            if let Some(recording) = state.recording.take() {
-                if matches!(result, std::task::Poll::Ready(Ok(()))) {
-                    let _completion =
-                        recording.finish_submitted(None, crate::trace::Outcome::Succeeded);
-                }
-            }
+        if result.is_ready()
+            && let Some(recording) = state.recording.take()
+            && matches!(result, std::task::Poll::Ready(Ok(())))
+        {
+            let _completion = recording.finish_submitted(None, crate::trace::Outcome::Succeeded);
         }
         result
     }

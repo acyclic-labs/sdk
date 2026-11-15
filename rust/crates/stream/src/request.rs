@@ -704,12 +704,11 @@ impl<'a, A> MutationView<'a, A> {
     }
 
     fn at(&self, position: usize) -> &CommitMutation {
-        match self.single {
-            Some(mutations) => &mutations[position],
-            None => {
-                let index = &self.index[position];
-                &self.request.effects[index.effect].mutations[index.mutation]
-            }
+        if let Some(mutations) = self.single {
+            &mutations[position]
+        } else {
+            let index = &self.index[position];
+            &self.request.effects[index.effect].mutations[index.mutation]
         }
     }
 

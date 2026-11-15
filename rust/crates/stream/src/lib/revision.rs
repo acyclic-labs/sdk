@@ -95,10 +95,10 @@ impl RevisionCut {
             if next.scope != kept.scope {
                 return false;
             }
-            if !next.same_authority(kept) {
-                foreign = true;
-            } else {
+            if next.same_authority(kept) {
                 kept.index = kept.index.max(next.index);
+            } else {
+                foreign = true;
             }
             true
         });

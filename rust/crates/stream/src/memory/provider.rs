@@ -1172,12 +1172,12 @@ impl MemoryStream {
             &mut children_allocation,
         )
         .await?;
-        if let Some(mut children) = children_allocation.take() {
-            if let Err(error) = output.allocation.absorb(&mut children) {
-                drop(output);
-                drop(children);
-                return work.record(Err(error));
-            }
+        if let Some(mut children) = children_allocation.take()
+            && let Err(error) = output.allocation.absorb(&mut children)
+        {
+            drop(output);
+            drop(children);
+            return work.record(Err(error));
         }
         work.record(work.meter.check())?;
         let (view, allocation) = output.into_parts();
