@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use futures::TryStreamExt as _;
 
 /// Real transport ownership: the scoped view selects its own capability,
@@ -211,7 +212,7 @@ async fn native_session_refuses_outgoing_commands_after_lease_change_without_a_r
                     Err(transport::Failure {
                         error,
                         transient: false,
-                    }) if error.category() == StreamError::AccessDenied
+                    }) if error.category() == StreamCategory::AccessDenied
                 ));
                 assert_eq!(
                     fixture.counts.received_bytes.load(Ordering::Relaxed),
@@ -228,7 +229,7 @@ async fn native_session_refuses_outgoing_commands_after_lease_change_without_a_r
             assert!(
                 matches!(
                     waiting.now_or_never(),
-                    Some(Some(Err(transport::Failure { error, transient: false }))) if error.category() == StreamError::AccessDenied
+                    Some(Some(Err(transport::Failure { error, transient: false }))) if error.category() == StreamCategory::AccessDenied
                 ),
                 "source notification must retire an idle session without another frame"
             );
@@ -421,7 +422,7 @@ async fn session_credentials_renew_on_handshake_retry_reconnect_and_move() -> Te
             Ok(_) => panic!("failed renewal admitted a follow"),
             Err(error) => error,
         };
-        assert_eq!(error.category(), StreamError::AccessDenied);
+        assert_eq!(error.category(), StreamCategory::AccessDenied);
         assert!(
             std::iter::successors(std::error::Error::source(&error), |source| source.source())
                 .any(|source| source.is::<grpc::CredentialError>())

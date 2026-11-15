@@ -1,3 +1,4 @@
+use crate::StreamCategory;
 use crate::*;
 
 #[tokio::test]
@@ -84,7 +85,7 @@ async fn fenced_latest_preserves_indexed_absence_and_rejects_a_changed_source()
         }
         assert!(matches!(
             provider.tail(StreamPath::new("stale")?).await,
-            Err(StreamError::NotFound)
+            Err(error) if error.category() == StreamCategory::NotFound
         ));
         assert_eq!(
             provider.commit(accepted).await?,
@@ -154,8 +155,8 @@ async fn check_trusted_view<P: StreamProvider>(provider: &P) -> Result<(), Strea
             .is_some_and(|record| record.value.as_slice() == payload)
     }));
     assert_eq!(
-        wire_codec::heads_to_wire(view.clone()),
-        Err(StreamError::LimitExceeded)
+        wire_codec::heads_to_wire(view.clone()).map_err(|error| error.category()),
+        Err(StreamCategory::LimitExceeded)
     );
     request.retained.truncate(1);
     request.limit = 1;
@@ -214,8 +215,10 @@ async fn check_child_selection<P: StreamProvider>(provider: &P) -> Result<(), St
     assert_eq!(provider.children_page(selected.clone()).await?, *page);
     let refuses = |candidate: &Heads, selection: &HeadsRequest| {
         assert_eq!(
-            candidate.validate_for(selection),
-            Err(StreamError::InvalidResponse),
+            candidate
+                .validate_for(selection)
+                .map_err(|error| error.category()),
+            Err(StreamCategory::InvalidResponse),
             "child page escaped its original selection"
         );
     };
@@ -556,16 +559,18 @@ async fn wire_tail_uses_one_head_view_for_offsets_receipt_and_revision() -> Resu
     let mut unsolicited = request.clone();
     unsolicited.durable_through = None;
     assert_eq!(
-        view.validate_for(&unsolicited),
-        Err(StreamError::InvalidResponse)
+        view.validate_for(&unsolicited)
+            .map_err(|error| error.category()),
+        Err(StreamCategory::InvalidResponse)
     );
     view.heads[0]
         .as_mut()
         .ok_or(StreamError::InvalidResponse)?
         .retained_through = Some(2);
     assert_eq!(
-        wire_codec::heads_from_response(wire_codec::heads_to_wire(view)?),
-        Err(StreamError::InvalidResponse)
+        wire_codec::heads_from_response(wire_codec::heads_to_wire(view)?)
+            .map_err(|error| error.category()),
+        Err(StreamCategory::InvalidResponse)
     );
     Ok(())
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use futures::StreamExt as _;
 use futures::TryFutureExt as _;
 use loom::thread;
@@ -229,15 +230,15 @@ fn subscription_and_recovery(retain_old: bool) {
             {
                 Ok(mut stream) => assert!(matches!(
                     stream.next().await,
-                    Some(Err(StreamError::NotFound
-                        | StreamError::OutOfRange
-                        | StreamError::PrefixNotRetained))
+                    Some(Err(error)) if matches!(error.category(), StreamCategory::NotFound
+                        | StreamCategory::OutOfRange
+                        | StreamCategory::PrefixNotRetained)
                 )),
                 Err(error) => assert!(matches!(
-                    error,
-                    StreamError::NotFound
-                        | StreamError::OutOfRange
-                        | StreamError::PrefixNotRetained
+                    error.category(),
+                    StreamCategory::NotFound
+                        | StreamCategory::OutOfRange
+                        | StreamCategory::PrefixNotRetained
                 )),
             }
         });
@@ -389,8 +390,10 @@ pub fn session_registration_and_recovery_never_splice(omit_anchor: bool) {
                 },
             };
             assert!(matches!(
-                error,
-                StreamError::NotFound | StreamError::OutOfRange | StreamError::PrefixNotRetained
+                error.category(),
+                StreamCategory::NotFound
+                    | StreamCategory::OutOfRange
+                    | StreamCategory::PrefixNotRetained
             ));
         });
         recovery.join().unwrap().unwrap();

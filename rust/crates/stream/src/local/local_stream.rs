@@ -116,12 +116,12 @@ impl LocalStream {
                     provider
                         .restore_state(&encoded)
                         .await
-                        .map_err(|error| match error {
-                            StreamError::Unsupported => {
+                        .map_err(|error| match error.category() {
+                            StreamCategory::Unsupported => {
                                 LocalStreamError::UnsupportedVersion { format: "state" }
                             }
-                            StreamError::InvalidArgument => LocalStreamError::Corrupt,
-                            error => LocalStreamError::Replay(error),
+                            StreamCategory::InvalidArgument => LocalStreamError::Corrupt,
+                            _ => LocalStreamError::Replay(error),
                         })
                 }
                 Recovered::WriteRequest {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 
 #[tokio::test]
 async fn connection_observers_end_when_the_original_pool_driver_is_dropped() -> TestResult {
@@ -57,16 +58,16 @@ async fn connection_observers_end_when_the_original_pool_driver_is_dropped() -> 
         );
         assert!(matches!(
             waiting.as_mut().poll(&mut cx),
-            std::task::Poll::Ready(Err(StreamError::Unavailable))
+            std::task::Poll::Ready(Err(error)) if error.category() == StreamCategory::Unavailable
         ));
         let mut late = Box::pin(sibling.changed(0));
         assert!(matches!(
             late.as_mut().poll(&mut cx),
-            std::task::Poll::Ready(Err(StreamError::Unavailable))
+            std::task::Poll::Ready(Err(error)) if error.category() == StreamCategory::Unavailable
         ));
         assert!(matches!(
             client.register_credential(0, Bytes::new()),
-            Err(StreamError::Unavailable)
+            Err(error) if error.category() == StreamCategory::Unavailable
         ));
     }
     Ok(())
@@ -186,7 +187,7 @@ async fn failed_home_dial_resets_pending_admissions_only_for_connection_errors()
         } else {
             pool.dial_ready("good", 0, Err(error.clone()))?;
         }
-        let reset = error != StreamError::AccessDenied;
+        let reset = error.category() != StreamCategory::AccessDenied;
         assert_eq!(pool.home, if reset { "" } else { "good" });
         assert_eq!(pool.admissions.interested(""), reset);
         assert_eq!(pool.admissions.interested("good"), !reset);

@@ -7,7 +7,7 @@ use acyclic_auth::{
     verify::{Trust as _, VerifyError},
 };
 use acyclic_stream::{
-    IdempotencyKey, MemoryStream, OwnedBytes, Stream, StreamError, UnixMillisClock,
+    IdempotencyKey, MemoryStream, OwnedBytes, Stream, StreamCategory, UnixMillisClock,
     trust_feed::TrustFeed,
 };
 use ed25519_dalek::SigningKey;
@@ -153,8 +153,8 @@ async fn placeholder_anchor_recovers_on_key_publication_without_restart() {
         "producer loss must wake its driver"
     );
     assert_eq!(
-        step(run.as_mut(), &wake),
-        Some(Err(StreamError::Unavailable)),
+        step(run.as_mut(), &wake).map(|result| result.map_err(|error| error.category())),
+        Some(Err(StreamCategory::Unavailable)),
         "lost anchor producer left its original trust feed parked"
     );
     assert_eq!(
@@ -255,8 +255,14 @@ async fn empty_environment_reanchors_blocked_account_opens_and_records() {
         changed.now_or_never(),
         Some(Err(acyclic_auth::trust::SourceClosed))
     );
-    assert_eq!(accounts.follow("cold"), Err(StreamError::Unavailable));
-    assert_eq!(late.follow("late"), Err(StreamError::Unavailable));
+    assert_eq!(
+        accounts.follow("cold").map_err(|error| error.category()),
+        Err(StreamCategory::Unavailable)
+    );
+    assert_eq!(
+        late.follow("late").map_err(|error| error.category()),
+        Err(StreamCategory::Unavailable)
+    );
 }
 
 #[tokio::test]
@@ -293,8 +299,8 @@ async fn closing_a_fenced_environment_ends_its_original_anchor_wait() {
         "closed follower left its original anchor wait parked"
     );
     assert_eq!(
-        step(run.as_mut(), &wake),
-        Some(Err(StreamError::Unavailable)),
+        step(run.as_mut(), &wake).map(|result| result.map_err(|error| error.category())),
+        Some(Err(StreamCategory::Unavailable)),
         "closed follower did not end its original anchor wait"
     );
     assert_eq!(

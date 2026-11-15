@@ -4,6 +4,7 @@
 //! replica, refreshed in bounded pages. Server-side conditional publication orders
 //! processes; LISTEN/NOTIFY drives live replicas without timers or polling.
 
+use crate::StreamCategory;
 use crate::{
     query_sync::SyncMutex,
     replicated::{ReplicaClock, Replicated},
@@ -342,7 +343,7 @@ impl PostgresStream {
                 if result.as_ref().err().is_some_and(|error| {
                     matches!(
                         error.category(),
-                        StreamError::Unavailable | StreamError::InvalidResponse
+                        StreamCategory::Unavailable | StreamCategory::InvalidResponse
                     )
                 }) {
                     provider.fail();
@@ -495,7 +496,7 @@ impl StreamProvider for PostgresStream {
             async {
                 self.check()?;
                 match self.inner.core.read_commit_inner(id).await {
-                    Err(error) if error.category() == StreamError::NotFound => {}
+                    Err(error) if error.category() == StreamCategory::NotFound => {}
                     result => return result,
                 }
                 // Success is immutable; only a missing envelope needs a fresh journal

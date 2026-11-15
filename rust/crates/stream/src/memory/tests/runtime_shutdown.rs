@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use futures::Stream as _;
 use std::task::{Context, Waker};
 
@@ -42,7 +43,7 @@ fn retired_executor_refuses_new_public_follows_before_writer_release() {
         assert!(
             matches!(
                 result,
-                std::task::Poll::Ready(Some(Err(StreamError::Unavailable)))
+                std::task::Poll::Ready(Some(Err(error))) if error.category() == StreamCategory::Unavailable
             ),
             "retired executor left a newly admitted public follow parked"
         );
@@ -84,7 +85,7 @@ fn executor_loss_ends_public_follows_before_a_retained_writer_releases() {
         assert!(
             matches!(
                 observed,
-                Ok(std::task::Poll::Ready(Some(Err(StreamError::Unavailable))))
+                Ok(std::task::Poll::Ready(Some(Err(error)))) if error.category() == StreamCategory::Unavailable
             ),
             "snapshot without an executor did not refuse before scheduling"
         );
@@ -137,7 +138,7 @@ fn executor_loss_ends_public_follows_before_a_retained_writer_releases() {
                 matches!(
                     std::pin::Pin::new(&mut follow)
                         .poll_next(&mut Context::from_waker(Waker::noop())),
-                    std::task::Poll::Ready(Some(Err(StreamError::Unavailable)))
+                    std::task::Poll::Ready(Some(Err(error))) if error.category() == StreamCategory::Unavailable
                 ),
                 "lost snapshot producer left its public follow parked"
             );

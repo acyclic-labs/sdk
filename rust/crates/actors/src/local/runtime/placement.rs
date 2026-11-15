@@ -9,6 +9,7 @@
 //! same record and admission path ([`Runtime::with_external_placement`] turns
 //! this off). Neither delivery nor namespace discovery decides ownership.
 use super::*;
+use acyclic_stream::StreamCategory;
 use acyclic_stream::{CommitCondition, CommitEffect, CommitMutation};
 
 /// The external placement owner's event: `actor`, in an assigned shard, has
@@ -189,7 +190,7 @@ async fn command_control<P: StreamProvider + ?Sized>(
     let path = StreamPath::new(format!("{}/placement", previous.path()))?;
     let head = match store.provider().head(path.clone()).await {
         Ok(head) => Some(head),
-        Err(error) if error.category() == StreamError::NotFound => None,
+        Err(error) if error.category() == StreamCategory::NotFound => None,
         Err(error) => return Err(error.into()),
     };
     let tail = head.as_ref().map_or(0, |head| head.tail);

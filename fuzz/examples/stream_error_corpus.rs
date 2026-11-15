@@ -1,5 +1,5 @@
 //! Capture canonical failure bytes through the public production serializer.
-use acyclic_stream::StreamError;
+use acyclic_stream::{StreamCategory, StreamError};
 
 fn capture() -> Result<(), Box<dyn std::error::Error>> {
     let directory = std::path::PathBuf::from(
@@ -8,7 +8,7 @@ fn capture() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or("expected corpus directory")?,
     );
     std::fs::create_dir_all(&directory)?;
-    for error in StreamError::ALL {
+    for error in StreamCategory::ALL.map(StreamError::from) {
         let bytes = serde_json::to_vec(&error)?;
         std::fs::write(directory.join(error.code()), &bytes)?;
         println!(

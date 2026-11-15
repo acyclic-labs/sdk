@@ -4,6 +4,7 @@
 //! storage scope) in one physical incarnation. An index is never compared across
 //! scopes or incarnations, and a stream offset is never a revision.
 use crate::OwnedBytes as Bytes;
+use crate::StreamCategory;
 use crate::StreamError;
 use crate::StreamProviderExt as _;
 use crate::query_sync::watch;
@@ -436,7 +437,7 @@ pub async fn served<P: crate::StreamProvider + ?Sized>(
 ) -> Result<Option<Revision>, StreamError> {
     match provider.wait_applied(at_least).await {
         Ok(revision) => Ok(Some(revision)),
-        Err(error) if error.category() == StreamError::Unsupported => Ok(None),
+        Err(error) if error.category() == StreamCategory::Unsupported => Ok(None),
         Err(error) => Err(error),
     }
 }
@@ -677,11 +678,11 @@ mod tests {
             let first = Revision { scope: RevisionScope::new(scope.clone()), incarnation, index: first_index };
             let reset = Revision { incarnation: incarnation ^ 1, index: next_index, ..first.clone() };
             for revisions in [[first.clone(), reset.clone()], [reset.clone(), first.clone()]] {
-                proptest::prop_assert_eq!(RevisionCut::new(revisions.clone()), Err(StreamError::RevisionForeign));
-                proptest::prop_assert_eq!(crate::wire_codec::cut_from_wire(revisions.iter().map(crate::wire_codec::revision_to_wire).collect()), Err(StreamError::RevisionForeign));
+                proptest::prop_assert_eq!(RevisionCut::new(revisions.clone()).map_err(|error| error.category()), Err(StreamCategory::RevisionForeign));
+                proptest::prop_assert_eq!(crate::wire_codec::cut_from_wire(revisions.iter().map(crate::wire_codec::revision_to_wire).collect()).map_err(|error| error.category()), Err(StreamCategory::RevisionForeign));
             }
             let mut cut = RevisionCut::of(first.clone());
-            proptest::prop_assert_eq!(cut.observe(reset), Err(StreamError::RevisionForeign));
+            proptest::prop_assert_eq!(cut.observe(reset).map_err(|error| error.category()), Err(StreamCategory::RevisionForeign));
             proptest::prop_assert_eq!(&cut, &RevisionCut::of(first.clone()));
 
             // Same-authority duplicates retain their maximum in either order;
@@ -716,7 +717,7 @@ mod tests {
             }
             let tracker = RevisionTracker::default();
             tracker.observe(&first);
-            proptest::prop_assert_eq!(tracker.floor(&RevisionCut::of(Revision { incarnation: incarnation ^ 1, ..next })), Err(StreamError::RevisionForeign), "revision floor accepted a foreign incarnation");
+            proptest::prop_assert_eq!(tracker.floor(&RevisionCut::of(Revision { incarnation: incarnation ^ 1, ..next })).map_err(|error| error.category()), Err(StreamCategory::RevisionForeign), "revision floor accepted a foreign incarnation");
         }
     }
 
@@ -780,14 +781,20 @@ mod tests {
         let mut foreign = wanted.clone();
         foreign.incarnation ^= 1;
         assert_eq!(
-            authority.wait(&RevisionCut::of(foreign)).await,
-            Err(StreamError::RevisionForeign)
+            authority
+                .wait(&RevisionCut::of(foreign))
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::RevisionForeign)
         );
         // Another scope is foreign too, even at a covered index.
         let other = AppliedRevisions::in_process().at(0);
         assert_eq!(
-            authority.wait(&RevisionCut::of(other)).await,
-            Err(StreamError::RevisionForeign)
+            authority
+                .wait(&RevisionCut::of(other))
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::RevisionForeign)
         );
         // Negative control: no minimum serves the local cut at once.
         assert_eq!(
@@ -811,8 +818,11 @@ mod tests {
             "retired revision authority left its reader parked"
         );
         assert_eq!(
-            authority.wait(&closing_cut).await,
-            Err(StreamError::Unavailable)
+            authority
+                .wait(&closing_cut)
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::Unavailable)
         );
     }
 
@@ -886,8 +896,9 @@ mod tests {
             );
             let mut reset_wire = vec![crate::wire_codec::revision_to_wire(&reset)];
             assert_eq!(
-                view.raise_uncovered(&mut reset_wire, &floor),
-                Err(StreamError::RevisionForeign)
+                view.raise_uncovered(&mut reset_wire, &floor)
+                    .map_err(|error| error.category()),
+                Err(StreamCategory::RevisionForeign)
             );
             view.observe(&Revision {
                 scope: selected.clone(),
@@ -934,12 +945,16 @@ mod tests {
         };
         tracker.observe(&reset);
         assert_eq!(
-            tracker.floor(&RevisionCut::default()),
-            Err(StreamError::RevisionForeign)
+            tracker
+                .floor(&RevisionCut::default())
+                .map_err(|error| error.category()),
+            Err(StreamCategory::RevisionForeign)
         );
         assert_eq!(
-            tracker.served(&floor, Some(&reset)),
-            Err(StreamError::InvalidResponse)
+            tracker
+                .served(&floor, Some(&reset))
+                .map_err(|error| error.category()),
+            Err(StreamCategory::InvalidResponse)
         );
     }
 
@@ -967,8 +982,9 @@ mod tests {
         assert_eq!(
             authority
                 .wait_applied(&foreign, std::future::pending())
-                .await,
-            Err(StreamError::RevisionForeign)
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::RevisionForeign)
         );
     }
 }

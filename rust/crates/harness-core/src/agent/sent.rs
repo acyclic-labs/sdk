@@ -2,7 +2,7 @@
 //! The marker and inbox effect share one publication; recovery reads that exact
 //! immutable envelope, never a current inbox tail or a conversation scan.
 use super::{AgentPath, AgentRecord, Delivered, Error, InboxRecord, IntentId, Sender};
-use acyclic_stream::{CommittedMutation, StreamError, StreamProviderExt as _};
+use acyclic_stream::{CommittedMutation, StreamCategory, StreamProviderExt as _};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
@@ -119,7 +119,7 @@ pub async fn sent<P: crate::store::JournalProvider + ?Sized>(
 ) -> Result<Option<SentMessage>, Error> {
     let head = match provider.head(sender.sent_message(id)?).await {
         Ok(head) => head,
-        Err(error) if error.category() == StreamError::NotFound => return Ok(None),
+        Err(error) if error.category() == StreamCategory::NotFound => return Ok(None),
         Err(error) => return Err(Error::Stream(error)),
     };
     let record = head

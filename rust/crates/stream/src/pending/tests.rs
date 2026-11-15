@@ -1,5 +1,6 @@
 use super::*;
 use crate::BoxProviderFuture;
+use crate::StreamCategory;
 use crate::{CommitCondition, CommitMutation, IdempotencyKey, MemoryStream, Stream};
 use futures::FutureExt as _;
 use std::sync::Mutex;
@@ -16,7 +17,7 @@ impl crate::runtime::Executor for Executor {
 }
 
 fn assert_original_producer_loss(error: &StreamError) {
-    assert_eq!(error.category(), StreamError::Unavailable);
+    assert_eq!(error.category(), StreamCategory::Unavailable);
     let mut cause = std::error::Error::source(error);
     let mut original = false;
     while let Some(source) = cause {
@@ -51,7 +52,10 @@ async fn cancellation_keeps_exact_submission_and_shared_outcome() -> Result<(), 
     assert!(pending.wait().now_or_never().is_none());
     drop(pending);
     drop(stream);
-    assert_eq!(provider.head(path).await, Err(StreamError::NotFound));
+    assert_eq!(
+        provider.head(path).await.map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
+    );
     let owned = executor.0.lock().unwrap().pop().unwrap();
     owned.await;
     let outcome = retained.wait().await?;
@@ -64,8 +68,11 @@ async fn cancellation_keeps_exact_submission_and_shared_outcome() -> Result<(), 
     };
     *records = vec!["changed".into()];
     assert_eq!(
-        provider.commit(changed).await,
-        Err(StreamError::IdempotencyMismatch)
+        provider
+            .commit(changed)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::IdempotencyMismatch)
     );
 
     // Even losing every waiter cannot revoke custody already submitted.
@@ -139,8 +146,11 @@ async fn commit_custody_keeps_exact_results_and_terminates_on_producer_loss()
     );
     assert!(pending.result().now_or_never().is_none());
     assert_eq!(
-        provider.head(path.clone()).await,
-        Err(StreamError::NotFound)
+        provider
+            .head(path.clone())
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
     );
     producer.await??;
     let retained = pending.result().await?;
@@ -203,13 +213,13 @@ async fn commit_custody_keeps_exact_results_and_terminates_on_producer_loss()
     );
     assert!(matches!(
         second.as_mut().poll(&mut second_context),
-        std::task::Poll::Ready(Err(error)) if error.category() == StreamError::Unavailable
+        std::task::Poll::Ready(Err(error)) if error.category() == StreamCategory::Unavailable
     ));
     drop(first);
     drop(second);
     assert!(matches!(
         pending.result().now_or_never(),
-        Some(Err(error)) if error.category() == StreamError::Unavailable
+        Some(Err(error)) if error.category() == StreamCategory::Unavailable
     ));
     let error = pending
         .result()
@@ -290,8 +300,11 @@ async fn append_submission_keeps_identity_and_survives_observer_cancellation()
     assert!(pending.wait().now_or_never().is_none());
     drop(pending);
     assert_eq!(
-        provider.head(request.path.clone()).await,
-        Err(StreamError::NotFound)
+        provider
+            .head(request.path.clone())
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
     );
     let producer = executor.0.lock().unwrap().pop().unwrap();
     producer.await;

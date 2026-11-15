@@ -261,12 +261,12 @@ impl From<crate::Error> for Error {
 #[cfg(test)]
 mod uncertain_tests {
     use super::Error;
-    use acyclic_stream::StreamError;
+    use acyclic_stream::{StreamCategory, StreamError};
 
     #[test]
     fn store_uncertainty_survives_every_wrapper() {
         use std::error::Error as _;
-        for category in StreamError::ALL {
+        for category in StreamCategory::ALL.map(StreamError::from) {
             let error = crate::Error::from(
                 category
                     .clone()

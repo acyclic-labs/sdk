@@ -1,6 +1,7 @@
 //! `read` selectors: latest-first keys, key ranges, a follow from beyond the
 //! tail, and `children` paging, each with a negative control.
 use super::*;
+use crate::StreamCategory;
 use futures::Stream;
 
 /// Every record of one indexed read, paged `page` at a time through the
@@ -130,7 +131,7 @@ pub async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), Fail
         })
         .await
         .err();
-    if refused != Some(StreamError::InvalidArgument) {
+    if refused.map(|error| error.category()) != Some(StreamCategory::InvalidArgument) {
         return Err(violated!());
     }
 

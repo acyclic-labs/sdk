@@ -1,7 +1,7 @@
 use crate::{
     AppendRecord, AppendRequest, Attribute, CommitCondition, CommitEffect, CommitMutation,
-    CommitRequest, IdempotencyKey, MAX_RECORD_BYTES, OwnedBytes, RecordHeaders, StreamError,
-    StreamPath,
+    CommitRequest, IdempotencyKey, MAX_RECORD_BYTES, OwnedBytes, RecordHeaders, StreamCategory,
+    StreamError, StreamPath,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -39,13 +39,13 @@ fn indexed_headers_share_the_value_payload_bound() -> Result<(), StreamError> {
         .ok_or(StreamError::Unavailable)?
         .value = vec![0; MAX_RECORD_BYTES].into();
     assert_eq!(
-        crate::request::append_digest(&request),
-        Err(StreamError::LimitExceeded)
+        crate::request::append_digest(&request).map_err(|error| error.category()),
+        Err(StreamCategory::LimitExceeded)
     );
     let wire = crate::wire_codec::append_record_wire(request.records.remove(0));
     assert_eq!(
-        crate::wire_codec::append_record(wire),
-        Err(StreamError::LimitExceeded)
+        crate::wire_codec::append_record(wire).map_err(|error| error.category()),
+        Err(StreamCategory::LimitExceeded)
     );
     Ok(())
 }
@@ -54,24 +54,27 @@ fn indexed_headers_share_the_value_payload_bound() -> Result<(), StreamError> {
 fn indexed_header_order_is_canonical_and_unique() -> Result<(), StreamError> {
     for keys in [vec![b"b".as_slice(), b"a"], vec![b"a".as_slice(), b"a"]] {
         assert_eq!(
-            RecordHeaders::new(keys.into_iter().map(Into::into).collect(), vec![]),
-            Err(StreamError::InvalidArgument)
+            RecordHeaders::new(keys.into_iter().map(Into::into).collect(), vec![])
+                .map_err(|error| error.category()),
+            Err(StreamCategory::InvalidArgument)
         );
     }
     assert_eq!(
         RecordHeaders::new(
             vec![vec![0; crate::MAX_RECORD_KEY_BYTES + 1].into()],
             vec![]
-        ),
-        Err(StreamError::LimitExceeded)
+        )
+        .map_err(|error| error.category()),
+        Err(StreamCategory::LimitExceeded)
     );
     let attribute = Attribute {
         name: "topic".into(),
         value: b"x".as_slice().into(),
     };
     assert_eq!(
-        RecordHeaders::new(vec![], vec![attribute.clone(), attribute]),
-        Err(StreamError::InvalidArgument)
+        RecordHeaders::new(vec![], vec![attribute.clone(), attribute])
+            .map_err(|error| error.category()),
+        Err(StreamCategory::InvalidArgument)
     );
     Ok(())
 }

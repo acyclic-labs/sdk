@@ -378,12 +378,18 @@ async fn a_poisoned_store_fails_waits_for_frames_already_durable()
     provider.await_publication(required).await?;
     provider.inner.poison();
     assert_eq!(
-        provider.await_publication(required).await,
-        Err(StreamError::Unavailable)
+        provider
+            .await_publication(required)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::Unavailable)
     );
     assert_eq!(
-        provider.tail(StreamPath::new("durable")?).await,
-        Err(StreamError::Unavailable)
+        provider
+            .tail(StreamPath::new("durable")?)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::Unavailable)
     );
     Ok(())
 }
@@ -532,7 +538,7 @@ async fn every_partial_current_frame_recovers_only_the_accepted_prefix()
                     .await
                 {
                     Ok(records) => Some(records.try_collect().await?),
-                    Err(StreamError::NotFound) => None,
+                    Err(error) if error.category() == StreamCategory::NotFound => None,
                     Err(error) => return Err(error),
                 },
             );
@@ -863,8 +869,11 @@ async fn retry_outcomes_survive_clock_exhaustion_and_reopen()
     let mut changed = request;
     changed.path = StreamPath::new("retained/another")?;
     assert_eq!(
-        reopened.append(changed).await,
-        Err(StreamError::IdempotencyMismatch)
+        reopened
+            .append(changed)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::IdempotencyMismatch)
     );
     Ok(())
 }
@@ -1133,8 +1142,8 @@ async fn local_follow_observes_lifetime_drop_and_late_error()
         if late_error {
             provider.inner.poison();
             assert_eq!(
-                records.next().await.unwrap().unwrap_err(),
-                StreamError::Unavailable
+                records.next().await.unwrap().unwrap_err().category(),
+                StreamCategory::Unavailable
             );
             assert!(records.next().await.is_none());
         } else {

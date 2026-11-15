@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use crate::probe::probe;
 use loom::sync::atomic::{AtomicBool, Ordering};
 use std::future::Future;
@@ -183,7 +184,7 @@ fn producer_loss_terminates_detached_subscriptions() {
         let Poll::Ready(Err(error)) = observed else {
             panic!("detached subscription retained a vanished change producer");
         };
-        assert_eq!(error.category(), StreamError::Unavailable);
+        assert_eq!(error.category(), StreamCategory::Unavailable);
         let cause = error
             .source()
             .and_then(std::error::Error::source)

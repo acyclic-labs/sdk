@@ -1,5 +1,6 @@
 //! Strict `IndexedDB` command publication around the existing Rust state machine.
 
+use crate::StreamCategory;
 use crate::{
     replicated::{ReplicaClock, Replicated},
     *,
@@ -283,7 +284,7 @@ impl BrowserStream {
         dispatch.failed = result
             .as_ref()
             .err()
-            .map(|error| *error == StreamError::Unavailable);
+            .map(|error| error.category() == StreamCategory::Unavailable);
         result
     }
 
@@ -330,7 +331,7 @@ impl BrowserStream {
         dispatch.failed = result
             .as_ref()
             .err()
-            .map(|error| *error == StreamError::Unavailable);
+            .map(|error| error.category() == StreamCategory::Unavailable);
         result?.ok_or(StreamError::InvalidResponse)
     }
 }
@@ -437,7 +438,7 @@ impl StreamProvider for BrowserStream {
         self.with_retained(
             async |provider| match provider.read_commit_inner(id).await {
                 Ok(envelope) => Ok(Some(envelope)),
-                Err(error) if error.category() == StreamError::NotFound => Ok(None),
+                Err(error) if error.category() == StreamCategory::NotFound => Ok(None),
                 Err(error) => Err(error),
             },
             Option::is_some,

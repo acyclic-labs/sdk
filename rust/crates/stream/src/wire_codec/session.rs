@@ -26,7 +26,7 @@ pub fn closed_error(closed: &wire::SessionClosed) -> StreamError {
         &closed.message,
         b"",
         &http::HeaderMap::new(),
-        super::status::canonical(&category),
+        super::status::canonical(category.category()),
         None,
     )
     .map_or_else(

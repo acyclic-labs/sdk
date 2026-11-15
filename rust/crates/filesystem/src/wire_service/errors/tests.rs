@@ -159,7 +159,7 @@ fn every_stream_category_survives_the_authority_wrapper() -> Result<(), Box<dyn 
         (E::Unsupported, Code::Unimplemented),
         (E::RevisionForeign, Code::FailedPrecondition),
     ];
-    assert_eq!(cases.len(), E::ALL.len());
+    assert_eq!(cases.len(), acyclic_stream::StreamCategory::ALL.len());
     for (error, expected) in cases {
         let refusal = acyclic_auth::refusal::Refusal::capture_owned(
             acyclic_auth::refusal::Parts {

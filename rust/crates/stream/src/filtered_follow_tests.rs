@@ -1,3 +1,4 @@
+use crate::StreamCategory;
 use crate::*;
 use futures::Stream as _;
 use futures::StreamExt;
@@ -114,7 +115,7 @@ async fn qualify_resume(
                 at_least: Default::default(),
             })
             .await,
-        Err(StreamError::PrefixNotRetained)
+        Err(error) if error.category() == StreamCategory::PrefixNotRetained
     ));
     Ok(())
 }
@@ -287,8 +288,11 @@ async fn retry_headers(provider: &impl StreamProvider) -> TestResult {
         let mut changed = request.clone();
         changed.records = vec![body];
         assert_eq!(
-            provider.append(changed).await,
-            Err(StreamError::IdempotencyMismatch)
+            provider
+                .append(changed)
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::IdempotencyMismatch)
         );
     }
     for fork in [false, true] {
@@ -336,8 +340,11 @@ async fn retry_headers(provider: &impl StreamProvider) -> TestResult {
                 }
             }
             assert_eq!(
-                provider.commit(changed).await,
-                Err(StreamError::IdempotencyMismatch)
+                provider
+                    .commit(changed)
+                    .await
+                    .map_err(|error| error.category()),
+                Err(StreamCategory::IdempotencyMismatch)
             );
         }
     }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use acyclic_auth::contract::*;
 use acyclic_auth::testing as signed;
 use acyclic_auth::verify;
@@ -100,7 +101,7 @@ async fn alarm_producer_loss_terminates_the_original_authorized_session() {
         assert!(futures::poll!(&mut lost).is_pending());
         state.lose_clock();
         let error = lost.await.expect_err("lost producer cannot settle expiry");
-        assert_eq!(error.category(), StreamError::Unavailable);
+        assert_eq!(error.category(), StreamCategory::Unavailable);
         let mut source = error.source();
         let mut retained = false;
         while let Some(cause) = source {
@@ -178,7 +179,7 @@ async fn alarm_producer_loss_terminates_the_original_authorized_session() {
         assert!(
             matches!(
                 futures::poll!(next.as_mut()),
-                std::task::Poll::Ready(Some(Err(StreamError::Unavailable))),
+                std::task::Poll::Ready(Some(Err(error))) if error.category() == StreamCategory::Unavailable,
             ),
             "clock loss must terminate, rather than expire, re-arm or park"
         );
@@ -271,7 +272,7 @@ fn credential_capacity_counts_live_entries_not_slot_numbers() {
         .unwrap();
     assert!(matches!(
         authority.register(&mut slots, 0, &credential, 1),
-        Err(StreamError::Capacity)
+        Err(error) if error.category() == StreamCategory::Capacity
     ));
     // Clearing remains possible with no available registration capacity.
     authority.register(&mut slots, u32::MAX, &[], 0).unwrap();
@@ -419,7 +420,7 @@ fn declared_method_credentials_match_session_admission() {
 
 pub(in crate::session) fn assert_verifier_denial(result: Result<(), StreamError>) {
     let error = result.unwrap_err();
-    assert_eq!(error.category(), StreamError::AccessDenied);
+    assert_eq!(error.category(), StreamCategory::AccessDenied);
     let mut source = std::error::Error::source(&error);
     while let Some(cause) = source {
         if cause.downcast_ref::<verify::VerifyError>().is_some() {
@@ -475,8 +476,10 @@ fn product_call_targets_retain_exact_action_resource_and_live_credential() {
             Err(Rejection::Forbidden)
         ));
         assert_eq!(
-            original.authorize(&foreign, &[], &attributes, PolicyDecision::Allow),
-            Err(StreamError::AccessDenied)
+            original
+                .authorize(&foreign, &[], &attributes, PolicyDecision::Allow)
+                .map_err(|error| error.category()),
+            Err(StreamCategory::AccessDenied)
         );
         assert_verifier_denial(original.authorize(
             resource,
@@ -507,7 +510,7 @@ fn product_call_targets_retain_exact_action_resource_and_live_credential() {
             .unwrap();
         assert!(matches!(
             CallTarget::new(resource.into(), "streams/follow"),
-            Err(StreamError::InvalidArgument)
+            Err(error) if error.category() == StreamCategory::InvalidArgument
         ));
         state.publish(signed::Snapshot::default(), u64::MAX);
         assert_verifier_denial(original.authorize(
@@ -1111,7 +1114,7 @@ async fn filesystem_context_borrows_its_resource_and_rechecks_current_authority(
                 .unwrap_err();
             {
                 use std::error::Error as _;
-                assert_eq!(denial.category(), StreamError::AccessDenied);
+                assert_eq!(denial.category(), StreamCategory::AccessDenied);
                 let mut source = denial.source();
                 let mut retained = false;
                 while let Some(cause) = source {
@@ -1257,7 +1260,7 @@ async fn filesystem_context_borrows_its_resource_and_rechecks_current_authority(
                 context.authorize("fs:/volume/public", &[], &attributes, PolicyDecision::Allow),
             ] {
                 let error = result.expect_err("lost trust cannot authorize disclosure");
-                assert_eq!(error.category(), StreamError::AccessDenied);
+                assert_eq!(error.category(), StreamCategory::AccessDenied);
                 let mut source = error.source();
                 let mut retained = false;
                 while let Some(cause) = source {

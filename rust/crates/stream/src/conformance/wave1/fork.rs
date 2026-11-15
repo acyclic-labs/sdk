@@ -4,7 +4,7 @@ use crate::StreamProviderExt as _;
 use crate::{
     AppendOutcome, AppendRequest, CommitCondition, CommitEffect, CommitMutation, CommitOutcome,
     CommitRequest, ForkRequest, IdempotencyKey, IdempotencyOutcome, OwnedBytes, ReadRequest,
-    StreamError, StreamPath, StreamProvider,
+    StreamCategory, StreamPath, StreamProvider,
 };
 use futures::{StreamExt as _, TryStreamExt as _};
 use sha2::{Digest as _, Sha256};
@@ -59,7 +59,7 @@ pub(super) async fn absent<P: StreamProvider + ?Sized>(
     invariant: Invariant,
 ) -> Result<(), Failure> {
     match history.provider.tail(target.clone()).await {
-        Err(StreamError::NotFound) => Ok(()),
+        Err(error) if error.category() == StreamCategory::NotFound => Ok(()),
         Ok(_) => history.check("absent_fork_path", invariant, false),
         Err(source) => Err(super::provider_failure(
             history.case,
@@ -103,7 +103,7 @@ pub(super) async fn values<P: StreamProvider + ?Sized>(
         .await
     {
         Ok(reader) => reader,
-        Err(StreamError::NotFound) => {
+        Err(error) if error.category() == StreamCategory::NotFound => {
             return history.check("read_inherited_path", invariant, false);
         }
         Err(source) => {

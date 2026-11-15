@@ -1,4 +1,4 @@
-use crate::StreamError;
+use crate::{StreamCategory, StreamError};
 use acyclic_auth::refusal::{Canonical, Refusal};
 use tonic::{Code, Status, metadata::MetadataMap};
 
@@ -11,7 +11,7 @@ pub fn status(error: &Status) -> StreamError {
         error.message(),
         error.details(),
         error.metadata().as_ref(),
-        canonical(&category),
+        canonical(category.category()),
         None,
     )
     .map_or_else(
@@ -29,7 +29,7 @@ pub fn status(error: &Status) -> StreamError {
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub(crate) fn status_owned(parts: acyclic_auth::refusal::Parts) -> StreamError {
     let category = StreamError::from_grpc_status(parts.code, &parts.message);
-    Refusal::capture_owned(parts, canonical(&category), None).map_or_else(
+    Refusal::capture_owned(parts, canonical(category.category()), None).map_or_else(
         || category.clone(),
         |refusal| category.clone().with_refusal(refusal),
     )
@@ -40,25 +40,24 @@ pub(crate) fn category(error: &Status) -> StreamError {
     StreamError::from_grpc_status(error.code() as i32, error.message())
 }
 
-pub(super) fn canonical(error: &StreamError) -> Canonical<'static> {
-    let (code, message) = match error {
-        StreamError::InvalidResponse => (Code::DataLoss, "invalid_response"),
-        StreamError::InvalidPath => (Code::InvalidArgument, "invalid_path"),
-        StreamError::InvalidArgument => (Code::InvalidArgument, "invalid_argument"),
-        StreamError::LimitExceeded => (Code::InvalidArgument, "limit_exceeded"),
-        StreamError::NotFound => (Code::NotFound, "stream not found"),
-        StreamError::AlreadyExists => (Code::AlreadyExists, "stream already exists"),
-        StreamError::OutOfRange => (Code::OutOfRange, "stream sequence out of range"),
-        StreamError::HierarchyChanged => (Code::FailedPrecondition, "hierarchy_changed"),
-        StreamError::AccessDenied => (Code::PermissionDenied, "stream access denied"),
-        StreamError::Capacity => (Code::ResourceExhausted, "stream capacity exhausted"),
-        StreamError::IdempotencyMismatch => (Code::FailedPrecondition, "idempotency_mismatch"),
-        StreamError::PrefixNotRetained => (Code::FailedPrecondition, "prefix_not_retained"),
-        StreamError::Refused(_) | StreamError::Caused(_) => return canonical(&error.category()),
-        StreamError::Unavailable => (Code::Unavailable, "stream unavailable"),
-        StreamError::DeadlineElapsed => (Code::FailedPrecondition, "deadline_elapsed"),
-        StreamError::Unsupported => (Code::Unimplemented, "unsupported_capability"),
-        StreamError::RevisionForeign => (Code::FailedPrecondition, "revision_foreign"),
+pub(super) fn canonical(category: StreamCategory) -> Canonical<'static> {
+    let (code, message) = match category {
+        StreamCategory::InvalidResponse => (Code::DataLoss, "invalid_response"),
+        StreamCategory::InvalidPath => (Code::InvalidArgument, "invalid_path"),
+        StreamCategory::InvalidArgument => (Code::InvalidArgument, "invalid_argument"),
+        StreamCategory::LimitExceeded => (Code::InvalidArgument, "limit_exceeded"),
+        StreamCategory::NotFound => (Code::NotFound, "stream not found"),
+        StreamCategory::AlreadyExists => (Code::AlreadyExists, "stream already exists"),
+        StreamCategory::OutOfRange => (Code::OutOfRange, "stream sequence out of range"),
+        StreamCategory::HierarchyChanged => (Code::FailedPrecondition, "hierarchy_changed"),
+        StreamCategory::AccessDenied => (Code::PermissionDenied, "stream access denied"),
+        StreamCategory::Capacity => (Code::ResourceExhausted, "stream capacity exhausted"),
+        StreamCategory::IdempotencyMismatch => (Code::FailedPrecondition, "idempotency_mismatch"),
+        StreamCategory::PrefixNotRetained => (Code::FailedPrecondition, "prefix_not_retained"),
+        StreamCategory::Unavailable => (Code::Unavailable, "stream unavailable"),
+        StreamCategory::DeadlineElapsed => (Code::FailedPrecondition, "deadline_elapsed"),
+        StreamCategory::Unsupported => (Code::Unimplemented, "unsupported_capability"),
+        StreamCategory::RevisionForeign => (Code::FailedPrecondition, "revision_foreign"),
     };
     Canonical {
         code: code as i32,
@@ -91,7 +90,7 @@ impl From<StreamError> for Status {
 #[must_use]
 fn error_status(error: &StreamError) -> Status {
     let refusal = error.member_refusal().map(|refusal| &**refusal);
-    let parts = match Refusal::encode(refusal, canonical(error)) {
+    let parts = match Refusal::encode(refusal, canonical(error.category())) {
         Ok(parts) => parts,
         Err(error) => {
             let mut status = Status::internal("refusal attribution encoding failed");

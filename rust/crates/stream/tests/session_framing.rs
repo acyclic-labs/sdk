@@ -151,7 +151,7 @@ fn assert_failure<T>(result: Result<T, StreamError>, category: StreamError) {
         Err(error) => error,
         Ok(_) => panic!("invalid original session frame was accepted"),
     };
-    assert_eq!(error.category(), category);
+    assert_eq!(error.category(), category.category());
     assert!(
         std::error::Error::source(&error).is_some(),
         "session framing lost its original failure cause"

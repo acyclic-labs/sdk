@@ -211,7 +211,7 @@ mod tests {
     #[tokio::test]
     async fn erased_provider_preserves_records_failures_and_request_budgets() {
         use crate::{
-            AppendOutcome, AppendRequest, MemoryStream, ReadRequest, StreamError, StreamPath,
+            AppendOutcome, AppendRequest, MemoryStream, ReadRequest, StreamCategory, StreamPath,
             StreamProvider, StreamProviderExt as _,
         };
         use futures::TryStreamExt as _;
@@ -263,8 +263,9 @@ mod tests {
         let absent = StreamPath::new("absent").unwrap();
         let before = ledger.requests();
         assert_eq!(
-            crate::assert_requests!(ledger, provider.tail(absent).await, control = 1, data = 0),
-            Err(StreamError::NotFound)
+            crate::assert_requests!(ledger, provider.tail(absent).await, control = 1, data = 0)
+                .map_err(|error| error.category()),
+            Err(StreamCategory::NotFound)
         );
         let requested = ledger.requests().since(before);
         assert_eq!(requested.class(RequestClass::Head), 1);
@@ -301,8 +302,11 @@ mod tests {
         // the same requested class and a failed auxiliary HEAD.
         provider.children_page(list()).await.unwrap();
         assert_eq!(
-            provider.tail(StreamPath::new("absent").unwrap()).await,
-            Err(StreamError::NotFound)
+            provider
+                .tail(StreamPath::new("absent").unwrap())
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::NotFound)
         );
         let extra = ledger.requests().since(before);
         assert_eq!(extra.class(RequestClass::List), 2);

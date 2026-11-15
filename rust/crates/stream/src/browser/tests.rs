@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use futures::{FutureExt as _, TryFutureExt as _};
 use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
@@ -58,21 +59,30 @@ async fn database_loss_ends_parked_revision_observers() {
     // and its subscribers. A public observation encounters the lost backend.
     reader.inner.database.clone().close();
     assert_eq!(
-        reader.tail(StreamPath::new("events").expect("path")).await,
-        Err(StreamError::Unavailable)
+        reader
+            .tail(StreamPath::new("events").expect("path"))
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::Unavailable)
     );
     assert_eq!(
-        waiting.as_mut().now_or_never(),
-        Some(Err(StreamError::Unavailable)),
+        waiting
+            .as_mut()
+            .now_or_never()
+            .map(|result| result.map_err(|error| error.category())),
+        Some(Err(StreamCategory::Unavailable)),
         "revision wait retained failed IndexedDB producer"
     );
     assert!(matches!(
         follow.next().now_or_never(),
-        Some(Some(Err(StreamError::Unavailable)))
+        Some(Some(Err(error))) if error.category() == StreamCategory::Unavailable
     ));
     assert_eq!(
-        reader.wait_applied(&cut).now_or_never(),
-        Some(Err(StreamError::Unavailable))
+        reader
+            .wait_applied(&cut)
+            .now_or_never()
+            .map(|result| result.map_err(|error| error.category())),
+        Some(Err(StreamCategory::Unavailable))
     );
     let AppendOutcome::Committed(next) = append(&writer, "events").await.expect("surviving writer")
     else {
@@ -202,7 +212,10 @@ async fn immutable_results_reuse_only_a_durable_browser_cache() {
     let mut missing = Box::pin(provider.read_commit(CommitId::from_bytes([42; 32])));
     assert!(futures::poll!(missing.as_mut()).is_pending());
     assert!(provider.inner.transactions.get() > transactions);
-    assert_eq!(missing.await, Err(StreamError::NotFound));
+    assert_eq!(
+        missing.await.map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
+    );
     assert_eq!(provider.inner.observation_locks.get() - locks, 1);
 
     let mut absent = retained.clone();
@@ -255,8 +268,11 @@ async fn immutable_results_reuse_only_a_durable_browser_cache() {
                 None
             ),
             Lookup::Commit => assert_eq!(
-                provider.read_commit(receipt.commit_id).await,
-                Err(StreamError::NotFound)
+                provider
+                    .read_commit(receipt.commit_id)
+                    .await
+                    .map_err(|error| error.category()),
+                Err(StreamCategory::NotFound)
             ),
             Lookup::Retained => {
                 let mut selected = retained.clone();
@@ -314,7 +330,7 @@ async fn checked_browser_follow_validates_then_retains_the_yielded_anchor_across
             })
             .map_ok(crate::records_only)
             .await,
-        Err(StreamError::PrefixNotRetained)
+        Err(error) if error.category() == StreamCategory::PrefixNotRetained
     ));
     let mut records = reader
         .follow(crate::FollowRequest {
@@ -493,15 +509,18 @@ async fn follow_recovers_its_cache_without_exposing_rejected_records() {
                 at_tail: None,
                 idempotency_key: crate::IdempotencyKey::unique(),
             })
-            .await,
-        Err(StreamError::NotFound)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
     );
     let (record, written) = futures::join!(records.next(), append(&provider, "events"));
     assert!(matches!(written, Ok(AppendOutcome::Committed(_))));
     assert_eq!(record.expect("ended").expect("record").sequence, 1);
     assert_eq!(
-        append(&provider, "events").await,
-        Err(StreamError::Capacity)
+        append(&provider, "events")
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::Capacity)
     );
     let pending = Box::pin(records.next());
     let refreshed = Box::pin(provider.tail(StreamPath::new("events").expect("path")));
@@ -746,7 +765,7 @@ async fn every_opener_of_one_database_proves_the_others_revisions() {
         // Invalid controls must not refresh IndexedDB or wait on the future cut.
         assert!(matches!(
             reader.read(invalid).now_or_never(),
-            Some(Err(StreamError::LimitExceeded))
+            Some(Err(error)) if error.category() == StreamCategory::LimitExceeded
         ));
     }
     let applied = reader
@@ -763,7 +782,7 @@ async fn every_opener_of_one_database_proves_the_others_revisions() {
     let foreign = crate::RevisionCut::of(receipt.revision);
     assert!(matches!(
         other.wait_applied(&foreign).now_or_never(),
-        Some(Err(StreamError::RevisionForeign))
+        Some(Err(error)) if error.category() == StreamCategory::RevisionForeign
     ));
     assert!(matches!(
         other
@@ -775,7 +794,7 @@ async fn every_opener_of_one_database_proves_the_others_revisions() {
                 at_least: foreign.clone(),
             })
             .now_or_never(),
-        Some(Err(StreamError::RevisionForeign))
+        Some(Err(error)) if error.category() == StreamCategory::RevisionForeign
     ));
     assert!(matches!(
         other
@@ -784,7 +803,7 @@ async fn every_opener_of_one_database_proves_the_others_revisions() {
                 ..FollowRequest::new(StreamPath::new("events").expect("path"), 1)
             })
             .now_or_never(),
-        Some(Err(StreamError::RevisionForeign))
+        Some(Err(error)) if error.category() == StreamCategory::RevisionForeign
     ));
 }
 

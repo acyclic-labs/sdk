@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use crate::verification::block_on;
 use futures::TryFutureExt as _;
 use std::task::{Context, Poll};
@@ -173,8 +174,8 @@ pub(crate) fn verify(fault: u8) {
         );
 
         assert_eq!(
-            later_visible,
-            Err(StreamError::NotFound),
+            later_visible.map_err(|error| error.category()),
+            Err(StreamCategory::NotFound),
             "compaction must preserve accepted reads and the snapshot cut"
         );
         assert!(

@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 
 #[test]
 fn a_pending_write_releases_metadata_and_cannot_borrow_an_earlier_flush()
@@ -71,10 +72,10 @@ fn a_pending_write_releases_metadata_and_cannot_borrow_an_earlier_flush()
             );
             if lose_completion {
                 drop(release);
-                assert!(matches!(writing.await?, Err(StreamError::Unavailable)));
+                assert!(matches!(writing.await?, Err(error) if error.category() == StreamCategory::Unavailable));
                 assert!(matches!(
                     provider.check_available(),
-                    Err(StreamError::Unavailable)
+                    Err(error) if error.category() == StreamCategory::Unavailable
                 ));
                 assert_eq!(
                     std::fs::metadata(root.path().join(JOURNAL_FILE))?.len(),

@@ -8,7 +8,9 @@
 //! a refused account record fences that account, whose reads refuse as
 //! `VerifyError::Refused`, and pauses its original follow until an
 //! environment record or bootstrap key publication lets it apply.
-use crate::{FollowFilter, Record, Stream, StreamError, StreamProvider, UnixMillisClock};
+use crate::{
+    FollowFilter, Record, Stream, StreamCategory, StreamError, StreamProvider, UnixMillisClock,
+};
 use acyclic_auth::trust::{
     AnchorKeys, Applied, FenceCause, Follower, FollowerState, account_path, environment_path,
 };
@@ -119,7 +121,7 @@ impl Future for Next<'_> {
             Reading::Opening(opening) => match futures::ready!(opening.as_mut().poll(cx)) {
                 Ok((tail, position, records)) => (Event::Opened { tail, position }, records),
                 Err(error)
-                    if error.category() == StreamError::AccessDenied && this.key.is_some() =>
+                    if error.category() == StreamCategory::AccessDenied && this.key.is_some() =>
                 {
                     (
                         Event::Refused(this.anchor.take()),

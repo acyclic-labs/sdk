@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 
 fn append(path: &StreamPath) -> CommitMutation {
     CommitMutation::Append {
@@ -78,8 +79,16 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         || provider.tail(pair.clone()).await? != 1
         || provider.tail(closing.clone()).await? != 1
         || provider.tail(carrier.clone()).await? != 1
-        || provider.tail(never.clone()).await != Err(StreamError::NotFound)
-        || provider.tail(absent.clone()).await != Err(StreamError::NotFound)
+        || provider
+            .tail(never.clone())
+            .await
+            .map_err(|error| error.category())
+            != Err(StreamCategory::NotFound)
+        || provider
+            .tail(absent.clone())
+            .await
+            .map_err(|error| error.category())
+            != Err(StreamCategory::NotFound)
     {
         return Err(Failure::Invariant(
             "soft append tails must advance only applied paths; skipped absent paths must remain absent",
@@ -116,7 +125,11 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         .split_off(1);
     regrouped.effects.push(send(&open, &open_marker, split));
     if crate::request::commit_digest(&mut regrouped.clone())? == binding.digest()
-        || provider.commit(regrouped).await != Err(StreamError::IdempotencyMismatch)
+        || provider
+            .commit(regrouped)
+            .await
+            .map_err(|error| error.category())
+            != Err(StreamCategory::IdempotencyMismatch)
     {
         return Err(violated!());
     }
@@ -139,7 +152,11 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         || !receipt.forks.is_empty()
         || !facts.mutations.is_empty()
         || provider.commit(skipped.clone()).await? != outcome
-        || provider.tail(absent.clone()).await != Err(StreamError::NotFound)
+        || provider
+            .tail(absent.clone())
+            .await
+            .map_err(|error| error.category())
+            != Err(StreamCategory::NotFound)
         || provider
             .inspect_idempotency(skipped_key.clone())
             .await?
@@ -151,7 +168,12 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
     // Negative control: the spent key refuses a different body.
     let mut changed = skipped.clone();
     changed.effects.first_mut().ok_or(violated!())?.soft = false;
-    if provider.commit(changed).await != Err(StreamError::IdempotencyMismatch) {
+    if provider
+        .commit(changed)
+        .await
+        .map_err(|error| error.category())
+        != Err(StreamCategory::IdempotencyMismatch)
+    {
         return Err(violated!());
     }
 

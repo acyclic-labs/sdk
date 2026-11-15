@@ -1,7 +1,7 @@
 //! Persistent namespace and successful retry recovery through the local journal.
 #![cfg(not(loom))]
 use acyclic_stream::{
-    IdempotencyKey, LocalStream, LocalStreamLimits, StreamError, StreamPath, StreamProvider,
+    IdempotencyKey, LocalStream, LocalStreamLimits, StreamCategory, StreamPath, StreamProvider,
     StreamProviderExt as _, conformance,
 };
 #[tokio::test]
@@ -35,8 +35,9 @@ async fn subtree_and_success_keys_survive_journal_and_snapshot_recovery()
                 .tail(StreamPath::new(
                     "conformance/tree/children/fork/children/old/events"
                 )?)
-                .await,
-            Err(StreamError::NotFound)
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::NotFound)
         );
         assert_eq!(
             provider

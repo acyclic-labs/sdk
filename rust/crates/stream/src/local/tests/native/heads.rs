@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use crate::{HeadProjection, HeadsRequest, RevisionCut};
 use futures::FutureExt as _;
 
@@ -116,7 +117,7 @@ async fn native_indexed_children_share_the_head_cut_and_original_output_owner()
         let before = Arc::new(Meter::default());
         assert!(matches!(
             provider.native_heads(invalid, before.original()).await?,
-            Err(StreamError::InvalidArgument)
+            Err(error) if error.category() == StreamCategory::InvalidArgument
         ));
         assert_eq!(before.allocations.load(Ordering::SeqCst), 0);
     }
@@ -290,7 +291,7 @@ async fn coherent_native_heads_keep_original_credit_and_leave_future_cut_append_
         let meter = Arc::new(Meter::default());
         assert!(matches!(
             provider.native_heads(foreign, meter.original()).await?,
-            Err(StreamError::RevisionForeign)
+            Err(error) if error.category() == StreamCategory::RevisionForeign
         ));
         assert_eq!(meter.examined.load(Ordering::SeqCst), 0);
 
@@ -303,7 +304,9 @@ async fn coherent_native_heads_keep_original_credit_and_leave_future_cut_append_
         let mut lost = provider.native_heads(selected, meter.original());
         assert!((&mut lost).now_or_never().is_none());
         revisions.close();
-        assert!(matches!(lost.await?, Err(StreamError::Unavailable)));
+        assert!(
+            matches!(lost.await?, Err(error) if error.category() == StreamCategory::Unavailable)
+        );
         assert_eq!(meter.held.load(Ordering::SeqCst), 0);
         meter.assert_refunded();
 
@@ -313,7 +316,7 @@ async fn coherent_native_heads_keep_original_credit_and_leave_future_cut_append_
         let meter = Arc::new(Meter::default());
         assert!(matches!(
             provider.native_heads(history, meter.original()).await?,
-            Err(StreamError::Unsupported)
+            Err(error) if error.category() == StreamCategory::Unsupported
         ));
         assert_eq!(meter.allocations.load(Ordering::SeqCst), 0);
         assert_eq!(meter.examined.load(Ordering::SeqCst), 0);
@@ -446,7 +449,7 @@ async fn native_history_keeps_original_records_provenance_and_funding_at_one_cut
             provider
                 .native_heads(selected, unsupported.original())
                 .await?,
-            Err(StreamError::Unsupported)
+            Err(error) if error.category() == StreamCategory::Unsupported
         ));
         assert_eq!(unsupported.allocations.load(Ordering::SeqCst), 0);
     }

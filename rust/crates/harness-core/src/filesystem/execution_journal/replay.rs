@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::StreamCategory;
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
@@ -204,7 +205,7 @@ where
             .await?
             {
                 Ok(entries) => entries,
-                Err(error) if error.category() == StreamError::NotFound => {
+                Err(error) if error.category() == StreamCategory::NotFound => {
                     if let Some(io) = io {
                         io.check_cancellation()?;
                     }

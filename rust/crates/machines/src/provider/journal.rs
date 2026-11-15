@@ -4,8 +4,8 @@ use super::*;
 use acyclic_actors::call::{self, CallPath};
 use acyclic_stream::{
     AppendRecord, CommitCondition, CommitEffect, CommitId, CommitMutation, CommitOutcome,
-    CommitReceipt, CommitRequest, PathHead, ReadRequest, StreamError, StreamPath, StreamProvider,
-    StreamProviderExt as _,
+    CommitReceipt, CommitRequest, PathHead, ReadRequest, StreamCategory, StreamError, StreamPath,
+    StreamProvider, StreamProviderExt as _,
 };
 
 /// Storage of one admitted Machine incarnation. No process-local result map,
@@ -140,7 +140,7 @@ impl Journal {
             })
             .await
         {
-            Err(error) if error.category() == StreamError::NotFound => return Ok(snapshot),
+            Err(error) if error.category() == StreamCategory::NotFound => return Ok(snapshot),
             result => result.map_err(storage)?.take(3),
         };
         while let Some(record) = records.next().await {
@@ -159,7 +159,7 @@ impl Journal {
 
     async fn head(&self, path: StreamPath) -> Result<PathHead, ProviderError> {
         match self.streams.head(path).await {
-            Err(error) if error.category() == StreamError::NotFound => Ok(PathHead {
+            Err(error) if error.category() == StreamCategory::NotFound => Ok(PathHead {
                 changed_at: 0,
                 tail: 0,
                 last: None,
@@ -664,7 +664,7 @@ fn decode<T: serde::de::DeserializeOwned>(head: PathHead) -> Result<T, ProviderE
 }
 
 fn storage(error: StreamError) -> ProviderError {
-    if error.category() == StreamError::Unavailable {
+    if error.category() == StreamCategory::Unavailable {
         ProviderError::Unavailable
     } else {
         ProviderError::Rejected(format!(

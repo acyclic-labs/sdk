@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use futures::FutureExt as _;
 
 pub(super) fn subscription() -> wire::SessionSubscription {
@@ -114,7 +115,9 @@ async fn crash_before_application_commit_replays_despite_returned_credit() -> Te
     assert_eq!(source.checkpoint()?, initial);
     drop(delivery); // Credit returns; application progress must remain zero.
     assert_eq!(source.checkpoint()?, initial);
-    assert!(matches!(source.next().await, Err(StreamError::Unavailable)));
+    assert!(
+        matches!(source.next().await, Err(error) if error.category() == StreamCategory::Unavailable)
+    );
     drop(source);
 
     let mut recovered = client.deliveries(initial).await?;
@@ -289,7 +292,7 @@ async fn keyed_application_checkpoints_reopen_without_a_contiguous_anchor() -> T
     follow.preceding_commit_id = commit_id;
     assert!(matches!(
         client.deliveries(invalid).await,
-        Err(StreamError::InvalidArgument)
+        Err(error) if error.category() == StreamCategory::InvalidArgument
     ));
     Ok(())
 }

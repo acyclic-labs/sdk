@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::StreamCategory;
 
 #[tokio::test]
 async fn compact_receipts_replay_with_full_facts_and_empty_fork_time_after_reopen()
@@ -187,8 +188,11 @@ async fn present_send_requires_the_precommit_path_and_preserves_retry_and_close_
             .is_none()
     );
     assert_eq!(
-        provider.tail(inbox.clone()).await,
-        Err(StreamError::NotFound)
+        provider
+            .tail(inbox.clone())
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
     );
 
     append(&provider, "seed", "seed").await?;

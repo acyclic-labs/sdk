@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 
 struct PausedPeer {
     counts: Arc<Counts>,
@@ -167,7 +168,7 @@ async fn a_peer_that_stops_reading_controls_cannot_stall_healthy_nodes_or_cancel
                 })
                 .collect();
             while let Some(result) = opens.next().await {
-                if matches!(result, Err(StreamError::Capacity)) {
+                if matches!(result, Err(error) if error.category() == StreamCategory::Capacity) {
                     rejection.notify_one();
                 }
             }

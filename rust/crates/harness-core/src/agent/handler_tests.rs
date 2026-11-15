@@ -588,7 +588,7 @@ async fn alarm_opening_from_overflow_accepts_only_its_selected_input_interrupt()
             };
             assert!(matches!(
                 cause.category(),
-                acyclic_stream::StreamError::Capacity
+                acyclic_stream::StreamCategory::Capacity
             ));
             break;
         }

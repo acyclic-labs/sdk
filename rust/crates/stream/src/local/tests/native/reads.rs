@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use crate::{ReadKeySeek, RevisionCut};
 use futures::FutureExt as _;
 
@@ -60,14 +61,14 @@ async fn finite_reads_admit_before_revision_waits_and_keep_the_original_producer
                 invalid.at_least = RevisionCut::of(cut);
                 assert!(matches!(
                     provider.read(invalid.clone()).now_or_never(),
-                    Some(Err(StreamError::LimitExceeded))
+                    Some(Err(error)) if error.category() == StreamCategory::LimitExceeded
                 ));
                 let meter = Arc::new(Meter::default());
                 assert!(matches!(
                     provider
                         .native_read(invalid.clone(), meter.original())
                         .now_or_never(),
-                    Some(Ok(Err(StreamError::LimitExceeded)))
+                    Some(Ok(Err(error))) if error.category() == StreamCategory::LimitExceeded
                 ));
                 assert_eq!(meter.examined.load(Ordering::SeqCst), 0);
                 assert_eq!(meter.read.load(Ordering::SeqCst), 0);
@@ -111,8 +112,12 @@ async fn finite_reads_admit_before_revision_waits_and_keep_the_original_producer
         assert!((&mut portable).now_or_never().is_none());
         assert!((&mut native).now_or_never().is_none());
         revisions.close();
-        assert!(matches!(portable.await, Err(StreamError::Unavailable)));
-        assert!(matches!(native.await?, Err(StreamError::Unavailable)));
+        assert!(
+            matches!(portable.await, Err(error) if error.category() == StreamCategory::Unavailable)
+        );
+        assert!(
+            matches!(native.await?, Err(error) if error.category() == StreamCategory::Unavailable)
+        );
         meter.assert_refunded();
     }
     Ok(())

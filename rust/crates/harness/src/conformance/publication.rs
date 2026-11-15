@@ -5,7 +5,8 @@ use crate::conformance::{
 };
 use acyclic_actors::{addressing::ActorReference, guest::*};
 use acyclic_stream::{
-    CommitCondition, CommitId, CommitOutcome, CommitRequest, Record, StreamError, StreamPath,
+    CommitCondition, CommitId, CommitOutcome, CommitRequest, Record, StreamCategory, StreamError,
+    StreamPath,
 };
 use std::sync::{
     Arc, Mutex,
@@ -75,7 +76,7 @@ impl Composition for ParticipantCounts {
             if outcome.err().is_some_and(|error| {
                 matches!(
                     error.category(),
-                    StreamError::Unavailable | StreamError::InvalidResponse
+                    StreamCategory::Unavailable | StreamCategory::InvalidResponse
                 )
             }) {
                 return Err(GuestError::Handler("settled an unknown outcome".into()));

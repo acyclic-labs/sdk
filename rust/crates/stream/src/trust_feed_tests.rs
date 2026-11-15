@@ -1,6 +1,7 @@
 //! Feed controls over the original memory provider. Fault adapters only
 //! interrupt a follow or hold its opening or delivery; they never construct records.
 use super::*;
+use crate::StreamCategory;
 use crate::{IdempotencyKey, MemoryStream, OwnedBytes};
 use acyclic_auth::trust::{ChangeSource as _, EnvironmentFrontier, Issuer};
 use acyclic_auth::verify::{RevocationCheck, Trust as _, VerifyError};
@@ -232,7 +233,10 @@ async fn reconnect_completes_an_interrupted_authenticated_replay() {
     let mut run = Box::pin(feed.run());
     assert!(step(&mut run).is_none());
     accounts.follow("account").unwrap();
-    assert_eq!(step(&mut run), Some(Err(StreamError::Unavailable)));
+    assert_eq!(
+        step(&mut run).map(|result| result.map_err(|error| error.category())),
+        Some(Err(StreamCategory::Unavailable))
+    );
     drop(run);
     assert!(follower.initialized("account").unwrap());
     assert!(!served(&follower, "account"));
@@ -337,7 +341,10 @@ async fn losing_one_account_follow_fences_everything() {
         assert_eq!(follower.revoked("account", retired), Ok(false));
         // The environment follow stays live; only the account's ends.
         source.end(&account_path("test", "account"));
-        assert_eq!(step(&mut run), Some(Err(StreamError::Unavailable)));
+        assert_eq!(
+            step(&mut run).map(|result| result.map_err(|error| error.category())),
+            Some(Err(StreamCategory::Unavailable))
+        );
         assert!(!served(&follower, "account"));
         assert_eq!(
             *follower.state().borrow(),
@@ -366,7 +373,10 @@ async fn losing_one_account_follow_fences_everything() {
             assert_eq!(follower.revoked("account", retired), Ok(true));
         } else {
             drop(producer);
-            assert_eq!(step(&mut run), Some(Err(StreamError::Unavailable)));
+            assert_eq!(
+                step(&mut run).map(|result| result.map_err(|error| error.category())),
+                Some(Err(StreamCategory::Unavailable))
+            );
             assert!(!served(&follower, "account"));
         }
     }
@@ -498,7 +508,10 @@ async fn a_slow_account_open_never_delays_another_accounts_revocations() {
     assert!(step(&mut run).is_none());
     assert_eq!(changed.now_or_never(), Some(Ok(())));
     drop(producer);
-    assert_eq!(step(&mut run), Some(Err(StreamError::Unavailable)));
+    assert_eq!(
+        step(&mut run).map(|result| result.map_err(|error| error.category())),
+        Some(Err(StreamCategory::Unavailable))
+    );
     assert!(!served(&follower, "account"));
 }
 

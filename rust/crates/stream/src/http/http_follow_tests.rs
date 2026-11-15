@@ -6,6 +6,7 @@
     reason = "Test fixtures and assertions must fail immediately on malformed inputs or violated expectations"
 )]
 use super::*;
+use crate::StreamCategory;
 
 use serde_json::json;
 use std::collections::VecDeque;
@@ -253,7 +254,7 @@ async fn json_heads_refuses_incoherent_cuts_without_another_provider_request()
         } else {
             assert_eq!(
                 actual.as_ref().map_err(|error| error.category()),
-                Err(StreamError::InvalidResponse)
+                Err(StreamCategory::InvalidResponse)
             );
             assert!(std::error::Error::source(actual.as_ref().unwrap_err()).is_some());
         }
@@ -293,8 +294,12 @@ async fn request_path_typed_append_preserves_json_responses_and_validation() {
         idempotency_key: IdempotencyKey::new(bytes::Bytes::from_static(b"key")).unwrap(),
     };
     assert_eq!(
-        server.client.append(request.clone()).await,
-        Err(StreamError::LimitExceeded)
+        server
+            .client
+            .append(request.clone())
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::LimitExceeded)
     );
     assert!(server.requests().is_empty());
     request
@@ -332,7 +337,7 @@ async fn truncated_unary_body_fails_without_retry() {
         .inspect_idempotency(key)
         .await
         .expect_err("truncated original body cannot settle");
-    assert_eq!(error.category(), StreamError::Unavailable);
+    assert_eq!(error.category(), StreamCategory::Unavailable);
     assert!(error.uncertain());
     assert_eq!(server.requests().len(), 1);
     drop(server);
@@ -459,7 +464,9 @@ async fn physical_http_exchange_has_owned_round_trip_and_original_body_bytes()
             .await?,
         response
     );
-    assert!(matches!(trace.tail().await, Err(StreamError::NotFound)));
+    assert!(
+        matches!(trace.tail().await, Err(error) if error.category() == StreamCategory::NotFound)
+    );
     let recorder = Arc::new(Recorder::new(trace.clone(), [94; 16]));
     let root = recorder
         .start(
@@ -497,7 +504,7 @@ async fn physical_http_exchange_has_owned_round_trip_and_original_body_bytes()
         .await
         .expect_err("credential refusal must stop dispatch");
     server.client.credential = original_credential;
-    assert_eq!(refused.category(), StreamError::AccessDenied);
+    assert_eq!(refused.category(), StreamCategory::AccessDenied);
     assert_eq!(
         server.requests().len(),
         2,
@@ -512,7 +519,7 @@ async fn physical_http_exchange_has_owned_round_trip_and_original_body_bytes()
         }))
         .await
         .expect_err("a committed append without revision must be rejected");
-    assert_eq!(rejected.category(), StreamError::Unavailable);
+    assert_eq!(rejected.category(), StreamCategory::Unavailable);
     assert_eq!(server.requests().len(), 3);
     let _completion = root.finish_submitted(None, Outcome::Succeeded)?;
     let mut query = TraceQuery::new(

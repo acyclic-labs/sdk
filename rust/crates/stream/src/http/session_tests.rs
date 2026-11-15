@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use futures::TryFutureExt as _;
 use futures::{StreamExt, stream};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -202,7 +203,7 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
                 })
                 .map_ok(crate::records_only)
                 .await,
-            Err(StreamError::PrefixNotRetained)
+            Err(error) if error.category() == StreamCategory::PrefixNotRetained
         ));
         let mut checked = client
             .follow(crate::FollowRequest {

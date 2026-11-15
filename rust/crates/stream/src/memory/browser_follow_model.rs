@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use crate::interest::Interests;
 
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
@@ -75,7 +76,7 @@ fn check<const OMIT_ANCHOR: bool>() {
         });
         writer.join().unwrap();
         assert!(
-            matches!(result, Err(StreamError::PrefixNotRetained)),
+            matches!(&result, Err(error) if error.category() == StreamCategory::PrefixNotRetained),
             "replaced snapshot was spliced into new history: {result:?}"
         );
     });

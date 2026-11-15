@@ -1,6 +1,7 @@
 //! One real actor decision retains its participant through a lost acknowledgement.
 use super::*;
 use crate::guest::{Composer, Composition, GuestFuture};
+use acyclic_stream::StreamCategory;
 
 fn key(value: &str) -> Result<IdempotencyKey, StreamError> {
     IdempotencyKey::new(value.as_bytes().to_vec())
@@ -121,10 +122,10 @@ fn refusal_was_settled(result: &Result<(), Error>, counts: &Counts, refusal: &St
 
 #[tokio::test]
 async fn definite_refusals_settle_and_leave_the_input_available() -> Result<(), Failure> {
-    for refusal in StreamError::ALL {
+    for refusal in StreamCategory::ALL.map(StreamError::from) {
         if matches!(
             refusal.category(),
-            StreamError::Unavailable | StreamError::InvalidResponse
+            StreamCategory::Unavailable | StreamCategory::InvalidResponse
         ) {
             continue;
         }

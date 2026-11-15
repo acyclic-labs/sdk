@@ -24,7 +24,7 @@ use crate::tool::{ToolExecutor, ToolInvocation, ToolResult};
 use acyclic_machines::MachineState;
 use acyclic_stream::{
     AppendRecord, BoxProviderFuture, ChildrenPageRequest, CommitCondition, CommitEffect,
-    CommitMutation, CommitRequest, ReadRequest, StreamError, StreamProviderExt as _,
+    CommitMutation, CommitRequest, ReadRequest, StreamCategory, StreamProviderExt as _,
 };
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
@@ -285,7 +285,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         };
         let mut records = match self.stream.read(request).await {
             Ok(records) => records,
-            Err(error) if error.category() == StreamError::NotFound => return Ok(None),
+            Err(error) if error.category() == StreamCategory::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         };
         Ok(records.try_next().await?)
@@ -664,7 +664,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     async fn closed(&self, agent: &AgentPath) -> Result<bool> {
         match self.stream.tail(agent.closed().map_err(Error::from)?).await {
             Ok(_) => Ok(true),
-            Err(error) if error.category() == StreamError::NotFound => Ok(false),
+            Err(error) if error.category() == StreamCategory::NotFound => Ok(false),
             Err(error) => Err(error.into()),
         }
     }

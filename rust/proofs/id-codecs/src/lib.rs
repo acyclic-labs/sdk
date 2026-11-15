@@ -241,7 +241,7 @@ mod version {
     #[kani::proof]
     #[kani::unwind(16)]
     fn version_admission_borrows_payload_and_refuses_before_decoding() {
-        use acyclic_stream::{StreamError, persistence::header};
+        use acyclic_stream::{StreamCategory, StreamError, persistence::header};
         use std::cell::Cell;
         let bytes: [u8; 12] = kani::any();
         let length: usize = kani::any();
@@ -269,18 +269,24 @@ mod version {
             assert_eq!(payload.as_ptr(), input[8..].as_ptr());
             assert_eq!((invalid.get(), unsupported.get()), (0, 0));
         } else if input.starts_with(b"kind-v") {
-            assert_eq!(result, Err(StreamError::Unsupported));
+            assert_eq!(
+                result.as_ref().map_err(|error| error.category()),
+                Err(StreamCategory::Unsupported)
+            );
             assert_eq!((invalid.get(), unsupported.get()), (0, 1));
         } else {
-            assert_eq!(result, Err(StreamError::InvalidArgument));
+            assert_eq!(
+                result.as_ref().map_err(|error| error.category()),
+                Err(StreamCategory::InvalidArgument)
+            );
             assert_eq!((invalid.get(), unsupported.get()), (1, 0));
         }
         for version in [b'0', b'2', u8::MAX] {
             let mut obsolete = *b"kind-v1\0";
             obsolete[6] = version;
             assert_eq!(
-                header(&obsolete, b"kind-v", b"1\0"),
-                Err(StreamError::Unsupported)
+                header(&obsolete, b"kind-v", b"1\0").map_err(|error| error.category()),
+                Err(StreamCategory::Unsupported)
             );
         }
         assert_eq!(header(b"kind-v1\0", b"kind-v", b"1\0"), Ok(&[][..]));
@@ -491,7 +497,7 @@ mod proofs {
 #[cfg(kani)]
 mod framing {
     use acyclic_stream::{
-        StreamError, wire,
+        StreamCategory, StreamError, wire,
         wire_codec::session::{FrameDecoder, grant_credit},
     };
 
@@ -561,7 +567,7 @@ mod framing {
         assert_eq!(decoder.read(&mut prefix), Ok(None));
         assert_eq!(
             decoder.finish().map_err(|error| error.category()),
-            Err(StreamError::InvalidResponse)
+            Err(StreamCategory::InvalidResponse)
         );
         let mut body: &[u8] = &[0];
         assert_eq!(decoder.read(&mut body), Ok(Some(1)));
@@ -596,12 +602,12 @@ mod framing {
         );
         let length = u32::from_be_bytes(header[1..].try_into().unwrap()) as usize;
         match header[0] {
-            1 => assert_eq!(result, Err(StreamError::Unsupported)),
+            1 => assert_eq!(result, Err(StreamCategory::Unsupported)),
             0 if length > acyclic_stream::MAX_COMMAND_BYTES => {
-                assert_eq!(result, Err(StreamError::LimitExceeded));
+                assert_eq!(result, Err(StreamCategory::LimitExceeded));
             }
             0 if length == 0 => assert_eq!(result, Ok(Some(wire::SessionFrame::default()))),
-            _ => assert_eq!(result, Err(StreamError::InvalidResponse)),
+            _ => assert_eq!(result, Err(StreamCategory::InvalidResponse)),
         }
     }
 
@@ -622,18 +628,18 @@ mod framing {
             frames: kani::any(),
         };
         let mut after = before;
-        match consume_credit(&mut after, &frame) {
+        match consume_credit(&mut after, &frame).map_err(|error| error.category()) {
             Ok(()) => {
                 assert_ne!(frame.channel_id, 0);
                 assert_eq!(before.bytes.checked_sub(bytes), Some(after.bytes));
                 assert_eq!(before.frames.checked_sub(1), Some(after.frames));
             }
-            Err(StreamError::InvalidArgument) => {
+            Err(StreamCategory::InvalidArgument) => {
                 assert_eq!(frame.channel_id, 0);
                 assert_eq!(after, before);
             }
-            Err(error) => {
-                assert_eq!(error, StreamError::Capacity);
+            Err(category) => {
+                assert_eq!(category, StreamCategory::Capacity);
                 assert_ne!(frame.channel_id, 0);
                 assert!(before.bytes < bytes || before.frames == 0);
                 assert_eq!(after, before);

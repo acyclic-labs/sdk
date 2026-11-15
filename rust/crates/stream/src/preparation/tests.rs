@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use std::cell::Cell;
 
 #[test]
@@ -199,8 +200,9 @@ fn backend_facts_preserve_precommit_cuts_order_and_record_identity() -> Result<(
         "the planner must not grow an unfunded output"
     );
     assert_eq!(
-        records(&source, 0, &bodies, identity, 9_000, Vec::with_capacity(1)),
-        Err(StreamError::InvalidArgument),
+        records(&source, 0, &bodies, identity, 9_000, Vec::with_capacity(1))
+            .map_err(|error| error.category()),
+        Err(StreamCategory::InvalidArgument),
         "record construction must use admitted slots"
     );
     Ok(())
@@ -219,12 +221,13 @@ fn backend_authority_distinguishes_missing_history_from_failed_storage() -> Resu
     };
     let request = [&fork];
     assert_eq!(
-        authority(&request[..], |_| Err(StreamError::Unavailable)),
-        Err(StreamError::Unavailable)
+        authority(&request[..], |_| Err(StreamError::Unavailable))
+            .map_err(|error| error.category()),
+        Err(StreamCategory::Unavailable)
     );
     assert_eq!(
-        authority(&request[..], |_| Ok(None)),
-        Err(StreamError::NotFound)
+        authority(&request[..], |_| Ok(None)).map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
     );
     assert_eq!(
         authority(&request[..], |_| Ok(Some(2))),
@@ -291,7 +294,7 @@ fn settling_reports_hard_conflicts_or_skips_soft_effects_and_views_the_rest_in_p
     // Negative control: an under-admitted output is refused, never grown.
     assert!(matches!(
         settle(&request, conflict, Vec::new(), Vec::with_capacity(1)),
-        Err(StreamError::InvalidArgument)
+        Err(error) if error.category() == StreamCategory::InvalidArgument
     ));
     let (conflicts, skipped) = settle(
         &request,

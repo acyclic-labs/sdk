@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 
 #[tokio::test]
 async fn malformed_discovery_closes_only_its_node_and_keeps_later_opens_live() -> TestResult {
@@ -62,8 +63,11 @@ async fn malformed_discovery_closes_only_its_node_and_keeps_later_opens_live() -
         }
         bad.controls.send(Ok(malformed_child(id)))?;
         assert_eq!(
-            children.next().await,
-            Some(Err(StreamError::InvalidResponse))
+            children
+                .next()
+                .await
+                .map(|result| result.map_err(|error| error.category())),
+            Some(Err(StreamCategory::InvalidResponse))
         );
         assert!(children.next().await.is_none());
         let mut later = client

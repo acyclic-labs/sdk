@@ -208,6 +208,7 @@ impl Drop for Subscription {
 #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use crate::StreamCategory;
     use std::{future::Future, sync::Mutex as StdMutex, task::Wake};
 
     struct Reenter {
@@ -255,10 +256,19 @@ mod tests {
         assert!(waiting.as_mut().poll(&mut context).is_pending());
         drop(event);
         assert_eq!(observer.wakes.load(Ordering::SeqCst), 2);
-        assert!(matches!(
-            waiting.as_mut().poll(&mut context),
-            Poll::Ready(Err(StreamError::Unavailable))
-        ));
+        // Final producer retirement is unavailability that retains its typed
+        // cause: the category decides recovery, the cause names the producer.
+        let Poll::Ready(Err(retired)) = waiting.as_mut().poll(&mut context) else {
+            panic!("retirement must settle the waiting subscriber");
+        };
+        assert_eq!(retired.category(), StreamCategory::Unavailable);
+        assert_eq!(
+            retired,
+            StreamError::unavailable(acyclic_auth::refusal::Cause::new(
+                "stream.change",
+                "producer_retired"
+            ))
+        );
     }
 }
 

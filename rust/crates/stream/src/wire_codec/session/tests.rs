@@ -1,12 +1,13 @@
 use super::*;
+use crate::StreamCategory;
 use bytes::Bytes;
 use wire::{session_data::Item, session_frame::Body};
 
 #[test]
 fn closed_diagnostics_preserve_every_declared_category() {
     let mut old_decoder_misclassifies = 0;
-    for category in StreamError::ALL {
-        let canonical = crate::wire_codec::status::canonical(&category);
+    for category in StreamCategory::ALL.map(StreamError::from) {
+        let canonical = crate::wire_codec::status::canonical(category.category());
         let diagnostic = acyclic_auth::refusal::Refusal::capture(
             canonical.code,
             "caller diagnostic",
@@ -29,7 +30,7 @@ fn closed_diagnostics_preserve_every_declared_category() {
             panic!("not a close")
         };
         let error = closed_error(&closed);
-        assert_eq!(error.category(), category);
+        assert_eq!(error.category(), category.category());
         assert_eq!(tonic::Status::from(&error).message(), "caller diagnostic");
         let source = std::error::Error::source(&error).expect("retained refusal");
         let parts = source
@@ -42,7 +43,7 @@ fn closed_diagnostics_preserve_every_declared_category() {
             tonic::Status::from(&category).code(),
             &closed.message,
         ));
-        old_decoder_misclassifies += usize::from(old.category() != category);
+        old_decoder_misclassifies += usize::from(old.category() != category.category());
     }
     assert!(
         old_decoder_misclassifies > 0,
@@ -54,7 +55,7 @@ fn closed_diagnostics_preserve_every_declared_category() {
 fn actor_call_chunks_preserve_order_total_and_finite_fragment_work() {
     let rejected = |result: Result<u64, StreamError>| {
         let error = result.expect_err("invalid original finite reply fragment accepted");
-        assert_eq!(error.category(), StreamError::InvalidResponse);
+        assert_eq!(error.category(), StreamCategory::InvalidResponse);
         assert!(
             std::error::Error::source(&error).is_some(),
             "reply fragment discarded its original rejection cause"
@@ -105,7 +106,7 @@ fn actor_call_chunks_preserve_order_total_and_finite_fragment_work() {
     ] {
         data.after = after;
         let error = actor_call_total(&data).expect_err("invalid original reply cursor accepted");
-        assert_eq!(error.category(), StreamError::InvalidResponse);
+        assert_eq!(error.category(), StreamCategory::InvalidResponse);
         let mut cause = std::error::Error::source(&error);
         let mut original = false;
         while let Some(source) = cause {
@@ -126,7 +127,7 @@ fn malformed_peer_protobuf_is_a_terminal_response_error() {
     let malformed = [255];
     let original = wire::SessionFrame::decode(malformed.as_slice()).unwrap_err();
     let error = decode_frame(&malformed).unwrap_err();
-    assert_eq!(error.category(), StreamError::InvalidResponse);
+    assert_eq!(error.category(), StreamCategory::InvalidResponse);
     let mut source = std::error::Error::source(&error);
     let mut retained = None;
     while let Some(cause) = source {
@@ -185,8 +186,8 @@ fn latest_values_round_trip_with_additive_credit() -> Result<(), Box<dyn std::er
     consume_credit(&mut remaining, &frame)?;
     assert_eq!(remaining, wire::SessionWindow::default());
     assert_eq!(
-        consume_credit(&mut remaining, &frame),
-        Err(StreamError::Capacity)
+        consume_credit(&mut remaining, &frame).map_err(|error| error.category()),
+        Err(StreamCategory::Capacity)
     );
     assert_eq!(remaining, wire::SessionWindow::default());
     Ok(())
@@ -249,8 +250,8 @@ fn credit_failures_never_partially_change_balances() {
     ] {
         let before = remaining;
         assert_eq!(
-            grant_credit(&mut remaining, &grant),
-            Err(StreamError::LimitExceeded)
+            grant_credit(&mut remaining, &grant).map_err(|error| error.category()),
+            Err(StreamCategory::LimitExceeded)
         );
         assert_eq!(remaining, before);
     }
@@ -271,8 +272,8 @@ fn credit_failures_never_partially_change_balances() {
     ] {
         let before = remaining;
         assert_eq!(
-            consume_credit(&mut remaining, &frame),
-            Err(StreamError::Capacity)
+            consume_credit(&mut remaining, &frame).map_err(|error| error.category()),
+            Err(StreamCategory::Capacity)
         );
         assert_eq!(remaining, before);
     }
@@ -300,7 +301,7 @@ fn actor_socket_rejections_retain_original_frame_facts() {
             _ => data.item = Some(Item::ActorSocket(Bytes::new())),
         }
         let error = actor_socket_sequence(0, &data).unwrap_err();
-        assert_eq!(error.category(), StreamError::InvalidResponse);
+        assert_eq!(error.category(), StreamCategory::InvalidResponse);
         assert!(std::error::Error::source(&error).is_some());
     }
 }

@@ -30,8 +30,8 @@ use acyclic_stream::AppendRequest;
 use acyclic_stream::query_sync::SyncMutex;
 use acyclic_stream::runtime::PlatformExecutor;
 use acyclic_stream::{
-    BoxProviderFuture, IdempotencyKey, Record, RecordStream, StreamError, StreamPath,
-    StreamProvider,
+    BoxProviderFuture, IdempotencyKey, Record, RecordStream, StreamCategory, StreamError,
+    StreamPath, StreamProvider,
 };
 use clock::sleep;
 pub use clock::{Clock, ClockControl, ClockError, ControlledClock, SystemClock};
@@ -241,7 +241,7 @@ impl Inner {
 fn terminal(error: &Error) -> bool {
     match error {
         Error::Stream(error) => {
-            !error.uncertain() && !matches!(error.category(), StreamError::Capacity)
+            !error.uncertain() && !matches!(error.category(), StreamCategory::Capacity)
         }
         Error::PreconditionUnchanged | Error::UndecidedUnchanged(_) => true,
         Error::Handler(failure) => {
@@ -1778,7 +1778,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 // earlier record, so the new follow reports only later ones.
                 let tail = match self.store.provider().tail(path.clone()).await {
                     Ok(tail) => tail,
-                    Err(error) if error.category() == StreamError::NotFound => 0,
+                    Err(error) if error.category() == StreamCategory::NotFound => 0,
                     Err(error) => return Err(error.into()),
                 };
                 tails.insert(path, tail);
@@ -2118,7 +2118,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     .insert(id.to_owned(), acyclic_stream::records_only(follow));
                 Ok(true)
             }
-            Err(error) if error.category() == StreamError::NotFound => Ok(false),
+            Err(error) if error.category() == StreamCategory::NotFound => Ok(false),
             Err(error) => Err(error.into()),
         }
     }
@@ -2221,7 +2221,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         };
         let mut records = match records {
             Ok(records) => records,
-            Err(error) if error.category() == StreamError::NotFound => return Ok(None),
+            Err(error) if error.category() == StreamCategory::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         };
         let Some(record) = records.next().await.transpose()? else {

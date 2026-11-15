@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use futures::FutureExt;
 use proptest::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -122,7 +123,7 @@ fn credential_provider_renews_each_physical_retry_without_changing_the_body() {
                     let request = root.within(request);
                     let result: Result<((), ClientCompletion), StreamError> = request.await;
                     let error = result.err().expect("exhausted credential source refused");
-                    prop_assert_eq!(error.category(), StreamError::AccessDenied);
+                    prop_assert_eq!(error.category(), StreamCategory::AccessDenied);
                     prop_assert!(
                         std::iter::successors(std::error::Error::source(&error), |source| source
                             .source())
@@ -365,7 +366,7 @@ async fn wire_rejection_and_owner_denial_keep_exact_credential_custody() -> test
             expected_names.sort();
             assert_eq!(names, expected_names);
         }
-        assert_eq!(error.category(), StreamError::AccessDenied);
+        assert_eq!(error.category(), StreamCategory::AccessDenied);
         let original = tonic::Status::from(&error);
         assert_eq!(original.code(), code);
         assert_eq!(original.message(), "synthetic service refusal");

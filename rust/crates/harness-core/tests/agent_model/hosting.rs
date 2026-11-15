@@ -21,7 +21,9 @@ use acyclic_harness_core::{
     resources::ProviderRef,
 };
 use acyclic_stream::StreamProviderExt as _;
-use acyclic_stream::{BoxProviderFuture, MemoryStream, StreamError, StreamProvider};
+use acyclic_stream::{
+    BoxProviderFuture, MemoryStream, StreamCategory, StreamError, StreamProvider,
+};
 use std::sync::{Arc, atomic::Ordering};
 
 /// Never builds an executor: these tests only create roots.
@@ -2692,7 +2694,7 @@ async fn input_wait_retains_the_original_actor_failure_after_source_drop() -> Re
     let retained = original.clone();
     drop(original);
     drop(host);
-    assert_eq!(retained.category(), StreamError::Unavailable);
+    assert_eq!(retained.category(), StreamCategory::Unavailable);
     let mut source = std::error::Error::source(&retained);
     while let Some(cause) = source {
         if let Some(original) = cause.downcast_ref::<acyclic_actors::local::DeliveryFailure>() {

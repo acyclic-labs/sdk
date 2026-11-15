@@ -804,8 +804,14 @@ mod tests {
                         let (projected, allocations, marker_probes, parsed_bytes) =
                             measure(|| filter.project(record.clone()));
                         if !valid {
-                            assert_eq!(preservation, Err(StreamError::InvalidArgument));
-                            assert_eq!(projected, Err(StreamError::InvalidArgument));
+                            assert_eq!(
+                                preservation.as_ref().map_err(|error| error.category()),
+                                Err(crate::StreamCategory::InvalidArgument)
+                            );
+                            assert_eq!(
+                                projected.as_ref().map_err(|error| error.category()),
+                                Err(crate::StreamCategory::InvalidArgument)
+                            );
                         } else {
                             let projected = projected.as_ref().unwrap().as_ref();
                             assert_eq!(matched, projected.is_some());
@@ -1130,8 +1136,10 @@ mod tests {
                 let mut malformed = record;
                 malformed.value = bytes::Bytes::new().into();
                 assert_eq!(
-                    authorized.project(malformed.clone()),
-                    Err(StreamError::InvalidArgument)
+                    authorized
+                        .project(malformed.clone())
+                        .map_err(|error| error.category()),
+                    Err(crate::StreamCategory::InvalidArgument)
                 );
                 assert_eq!(
                     forwarded.project(malformed.clone()),

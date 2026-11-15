@@ -15,7 +15,7 @@
 use super::{ActorReference, Error, Store, StreamPath, StreamProvider};
 use acyclic_stream::{
     ChildrenPageRequest, CommitEffect, CommitMutation, CommitRequest, IdempotencyKey, ReadRequest,
-    StreamError, StreamProviderExt as _,
+    StreamCategory, StreamProviderExt as _,
 };
 use futures::TryStreamExt as _;
 use sha2::{Digest, Sha256};
@@ -248,7 +248,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             };
             let page = match self.provider().children_page(request).await {
                 Ok(page) => page,
-                Err(error) if error.category() == StreamError::NotFound => return Ok(None),
+                Err(error) if error.category() == StreamCategory::NotFound => return Ok(None),
                 Err(error) => return Err(error.into()),
             };
             let Some(child) = page.children.into_iter().next() else {
@@ -417,7 +417,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         };
         let page = match self.provider().children_page(request.clone()).await {
             Ok(page) => page,
-            Err(error) if error.category() == StreamError::NotFound => {
+            Err(error) if error.category() == StreamCategory::NotFound => {
                 return Ok((Vec::new(), None));
             }
             Err(error) => return Err(error.into()),

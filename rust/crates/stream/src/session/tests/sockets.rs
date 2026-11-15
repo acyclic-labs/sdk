@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use futures::channel::oneshot;
 
 /// Echoes every peer frame back, and reports when the session drops its
@@ -444,8 +445,12 @@ async fn forwarded_owned_credential_renewal_keeps_sibling_channels_live() -> Tes
     );
     borrowed.inbound.replace_credential(credential.clone())?;
     assert_eq!(
-        borrowed.outbound.next().await,
-        Some(Err(StreamError::AccessDenied))
+        borrowed
+            .outbound
+            .next()
+            .await
+            .map(|result| result.map_err(|error| error.category())),
+        Some(Err(StreamCategory::AccessDenied))
     );
     drop(borrowed);
     channel.inbound.replace_credential(credential)?;
@@ -456,8 +461,12 @@ async fn forwarded_owned_credential_renewal_keeps_sibling_channels_live() -> Tes
     );
     channel.inbound.replace_credential(Bytes::new())?;
     assert_eq!(
-        channel.outbound.next().await,
-        Some(Err(StreamError::AccessDenied))
+        channel
+            .outbound
+            .next()
+            .await
+            .map(|result| result.map_err(|error| error.category())),
+        Some(Err(StreamCategory::AccessDenied))
     );
     sibling.send(Bytes::from_static(b"sibling lives")).await?;
     assert_eq!(
@@ -501,8 +510,12 @@ async fn forwarded_socket_renews_and_withdraws_its_original_credential() -> Test
     );
     channel.inbound.replace_credential(Bytes::new())?;
     assert_eq!(
-        channel.outbound.next().await,
-        Some(Err(StreamError::AccessDenied))
+        channel
+            .outbound
+            .next()
+            .await
+            .map(|result| result.map_err(|error| error.category())),
+        Some(Err(StreamCategory::AccessDenied))
     );
     left.await?;
     Ok(())
@@ -544,16 +557,23 @@ async fn forwarding_retains_the_original_socket_and_its_send_results() -> TestRe
         .ok_or("echo ended")?;
     assert_eq!(echoed.as_ptr(), bytes.as_ptr());
     assert_eq!(
-        channel.inbound.receive(Bytes::new()),
-        Err(StreamError::InvalidArgument)
+        channel
+            .inbound
+            .receive(Bytes::new())
+            .map_err(|error| error.category()),
+        Err(StreamCategory::InvalidArgument)
     );
     drop(channel.inbound);
     // The downstream peer can stop reading forever; dropping only its input
     // still retires the upstream socket and its original product owner.
     left.await?;
     assert_eq!(
-        channel.outbound.next().await,
-        Some(Err(StreamError::Unavailable))
+        channel
+            .outbound
+            .next()
+            .await
+            .map(|result| result.map_err(|error| error.category())),
+        Some(Err(StreamCategory::Unavailable))
     );
     Ok(())
 }
@@ -595,8 +615,11 @@ async fn socket_frames_flow_both_ways_and_dropping_the_peer_ends_the_owner() -> 
     }
     // Negative control: an empty frame never reaches the owner.
     assert_eq!(
-        socket.send(Bytes::new()).await,
-        Err(StreamError::InvalidArgument)
+        socket
+            .send(Bytes::new())
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::InvalidArgument)
     );
     drop(socket);
     // Both data credits remain held, but the original peer retirement still
@@ -622,7 +645,10 @@ async fn socket_admission_requires_actor_invoke_on_the_resource() -> TestResult 
         Err(error) => Some(error),
         Ok(mut socket) => socket.next().await.err(),
     };
-    assert_eq!(refused, Some(StreamError::AccessDenied));
+    assert_eq!(
+        refused.map(|error| error.category()),
+        Some(StreamCategory::AccessDenied)
+    );
     Ok(())
 }
 

@@ -30,7 +30,7 @@ use acyclic_actors::{
 };
 use acyclic_stream::{
     AppendRecord, CommitEffect, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey,
-    Record, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
+    Record, StreamCategory, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -173,7 +173,7 @@ impl State {
         match provider.head(call.log().clone()).await {
             Ok(head) if head.tail != 0 => return Ok(()),
             Ok(_) => {}
-            Err(error) if error.category() == StreamError::NotFound => {}
+            Err(error) if error.category() == StreamCategory::NotFound => {}
             Err(error) => return Err(error.into()),
         }
         let ours = run.command.actor
@@ -258,7 +258,7 @@ impl State {
         let call = super::records::call(agent, op)?;
         let last = match provider.head(call.log().clone()).await {
             Ok(head) => head.last,
-            Err(error) if error.category() == StreamError::NotFound => return Ok(None),
+            Err(error) if error.category() == StreamCategory::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         };
         let Some(last) = last else {

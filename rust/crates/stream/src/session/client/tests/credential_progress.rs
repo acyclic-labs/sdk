@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use acyclic_auth::credential::{
     CredentialAction, CredentialBinding, CredentialCache, CredentialCacheError, CredentialError,
     CredentialPending, CredentialProvider, CredentialRequest, CredentialResolution,
@@ -219,7 +220,7 @@ async fn source_change_cancels_pending_reply_admission_and_remote_rejection() ->
                             Some(Err(transport::Failure {
                                 error,
                                 transient: false,
-                            })) if error.category() == StreamError::AccessDenied
+                            })) if error.category() == StreamCategory::AccessDenied
                         ),
                         "{stage}: source change must cancel the owner wait immediately"
                     );
@@ -232,7 +233,7 @@ async fn source_change_cancels_pending_reply_admission_and_remote_rejection() ->
                         Some(Err(transport::Failure {
                             error,
                             transient: false,
-                        })) if error.category() == StreamError::AccessDenied
+                        })) if error.category() == StreamCategory::AccessDenied
                     ));
                 }
                 _ => {
@@ -245,7 +246,7 @@ async fn source_change_cancels_pending_reply_admission_and_remote_rejection() ->
                     } else {
                         let failure = result.unwrap_err();
                         assert!(!failure.transient);
-                        assert_eq!(failure.error.category(), StreamError::AccessDenied);
+                        assert_eq!(failure.error.category(), StreamCategory::AccessDenied);
                         let original = tonic::Status::from(&failure.error);
                         assert_eq!(original.code(), tonic::Code::Unauthenticated);
                         assert_eq!(original.message(), "synthetic remote refusal");

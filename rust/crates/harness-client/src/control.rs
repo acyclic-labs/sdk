@@ -877,7 +877,7 @@ mod tests {
 
     #[test]
     fn exchange_preserves_every_session_failure_code_and_cause() {
-        for cause in StreamError::ALL {
+        for cause in acyclic_stream::StreamCategory::ALL.map(StreamError::from) {
             let error = AgentExchangeError::Session(cause.clone());
             assert_eq!(error.code(), cause.code());
             assert!(matches!(error, AgentExchangeError::Session(original) if original == cause));

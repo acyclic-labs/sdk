@@ -1,6 +1,6 @@
 // One independent oracle drives the property suite and the actual fuzz target.
 use acyclic_stream::{
-    CommitId, StreamError, StreamWatermarks, wire,
+    CommitId, StreamCategory, StreamError, StreamWatermarks, wire,
     wire_codec::{
         session::{confirm_follow, preceding_follow, record_anchor, record_cursor},
         watermarks_from_wire,
@@ -92,7 +92,7 @@ fn snapshot(cursor: &wire::SessionCursor, fault: Fault) -> Result<(), &'static s
     let expected = match (cursor.next, anchor) {
         (0, _) if cursor.opaque.is_empty() => Ok(None),
         (1.., Ok(anchor)) => Ok(Some(anchor)),
-        _ => Err(StreamError::InvalidArgument),
+        _ => Err(StreamCategory::InvalidArgument),
     };
     let mut actual = record_anchor(cursor)
         .map(|anchor| anchor.map(|id| *id.as_bytes()))
@@ -124,7 +124,7 @@ fn snapshot(cursor: &wire::SessionCursor, fault: Fault) -> Result<(), &'static s
                 .into();
         }
         let expected = if cursor.next == 0 {
-            Err(StreamError::InvalidArgument)
+            Err(StreamCategory::InvalidArgument)
         } else {
             Ok(wire::SessionCursor {
                 next: cursor.next,

@@ -1,6 +1,6 @@
 //! Provider-independent assertions formerly confined to the HTTP fixture runner.
 use crate::StreamProviderExt as _;
-use crate::{StreamError, StreamPath, StreamProvider};
+use crate::{StreamCategory, StreamPath, StreamProvider};
 
 pub(super) async fn verify(provider: &dyn StreamProvider) -> Result<(), super::Failure> {
     let first = StreamPath::new("conformance/atomic-first")?;
@@ -71,8 +71,16 @@ pub(super) async fn deadline(provider: &dyn StreamProvider) -> Result<(), super:
         ))?,
         deadline_unix_millis: Some(1),
     };
-    if provider.commit(request).await != Err(StreamError::DeadlineElapsed)
-        || provider.tail(deadline_path).await != Err(StreamError::NotFound)
+    if provider
+        .commit(request)
+        .await
+        .map_err(|error| error.category())
+        != Err(StreamCategory::DeadlineElapsed)
+        || provider
+            .tail(deadline_path)
+            .await
+            .map_err(|error| error.category())
+            != Err(StreamCategory::NotFound)
     {
         return Err(violated!());
     }

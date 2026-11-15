@@ -1,4 +1,5 @@
 //! Runs the unchanged suite and cross-session durability/CAS/notification checks.
+use acyclic_stream::StreamCategory;
 use acyclic_stream::{postgres::PostgresStream, *};
 use futures::StreamExt;
 use futures::TryFutureExt as _;
@@ -224,11 +225,11 @@ async fn listener_failure(database: &str) -> Result<(), Box<dyn std::error::Erro
     assert_eq!(killed.len(), 1);
     assert!(matches!(
         records.next().await,
-        Some(Err(StreamError::Unavailable))
+        Some(Err(error)) if error.category() == StreamCategory::Unavailable
     ));
     assert!(matches!(
         updates.next().await,
-        Some(Err(StreamError::Unavailable))
+        Some(Err(error)) if error.category() == StreamCategory::Unavailable
     ));
     assert!(records.next().await.is_none());
     assert!(updates.next().await.is_none());

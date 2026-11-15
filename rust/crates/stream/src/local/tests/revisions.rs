@@ -1,5 +1,6 @@
 //! Read-your-writes revisions: parking, foreign refusal and durable incarnations.
 use super::*;
+use crate::StreamCategory;
 use futures::StreamExt as _;
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -218,12 +219,21 @@ async fn input_revisions_follow_only_own_history_membership_and_grafts_across_re
         let mut foreign = historical_request.clone();
         foreign.at.as_mut().ok_or("cut")?.incarnation ^= 1;
         assert_eq!(
-            reopened.heads(foreign).await,
-            Err(StreamError::RevisionForeign)
+            reopened
+                .heads(foreign)
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::RevisionForeign)
         );
         let mut future = historical_request;
         future.at.as_mut().ok_or("cut")?.index = replayed.applied.index + 1;
-        assert_eq!(reopened.heads(future).await, Err(StreamError::Unavailable));
+        assert_eq!(
+            reopened
+                .heads(future)
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::Unavailable)
+        );
         let wire = crate::wire_codec::heads_to_wire(replayed.clone())?;
         assert_eq!(
             crate::wire_codec::heads_from_response(wire.clone())?,
@@ -236,8 +246,8 @@ async fn input_revisions_follow_only_own_history_membership_and_grafts_across_re
             .ok_or("missing head")?
             .changed_at = replayed.snapshot.index + 1;
         assert_eq!(
-            crate::wire_codec::heads_from_response(impossible),
-            Err(StreamError::InvalidResponse)
+            crate::wire_codec::heads_from_response(impossible).map_err(|error| error.category()),
+            Err(StreamCategory::InvalidResponse)
         );
     }
     Ok(())
@@ -318,8 +328,9 @@ async fn a_foreign_token_is_refused_and_an_own_token_survives_reopen() -> Result
     assert_eq!(
         provider
             .wait_applied(&crate::RevisionCut::of(foreign))
-            .await,
-        Err(StreamError::RevisionForeign)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::RevisionForeign)
     );
     drop(provider);
 
@@ -365,8 +376,11 @@ async fn a_foreign_token_is_refused_and_an_own_token_survives_reopen() -> Result
     let provider = LocalStream::open(&directory, LocalStreamLimits::default()).await?;
     append(&provider, crate::IdempotencyKey::unique()).await?;
     assert_eq!(
-        provider.wait_applied(&crate::RevisionCut::of(issued)).await,
-        Err(StreamError::RevisionForeign)
+        provider
+            .wait_applied(&crate::RevisionCut::of(issued))
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::RevisionForeign)
     );
     Ok(())
 }
@@ -388,8 +402,11 @@ async fn a_run_that_issued_revisions_ahead_of_a_flush_rotates_its_incarnation() 
     let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
     for issued in [flushed, deferred] {
         assert_eq!(
-            provider.wait_applied(&crate::RevisionCut::of(issued)).await,
-            Err(StreamError::RevisionForeign)
+            provider
+                .wait_applied(&crate::RevisionCut::of(issued))
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::RevisionForeign)
         );
     }
     Ok(())

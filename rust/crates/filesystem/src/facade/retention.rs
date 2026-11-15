@@ -188,7 +188,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         result.map_err(|error| match error {
             #[cfg(not(target_arch = "wasm32"))]
             AuthorityStoreError::NativeStream(error)
-                if error.category() == acyclic_stream::StreamError::NotFound =>
+                if error.category() == acyclic_stream::StreamCategory::NotFound =>
             {
                 FsError::Authority(AuthorityStoreError::Missing)
             }

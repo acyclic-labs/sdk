@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use futures::Stream as _;
 use futures::TryFutureExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -39,7 +40,7 @@ where
     for stream in streams {
         assert!(matches!(
             stream.next().await,
-            Some(Err(StreamError::Unavailable))
+            Some(Err(error)) if error.category() == StreamCategory::Unavailable
         ));
         assert!(stream.next().await.is_none());
     }
@@ -275,7 +276,7 @@ fn executor_retirement_ends_forked_follows_before_publication_unlocks()
             assert!(
                 matches!(
                     result,
-                    std::task::Poll::Ready(Some(Err(StreamError::Unavailable)))
+                    std::task::Poll::Ready(Some(Err(error))) if error.category() == StreamCategory::Unavailable
                 ),
                 "retired local snapshot left its public follow parked"
             );

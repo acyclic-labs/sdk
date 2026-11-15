@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 
 #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
 #[tokio::test]
@@ -17,9 +18,9 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
     let forked = path("ephemeral/lease/fork")?;
     let adopted = path("ephemeral/changes")?;
     match provider.lease_ephemeral(root.clone()).await {
-        Err(StreamError::Unsupported) => return Ok(()),
+        Err(error) if error.category() == StreamCategory::Unsupported => return Ok(()),
         // A lease never creates its durable ancestors.
-        Err(StreamError::NotFound) => {}
+        Err(error) if error.category() == StreamCategory::NotFound => {}
         _ => return Err(violated!()),
     }
     for (target, retry) in [
@@ -37,7 +38,12 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
     }
     let lease = provider.lease_ephemeral(root.clone()).await?;
     if lease.root() != &root
-        || provider.lease_ephemeral(root.clone()).await.err() != Some(StreamError::AlreadyExists)
+        || provider
+            .lease_ephemeral(root.clone())
+            .await
+            .err()
+            .map(|error| error.category())
+            != Some(StreamCategory::AlreadyExists)
     {
         return Err(violated!());
     }
@@ -70,7 +76,8 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
             })
             .await
             .err()
-            != Some(StreamError::IdempotencyMismatch)
+            .map(|error| error.category())
+            != Some(StreamCategory::IdempotencyMismatch)
         {
             return Err(violated!());
         }
@@ -83,7 +90,12 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
     lease.settle().await?;
     for (key, id) in receipts {
         if provider.inspect_idempotency(key).await?.is_some()
-            || provider.read_commit(id).await.err() != Some(StreamError::NotFound)
+            || provider
+                .read_commit(id)
+                .await
+                .err()
+                .map(|error| error.category())
+                != Some(StreamCategory::NotFound)
         {
             return Err(violated!());
         }
@@ -97,8 +109,12 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         return Err(violated!());
     }
     for (follow, gone) in follows.iter_mut().zip([&forked, &adopted]) {
-        if !matches!(follow.next().await, Some(Err(StreamError::NotFound)))
-            || provider.tail(gone.clone()).await != Err(StreamError::NotFound)
+        if !matches!(follow.next().await, Some(Err(error)) if error.category() == StreamCategory::NotFound)
+            || provider
+                .tail(gone.clone())
+                .await
+                .map_err(|error| error.category())
+                != Err(StreamCategory::NotFound)
         {
             return Err(violated!());
         }
@@ -290,7 +306,7 @@ async fn refusals<P: StreamProvider + ?Sized>(
                 idempotency_key: key(retry)?,
             })
             .await;
-        if refused.err() != Some(StreamError::InvalidArgument) {
+        if refused.err().map(|error| error.category()) != Some(StreamCategory::InvalidArgument) {
             return Err(violated!());
         }
     }
@@ -303,7 +319,7 @@ async fn refusals<P: StreamProvider + ?Sized>(
             idempotency_key: key(b"ephemeral/escaped")?,
         })
         .await;
-    if escaped.err() != Some(StreamError::InvalidArgument) {
+    if escaped.err().map(|error| error.category()) != Some(StreamCategory::InvalidArgument) {
         return Err(violated!());
     }
     let orphan = provider
@@ -316,7 +332,7 @@ async fn refusals<P: StreamProvider + ?Sized>(
             idempotency_key: key(b"ephemeral/orphan")?,
         })
         .await;
-    if orphan.err() != Some(StreamError::NotFound) {
+    if orphan.err().map(|error| error.category()) != Some(StreamCategory::NotFound) {
         return Err(violated!());
     }
     other.settle().await?;
@@ -465,8 +481,16 @@ async fn isolation<P: StreamProvider + ?Sized>(
             idempotency_key: key(b"ephemeral/copy")?,
         })
         .await?;
-    if provider.tail(path("ephemeral-copy/lease/fork")?).await != Err(StreamError::NotFound)
-        || provider.tail(path("ephemeral-copy/changes")?).await != Err(StreamError::NotFound)
+    if provider
+        .tail(path("ephemeral-copy/lease/fork")?)
+        .await
+        .map_err(|error| error.category())
+        != Err(StreamCategory::NotFound)
+        || provider
+            .tail(path("ephemeral-copy/changes")?)
+            .await
+            .map_err(|error| error.category())
+            != Err(StreamCategory::NotFound)
         || provider.tail(path("ephemeral-copy/source")?).await != Ok(1)
     {
         return Err(violated!());

@@ -1,6 +1,6 @@
 //! Credential and bounded-response checks for the local HTTPS fixture only.
 use acyclic_stream::{
-    StreamError, StreamPath, StreamProvider, StreamProviderExt as _, http::HttpStream,
+    StreamCategory, StreamPath, StreamProvider, StreamProviderExt as _, http::HttpStream,
 };
 
 pub async fn verify(endpoint: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -11,13 +11,19 @@ pub async fn verify(endpoint: &str) -> Result<(), Box<dyn std::error::Error>> {
         .transpose()?;
     let denied = HttpStream::with_ca_certificate(endpoint, "wrong", 1024, ca.as_deref())?;
     assert_eq!(
-        denied.tail(StreamPath::new("conformance/source")?).await,
-        Err(StreamError::AccessDenied)
+        denied
+            .tail(StreamPath::new("conformance/source")?)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::AccessDenied)
     );
     let bounded = HttpStream::with_ca_certificate(endpoint, "conformance", 1, ca.as_deref())?;
     assert_eq!(
-        bounded.tail(StreamPath::new("conformance/source")?).await,
-        Err(StreamError::Unavailable)
+        bounded
+            .tail(StreamPath::new("conformance/source")?)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::Unavailable)
     );
     Ok(())
 }
@@ -53,8 +59,11 @@ async fn verify_commit_only(endpoint: &str) -> Result<(), Box<dyn std::error::Er
         return Err("commit-only mutation did not commit".into());
     };
     assert_eq!(
-        commit_only.read_commit(envelope.commit_id).await,
-        Err(StreamError::AccessDenied)
+        commit_only
+            .read_commit(envelope.commit_id)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::AccessDenied)
     );
     Ok(())
 }

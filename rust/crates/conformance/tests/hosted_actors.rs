@@ -16,7 +16,7 @@ use acyclic_harness::{
     server::{self, Actors, Execution, ServerConfig},
 };
 use acyclic_harness_client::AgentCommand;
-use acyclic_stream::{BoxProviderFuture, MemoryStream, StreamError};
+use acyclic_stream::{BoxProviderFuture, MemoryStream, StreamCategory, StreamError};
 use futures::{StreamExt as _, TryStreamExt as _};
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
@@ -290,7 +290,7 @@ async fn selected_discovery_preserves_the_published_member() -> Outcome {
     let foreign = AgentControls::new(clients[1].clone(), 0, binding);
     assert!(matches!(
         foreign.select(root.clone()).await,
-        Err(AgentExchangeError::Session(error)) if error.category() == StreamError::AccessDenied
+        Err(AgentExchangeError::Session(error)) if error.category() == StreamCategory::AccessDenied
     ));
     let encoded = selected.binding_bytes();
     let published = acyclic_actors::wire::InvokeActorRequest::decode(encoded.as_slice())?;
@@ -303,7 +303,7 @@ async fn selected_discovery_preserves_the_published_member() -> Outcome {
     clients[0].actor_call(&routed, 0, Some(1 << 20)).await?;
     assert!(matches!(
         clients[1].actor_call(&routed, 0, Some(1 << 20)).await,
-        Err(error) if error.category() == StreamError::AccessDenied
+        Err(error) if error.category() == StreamCategory::AccessDenied
     ));
     for field in ["account", "namespace"] {
         let mut other = published.clone();
@@ -318,7 +318,7 @@ async fn selected_discovery_preserves_the_published_member() -> Outcome {
                 AgentBinding::new(&other.encode_to_vec())?,
             )
             .await,
-            Err(AgentExchangeError::Session(error)) if error.category() == StreamError::AccessDenied
+            Err(AgentExchangeError::Session(error)) if error.category() == StreamCategory::AccessDenied
         ));
     }
     let (bootstrapped, _) = AgentControls::discover_at(clients[0].clone(), 0, binding).await?;
@@ -555,7 +555,7 @@ async fn run(producer: Producer) -> Outcome {
             matches!(
                 &failure.cause,
                 Some(acyclic_conformance::client::Cause::Stream(error))
-                    if error.category() == StreamError::Unavailable
+                    if error.category() == StreamCategory::Unavailable
             ),
             "closed producer returned {failure:?}"
         );

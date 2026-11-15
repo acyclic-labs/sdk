@@ -253,7 +253,7 @@ mod tests {
             registry.keys_in::<u8, _>(..).unwrap_err(),
         ];
         for error in errors {
-            assert_eq!(error.category(), StreamError::Unavailable);
+            assert_eq!(error.category(), crate::StreamCategory::Unavailable);
             assert!(error.uncertain());
             let cause = error
                 .source()

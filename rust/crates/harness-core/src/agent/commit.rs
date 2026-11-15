@@ -23,7 +23,8 @@ use super::{
 };
 use acyclic_stream::{
     CommitCondition, CommitConflict, CommitEffect, CommitMutation, CommitOutcome, CommitReceipt,
-    CommitRequest, IdempotencyKey, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
+    CommitRequest, IdempotencyKey, StreamCategory, StreamPath, StreamProvider,
+    StreamProviderExt as _,
 };
 
 /// Domain-separated idempotency key; one stable key per intent.
@@ -106,7 +107,7 @@ pub async fn inbox_tail<P: crate::store::JournalProvider + ?Sized>(
 ) -> Result<u64, Error> {
     match provider.tail(agent.inbox()?).await {
         Ok(0) => Err(Error::NoSuchAgent),
-        Err(error) if error.category() == StreamError::NotFound => Err(Error::NoSuchAgent),
+        Err(error) if error.category() == StreamCategory::NotFound => Err(Error::NoSuchAgent),
         Ok(tail) => Ok(tail),
         Err(error) => Err(Error::Stream(error)),
     }

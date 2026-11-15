@@ -280,7 +280,7 @@ async fn goal_reply<P: crate::store::JournalProvider + ?Sized>(
         .await
     {
         Ok(mut records) => records.try_next().await.map_err(Error::Stream)?,
-        Err(error) if error.category() == acyclic_stream::StreamError::NotFound => None,
+        Err(error) if error.category() == acyclic_stream::StreamCategory::NotFound => None,
         Err(error) => return Err(Error::Stream(error)),
     };
     let Some(record) = record else {

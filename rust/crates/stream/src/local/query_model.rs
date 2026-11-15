@@ -1,5 +1,6 @@
 use super::*;
 use crate::OwnedBytes as Bytes;
+use crate::StreamCategory;
 use crate::verification::{block_on, check, check_with_bound};
 use futures::TryFutureExt as _;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -234,9 +235,9 @@ pub(crate) fn poison_wakes_checked_followers(omit_publication: bool) {
             {
                 Ok(mut follow) => assert!(matches!(
                     follow.next().await,
-                    Some(Err(StreamError::Unavailable))
+                    Some(Err(error)) if error.category() == StreamCategory::Unavailable
                 )),
-                Err(error) => assert_eq!(error, StreamError::Unavailable),
+                Err(error) => assert_eq!(error.category(), StreamCategory::Unavailable),
             }
         });
         writer.join().map_err(|_| "writer panicked")?;

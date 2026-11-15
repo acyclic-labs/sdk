@@ -37,7 +37,8 @@ use futures::{StreamExt as _, TryStreamExt as _};
 use crate::{
     AppendOutcome, AppendRequest, ChildrenPageRequest, CommitCondition, CommitConflict,
     CommitEffect, CommitMutation, CommitOutcome, CommitRequest, CommittedMutation, ForkRequest,
-    IdempotencyKey, IdempotencyOutcome, ReadRequest, StreamError, StreamPath, StreamProvider,
+    IdempotencyKey, IdempotencyOutcome, ReadRequest, StreamCategory, StreamError, StreamPath,
+    StreamProvider,
 };
 
 /// Canonical language-neutral Stream conformance inventory.
@@ -88,7 +89,8 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
             idempotency_key: append_key.clone(),
         })
         .await
-        != Err(StreamError::IdempotencyMismatch)
+        .map_err(|error| error.category())
+        != Err(StreamCategory::IdempotencyMismatch)
     {
         return Err(violated!());
     }
@@ -239,7 +241,8 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
             limit: 1,
         })
         .await
-        != Err(StreamError::HierarchyChanged)
+        .map_err(|error| error.category())
+        != Err(StreamCategory::HierarchyChanged)
     {
         return Err(violated!());
     }
@@ -274,7 +277,8 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
             limit: 1,
         })
         .await
-        != Err(StreamError::InvalidArgument)
+        .map_err(|error| error.category())
+        != Err(StreamCategory::InvalidArgument)
     {
         return Err(violated!());
     }
@@ -406,8 +410,12 @@ async fn verify_read_open_failures(
             .err()
     };
     let beyond = provider.tail(source.clone()).await? + 1;
-    if open(path("conformance/never-written")?, 0).await != Some(StreamError::NotFound)
-        || open(source, beyond).await != Some(StreamError::OutOfRange)
+    if open(path("conformance/never-written")?, 0)
+        .await
+        .map(|error| error.category())
+        != Some(StreamCategory::NotFound)
+        || open(source, beyond).await.map(|error| error.category())
+            != Some(StreamCategory::OutOfRange)
     {
         return Err(violated!());
     }
@@ -451,7 +459,11 @@ pub async fn verify_stale_tail_condition(
         })
         .await?
         != stale_conflict
-        || provider.tail(stale_path).await != Err(StreamError::NotFound)
+        || provider
+            .tail(stale_path)
+            .await
+            .map_err(|error| error.category())
+            != Err(StreamCategory::NotFound)
         || provider.tail(source).await? != 2
     {
         return Err(violated!());
@@ -865,7 +877,8 @@ async fn verify_subtree_private_writes(
     if provider
         .tail(path("conformance/tree/children/fork/children/fork")?)
         .await
-        != Err(StreamError::NotFound)
+        .map_err(|error| error.category())
+        != Err(StreamCategory::NotFound)
     {
         return Err(violated!());
     }
@@ -876,7 +889,8 @@ async fn verify_subtree_private_writes(
         || provider
             .tail(path("conformance/tree/children/fork/children/old/events")?)
             .await
-            != Err(StreamError::NotFound)
+            .map_err(|error| error.category())
+            != Err(StreamCategory::NotFound)
     {
         return Err(violated!());
     }
@@ -989,7 +1003,8 @@ pub async fn verify_page_tails(provider: &(impl StreamProvider + ?Sized)) -> Res
     if provider
         .tail(path("conformance/page-tails/c/status")?)
         .await
-        != Err(StreamError::NotFound)
+        .map_err(|error| error.category())
+        != Err(StreamCategory::NotFound)
     {
         return Err(violated!());
     }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use proptest::prelude::*;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -62,8 +63,11 @@ async fn qualify(
         for ((path, accepted), durable) in paths.iter().zip(accepted).zip(&mut durable) {
             if accepted == 0 {
                 assert_eq!(
-                    provider.watermarks(path.clone()).await,
-                    Err(StreamError::NotFound)
+                    provider
+                        .watermarks(path.clone())
+                        .await
+                        .map_err(|error| error.category()),
+                    Err(StreamCategory::NotFound)
                 );
                 continue;
             }

@@ -193,7 +193,7 @@ mod tests {
             previous[b"ACYCLIC-STREAM-COMMAND-V".len()] = b'1';
             assert!(matches!(
                 decode_command(&previous),
-                Err(StreamError::Unsupported)
+                Err(error) if error.category() == crate::StreamCategory::Unsupported
             ));
             let mut unknown = encoded.clone();
             unknown.extend_from_slice(&[0x78, 0]);

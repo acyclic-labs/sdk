@@ -32,7 +32,9 @@ pub use driver::Driver;
 use requests::Requests;
 
 use acyclic_stream::OwnedBytes;
-use acyclic_stream::{CommitId, ForkCut, PathHead, Provenance, StreamError, StreamPath};
+use acyclic_stream::{
+    CommitId, ForkCut, PathHead, Provenance, StreamCategory, StreamError, StreamPath,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Finite budgets for one client, independent of the number of streams.
@@ -261,11 +263,11 @@ impl Failure {
     #[must_use]
     pub fn of(error: &StreamError) -> Self {
         match error.category() {
-            StreamError::Unavailable | StreamError::DeadlineElapsed => Self::Unavailable,
-            StreamError::Capacity => Self::Overloaded,
-            StreamError::HierarchyChanged => Self::Changed,
-            StreamError::AccessDenied => Self::Denied,
-            StreamError::PrefixNotRetained => Self::RetentionLost,
+            StreamCategory::Unavailable | StreamCategory::DeadlineElapsed => Self::Unavailable,
+            StreamCategory::Capacity => Self::Overloaded,
+            StreamCategory::HierarchyChanged => Self::Changed,
+            StreamCategory::AccessDenied => Self::Denied,
+            StreamCategory::PrefixNotRetained => Self::RetentionLost,
             _ => Self::Refused,
         }
     }
@@ -906,7 +908,7 @@ impl Reader {
                     // the original refusal until the caller acknowledges it.
                     && !matches!(
                         self.issues.get(witness),
-                        Some(ReadIssue::Refused(error)) if error.category() == StreamError::NotFound
+                        Some(ReadIssue::Refused(error)) if error.category() == StreamCategory::NotFound
                     )
                 {
                     return Some((OpKey::Head(witness.clone()), Paging::default()));
@@ -1038,7 +1040,7 @@ impl Reader {
         };
         let protect = Some(self.frame_mark);
         let accepted = match (&flight.key, outcome) {
-            (_, Outcome::Failed(error)) if error.category() == StreamError::HierarchyChanged => {
+            (_, Outcome::Failed(error)) if error.category() == StreamCategory::HierarchyChanged => {
                 // This witness covers the whole hierarchy, not just the page
                 // reporting it. Old continuations cannot be rebound to a new
                 // version by an intervening reply or another driver wake.
@@ -1053,7 +1055,9 @@ impl Reader {
                 self.report_issue(flight.key.path(), ReadIssue::HierarchyChanged);
                 return;
             }
-            (_, Outcome::Failed(error)) if error.category() == StreamError::PrefixNotRetained => {
+            (_, Outcome::Failed(error))
+                if error.category() == StreamCategory::PrefixNotRetained =>
+            {
                 self.replaced(flight.key.path());
                 return;
             }

@@ -1,5 +1,5 @@
 //! On-demand checks call the same codecs as transport and recovery.
-use crate::{StreamError, persistence};
+use crate::{StreamCategory, StreamError, persistence};
 use futures::FutureExt as _;
 use prost::Message as _;
 
@@ -89,7 +89,7 @@ pub fn grpc_status(bytes: &[u8]) -> bool {
         }
         let decoded = status(&original);
         let encoded = Status::from(&decoded);
-        if decoded.category() != category(&original)
+        if decoded.category() != category(&original).category()
             || decoded.uncertain() != category(&original).uncertain()
             || encoded.code() != original.code()
             || encoded.message() != original.message()
@@ -167,7 +167,7 @@ pub fn session(bytes: &[u8]) -> bool {
     };
     let output = futures::executor::block_on(output.collect::<Vec<_>>());
     if version.is_some_and(|version| version != session::VERSION) {
-        return matches!(output.as_slice(), [Err(StreamError::Unsupported)]);
+        return matches!(output.as_slice(), [Err(error)] if error.category() == StreamCategory::Unsupported);
     }
     true
 }
@@ -179,7 +179,7 @@ fn truncated_header_is_invalid<T>(
 ) -> bool {
     !bytes.starts_with(domain)
         || bytes.len() >= domain.len() + persistence::FACT_VERSION.len()
-        || matches!(decoded, Err(StreamError::InvalidArgument))
+        || matches!(decoded, Err(error) if error.category() == StreamCategory::InvalidArgument)
 }
 
 pub(crate) fn command(bytes: &[u8]) -> bool {
@@ -217,7 +217,8 @@ pub fn check(bytes: &[u8]) -> bool {
             .find(|operation| operation.as_str() == text);
         match text.parse::<crate::TokenOperation>() {
             Ok(operation) if Some(operation) == expected => {}
-            Err(StreamError::InvalidArgument) if expected.is_none() => {}
+            Err(error)
+                if error.category() == StreamCategory::InvalidArgument && expected.is_none() => {}
             _ => return false,
         }
     }
@@ -234,13 +235,13 @@ pub fn check(bytes: &[u8]) -> bool {
         // varying its record values and fork position with this input.
         let commands = match commands(Some(value.clone())) {
             Ok(commands) => Some(commands),
-            Err(StreamError::LimitExceeded) => None,
+            Err(error) if error.category() == StreamCategory::LimitExceeded => None,
             Err(_) => return false,
         };
         for (_, command) in commands.into_iter().flatten() {
             let command = match command.validated() {
                 Ok(command) => command,
-                Err(StreamError::LimitExceeded) => continue,
+                Err(error) if error.category() == StreamCategory::LimitExceeded => continue,
                 Err(_) => return false,
             };
             if !crate::journal::decode_command(&command.encode_to_vec())
@@ -279,7 +280,7 @@ pub fn check(bytes: &[u8]) -> bool {
                 }
             }
         }
-        Some(Err(StreamError::LimitExceeded)) => {}
+        Some(Err(error)) if error.category() == StreamCategory::LimitExceeded => {}
         Some(Err(_)) | None => return false,
     }
     let observation = persistence::decode_observation(bytes, usize::MAX);
@@ -371,12 +372,12 @@ fn persisted_fact_admitted<T: PartialEq>(
     if decode(&bytes, bytes.len()).as_ref() != Ok(value)
         || encode(value, bytes.len()).as_deref() != Ok(bytes.as_slice())
         || [0, bytes.len() - 1].into_iter().any(|maximum| {
-            !matches!(encode(value, maximum), Err(StreamError::LimitExceeded))
-                || !matches!(decode(&bytes, maximum), Err(StreamError::LimitExceeded))
+            !matches!(encode(value, maximum), Err(error) if error.category() == StreamCategory::LimitExceeded)
+                || !matches!(decode(&bytes, maximum), Err(error) if error.category() == StreamCategory::LimitExceeded)
         })
         || !matches!(
             decode(payload, usize::MAX),
-            Err(StreamError::InvalidArgument)
+            Err(error) if error.category() == StreamCategory::InvalidArgument
         )
         // A valid domain with no version or only its first byte must refuse
         // as malformed before payload interpretation or capacity accounting.
@@ -384,7 +385,7 @@ fn persisted_fact_admitted<T: PartialEq>(
             let Some(prefix) = bytes.get(..end) else {
                 return true;
             };
-            !matches!(decode(prefix, 0), Err(StreamError::InvalidArgument))
+            !matches!(decode(prefix, 0), Err(error) if error.category() == StreamCategory::InvalidArgument)
         })
     {
         return false;
@@ -398,7 +399,7 @@ fn persisted_fact_admitted<T: PartialEq>(
     let Some(header) = bytes.get(..magic.len()) else {
         return false;
     };
-    matches!(decode(header, 0), Err(StreamError::Unsupported))
+    matches!(decode(header, 0), Err(error) if error.category() == StreamCategory::Unsupported)
 }
 
 fn wire_records_admitted(envelope: &crate::CommittedEnvelope) -> bool {

@@ -1,5 +1,5 @@
 use crate::{Error, wire};
-use acyclic_stream::{StreamError, wire_codec::session::FrameDecoder};
+use acyclic_stream::{StreamCategory, StreamError, wire_codec::session::FrameDecoder};
 use prost::Message as _;
 
 pub(crate) fn decoder(maximum: Option<usize>) -> FrameDecoder<wire::AvailabilityCursor> {
@@ -16,7 +16,7 @@ pub(crate) fn decoder(maximum: Option<usize>) -> FrameDecoder<wire::Availability
 
 pub(crate) fn failure(error: StreamError) -> Error {
     let code = match error.category() {
-        StreamError::LimitExceeded => wire::ErrorCode::QuotaExceeded,
+        StreamCategory::LimitExceeded => wire::ErrorCode::QuotaExceeded,
         _ => wire::ErrorCode::Unavailable,
     };
     Error::from(code).with_source(error)
@@ -29,7 +29,7 @@ mod tests {
     #[test]
     fn oversized_availability_frame_retains_quota_and_original_cause() {
         let original = decoder(Some(1)).read(&mut [2].as_slice()).unwrap_err();
-        assert_eq!(original.category(), StreamError::LimitExceeded);
+        assert_eq!(original.category(), StreamCategory::LimitExceeded);
         let error = failure(original.clone());
         assert_eq!(error.code, wire::ErrorCode::QuotaExceeded);
         let source = std::error::Error::source(&error).unwrap();

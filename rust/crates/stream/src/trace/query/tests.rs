@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use crate::{AppendOutcome, IdempotencyKey, MemoryStream, OwnedBytes};
 use futures::TryStreamExt as _;
 use std::sync::Arc;
@@ -104,7 +105,7 @@ async fn original_guard_unlock_precedes_its_trace_settlement()
     };
     drop(observe_guard(request(), mutex.lock()).await);
     assert!(
-        matches!(stream.tail().await, Err(crate::StreamError::NotFound)),
+        matches!(stream.tail().await, Err(error) if error.category() == crate::StreamCategory::NotFound),
         "unobserved guard published diagnostics"
     );
     let recorder = Arc::new(Recorder::new(stream.clone(), [73; 16]));
@@ -238,7 +239,7 @@ async fn concurrent_original_publications_have_no_default_credit_ceiling()
         .submit_start(request())
         .err()
         .ok_or("explicit credit was ignored")?;
-    assert_eq!(error.category(), StreamError::Capacity);
+    assert_eq!(error.category(), StreamCategory::Capacity);
     assert_eq!(bounded.suppressed_spans(), 1);
     let terminal = held.finish_submitted(Some(0), Outcome::Succeeded)?;
     assert!(matches!(

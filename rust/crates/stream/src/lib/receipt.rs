@@ -381,22 +381,28 @@ mod receipt_membership_tests {
             let mut missing = receipt.clone();
             missing.appends.remove(index);
             assert_eq!(
-                missing.validate_request(&request),
-                Err(StreamError::InvalidResponse)
+                missing
+                    .validate_request(&request)
+                    .map_err(|error| error.category()),
+                Err(StreamCategory::InvalidResponse)
             );
             let mut wrong_range = receipt.clone();
             wrong_range.appends[index].tail += 1;
             assert_eq!(
-                wrong_range.validate_request(&request),
-                Err(StreamError::InvalidResponse)
+                wrong_range
+                    .validate_request(&request)
+                    .map_err(|error| error.category()),
+                Err(StreamCategory::InvalidResponse)
             );
         }
         for index in 0..receipt.forks.len() {
             let mut missing = receipt.clone();
             missing.forks.remove(index);
             assert_eq!(
-                missing.validate_request(&request),
-                Err(StreamError::InvalidResponse)
+                missing
+                    .validate_request(&request)
+                    .map_err(|error| error.category()),
+                Err(StreamCategory::InvalidResponse)
             );
             for change in 0..6 {
                 let mut corrupt = receipt.clone();
@@ -410,28 +416,36 @@ mod receipt_membership_tests {
                     _ => fork.revision = base.revision.clone(),
                 }
                 assert_eq!(
-                    corrupt.validate_request(&request),
-                    Err(StreamError::InvalidResponse)
+                    corrupt
+                        .validate_request(&request)
+                        .map_err(|error| error.category()),
+                    Err(StreamCategory::InvalidResponse)
                 );
             }
         }
         let mut reordered = receipt.clone();
         reordered.appends.swap(0, 1);
         assert_eq!(
-            reordered.validate_request(&request),
-            Err(StreamError::InvalidResponse)
+            reordered
+                .validate_request(&request)
+                .map_err(|error| error.category()),
+            Err(StreamCategory::InvalidResponse)
         );
         let mut reordered = receipt.clone();
         reordered.forks.swap(0, 1);
         assert_eq!(
-            reordered.validate_request(&request),
-            Err(StreamError::InvalidResponse)
+            reordered
+                .validate_request(&request)
+                .map_err(|error| error.category()),
+            Err(StreamCategory::InvalidResponse)
         );
         let mut surplus = receipt.clone();
         surplus.appends.push(receipt.appends[0].clone());
         assert_eq!(
-            surplus.validate_request(&request),
-            Err(StreamError::InvalidResponse)
+            surplus
+                .validate_request(&request)
+                .map_err(|error| error.category()),
+            Err(StreamCategory::InvalidResponse)
         );
         // A consistent but shifted range cannot override an original anchor.
         for index in [0, 1, 4] {
@@ -439,8 +453,10 @@ mod receipt_membership_tests {
             shifted.appends[index].start += 1;
             shifted.appends[index].tail += 1;
             assert_eq!(
-                shifted.validate_request(&request),
-                Err(StreamError::InvalidResponse)
+                shifted
+                    .validate_request(&request)
+                    .map_err(|error| error.category()),
+                Err(StreamCategory::InvalidResponse)
             );
         }
         // Present/unconditioned starts have no independent anchor in this
@@ -455,20 +471,26 @@ mod receipt_membership_tests {
         overflow.appends[3].start = u64::MAX;
         overflow.appends[3].tail = 0;
         assert_eq!(
-            overflow.validate_request(&request),
-            Err(StreamError::InvalidResponse)
+            overflow
+                .validate_request(&request)
+                .map_err(|error| error.category()),
+            Err(StreamCategory::InvalidResponse)
         );
         let mut noncanonical = request.clone();
         noncanonical.effects[0].conditions.swap(0, 1);
         assert_eq!(
-            receipt.validate_request(&noncanonical),
-            Err(StreamError::InvalidArgument)
+            receipt
+                .validate_request(&noncanonical)
+                .map_err(|error| error.category()),
+            Err(StreamCategory::InvalidArgument)
         );
         noncanonical = request.clone();
         noncanonical.effects[0].mutations.swap(0, 1);
         assert_eq!(
-            receipt.validate_request(&noncanonical),
-            Err(StreamError::InvalidArgument)
+            receipt
+                .validate_request(&noncanonical)
+                .map_err(|error| error.category()),
+            Err(StreamCategory::InvalidArgument)
         );
         assert_eq!(
             provider.commit(request.clone()).await?,

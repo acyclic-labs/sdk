@@ -852,8 +852,8 @@ mod tests {
             .mutations
             .push(append("a/child/deeper")?);
         assert_eq!(
-            validate_commit(&mut request),
-            Err(StreamError::InvalidArgument)
+            validate_commit(&mut request).map_err(|error| error.category()),
+            Err(crate::StreamCategory::InvalidArgument)
         );
         request
             .effects
@@ -867,8 +867,8 @@ mod tests {
             mutations: vec![append("a/child")?],
         });
         assert_eq!(
-            validate_commit(&mut request),
-            Err(StreamError::InvalidArgument)
+            validate_commit(&mut request).map_err(|error| error.category()),
+            Err(crate::StreamCategory::InvalidArgument)
         );
         Ok(())
     }
@@ -901,8 +901,10 @@ mod tests {
         })??);
         assert!(charged > 0);
         assert_eq!(
-            binding.matches_with(&facts, |_| Err::<(), _>(StreamError::LimitExceeded)),
-            Err(StreamError::LimitExceeded)
+            binding
+                .matches_with(&facts, |_| Err::<(), _>(StreamError::LimitExceeded))
+                .map_err(|error| error.category()),
+            Err(crate::StreamCategory::LimitExceeded)
         );
         let crate::CommittedMutation::Append(append) = &mut facts.mutations[0] else {
             return Err(StreamError::InvalidArgument);

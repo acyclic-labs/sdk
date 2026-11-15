@@ -198,7 +198,10 @@ mod tests {
             wire_codec::provider_cursor(&provider, "follow", &follow.encode_to_vec(), &stale)
                 .await
                 .err();
-        assert_eq!(refused, Some(StreamError::PrefixNotRetained));
+        assert_eq!(
+            refused.map(|error| error.category()),
+            Some(StreamCategory::PrefixNotRetained)
+        );
         Ok(())
     }
 }

@@ -224,8 +224,9 @@ async fn provider_deadline_is_exclusive_and_replay_precedes_time() -> Result<(),
                 deadline_unix_millis: Some(100),
                 ..request.clone()
             })
-            .await,
-        Err(StreamError::DeadlineElapsed)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::DeadlineElapsed)
     );
     assert_eq!(
         provider
@@ -233,8 +234,9 @@ async fn provider_deadline_is_exclusive_and_replay_precedes_time() -> Result<(),
                 deadline_unix_millis: Some(99),
                 ..request.clone()
             })
-            .await,
-        Err(StreamError::DeadlineElapsed)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::DeadlineElapsed)
     );
     let committed = provider
         .commit(CommitRequest {
@@ -273,8 +275,9 @@ async fn provider_deadline_is_exclusive_and_replay_precedes_time() -> Result<(),
                 deadline_unix_millis: Some(1_000),
                 ..retryable.clone()
             })
-            .await,
-        Err(StreamError::DeadlineElapsed)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::DeadlineElapsed)
     );
     assert!(matches!(
         provider
@@ -537,12 +540,15 @@ fn permanent_path_validation_rejects_ambiguous_names() {
     for invalid in [
         "", "/a", "a/", "a//b", ".", "..", "a/./b", "a/../b", "a\n", "a b", "a\\b",
     ] {
-        assert_eq!(StreamPath::new(invalid), Err(StreamError::InvalidPath));
+        assert_eq!(
+            StreamPath::new(invalid).map_err(|error| error.category()),
+            Err(StreamCategory::InvalidPath)
+        );
     }
     assert!(StreamPath::new("a".repeat(crate::MAX_PATH_BYTES)).is_ok());
     assert_eq!(
-        StreamPath::new("a".repeat(crate::MAX_PATH_BYTES + 1)),
-        Err(StreamError::InvalidPath)
+        StreamPath::new("a".repeat(crate::MAX_PATH_BYTES + 1)).map_err(|error| error.category()),
+        Err(StreamCategory::InvalidPath)
     );
     assert!(StreamPath::new("runs/run_42/agents/researcher").is_ok());
 }
@@ -569,8 +575,11 @@ async fn results_and_envelopes_never_expire_or_execute_again() -> Result<(), Str
     };
     clock.0.store(1, Ordering::SeqCst);
     assert_eq!(
-        provider.append(append(b"second")).await,
-        Err(StreamError::Capacity),
+        provider
+            .append(append(b"second"))
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::Capacity),
         "the first result is still retained"
     );
     assert!(
@@ -584,8 +593,11 @@ async fn results_and_envelopes_never_expire_or_execute_again() -> Result<(), Str
     for now in [0, 1, 24 * 60 * 60 * 1_000, u64::MAX] {
         clock.0.store(now, Ordering::SeqCst);
         assert_eq!(
-            provider.append(append(b"second")).await,
-            Err(StreamError::Capacity)
+            provider
+                .append(append(b"second"))
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::Capacity)
         );
         assert_eq!(
             provider.append(append(b"first")).await?,
@@ -602,8 +614,11 @@ async fn results_and_envelopes_never_expire_or_execute_again() -> Result<(), Str
         let mut changed = append(b"first");
         changed.path = path("another/path")?;
         assert_eq!(
-            provider.append(changed).await,
-            Err(StreamError::IdempotencyMismatch)
+            provider
+                .append(changed)
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::IdempotencyMismatch)
         );
     }
     Ok(())

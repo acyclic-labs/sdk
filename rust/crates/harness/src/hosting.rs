@@ -54,7 +54,7 @@ use acyclic_harness_client::{
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     BoxProviderFuture, ChildrenPageRequest, CommitId, HeadProjection, HeadsRequest,
-    ProviderPlatform, RevisionCut, StreamError, StreamPath,
+    ProviderPlatform, RevisionCut, StreamCategory, StreamError, StreamPath,
     session::{CallAuthorization, CallProvider},
 };
 use bytes::Bytes;
@@ -1465,7 +1465,7 @@ where
                         view.validate_for(&request).map_err(Error::Stream)?;
                         view
                     }
-                    Err(error) if error.category() == StreamError::NotFound => {
+                    Err(error) if error.category() == StreamCategory::NotFound => {
                         return Ok(AgentReply::Children {
                             items: Vec::new(),
                             next: None,
@@ -1878,7 +1878,7 @@ where
     async fn tail(&self, path: StreamPath) -> Result<u64, Error> {
         match self.bound.agents().provider().tail(path).await {
             Ok(tail) => Ok(tail),
-            Err(error) if error.category() == StreamError::NotFound => Ok(0),
+            Err(error) if error.category() == StreamCategory::NotFound => Ok(0),
             Err(error) => Err(Error::Stream(error)),
         }
     }
