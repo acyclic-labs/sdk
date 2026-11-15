@@ -192,6 +192,84 @@ async fn patch_application_is_atomic_conflict_checked_and_idempotent() {
     ));
 }
 
+#[tokio::test]
+async fn patch_hunks_end_where_their_headers_say() {
+    let workspace = memory_workspace("git-patch-extents").await;
+    let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x38; 16])).await;
+    for (path, text) in [
+        ("/a.txt", "one\ntwo\nthree\n"),
+        ("/q.sql", "select 1;\n-- drop me\nselect 2;\n"),
+        ("/z.txt", "l1\nl2\nl3\n"),
+        ("/dash.txt", "one\n-\n"),
+    ] {
+        transaction
+            .write_text(path, text)
+            .await
+            .expect("fixture text");
+    }
+    publish_fixture(transaction).await;
+    let patch = b"From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001\n\
+Subject: [PATCH] change\n\n---\n a.txt | 2 +-\n q.sql | 1 -\n z.txt | 1 +\n\n\
+diff --git a/a.txt b/a.txt\nindex 4cb29ea..ddc897f 100644\n--- a/a.txt\n+++ b/a.txt\n\
+@@ -1,3 +1,3 @@\n one\n-two\n+TWO\n three\n\
+diff --git a/q.sql b/q.sql\nindex 0a85231..707b1d1 100644\n--- a/q.sql\n+++ b/q.sql\n\
+@@ -1,3 +1,2 @@\n select 1;\n--- drop me\n select 2;\n\
+diff --git a/z.txt b/z.txt\nindex 0970e47..ee7596b 100644\n--- a/z.txt\n+++ b/z.txt\n\
+@@ -2,0 +3 @@ l2\n+NEW\n\
+diff --git a/dash.txt b/dash.txt\n--- a/dash.txt\n+++ b/dash.txt\n\
+@@ -1,2 +1 @@\n one\n--\n-- \n2.43.0\n\n";
+    let TransactionCommit::Committed(patched) = apply_git_patch(
+        &workspace,
+        patch,
+        IdempotencyKey::from_bytes([0x39; 16]),
+        crate::PublicationPermit::Unrestricted,
+    )
+    .await
+    .expect("apply") else {
+        panic!("patch did not commit");
+    };
+    for (path, expected) in [
+        ("/a.txt", "one\nTWO\nthree\n"),
+        ("/q.sql", "select 1;\nselect 2;\n"),
+        ("/z.txt", "l1\nl2\nNEW\nl3\n"),
+        ("/dash.txt", "one\n"),
+    ] {
+        assert_eq!(
+            unbounded!(patched, read(path, 1_024))
+                .expect("patched file")
+                .as_ref(),
+            expected.as_bytes(),
+            "{path}"
+        );
+    }
+    for damaged in [
+        b"--- a/a.txt\n+++ b/a.txt\n@@ -1,3 +1,3 @@\n one\n-TWO\n+two\n".as_slice(),
+        b"--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1 @@\n one\n+extra\n-TWO\n",
+        b"--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n one\n-TWO\n+two\n",
+        b"--- a/dash.txt\n+++ b/dash.txt\n@@ -1 +1 @@\n one\n--\n",
+        b"--- a/dash.txt\n+++ b/dash.txt\n@@ -1 +1 @@\n one\n--",
+        b"--- a/dash.txt\n+++ b/dash.txt\n@@ -1 +1 @@\n one\n--  \n",
+        b"--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-one\n+ONE\n\n-TWO\n+two\n",
+        b"--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-one\n+ONE\nindex 1111111..2222222 100644\n-TWO\n+two\n",
+    ] {
+        assert!(matches!(
+            apply_git_patch(
+                &workspace,
+                damaged,
+                IdempotencyKey::new(),
+                crate::PublicationPermit::Unrestricted,
+            )
+            .await,
+            Err(GitPatchError::Invalid(_))
+        ));
+        assert_eq!(
+            unbounded!(workspace, head()).expect("head after refusal").id(),
+            patched.id(),
+            "refused patch published a partial edit"
+        );
+    }
+}
+
 #[test]
 fn portable_git_names_decode_canonical_windows_names() {
     let bytes = "source-λ.rs"
