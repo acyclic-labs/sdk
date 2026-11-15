@@ -460,7 +460,7 @@ pub(crate) fn report(event: HookEvent, output: &HookOutput) {
 
 mod output;
 pub(crate) use output::ToolHookDecision;
-pub use output::{HookDiagnostic, HookOutput};
+pub use output::{HookApproval, HookDiagnostic, HookOutput};
 
 mod native;
 #[doc(hidden)]
@@ -475,6 +475,19 @@ thread_local! {
 }
 #[cfg(test)]
 mod tests;
+
+/// The route the shipping dispatcher and decoder give one plugin decision, so
+/// approval tests start from decision bytes rather than a chosen route.
+#[cfg(test)]
+pub(crate) async fn plugin_ask_route(
+    decision: Value,
+) -> Result<Option<crate::interaction::ApprovalRoute>> {
+    let (output, _) = chain::model::judge(vec![chain::model::plugin("ask", None)], "ls", |_, _| {
+        decision.clone()
+    })
+    .await?;
+    Ok(output.approval.map(|approval| approval.route))
+}
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod identity_test_support;

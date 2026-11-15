@@ -12,15 +12,25 @@ pub struct HookOutput {
     /// Reason the guarded action was blocked, returned to the model so it can
     /// choose another action.
     pub blocked: Option<String>,
-    /// A pre-tool hook requested human approval, with its explanation. A refusal
-    /// is returned to the model as the call's ordinary tool failure.
-    pub approval: Option<String>,
+    /// A pre-tool hook requested approval from the approver it named. A
+    /// refusal is returned to the model as the call's ordinary tool failure.
+    pub approval: Option<HookApproval>,
     /// Extra context to include in the next model request.
     pub additional_context: Vec<String>,
     /// Replacement arguments returned by a pre-tool hook.
     pub updated_input: Option<Value>,
     /// Command failures, including explicit failure-policy blocks.
     pub diagnostics: Vec<HookDiagnostic>,
+}
+
+/// A hook's approval request: its explanation and who decides.
+#[derive(Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+pub struct HookApproval {
+    /// The explanation shown to the approver.
+    pub prompt: String,
+    /// The approver the hook named; several hooks keep the strictest.
+    pub route: crate::interaction::ApprovalRoute,
 }
 
 /// A retained process cause and the event's failure policy.
@@ -35,7 +45,10 @@ pub struct HookDiagnostic {
 
 pub(crate) enum ToolHookDecision {
     Allow,
-    RequireApproval { prompt: String },
+    RequireApproval {
+        prompt: String,
+        route: crate::interaction::ApprovalRoute,
+    },
 }
 
 impl HookOutput {
@@ -49,7 +62,9 @@ impl HookOutput {
             return Err(Error::Process(self.diagnostics.remove(0).cause));
         }
         Ok(match self.approval.take() {
-            Some(prompt) => ToolHookDecision::RequireApproval { prompt },
+            Some(HookApproval { prompt, route }) => {
+                ToolHookDecision::RequireApproval { prompt, route }
+            }
             None => ToolHookDecision::Allow,
         })
     }

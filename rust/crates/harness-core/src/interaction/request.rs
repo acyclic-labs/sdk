@@ -12,15 +12,23 @@ pub struct ChoiceOption {
     pub description: Option<String>,
 }
 
-/// The authority that must review this request. Guard requests require a human
+/// The authority that must review this request. A guard names who decides
 /// independently of the ordinary tool policy; the immutable request binds it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
+/// Variants are ordered by authority: folding several guards keeps the
+/// strictest.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, crate::HeapLayout,
+)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalRoute {
     /// Traverse the configured rule, model, parent and human policy chain.
     Policy,
-    /// A guard explicitly requested a human decision.
+    /// A guard requested the policy's model reviewers.
+    Model,
+    /// A guard requested the parent agent's decision.
+    Parent,
+    /// A guard requested a human decision.
     Human,
 }
 

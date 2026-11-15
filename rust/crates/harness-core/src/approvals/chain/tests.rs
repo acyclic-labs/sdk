@@ -384,3 +384,151 @@ async fn automatic_and_parent_decisions_require_their_authenticated_role() -> Re
     );
     Ok(())
 }
+
+/// Every kind of approver, with a rules stage that would allow anything.
+fn every_approver() -> ApprovalPolicy {
+    ApprovalPolicy {
+        approvers: vec![
+            Approver::Rules {
+                principal: "rules".into(),
+                rules: vec![],
+                fallback: RuleVerdict::Allow,
+            },
+            Approver::Llm {
+                principal: "model".into(),
+                model: "independent".into(),
+            },
+            Approver::Parent,
+            Approver::Human {
+                principal: "human".into(),
+            },
+        ],
+    }
+}
+
+/// The request a plugin `{ask, to}` decision produces, routed by the shipping
+/// decoder rather than by the test.
+async fn asked(to: &str) -> Result<Vec<u8>> {
+    let route = crate::hooks::plugin_ask_route(serde_json::json!({"ask": "write?", "to": to}))
+        .await?
+        .expect("an ask decision asks");
+    Ok(request(route))
+}
+
+fn denied(stage: NextStage<'_>, reason: &str) -> bool {
+    matches!(
+        stage,
+        NextStage::Decided(ApprovalReviewFile {
+            verdict: RuleVerdict::Deny,
+            reason: Some(given),
+            ..
+        }) if given == reason
+    )
+}
+
+#[tokio::test]
+async fn a_person_ask_is_reviewed_by_a_person_alone() -> Result<()> {
+    let policy = every_approver();
+    let digest = policy.bind()?.identity().digest;
+    let bytes = asked("person").await?;
+    let request = ApprovalRequest::new("request", &bytes, 4096)?;
+    let parent = AgentId::from_bytes([3; 16]);
+    assert!(matches!(
+        next_stage(
+            &policy,
+            digest,
+            Some(parent),
+            &request,
+            &Files::default(),
+            0
+        )
+        .await?,
+        NextStage::Review {
+            approver: Approver::Human { .. },
+            expected: ApprovalReviewFile { stage: 0, .. },
+            ..
+        }
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_model_ask_is_reviewed_by_the_model_alone() -> Result<()> {
+    let policy = every_approver();
+    let digest = policy.bind()?.identity().digest;
+    let bytes = asked("model").await?;
+    let request = ApprovalRequest::new("request", &bytes, 4096)?;
+    let files = Files::default();
+    let parent = AgentId::from_bytes([3; 16]);
+    // The allowing rules stage is not consulted: the model is the first reviewer.
+    let NextStage::Review {
+        approver: Approver::Llm { .. },
+        mut expected,
+        ..
+    } = next_stage(&policy, digest, Some(parent.clone()), &request, &files, 0).await?
+    else {
+        panic!("a model ask was not reviewed by the model");
+    };
+    assert_eq!(expected.stage, 1);
+    // A model that will not decide denies; no parent or person decides instead.
+    expected.verdict = RuleVerdict::Ask;
+    super::super::files::create_exact(
+        &files,
+        &request.review_path(&expected.principal),
+        serde_json::to_vec(&expected).unwrap(),
+        Some(4096),
+    )
+    .await?;
+    assert!(denied(
+        next_stage(&policy, digest, Some(parent.clone()), &request, &files, 0).await?,
+        "approval chain exhausted without permission"
+    ));
+    // Without a model in the chain, nobody else is asked in its place.
+    let policy = ApprovalPolicy {
+        approvers: vec![
+            Approver::Parent,
+            Approver::Human {
+                principal: "human".into(),
+            },
+        ],
+    };
+    let digest = policy.bind()?.identity().digest;
+    assert!(denied(
+        next_stage(
+            &policy,
+            digest,
+            Some(parent),
+            &request,
+            &Files::default(),
+            0
+        )
+        .await?,
+        "approval model is unavailable"
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_parent_ask_is_reviewed_by_the_parent_alone() -> Result<()> {
+    let policy = every_approver();
+    let digest = policy.bind()?.identity().digest;
+    let bytes = asked("parent").await?;
+    let request = ApprovalRequest::new("request", &bytes, 4096)?;
+    let files = Files::default();
+    let parent = AgentId::from_bytes([3; 16]);
+    let NextStage::Review {
+        approver: Approver::Parent,
+        expected,
+        ..
+    } = next_stage(&policy, digest, Some(parent.clone()), &request, &files, 0).await?
+    else {
+        panic!("a parent ask was not reviewed by the parent");
+    };
+    assert_eq!(expected.principal, format!("parent:{parent}"));
+    // Without a parent, the ask denies rather than reaching a person.
+    assert!(denied(
+        next_stage(&policy, digest, None, &request, &files, 0).await?,
+        "approval parent is unavailable"
+    ));
+    Ok(())
+}

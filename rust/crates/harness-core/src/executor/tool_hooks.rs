@@ -129,7 +129,11 @@ impl StockExecution<'_> {
         operation: OperationId,
         invocation: &ToolInvocation,
         tool: &crate::tool::Tool,
-        (prompt, target): (String, Option<&crate::agent::TargetRecord>),
+        (prompt, route, target): (
+            String,
+            crate::interaction::ApprovalRoute,
+            Option<&crate::agent::TargetRecord>,
+        ),
         started: bool,
     ) -> Result<Option<tool_execution::PolicyStop>> {
         let hooks = self
@@ -145,7 +149,7 @@ impl StockExecution<'_> {
             invocation,
             (prompt, None),
             None,
-            (crate::interaction::ApprovalRoute::Human, target),
+            (route, target),
         )?;
         self.settle_approval(journal, operation, approval, &request, invocation, started)
             .await

@@ -17,7 +17,7 @@ impl Wake for Wakes {
     }
 }
 
-pub(super) fn plugin(instance: &str, matcher: Option<RequestMatch>) -> HookSpec {
+pub(in crate::hooks) fn plugin(instance: &str, matcher: Option<RequestMatch>) -> HookSpec {
     HookSpec {
         run: HookRun::Plugin {
             instance: instance.into(),
@@ -51,7 +51,7 @@ fn configured(event: HookEvent, hooks: Vec<HookSpec>) -> Result<Hooks> {
 
 /// Own protocol decisions, not captured external process results: the callback
 /// supplies the hook function while the original dispatcher owns the schedule.
-pub(super) async fn judge(
+pub(in crate::hooks) async fn judge(
     hooks: Vec<HookSpec>,
     command: &str,
     decide: impl Fn(&str, &str) -> Value,
@@ -413,7 +413,11 @@ pub async fn check(bytes: &[u8]) -> Result<()> {
         }
     } else if output.blocks()
         || output.updated_input != Some(json!({"command":final_input}))
-        || output.approval != Some(format!("run {final_input}?"))
+        || output
+            .approval
+            .as_ref()
+            .map(|approval| approval.prompt.as_str())
+            != Some(format!("run {final_input}?").as_str())
         || order.iter().any(|name| {
             !runs
                 .iter()

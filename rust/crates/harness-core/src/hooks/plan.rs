@@ -80,7 +80,7 @@ impl fmt::Display for Text<'_> {
 
 pub(super) struct Plan<'a> {
     pub(super) blocked: Option<Text<'a>>,
-    pub(super) approval: Option<Text<'a>>,
+    pub(super) approval: Option<(Text<'a>, crate::interaction::ApprovalRoute)>,
     pub(super) context: [Option<Text<'a>>; 2],
     pub(super) input: Option<(&'a RawValue, u64)>,
     pub(super) failure: Option<(ProcessError<Text<'a>>, bool)>,
@@ -240,11 +240,12 @@ impl<'a> Plan<'a> {
             }
         }
         if event == HookEvent::PreToolUse && permission == Some(1) && output.approval.is_none() {
-            plan.approval = Some(
+            plan.approval = Some((
                 specific[2]
                     .map(Text::Json)
                     .unwrap_or(Text::Plain("Approval requested by hook")),
-            );
+                crate::interaction::ApprovalRoute::Human,
+            ));
         }
         if event == HookEvent::PostToolUse && decision == Some(1) {
             plan.context[0] = root[3].map(Text::Json);
@@ -259,7 +260,7 @@ impl<'a> Plan<'a> {
     /// A plugin hook's decision (`BeforeHook` in `sys/types`): exit 2
     /// denies with stderr as the reason; exit 0 with no output allows;
     /// otherwise stdout is `{allow: true, input?}`, `{allow: false, reason}`
-    /// or `{ask, to}`.
+    /// or `{ask, to}`, where `to` is `person`, `model` or `parent`.
     pub(super) fn decision(
         code: Option<i32>,
         stdout: &'a [u8],
@@ -286,8 +287,13 @@ impl<'a> Plan<'a> {
             if allow.is_some() || input.is_some() || reason.is_some() {
                 return Err("an ask decision has only `ask` and `to`");
             }
-            choice(to, &["person"])?.ok_or("an ask decision names `to`")?;
-            plan.approval = Some(Text::Json(ask));
+            let route = match choice(to, &["person", "model", "parent"])? {
+                Some(0) => crate::interaction::ApprovalRoute::Human,
+                Some(1) => crate::interaction::ApprovalRoute::Model,
+                Some(_) => crate::interaction::ApprovalRoute::Parent,
+                None => return Err("an ask decision names `to`"),
+            };
+            plan.approval = Some((Text::Json(ask), route));
             return Ok(plan);
         }
         if to.is_some() {
