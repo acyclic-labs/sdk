@@ -2,7 +2,7 @@
 //! settlement paired with its call, and the call's effect matches it.
 use super::*;
 use acyclic_harness::test_support::ScriptedEvent;
-use coverage::Coverage;
+use family::{Generator, Variant};
 use oracle::{Plan, Prompted, Settled, World, call, done, service, settlements, tag};
 use serde_json::json;
 
@@ -26,7 +26,47 @@ const FAULTS: [&str; 7] = [
 /// Entries one step of this world admits together.
 const ENTRIES: [&str; 4] = ["read", "write", "edit", "remove"];
 
-pub(super) const SEEDS: std::ops::Range<u64> = 0..7;
+/// One world per fault; every world admits every entry.
+pub(super) const GENERATOR: Generator = Generator {
+    class: "A1",
+    seeds: every_admitted_call_settles_exactly_once_whatever_the_fault::VALUES,
+    variants,
+    world,
+};
+
+acyclic_test_support::cases! {
+    module = every_admitted_call_settles_exactly_once_whatever_the_fault,
+    values: u64,
+    runner = super::run,
+    cases = [
+        seed_0 => 0, seed_1 => 1, seed_2 => 2, seed_3 => 3,
+        seed_4 => 4, seed_5 => 5, seed_6 => 6,
+    ],
+}
+
+fn run(seed: u64) -> std::result::Result<(), String> {
+    GENERATOR.run(seed)
+}
+
+fn fault(seed: u64) -> &'static str {
+    FAULTS
+        .get(usize::try_from(seed % FAULTS.len() as u64).unwrap_or(0))
+        .copied()
+        .unwrap_or("none")
+}
+
+fn variants(seed: u64) -> Vec<Variant> {
+    ENTRIES
+        .iter()
+        .map(|entry| {
+            Variant::from([
+                ("entry", *entry),
+                ("fault", fault(seed)),
+                ("topology", "single"),
+            ])
+        })
+        .collect()
+}
 
 fn step(duplicate: bool) -> Vec<acyclic_harness::model::ToolCall> {
     let calls = [
@@ -170,12 +210,9 @@ fn checked(incarnation: &oracle::Incarnation) -> std::result::Result<(), String>
     effects_match(&settlements(last)?, step_ran)
 }
 
-pub(super) fn world(seed: u64, coverage: &mut Coverage) -> std::result::Result<(), String> {
-    let fault = FAULTS
-        .get(usize::try_from(seed % FAULTS.len() as u64).unwrap_or(0))
-        .copied()
-        .unwrap_or("none");
-    let covered = oracle::simulate(seed, move || {
+fn world(seed: u64) -> std::result::Result<bool, String> {
+    let fault = fault(seed);
+    oracle::simulate(seed, move || {
         entry(async move {
             let a1 = prompt("a1");
             let check = prompt("check");
@@ -229,14 +266,5 @@ pub(super) fn world(seed: u64, coverage: &mut Coverage) -> std::result::Result<(
             checked(&incarnation)?;
             Ok(true)
         })
-    })?;
-    if covered {
-        for entry in ENTRIES {
-            coverage.cover(
-                "A1",
-                &[("entry", entry), ("fault", fault), ("topology", "single")],
-            );
-        }
-    }
-    Ok(())
+    })
 }
