@@ -125,12 +125,19 @@ async fn fixture() -> Result<(Host, AgentState)> {
     Ok((host, agent))
 }
 
-async fn append(host: &Host, path: acyclic_stream::StreamPath, bytes: Vec<u8>) -> Result<()> {
+/// Appends the record at `tail`. Its key names that position, so two records
+/// on one stream never share a key.
+async fn append(
+    host: &Host,
+    path: acyclic_stream::StreamPath,
+    tail: u64,
+    bytes: Vec<u8>,
+) -> Result<()> {
     host.stream
         .append(AppendRequest {
-            idempotency_key: IdempotencyKey::new(path.as_str())?,
+            idempotency_key: IdempotencyKey::new(format!("{}@{tail}", path.as_str()))?,
             path,
-            if_tail: Some(0),
+            if_tail: Some(tail),
             records: vec![bytes.into()],
         })
         .await?;
@@ -160,12 +167,14 @@ async fn history(
     append(
         host,
         agent.path.history().map_err(Error::from)?,
+        0,
         crate::contract::canonical_json_bytes(&baseline)?,
     )
     .await?;
     append(
         host,
         agent.path.history().map_err(Error::from)?,
+        1,
         crate::contract::canonical_json_bytes(&checkpoint)?,
     )
     .await
@@ -228,6 +237,7 @@ async fn seed(
     append(
         host,
         agent.path.conversation().map_err(Error::from)?,
+        0,
         entry.encode().map_err(Error::from)?,
     )
     .await?;
