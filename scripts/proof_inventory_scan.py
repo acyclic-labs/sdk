@@ -260,7 +260,8 @@ def cfg_holds(predicates, test):
         if tokens[i] == '=':
             return None, i + 1
         return {'test': test, 'kani': True}.get(word), i
-    values = [value(re.findall(r'\w+|[(),=]', p), 0)[0] for p in predicates]
+    # The end sentinel gives every lookahead a token to read, an atom ending the predicate included.
+    values = [value(re.findall(r'\w+|[(),=]', p) + [''], 0)[0] for p in predicates]
     return False if False in values else None if None in values else True
 
 
