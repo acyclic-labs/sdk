@@ -14,6 +14,6 @@ export * from "./durable.js";
 export * as liveUpdate from "./live-update.js";
 
 export { bindingRequest, bindingResponse, bindingSignal, readBindingRequestBody, type Fetch } from "./binding-fetch.js";
-export { materializeActorState, type ActorStateHost, type ActorStateBinding, type ActorStateTransaction } from "./state-binding.js";
+export { materializeActorState, finishActorState, type ActorStateHost, type ActorStateBinding, type ActorStateTransaction } from "./state-binding.js";
 
 export { AUTHORIZATION, type ActorsMethod } from "./generated/authorization.js";

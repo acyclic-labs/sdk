@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {materializeActorState} from '../dist/state-binding.js';
+import {materializeActorState, finishActorState} from '../dist/state-binding.js';
 
 // Only the admitted host seam is scripted here. The shared guest projection
 // owns staging, byte isolation, transaction lifetimes and publication fencing.
@@ -11,6 +11,34 @@ function host(seed = {metadata:[],journalTail:'0'}) {
     fence(reason) { this.fences.push(reason); },
   };
 }
+
+test('finishing preserves durable flushes and hands remaining state to the delivery publisher', async () => {
+  const owner = host(), binding = materializeActorState(owner);
+  const durable = Promise.withResolvers();
+  owner.commit = async request => {owner.commits.push(request); await durable.promise;};
+  binding.transaction(state => {
+    state.put('value',Uint8Array.of(1));
+    state.appendJournal(0n,[Uint8Array.of(11)]);
+  });
+  const flushed = binding.flush();
+  binding.transaction(state => {
+    state.put('value',Uint8Array.of(2));
+    state.appendJournal(1n,[Uint8Array.of(22)]);
+    state.alarm(9007199254740993n);
+  });
+  const finished = finishActorState(binding);
+  assert.throws(() => binding.transaction(() => {}), /fenced/);
+  durable.resolve();
+  await flushed;
+  assert.equal(owner.commits.length,1,'the final packet must not flush independently');
+  assert.deepEqual(owner.commits[0].journal,[Uint8Array.of(11)]);
+  assert.deepEqual(await finished,{
+    writes:[{key:'value',value:Uint8Array.of(2)}],deletions:[],journalFrom:'1',
+    journal:[Uint8Array.of(22)],alarm:{type:'set',deadline:'9007199254740993'},
+  });
+  await assert.rejects(finishActorState(binding), /original actor state projection required/);
+  assert.deepEqual(owner.fences,[]);
+});
 
 test('state bytes do not alias the seed, inputs, reads or journal pages', async () => {
   const seed = Uint8Array.of(1), page = Uint8Array.of(2);
@@ -181,9 +209,9 @@ test('a transaction during an in-flight flush stages the next packet, dispatched
   assert.deepEqual(owner.fences,[]);
 });
 
-test('a rejected commit preserves its cause, fences the binding and never redispatches', async () => {
+test('a revoked commit preserves its typed cause, fences the binding and never redispatches', async () => {
   const owner = host(), binding = materializeActorState(owner);
-  const refusal = new Error('publication outcome unknown');
+  const refusal = {type:'revoked'};
   const entered = Promise.withResolvers(), completed = Promise.withResolvers();
   owner.commit = async request => { owner.commits.push(request); entered.resolve(); await completed.promise; };
   binding.transaction(state => state.put('value',Uint8Array.of(1)));
@@ -195,8 +223,8 @@ test('a rejected commit preserves its cause, fences the binding and never redisp
   completed.reject(refusal);
   await rejected;
   assert.deepEqual(owner.fences,[refusal]);
-  assert.throws(() => binding.transaction(() => {}),/fenced/);
-  await assert.rejects(binding.flush(),/fenced/);
-  await assert.rejects(binding.readJournal(0n,1),/fenced/);
+  assert.throws(() => binding.transaction(() => {}),error => error === refusal);
+  await assert.rejects(binding.flush(),error => error === refusal);
+  await assert.rejects(binding.readJournal(0n,1),error => error === refusal);
   assert.equal(owner.commits.length,1);
 });

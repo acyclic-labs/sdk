@@ -16,9 +16,9 @@ pub(super) const RUNTIME: char = '_';
 pub(super) const CUSTODY: &str = "custody";
 
 /// The one reservation check at the effect boundary: whether `mutation`
-/// writes a runtime-owned stream, either the actor `owner`'s control records
-/// or any runtime namespace of its state root (every root child named with a
-/// leading `_`: deadline windows, dispatcher checkpoints, sockets). No actor
+/// writes a runtime-owned stream: the actor `owner`'s control records or
+/// journal, or any runtime namespace of its state root (every root child named
+/// with a leading `_`: deadline windows, dispatcher checkpoints, sockets). No actor
 /// path can be one, since an encoded actor component starts with `%`. The
 /// sole exception is an append to a shard's activation log itself: every
 /// producer's wake entry, a hint the dispatcher ignores when malformed.
@@ -46,7 +46,7 @@ pub(super) fn targets_host_records(mutation: &CommitMutation, owner: &StreamPath
         .as_str()
         .strip_prefix(owner.as_str())
         .and_then(|suffix| suffix.strip_prefix('/'));
-    [DIRECTORY, CUSTODY, "placement"]
+    [DIRECTORY, CUSTODY, "placement", "journal"]
         .into_iter()
         .any(|reserved| {
             relative

@@ -6,14 +6,16 @@
 export interface ActorStateBinding {
   /** Synchronous, non-nesting callback. A thrown error rolls back only this
    * callback. Returning a Promise is refused; transaction handles expire at return.
-   * No mutation is durable before flush resolves. */
+   * Mutations become durable when flush resolves or the delivery's final
+   * publication commits. */
   transaction<T>(operation: (state: ActorStateTransaction) => T extends PromiseLike<unknown> ? never : T): T;
   /** Original conditional commit of all pending metadata, journal appends and
    * alarm. Resolves only after every packet staged before the call is durable.
    * Packets commit strictly in order, one at a time; a transaction made while a
    * flush is in flight stages the next packet. Rejection/cancellation fences this
    * activation; the host retains any unknown publication and NEVER retries it
-   * by re-entering the guest callback. */
+   * by re-entering the guest callback. Loss of placement ownership rejects
+   * with the canonical GuestError.revoked value, retained after fencing. */
   flush(): Promise<void>;
   /** Paged journal frames at the original committed actor cut, excluding staged
    * and in-flight writes and later owner epochs. A missing/corrupt frame rejects,
@@ -52,6 +54,17 @@ export interface ActorStateHost {
 }
 
 let activeTransaction = false;
+const finishes = new WeakMap<ActorStateBinding, () => Promise<import("./generated/guest.js").ActorStateCommit | undefined>>();
+
+/** Close a delivery's shared projection and transfer its remaining packet to
+ * the original native delivery publisher. Accepted flushes finish first and
+ * remain durable independently; this packet is durable only with the final
+ * checkpoint, effects and input acknowledgement. All aliases close together. */
+export async function finishActorState(binding: ActorStateBinding): Promise<import("./generated/guest.js").ActorStateCommit | undefined> {
+  const finish = finishes.get(binding);
+  if (!finish) throw new TypeError("original actor state projection required");
+  return finish();
+}
 const U64_MAX = (1n << 64n) - 1n;
 function position(value: bigint): bigint {
   if (typeof value !== "bigint" || value < 0n || value > U64_MAX) throw new RangeError("invalid actor journal position");
@@ -74,9 +87,20 @@ export function materializeActorState(host: ActorStateHost): ActorStateBinding {
   let journal: Uint8Array[] = [];
   let alarm: import("./generated/guest.js").ActorStateAlarm = {type:"keep"};
   let pending = false, fenced = false;
+  let failure: unknown;
   let committing: Promise<void> = Promise.resolve();
-  const usable = () => { if (fenced) throw new Error("actor state binding fenced"); };
-  return Object.freeze({
+  const usable = () => { if (fenced) throw failure ?? new Error("actor state binding fenced"); };
+  const take = (): import("./generated/guest.js").ActorStateCommit | undefined => {
+    if (!pending) return undefined;
+    const assignments: {key: string; value: Uint8Array}[] = [], deletions: string[] = [];
+    for (const [key,value] of writes) {
+      if (value === null) deletions.push(key); else assignments.push({key,value});
+    }
+    const request = {writes:assignments, deletions, journalFrom:staged.toString(), journal, alarm};
+    staged += BigInt(journal.length); writes = new Map(); journal = []; alarm = {type:"keep"}; pending = false;
+    return request;
+  };
+  const binding: ActorStateBinding = Object.freeze({
     transaction<T>(operation: (state: ActorStateTransaction) => T extends PromiseLike<unknown> ? never : T): T {
       usable();
       if (activeTransaction) throw new Error("nested actor state transaction");
@@ -137,20 +161,15 @@ export function materializeActorState(host: ActorStateHost): ActorStateBinding {
     async flush(): Promise<void> {
       usable();
       if (activeTransaction) throw new Error("flush inside actor state transaction");
-      if (pending) {
-        const assignments: {key: string; value: Uint8Array}[] = [], deletions: string[] = [];
-        for (const [key,value] of writes) {
-          if (value === null) deletions.push(key); else assignments.push({key,value});
-        }
-        const request = {writes:assignments, deletions, journalFrom:staged.toString(), journal, alarm};
-        const appended = BigInt(journal.length), previous = committing;
-        staged += appended; writes = new Map(); journal = []; alarm = {type:"keep"}; pending = false;
+      const request = take();
+      if (request) {
+        const appended = BigInt(request.journal.length), previous = committing;
         // A packet dispatches only after its predecessor is durable; a failed
         // predecessor rejects every successor with its original cause, undispatched.
         committing = (async () => {
           await previous;
           try { await host.commit(request); }
-          catch (error) { fenced = true; host.fence(error); throw error; }
+          catch (error) { failure = error; fenced = true; host.fence(error); throw error; }
           durable += appended;
         })();
       }
@@ -162,4 +181,13 @@ export function materializeActorState(host: ActorStateHost): ActorStateBinding {
       return (await host.readJournal(from, limit)).map(copy);
     },
   });
+  finishes.set(binding, async () => {
+    usable();
+    if (activeTransaction) throw new Error("finish inside actor state transaction");
+    finishes.delete(binding);
+    fenced = true;
+    await committing;
+    return take();
+  });
+  return binding;
 }

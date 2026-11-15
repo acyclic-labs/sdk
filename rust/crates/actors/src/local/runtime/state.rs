@@ -9,6 +9,14 @@ struct StateOwner<P: StreamProvider + ?Sized> {
     epoch: u64,
     receiver: tokio::sync::mpsc::Receiver<StateCommand>,
     conditions: Vec<acyclic_stream::CommitCondition>,
+    staged: Option<crate::guest::ActorStateCommit>,
+}
+
+fn state_error(error: &Error) -> GuestError {
+    match error {
+        Error::Conflict => GuestError::Revoked,
+        _ => GuestError::Pending(error.to_string()),
+    }
 }
 
 impl<P: StreamProvider + ?Sized> StateOwner<P> {
@@ -57,12 +65,16 @@ impl<P: StreamProvider + ?Sized> StateOwner<P> {
                                 .collect()));
                         }
                         Err(error) => {
-                            let _ = reply.send(Err(GuestError::Pending(error.to_string())));
+                            let _ = reply.send(Err(state_error(&error)));
                             return Err(error);
                         }
                     }
                 }
                 StateCommand::Commit(packet, reply) => {
+                    if self.staged.is_some() {
+                        let _ = reply.send(Err(GuestError::Revoked));
+                        continue;
+                    }
                     let result = async {
                         let mut binding = self
                             .store
@@ -83,9 +95,17 @@ impl<P: StreamProvider + ?Sized> StateOwner<P> {
                             let _ = reply.send(Ok(()));
                         }
                         Err(error) => {
-                            let _ = reply.send(Err(GuestError::Pending(error.to_string())));
+                            let _ = reply.send(Err(state_error(&error)));
                             return Err(error);
                         }
+                    }
+                }
+                StateCommand::Stage(packet, reply) => {
+                    if self.staged.is_some() {
+                        let _ = reply.send(Err(GuestError::Revoked));
+                    } else {
+                        self.staged = Some(packet);
+                        let _ = reply.send(Ok(()));
                     }
                 }
             }
@@ -132,6 +152,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     epoch,
                     receiver,
                     conditions: self.handler.publication_conditions(actor),
+                    staged: None,
                 }
             });
         let delivery = delivery(request.id());
@@ -194,6 +215,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         };
         drop(request);
         if let Some(owner) = owner {
+            inner.staged_state = if result.is_ok() { owner.staged } else { None };
             *cut = owner.snapshot;
         }
         match result {
