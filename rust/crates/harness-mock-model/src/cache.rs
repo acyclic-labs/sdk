@@ -131,84 +131,82 @@ impl PromptCache {
                 .cloned()
                 .unwrap_or_default()
         };
-        // (boundaries, readable indexes, written indexes, whether writes are reported)
-        let (all, readable, writes, reported): (Vec<Boundary>, Vec<usize>, Vec<usize>, bool) =
-            match path {
-                "messages" => {
-                    let marked_system = body["system"]
-                        .as_array()
-                        .and_then(|blocks| blocks.last())
-                        .is_some_and(|block| block.get("cache_control").is_some());
-                    let automatic = body.get("cache_control").is_some();
-                    let mut head = serde_json::json!({
-                        "model": field("model"), "tools": field("tools"), "system": field("system"),
-                    });
-                    strip(&mut head);
-                    let blocks = content_blocks(items("messages"));
-                    let all = boundaries("messages", &head, &blocks, width);
-                    let end = blocks.len();
-                    let mut points = Vec::new();
-                    if marked_system {
-                        points.push(0);
-                    }
-                    let mut readable = points.clone();
-                    if automatic {
-                        readable.extend(end.saturating_sub(LOOKBACK - 1)..=end);
-                        points.push(end);
-                    }
-                    (all, readable, points, true)
+        // (readable boundaries, written boundaries, whether writes are reported)
+        let (readable, writes, reported): (Vec<Boundary>, Vec<Boundary>, bool) = match path {
+            "messages" => {
+                let marked_system = body
+                    .get("system")
+                    .and_then(Value::as_array)
+                    .and_then(|blocks| blocks.last())
+                    .is_some_and(|block| block.get("cache_control").is_some());
+                let automatic = body.get("cache_control").is_some();
+                let mut head = serde_json::json!({
+                    "model": field("model"), "tools": field("tools"), "system": field("system"),
+                });
+                strip(&mut head);
+                let blocks = content_blocks(items("messages"));
+                let all = boundaries("messages", &head, &blocks, width);
+                let mut points = Vec::new();
+                if marked_system {
+                    points.extend(all.first().copied());
                 }
-                "responses" | "chat/completions" => {
-                    // OpenAI refuses longer keys; the request is never cached.
-                    let key = match body.get("prompt_cache_key") {
-                        Some(Value::String(key)) if key.len() <= MAX_KEY => key.as_str(),
-                        None if path == "chat/completions" && self.implicit_chat => path,
-                        _ => return accept(Cached::default()),
-                    };
-                    let (name, head) = if path == "responses" {
-                        (
-                            "input",
-                            serde_json::json!({"model": field("model"), "tools": field("tools"), "instructions": field("instructions")}),
-                        )
-                    } else {
-                        (
-                            "messages",
-                            serde_json::json!({"model": field("model"), "tools": field("tools")}),
-                        )
-                    };
-                    let messages = items(name);
-                    let all = boundaries(key, &head, &messages, width);
-                    let end = messages.len();
-                    let routed = body.get("cache_control").is_some();
-                    (all, (0..=end).collect(), (0..=end).collect(), routed)
+                let mut readable = points.clone();
+                if automatic {
+                    // The last LOOKBACK boundaries, ending at the request's end.
+                    readable.extend(all.iter().rev().take(LOOKBACK).rev().copied());
+                    points.extend(all.last().copied());
                 }
-                path if path.starts_with("models/") => {
-                    let head = serde_json::json!({
-                        "systemInstruction": field("systemInstruction"), "tools": field("tools"),
-                    });
-                    let contents = items("contents");
-                    let all = boundaries(path, &head, &contents, width);
-                    let end = contents.len();
-                    (all, (0..=end).collect(), (0..=end).collect(), false)
-                }
-                _ => return accept(Cached::default()),
-            };
+                (readable, points, true)
+            }
+            "responses" | "chat/completions" => {
+                // OpenAI refuses longer keys; the request is never cached.
+                let key = match body.get("prompt_cache_key") {
+                    Some(Value::String(key)) if key.len() <= MAX_KEY => key.as_str(),
+                    None if path == "chat/completions" && self.implicit_chat => path,
+                    _ => return accept(Cached::default()),
+                };
+                let (name, head) = if path == "responses" {
+                    (
+                        "input",
+                        serde_json::json!({"model": field("model"), "tools": field("tools"), "instructions": field("instructions")}),
+                    )
+                } else {
+                    (
+                        "messages",
+                        serde_json::json!({"model": field("model"), "tools": field("tools")}),
+                    )
+                };
+                let messages = items(name);
+                let all = boundaries(key, &head, &messages, width);
+                let routed = body.get("cache_control").is_some();
+                (all.clone(), all, routed)
+            }
+            path if path.starts_with("models/") => {
+                let head = serde_json::json!({
+                    "systemInstruction": field("systemInstruction"), "tools": field("tools"),
+                });
+                let contents = items("contents");
+                let all = boundaries(path, &head, &contents, width);
+                (all.clone(), all, false)
+            }
+            _ => return accept(Cached::default()),
+        };
         let read = readable
             .iter()
-            .filter(|&&index| self.written.contains(&all[index].id))
-            .map(|&index| all[index].tokens)
+            .filter(|boundary| self.written.contains(&boundary.id))
+            .map(|boundary| boundary.tokens)
             .max()
             .unwrap_or(0);
-        let mut furthest = read;
-        for &index in &writes {
-            furthest = furthest.max(all[index].tokens);
-        }
+        let furthest = writes
+            .iter()
+            .map(|boundary| boundary.tokens)
+            .fold(read, u64::max);
         let result = accept(Cached {
             read,
             write: if reported { furthest - read } else { 0 },
         })?;
         self.written
-            .extend(writes.into_iter().map(|index| all[index].id));
+            .extend(writes.into_iter().map(|boundary| boundary.id));
         Some(result)
     }
 }

@@ -109,24 +109,27 @@ fn bind(value: &mut Value, request: &Value, result: &Value) -> Result<(), String
             let mut rest = text.as_str();
             let mut output = String::new();
             loop {
+                // The earliest placeholder, split around its first occurrence.
                 let candidate = [("{{request:", request), ("{{tool_result:", result)]
                     .into_iter()
                     .filter_map(|(prefix, source)| {
-                        rest.find(prefix).map(|index| (index, prefix, source))
+                        rest.split_once(prefix)
+                            .map(|(before, after)| (before, after, source))
                     })
-                    .min_by_key(|(index, _, _)| *index);
-                let Some((index, prefix, source)) = candidate else {
+                    .min_by_key(|(before, _, _)| before.len());
+                let Some((before, after, source)) = candidate else {
                     break;
                 };
-                output.push_str(&rest[..index]);
-                rest = &rest[index + prefix.len()..];
-                let end = rest.find("}}").ok_or("unterminated request template")?;
-                let copied = lookup(source, &rest[..end])?;
+                output.push_str(before);
+                let (name, remainder) = after
+                    .split_once("}}")
+                    .ok_or("unterminated request template")?;
+                let copied = lookup(source, name)?;
                 match copied.as_str() {
                     Some(text) => output.push_str(text),
                     None => output.push_str(&copied.to_string()),
                 }
-                rest = &rest[end + 2..];
+                rest = remainder;
             }
             output.push_str(rest);
             *text = output;
