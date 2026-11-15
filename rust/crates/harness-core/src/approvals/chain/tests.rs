@@ -127,13 +127,14 @@ async fn agent_reviews_escalate_in_order_and_external_files_never_grant_authorit
             ..
         }
     ));
-    // A gone parent refuses the action even if a later human could approve it.
+    // A root has no parent stage: the same chain advances to its human.
     assert!(matches!(
         next_stage(&policy, digest, None, &request, &files, 0).await?,
-        NextStage::Decided(ApprovalReviewFile {
-            verdict: RuleVerdict::Deny,
+        NextStage::Review {
+            approver: Approver::Human { .. },
+            expected: ApprovalReviewFile { stage: 3, .. },
             ..
-        })
+        }
     ));
     // Parent mode only advances through its authenticated owner, never through
     // the Allow review above. A caller may inspect the human stage explicitly.
@@ -144,6 +145,81 @@ async fn agent_reviews_escalate_in_order_and_external_files_never_grant_authorit
             ..
         }
     ));
+    Ok(())
+}
+
+/// A root's parent stage is absent, not a refusal; exhaustion is the only
+/// implicit deny. A child's parent stage still routes to its parent.
+#[tokio::test]
+async fn a_root_skips_its_absent_parent_stage_and_only_exhaustion_denies() -> Result<()> {
+    let bytes = request(ApprovalRoute::Policy);
+    let request = ApprovalRequest::new("request", &bytes, 4096)?;
+    let files = Files::default();
+    let parent = AgentId::from_bytes([3; 16]);
+    let alone = ApprovalPolicy {
+        approvers: vec![Approver::Parent],
+    };
+    let digest = alone.bind()?.identity().digest;
+    let NextStage::Decided(review) = next_stage(&alone, digest, None, &request, &files, 0).await?
+    else {
+        panic!("a root with only a parent stage did not decide");
+    };
+    assert_eq!(
+        (review.principal.as_str(), review.verdict, review.stage),
+        ("policy:exhausted", RuleVerdict::Deny, 1)
+    );
+    let allowing = ApprovalPolicy {
+        approvers: vec![
+            Approver::Parent,
+            Approver::Rules {
+                principal: "rules".into(),
+                rules: vec![],
+                fallback: RuleVerdict::Allow,
+            },
+        ],
+    };
+    let digest = allowing.bind()?.identity().digest;
+    let NextStage::Review {
+        approver: approver @ Approver::Rules { .. },
+        expected,
+        ..
+    } = next_stage(&allowing, digest, None, &request, &files, 0).await?
+    else {
+        panic!("a root did not advance past its absent parent stage");
+    };
+    assert_eq!(expected.stage, 1);
+    let journal = crate::executor::tests::Journal::default();
+    let review = super::super::automatic_agent_review(
+        (&journal, None),
+        &BTreeMap::new(),
+        &files,
+        &request,
+        approver,
+        expected,
+        crate::conversation::Limits::default(),
+    )
+    .await?;
+    assert_eq!(review.verdict, RuleVerdict::Allow);
+    assert!(matches!(
+        next_stage(&allowing, digest, None, &request, &files, 0).await?,
+        NextStage::Decided(ApprovalReviewFile {
+            verdict: RuleVerdict::Allow,
+            stage: 1,
+            ..
+        })
+    ));
+    let NextStage::Review {
+        approver: Approver::Parent,
+        expected,
+        ..
+    } = next_stage(&allowing, digest, Some(parent.clone()), &request, &files, 0).await?
+    else {
+        panic!("a child's parent stage did not route to its parent");
+    };
+    assert_eq!(
+        (expected.principal, expected.stage),
+        (format!("parent:{parent}"), 0)
+    );
     Ok(())
 }
 

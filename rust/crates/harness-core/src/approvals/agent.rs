@@ -53,7 +53,8 @@ fn decision_path(id: &str, principal: &str) -> String {
 }
 
 /// The bound policy chain of one agent: its policy (the human default when the
-/// agent has none), the parent that answers parent stages, and the independent
+/// agent has none), the parent that answers parent stages (none for a root,
+/// whose parent stages are absent), and the independent
 /// models of automatic stages.
 pub struct AgentApprovalPolicy {
     owner: AgentId,

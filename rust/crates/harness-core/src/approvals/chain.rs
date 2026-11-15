@@ -29,16 +29,21 @@ pub enum NextStage<'a> {
 }
 
 /// One traversal decides the active policy stage for execution and every client.
+///
+/// `owner_parent` is the parent of the agent that owns the request, or `None`
+/// when that agent is a root. A root has no parent stage: it is absent, and the
+/// traversal advances to the next approver. Only an exhausted chain denies
+/// implicitly.
 pub async fn next_stage<'a>(
     policy: &'a ApprovalPolicy,
     digest: [u8; 32],
-    parent: Option<AgentId>,
+    owner_parent: Option<AgentId>,
     request: &ApprovalRequest<'_>,
     files: &dyn ApprovalFiles,
     start: usize,
 ) -> Result<NextStage<'a>> {
     use crate::runtime::ToolPolicy as _;
-    let parent = parent.map(|parent| format!("parent:{parent}"));
+    let parent = owner_parent.map(|parent| format!("parent:{parent}"));
     if policy.bind()?.identity().digest != digest {
         return Err(Error::Conflict("approval policy digest changed".into()));
     }
@@ -106,16 +111,7 @@ pub async fn next_stage<'a>(
             | Approver::Human { principal } => principal.clone(),
             Approver::Parent => match &parent {
                 Some(parent) => parent.to_owned(),
-                None => {
-                    return Ok(NextStage::Decided(ApprovalReviewFile {
-                        principal: "policy:exhausted".into(),
-                        request_sha256: hash,
-                        policy_digest: digest,
-                        stage,
-                        verdict: RuleVerdict::Deny,
-                        reason: Some("approval parent is unavailable".into()),
-                    }));
-                }
+                None => continue,
             },
         };
         let expected = ApprovalReviewFile {
@@ -180,7 +176,7 @@ pub enum ApprovalResponder<'a> {
     Rules(&'a str),
     /// Independent model owner identity.
     Llm(&'a str),
-    /// Internal exhaustion or parent-unavailable refusal.
+    /// Internal refusal of an exhausted chain.
     Policy,
 }
 
@@ -191,7 +187,7 @@ pub enum ApprovalResponder<'a> {
 pub async fn validate_agent_decision(
     policy: &ApprovalPolicy,
     digest: [u8; 32],
-    parent: Option<AgentId>,
+    owner_parent: Option<AgentId>,
     request: &ApprovalRequest<'_>,
     files: &dyn ApprovalFiles,
     responder: ApprovalResponder<'_>,
@@ -221,7 +217,7 @@ pub async fn validate_agent_decision(
             "approval decision binding differs".into(),
         ));
     }
-    let allowed = match next_stage(policy, digest, parent, request, files, 0).await? {
+    let allowed = match next_stage(policy, digest, owner_parent, request, files, 0).await? {
         NextStage::Review {
             approver: Approver::Human { .. },
             expected,

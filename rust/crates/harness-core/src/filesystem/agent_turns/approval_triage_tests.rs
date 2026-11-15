@@ -83,13 +83,20 @@ async fn family(
 async fn family_with(
     executors: Arc<dyn TurnExecutors>,
 ) -> TestResult<(Binding, AgentPath, Vec<AgentState>)> {
-    let (bound, parent) = crate::filesystem::hosting::binding_with(
+    family_under(
         executors,
         ApprovalPolicy {
             approvers: vec![Approver::Parent],
         },
     )
-    .await?;
+    .await
+}
+
+async fn family_under(
+    executors: Arc<dyn TurnExecutors>,
+    policy: ApprovalPolicy,
+) -> TestResult<(Binding, AgentPath, Vec<AgentState>)> {
+    let (bound, parent) = crate::filesystem::hosting::binding_with(executors, policy).await?;
     let sender = Sender::User {
         principal: "human".into(),
     };
@@ -948,7 +955,20 @@ async fn ended_parent_refuses(archived: bool) -> TestResult {
         ]))),
     )
     .with_models(original_models(model.clone()));
-    let (bound, parent, children) = family_with(Arc::new(executors)).await?;
+    // A later human could approve every child action, so a refusal shows the
+    // ended parent decided it, not an exhausted chain.
+    let (bound, parent, children) = family_under(
+        Arc::new(executors),
+        ApprovalPolicy {
+            approvers: vec![
+                Approver::Parent,
+                Approver::Human {
+                    principal: "human".into(),
+                },
+            ],
+        },
+    )
+    .await?;
     let child = &children[0];
     let turns = bound.turns();
     let sender = Sender::User {
@@ -1024,6 +1044,7 @@ async fn ended_parent_refuses(archived: bool) -> TestResult {
     );
     bound.agents().drain(&child.path).await?;
     let settled = bound.agents().state(&child.path).await?;
+    // A gone parent refuses the action even if a later human could approve it.
     assert!(
         settled.turn.is_none(),
         "the child still waits on its parent"
