@@ -9,6 +9,9 @@ use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 pub(crate) mod availability;
 
 #[cfg(not(target_arch = "wasm32"))]
+mod simulation;
+
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod budget;
 #[cfg(not(target_arch = "wasm32"))]
 use budget::Budget;

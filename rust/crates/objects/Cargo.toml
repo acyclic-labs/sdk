@@ -74,6 +74,7 @@ wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
 acyclic-test-support = { path = "../test-support" }
 tempfile = "3.27.0"
 http-body-util = "0.1"

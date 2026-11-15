@@ -11,14 +11,23 @@ use std::{fmt, ops::Range, time::Duration};
 /// names `u64::MAX`, so a typo never silently runs the wrong range or none.
 #[must_use]
 pub fn seeds(default: Range<u64>) -> Range<u64> {
+    let parse = |name: &str, value: &str| -> u64 {
+        value
+            .parse()
+            .unwrap_or_else(|_| panic!("{name}: {value:?} is not a u64"))
+    };
     if let Ok(seed) = std::env::var("DST_SEED") {
-        let seed: u64 = seed.parse().expect("DST_SEED=<u64>");
-        return seed..seed.checked_add(1).expect("DST_SEED below u64::MAX");
+        let seed = parse("DST_SEED", &seed);
+        let end = seed
+            .checked_add(1)
+            .unwrap_or_else(|| panic!("DST_SEED must be below u64::MAX"));
+        return seed..end;
     }
     if let Ok(range) = std::env::var("DST_SEEDS") {
-        let (start, end) = range.split_once("..").expect("DST_SEEDS=<start>..<end>");
-        let seeds: Range<u64> =
-            start.parse().expect("DST_SEEDS start")..end.parse().expect("DST_SEEDS end");
+        let Some((start, end)) = range.split_once("..") else {
+            panic!("DST_SEEDS={range:?} is not <start>..<end>");
+        };
+        let seeds = parse("DST_SEEDS start", start)..parse("DST_SEEDS end", end);
         // An empty range would pass without running a single world.
         assert!(seeds.start < seeds.end, "DST_SEEDS={range} selects no seed");
         return seeds;
