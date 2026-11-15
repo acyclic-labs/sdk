@@ -4532,6 +4532,61 @@ async fn tool_free_checkout_sessions_read_their_own_logical_context_without_moun
     Ok(())
 }
 
+/// The root's project opens as the root even when the root's recorded volumes
+/// differ from the session triple: the volume's own lineage, not a comparison
+/// of binding tables, selects the root path.
+#[tokio::test]
+async fn a_root_project_with_other_recorded_volumes_opens_as_the_root() -> Result<()> {
+    let checkout = tempfile::tempdir().map_err(agent)?;
+    let state = tempfile::tempdir().map_err(agent)?;
+    std::fs::write(checkout.path().join("root.txt"), "ROOT").map_err(agent)?;
+    let harness = Arc::new(
+        super::open_scripted(
+            crate::test_support::local_harness_config(
+                checkout.path(),
+                (
+                    crate::model::Model::new("scripted".into(), "test".into(), "1".into())?,
+                    super::scripted(std::iter::empty()),
+                ),
+            )?
+            .state_directory(state.path())
+            .without_default_tools(),
+        )
+        .await?,
+    );
+    let (agents, root) = harness.agents().await?;
+    let root = root.clone();
+    let recorded = agents.state(&root).await.map_err(agent)?.volumes;
+    let project = recorded
+        .iter()
+        .find(|binding| binding.name == "project")
+        .ok_or_else(|| Error::Invalid("root has no project".into()))?;
+    assert_eq!(project.volume()?, &harness.project);
+    let workspace = harness.workspace.as_ref().unwrap();
+    let view = workspace.spawned_project_view(project.volume()?).await?;
+    assert_eq!(view.workspace().id(), workspace.view().workspace().id());
+    // Without the home and shared entries the tables differ, so the root
+    // binds a task view of its own project rather than reusing the session.
+    let differing = vec![project.clone()];
+    let (signed, verifier) = harness
+        .agents
+        .get()
+        .unwrap()
+        .server()
+        .bound()
+        .volume_scope(&root)
+        .await
+        .map_err(agent)?;
+    let bound = harness
+        .project_workspace(workspace, project.volume()?, &differing, &signed, &verifier)
+        .await?;
+    assert_eq!(
+        bound.view().workspace().id(),
+        workspace.view().workspace().id()
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn historical_input_previews_do_not_admit_reserved_follow_ups_inside_a_steering_cut()
 -> Result<()> {
