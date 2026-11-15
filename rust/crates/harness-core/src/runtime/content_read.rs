@@ -86,11 +86,13 @@ impl ContentResidencyVerifier for TaskContext {
 impl TaskContext {
     /// The authored subtree shares the agent's original private publisher.
     /// Managed outputs retain their read-only route and cannot be overwritten
-    /// through another spelling of the same volume.
+    /// through another spelling of the same volume. Projected `evals/` files
+    /// are readable but never writable.
     pub(super) fn private_content_path<'a>(
         &'a self,
         path: &'a str,
         io: Option<&ContentIo>,
+        write: bool,
     ) -> Result<Option<(&'a ContentBindings, &'a str)>> {
         let Some(relative) = path.strip_prefix(crate::layers::PRIVATE_PATH) else {
             return Ok(None);
@@ -107,7 +109,10 @@ impl TaskContext {
             crate::conversation::validate_content_path(relative, work)
         })
         .map_err(Error::tool_input)?;
-        if relative != "ui" && !relative.starts_with("ui/") {
+        if relative != "ui"
+            && !relative.starts_with("ui/")
+            && (write || (relative != "evals" && !relative.starts_with("evals/")))
+        {
             return Err(content_error(io, ErrorCode::Unauthorized,
                 "managed private files are read-only; recovery: author volume:///private/ui/ instead")
                 .tool_input());

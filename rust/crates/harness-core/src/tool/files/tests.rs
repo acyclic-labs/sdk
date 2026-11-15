@@ -455,3 +455,82 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
     }
     Ok(())
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn private_evaluation_files_are_readable_but_never_model_writable() -> Result<()> {
+    use crate::{conversation::VolumeOperation, runtime::Bindings};
+    let storage =
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65536).await?;
+    storage
+        .stage(
+            OperationId::new(),
+            "evals/case.json",
+            b"{\"version\":1}",
+            "application/json",
+            "case",
+        )
+        .await?;
+    let grants = Capabilities::new([
+        "tool:call:read".into(),
+        "tool:call:write".into(),
+        storage
+            .volume()
+            .capability(VolumeOperation::Read, &mut None)?,
+        storage
+            .volume()
+            .capability(VolumeOperation::Write, &mut None)?,
+    ]);
+    let task = Arc::new(
+        Bindings {
+            scope: RuntimeScope::new(grants, Limits::default())?,
+            ..Bindings::local()
+        }
+        .build()?
+        .agent_context(&Capabilities::default(), storage.content_bindings())?,
+    );
+    for (path, selection) in [
+        (
+            "volume:///private/evals",
+            Some(json!({"kind":"directory","limit":1})),
+        ),
+        ("volume:///private/evals/case.json", None),
+    ] {
+        let mut arguments = json!({"path":path});
+        if let Some(selection) = selection {
+            arguments["selection"] = selection;
+        }
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "read-case".into(),
+            name: "read".into(),
+            arguments,
+        };
+        let context = ToolContext::new(task.clone(), invocation.operation_id, &invocation.call_id)?;
+        let value = read()?
+            .executor
+            .execute(invocation, Some(context))
+            .await?
+            .value;
+        if path.ends_with("case.json") {
+            assert_eq!(value["text"], "{\"version\":1}");
+        } else {
+            assert_eq!(value["entries"][0]["name"], "case.json");
+        }
+    }
+    let invocation = ToolInvocation {
+        operation_id: OperationId::new(),
+        call_id: "overwrite-case".into(),
+        name: "write".into(),
+        arguments: json!({"path":"volume:///private/evals/case.json","content":"forged","ifVersion":"any"}),
+    };
+    let context = ToolContext::new(task, invocation.operation_id, &invocation.call_id)?;
+    assert!(
+        write()?
+            .executor
+            .execute(invocation, Some(context))
+            .await
+            .is_err()
+    );
+    Ok(())
+}

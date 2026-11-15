@@ -1,0 +1,78 @@
+{
+  "id": "evals-projection",
+  "workspace": {
+    "files": {},
+    "kind": [
+      "plain",
+      "git"
+    ]
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "PROJECTION_FIRST"
+        },
+        "text": [
+          "Original first outcome."
+        ]
+      },
+      {
+        "when": {
+          "user": "PROJECTION_SECOND"
+        },
+        "text": [
+          "Original second outcome."
+        ]
+      },
+      {
+        "when": {
+          "user": "PROJECTION_REVIEW"
+        },
+        "tools": [
+          {
+            "name": "code",
+            "arguments": {
+              "code": "const root='volume:///private/evals';\nconst first=await tools.read({path:root,selection:{kind:'directory',limit:1}});\nif(first.entries.length!==1 || !first.hasMore) throw Error('projection did not page settled turns');\nconst entry=first.entries[0];\nconst file=await tools.read({path:entry.path,version:entry.version});\nif(file.page?.next!=null) throw Error('fixture case exceeds one byte page');\nconst value=JSON.parse(file.text);\nif(value.version!==1 || value.source.sequence!==0 || value.cut.through!==0 || value.cut.checkpoint?.conversation!==0 || value.outcome.checkpoint?.conversation!==1) throw Error('first case lost its original adoption boundary');\nif(!value.source.origin || !value.source.commit?.length || !value.cut.stream) throw Error('case lost its original source identity');\nconst range=await tools.read({path:entry.path,version:entry.version,range:{start:7,end:26}});\nif(range.text!==file.text.slice(7,26)) throw Error('case range differs from pinned full read');\nconst after=first.next; if(typeof after!=='string' || !after) throw Error('projection omitted its opaque continuation');\nconst second=await tools.read({path:root,selection:{kind:'directory',limit:1,after}});\nif(second.entries.length!==1 || second.entries[0].path===entry.path || second.hasMore) throw Error('projection continuation repeated or skipped a settled turn');\nconst next=await tools.read({path:second.entries[0].path,version:second.entries[0].version});\nconst later=JSON.parse(next.text);\nif(later.source.sequence!==1 || later.cut.checkpoint?.conversation!==1 || later.outcome.checkpoint?.conversation!==2) throw Error('adjacent case boundaries differ');\nlet refused=false;\ntry { await tools.write({path:entry.path,content:'replace original'}); } catch { refused=true; }\nif(!refused) throw Error('computed evaluation file accepted a write');\nconst unchanged=await tools.read({path:entry.path,version:entry.version});\nif(unchanged.text!==file.text) throw Error('refused write changed the original case');\nexport default {verified:'ORIGINAL_PROJECTION_VERIFIED'};"
+            },
+            "id": "read-original-projection"
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PROJECTION_REVIEW",
+          "tool_result": "ORIGINAL_PROJECTION_VERIFIED"
+        },
+        "text": [
+          "PROJECTION_VERIFIED"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "answer": "Original first outcome.",
+      "text": "PROJECTION_FIRST"
+    },
+    {
+      "mode": "headless",
+      "answer": "Original second outcome.",
+      "operation": "00000000-0000-0000-0000-000000000002",
+      "text": "PROJECTION_SECOND"
+    },
+    {
+      "mode": "headless",
+      "answer": "PROJECTION_VERIFIED",
+      "operation": "00000000-0000-0000-0000-000000000003",
+      "text": "PROJECTION_REVIEW"
+    }
+  ],
+  "assert": {
+    "tool_contains": [
+      "ORIGINAL_PROJECTION_VERIFIED"
+    ],
+    "requests": 4
+  }
+}

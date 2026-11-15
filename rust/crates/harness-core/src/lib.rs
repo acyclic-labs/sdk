@@ -48,6 +48,7 @@ pub mod core;
 pub mod devices;
 pub mod distributed;
 mod effects;
+pub mod evals;
 pub mod executor;
 pub mod experiments;
 pub mod extension;
