@@ -4925,6 +4925,7 @@ crate.spec(
 crate.from_cargo(
     name = "crates",
     cargo_lockfile = "//:Cargo.lock",
+    skip_cargo_lockfile_overwrite = True,
     manifests = [
         "//:Cargo.toml",
     ],

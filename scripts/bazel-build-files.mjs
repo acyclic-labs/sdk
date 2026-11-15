@@ -548,7 +548,10 @@ function moduleFile() {
     ...specs(),
     rule("crate.from_cargo", [
       ["name", q("crates")],
+      // Cargo.lock is read, never written: a build that rewrote it would change an input of every
+      // later build from that checkout, so identical sources would stop sharing cache keys.
       ["cargo_lockfile", q("//:Cargo.lock")],
+      ["skip_cargo_lockfile_overwrite", "True"],
       ["manifests", list(["//:Cargo.toml"])],
       ["supported_platform_triples", list(TRIPLES)],
     ]),
