@@ -21,6 +21,7 @@ pub(in crate::hooks) fn plugin(instance: &str, matcher: Option<RequestMatch>) ->
     HookSpec {
         run: HookRun::Plugin {
             instance: instance.into(),
+            ts: Vec::new(),
             sh: Some("exit 0".into()),
             ps1: None,
             config: "{}".into(),

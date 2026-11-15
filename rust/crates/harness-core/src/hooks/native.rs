@@ -104,6 +104,20 @@ pub(super) async fn run_hook(
     owner_wake: Option<acyclic_native_runtime::ProcessWake>,
     execution: Option<Arc<HookExecution>>,
 ) -> Result<(Option<i32>, Vec<u8>, Vec<u8>)> {
+    if let HookRun::Plugin { ts, .. } = &hook.run
+        && !ts.is_empty()
+    {
+        owner_check().map_err(Error::process_io)?;
+        let decision = super::typescript::run(ts, &request.2).await?;
+        // The decision spends the same capture credit a script's stdout does.
+        if maximum_bytes.is_some_and(|maximum| decision.1.len() > maximum) {
+            return Err(Error::Process(crate::ProcessError::OutputLimit {
+                exit_code: None,
+                message: "hook capture budget exhausted".into(),
+            }));
+        }
+        return Ok(decision);
+    }
     acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
     let cancellation = HookCancellation::new().map_err(Error::process_io)?;
     let mut wakes = vec![cancellation.1.clone()];
@@ -219,6 +233,7 @@ fn hook_command(
         HookRun::Shell { command, shell } => {
             shell_command(command, shell.as_deref()).map_err(Error::process_io)?
         }
+        // A TypeScript plugin hook never reaches a process; see `run_hook`.
         HookRun::Plugin { sh, ps1, .. } => {
             // The target runs the form native to it; a Windows target never
             // borrows a POSIX shell, so a plugin without `.ps1` cannot run

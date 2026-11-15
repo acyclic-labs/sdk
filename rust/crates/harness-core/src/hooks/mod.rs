@@ -463,6 +463,7 @@ pub(crate) use output::ToolHookDecision;
 pub use output::{HookApproval, HookDiagnostic, HookOutput};
 
 mod native;
+mod typescript;
 #[doc(hidden)]
 pub use native::HookCheck;
 pub use native::HookExecution;

@@ -240,6 +240,45 @@ async fn read_hook(
         .transpose()
 }
 
+/// Pins a TypeScript hook and every module it statically imports at this
+/// admitted generation, the hook first, as the only files it runs against.
+/// A missing import refuses the plugin here instead of failing each request.
+async fn typescript_modules(
+    tree: &dyn Tree,
+    mut identity: Option<&mut blake3::Hasher>,
+    hook: &str,
+    code: String,
+    io: Option<&crate::filesystem::PreparationIo>,
+) -> std::result::Result<Vec<(String, String)>, LoadFailure> {
+    let prepared = config::prepare(hook, code.as_bytes(), tree)
+        .await
+        .map_err(LoadFailure::Operational)?;
+    let mut code = Some(code);
+    let mut modules = Vec::new();
+    for read in prepared.reads() {
+        let source = if read.path == hook
+            && let Some(code) = code.take()
+        {
+            code
+        } else {
+            read_hook(tree, identity.as_deref_mut(), &read.path, io)
+                .await?
+                .ok_or_else(|| {
+                    LoadFailure::Semantic(Error::Invalid(format!(
+                        "{MANIFEST}: {hook} imports {}, which does not exist",
+                        read.path
+                    )))
+                })?
+        };
+        let path = stock_string_copy(&read.path, io).map_err(LoadFailure::Operational)?;
+        stock_vec_push(&mut modules, (path, source), io).map_err(LoadFailure::Operational)?;
+    }
+    if let Some(code) = code {
+        stock_retire_text(code, io).map_err(LoadFailure::Operational)?;
+    }
+    Ok(modules)
+}
+
 async fn load_enabled(
     tree: &dyn Tree,
     value: config::ConfigValue,
@@ -378,17 +417,23 @@ async fn load_enabled(
                 read_hook(tree, identity.as_deref_mut(), &paths[1], io).await?,
                 read_hook(tree, identity.as_deref_mut(), &paths[2], io).await?,
             );
-            if ts.is_some() {
+            if ts.is_some() && (sh.is_some() || ps1.is_some()) {
                 return Err(invalid(format!(
-                    "{}: TypeScript hooks do not run on this host yet",
-                    paths[0]
+                    "{root}hooks/before-{}: a plugin hook ships TypeScript or scripts, not both",
+                    event.name()
                 ))
                 .into());
             }
+            let ts = match ts {
+                Some(code) => {
+                    typescript_modules(tree, identity.as_deref_mut(), &paths[0], code, io).await?
+                }
+                None => Vec::new(),
+            };
             for path in paths {
                 stock_retire_text(path, io).map_err(LoadFailure::Operational)?;
             }
-            if sh.is_none() && ps1.is_none() {
+            if ts.is_empty() && sh.is_none() && ps1.is_none() {
                 continue;
             }
             let Some(site) = event.site() else {
@@ -422,6 +467,7 @@ async fn load_enabled(
                         io,
                     )
                     .map_err(LoadFailure::Operational)?,
+                    ts,
                     sh,
                     ps1,
                     config: stock_string_copy(&settings, io).map_err(LoadFailure::Operational)?,
