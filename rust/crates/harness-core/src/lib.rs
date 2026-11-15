@@ -36,6 +36,8 @@ pub mod agent;
 pub mod client_files;
 #[doc(hidden)]
 pub mod command_request;
+#[cfg(not(target_arch = "wasm32"))]
+mod computed_watch;
 #[doc(hidden)]
 pub mod config;
 pub mod context;

@@ -144,7 +144,7 @@ async fn history(
 ) -> Result<()> {
     let checkpoint = HistoryCheckpoint {
         live_children: false,
-        version: 2,
+        version: 3,
         conversation: 1,
         checkpoint: None,
         context: ContextCut {
@@ -154,6 +154,15 @@ async fn history(
         },
         volumes: Vec::new(),
     };
+    let mut baseline = checkpoint.clone();
+    baseline.conversation = 0;
+    baseline.context.tail = 0;
+    append(
+        host,
+        agent.path.history().map_err(Error::from)?,
+        crate::contract::canonical_json_bytes(&baseline)?,
+    )
+    .await?;
     append(
         host,
         agent.path.history().map_err(Error::from)?,
