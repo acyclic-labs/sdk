@@ -267,6 +267,7 @@ export function cargoTestFilters(text) {
 // Each exception names why libtest is required and how the file refuses an empty selection.
 export const LIBTEST_SELECTIONS = new Map([
   ['scripts/check-harness-test-isolation.sh', 'one libtest process exposes process-local fixture leakage that per-test nextest processes hide; the script fails unless its selection ran tests'],
+  ['scripts/qualify-main-green-debts.test.mjs', 'it asserts the main-debt runner\'s exact libtest arguments; the runner refuses unless every named regression and control ran and passed (verifyExactTests)'],
 ]);
 export function checkCargoTestFilters(sources, allowed = LIBTEST_SELECTIONS) {
   const failures = [];
