@@ -121,7 +121,7 @@ if command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; t
 fi
 versions="$("$cargo_bin" metadata --no-deps --format-version 1 --manifest-path "$manifest" | node -e 'let input=""; process.stdin.on("data", chunk => input += chunk).on("end", () => { const packages = JSON.parse(input).packages; console.log(["acyclic-machines", "acyclic-grpc-observability"].map(name => packages.find(item => item.name === name).version).join("\t")); })')"
 IFS=$'\t' read -r version observability_version <<< "$versions"
-"$cargo_bin" test --locked -p acyclic-machines -p acyclic-harness --manifest-path "$manifest" --target-dir "$package_target_argument"
+"$cargo_bin" test --locked -p acyclic-machines -p acyclic-harness --features acyclic-harness/test-support --manifest-path "$manifest" --target-dir "$package_target_argument"
 clean_head "$root" "$head"
 clean_head "$package_root" "$head"
 "$cargo_bin" package --locked --no-verify -p acyclic-proto-build -p acyclic-grpc-observability -p acyclic-machines --manifest-path "$manifest" --target-dir "$package_target_argument"

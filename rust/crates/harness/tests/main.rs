@@ -1,4 +1,9 @@
 //! Integration behaviour tests.
+// The DST, scenario and end-to-end modules need the harness test-support
+// surface. Without it a native build would silently run a fraction of this
+// suite, so it refuses to compile instead.
+#[cfg(all(not(loom), not(target_arch = "wasm32"), not(feature = "test-support")))]
+compile_error!("acyclic-harness tests/main needs `--features test-support`");
 #[cfg(not(loom))]
 acyclic_test_support::counting_allocator!();
 

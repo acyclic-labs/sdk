@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {execFileSync} from 'node:child_process';
 import {readFileSync} from 'node:fs';
-import {checkDeserializedTestSupport, checkTestSupport, checkTestSupportExports} from './check-test-support.mjs';
+import {checkDeserializedTestSupport, checkGatedTestRoots, checkTestSelection, checkTestSupport, checkTestSupportExports} from './check-test-support.mjs';
 
 /** @param {{optional?: boolean, kind?: string | null, target?: string | null, alias?: string}} options */
 function fixture({optional = false, kind = null, target = null, alias = 'backend-alias'} = {}) {
@@ -107,4 +107,35 @@ test('workspace exports pass and restoring the original answer cfg is rejected',
   assert.match(answer[1], /#\[cfg\(any\(test, feature = "test-support"\)\)\]/);
   answer[1] = answer[1].replace('#[cfg(any(test, feature = "test-support"))]', '#[cfg(feature = "test-support")]');
   assert.throws(() => checkTestSupportExports(sources), /answer.rs::validation.*requires test-support/);
+});
+
+/** @param {string} text @param {boolean} [member] */
+function testRoot(text, member = true) {
+  const pkg = {id: 'p@1', name: 'p', targets: [{name: 'main', kind: ['test'], src_path: 'main.rs'},
+    {name: 'p', kind: ['lib'], src_path: 'lib.rs'}]};
+  return [{packages: [pkg], workspace_members: member ? [pkg.id] : []}, () => text];
+}
+
+test('a test root gated on its own test-support must refuse to compile without it', () => {
+  const gated = '#[cfg(feature = "test-support")]\nmod dst;\n';
+  assert.throws(() => checkGatedTestRoots(...testRoot(gated)), /p test main: gates on test-support/);
+  assert.equal(checkGatedTestRoots(...testRoot(gated, false)), 0);
+  assert.equal(checkGatedTestRoots(...testRoot('mod plain;\n')), 1);
+  const guard = '#[cfg(all(not(loom), not(target_arch = "wasm32"), not(feature = "test-support")))]\ncompile_error!("x");\n';
+  assert.equal(checkGatedTestRoots(...testRoot(guard + gated)), 1);
+});
+
+test('the harness suite carries the guard, and removing it is rejected', () => {
+  const file = 'rust/crates/harness/tests/main.rs';
+  const text = readFileSync(file, 'utf8');
+  assert.equal(checkGatedTestRoots(...testRoot(text)), 1);
+  const unguarded = text.replace(/#\[cfg\(all\(not\(loom\), not\(target_arch = "wasm32"\), not\(feature = "test-support"\)\)\)\]\s*compile_error!\([^)]*\);/, '');
+  assert.notEqual(unguarded, text);
+  assert.throws(() => checkGatedTestRoots(...testRoot(unguarded)), /gates on test-support/);
+});
+
+test('a selection matching no tests must fail', () => {
+  for (const line of ['=pass', ' warn'].map(value => '--no-tests' + value).concat(`NEXTEST_${'NO_TESTS'}=pass`))
+    assert.throws(() => checkTestSelection([['run.sh', `cargo nextest run ${line}\n`]]), /run.sh:1: a selection matching no tests must fail/);
+  assert.equal(checkTestSelection([['run.sh', 'cargo nextest run --no-tests=fail\n']]), 1);
 });

@@ -54,7 +54,7 @@ cargo() {
   case "$action" in
     metadata) echo '{"packages":[{"name":"acyclic-machines","version":"0.2.0"},{"name":"acyclic-grpc-observability","version":"0.2.0"}]}' ;;
     test)
-      [[ "$*" == "test --locked -p acyclic-machines -p acyclic-harness --manifest-path $manifest --target-dir $package_target_argument" ]]
+      [[ "$*" == "test --locked -p acyclic-machines -p acyclic-harness --features acyclic-harness/test-support --manifest-path $manifest --target-dir $package_target_argument" ]]
       if [[ "$SDK_MUTATE_SOURCE" == true ]]; then touch "$package_root/Cargo.toml.dirty"; fi ;;
     package)
       [[ "$*" == "package --locked --no-verify -p acyclic-proto-build -p acyclic-grpc-observability -p acyclic-machines --manifest-path $manifest --target-dir $package_target_argument" ]] ;;

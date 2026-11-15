@@ -242,7 +242,8 @@ case "$lane" in
     RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="$warning_rustflags" \
  cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --features model-checking --lib
     # Compile native implementations and their unit tests together.
- cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --lib --tests
+ cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --lib --tests \
+      --features acyclic-harness/test-support
     RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="$warning_rustflags" \
       harness_tests -p acyclic-harness-core --features model-checking --test main mcp_loom::
     RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="$warning_rustflags" \

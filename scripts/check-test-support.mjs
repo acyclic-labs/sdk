@@ -174,6 +174,39 @@ export function checkTestSupportExports(sources) {
   return exports.length;
 }
 
+// A test target that gates modules on its own test-support feature would
+// silently run a fraction of itself without the feature. Its native build
+// must refuse to compile instead, so no runner can drop those tests unseen.
+const GUARD = /#\[cfg\(all\(not\(loom\), not\(target_arch = "wasm32"\), not\(feature = "test-support"\)\)\)\]\s*compile_error!\(/;
+export function checkGatedTestRoots(metadata, read = file => readFileSync(file, 'utf8')) {
+  const failures = [];
+  let checked = 0;
+  for (const pkg of metadata.packages) {
+    if (!metadata.workspace_members.includes(pkg.id)) continue;
+    for (const target of pkg.targets) {
+      if (!target.kind.includes('test')) continue;
+      const text = read(target.src_path);
+      checked++;
+      if (/feature\s*=\s*"test-support"/.test(text.replace(GUARD, '')) && !GUARD.test(text))
+        failures.push(`${pkg.name} test ${target.name}: gates on test-support but compiles without it`);
+    }
+  }
+  if (failures.length) throw new Error(failures.join('\n'));
+  return checked;
+}
+
+// A selection that matches no tests must fail, never pass.
+const ZERO_PASS = new RegExp(['--no-tests[= ]+(?:pass|warn)\\b', 'NEXTEST_' + 'NO_TESTS'].join('|'));
+export function checkTestSelection(sources) {
+  const failures = [];
+  for (const [file, text] of sources)
+    text.split('\n').forEach((line, index) => {
+      if (ZERO_PASS.test(line)) failures.push(`${file}:${index + 1}: a selection matching no tests must fail`);
+    });
+  if (failures.length) throw new Error(failures.join('\n'));
+  return sources.length;
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   // Resolve every optional and target-specific edge, including registry crates.
   const child = spawn('cargo', ['metadata', '--locked', '--all-features', '--format-version', '1'],
@@ -188,4 +221,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const sources = files.map(file => [file, readFileSync(file, 'utf8')]);
   console.log(`test-support deserialized members: ${checkDeserializedTestSupport(sources)} Rust sources checked`);
   console.log(`test-support exports: ${checkTestSupportExports(sources)} local re-exports checked`);
+  console.log(`test-support gated test roots: ${checkGatedTestRoots(JSON.parse(output))} test targets checked`);
+  const tracked = execFileSync('git', ['ls-files', '--', ':!scripts/tests/fixtures'], {encoding: 'utf8'}).split('\n')
+    .filter(file => /\.(?:sh|ps1|m?js|ts|py|ya?ml|json|toml|md|bazel|bzl|rs)$/.test(file));
+  console.log(`test selection: ${checkTestSelection(tracked.map(file => [file, readFileSync(file, 'utf8')]))} files checked`);
 }
