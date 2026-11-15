@@ -202,7 +202,7 @@ async fn paired_openings(follows: u64, broken: bool) -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     append(&provider, "events", 1).await?;
     let fixture = Fixture::open(provider, "node").await?;
-    let bearer = "Bearer fixture".parse()?;
+    let bearer = "Bearer fixture".parse::<http::HeaderValue>()?;
     let client = || {
         Client::open(
             fixture._channel.clone(),
