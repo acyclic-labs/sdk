@@ -548,7 +548,7 @@ impl BlobsServer {
     }
 
     fn account<T>(&self, request: &Request<T>) -> Result<Arc<dyn Blobs>, tonic::Status> {
-        (self.resolve)(request.metadata()).map_err(status)
+        (self.resolve)(request.metadata()).map_err(|error| status(&error))
     }
 }
 
@@ -677,13 +677,13 @@ impl wire::blobs_service_server::BlobsService for BlobsServer {
         let (metadata, _, message) = request.into_parts();
         let observation = crate::route::availability(&*blobs, message)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         let resolve = Arc::clone(&self.resolve);
         let events = crate::route::availability_frames(observation).map(move |event| {
             // The original verified account resolver also enforces current
             // permission before each disclosure, including terminal frames.
             resolve(&metadata).map_err(status)?;
-            event.map_err(status)
+            event.map_err(|error| status(&error))
         });
         Ok(tonic::Response::new(Box::pin(events)))
     }
