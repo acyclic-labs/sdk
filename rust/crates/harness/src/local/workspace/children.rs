@@ -74,10 +74,12 @@ impl LocalWorkspace {
         Ok(Some(cut.authored_generation))
     }
 
-    /// The lazy view of spawned project `project`, first binding its
-    /// prepared fork to the spawn's creating generation (step two) if no
-    /// open has yet, and registering it in the workspace graph; idempotent
-    /// and O(1).
+    /// The lazy view of project `project`, first binding its prepared fork
+    /// to the spawn's creating generation (step two) if no open has yet, and
+    /// registering it in the workspace graph; idempotent and O(1). The
+    /// volume's own recorded lineage selects the path: a root, which has
+    /// neither fork origin nor parent, opens as itself, so no caller's guess
+    /// about which agent owns the volume can route a root through a fork.
     pub(in crate::local) async fn spawned_project_view(&self, project: &VolumeRef) -> Result<View> {
         let name = project.storage_name(&mut None)?;
         self.spawned_project_view_named(&name).await
@@ -98,9 +100,16 @@ impl LocalWorkspace {
             .await
             .map_err(storage)?
             .ok_or_else(|| Error::NotFound("spawned project has no prepared fork".into()))?;
-        let origin = state
-            .fork_origin
-            .ok_or_else(|| Error::Conflict("spawned project has no fork origin".into()))?;
+        let Some(origin) = state.fork_origin else {
+            if state.parent_workspace_id.is_some() {
+                return Err(Error::Conflict("spawned project has no fork origin".into()));
+            }
+            return self
+                .view()
+                .open_related(child, &mut accounting)
+                .await
+                .map_err(storage);
+        };
         let parent = state
             .parent_workspace_id
             .ok_or_else(|| Error::Conflict("spawned project fork has no parent".into()))?;
