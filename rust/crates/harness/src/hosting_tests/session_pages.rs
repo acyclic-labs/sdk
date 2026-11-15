@@ -107,9 +107,15 @@ async fn session_and_peer_pages_keep_discovery_at_two_bounded_head_views() -> Re
             Arc::new(acyclic_stream::runtime::PlatformExecutor),
             None,
         );
+        // Owned discovery is session-directory control; peer discovery is its
+        // own read-only resource (`Server::command_resource`).
         client.register_credential(
             0,
-            credentials(&[server.resource(), &server.session_resource()]),
+            credentials(&[
+                server.resource(),
+                &server.session_resource(),
+                &server.peer_resource(),
+            ]),
         )?;
         let before = stream.requests();
         let Ok(AgentReply::Children { items, next }) = call(
