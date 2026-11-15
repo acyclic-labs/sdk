@@ -827,11 +827,16 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     .ok_or(Error::Invalid("actor is not tracked"))?;
                 // This explicit event can follow an external control commit
                 // whose activation the continuous dispatcher has not consumed.
-                // Read that committed actor cut once, then retain it across
-                // this drain's cooperative batches and delivery publications.
-                delivery.0.refresh.store(true, Ordering::Release);
+                // Read that committed actor cut once it owns the actor, then
+                // retain it across this drain's cooperative batches and
+                // delivery publications. A waiter cancelled before then
+                // touches nothing another delivery owns.
+                let mut observe = true;
                 let result = loop {
-                    match self.deliver(actor, &delivery.0, None).await {
+                    match self
+                        .deliver(actor, &delivery.0, None, std::mem::take(&mut observe))
+                        .await
+                    {
                         Ok(true) => break Ok(()),
                         Ok(false) => {
                             // Drop both locks before queueing the next finite batch.
@@ -1518,7 +1523,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let Some(slot) = self.slot(&actor) else {
             return Ok(());
         };
-        let result = self.deliver(&actor, &slot, Some(work)).await;
+        let result = self.deliver(&actor, &slot, Some(work), false).await;
         if let Err(Error::Conflict) = result {
             // Another placement owns the actor now; stop hosting it here.
             self.release(&actor);
@@ -1538,6 +1543,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         actor: &'a ActorReference,
         slot: &'a Arc<Slot>,
         work: Option<Work<ActorReference>>,
+        observe: bool,
     ) -> BoxProviderFuture<'a, Result<bool, Error>> {
         Box::pin(acyclic_stream::trace::observe(
             acyclic_stream::trace::Request {
@@ -1559,6 +1565,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     slot.inner.lock(),
                 )
                 .await;
+                if observe {
+                    inner.observed = None;
+                }
                 // The delivery starts once it owns the actor: a waiter owns
                 // nothing and settles nothing. From here it counts in flight
                 // in the shared ready index, whichever consumer started it,
