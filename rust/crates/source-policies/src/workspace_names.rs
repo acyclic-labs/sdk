@@ -128,37 +128,83 @@ fn product(path: &str) -> Option<&str> {
     Some(path)
 }
 
-/// Drops each inline test module: a `#[cfg(..test..)]` attribute whose item is
-/// `mod name {`, through the formatted `}` at that item's indentation. Product
-/// code around it is kept. Out-of-line test modules are excluded by path.
+/// Drops each inline test module: a module whose `#[cfg(..)]` predicate
+/// requires a test build, through the formatted `}` at that item's
+/// indentation. Product code around it is kept, including modules gated on
+/// `not(test)` or on `test` as one alternative. Out-of-line test modules are
+/// excluded by path.
 fn without_inline_tests(text: &str) -> String {
     let mut kept = String::with_capacity(text.len());
     let mut attributes = String::new();
+    let mut test_only = false;
     let mut closing = None;
     for line in text.split_inclusive('\n') {
         let trimmed = line.trim_end();
+        let item = trimmed.trim_start();
         if let Some(end) = &closing {
             if trimmed == end {
                 closing = None;
             }
-        } else if trimmed.trim_start().starts_with("#[") {
+        } else if item.starts_with("#[") {
+            test_only |= item
+                .strip_prefix("#[cfg(")
+                .and_then(|rest| rest.strip_suffix(")]"))
+                .is_some_and(requires_test);
             attributes.push_str(line);
-        } else if attributes.contains("#[cfg(")
-            && attributes.contains("test")
-            && trimmed.trim_start().starts_with("mod ")
-            && trimmed.ends_with('{')
-        {
-            let indent = &trimmed[..trimmed.len() - trimmed.trim_start().len()];
+        } else if test_only && item.starts_with("mod ") && trimmed.ends_with('{') {
+            let indent = &trimmed[..trimmed.len() - item.len()];
             closing = Some(format!("{indent}}}"));
             attributes.clear();
+            test_only = false;
         } else {
             kept.push_str(&attributes);
             kept.push_str(line);
             attributes.clear();
+            test_only = false;
         }
     }
     kept.push_str(&attributes);
     kept
+}
+
+/// Whether a `cfg` predicate holds only in a test build: `test` or the
+/// `test-support` feature, a conjunction with such a member, or a disjunction
+/// whose every member is one. `not(..)` never requires a test build.
+fn requires_test(predicate: &str) -> bool {
+    let predicate = predicate.trim();
+    if let Some(members) = predicate
+        .strip_prefix("all(")
+        .and_then(|p| p.strip_suffix(')'))
+    {
+        return split_members(members).any(requires_test);
+    }
+    if let Some(members) = predicate
+        .strip_prefix("any(")
+        .and_then(|p| p.strip_suffix(')'))
+    {
+        return split_members(members).all(requires_test);
+    }
+    predicate == "test" || predicate == "feature = \"test-support\""
+}
+
+/// The top-level comma-separated members of a `cfg` predicate list.
+fn split_members(members: &str) -> impl Iterator<Item = &str> {
+    let mut depth = 0usize;
+    let mut start = 0;
+    let mut parts = Vec::new();
+    for (index, byte) in members.bytes().enumerate() {
+        match byte {
+            b'(' => depth += 1,
+            b')' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => {
+                parts.push(&members[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&members[start..]);
+    parts.into_iter().filter(|part| !part.trim().is_empty())
 }
 
 /// Compares workspace-name counts with the exact allowance, in both directions.
@@ -263,10 +309,23 @@ fn planted_workspace_names_fail_the_scan() {
         .is_empty()
     );
     assert!(!scan(target, "\".env\"\n#[cfg(test)]\nmod tests {\n}\n").is_empty());
-    // Product code after a test module, nested or not, is still scanned.
+    // Modules that need a test build are skipped, whatever else they require.
+    for gate in [
+        "all(test, not(loom))",
+        "any(test, feature = \"test-support\")",
+        "all(any(test, feature = \"test-support\"), unix)",
+    ] {
+        let plant = format!("#[cfg({gate})]\nmod tests {{\n\".env\"\n}}\n");
+        assert!(scan(target, &plant).is_empty(), "{plant}");
+    }
+    // Product code after a test module, nested or not, is still scanned, and
+    // so is a module built without tests or with tests as one alternative.
     for plant in [
         "#[cfg(test)]\nmod tests {\n}\nfn f() -> &'static str { \".env\" }\n",
         "mod outer {\n    #[cfg(test)]\n    mod tests {\n    }\n    fn f() -> &'static str { \".env\" }\n}\n",
+        "#[cfg(not(test))]\nmod production {\n    fn f() -> &'static str { \".env\" }\n}\n",
+        "#[cfg(any(test, unix))]\nmod native {\n    fn f() -> &'static str { \".env\" }\n}\n",
+        "#[cfg(all(unix, not(any(test, loom))))]\nmod native {\n    fn f() -> &'static str { \".env\" }\n}\n",
     ] {
         let found = scan(target, plant);
         assert!(
