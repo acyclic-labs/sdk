@@ -193,6 +193,14 @@ impl ToolExecutor for Adapter {
         self.original.executor.cancellable_on_drop()
     }
 
+    fn reexecutes_fenced(&self, invocation: &ToolInvocation) -> bool {
+        self.adapt(invocation, None).is_ok_and(|adapted| {
+            self.original
+                .executor
+                .reexecutes_fenced(&adapted.invocation)
+        })
+    }
+
     fn cancellation(
         &self,
         invocation: &ToolInvocation,

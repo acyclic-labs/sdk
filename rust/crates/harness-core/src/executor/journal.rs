@@ -246,6 +246,15 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         io: Option<&PreparationIo>,
     ) -> Result<ExecutionAttempt<'a>>;
 
+    /// The tool calls this journal's live owner started and has not settled,
+    /// shared by every alias of the ownership registry. A start missing from
+    /// it was recorded by a predecessor that this owner's acquisition of the
+    /// actor's delivery fenced. `None` names no owner: every start is then
+    /// treated as possibly live, and an unknown outcome is retained.
+    fn started_calls(&self) -> Result<Option<std::sync::Arc<super::StartedCalls>>> {
+        Ok(None)
+    }
+
     /// Excludes live attempts before replay can mistake them for crashed work.
     /// The ordinary execution policy is shared by every journal adapter.
     fn claim_execution<'a>(

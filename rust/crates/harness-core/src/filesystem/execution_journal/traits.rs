@@ -341,6 +341,11 @@ where
         self.prepare_phase_seal(io)
     }
 
+    fn started_calls(&self) -> Result<Option<std::sync::Arc<crate::executor::StartedCalls>>> {
+        crate::executor::execution_claim::started_calls(self.host.filesystem.operation_claims())
+            .map(Some)
+    }
+
     fn acquire_execution<'a>(
         &'a self,
         operation: OperationId,
