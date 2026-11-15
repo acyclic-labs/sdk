@@ -765,13 +765,9 @@ fn open_root(
             return Err(LocalOpenError::Corrupt);
         }
         let tail = usize::try_from(length - end).map_err(std::io::Error::other)?;
-        match acyclic_native_runtime::recover_log_tail(
-            &log,
-            end,
-            tail,
-            native(durability),
-            |bytes| LOG_FRAME.is_valid(bytes),
-        )? {
+        match acyclic_native_runtime::recover_log_tail(&log, end, tail, |bytes| {
+            LOG_FRAME.is_valid(bytes)
+        })? {
             acyclic_native_runtime::LogTail::Torn => {}
             acyclic_native_runtime::LogTail::Corrupt => return Err(LocalOpenError::Corrupt),
         }
