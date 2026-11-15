@@ -262,3 +262,35 @@ fn a_wait_ready_on_its_first_poll_opens_no_span() {
         assert!(snapshot(&report).is_empty());
     });
 }
+
+#[test]
+fn a_subscriber_admitting_only_wait_spans_reports_them() {
+    use tracing_subscriber::Layer as _;
+    // The CLI admits exactly the wait span's target and name.
+    let report = WaitReport::default();
+    let only_waits = tracing_subscriber::filter::filter_fn(|metadata| {
+        metadata.target() == "acyclic.wait" && metadata.name() == "waiting"
+    });
+    let dispatch = tracing::Dispatch::new(
+        tracing_subscriber::registry().with(report.clone().with_filter(only_waits)),
+    );
+    tracing::dispatcher::with_default(&dispatch, || {
+        assert!(crate::obs::waits_reported());
+        let wait = crate::obs::blocked("channel-close", 3, std::future::pending::<()>());
+        assert!(snapshot(&report).starts_with("waiting: channel-close 3 since "));
+        drop(wait);
+    });
+    assert!(snapshot(&report).is_empty());
+    // Negative control: a filter refusing wait spans reports none.
+    let report = WaitReport::default();
+    let no_waits = tracing_subscriber::filter::filter_fn(|metadata| metadata.name() != "waiting");
+    let dispatch = tracing::Dispatch::new(
+        tracing_subscriber::registry().with(report.clone().with_filter(no_waits)),
+    );
+    tracing::dispatcher::with_default(&dispatch, || {
+        assert!(!crate::obs::waits_reported());
+        let wait = crate::obs::blocked("channel-close", 4, std::future::pending::<()>());
+        assert!(snapshot(&report).is_empty());
+        drop(wait);
+    });
+}

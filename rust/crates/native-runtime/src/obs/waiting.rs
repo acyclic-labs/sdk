@@ -6,7 +6,15 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
 };
-use tracing::Dispatch;
+use tracing::{
+    Dispatch, Level, Metadata, Span,
+    field::{FieldSet, Value},
+    level_filters::{LevelFilter, STATIC_MAX_LEVEL},
+};
+use tracing_core::{
+    callsite::{DefaultCallsite, Identifier},
+    metadata::Kind,
+};
 
 /// Retires a reported wait when dropped, including on unwind.
 struct Retire(OperationSpan);
@@ -48,16 +56,48 @@ pin_project_lite::pin_project! {
     }
 }
 
+/// The one callsite of every wait span. [`waits_reported`] asks a subscriber
+/// about this same metadata, so no filter can admit the span yet refuse the
+/// check, or the reverse.
+static WAITING: DefaultCallsite = DefaultCallsite::new(&WAITING_METADATA);
+static WAITING_METADATA: Metadata<'static> = Metadata::new(
+    "waiting",
+    "acyclic.wait",
+    Level::INFO,
+    Some(file!()),
+    Some(line!()),
+    Some(module_path!()),
+    FieldSet::new(
+        &["primitive", "key", "stage", "predecessor", "finished"],
+        Identifier(&WAITING),
+    ),
+    Kind::SPAN,
+);
+
 fn span(primitive: &'static str, key: &dyn Display) -> OperationSpan {
-    OperationSpan::new(tracing::info_span!(
-        target: "acyclic.wait",
-        "waiting",
-        primitive,
-        key = %key,
-        stage = 0_u64,
-        predecessor = 0_u64,
-        finished = tracing::field::Empty,
-    ))
+    let fields = WAITING_METADATA.fields();
+    let mut field = fields.iter();
+    let span = match (
+        waits_reported(),
+        field.next(),
+        field.next(),
+        field.next(),
+        field.next(),
+        field.next(),
+    ) {
+        (true, Some(name), Some(id), Some(stage), Some(predecessor), Some(finished)) => Span::new(
+            &WAITING_METADATA,
+            &fields.value_set(&[
+                (&name, Some(&primitive as &dyn Value)),
+                (&id, Some(&tracing::field::display(key) as &dyn Value)),
+                (&stage, Some(&0_u64 as &dyn Value)),
+                (&predecessor, Some(&0_u64 as &dyn Value)),
+                (&finished, None),
+            ]),
+        ),
+        _ => Span::none(),
+    };
+    OperationSpan::new(span)
 }
 
 impl<F: Future, K: Display> Future for Waiting<F, K> {
@@ -135,12 +175,19 @@ pub(crate) fn waiting_now<F>(
     (wait, context)
 }
 
-/// Whether any installed subscriber would record a [`waiting`] span, by the
-/// same callsite interest the span itself uses. A producer that would allocate
-/// to wrap a wait asks this first, so an unreported wait costs only the check.
+/// Whether the current subscriber would record a [`waiting`] span. This asks
+/// about the span's own callsite and metadata, exactly as creating the span
+/// does. A producer that would allocate to wrap a wait asks this first, so an
+/// unreported wait costs only the check.
 #[must_use]
 pub fn waits_reported() -> bool {
-    tracing::enabled!(target: "acyclic.wait", tracing::Level::INFO)
+    if Level::INFO > STATIC_MAX_LEVEL || Level::INFO > LevelFilter::current() {
+        return false;
+    }
+    let interest = WAITING.interest();
+    !interest.is_never()
+        && (interest.is_always()
+            || tracing::dispatcher::get_default(|dispatch| dispatch.enabled(&WAITING_METADATA)))
 }
 
 /// Names an existing synchronous wait while its closure runs.

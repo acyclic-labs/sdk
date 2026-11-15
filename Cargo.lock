@@ -1262,6 +1262,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-core",
  "tracing-subscriber",
  "windows",
  "windows-sys 0.61.2",
