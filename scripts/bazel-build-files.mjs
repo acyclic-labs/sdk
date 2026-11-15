@@ -2,10 +2,12 @@
 // cargo.MODULE.bazel (Rust toolchain, rustc flags and crate universe inputs).
 // Cargo.toml, Cargo.lock, .cargo/config.toml and rust-toolchain.toml remain the only sources;
 // third-party crates resolve through crate_universe from the same Cargo.lock.
-// Features come from one whole-workspace resolution and are fixed per target, so a target's
-// action keys never depend on which targets a build selects (Cargo's -p unification rebuilt
-// unchanged units whenever the selection changed).
-// Every workspace member builds with Bazel.
+// Features come from one whole-workspace resolution with every feature enabled, as the cargo
+// test legs build with --all-features, and are fixed per target, so a target's action keys never
+// depend on which targets a build selects (Cargo's -p unification rebuilt unchanged units
+// whenever the selection changed).
+// Every workspace member builds with Bazel, and every target `cargo test --all-features` builds
+// is rendered: a target with `test = false` is the only one left out of testing.
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -49,8 +51,10 @@ function tables(file) {
 }
 const value = (table, key) => (table?.[key] === undefined ? undefined : JSON.parse(table[key]));
 
-const metadata = triple => JSON.parse(execFileSync("cargo", ["metadata", "--format-version", "1", "--locked", "--filter-platform", triple], { cwd: root, encoding: "utf8", maxBuffer: 2 ** 31 - 1 }));
-const runs = TRIPLES.map(metadata);
+const metadata = (triple, flags) => JSON.parse(execFileSync("cargo", ["metadata", "--format-version", "1", "--locked", "--filter-platform", triple, ...flags], { cwd: root, encoding: "utf8", maxBuffer: 2 ** 31 - 1 }));
+const runs = TRIPLES.map(triple => metadata(triple, ["--all-features"]));
+// crate_universe resolves third-party features from the default workspace features.
+const defaults = TRIPLES.map(triple => metadata(triple, []));
 const [base] = runs;
 const packages = new Map(base.packages.map(p => [p.id, p]));
 const members = new Set(base.workspace_members);
@@ -184,9 +188,11 @@ function perTriple(values, render) {
   return `select({\n${TRIPLES.map((t, i) => `        "@rules_rust//rust/platform:${t}": ${rendered[i]},\n`).join("")}    })`;
 }
 
-// Edges of one member for the selected dependency kinds, per triple: first-party dependencies,
-// and every renamed dependency's alias. crate_universe's aliases() is not used: it drops the
-// conditional aliases of a package with more than one cfg condition.
+// Edges of one member for the selected dependency kinds, per triple, from the all-features
+// resolution: first-party dependencies by label, third-party ones by crate universe hub label,
+// and every renamed dependency's alias. crate_universe's all_crate_deps() and aliases() are not
+// used: they follow its default-features resolution, and aliases() drops the conditional aliases
+// of a package with more than one cfg condition.
 function edges(p, kinds) {
   return nodes.map(byId => {
     const deps = [], procMacros = [], aliases = {};
@@ -196,7 +202,6 @@ function edges(p, kinds) {
       const lib = libOf(target);
       const name = members.has(dep.pkg) ? `${label(target)}:${crateName(lib)}` : `@crates//${target.name}-${target.version}`;
       if (dep.name !== crateName(lib)) aliases[name] = dep.name;
-      if (!members.has(dep.pkg)) continue;
       (lib.kind.includes("proc-macro") ? procMacros : deps).push(name);
     }
     return { deps: deps.sort(), procMacros: procMacros.sort(), aliases };
@@ -232,12 +237,12 @@ function buildFile(p) {
     ["rustc_env", "PACKAGE_ENV"],
     ["rustc_flags", opt === undefined ? undefined : list([`-Copt-level=${opt}`])],
   ];
-  // Rendered dependencies of one target: crate_universe resolves third-party ones per package.
-  const deps = (kinds, universe, extra = [], extraMacros = []) => {
+  // Rendered dependencies of one target.
+  const deps = (kinds, extra = [], extraMacros = []) => {
     const first = edges(p, kinds);
     return [
-      ["deps", plus(`all_crate_deps(${universe.deps})`, list(extra), perTriple(first, e => list(e.deps)))],
-      ["proc_macro_deps", plus(`all_crate_deps(${universe.procMacros})`, list(extraMacros), perTriple(first, e => list(e.procMacros)))],
+      ["deps", plus(list(extra), perTriple(first, e => list(e.deps)))],
+      ["proc_macro_deps", plus(list(extraMacros), perTriple(first, e => list(e.procMacros)))],
       ["aliases", first.some(e => Object.keys(e.aliases).length) ? perTriple(first, e => q(Object.fromEntries(Object.entries(e.aliases).sort()))) : undefined],
     ];
   };
@@ -247,6 +252,8 @@ function buildFile(p) {
   const ownMacro = lib?.kind.includes("proc-macro") ? [`:${crateName(lib)}`] : [];
   // Test names that collide with another target of the package take a `_test` suffix.
   const names = new Set([lib && crateName(lib), ...p.targets.filter(t => t.kind.includes("bin")).map(t => t.name), "build_script"]);
+  // Each target `cargo test --all-features --no-run` builds, as rendered; checked against Cargo.
+  const covered = rendered.get(p.id);
   // The libtest executable builds on its own; the isolated test runs its cases.
   // Cases run in the package directory, as under Cargo, and read its files there.
   const test = (wanted, attrs) => {
@@ -272,7 +279,7 @@ function buildFile(p) {
       ["links", p.links ? q(p.links) : undefined],
       ...common(script),
       ["build_script_env", scriptEnv.get(p.id).length ? `PACKAGE_ENV | ${platformSelect(p.id, vars => Object.fromEntries(vars.map(([variable, file]) => [variable, `$(execpath ${file})`])))}` : "PACKAGE_ENV"],
-      ...deps(["build"], { deps: "build = True", procMacros: "build_proc_macro = True" }),
+      ...deps(["build"]),
     ]]);
   }
   if (lib) {
@@ -282,61 +289,94 @@ function buildFile(p) {
       ["crate_root", q(local(lib.src_path))],
       ...libInputs(lib),
       ...common(lib),
-      ...deps([null], { deps: "normal = True", procMacros: "proc_macro = True" }, ownDeps),
+      ...deps([null], ownDeps),
       ["visibility", q(["//visibility:public"])],
     ]]);
     // The crate's tests compile its sources again; rust_test does not inherit compile_data.
-    if (lib.test) test(`${crateName(lib)}_test`, [
+    if (lib.test) covered.add(`test ${lib.kind[0]} ${lib.name}`), test(`${crateName(lib)}_test`, [
       ["crate", q(`:${crateName(lib)}`)],
       ["compile_data", list(extras(lib, libCovered).data)],
       ...common(lib).filter(([k]) => k !== "rustc_env"),
-      ...deps(["dev"], { deps: "normal_dev = True", procMacros: "proc_macro_dev = True" }),
+      ...deps(["dev"]),
     ]);
   }
-  // Targets whose required features the package's resolved features enable, as Cargo builds them.
-  const enabled = new Set(features[0]);
-  const buildable = t => (t["required-features"] ?? []).every(f => enabled.has(f));
-  for (const bin of p.targets.filter(t => t.kind.includes("bin") && buildable(t))) {
+  for (const bin of p.targets.filter(t => t.kind.includes("bin"))) {
+    covered.add(`build bin ${bin.name}`);
     rules.push(["rust_binary", [
       ["name", q(bin.name)],
       ["crate_root", q(local(bin.src_path))],
       ...libInputs(bin),
       ...common(bin),
-      ...deps([null], { deps: "normal = True", procMacros: "proc_macro = True" }, [...ownLib, ...ownDeps], ownMacro),
+      ...deps([null], [...ownLib, ...ownDeps], ownMacro),
       ["visibility", q(["//visibility:public"])],
     ]]);
     // A binary's own #[cfg(test)] cases, as `cargo test` runs them.
     const binCrate = bin.name.replaceAll("-", "_");
-    if (bin.test) test(lib && binCrate === crateName(lib) ? `${binCrate}_bin_test` : `${binCrate}_test`, [
+    if (bin.test) covered.add(`test bin ${bin.name}`), test(lib && binCrate === crateName(lib) ? `${binCrate}_bin_test` : `${binCrate}_test`, [
       ["crate_root", q(local(bin.src_path))],
       ...libInputs(bin),
       ...common(bin),
-      ...deps([null, "dev"], { deps: "normal = True, normal_dev = True", procMacros: "proc_macro = True, proc_macro_dev = True" },
+      ...deps([null, "dev"],
         [...ownLib, ...ownDeps], ownMacro),
     ]);
   }
-  for (const target of p.targets.filter(t => t.kind.includes("test") && buildable(t))) {
-    const crateRoot = local(target.src_path), testDir = crateRoot.startsWith("//") ? "." : path.posix.dirname(crateRoot);
-    const extra = extras(target, file => testDir === "." || file.startsWith(`${testDir}/`));
-    test(lib && target.name === crateName(lib) ? `${target.name}_integration` : target.name, [
+  // Integration tests, examples and benches compile from their own directory and the package's
+  // library, with dev-dependencies. Cargo builds every example and runs those with `test = true`;
+  // it builds a bench only when its `test = true`.
+  const separate = target => {
+    const crateRoot = local(target.src_path), dir = crateRoot.startsWith("//") ? "." : path.posix.dirname(crateRoot);
+    const extra = extras(target, file => dir === "." || file.startsWith(`${dir}/`));
+    return [
       ["crate_root", q(crateRoot)],
-      ["srcs", plus(glob([testDir === "." ? "**/*.rs" : `${testDir}/**/*.rs`], []), list(extra.srcs))],
-      ["compile_data", plus(glob([testDir === "." ? "**" : `${testDir}/**`], ["**/*.rs", "BUILD.bazel"]), list(extra.data))],
+      ["srcs", plus(glob([dir === "." ? "**/*.rs" : `${dir}/**/*.rs`], []), list(extra.srcs))],
+      ["compile_data", plus(glob([dir === "." ? "**" : `${dir}/**`], ["**/*.rs", "BUILD.bazel"]), list(extra.data))],
       ...common(target),
-      ...deps([null, "dev"], { deps: "normal = True, normal_dev = True", procMacros: "proc_macro = True, proc_macro_dev = True" },
-        [...ownLib, ...ownDeps], ownMacro),
-    ]);
+      ...deps([null, "dev"], [...ownLib, ...ownDeps], ownMacro),
+    ];
+  };
+  for (const target of p.targets.filter(t => (t.kind.includes("test") || t.kind.includes("example") || t.kind.includes("bench")) && t.test)) {
+    covered.add(`test ${target.kind[0]} ${target.name}`);
+    test(target.name, separate(target));
+  }
+  for (const example of p.targets.filter(t => t.kind.includes("example") && !t.test)) {
+    let name = `${example.name}_example`;
+    while (names.has(name)) name += "_example";
+    names.add(name);
+    covered.add(`build example ${example.name}`);
+    rules.push(["rust_binary", [["name", q(name)], ...separate(example)]]);
   }
   const loads = Map.groupBy([...new Set(rules.map(([kind]) => kind))].sort(), kind => LOADS[kind]);
   const header = [
     HEADER,
-    `load("@crates//:defs.bzl", "all_crate_deps")\n`,
     ...[...loads].sort().map(([file, kinds]) => `load(${q(file)}, ${kinds.map(q).join(", ")})\n`),
     "\n",
     `FEATURES = ${perTriple(features, list)}\n\n`,
     `PACKAGE_ENV = ${q(env)}\n`,
   ];
   return header.join("") + rules.map(([kind, attrs]) => `\n${rule(kind, attrs)}`).join("") + sourcesRule;
+}
+
+function specs() {
+  const wanted = new Map();
+  TRIPLES.forEach((triple, i) => {
+    const before = new Map(defaults[i].resolve.nodes.map(node => [node.id, new Set(node.features)]));
+    for (const node of runs[i].resolve.nodes) {
+      if (members.has(node.id) || (before.has(node.id) && node.features.every(f => before.get(node.id).has(f)))) continue;
+      if (!wanted.has(node.id)) wanted.set(node.id, new Set());
+      for (const feature of node.features) wanted.get(node.id).add(feature);
+    }
+  });
+  const named = Map.groupBy([...wanted.keys()], id => packages.get(id).name);
+  return [...wanted].sort(([a], [b]) => (a < b ? -1 : 1)).map(([id, features]) => {
+    const { name, version } = packages.get(id);
+    return `${rule("crate.spec", [
+      ["package", q(name)],
+      ["version", q(`=${version}`)],
+      ["package_alias", named.get(name).length > 1 ? q(`${name}-${version}`) : undefined],
+      ["default_features", "False"],
+      ["features", list([...features].sort())],
+    ])}\n`;
+  });
 }
 
 function moduleFile() {
@@ -373,6 +413,9 @@ function moduleFile() {
         ["proc_macro_deps", list(own.filter(p => libOf(p).kind.includes("proc-macro")).map(target).sort())],
       ])}\n`];
     }),
+    // Third-party packages and features only the all-features resolution reaches, pinned for
+    // crate_universe's default-features resolution, which unifies them in.
+    ...specs(),
     rule("crate.from_cargo", [
       ["name", q("crates")],
       ["cargo_lockfile", q("//:Cargo.lock")],
@@ -389,7 +432,19 @@ function moduleFile() {
 }
 
 // Bodies first: rendering them records every file another package takes by label.
+const rendered = new Map([...members].map(id => [id, new Set()]));
 const bodies = new Map([...members].map(id => [dir(packages.get(id)), buildFile(packages.get(id))]));
+// Coverage equals the cargo legs: every target `cargo test --all-features --no-run` builds.
+for (const id of members) {
+  const p = packages.get(id), expected = new Set();
+  for (const t of p.targets) {
+    if (t.kind.some(k => k === "bin" || k === "example")) expected.add(`build ${t.kind[0]} ${t.name}`);
+    if (t.test && (t.kind.some(k => ["bin", "test", "example", "bench"].includes(k)) || t === libOf(p))) expected.add(`test ${t.kind[0]} ${t.name}`);
+  }
+  const have = rendered.get(id);
+  const missing = [...expected].filter(t => !have.has(t)), extra = [...have].filter(t => !expected.has(t));
+  if (missing.length || extra.length) throw new Error(`STEP_FAILED bazel-build-files: ${p.name} renders a different target set than cargo test --all-features (missing: ${missing.join(", ") || "none"}; extra: ${extra.join(", ") || "none"})`);
+}
 const files = new Map([
   ["cargo.MODULE.bazel", moduleFile()],
   ["BUILD.bazel", `${HEADER}\nexports_files(${list(["Cargo.lock", "Cargo.toml"])})\n${platformRules}${sourcesRule}${exportsRule("")}`],
