@@ -319,3 +319,70 @@ pub(crate) fn abandon(
         drop(ManuallyDrop::into_inner(keeper));
     });
 }
+
+/// Waits for `path` to hold a record: observe the head, return if a record is
+/// already there, otherwise subscribe from the observed head and take the
+/// first record. A publication racing the head read or the subscription lands
+/// at or after the observed sequence, so the inclusive follow delivers it.
+async fn wait_for_record(provider: MemoryStream, path: StreamPath) -> Result<(), StreamError> {
+    use futures::StreamExt as _;
+    let observed = provider.tail(path.clone()).await?;
+    if observed > 0 {
+        return Ok(());
+    }
+    let mut records = crate::records_only(
+        provider
+            .follow(crate::FollowRequest::new(path, observed))
+            .await?,
+    );
+    match records.next().await {
+        Some(record) => record.map(|_| ()),
+        None => Err(StreamError::Unavailable),
+    }
+}
+
+// One waiter races its head read and subscription with the publication on its
+// own thread. Another is polled once on an exhausted cooperative budget, then
+// left unpolled (or dropped) across the publication, as a caller does when it
+// starts a wait and keeps working before awaiting it. The publication must
+// commit and every live waiter must then complete.
+pub(crate) fn budget_parked_waiters(drop_parked: bool, budget_after_acquire: bool) {
+    use crate::verification::{Fault, set_fault};
+    loom::model(move || {
+        let provider = MemoryStream::default();
+        let path = StreamPath::new("waited").unwrap();
+        let racing = {
+            let (provider, path) = (provider.clone(), path.clone());
+            loom::thread::spawn(move || block_on(wait_for_record(provider, path)))
+        };
+        if budget_after_acquire {
+            set_fault(Fault::BudgetAfterAcquire);
+        }
+        let mut parked = Box::pin(wait_for_record(provider.clone(), path.clone()));
+        crate::query_sync::budget::exhaust();
+        assert!(
+            parked
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending(),
+            "an exhausted budget did not yield"
+        );
+        if drop_parked {
+            drop(parked);
+        }
+        let AppendOutcome::Committed(_) = block_on(provider.append(AppendRequest {
+            path: path.clone(),
+            records: vec![Bytes::from_static(b"published").into()],
+            if_tail: Some(0),
+            idempotency_key: crate::IdempotencyKey::unique(),
+        }))
+        .unwrap() else {
+            unreachable!("the only publication conflicted")
+        };
+        if !drop_parked {
+            block_on(parked).unwrap();
+        }
+        racing.join().unwrap().unwrap();
+        assert_eq!(block_on(provider.tail(path)).unwrap(), 1);
+    });
+}
