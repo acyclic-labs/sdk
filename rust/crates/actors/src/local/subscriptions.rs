@@ -158,16 +158,20 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         }
         match self.submit(prepared).await {
             Ok(()) => Ok(()),
-            Err(
-                error @ (Error::Conflict
-                | Error::Stream(StreamError::IdempotencyMismatch)
-                | Error::Unknown { .. }),
-            ) => match self.subscription_replay(&key, &path, &intent).await {
-                Ok(true) => Ok(()),
-                Ok(false) => Err(error),
-                Err(_) if matches!(&error, Error::Unknown { .. }) => Err(error),
-                Err(recovery) => Err(recovery),
-            },
+            Err(error)
+                if matches!(&error, Error::Conflict | Error::Unknown { .. })
+                    || matches!(
+                        &error,
+                        Error::Stream(source) if source.as_ref() == &StreamError::IdempotencyMismatch
+                    ) =>
+            {
+                match self.subscription_replay(&key, &path, &intent).await {
+                    Ok(true) => Ok(()),
+                    Ok(false) => Err(error),
+                    Err(_) if matches!(&error, Error::Unknown { .. }) => Err(error),
+                    Err(recovery) => Err(recovery),
+                }
+            }
             Err(error) => Err(error),
         }
     }

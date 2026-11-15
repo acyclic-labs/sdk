@@ -293,10 +293,10 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         key: IdempotencyKey,
     ) -> Result<PreparedPublish, Error> {
         if matches!(cause.category(), GuestError::PreconditionChanged) {
-            return Err(Error::PreconditionChanged(Vec::new()));
+            return Err(Error::PreconditionChanged(Box::default()));
         }
         if matches!(cause.category(), GuestError::Pending(_)) {
-            return Err(Error::Handler(cause.clone()));
+            return Err(Error::Handler(Box::new(cause.clone())));
         }
         let original = super::owned(previous, epoch)?;
         let (subscription, sequence) = trigger

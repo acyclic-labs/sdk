@@ -156,10 +156,10 @@ async fn history() -> TestResult {
         Vec::new()
     } else {
         vec![
-            <crate::local::Error>::UndecidedUnchanged(
+            <crate::local::Error>::UndecidedUnchanged(Box::new(
                 GuestError::Pending("undecided storage outcome".into())
                     .with_context("context prepared, model not started"),
-            )
+            ))
             .to_string(),
         ]
     };

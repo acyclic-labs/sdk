@@ -363,7 +363,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 if let Err(source) = self.confirm_durability().await {
                     return Err(Error::InvocationDurabilityUnknown {
                         receipt: Box::new(call),
-                        source,
+                        source: Box::new(source),
                     });
                 }
                 if matches!(outcome, Outcome::Cancelled(_) | Outcome::Indeterminate(_)) {
@@ -434,7 +434,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                             return Err(Error::Invalid("non-canonical invocation failure"));
                         }
                         Err(Error::InvocationFailed {
-                            source,
+                            source: Box::new(source),
                             receipt: Box::new(receipt),
                         })
                     }
@@ -463,12 +463,12 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         // original delivery unapplied, including explicit failure preparation.
         if matches!(outcome, Some(Err(failure)) if matches!(failure.category(), GuestError::PreconditionChanged))
         {
-            return Err(Error::PreconditionChanged(Vec::new()));
+            return Err(Error::PreconditionChanged(Box::default()));
         }
         if let Some(Err(failure)) = outcome
             && matches!(failure.category(), GuestError::Pending(_))
         {
-            return Err(Error::Handler(failure.clone()));
+            return Err(Error::Handler(Box::new(failure.clone())));
         }
         let invocation = delivered
             .map(Invocation::decode_bound)

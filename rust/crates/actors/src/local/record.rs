@@ -413,7 +413,7 @@ mod tests {
             obsolete[STATE_FORMAT_V2.len() - 1] = version;
             assert!(matches!(
                 State::decode(&obsolete),
-                Err(Error::Stream(acyclic_stream::StreamError::Unsupported))
+                Err(Error::Stream(error)) if error.as_ref() == &acyclic_stream::StreamError::Unsupported
             ));
         }
         let variable = "acyclic.harness.agent".len() + "1".len() + bytes.len();

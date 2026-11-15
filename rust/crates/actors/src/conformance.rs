@@ -1588,7 +1588,7 @@ async fn invoked<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failur
     .map_err(Error::from)?;
     if !matches!(
         target.store().enqueue_invoke(&changed).await,
-        Err(Error::Stream(StreamError::IdempotencyMismatch))
+        Err(Error::Stream(error)) if error.as_ref() == &StreamError::IdempotencyMismatch
     ) {
         return fixture.violation("operation accepted changed request bytes".into());
     }
@@ -1620,7 +1620,7 @@ async fn invoked<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failur
     }
     if !matches!(
         target.store().enqueue_invoke(&changed).await,
-        Err(Error::Stream(StreamError::IdempotencyMismatch))
+        Err(Error::Stream(error)) if error.as_ref() == &StreamError::IdempotencyMismatch
     ) {
         return fixture.violation("completed operation accepted changed bytes".into());
     }
@@ -1657,7 +1657,7 @@ pub(crate) async fn invocation_failure<T: Backend + ?Sized>(
         return fixture
             .violation("handler failure did not settle as a terminal invocation failure".into());
     };
-    if source != GuestError::Handler("unknown command".into())
+    if source.as_ref() != &GuestError::Handler("unknown command".into())
         || receipt.state().commit_id != receipt.terminal().commit_id
         || receipt.ticket().invocation() != &invocation
     {
@@ -1886,7 +1886,7 @@ async fn reserved<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failu
     if !matches!(
         pool.reserve(1, first_id.clone(), owner.clone(), deadline)
             .await,
-        Err(Error::Stream(StreamError::IdempotencyMismatch))
+        Err(Error::Stream(error)) if error.as_ref() == &StreamError::IdempotencyMismatch
     ) {
         return fixture.violation("reserve accepted changed units under one request id".into());
     }
@@ -1897,7 +1897,7 @@ async fn reserved<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failu
     .map_err(Error::from)?;
     if !matches!(
         pool.reserve(2, first_id.clone(), another, deadline).await,
-        Err(Error::Stream(StreamError::IdempotencyMismatch))
+        Err(Error::Stream(error)) if error.as_ref() == &StreamError::IdempotencyMismatch
     ) {
         return fixture.violation("reserve accepted changed owner evidence".into());
     }
@@ -2017,7 +2017,7 @@ async fn wait_pool_used<T: Target + ?Sized>(
             return Ok(());
         }
     }
-    Err(Error::Stream(StreamError::Unavailable).into())
+    Err(Error::Stream(Box::new(StreamError::Unavailable)).into())
 }
 
 /// A committed input cut is observed through the same original state stream.
@@ -2083,7 +2083,7 @@ async fn applied<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failur
                 AppliedCut::through("inbox".into(), fixture.inbox.clone(), &foreign_input)?
             )
             .await,
-        Err(Error::Stream(StreamError::PrefixNotRetained))
+        Err(Error::Stream(error)) if error.as_ref() == &StreamError::PrefixNotRetained
     ) {
         return fixture.violation("a consumed cursor accepted a different input history".into());
     }

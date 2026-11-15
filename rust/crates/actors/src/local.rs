@@ -51,80 +51,67 @@ use std::{collections::BTreeMap, sync::Arc};
 /// platform handles, so it never travels as a cause; [`Error::into_cause`]
 /// keeps the failure but discards custody. Callers that may retry must
 /// extract custody before converting.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum Error<C = Box<PreparedPublish>> {
     /// A shared call journal is malformed or cannot be addressed.
-    #[error(transparent)]
-    Call(#[from] crate::call::Error),
+    Call(Box<crate::call::Error>),
     /// Cancellation or executor loss settled the caller's original journal.
-    #[error("actor invocation terminated: {receipt:?}")]
     InvocationTerminated {
         /// Original call decision; no state publication is inferred from it.
         receipt: Box<crate::call::Receipt>,
     },
     /// The original call guard refused this inline step. No effects committed;
     /// the runtime consumes only its input under the same settled marker.
-    #[error("actor call was already settled")]
     CallSettled {
         /// Original call whose settled marker refused the publication.
-        call: crate::call::CallPath,
+        call: Box<crate::call::CallPath>,
         /// Exact input from the refused publication, retained through retries.
-        trigger: Trigger,
+        trigger: Box<Trigger>,
     },
     /// The original scheduling clock could not produce a deadline event.
-    #[error(transparent)]
-    Clock(#[from] ClockError),
+    Clock(ClockError),
     /// The requested completion cut has no original host, or its host stopped.
-    #[error("actor runtime completion producer stopped")]
     CompletionStopped,
     /// A delivery failed before the host could establish its completion cut.
-    #[error("actor runtime completion failed: {0}")]
-    CompletionFailed(#[source] Arc<Cause>),
+    CompletionFailed(Arc<Cause>),
     /// The original per-agent spend balance refused the candidate.
-    #[error(transparent)]
-    Escrow(#[from] crate::escrow::Error),
+    Escrow(crate::escrow::Error),
     /// Canonical provider failure, including uncertain acknowledgement. Not
     /// transparent: the StreamError stays in the source chain, so diagnostics
     /// keep its code instead of only its own opaque causes.
-    #[error("actor stream provider failed: {0}")]
-    Stream(#[from] StreamError),
+    Stream(Box<StreamError>),
     /// The provider did not establish an outcome. Retry this exact publication;
     /// its request and participant custody remain together.
-    #[error("actor publication acknowledgement is unknown: {source}")]
     Unknown {
         /// The sealed publication to pass back to [`Store::submit`].
         publication: C,
         /// The original uncertain provider response or transport failure.
-        source: StreamError,
+        source: Box<StreamError>,
     },
     /// A terminal was observed, but its durable cut could not be confirmed.
     /// This retains the original outcome; it is not a refusal of that call.
-    #[error("actor invocation durability is unknown: {source}")]
     InvocationDurabilityUnknown {
         /// The observed original terminal, including its result bytes.
         receipt: Box<crate::call::Receipt>,
         /// Why its persistence could not be confirmed.
-        source: StreamError,
+        source: Box<StreamError>,
     },
     /// A publication was observed, but its durable cut is unconfirmed.
     /// Retry the original operation; this envelope is not a refusal.
-    #[error("actor publication durability is unknown: {source}")]
     PublicationDurabilityUnknown {
         /// The original accepted publication, including all its joined effects.
         envelope: Box<acyclic_stream::CommittedEnvelope>,
         /// Why persistence could not be confirmed.
-        source: StreamError,
+        source: Box<StreamError>,
     },
     /// Publication has a terminal outcome, but participant settlement failed.
-    #[error("actor participant settlement failed: {source}")]
     Settlement {
         /// The already decided provider outcome, never replaced by this error.
-        outcome: Result<CommitOutcome, StreamError>,
+        outcome: Box<Result<CommitOutcome, StreamError>>,
         /// Why local participant settlement failed.
-        source: GuestError,
+        source: Box<GuestError>,
     },
     /// Another owner or transition changed the exact durable cut.
-    #[error("actor epoch or checkpoint changed")]
     Conflict,
     /// A composed external guard changed. Recompute the original delivery;
     /// its handler must observe the changed guard or settle its refusal.
@@ -132,50 +119,149 @@ pub enum Error<C = Box<PreparedPublish>> {
     /// must observe; empty when the participant refused while sealing and
     /// supplied no comparable source observation. Two empty lists do not
     /// establish that a source is unchanged.
-    #[error("composed transaction precondition changed")]
-    PreconditionChanged(Vec<acyclic_stream::CommitConflict>),
+    PreconditionChanged(Box<[acyclic_stream::CommitConflict]>),
     /// A recomputed delivery met the identical guard refusal again: nothing
     /// external changed, so its handler cannot observe a change and another
     /// attempt would touch storage forever without progress.
-    #[error("composed transaction precondition refused again with no external change")]
     PreconditionUnchanged,
     /// A redelivered input was undecided again, with nothing published
     /// between. No later event is owed to the actor: retaining the input
     /// would leave it idle with work unconsumed.
-    #[error("handler failure undecided again on redelivery: {0}")]
-    UndecidedUnchanged(GuestError),
+    UndecidedUnchanged(Box<GuestError>),
     /// The actor is paused; queued work remains unconsumed.
-    #[error("actor is paused")]
     Paused,
     /// The handler failed; nothing was published and the input stays queued.
-    #[error(transparent)]
-    Handler(#[from] GuestError),
+    Handler(Box<GuestError>),
     /// A deterministic guest failure was committed with its consumed input.
     /// Reconciliation returns this same terminal result, never a new attempt.
-    #[error("actor invocation failed: {source}")]
     InvocationFailed {
         /// Original typed guest failure, including its exact detail.
-        source: GuestError,
+        source: Box<GuestError>,
         /// Original co-committed state and failure reply.
         receipt: Box<InvocationReceipt>,
     },
     /// The authority refused an alarm consumption before its deadline: its
     /// own commit time was `authority_unix_ms`. Nothing was published.
-    #[error("alarm not yet due at authority time {authority_unix_ms}")]
     AlarmNotDue {
         /// The authority's commit time at the refusal.
         authority_unix_ms: u64,
     },
     /// The actor is deleted. Its terminal state admits no claim, publication,
     /// control write or second deletion.
-    #[error("actor is deleted")]
     Deleted,
     /// The original configured delivery-credit owner closed admission.
-    #[error("invalid actor transition: runtime admission is closed")]
-    AdmissionClosed(#[source] tokio::sync::AcquireError),
+    AdmissionClosed(tokio::sync::AcquireError),
     /// A request contradicts the durable state machine.
-    #[error("invalid actor transition: {0}")]
     Invalid(&'static str),
+}
+
+impl<C> std::fmt::Display for Error<C> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Call(error) => error.fmt(formatter),
+            Self::InvocationTerminated { receipt } => {
+                write!(formatter, "actor invocation terminated: {receipt:?}")
+            }
+            Self::CallSettled { .. } => formatter.write_str("actor call was already settled"),
+            Self::Clock(error) => error.fmt(formatter),
+            Self::CompletionStopped => {
+                formatter.write_str("actor runtime completion producer stopped")
+            }
+            Self::CompletionFailed(cause) => {
+                write!(formatter, "actor runtime completion failed: {cause}")
+            }
+            Self::Escrow(error) => error.fmt(formatter),
+            Self::Stream(error) => {
+                write!(formatter, "actor stream provider failed: {error}")
+            }
+            Self::Unknown { source, .. } => {
+                write!(formatter, "actor publication acknowledgement is unknown: {source}")
+            }
+            Self::InvocationDurabilityUnknown { source, .. } => {
+                write!(formatter, "actor invocation durability is unknown: {source}")
+            }
+            Self::PublicationDurabilityUnknown { source, .. } => {
+                write!(formatter, "actor publication durability is unknown: {source}")
+            }
+            Self::Settlement { source, .. } => {
+                write!(formatter, "actor participant settlement failed: {source}")
+            }
+            Self::Conflict => formatter.write_str("actor epoch or checkpoint changed"),
+            Self::PreconditionChanged(_) => {
+                formatter.write_str("composed transaction precondition changed")
+            }
+            Self::PreconditionUnchanged => formatter.write_str(
+                "composed transaction precondition refused again with no external change",
+            ),
+            Self::UndecidedUnchanged(failure) => {
+                write!(formatter, "handler failure undecided again on redelivery: {failure}")
+            }
+            Self::Paused => formatter.write_str("actor is paused"),
+            Self::Handler(failure) => failure.fmt(formatter),
+            Self::InvocationFailed { source, .. } => {
+                write!(formatter, "actor invocation failed: {source}")
+            }
+            Self::AlarmNotDue { authority_unix_ms } => {
+                write!(formatter, "alarm not yet due at authority time {authority_unix_ms}")
+            }
+            Self::Deleted => formatter.write_str("actor is deleted"),
+            Self::AdmissionClosed(_) => {
+                formatter.write_str("invalid actor transition: runtime admission is closed")
+            }
+            Self::Invalid(reason) => write!(formatter, "invalid actor transition: {reason}"),
+        }
+    }
+}
+
+impl<C: std::fmt::Debug> std::error::Error for Error<C> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Call(error) => error.source(),
+            Self::Clock(error) => error.source(),
+            Self::Escrow(error) => error.source(),
+            Self::Handler(error) => error.source(),
+            Self::CompletionFailed(cause) => Some(cause),
+            Self::Stream(error) => Some(error.as_ref()),
+            Self::Unknown { source, .. }
+            | Self::InvocationDurabilityUnknown { source, .. }
+            | Self::PublicationDurabilityUnknown { source, .. } => Some(source.as_ref()),
+            Self::Settlement { source, .. } | Self::InvocationFailed { source, .. } => {
+                Some(source.as_ref())
+            }
+            Self::AdmissionClosed(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl From<crate::call::Error> for Error {
+    fn from(error: crate::call::Error) -> Self {
+        Self::Call(Box::new(error))
+    }
+}
+
+impl From<ClockError> for Error {
+    fn from(error: ClockError) -> Self {
+        Self::Clock(error)
+    }
+}
+
+impl From<crate::escrow::Error> for Error {
+    fn from(error: crate::escrow::Error) -> Self {
+        Self::Escrow(error)
+    }
+}
+
+impl From<StreamError> for Error {
+    fn from(error: StreamError) -> Self {
+        Self::Stream(Box::new(error))
+    }
+}
+
+impl From<GuestError> for Error {
+    fn from(error: GuestError) -> Self {
+        Self::Handler(Box::new(error))
+    }
 }
 
 /// An actor failure without retry custody. It is `Send + Sync` on every
@@ -978,16 +1064,20 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         commit.join(self.activation(&child)?)?;
         match self.submit(commit).await {
             Ok(()) => {}
-            Err(
-                error @ (Error::Conflict
-                | Error::Stream(StreamError::IdempotencyMismatch)
-                | Error::Unknown { .. }),
-            ) => match self.fork_replay(&key, &parent_path, &child_path).await {
-                Ok(true) => {}
-                Ok(false) => return Err(error),
-                Err(_) if matches!(&error, Error::Unknown { .. }) => return Err(error),
-                Err(recovery) => return Err(recovery),
-            },
+            Err(error)
+                if matches!(&error, Error::Conflict | Error::Unknown { .. })
+                    || matches!(
+                        &error,
+                        Error::Stream(source) if source.as_ref() == &StreamError::IdempotencyMismatch
+                    ) =>
+            {
+                match self.fork_replay(&key, &parent_path, &child_path).await {
+                    Ok(true) => {}
+                    Ok(false) => return Err(error),
+                    Err(_) if matches!(&error, Error::Unknown { .. }) => return Err(error),
+                    Err(recovery) => return Err(recovery),
+                }
+            }
             Err(error) => return Err(error),
         }
         Ok(child)
@@ -1261,10 +1351,10 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 &next,
                 &intent.participant,
             )
-            .map_err(Error::Handler)?
+            .map_err(Error::from)?
             .settle(Ok(&CommitOutcome::Committed(receipt)))
             .await
-            .map_err(Error::Handler)
+            .map_err(Error::from)
     }
 
     /// The one record at `sequence` of `path`.
@@ -1597,7 +1687,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             prepared.acknowledgement_unknown = true;
             return Err(Error::Unknown {
                 publication: Box::new(prepared),
-                source,
+                source: Box::new(source),
             });
         }
         Ok(prepared)
@@ -1612,7 +1702,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         if let Err(source) = self.confirm_durability().await {
             return Err(Error::PublicationDurabilityUnknown {
                 envelope: Box::new(envelope),
-                source,
+                source: Box::new(source),
             });
         }
         Ok(envelope)
@@ -1659,9 +1749,9 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                                 composition.seal(original.clone()).await.map_err(|error| {
                                     match error.category() {
                                         GuestError::PreconditionChanged => {
-                                            Error::PreconditionChanged(Vec::new())
+                                            Error::PreconditionChanged(Box::default())
                                         }
-                                        _ => Error::Handler(error),
+                                        _ => Error::Handler(Box::new(error)),
                                     }
                                 })?;
                             if !extends(original, &request, &self.root)
@@ -1712,7 +1802,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                         if let Err(source) = &outcome {
                             return Err(Error::Unknown {
                                 publication: Box::new(prepared),
-                                source: source.clone(),
+                                source: Box::new(source.clone()),
                             });
                         }
                     }
@@ -1725,7 +1815,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                         prepared.acknowledgement_unknown = true;
                         return Err(Error::Unknown {
                             publication: Box::new(prepared),
-                            source: source.clone(),
+                            source: Box::new(source.clone()),
                         });
                     }
                     let retained = match &outcome {
@@ -1757,7 +1847,10 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     let composed = prepared.composition.is_some();
                     if let Some(composition) = prepared.composition {
                         if let Err(source) = composition.settle(outcome.as_ref()).await {
-                            return Err(Error::Settlement { outcome, source });
+                            return Err(Error::Settlement {
+                                outcome: Box::new(outcome),
+                                source: Box::new(source),
+                            });
                         }
                     }
                     if let (Ok(CommitOutcome::Committed(receipt)), Some(own)) =
@@ -1770,12 +1863,15 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                         }
                     }
                     if let Some((call, trigger)) = settled {
-                        return Err(Error::CallSettled { call, trigger });
+                        return Err(Error::CallSettled {
+                            call: Box::new(call),
+                            trigger: Box::new(trigger),
+                        });
                     }
                     if revalidate {
                         return Err(Error::PreconditionChanged(match outcome {
-                            Ok(CommitOutcome::Conflict(conflicts)) => conflicts,
-                            _ => Vec::new(),
+                            Ok(CommitOutcome::Conflict(conflicts)) => conflicts.into_boxed_slice(),
+                            _ => Box::default(),
                         }));
                     }
                     if let Err(source) = &outcome

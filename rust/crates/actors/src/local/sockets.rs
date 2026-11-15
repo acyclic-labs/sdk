@@ -319,7 +319,7 @@ async fn commit<P: StreamProvider + ?Sized>(
             ) =>
             {
                 publication = *retained;
-                undecided.retry(executor, source.into()).await?;
+                undecided.retry(executor, (*source).into()).await?;
             }
             Err(error) => return Err(error),
         }
@@ -541,7 +541,7 @@ impl Entry {
         let completion: BoxProviderFuture<'static, Result<(), Arc<Error>>> = Box::pin(async move {
             completion
                 .await
-                .unwrap_or_else(|_| Err(Arc::new(Error::Stream(StreamError::Unavailable))))
+                .unwrap_or_else(|_| Err(Arc::new(Error::Stream(Box::new(StreamError::Unavailable)))))
         });
         let completion = completion.shared();
         self.completed = Some(completed);

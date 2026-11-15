@@ -552,7 +552,7 @@ async fn native_socket_admission_rechecks_the_retained_target_before_installing(
     assert!(sockets.is_empty());
     assert!(matches!(
         records(&sockets.shared.store, &sockets.shared.layout.segment(1)?).await,
-        Err(Error::Stream(StreamError::NotFound))
+        Err(Error::Stream(error)) if error.as_ref() == &StreamError::NotFound
     ));
     Ok(())
 }
@@ -617,7 +617,7 @@ async fn socket_admission_binds_namespace_grants_to_the_certified_account() -> T
     }
     assert!(matches!(
         records(&sockets.shared.store, &ledger).await,
-        Err(Error::Stream(StreamError::NotFound))
+        Err(Error::Stream(error)) if error.as_ref() == &StreamError::NotFound
     ));
     let before = decode_work();
     let refused = match client.actor_socket(encoded.clone(), 0).await {
@@ -638,7 +638,7 @@ async fn socket_admission_binds_namespace_grants_to_the_certified_account() -> T
     );
     assert!(matches!(
         records(&sockets.shared.store, &ledger).await,
-        Err(Error::Stream(StreamError::NotFound))
+        Err(Error::Stream(error)) if error.as_ref() == &StreamError::NotFound
     ));
 
     // The same signed credential admits its own account's namespace. Actor
@@ -930,7 +930,7 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
                 assert_eq!(records.len(), 2);
                 assert_eq!(crate::sockets::input_kind(&records[1]), Some("close"));
             }
-            Err(Error::Stream(StreamError::NotFound)) if !committed => {}
+            Err(Error::Stream(error)) if error.as_ref() == &StreamError::NotFound && !committed => {}
             _ => return Err("recovery lost an Open or delivered a refused Open".into()),
         }
     }
@@ -1701,7 +1701,7 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
     drop(executor.take()?); // Drop the actual close future before its first poll.
     assert!(matches!(
         waiting.await,
-        Err(error) if matches!(error.as_ref(), Error::Stream(StreamError::Unavailable))
+        Err(error) if matches!(error.as_ref(), Error::Stream(error) if error.as_ref() == &StreamError::Unavailable)
     ));
     let terminal = pin
         .completion()
@@ -1709,7 +1709,7 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
         .expect_err("original producer loss must remain terminal");
     assert!(matches!(
         terminal.downcast_ref::<Error>(),
-        Some(Error::Stream(StreamError::Unavailable))
+        Some(Error::Stream(error)) if error.as_ref() == &StreamError::Unavailable
     ));
     assert!(
         last.await.is_err(),
@@ -1844,7 +1844,7 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
         if lose_producer {
             drop(opening);
             assert!(
-                matches!(later.await, Err(error) if matches!(error.as_ref(), Error::Stream(StreamError::Unavailable)))
+                matches!(later.await, Err(error) if matches!(error.as_ref(), Error::Stream(error) if error.as_ref() == &StreamError::Unavailable))
             );
             assert!(last.await.is_err());
             assert!(matches!(
