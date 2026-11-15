@@ -156,7 +156,12 @@ async fn publish<P: StreamProvider + ?Sized>(
     let CommitOutcome::Committed(retried) = provider.commit(fork).await? else {
         return Err(violated!());
     };
-    if retried.commit_id != first.commit_id {
+    // The fork takes no canonical decision, so its heads are a fact of the
+    // revision already published, before any later durable decision.
+    if retried.commit_id != first.commit_id
+        || provider.tail(forked.clone()).await? != 2
+        || provider.tail(adopted.clone()).await? != 1
+    {
         return Err(violated!());
     }
     let mut receipts = vec![(key(b"ephemeral/fork")?, first.commit_id)];
