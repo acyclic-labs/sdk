@@ -4898,7 +4898,7 @@ mod demand_admission_tests {
         let mut held = watch.lock().map_err(|_| "watch poisoned")?;
         assert!(held.watched_directories.is_empty());
         // Whole-tree registration and rescan reuse the same physical producer.
-        held.watch_tree(&[])?;
+        held.watch_tree()?;
         let rescan = held.begin_rescan()?;
         held.finish_rescan(rescan)?;
         let NativeWatchDriver::Source(source) = &held.watcher else {
@@ -5268,7 +5268,7 @@ mod demand_admission_tests {
         let watch = watcher(root.path())?;
         let mut held = watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
         let unregistered = fence_items(&mut held)?;
-        held.watch_tree(&[])?;
+        held.watch_tree()?;
         assert_eq!(held.windows_registered(), DIRECTORIES);
         let after = handles()?;
         assert!(

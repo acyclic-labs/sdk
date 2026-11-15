@@ -22,17 +22,17 @@ impl NativeWatch {
                 WatchChange::Renamed { to, .. } => to,
                 _ => continue,
             };
-            self.register_tree(directory, policy, &mut remaining, &[])?;
+            self.register_tree(directory, policy, &mut remaining)?;
         }
         Ok(())
     }
 
-    /// Adds every directory beneath the root except the excluded root names.
-    pub fn watch_tree(&mut self, excluded: &[&str]) -> Result<(), NativeWatchError> {
+    /// Adds every directory beneath the root outside the excluded subtrees.
+    pub fn watch_tree(&mut self) -> Result<(), NativeWatchError> {
         let root = NamespacePath::new(Vec::new(), self.limits)
             .map_err(|_| NativeWatchError::UnrepresentablePath)?;
         let mut remaining = None;
-        self.register_tree(&root, &CapturePolicy::default(), &mut remaining, excluded)
+        self.register_tree(&root, &CapturePolicy::default(), &mut remaining)
     }
 
     fn register_tree(
@@ -40,7 +40,6 @@ impl NativeWatch {
         directory: &NamespacePath,
         policy: &CapturePolicy,
         remaining: &mut Option<u32>,
-        excluded: &[&str],
     ) -> Result<(), NativeWatchError> {
         if let Some(original) = &self.original_work {
             original.admit(WorkCounters::UNCHARGED)?;
@@ -79,20 +78,18 @@ impl NativeWatch {
                 }
                 let relative =
                     crate::native_capture::namespace_to_host_path_with_work(path, &mut &*meter)?;
-                let omitted = (path.depth() == 1
-                    && excluded.iter().any(|name| relative.0 == Path::new(name)))
-                    || self
-                        .shared
-                        .state
-                        .lock()
-                        .map_err(|_| NativeWatchError::StatePoisoned)?
-                        .excluded
-                        .iter()
-                        .any(|omitted| {
-                            omitted
-                                .strip_prefix(&self.root)
-                                .is_ok_and(|omitted| relative.0.starts_with(omitted))
-                        });
+                let omitted = self
+                    .shared
+                    .state
+                    .lock()
+                    .map_err(|_| NativeWatchError::StatePoisoned)?
+                    .excluded
+                    .iter()
+                    .any(|omitted| {
+                        omitted
+                            .strip_prefix(&self.root)
+                            .is_ok_and(|omitted| relative.0.starts_with(omitted))
+                    });
                 drop(relative);
                 if omitted {
                     return Ok(false);

@@ -132,7 +132,7 @@ fn tree_registration_refuses_the_cancelled_original_before_enumeration()
     // walker enumerated this tree and returned success without ever reaching
     // a watch-directory call, whose later admission could mask that defect.
     assert!(matches!(
-        watch.watch_tree(&["arrived"]),
+        watch.watch_tree(),
         Err(NativeWatchError::Cancelled(_))
     ));
     Ok(())

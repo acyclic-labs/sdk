@@ -54,9 +54,6 @@ impl Cursor {
             &work,
         )
         .map_err(storage)?;
-        watcher
-            .exclude_subtrees(workspace.source_policy.excluded_prefixes())
-            .map_err(storage)?;
         Ok(Self {
             watcher,
             initial: None,
@@ -70,10 +67,7 @@ impl Cursor {
     pub(super) fn initial(workspace: &LocalWorkspace) -> Result<Self> {
         let mut cursor = Self::open(workspace)?;
         let rescan = cursor.watcher.begin_rescan().map_err(storage)?;
-        cursor
-            .watcher
-            .watch_tree(workspace::SOURCE_EXCLUDED_ROOTS)
-            .map_err(storage)?;
+        cursor.watcher.watch_tree().map_err(storage)?;
         cursor.initial = Some(cursor.watcher.finish_rescan(rescan).map_err(storage)?);
         Ok(cursor)
     }
@@ -464,5 +458,5 @@ pub(in crate::local) fn configuration(
         maximum_paths: None,
         maximum_extent_spans: None,
     };
-    (options, workspace.source_policy.clone())
+    (options, CapturePolicy::default())
 }

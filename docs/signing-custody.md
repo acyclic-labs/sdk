@@ -65,11 +65,12 @@ numeric statuses. Apple interaction-not-allowed is
 InteractionRequired(-25308); it cannot distinguish a locked keychain from an
 unavailable prompt. Credential contents never enter diagnostics.
 
-The current owner.v14 record admits external native preparation, host-owned
+The current owner.v15 record admits external native preparation, host-owned
 journals, pinned hook configurations, frozen manifests and context delivery
 frontiers with read-only selected inputs, retains the same store-owned seed
-reference and v1 actor records, and excludes native-only opaque subtrees from
-captured generations. Native skill-source metadata uses versioned indexed
+reference and v1 actor records, and captures every checkout entry as
+content: no subtree is native-only and a physical task view holds no alias
+to a checkout entry. Native skill-source metadata uses versioned indexed
 records in the original owner's Streams state, split by the shared value-and-header
 frame size. Sorted source keys fix chunk boundaries and retry identities; a
 catalog is returned only after every chunk commits. Settings decisions, including
@@ -80,8 +81,8 @@ and outcomes
 are in the host journal. There are no native source-metadata sidecars or
 private hook-outcome readers. If that record is absent but owner.json,
 owner.v2, owner.v3, owner.v4, owner.v5,
-owner.v6, owner.v7, owner.v8, owner.v9, owner.v10, owner.v11, owner.v12 or owner.v13
-exists, both opening and explicit deletion return Error::Conflict with:
+owner.v6, owner.v7, owner.v8, owner.v9, owner.v10, owner.v11, owner.v12, owner.v13
+or owner.v14 exists, both opening and explicit deletion return Error::Conflict with:
 local state at <dir> uses an older format; remove
 that directory to start fresh. Refusal happens before decoding the older
 record or accessing credentials, and leaves its bytes unchanged. There is

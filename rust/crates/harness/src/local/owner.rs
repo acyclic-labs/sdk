@@ -257,15 +257,17 @@ impl RootWitness {
 // f_fsid, Windows volume serial); on macOS it is st_dev, so a remount that
 // renumbers the device refuses attachment rather than trusting a copied token.
 
-/// Version fourteen retains native skill-source metadata and complete-cut
-/// pre-root settings decisions in owner Streams, plus hook effects in the
-/// host journal and version thirteen opaque-subtree exclusion. Earlier owners
-/// may retain native metadata
-
-/// sidecars or private hook outcomes; refuse them before record decoding,
-/// credential access or filesystem attachment, without importing their state.
-pub(super) const RECORD: &str = "owner.v14";
-const OLDER_RECORDS: [&str; 13] = [
+/// Version fifteen captures every checkout entry as content, with no
+/// native-only opaque subtree and no harness-made alias in a physical task
+/// view. It keeps version fourteen's native skill-source metadata and
+/// complete-cut pre-root settings decisions in owner Streams, plus hook
+/// effects in the host journal. Earlier owners may retain native metadata
+/// sidecars, private hook outcomes, generations without their opaque subtrees
+/// or physical views aliasing the checkout's own entries; refuse them before
+/// record decoding, credential access or filesystem attachment, without
+/// importing their state.
+pub(super) const RECORD: &str = "owner.v15";
+const OLDER_RECORDS: [&str; 14] = [
     "owner.json",
     "owner.v2",
     "owner.v3",
@@ -279,6 +281,7 @@ const OLDER_RECORDS: [&str; 13] = [
     "owner.v11",
     "owner.v12",
     "owner.v13",
+    "owner.v14",
 ];
 
 impl Owner {

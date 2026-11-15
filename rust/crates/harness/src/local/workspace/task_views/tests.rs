@@ -264,10 +264,6 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         remounted.native_root_for(remounted.named(None)?.1),
         Some(second.path.join("selected").as_path()),
     );
-    assert!(
-        remounted.native_read_roots.is_empty(),
-        "a scoped view must not add opaque read roots outside its subtree"
-    );
     {
         let host = crate::local::host_workspace::HostWorkspace::attach(
             Arc::clone(&second),
@@ -1048,11 +1044,11 @@ async fn native_guard_retains_the_original_binding_until_physical_retirement() -
     Ok(())
 }
 
-/// A physical view's opaque alias is installed once, with the view. Whatever
-/// the agent's commands later make at that path is its own; rebinding the view
-/// (as a redelivered handler does) converges instead of failing every attempt.
+/// A physical view materializes the checkout's `.git` as content. Whatever the
+/// agent's commands later make there is its own; rebinding the view (as a
+/// redelivered handler does) converges instead of replaying the first binding.
 #[tokio::test]
-async fn rebinding_a_physical_view_keeps_what_replaced_its_alias() -> Result<()> {
+async fn rebinding_a_physical_view_keeps_the_agents_repository() -> Result<()> {
     let checkout = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
     std::fs::create_dir(checkout.path().join(".git")).map_err(storage)?;
@@ -1115,7 +1111,7 @@ async fn rebinding_a_physical_view_keeps_what_replaced_its_alias() -> Result<()>
         b"source"
     );
     drop(first);
-    // The agent moves the alias aside and puts a real repository in its place.
+    // The checkout's `.git` is ordinary content; the agent replaces it.
     std::fs::rename(path.join(".git"), path.join(".git-link")).map_err(storage)?;
     std::fs::create_dir(path.join(".git")).map_err(storage)?;
     std::fs::write(path.join(".git/marker"), b"agent").map_err(storage)?;
