@@ -247,21 +247,23 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
                 .native_heads(request.clone(), work.runtime_meter())
                 .await
                 .map_err(|error| work.runtime_error(error))?
-                .map_err(|source| Error::NativeStream {
+                .map_err(|source| Error::StreamFailure {
                     code: if source.category() == acyclic_stream::StreamError::AccessDenied {
                         ErrorCode::Unauthorized
                     } else {
                         ErrorCode::Storage
                     },
                     source,
+                    native: true,
                     custody: None,
                 })?;
             observed
                 .value()
                 .validate_for(&request)
-                .map_err(|source| Error::NativeStream {
+                .map_err(|source| Error::StreamFailure {
                     code: ErrorCode::Storage,
                     source,
+                    native: true,
                     custody: None,
                 })?;
             return Ok(());

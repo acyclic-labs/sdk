@@ -255,8 +255,18 @@ impl AgentPath {
     /// This checks routing containment, not the caller's current authority.
     #[must_use]
     pub fn contains(&self, agent: &Self) -> bool {
+        self.contains_text(agent.as_str())
+    }
+
+    /// Validate a borrowed, untrusted agent address before checking ancestry.
+    /// This allocates no parent paths and conveys no source authority.
+    pub fn contains_path(&self, agent: &str) -> Result<bool, Error> {
+        Self::parse_depth(agent)?;
+        Ok(self.contains_text(agent))
+    }
+
+    fn contains_text(&self, agent: &str) -> bool {
         agent
-            .text
             .strip_prefix(self.text.as_str())
             .is_some_and(|rest| rest.is_empty() || rest.starts_with("/children/"))
     }
