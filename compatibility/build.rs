@@ -11,10 +11,17 @@
 //! The crate's own shared protocols travel the same way. The bundle is copied
 //! into `OUT_DIR`, so the library embeds bytes, never a path that is valid only
 //! while this script runs or only inside this package.
+//! Every file the script writes goes through [`place`], so the script reruns
+//! over its own output whatever mode that output has.
 use std::{
     env, fs, io,
     path::{Path, PathBuf},
 };
+
+// Shared with the library's tests, which prove it on every OS.
+#[path = "src/place.rs"]
+mod place;
+use place::place;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=build.rs");
@@ -44,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut source = match executable {
         Some(path) => {
             println!("cargo:rerun-if-changed={}", path.display());
-            fs::copy(path, out.join("protoc"))?;
+            place(&out.join("protoc"), &fs::read(path)?)?;
             "const EXECUTABLE: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/protoc\"));\n"
                 .to_owned()
         }
@@ -62,7 +69,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .join("proto");
     embed(&shared, &shared, &out, "shared", &mut source)?;
     source.push_str("];\n");
-    fs::write(out.join("compiler.rs"), source)?;
+    place(&out.join("compiler.rs"), source.as_bytes())?;
     Ok(())
 }
 
@@ -122,7 +129,7 @@ fn embed(
                     .parent()
                     .ok_or_else(|| io::Error::other("embedded file parent"))?,
             )?;
-            fs::copy(&path, &target)?;
+            place(&target, &fs::read(&path)?)?;
             source.push_str(&format!(
                 "({relative:?}, include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{name}/\", {relative:?}))),\n"
             ));
