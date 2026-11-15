@@ -3160,7 +3160,7 @@ async fn syncs<T>(work: impl Future<Output = T>) -> (T, std::collections::BTreeM
     let mut syncs = std::collections::BTreeMap::new();
     for call in schedule.durable_writes() {
         if call.operation.contains("sync") {
-            *syncs.entry(call.operation.to_string()).or_default() += 1;
+            *syncs.entry(call.operation.to_owned()).or_default() += 1;
         }
     }
     (value, syncs)
@@ -3225,11 +3225,12 @@ async fn a_dropped_root_stays_owned_until_its_last_accepted_write()
         async move {
             let mut hold = Some(hold);
             while let Some(boundary) = events.recv().await {
-                if boundary.name.ends_with(":submitted") && holding.load(Ordering::SeqCst) {
-                    if let Some(hold) = hold.take() {
-                        let _ = hold.send(boundary);
-                        continue;
-                    }
+                if boundary.name.ends_with(":submitted")
+                    && holding.load(Ordering::SeqCst)
+                    && let Some(hold) = hold.take()
+                {
+                    let _ = hold.send(boundary);
+                    continue;
                 }
                 boundary.release();
             }
@@ -3887,7 +3888,8 @@ async fn a_put_hashes_its_body_once() -> Result<(), Box<dyn std::error::Error>> 
             "{hashed} bytes hashed for {bodies} bodies"
         );
     };
-    let body = |seed: u8| OwnedBytes::from(vec![seed; LENGTH as usize]);
+    let length = usize::try_from(LENGTH)?;
+    let body = |seed: u8| OwnedBytes::from(vec![seed; length]);
     let blobs = crate::MemoryObjects::memory();
     blobs.put(vec![0].into(), Vec::new()).await?;
     let (put, bytes) = hashed(blobs.put(body(1), Vec::new())).await;

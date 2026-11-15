@@ -75,25 +75,43 @@ fn check_admission<T: PartialEq>(
 
 /// Prepare an obsolete value using the original local compaction chunk size.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn compaction_chunk_bytes() -> usize {
+pub fn compaction_chunk_bytes() -> Result<usize, Error> {
     usize::try_from(crate::local::COMPACTION_CHUNK)
-        .expect("local compaction chunk fits a native allocation")
+        .map_err(|source| Error::from(ErrorCode::Unavailable).with_source(source))
+}
+
+/// Reads one little-endian generator word from `fields` at `start`.
+fn word(fields: &[u8], start: usize) -> u64 {
+    let mut bytes = [0; 8];
+    for (slot, byte) in bytes.iter_mut().zip(fields.iter().skip(start)) {
+        *slot = *byte;
+    }
+    u64::from_le_bytes(bytes)
+}
+
+/// Reads one little-endian generator array from `fields` at `start`.
+fn wide(fields: &[u8], start: usize) -> [u8; 16] {
+    let mut bytes = [0; 16];
+    for (slot, byte) in bytes.iter_mut().zip(fields.iter().skip(start)) {
+        *slot = *byte;
+    }
+    bytes
 }
 
 fn check_codec<T: PartialEq>(
     bytes: &[u8],
     magic: &[u8],
-    written: T,
+    written: &T,
     decode: impl Fn(&[u8]) -> Result<T, Error>,
     encode: impl Fn(&T) -> Result<Vec<u8>, Error>,
     valid_prefix: impl Fn(usize) -> bool,
 ) -> bool {
     // Arbitrary malformed bytes may be refused, but the actual writer's value
     // must be admitted unchanged. Otherwise a reject-all decoder passes fuzzing.
-    let Ok(encoded_written) = encode(&written) else {
+    let Ok(encoded_written) = encode(written) else {
         return false;
     };
-    if !decode(&encoded_written).is_ok_and(|decoded| decoded == written) {
+    if !decode(&encoded_written).is_ok_and(|decoded| &decoded == written) {
         return false;
     }
     let Ok(value) = decode(bytes) else {
@@ -109,25 +127,23 @@ fn check_codec<T: PartialEq>(
         decode(input).is_err_and(|error| error.code == code && error.stopped.is_none())
     };
     // A fixed number of selected prefixes keeps total work linear in the input.
-    for end in [
-        0,
-        magic.len() - 1,
-        magic.len(),
-        bytes.len() / 2,
-        bytes.len() - 1,
-    ] {
+    let last = bytes.len().saturating_sub(1);
+    for end in [0, magic.len().saturating_sub(1), magic.len(), bytes.len() / 2, last] {
+        let Some(prefix) = bytes.get(..end) else {
+            return false;
+        };
         if valid_prefix(end) {
-            let Ok(value) = decode(&bytes[..end]) else {
+            let Ok(value) = decode(prefix) else {
                 return false;
             };
             let Ok(encoded) = encode(&value) else {
                 return false;
             };
-            if encoded != bytes[..end] {
+            if encoded.as_slice() != prefix {
                 return false;
             }
         } else if !refused(
-            &bytes[..end],
+            prefix,
             if end < magic.len() {
                 ErrorCode::Unsupported
             } else {
@@ -138,22 +154,43 @@ fn check_codec<T: PartialEq>(
         }
     }
     // A complete valid body must not admit another format domain.
-    encoded[0] ^= 0x20;
+    let Some(first) = encoded.first_mut() else {
+        return false;
+    };
+    *first ^= 0x20;
     let foreign_domain = refused(&encoded, ErrorCode::Unsupported);
-    encoded[0] ^= 0x20;
+    let Some(first) = encoded.first_mut() else {
+        return false;
+    };
+    *first ^= 0x20;
     if !foreign_domain {
         return false;
     }
     // Refuse another version before any body, using the admitted writer header.
-    for version in [b'0', b'1', b'2', b'9'] {
-        if version != magic[magic.len() - 2] {
-            encoded[magic.len() - 2] = version;
-            if !refused(&encoded[..magic.len()], ErrorCode::Unsupported) {
+    let Some(version_index) = magic.len().checked_sub(2) else {
+        return false;
+    };
+    let Some(version_byte) = magic.get(version_index).copied() else {
+        return false;
+    };
+    for version in *b"0129" {
+        if version != version_byte {
+            let Some(slot) = encoded.get_mut(version_index) else {
+                return false;
+            };
+            *slot = version;
+            let Some(prefix) = encoded.get(..magic.len()) else {
+                return false;
+            };
+            if !refused(prefix, ErrorCode::Unsupported) {
                 return false;
             }
         }
     }
-    encoded[magic.len() - 2] = magic[magic.len() - 2];
+    let Some(slot) = encoded.get_mut(version_index) else {
+        return false;
+    };
+    *slot = version_byte;
     encoded.push(0);
     refused(&encoded, ErrorCode::Corrupt)
 }
@@ -183,7 +220,10 @@ pub fn check(bytes: &[u8]) -> bool {
     }
     let mut invalid = written.clone();
     invalid.replace_range(..1, "!");
-    for text in [&written[..63], &format!("{written}0"), &invalid] {
+    let Some(short) = written.get(..63) else {
+        return false;
+    };
+    for text in [short, &format!("{written}0"), &invalid] {
         if !Digest::from_hex(text).is_err_and(|error| error.code == ErrorCode::InvalidArgument) {
             return false;
         }
@@ -197,11 +237,9 @@ pub fn check(bytes: &[u8]) -> bool {
     for (field, byte) in fields.iter_mut().zip(bytes) {
         *field = *byte;
     }
-    let word =
-        |start| u64::from_le_bytes(fields[start..start + 8].try_into().expect("generator word"));
     // Sorted input-derived bounds give valid selections independently of the
     // resolver. Fixed counterexamples cover empty, reversed and oversized ones.
-    let mut bounds = [word(0), word(8), word(16)];
+    let mut bounds = [word(&fields, 0), word(&fields, 8), word(&fields, 16)];
     bounds.sort_unstable();
     let [start, end, length] = bounds;
     if ![
@@ -245,19 +283,23 @@ pub fn check(bytes: &[u8]) -> bool {
         return false;
     }
     let references: Vec<_> = bytes
-        .chunks_exact(32)
-        .map(|chunk| Digest::from_bytes(chunk.try_into().expect("generator digest")))
+        .as_chunks::<32>()
+        .0
+        .iter()
+        .map(|chunk| Digest::from_bytes(*chunk))
         .collect();
+    let Some(parts) = references
+        .iter()
+        .map(|&digest| {
+            let length = u64::from_le_bytes(*digest.as_bytes().first_chunk::<8>()?);
+            Some(Part { digest, length })
+        })
+        .collect::<Option<Vec<_>>>()
+    else {
+        return false;
+    };
     let manifest = Manifest {
-        parts: references
-            .iter()
-            .map(|&digest| Part {
-                digest,
-                length: u64::from_le_bytes(
-                    digest.as_bytes()[..8].try_into().expect("generator length"),
-                ),
-            })
-            .collect(),
+        parts,
         edges: references.clone(),
     };
     // Wide arithmetic independently checks the public logical-length boundary.
@@ -296,12 +338,12 @@ pub fn check(bytes: &[u8]) -> bool {
         } else {
             Kind::Manifest
         },
-        length: word(0),
-        stored: word(8),
+        length: word(&fields, 0),
+        stored: word(&fields, 8),
         references: references.clone(),
-        version: fields[16..32].try_into().expect("generator version"),
-        dying: (fields[57] & 1 != 0).then(|| fields[32..48].try_into().expect("generator deleter")),
-        condemned: word(48),
+        version: wide(&fields, 16),
+        dying: (fields[57] & 1 != 0).then(|| wide(&fields, 32)),
+        condemned: word(&fields, 48),
     };
     let Ok(mut encoded) = envelope.encode() else {
         return false;
@@ -333,7 +375,7 @@ pub fn check(bytes: &[u8]) -> bool {
     let width = encoded.len();
     envelope.dying = match envelope.dying {
         Some(_) => None,
-        None => Some(fields[32..48].try_into().expect("generator deleter")),
+        None => Some(wide(&fields, 32)),
     };
     envelope.condemned = !envelope.condemned;
     let Ok(restamped) = envelope.encode() else {
@@ -346,15 +388,45 @@ pub fn check(bytes: &[u8]) -> bool {
     }
     // Mutate the complete writer body: presence byte, 16-byte nonce, u64 epoch.
     // Truncating it first would let a missing-byte refusal hide a bad tag.
-    let truncated = Envelope::decode(&encoded[..width - 8]);
-    let kind = encoded[ENVELOPE_MAGIC.len()];
-    encoded[ENVELOPE_MAGIC.len()] = 0;
+    let Some(truncated_end) = width.checked_sub(8) else {
+        return false;
+    };
+    let Some(truncated_bytes) = encoded.get(..truncated_end) else {
+        return false;
+    };
+    let truncated = Envelope::decode(truncated_bytes);
+    let kind_index = ENVELOPE_MAGIC.len();
+    let Some(kind) = encoded.get(kind_index).copied() else {
+        return false;
+    };
+    let Some(slot) = encoded.get_mut(kind_index) else {
+        return false;
+    };
+    *slot = 0;
     let unknown_kind = Envelope::decode(&encoded);
-    encoded[ENVELOPE_MAGIC.len()] = kind;
-    encoded[width - 25] = 2;
+    let Some(slot) = encoded.get_mut(kind_index) else {
+        return false;
+    };
+    *slot = kind;
+    let Some(presence) = width.checked_sub(25) else {
+        return false;
+    };
+    let Some(slot) = encoded.get_mut(presence) else {
+        return false;
+    };
+    *slot = 2;
     let unknown_presence = Envelope::decode(&encoded);
-    encoded[width - 25] = 0;
-    encoded[width - 24] = 1;
+    let Some(slot) = encoded.get_mut(presence) else {
+        return false;
+    };
+    *slot = 0;
+    let Some(nonce) = width.checked_sub(24) else {
+        return false;
+    };
+    let Some(slot) = encoded.get_mut(nonce) else {
+        return false;
+    };
+    *slot = 1;
     if ![
         truncated,
         unknown_kind,
@@ -370,30 +442,30 @@ pub fn check(bytes: &[u8]) -> bool {
     check_codec(
         bytes,
         MANIFEST_MAGIC,
-        manifest,
+        &manifest,
         Manifest::decode,
         Manifest::encode,
         |_| false,
     ) && check_codec(
         bytes,
         ENVELOPE_MAGIC,
-        envelope,
+        &envelope,
         Envelope::decode,
         Envelope::encode,
         |_| false,
     ) && check_codec(
         bytes,
         BATCH_MAGIC,
-        references,
+        &references,
         decode_batch,
         |value| Ok(encode_batch(value)),
-        |end| end >= BATCH_MAGIC.len() && (end - BATCH_MAGIC.len()) % 32 == 0,
+        |end| end >= BATCH_MAGIC.len() && (end - BATCH_MAGIC.len()).is_multiple_of(32),
     ) && check_codec(
         bytes,
         INCARNATION_MAGIC,
-        (
-            u128::from_le_bytes(fields[..16].try_into().expect("generator incarnation")),
-            word(16),
+        &(
+            u128::from_le_bytes(wide(&fields, 0)),
+            word(&fields, 16),
         ),
         decode_incarnation,
         |&(incarnation, run)| Ok(encode_incarnation(incarnation, run)),
@@ -401,7 +473,7 @@ pub fn check(bytes: &[u8]) -> bool {
     ) && check_codec(
         bytes,
         EPOCH_MAGIC,
-        word(24),
+        &word(&fields, 24),
         decode_epoch,
         |&epoch| Ok(encode_epoch(epoch)),
         |_| false,
@@ -441,7 +513,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Error> {
         ));
     }
     #[cfg(not(target_arch = "wasm32"))]
-    seeds.extend(crate::local::codec_fuzz::seeds());
+    seeds.extend(crate::local::codec_fuzz::seeds()?);
     Ok(seeds)
 }
 
@@ -454,8 +526,7 @@ mod tests {
         }
         for name in ["head-live", "head-dying"] {
             let bytes =
-                acyclic_proto_build::golden::frame(&format!("corpus/object_persistence/{name}"))
-                    .expect("retained historical writer capture");
+                acyclic_proto_build::golden::frame(&format!("corpus/object_persistence/{name}"))?;
             assert!(super::check(&bytes), "persisted fuzz oracle: {name}");
         }
         Ok(())
