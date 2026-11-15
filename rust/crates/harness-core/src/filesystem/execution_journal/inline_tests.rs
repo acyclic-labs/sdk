@@ -375,6 +375,15 @@ async fn committed_archive_fences_dispatch_before_its_actor_consumes_the_control
                 },
                 &IntentId::try_from("archive")
                     .map_err(|error| Error::Invalid(error.to_string()))?,
+                Store::new(
+                    journal.stream.clone(),
+                    acyclic_stream::StreamPath::new("archive-test/actors")?,
+                )
+                .activation(
+                    &ActorReference::new(b"account", b"agents", target.id().as_str().as_bytes())
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                )
+                .map_err(|error| Error::Invalid(error.to_string()))?,
             )
             .map_err(|error| Error::Invalid(error.to_string()))?;
             assert!(matches!(

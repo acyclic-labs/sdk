@@ -349,7 +349,13 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                         .map_err(|error| Error::Actor(Box::new(error.into_cause())))?;
                     effects.extend(request.effects);
                     if stopping {
-                        effects.extend(crate::agent::archive(&state.agent, &by, &intent)?.effects);
+                        let activation = self
+                            .store
+                            .activation(&target)
+                            .map_err(|error| Error::Actor(Box::new(error.into_cause())))?;
+                        effects.extend(
+                            crate::agent::archive(&state.agent, &by, &intent, activation)?.effects,
+                        );
                         lifecycle.push(crate::supervision::Lifecycle::Stopped { signal: None });
                         retired = true;
                     } else {

@@ -364,6 +364,9 @@ pub(super) async fn transition<P: AuthorityProvider + ?Sized>(
                                 host: "harness".into(),
                             },
                             &intent,
+                            store
+                                .activation(&target)
+                                .map_err(|error| Error::Actor(Box::new(error.into_cause())))?,
                         )?
                         .effects,
                     );

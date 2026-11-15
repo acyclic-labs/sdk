@@ -812,7 +812,9 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         id: &'a IntentId,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<Delivered, Error>> {
         Box::pin(async move {
-            let delivered = self.deliver(target, archive(target, by, id)?).await?;
+            let delivered = self
+                .commit_inbox(target, archive(target, by, id, self.activation(target)?)?)
+                .await?;
             self.pause(target, false).await?;
             let state = self.state(target).await?;
             let mut ancestry = vec![(target.clone(), state.open_children, None)];
@@ -825,7 +827,8 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
                 };
                 let child = parent.child(&next)?;
                 *after = Some(next);
-                self.deliver(&child, archive(&child, by, id)?).await?;
+                self.commit_inbox(&child, archive(&child, by, id, self.activation(&child)?)?)
+                    .await?;
                 self.pause(&child, false).await?;
                 let state = self.state(&child).await?;
                 ancestry.push((child, state.open_children, None));
@@ -897,14 +900,26 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         to: &AgentPath,
         mut request: CommitRequest,
     ) -> Result<Delivered, Error> {
+        request.effects.push(self.activation(to)?);
+        self.commit_inbox(to, request).await
+    }
+
+    /// The wake entry of `agent`'s actor, joined to each commit carrying its input.
+    fn activation(&self, agent: &AgentPath) -> Result<acyclic_stream::CommitEffect, Error> {
+        self.runtime
+            .store()
+            .activation(&self.actor(agent)?)
+            .map_err(actor_error)
+    }
+
+    /// Submits an inbox commit that already carries `to`'s activation.
+    async fn commit_inbox(
+        &self,
+        to: &AgentPath,
+        request: CommitRequest,
+    ) -> Result<Delivered, Error> {
         let inbox = to.inbox()?;
         let actor = self.actor(to)?;
-        request.effects.push(
-            self.runtime
-                .store()
-                .activation(&actor)
-                .map_err(actor_error)?,
-        );
         match submit(&*self.provider, request).await? {
             Submitted::Committed(receipt) => {
                 let append = receipt
