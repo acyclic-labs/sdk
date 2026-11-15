@@ -8,6 +8,7 @@ use crate::{
 use acyclic_fs::distributed::AuthorityProvider;
 use acyclic_fs::{StreamAuthorityStore, StreamGitCompatStore, WorkspaceGraph, WorkspaceResolver};
 use acyclic_stream::BoxProviderFuture;
+mod search;
 
 // This boundary is only for reads that own no admitted publication. The
 // command future itself must retain an accepted or unresolved commit.
@@ -29,6 +30,7 @@ pub(super) async fn read_before_effect<T>(
 
 /// Filesystem commands over the remote placement itself, without a machine.
 pub struct FilesystemTools<P: ?Sized + 'static, O: 'static> {
+    agent: crate::agent::AgentPath,
     host: Arc<FilesystemHost<StreamAuthorityStore<P>, O>>,
     store: StreamGitCompatStore<P>,
     volumes: BTreeMap<String, crate::agent::WorkspaceEntry>,
@@ -67,6 +69,8 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
         // or serializing all volume references for every command and replay.
         let mut identity = blake3::Hasher::new();
         identity.update(b"acyclic.filesystem.tool-binding.v1");
+        identity.update(&(agent.path.as_str().len() as u64).to_be_bytes());
+        identity.update(agent.path.as_str().as_bytes());
         for part in [
             host.provider.namespace(),
             host.provider.family(),
@@ -81,6 +85,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
             identity.update(&crate::contract::canonical_json_bytes(binding)?);
         }
         Ok(Self {
+            agent: agent.path.clone(),
             host,
             store,
             volumes,
@@ -145,6 +150,10 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| Error::Invalid("fs requires a command string".into()))?;
         let parsed = crate::tools::parse_fs_command(command)?;
+        // A history search is a pure read at its own cut: reconciliation reruns it.
+        if let Some(query) = parsed.scope_grep() {
+            return self.search(&query?, &context).await.map(Some);
+        }
         let volume = self.target(&parsed, &context)?;
         let reference =
             super::workspace_ref(self.host.provider.clone(), &volume.storage_name(&mut None)?)?;
@@ -327,6 +336,14 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Too
                 Err(Error::Invalid(_)) => return Ok(()),
                 Err(error) => return Err(error),
             };
+            // A saved page holds addresses, not content; opening one rereads
+            // it through the authorized reader. Replay rechecks the scope.
+            if let Some(query) = parsed.scope_grep() {
+                return match query.and_then(|query| self.search_selection(&query, context)) {
+                    Ok(_) | Err(Error::Invalid(_)) => Ok(()),
+                    Err(error) => Err(error),
+                };
+            }
             let volume = self.target(&parsed, context)?;
             let reference =
                 super::workspace_ref(self.host.provider.clone(), &volume.storage_name(&mut None)?)?;

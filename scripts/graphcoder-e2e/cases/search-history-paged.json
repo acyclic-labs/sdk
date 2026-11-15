@@ -1,0 +1,14 @@
+{
+  "id": "search-history-paged",
+  "workspace": {"kind": ["plain", "git"], "files": {}},
+  "model": {"steps": [
+    {"when": {"user": "RECORD_ARCHIVE"}, "text": ["Archived specimen approved."]},
+    {"when": {"user": "LOOK_UP_ARCHIVE"}, "tools": [{"id": "page-history", "name": "code", "arguments": {"code": "const query = \"grep --scope . 'Archived specimen approved' --page-size 1\"; let next; let pages = 0; const hits = []; do { const command = query + (next ? ' --cursor ' + next : ''); const page = (await tools.fs({command})).result; if (!Array.isArray(page.matches) || page.work > 1) throw Error('unbounded history page'); if (next) { const replay = (await tools.fs({command})).result; if (JSON.stringify(replay) !== JSON.stringify(page)) throw Error('continuation changed its cut'); } hits.push(...page.matches.filter(hit => hit.file)); next = page.next; pages++; } while (next); if (pages < 2 || !hits.length || hits.some(hit => !hit.path || !hit.commit || !hit.origin || !Number.isInteger(hit.sequence))) throw Error('original history addresses missing'); await tools.write({path: '.volumes/private/ui/search.md', content: hits.map(hit => JSON.stringify(hit)).join(String.fromCharCode(10))}); export default {verified: 'HISTORY_PAGES_VERIFIED'};"}}]},
+    {"when": {"user": "LOOK_UP_ARCHIVE", "tool_result": "HISTORY_PAGES_VERIFIED"}, "text": ["HISTORY_SEARCH_COMPLETE"]}
+  ]},
+  "inputs": [
+    {"mode": "headless", "text": "RECORD_ARCHIVE", "answer": "Archived specimen approved."},
+    {"mode": "headless", "operation": "00000000-0000-0000-0000-000000000002", "text": "/search-history LOOK_UP_ARCHIVE", "answer": "HISTORY_SEARCH_COMPLETE"}
+  ],
+  "assert": {"requests": 3, "tool_contains": ["HISTORY_PAGES_VERIFIED"], "model_contains": ["Scope search reads committed records"]}
+}

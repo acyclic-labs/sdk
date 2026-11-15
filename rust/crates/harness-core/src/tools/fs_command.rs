@@ -62,6 +62,77 @@ fn show_offset(args: &[String]) -> Option<u64> {
     }
 }
 
+/// One literal query over an agent's committed history: `grep --scope AGENT
+/// [--page-size N] [--cursor TOKEN] [--] LITERAL`. Without `--scope`, `grep`
+/// remains the volume's Git facade search.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ScopeGrep<'a> {
+    pub scope: &'a str,
+    pub pattern: &'a str,
+    /// Work per page: a chunking size, never a result limit.
+    pub size: std::num::NonZeroU32,
+    pub cursor: Option<&'a str>,
+}
+
+impl FsCommand {
+    /// The scoped history query, when this command selects one.
+    pub(crate) fn scope_grep(&self) -> Option<Result<ScopeGrep<'_>>> {
+        let mut arguments = self.arguments.iter().map(String::as_str);
+        if arguments.next() != Some("grep") {
+            return None;
+        }
+        let (mut scope, mut pattern, mut size, mut cursor) = (None, None, None, None);
+        let invalid = |reason: &str| Err(Error::Invalid(reason.into()));
+        while let Some(argument) = arguments.next() {
+            let slot = match argument {
+                "--scope" => &mut scope,
+                "--page-size" => &mut size,
+                "--cursor" => &mut cursor,
+                "--" => {
+                    if pattern.is_some() {
+                        return Some(invalid("grep requires exactly one literal"));
+                    }
+                    pattern = arguments.next();
+                    if pattern.is_none() || arguments.next().is_some() {
+                        return Some(invalid("grep requires exactly one literal"));
+                    }
+                    break;
+                }
+                literal => {
+                    if pattern.replace(literal).is_some() {
+                        return Some(invalid("grep requires exactly one literal"));
+                    }
+                    continue;
+                }
+            };
+            let Some(value) = arguments.next() else {
+                return Some(invalid("grep option requires a value"));
+            };
+            if slot.replace(value).is_some() {
+                return Some(invalid("duplicate grep option"));
+            }
+        }
+        let scope = scope?;
+        if self.volume.is_some() {
+            return Some(invalid("grep selects one agent scope or one volume"));
+        }
+        let Some(pattern) = pattern else {
+            return Some(invalid("grep requires a literal"));
+        };
+        let size = match size.map(str::parse) {
+            None => std::num::NonZeroU32::MIN.saturating_add(63),
+            Some(Ok(size)) => size,
+            Some(Err(_)) => return Some(invalid("search page size must be a positive integer")),
+        };
+        Some(Ok(ScopeGrep {
+            scope,
+            pattern,
+            size,
+            cursor,
+        }))
+    }
+}
+
 #[doc(hidden)]
 pub fn parse_fs_command(command: &str) -> Result<FsCommand> {
     let mut arguments = parse_command(command)?;
@@ -79,6 +150,7 @@ pub fn parse_fs_command(command: &str) -> Result<FsCommand> {
             (Some("commit"), "-m" | "--message" | "--author")
                 | (Some("restore"), "--source")
                 | (Some("log"), "-n" | "--max-count")
+                | (Some("grep"), "--scope" | "--page-size" | "--cursor")
         );
         if value_option {
             index += 2;
@@ -112,6 +184,49 @@ pub fn parse_fs_command(command: &str) -> Result<FsCommand> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn scope_grep_keeps_option_operands_and_leaves_volume_grep_alone() {
+        let parsed =
+            parse_fs_command("git grep --scope . --page-size 2 --cursor T -- '--volume'").unwrap();
+        assert_eq!(parsed.volume, None, "an option operand is not a qualifier");
+        let query = parsed.scope_grep().unwrap().unwrap();
+        assert_eq!(
+            (query.scope, query.pattern, query.size.get(), query.cursor),
+            (".", "--volume", 2, Some("T"))
+        );
+        assert_eq!(
+            parse_fs_command("grep --scope . needle")
+                .unwrap()
+                .scope_grep()
+                .unwrap()
+                .unwrap()
+                .size
+                .get(),
+            64
+        );
+        assert!(
+            parse_fs_command("grep needle")
+                .unwrap()
+                .scope_grep()
+                .is_none()
+        );
+        for invalid in [
+            "grep --scope . needle extra",
+            "grep --scope . --scope . needle",
+            "grep --scope . needle --page-size 0",
+            "grep --scope .",
+            "grep --scope . needle --volume private",
+        ] {
+            assert!(
+                matches!(
+                    parse_fs_command(invalid).unwrap().scope_grep(),
+                    Some(Err(Error::Invalid(_)))
+                ),
+                "{invalid}"
+            );
+        }
+    }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]

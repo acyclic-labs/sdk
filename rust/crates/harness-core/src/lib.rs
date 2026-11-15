@@ -87,6 +87,7 @@ pub mod projection;
 pub mod registry;
 pub mod resources;
 pub mod runtime;
+pub mod search;
 pub mod secrets;
 pub mod seed;
 pub mod source_authorization;
