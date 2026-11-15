@@ -115,7 +115,7 @@ async function main() {
   const inventory = new Map(localCargoPackages().map(item => [item.name, item]));
   const sets = clippySelections(inventory, cargoTreeUnits(inventory));
   if (list) {
-    for (const set of sets) console.log(`cargo clippy ${cargoFeatureArguments(set.selection, { targets: set.targets }).join(" ")} units=${set.units.length}`);
+    for (const set of sets) console.log(`cargo clippy ${cargoFeatureArguments(set.selection, { targets: set.targets }).join(" ")} units=${set.units.join(" ")}`);
     return;
   }
   let failed = 0;
