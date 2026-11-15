@@ -1033,6 +1033,7 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
 
 #[tokio::test]
 async fn computed_ui_watch_delivers_real_publications_and_physically_stops() -> Result {
+    acyclic_native_runtime::initialize_native_io_services()?;
     use acyclic_fs::demand::{SourceChange, SourceChangeSink, SourceFence};
     use acyclic_harness_core::{
         agent::{AgentId, IntentId, create_root, spawn},
