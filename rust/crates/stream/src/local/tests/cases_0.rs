@@ -720,7 +720,7 @@ async fn invalid_headers_and_snapshot_state_fail_without_repairing_disk()
         ([0; HEADER_BYTES], false),
         (encode_header(limits, 2)?, false),
     ] {
-        std::fs::write(&journal_path, &header)?;
+        std::fs::write(&journal_path, header)?;
         for _ in 0..2 {
             let result = LocalStream::open(directory.path(), limits).await;
             assert!(if unsupported {
@@ -736,7 +736,7 @@ async fn invalid_headers_and_snapshot_state_fail_without_repairing_disk()
     }
     // Keep the checksum valid so rejection must enforce the snapshot version.
     let header = encode_header(limits, 0)?;
-    std::fs::write(&journal_path, &header)?;
+    std::fs::write(&journal_path, header)?;
     let state = MemoryStream::new(limits.memory).encode_state().await;
     for version in *b"0134" {
         let mut obsolete = encode_snapshot(limits, 1, &state)?;
@@ -765,7 +765,7 @@ async fn invalid_headers_and_snapshot_state_fail_without_repairing_disk()
     }
     // A checksummed snapshot with invalid semantic state must not authorize
     let header = encode_header(limits, 0)?;
-    std::fs::write(&journal_path, &header)?;
+    std::fs::write(&journal_path, header)?;
     let invalid = encode_snapshot(limits, 1, b"invalid state")?;
     std::fs::write(&snapshot_path, &invalid)?;
     assert!(matches!(

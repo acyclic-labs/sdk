@@ -481,12 +481,14 @@ impl crate::NativeStreamProvider for LocalStream {
             }
             crate::WriteRequest::Commit(request) | crate::WriteRequest::CommitAccepted(request) => {
                 self.guarded_commit(
-                    request,
-                    None,
+                    GuardedCommit {
+                        request,
+                        deadline: None,
+                        reads: None,
+                        accepted,
+                    },
                     meter,
                     || futures::future::ready(Ok(())),
-                    None,
-                    accepted,
                     Ok,
                 )
             }
@@ -507,12 +509,14 @@ impl crate::NativeStreamProvider for LocalStream {
         let (reads, check) = before.into_parts();
         LocalStream::guarded_commit(
             self,
-            request,
-            deadline,
+            GuardedCommit {
+                request,
+                deadline,
+                reads: Some(reads),
+                accepted: false,
+            },
             meter,
             check,
-            Some(reads),
-            false,
             crate::WriteOutcome::into_commit,
         )
     }

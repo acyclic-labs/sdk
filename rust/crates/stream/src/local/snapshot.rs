@@ -46,7 +46,10 @@ fn decode_snapshot(
     let (rest, checksum) = rest
         .split_last_chunk::<32>()
         .ok_or(LocalStreamError::Corrupt)?;
-    let body = &encoded[..encoded.len() - 32];
+    // The checksum covers everything before it, header included.
+    let (body, _) = encoded
+        .split_last_chunk::<32>()
+        .ok_or(LocalStreamError::Corrupt)?;
     if snapshot_checksum(body) != *checksum {
         return Err(LocalStreamError::Corrupt);
     }

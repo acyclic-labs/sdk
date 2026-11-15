@@ -1,3 +1,13 @@
+struct FollowCursor {
+    path: StreamPath,
+    from: u64,
+    anchor: Option<crate::CommitId>,
+    when_absent: crate::WhenAbsent,
+    filter: crate::FollowFilter,
+    bootstrap_head: bool,
+    until: Option<u64>,
+}
+
 impl LocalStream {
     async fn follow_inner(
         &self,
@@ -16,39 +26,32 @@ impl LocalStream {
         } = request;
         // Park before visibility ownership, so a writer never waits on this floor.
         self.inner.provider.revisions.wait(&at_least).await?;
+        let cursor = FollowCursor {
+            path,
+            from,
+            anchor: preceding,
+            when_absent,
+            filter,
+            bootstrap_head,
+            until,
+        };
         if progress {
-            self.progress_from(
-                path,
-                from,
-                preceding,
-                when_absent,
-                filter,
-                bootstrap_head,
-                until,
-            )
-            .await
+            self.progress_from(cursor).await
         } else {
-            self.follow_from(
-                path,
-                from,
-                preceding,
-                when_absent,
-                filter,
-                bootstrap_head,
-                until,
-            )
-            .await
+            self.follow_from(cursor).await
         }
     }
     async fn follow_from(
         &self,
-        path: StreamPath,
-        from: u64,
-        anchor: Option<crate::CommitId>,
-        when_absent: crate::WhenAbsent,
-        filter: crate::FollowFilter,
-        bootstrap_head: bool,
-        until: Option<u64>,
+        FollowCursor {
+            path,
+            from,
+            anchor,
+            when_absent,
+            filter,
+            bootstrap_head,
+            until,
+        }: FollowCursor,
     ) -> Result<crate::FollowStream, StreamError> {
         let span = obs::OperationSpan::new(tracing::info_span!(
             "acyclic.stream.follow.cursor",

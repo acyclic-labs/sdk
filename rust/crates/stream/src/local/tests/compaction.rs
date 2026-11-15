@@ -111,7 +111,7 @@ fn accepted_follow_discovery_and_relay_watermarks_progress_while_compaction_is_h
                     assert_eq!(relay.watermarks(path.clone()).await?, marks);
                     let mut followed = relay.follow(crate::FollowRequest {
             bootstrap_head: false,
-            until: None, when_absent: Default::default(), path: path, from: 1, preceding: Some(seed.commit_id), filter: crate::FollowFilter::default(), progress: false, at_least: Default::default() }).map_ok(crate::records_only).await?;
+            until: None, when_absent: Default::default(), path, from: 1, preceding: Some(seed.commit_id), filter: crate::FollowFilter::default(), progress: false, at_least: Default::default() }).map_ok(crate::records_only).await?;
                     assert_eq!(followed.next().await.ok_or("relay ended")??, record);
                 }
                 Ok::<_, Box<dyn std::error::Error + Send + Sync>>(started.elapsed())

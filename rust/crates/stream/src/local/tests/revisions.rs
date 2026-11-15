@@ -419,9 +419,8 @@ async fn an_old_snapshot_version_refuses_without_repairing_disk() -> Result {
     obsolete_state[b"ACYCLIC-STREAM-STATE-V".len()] = b'1';
     let obsolete = encode_snapshot(limits, 0, &obsolete_state)?;
     std::fs::write(&snapshot, &obsolete)?;
-    let error = match LocalStream::open(directory.path(), limits).await {
-        Err(error) => error,
-        Ok(_) => return Err("old snapshot was accepted".into()),
+    let Err(error) = LocalStream::open(directory.path(), limits).await else {
+        return Err("old snapshot was accepted".into());
     };
     assert!(matches!(
         error,

@@ -1,13 +1,15 @@
 impl LocalStream {
     async fn progress_from(
         &self,
-        path: StreamPath,
-        from: u64,
-        anchor: Option<crate::CommitId>,
-        when_absent: crate::WhenAbsent,
-        filter: crate::FollowFilter,
-        bootstrap_head: bool,
-        until: Option<u64>,
+        FollowCursor {
+            path,
+            from,
+            anchor,
+            when_absent,
+            filter,
+            bootstrap_head,
+            until,
+        }: FollowCursor,
     ) -> Result<crate::FollowStream, StreamError> {
         let failed = self.inner.failed.subscribe();
         let (snapshot, selection, changed, cursor) = self

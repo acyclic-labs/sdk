@@ -1,12 +1,16 @@
+struct GuardedCommit {
+    request: CommitRequest,
+    deadline: Option<u64>,
+    reads: Option<Vec<StreamPath>>,
+    accepted: bool,
+}
+
 impl LocalStream {
     fn guarded_commit<T, C, E, F, Fut>(
         &self,
-        mut request: CommitRequest,
-        deadline: Option<u64>,
+        mut commit: GuardedCommit,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
         mut before: F,
-        reads: Option<Vec<StreamPath>>,
-        accepted: bool,
         convert: C,
     ) -> crate::NativeProviderFuture<'_, T, E>
     where
@@ -17,7 +21,7 @@ impl LocalStream {
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
         #[cfg(feature = "test-support")]
-        describe_commit(&request);
+        describe_commit(&commit.request);
         let original = Arc::clone(&meter);
         let stream = self.clone();
         let span = crate::native::span!("acyclic.stream.commit");
@@ -32,8 +36,8 @@ impl LocalStream {
             let _handle = stream.handle.take();
             let mut failed = stream.inner.failed.subscribe();
             let provider = stream.inner.provider.with_context(Arc::clone(&work));
-            let input = match provider.request_claim(&request).and_then(|request| {
-                let reads = provider.reads_claim(reads.as_ref().map_or(0, Vec::capacity))?;
+            let input = match provider.request_claim(&commit.request).and_then(|request| {
+                let reads = provider.reads_claim(commit.reads.as_ref().map_or(0, Vec::capacity))?;
                 Ok((request, reads))
             }) {
                 Ok(input) => input,
@@ -50,18 +54,23 @@ impl LocalStream {
                 publication_scope(async move {
                     let _input = input;
                     let result = {
-                        let replay = match provider.pin_replay(&request.idempotency_key).await {
-                            Ok(replay) => replay,
-                            Err(error) => {
-                                return work
-                                    .finish(Err(error))
-                                    .map(|result| result.map_err(E::from));
-                            }
-                        };
+                        let replay =
+                            match provider.pin_replay(&commit.request.idempotency_key).await {
+                                Ok(replay) => replay,
+                                Err(error) => {
+                                    return work
+                                        .finish(Err(error))
+                                        .map(|result| result.map_err(E::from));
+                                }
+                            };
                         let replay = match replay {
                             Some(pin) => {
                                 let ephemeral = pin.ephemeral;
-                                match provider.project_pinned_replay(&mut request, &pin, accepted) {
+                                match provider.project_pinned_replay(
+                                    &mut commit.request,
+                                    &pin,
+                                    commit.accepted,
+                                ) {
                                     Ok((outcome, allocation)) => {
                                         Some((outcome, allocation, ephemeral))
                                     }
@@ -78,9 +87,9 @@ impl LocalStream {
                         // receipt, so it observes no cut. An unguarded Commit
                         // observes nothing before its locked plan, which
                         // rechecks its key.
-                        let cut = match &reads {
+                        let cut = match &commit.reads {
                             Some(reads) if replay.is_none() => {
-                                match provider.guard_cut(&request, reads).await {
+                                match provider.guard_cut(&commit.request, reads).await {
                                     Ok(cut) => Some(cut),
                                     Err(error) => {
                                         return work
@@ -97,8 +106,8 @@ impl LocalStream {
                             return Ok(Err(error));
                         }
                         let visibility = stream.inner.visibility.write().await;
-                        if let (Some(cut), Some(reads)) = (cut, &reads) {
-                            let drift = match provider.guard_cut(&request, reads).await {
+                        if let (Some(cut), Some(reads)) = (cut, &commit.reads) {
+                            let drift = match provider.guard_cut(&commit.request, reads).await {
                                 Ok(now) if now == cut => None,
                                 Ok(_) => Some(StreamError::PrefixNotRetained),
                                 Err(error) => Some(error),
@@ -118,12 +127,12 @@ impl LocalStream {
                                 }
                                 return Ok((outcome, allocation));
                             }
-                            let command = if accepted {
-                                WriteRequest::CommitAccepted(request)
+                            let command = if commit.accepted {
+                                WriteRequest::CommitAccepted(commit.request)
                             } else {
-                                WriteRequest::Commit(request)
+                                WriteRequest::Commit(commit.request)
                             };
-                            let execution = stream.execute(command, deadline).await?;
+                            let execution = stream.execute(command, commit.deadline).await?;
                             Ok((execution.outcome, execution._allocation))
                         }
                         .await;
@@ -136,11 +145,10 @@ impl LocalStream {
                         }
                         let required = stream.inner.required();
                         drop(visibility);
-                        let result = match required {
+                        match required {
                             Ok(required) => stream.await_publication(required).await.and(result),
                             Err(error) => Err(error),
-                        };
-                        result
+                        }
                     };
                     // Keep the callback's captured lease through the physical terminal.
                     drop(before);
