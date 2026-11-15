@@ -197,7 +197,7 @@ fn every_local_and_global_credit_combination_matches_the_admission_contract() {
     let waker = futures::task::noop_waker();
     let mut cx = Context::from_waker(&waker);
     let authority = testing::authority();
-    let slots = testing::slots()?;
+    let slots = testing::slots().unwrap();
     for (binding, lookahead) in [
         (None, false),
         (

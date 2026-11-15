@@ -83,7 +83,7 @@ fn credited_tail_selection_visits_one_head_independent_of_stalled_follows() {
                         channel_id: id,
                         generation: 1,
                     },
-                    Ok(record(0)?),
+                    Ok(record(0).unwrap()),
                 )
                 .unwrap();
         }
@@ -111,7 +111,7 @@ fn credited_tail_selection_visits_one_head_independent_of_stalled_follows() {
                 .frame
                 .wire()
                 .clone();
-            let (old, visits) = scanned_ready(&mut before, target, session.credit)?;
+            let (old, visits) = scanned_ready(&mut before, target, session.credit).unwrap();
             assert_eq!(visits, count + 1);
             let head_visits = session.head_visits;
             session.refresh_source(target);
@@ -127,7 +127,7 @@ fn credited_tail_selection_visits_one_head_independent_of_stalled_follows() {
                             channel_id: target,
                             generation: 1,
                         },
-                        Ok(record(sequence + 1)?),
+                        Ok(record(sequence + 1).unwrap()),
                     )
                     .unwrap();
             }
@@ -157,7 +157,7 @@ fn global_byte_credit_selects_fitting_heads_without_overtaking_a_channel() {
     session.channels.insert(3, other);
     for (id, size) in [(1, 1000), (1, 1), (3, 1)] {
         let sequence = session.channels.get(&id).unwrap().pending.len() as u64;
-        let Event::Record(mut entry) = record(sequence)? else {
+        let Event::Record(mut entry) = record(sequence).unwrap() else {
             unreachable!()
         };
         entry.value = vec![0; size].into();

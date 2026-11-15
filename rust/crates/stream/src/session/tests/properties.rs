@@ -16,7 +16,7 @@ pub(super) fn empty_session(
             Default::default(),
             1,
         )
-        .ok_or(StreamError::AccessDenied)?
+        .map_err(|_| StreamError::AccessDenied)?
         .0;
     Ok(Session {
         authority,

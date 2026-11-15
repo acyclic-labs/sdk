@@ -4,7 +4,7 @@ use crate::NativeStreamProviderExt as _;
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-fn path() -> Result<StreamPath, StreamError> {
+fn path() -> std::result::Result<StreamPath, StreamError> {
     Ok(StreamPath::new("receipts")?)
 }
 
