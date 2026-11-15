@@ -285,7 +285,7 @@ impl<'v, 'p> AdmittedAgent<'v, 'p> {
                     .collect();
                 granted.extend(labels.into_iter().filter(|label| ceiling.contains(label)));
                 // A directory or exact-file read the admission grants on a
-                // bound volume is kept; its path is still checked at use.
+                // volume bound whole is kept; its path is still checked at use.
                 granted.extend(
                     ceiling
                         .iter()
@@ -581,7 +581,8 @@ struct BindingGrants {
     /// The same resources as one structured layer, naming each volume by the
     /// storage reference its workspace is bound with.
     layer: Vec<acyclic_fs::access::Grant>,
-    /// Identity digest of every bound volume: seed, journals and workspaces.
+    /// Identity digest of every volume bound whole: seed, journals and
+    /// workspaces bound at their root.
     volumes: Vec<[u8; 32]>,
 }
 
@@ -605,8 +606,8 @@ fn binding_grants(
         layer.extend(pinned.layers.into_iter().flatten());
         Ok(())
     };
-    // Only seed, journal, ancestor journal and workspace volumes are bound; an external file or
-    // attachment on another volume is reached by its exact path alone.
+    // Only seed, journals and whole-volume workspaces are bound whole; an
+    // external file or attachment is reached by its exact path alone.
     let mut bind = |volume: &VolumeRef| -> Result<()> {
         bound.push(volume.identity_digest(
             crate::store::default_projection_read_limits().maximum_bytes,
@@ -651,10 +652,12 @@ fn binding_grants(
             ActionSet::SourceRead.actions()
         };
         reach(volume, &binding.root, actions)?;
-        bind(volume)?;
         if !binding.root.is_empty() {
+            // A content read label hides its path, so a rooted binding keeps
+            // only its own root read, never an admission's.
             grants.push(volume.directory_read_capability(&binding.root, &mut None)?);
         } else {
+            bind(volume)?;
             grants.push(volume.capability(VolumeOperation::Read, &mut None)?);
             if binding.mode == crate::agent::WorkspaceMode::ReadWrite {
                 for operation in [VolumeOperation::Write, VolumeOperation::Delete] {
@@ -679,7 +682,12 @@ fn binding_grants(
             // redundant exact grants on reopen would change an unchanged
             // execution's authority binding merely because it retained input.
             grants.push(file.read_capability(&mut None)?);
-            reach(file.volume(), file.path(), &[Action::Read])?;
+            // A retained version is read from history once its volume advances.
+            reach(
+                file.volume(),
+                file.path(),
+                &[Action::Read, Action::ReadHistory],
+            )?;
             // An attachment manifest's files are copies in its own directory,
             // so one grant reaches them however many it lists.
             if file.descriptor().media_type() == crate::conversation::ATTACHMENT_MANIFEST_MEDIA_TYPE
@@ -689,7 +697,11 @@ fn binding_grants(
                     file.volume()
                         .directory_read_capability(directory, &mut None)?,
                 );
-                reach(file.volume(), directory, &[Action::Read])?;
+                reach(
+                    file.volume(),
+                    directory,
+                    &[Action::Read, Action::ReadHistory],
+                )?;
             }
         }
     }

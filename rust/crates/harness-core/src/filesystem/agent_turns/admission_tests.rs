@@ -2140,6 +2140,17 @@ fn an_admitted_agents_authority_is_its_bindings_never_more() -> Result<()> {
         VolumeClass::Project,
         VolumeOwner::Project("test".into()),
     )?;
+    let rooted = volume(
+        "rooted",
+        VolumeClass::Project,
+        VolumeOwner::Project("test".into()),
+    )?;
+    let mut rooted_binding = WorkspaceEntry::initial_volume(
+        crate::agent::WorkspaceRole::User,
+        "rooted".into(),
+        rooted.clone(),
+    );
+    rooted_binding.root = "src".into();
     let volumes = [
         WorkspaceEntry::initial_volume(
             crate::agent::WorkspaceRole::Private,
@@ -2151,6 +2162,7 @@ fn an_admitted_agents_authority_is_its_bindings_never_more() -> Result<()> {
             "project".into(),
             fork.clone(),
         ),
+        rooted_binding,
     ];
     let parent_file = FileRef::new(
         parent.clone(),
@@ -2171,12 +2183,18 @@ fn an_admitted_agents_authority_is_its_bindings_never_more() -> Result<()> {
     let bound = fork.capability(VolumeOperation::Read, &mut None)?;
     let bound_directory = fork.directory_read_capability("src", &mut None)?;
     let unbound_directory = parent.directory_read_capability("src", &mut None)?;
+    // A rooted binding keeps its own root read, never an admission's read
+    // elsewhere in the same volume.
+    let rooted_root = rooted.directory_read_capability("src", &mut None)?;
+    let rooted_escape = rooted.directory_read_capability("secrets", &mut None)?;
     let scope = root.bootstrap_scope(
         "caller",
         &Capabilities::new(
             unbound.iter().cloned().chain([
                 bound.clone(),
                 bound_directory.clone(),
+                rooted_root.clone(),
+                rooted_escape.clone(),
                 "model:generate".to_owned(),
                 crate::contract::capability::HARNESS_HOST.to_owned(),
                 whole
@@ -2200,6 +2218,11 @@ fn an_admitted_agents_authority_is_its_bindings_never_more() -> Result<()> {
         "unbound directory read inherited"
     );
     assert!(granted.contains(&bound_directory));
+    assert!(granted.contains(&rooted_root));
+    assert!(
+        !granted.contains(&rooted_escape),
+        "a read outside a rooted binding inherited"
+    );
     for label in &unbound {
         assert!(!granted.contains(label), "unbound grant inherited: {label}");
     }
