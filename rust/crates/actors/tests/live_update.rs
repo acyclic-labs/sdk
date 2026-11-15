@@ -540,8 +540,16 @@ async fn drive<P: StreamProvider + 'static>(provider: Arc<P>) -> Result {
     let mut rollback = false;
     while let Some(target) = ready.pop_front() {
         let count = std::mem::take(&mut queued[target]);
+        let t0 = std::time::Instant::now();
         let (host, package) = host(&store, &routes, target, &selection, &fence, &publications)?;
+        let t1 = std::time::Instant::now();
         host.wake().await?;
+        let t2 = std::time::Instant::now();
+        eprintln!(
+            "DIAGL target={target} count={count} build={:?} wake={:?}",
+            t1 - t0,
+            t2 - t1
+        );
         if audits.is_none() {
             audits = Some(acyclic_stream::records_only(
                 provider
@@ -549,6 +557,7 @@ async fn drive<P: StreamProvider + 'static>(provider: Arc<P>) -> Result {
                     .await?,
             ));
         }
+        let t3 = std::time::Instant::now();
         for _ in 0..count {
             let record = audits
                 .as_mut()
@@ -592,6 +601,7 @@ async fn drive<P: StreamProvider + 'static>(provider: Arc<P>) -> Result {
             }
             observed.push(evidence);
         }
+        eprintln!("DIAGL audits={:?}", t3.elapsed());
         if !promoted && observed.len() >= 9 {
             let change = selection.promote(Split {
                 stable: v1.clone(),
@@ -726,12 +736,17 @@ async fn drive<P: StreamProvider + 'static>(provider: Arc<P>) -> Result {
 
 #[tokio::test]
 async fn cyclic_traffic_retains_original_results_through_rollout_and_rollback() -> Result {
+    let t = std::time::Instant::now();
     drive(Arc::new(MemoryStream::default())).await?;
+    eprintln!("DIAGL memory drive={:?}", t.elapsed());
+    let t = std::time::Instant::now();
     let directory = tempfile::tempdir()?;
     drive(Arc::new(
         LocalStream::open(directory.path(), Default::default()).await?,
     ))
-    .await
+    .await?;
+    eprintln!("DIAGL local drive={:?}", t.elapsed());
+    Ok(())
 }
 
 struct Held {
