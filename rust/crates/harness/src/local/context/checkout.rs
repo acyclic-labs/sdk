@@ -398,6 +398,24 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    impl LocalHarness {
+        /// Publisher of this harness's prompt inputs on its private journal volume.
+        fn input_publisher_with_limit(
+            &self,
+            maximum_bytes: impl Into<Option<u64>>,
+        ) -> Result<Arc<FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>>>
+        {
+            FilesystemContentPublisher::new(
+                self.files.clone(),
+                &self.journal,
+                &self.verifier,
+                &self.signed,
+                maximum_bytes,
+                None,
+            )
+        }
+    }
+
     #[tokio::test]
     async fn rooted_checkout_context_uses_only_the_selected_subtree() -> Result<()> {
         let directory = tempfile::tempdir().map_err(storage)?;

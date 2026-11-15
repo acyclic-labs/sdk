@@ -1,6 +1,6 @@
 //! Native manifest and installer contracts, without a provider or agent runtime.
 use acyclic_harness::host_hooks::{
-    CLAUDE_EVENTS, MINIMUM_CODEX_VERSION, check_codex_version, claude_hook_executable, claude_hooks,
+    MINIMUM_CODEX_VERSION, check_codex_version, claude_hook_executable, claude_hooks,
 };
 use proptest::prelude::*;
 use serde_json::json;
@@ -195,6 +195,7 @@ fn ownership_rejects_split_arguments_foreign_hooks_and_changed_lifecycle() {
 #[cfg(unix)]
 #[test]
 fn native_shell_receives_arguments_from_both_manifest_and_installer() {
+    use acyclic_harness::host_hooks::CLAUDE_EVENTS;
     use std::os::unix::fs::PermissionsExt as _;
     let temporary = tempfile::tempdir().unwrap();
     let package = temporary.path().join("package with spaces and 'quotes'");
