@@ -11,7 +11,7 @@ use crate::{
 mod prefix_tests;
 
 #[tokio::test]
-async fn child_activity_uses_host_custody_without_rebinding_workload_identity() -> Result<()> {
+async fn child_activity_verifies_under_the_admission_that_signed_it() -> Result<()> {
     use crate::executor::ExecutionJournal as _;
     let parent = AgentPath::root(&crate::agent::AgentId::from_bytes([195; 16]));
     let child = parent
@@ -35,11 +35,19 @@ async fn child_activity_uses_host_custody_without_rebinding_workload_identity() 
     for volume in [&parent_volume, &child_volume, &journal_volume] {
         host.create_volume(volume).await?;
     }
+    // A served tree: every agent's turns run under one admission.
     let audience = Authority {
         kind: AggregateKind::Conversation,
         id: parent.id().to_string(),
     };
     let root = AuthorityRoot::new("activity-admission", [197; 32], audience.clone());
+    let broad = Capabilities::new([
+        acyclic_fs::access::Capability::whole_volume(None, &acyclic_fs::access::Action::ALL)
+            .to_scope_label()
+            .map_err(|error| Error::Invalid(error.to_string()))?,
+        crate::contract::capability::HARNESS_HOST.to_owned(),
+    ]);
+    let broad = root.bootstrap_scope("served", &broad, None, &mut None)?;
     let workload_grants = Capabilities::new([
         parent_volume.capability(VolumeOperation::Read, &mut None)?,
         parent_volume.capability(VolumeOperation::Write, &mut None)?,
@@ -53,7 +61,7 @@ async fn child_activity_uses_host_custody_without_rebinding_workload_identity() 
     )?;
     let admission = TurnAdmission::Admitted {
         audience: audience.clone(),
-        scope: scope.clone(),
+        scope: broad.clone(),
     };
     let issuer = RuntimeAuthority::from(root.clone());
     admission.verify(&issuer, &parent)?;
@@ -77,17 +85,11 @@ async fn child_activity_uses_host_custody_without_rebinding_workload_identity() 
     )
     .map_err(Error::from)?;
     let stream = Arc::new(acyclic_stream::MemoryStream::default());
-    // Negative control: the former query really rejects this valid parent.
-    assert!(matches!(
-        query_journal(&stream, &host, &issuer, &admission, &state).await,
-        Err(Error::Unauthorized(_))
-    ));
     let operation = OperationId::new();
-    let journal = query_activity_journal(&stream, &host, &issuer, &state)
+    // The child's own turn signs its checkpoint under the served admission.
+    query_journal(&stream, &host, &issuer, &admission, &state)
         .await?
-        .ok_or_else(|| Error::Storage("native host lost child activity authority".into()))?
-        .with_turn(operation, operation);
-    journal
+        .with_turn(operation, operation)
         .append(
             operation,
             "start",
@@ -97,6 +99,11 @@ async fn child_activity_uses_host_custody_without_rebinding_workload_identity() 
             None,
         )?
         .await?;
+    // The parent's wait verifies that checkpoint under the same identity.
+    let journal = query_activity_journal(&stream, &host, &issuer, &admission, &state)
+        .await?
+        .ok_or_else(|| Error::Storage("native host lost child activity authority".into()))?
+        .with_turn(operation, operation);
     assert!(
         journal
             .activity(operation, &acyclic_actors::local::SystemClock)
@@ -104,13 +111,6 @@ async fn child_activity_uses_host_custody_without_rebinding_workload_identity() 
             .is_some()
     );
 
-    let broad = Capabilities::new([
-        acyclic_fs::access::Capability::whole_volume(None, &acyclic_fs::access::Action::ALL)
-            .to_scope_label()
-            .map_err(|error| Error::Invalid(error.to_string()))?,
-        crate::contract::capability::HARNESS_HOST.to_owned(),
-    ]);
-    let broad = root.bootstrap_scope("unbound-host", &broad, None, &mut None)?;
     for (scope, expected) in [(scope, false), (broad, true)] {
         let (_producer, stopped) = futures::channel::oneshot::channel::<()>();
         let context = acyclic_auth::operation::Context::from_stopped(
@@ -123,7 +123,7 @@ async fn child_activity_uses_host_custody_without_rebinding_workload_identity() 
             },
         );
         let issuer = RuntimeAuthority::admitted(root.admit(scope, context)?, OperationId::new());
-        let observed = query_activity_journal(&stream, &host, &issuer, &state).await?;
+        let observed = query_activity_journal(&stream, &host, &issuer, &admission, &state).await?;
         assert_eq!(observed.is_some(), expected, "delegated ceiling changed");
         if let Some(journal) = observed {
             assert!(
@@ -135,6 +135,107 @@ async fn child_activity_uses_host_custody_without_rebinding_workload_identity() 
             );
         }
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_exact_grants_repair_a_retained_foreign_journal_as_its_owner() -> Result<()> {
+    let path = AgentPath::root(&crate::agent::AgentId::from_bytes([198; 16]));
+    let other = path
+        .child(&crate::agent::AgentId::from_bytes([199; 16]))
+        .map_err(Error::from)?;
+    let provider = ProviderRef::new(
+        "journal-repair".into(),
+        "filesystem".into(),
+        "2".into(),
+        &mut None,
+    )?;
+    let private = private_volume(provider.clone(), &path.id())?;
+    let journal = crate::conversation::journal_volume(provider.clone(), &path.id())?;
+    let foreign = crate::conversation::journal_volume(provider.clone(), &other.id())?;
+    let host =
+        FilesystemHost::<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>::new(
+            acyclic_fs::Fs::memory(),
+            &provider,
+            None,
+        )?;
+    for volume in [&private, &journal, &foreign] {
+        host.create_volume(volume).await?;
+    }
+    // The retained journal's saved policy is stale, so admission repairs it.
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let workspace = host
+        .filesystem
+        .open_workspace(
+            foreign.storage_name(&mut None)?,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(|failure| Error::from(failure.error))?
+        .value;
+    let mut stale: acyclic_fs::access::Policy =
+        serde_json::from_slice(include_bytes!("../host/journal-policy.json"))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+    stale
+        .layers
+        .first_mut()
+        .ok_or_else(|| Error::Invalid("journal policy has no layers".into()))?
+        .retain(|rule| rule.id != "published-input");
+    replace_policy(&workspace, &stale).await?;
+    let audience = Authority {
+        kind: AggregateKind::Conversation,
+        id: path.id().to_string(),
+    };
+    let root = AuthorityRoot::new("journal-repair", [200; 32], audience.clone());
+    // Exact grants carry no filesystem label: an agent-owned volume then
+    // requires its owner as the acting writer.
+    let grants = Capabilities::new([
+        private.capability(VolumeOperation::Read, &mut None)?,
+        private.capability(VolumeOperation::Write, &mut None)?,
+        foreign.capability(VolumeOperation::Read, &mut None)?,
+        foreign.capability(VolumeOperation::Write, &mut None)?,
+        crate::contract::capability::HARNESS_HOST.to_owned(),
+    ]);
+    let admission = TurnAdmission::Admitted {
+        audience,
+        scope: root.bootstrap_scope("exact-host", &grants, None, &mut None)?,
+    };
+    let volumes = vec![WorkspaceEntry::initial_volume(
+        crate::agent::WorkspaceRole::Private,
+        PRIVATE_VOLUME.into(),
+        private,
+    )];
+    let retained = FileRef::new(
+        foreign.clone(),
+        "inputs/retained".into(),
+        "1".into(),
+        crate::conversation::FileDescriptor::new([2; 32], 1, "text/plain".into())?,
+        "retained".into(),
+        &mut None,
+    )?;
+    let issuer = RuntimeAuthority::from(root);
+    let before = host
+        .resolve(
+            &workspace_ref(provider.clone(), &foreign.storage_name(&mut None)?)?,
+            None,
+        )
+        .await?
+        .generation;
+    AdmittedAgent::verify(&issuer, &admission, &path, &volumes)?
+        .journal_authority(&host, std::slice::from_ref(&retained), &[])
+        .await?;
+    let repaired = host
+        .resolve(
+            &workspace_ref(provider, &foreign.storage_name(&mut None)?)?,
+            None,
+        )
+        .await?
+        .generation;
+    assert_ne!(
+        repaired, before,
+        "the retained journal policy was not repaired"
+    );
     Ok(())
 }
 

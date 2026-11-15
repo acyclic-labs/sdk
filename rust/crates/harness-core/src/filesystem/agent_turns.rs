@@ -109,15 +109,18 @@ pub enum TurnAdmission {
 
 impl TurnAdmission {
     /// Host observation uses the retained host ceiling, not a workload's
-    /// agent-bound scope. Native custody remains native; delegated custody
-    /// cannot gain authority by observing a descendant.
-    fn host(issuer: &RuntimeAuthority) -> Self {
-        issuer
-            .caller()
-            .map_or(Self::LocalRoot, |(audience, scope)| Self::Admitted {
+    /// agent-bound scope. Native custody observes under the admission its
+    /// agents' turns run under, so a signed checkpoint verifies under the
+    /// identity that signed it; delegated custody cannot gain authority by
+    /// observing a descendant.
+    fn host(issuer: &RuntimeAuthority, admission: &Self) -> Self {
+        issuer.caller().map_or_else(
+            || admission.clone(),
+            |(audience, scope)| Self::Admitted {
                 audience: audience.clone(),
                 scope: scope.clone(),
-            })
+            },
+        )
     }
 
     /// Checks identity, audience, lifetime and attenuation before storage IO.
@@ -408,17 +411,21 @@ impl<'v, 'p> AdmittedAgent<'v, 'p> {
         {
             return Ok(parent.clone());
         }
-        let grants = match parent {
-            Some(parent) => parent.capabilities().clone(),
-            None => journal_grants(journal, content)?,
+        // Native custody attests the journal owner, whom exact grants require
+        // as writer. Delegation never attests another acting agent, so a
+        // delegated ceiling keeps its own.
+        let (grants, agent) = match parent {
+            Some(parent) if self.issuer.native().is_none() => {
+                (parent.capabilities().clone(), parent.agent())
+            }
+            Some(parent) => (
+                parent.capabilities().clone(),
+                parent.agent().or(Some(*owner)),
+            ),
+            None => (journal_grants(journal, content)?, Some(*owner)),
         };
         self.issuer
-            .issue(
-                parent,
-                "host-journal",
-                &grants,
-                parent.and_then(Scope::agent).or(Some(*owner)),
-            )
+            .issue(parent, "host-journal", &grants, agent)
             .await
     }
 
@@ -2814,6 +2821,7 @@ async fn query_activity_journal<P, A, O>(
     stream: &Arc<P>,
     host: &Arc<FilesystemHost<A, O>>,
     issuer: &RuntimeAuthority,
+    admission: &TurnAdmission,
     agent: &AgentState,
 ) -> Result<Option<FilesystemExecutionJournal<P, A, O>>>
 where
@@ -2821,7 +2829,7 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    let admission = TurnAdmission::host(issuer);
+    let admission = TurnAdmission::host(issuer, admission);
     match query_journal(stream, host, issuer, &admission, agent).await {
         Ok(journal) => Ok(Some(journal)),
         // Missing optional journal authority does not revoke phase observation.
@@ -3010,9 +3018,14 @@ where
                 if let Some(queued) = crate::agent::turn_input(input, record) {
                     let operation =
                         crate::agent::turn_id(&state, &queued.input).map_err(Error::from)?;
-                    let journal =
-                        query_activity_journal(&self.stream, &self.host, &self.issuer, &state)
-                            .await?;
+                    let journal = query_activity_journal(
+                        &self.stream,
+                        &self.host,
+                        &self.issuer,
+                        &self.admission,
+                        &state,
+                    )
+                    .await?;
                     if let Some(journal) = journal {
                         settled.activity = journal.activity(operation, &*self.clock).await?;
                     }
