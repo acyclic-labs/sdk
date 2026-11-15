@@ -350,13 +350,25 @@ pub trait StreamProviderExt: StreamProvider {
                 limit: 1,
                 at_least,
             };
+            // Only the first head's tail leaves this future; the view stays in
+            // the awaited result instead of being moved through each `?`.
             let work = async {
-                let heads = self.heads(request.clone()).await?;
-                heads.validate_for(&request)?;
-                Ok::<_, StreamError>(heads)
+                match self.heads(request.clone()).await {
+                    Ok(ref heads) => {
+                        heads.validate_for(&request)?;
+                        Ok::<_, StreamError>(
+                            heads
+                                .heads
+                                .first()
+                                .and_then(Option::as_ref)
+                                .map(|head| head.tail),
+                        )
+                    }
+                    Err(error) => Err(error),
+                }
             };
             #[cfg(feature = "serde")]
-            let heads = if crate::trace::is_source(&path) {
+            let tail = if crate::trace::is_source(&path) {
                 work.await?
             } else {
                 crate::trace::observe(
@@ -372,13 +384,13 @@ pub trait StreamProviderExt: StreamProvider {
                 .await?
             };
             #[cfg(not(feature = "serde"))]
-            let heads = work.await?;
-            let (before, condition) = match heads.heads.first().and_then(Option::as_ref) {
-                Some(head) => (
-                    head.tail,
+            let tail = work.await?;
+            let (before, condition) = match tail {
+                Some(tail) => (
+                    tail,
                     CommitCondition::Tail {
                         path: path.clone(),
-                        expected: head.tail,
+                        expected: tail,
                     },
                 ),
                 None => (0, CommitCondition::Absent { path: path.clone() }),
@@ -597,12 +609,18 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
                     limit: 1,
                     at_least: Default::default(),
                 };
-                let mut view = self.heads(request.clone()).await?;
-                view.validate_for(&request)?;
-                let head = view.heads.pop().flatten().ok_or(StreamError::NotFound)?;
-                Ok(head
-                    .retained_through
-                    .map(|through| DurableReceipt { path, through }))
+                let through = match self.heads(request.clone()).await {
+                    Ok(ref view) => {
+                        view.validate_for(&request)?;
+                        view.heads
+                            .last()
+                            .and_then(Option::as_ref)
+                            .ok_or(StreamError::NotFound)?
+                            .retained_through
+                    }
+                    Err(error) => return Err(error),
+                };
+                Ok(through.map(|through| DurableReceipt { path, through }))
             };
             #[cfg(feature = "serde")]
             if !diagnostic {
@@ -672,9 +690,13 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
                     children: Some(request),
                     at_least: Default::default(),
                 };
-                let view = self.heads(selection.clone()).await?;
-                view.validate_for(&selection)?;
-                view.children.ok_or(StreamError::InvalidResponse)
+                match self.heads(selection.clone()).await {
+                    Ok(ref mut view) => {
+                        view.validate_for(&selection)?;
+                        view.children.take().ok_or(StreamError::InvalidResponse)
+                    }
+                    Err(error) => Err(error),
+                }
             };
             #[cfg(feature = "serde")]
             if !diagnostic {
@@ -772,11 +794,18 @@ async fn named_head<P: StreamProvider + ?Sized>(
     // Validation rebuilds the forwarded request from the same inputs, so no
     // head, tail or watermark future holds it across the provider await.
     let work = async {
-        let mut view = provider
+        // Match in place: `?` and a by-value binding each add a Heads-sized
+        // slot to this frame in unoptimised builds.
+        match provider
             .heads(named_request(path.clone(), projection))
-            .await?;
-        view.validate_for(&named_request(path, projection))?;
-        view.heads.pop().flatten().ok_or(StreamError::NotFound)
+            .await
+        {
+            Ok(ref mut view) => {
+                view.validate_for(&named_request(path, projection))?;
+                view.heads.pop().flatten().ok_or(StreamError::NotFound)
+            }
+            Err(error) => Err(error),
+        }
     };
     #[cfg(feature = "serde")]
     if !diagnostic {
