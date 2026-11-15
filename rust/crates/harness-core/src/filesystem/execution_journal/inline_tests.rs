@@ -1,7 +1,7 @@
 use super::*;
 use crate::executor::ModelPurpose;
 use crate::model::{Model, ModelMessage, ModelRequest, ModelRole, PreparedModelRequest};
-use acyclic_stream::StreamProviderExt as _;
+use acyclic_stream::{StreamProvider as _, StreamProviderExt as _};
 
 type Journal = FilesystemExecutionJournal<
     acyclic_stream::MemoryStream,

@@ -6,7 +6,6 @@ use acyclic_harness_core::agent::*;
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     CommitCondition, CommitEffect, CommitMutation, CommitOutcome, CommitRequest, MemoryStream,
-    StreamProvider,
 };
 
 fn message(name: &str) -> Result<TurnInput> {

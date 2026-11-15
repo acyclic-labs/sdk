@@ -313,7 +313,7 @@ async fn spending_turn_settlement_commits_signal_and_terminal_action_once() -> R
             ));
             let mut adoption = adopted(path.id());
             adoption.volumes = volumes;
-            let mut state = AgentState::adopted(path.clone(), &adoption)?;
+            let state = AgentState::adopted(path.clone(), &adoption)?;
             let wake = || Wake::Inbox {
                 sequence: 1,
                 record: InboxRecord::Message(Message {

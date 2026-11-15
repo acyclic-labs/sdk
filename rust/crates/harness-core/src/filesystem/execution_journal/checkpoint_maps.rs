@@ -433,6 +433,7 @@ fn changed(io: Option<&PreparationIo>) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acyclic_stream::StreamProviderExt as _;
 
     #[test]
     fn scalar_cells_use_exact_binary_widths_and_reject_json_or_padding() -> Result<()> {

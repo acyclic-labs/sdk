@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::StreamProviderExt as _;
 
 #[tokio::test]
 async fn atomic_cut_confirms_context_and_epoch_contributions_at_original_positions() -> Result<()> {
