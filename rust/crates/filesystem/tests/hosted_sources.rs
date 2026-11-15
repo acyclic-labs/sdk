@@ -266,12 +266,26 @@ async fn native_source_rpcs_keep_read_only_observation_lazy_and_capture_replay_a
             .map_err(|failure| failure.error)?
             .value
             .id();
+        std::fs::remove_dir_all(&directory)?;
+        let missing = FilesystemNativeSources::new(BTreeMap::from([(
+            "observed".to_owned(),
+            directory.clone(),
+        )]))?;
+        assert_eq!(
+            missing
+                .rescan(&admitted, IdempotencyKey::from_bytes([5; 16]))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::Unavailable,
+            "a new operation must still require the native root"
+        );
         for (key, expected) in [
             (2, original_reconcile),
             (3, original_rescan),
             (4, original_seal),
         ] {
-            // Each fresh provider has no retained watcher or in-memory retry state.
+            // Completed retries require neither a retained watcher nor the native root.
             let restarted = FilesystemNativeSources::new(BTreeMap::from([(
                 "observed".to_owned(),
                 directory.clone(),

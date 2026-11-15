@@ -118,7 +118,7 @@ pub enum SourceError {
 
 #[derive(Clone, Copy)]
 #[repr(u8)]
-enum SourceOperation {
+pub(crate) enum SourceOperation {
     Reconcile = 1,
     Rescan = 2,
     Seal = 3,
@@ -163,6 +163,8 @@ impl<A: 'static, O: 'static> Clone for Source<A, O> {
 
 mod operation;
 pub use operation::BoundSource;
+pub(crate) use operation::completed_source_operation;
+use operation::replayed_source_outcome;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
     async fn operation(&self) -> BoundSource<'_, A, O> {
@@ -321,7 +323,7 @@ async fn rescan_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             persist_source_operation(session, SourceState::NeedsRescan(reason), key, operation)
                 .await?;
         discard_unpublished_capture(session).await?;
-        return reconcile_outcome_from_fact(session, fact);
+        return reconcile_outcome_from_fact(&session.workspace, fact);
     }
     let capture = session.capture.clone();
     let policy = session.capture_policy.clone();
@@ -536,7 +538,7 @@ async fn persist_generation_outcome<A: AsyncAuthorityStore, O: AsyncObjectStore>
     let fact =
         persist_source_operation_with_generation(session, state, generation_id, key, operation)
             .await?;
-    reconcile_outcome_from_fact(session, fact)
+    reconcile_outcome_from_fact(&session.workspace, fact)
 }
 
 async fn persist_state_outcome<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -546,17 +548,17 @@ async fn persist_state_outcome<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     operation: SourceOperation,
 ) -> Result<ReconcileOutcome<A, O>, SourceError> {
     let fact = persist_source_operation(session, state, key, operation).await?;
-    reconcile_outcome_from_fact(session, fact)
+    reconcile_outcome_from_fact(&session.workspace, fact)
 }
 
 fn reconcile_outcome_from_fact<A: 'static, O: 'static>(
-    session: &SourceSession<A, O>,
+    workspace: &Workspace<A, O>,
     fact: SourceFact,
 ) -> Result<ReconcileOutcome<A, O>, SourceError> {
     match fact.state {
         DurableSourceState::Clean | DurableSourceState::Sealed => {
             Ok(ReconcileOutcome::Clean(Generation {
-                workspace: session.workspace.clone(),
+                workspace: workspace.clone(),
                 id: fact.generation_id,
                 publication_closure: None,
             }))
@@ -934,23 +936,7 @@ async fn replay_reconcile_operation<A: AsyncAuthorityStore, O: AsyncObjectStore>
     let Some(fact) = replay_source_operation(session, key, operation).await? else {
         return Ok(None);
     };
-    let outcome = match fact.state {
-        DurableSourceState::Clean => ReconcileOutcome::Clean(Generation {
-            workspace: session.workspace.clone(),
-            id: fact.generation_id,
-            publication_closure: None,
-        }),
-        DurableSourceState::NeedsRescan(reason) => {
-            ReconcileOutcome::NeedsRescan(watch_invalidation(reason))
-        }
-        DurableSourceState::Conflict => ReconcileOutcome::Conflict,
-        DurableSourceState::PendingCapture | DurableSourceState::Sealed => {
-            return Err(SourceError::Engine(
-                "durable source operation has an invalid terminal state".to_owned(),
-            ));
-        }
-    };
-    Ok(Some(outcome))
+    replayed_source_outcome(&session.workspace, fact, operation).map(Some)
 }
 
 async fn replay_seal_operation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -960,17 +946,9 @@ async fn replay_seal_operation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let Some(fact) = replay_source_operation(session, key, SourceOperation::Seal).await? else {
         return Ok(None);
     };
-    match fact.state {
-        DurableSourceState::Sealed => Ok(Some(Generation {
-            workspace: session.workspace.clone(),
-            id: fact.generation_id,
-            publication_closure: None,
-        })),
-        DurableSourceState::Conflict => Err(SourceError::Conflict),
-        DurableSourceState::NeedsRescan(_) => Err(SourceError::Engine(
-            "source could not reach a clean sealed state".to_owned(),
-        )),
-        DurableSourceState::Clean | DurableSourceState::PendingCapture => Err(SourceError::Engine(
+    match replayed_source_outcome(&session.workspace, fact, SourceOperation::Seal)? {
+        ReconcileOutcome::Clean(generation) => Ok(Some(generation)),
+        ReconcileOutcome::Conflict | ReconcileOutcome::NeedsRescan(_) => Err(SourceError::Engine(
             "durable seal operation has an invalid terminal state".to_owned(),
         )),
     }
@@ -982,50 +960,55 @@ async fn find_source_operation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     operation: SourceOperation,
     stage: SourceOperationStage,
 ) -> Result<Option<RecoveredSourceOperation>, SourceError> {
-    let authority_id = source_authority_id(session.workspace.volume.id());
-    let recovered = ({
-        let __authority_args = (
+    let Some(recovered) = read_source_operation(&session.workspace, key, operation, stage).await?
+    else {
+        return Ok(None);
+    };
+    validate_source_fact_binding(session, &recovered.fact)?;
+    let head = recovered.head;
+    if head.epoch == session.authority_head.epoch
+        && head.sequence >= session.authority_head.sequence
+    {
+        session.authority_head = head;
+        session.state = source_state(recovered.fact.state);
+    }
+    Ok(Some(recovered))
+}
+
+async fn read_source_operation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    workspace: &Workspace<A, O>,
+    key: IdempotencyKey,
+    operation: SourceOperation,
+    stage: SourceOperationStage,
+) -> Result<Option<RecoveredSourceOperation>, SourceError> {
+    let authority_id = source_authority_id(workspace.volume.id());
+    let cancellation = CancellationToken::new();
+    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let recovered = workspace
+        .volume
+        .fs
+        .authority()
+        .find_operation(
             authority_id,
             source_stage_operation_id(key, stage),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        );
-        let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
-        let __authority_result = session
-            .workspace
-            .volume
-            .fs
-            .authority()
-            .find_operation(
-                __authority_args.0,
-                __authority_args.1,
-                &mut __authority_work,
-            )
-            .await;
-        __authority_work.receipt(__authority_result)
-    })
-    .map_err(engine)?
-    .value;
-    let Some(commit) = recovered else {
+            &mut work,
+        )
+        .await;
+    let Some(commit) = work.receipt(recovered).map_err(engine)?.value else {
         return Ok(None);
     };
     let fact = decode_source_fact(&commit.payload, 4096).map_err(engine)?;
     if commit.fingerprint != source_operation_fingerprint(operation, &fact)? {
         return Err(SourceError::IdempotencyConflict);
     }
-    validate_source_fact_binding(session, &fact)?;
+    if fact.volume_id != workspace.volume.id() {
+        return Err(SourceError::BindingMismatch);
+    }
     let head = Head {
         epoch: commit.epoch,
         sequence: commit.sequence,
         digest: commit.digest,
     };
-    if head.epoch == session.authority_head.epoch
-        && head.sequence >= session.authority_head.sequence
-    {
-        session.authority_head = head;
-        session.state = source_state(fact.state);
-    }
     Ok(Some(RecoveredSourceOperation { fact, head }))
 }
 

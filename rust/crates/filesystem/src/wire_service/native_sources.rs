@@ -14,6 +14,11 @@ struct Directory<A: 'static, O: 'static> {
     attachment: Mutex<Option<Source<A, O>>>,
 }
 
+enum Attachment<'a, A: 'static, O: 'static> {
+    Native(MutexGuard<'a, Option<Source<A, O>>>),
+    Completed(ReconcileOutcome<A, O>),
+}
+
 /// Configured native roots over the canonical filesystem engine.
 /// Roots are lazy: only a source mutation starts a watcher and authenticates a baseline.
 pub struct FilesystemNativeSources<A: 'static, O: 'static> {
@@ -58,10 +63,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemNativeSources<A, O> 
     async fn attach<'a>(
         &'a self,
         workspace: &Workspace<A, O>,
-    ) -> Result<MutexGuard<'a, Option<Source<A, O>>>, Status> {
+        key: IdempotencyKey,
+        operation: crate::source::SourceOperation,
+    ) -> Result<Attachment<'a, A, O>, Status> {
         let directory = self.directory(workspace)?;
         let mut attached = directory.attachment.lock().await;
         if attached.is_none() {
+            if let Some(outcome) =
+                crate::source::completed_source_operation(workspace, key, operation)
+                    .await
+                    .map_err(status)?
+            {
+                return Ok(Attachment::Completed(outcome));
+            }
             let native = workspace
                 .open_directory(&directory.path, SourceOptions::default())
                 .await
@@ -72,7 +86,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemNativeSources<A, O> 
                 .ok_or_else(|| Status::internal("native source attachment missing"))?;
             *attached = Some(source);
         }
-        Ok(attached)
+        Ok(Attachment::Native(attached))
     }
 }
 
@@ -111,7 +125,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemSourceProvider<A, O>
         workspace: &Workspace<A, O>,
         key: IdempotencyKey,
     ) -> Result<HostedSourceResult, Status> {
-        let attached = self.attach(workspace).await?;
+        let attached = match self
+            .attach(workspace, key, crate::source::SourceOperation::Reconcile)
+            .await?
+        {
+            Attachment::Completed(outcome) => return Ok(outcome_result(outcome)),
+            Attachment::Native(attached) => attached,
+        };
         let attached = attached
             .as_ref()
             .ok_or_else(|| Status::internal("native source attachment missing"))?;
@@ -130,7 +150,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemSourceProvider<A, O>
         workspace: &Workspace<A, O>,
         key: IdempotencyKey,
     ) -> Result<HostedSourceResult, Status> {
-        let attached = self.attach(workspace).await?;
+        let attached = match self
+            .attach(workspace, key, crate::source::SourceOperation::Rescan)
+            .await?
+        {
+            Attachment::Completed(outcome) => return Ok(outcome_result(outcome)),
+            Attachment::Native(attached) => attached,
+        };
         let attached = attached
             .as_ref()
             .ok_or_else(|| Status::internal("native source attachment missing"))?;
@@ -149,7 +175,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemSourceProvider<A, O>
         workspace: &Workspace<A, O>,
         key: IdempotencyKey,
     ) -> Result<HostedSourceResult, Status> {
-        let attached = self.attach(workspace).await?;
+        let attached = match self
+            .attach(workspace, key, crate::source::SourceOperation::Seal)
+            .await?
+        {
+            Attachment::Completed(ReconcileOutcome::Clean(generation)) => {
+                return Ok(HostedSourceResult {
+                    state: HostedSourceState::Sealed,
+                    generation_id: Some(generation.id()),
+                });
+            }
+            Attachment::Completed(_) => {
+                return Err(Status::internal("native seal receipt invalid"));
+            }
+            Attachment::Native(attached) => attached,
+        };
         let attached = attached
             .as_ref()
             .ok_or_else(|| Status::internal("native source attachment missing"))?;

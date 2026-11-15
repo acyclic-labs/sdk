@@ -120,3 +120,50 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> BoundSource<'_, A, O> {
         Ok(generation)
     }
 }
+
+pub(crate) async fn completed_source_operation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    workspace: &Workspace<A, O>,
+    key: IdempotencyKey,
+    operation: SourceOperation,
+) -> Result<Option<ReconcileOutcome<A, O>>, SourceError> {
+    let Some(recovered) =
+        read_source_operation(workspace, key, operation, SourceOperationStage::Terminal).await?
+    else {
+        return Ok(None);
+    };
+    replayed_source_outcome(workspace, recovered.fact, operation).map(Some)
+}
+
+pub(super) fn replayed_source_outcome<A: 'static, O: 'static>(
+    workspace: &Workspace<A, O>,
+    fact: SourceFact,
+    operation: SourceOperation,
+) -> Result<ReconcileOutcome<A, O>, SourceError> {
+    match operation {
+        SourceOperation::Reconcile | SourceOperation::Rescan => {
+            if matches!(
+                fact.state,
+                DurableSourceState::PendingCapture | DurableSourceState::Sealed
+            ) {
+                return Err(SourceError::Engine(
+                    "durable source operation has an invalid terminal state".to_owned(),
+                ));
+            }
+        }
+        SourceOperation::Seal => match fact.state {
+            DurableSourceState::Sealed => {}
+            DurableSourceState::Conflict => return Err(SourceError::Conflict),
+            DurableSourceState::NeedsRescan(_) => {
+                return Err(SourceError::Engine(
+                    "source could not reach a clean sealed state".to_owned(),
+                ));
+            }
+            DurableSourceState::Clean | DurableSourceState::PendingCapture => {
+                return Err(SourceError::Engine(
+                    "durable seal operation has an invalid terminal state".to_owned(),
+                ));
+            }
+        },
+    }
+    reconcile_outcome_from_fact(workspace, fact)
+}
