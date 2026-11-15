@@ -49,7 +49,7 @@ throws the original cause or an `AggregateError` with all retained causes.
 An input source that outlives the command is destroyed when that command exits.
 
 Validate the published entry and real native executable together with
-`cargo test --locked -p acyclic-native-runtime --test node_process` from `rust/`.
+`cargo test --locked -p acyclic-native-runtime --test main node_process::` from `rust/`.
 Node.js must be installed. The control uses real input/output, a root with a
 descendant, caller cancellation, accepted output writes and native receipts.
 Run `node --test test/process-admission.test.mjs` from this package to check

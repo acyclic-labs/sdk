@@ -106,7 +106,7 @@ async function main() {
     if (!valid) throw new Error(`${step}: deciding oracle failed; recovery: inspect ${log}, correct source or command, then run ${JSON.stringify(command)}`);
     return text;
   }
-  const ordinary = ["cargo", "test", "--locked", "-p", "acyclic-native-runtime", "--test", targetName, "--", "--nocapture"];
+  const ordinary = ["cargo", "test", "--locked", "-p", "acyclic-native-runtime", "--test", "main", `${targetName}::`, "--", "--nocapture"];
   try {
     let command;
     if (routine || coverageOnly) {

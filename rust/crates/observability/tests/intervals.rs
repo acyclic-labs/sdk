@@ -15,8 +15,6 @@ use std::{
 use tokio::sync::Semaphore;
 use tracing_subscriber::prelude::*;
 
-acyclic_test_support::counting_allocator!();
-
 fn take(receiver: &mut ExportReceiver) -> Result<ExportRecord, Box<dyn std::error::Error>> {
     match pin!(receiver.recv()).poll(&mut Context::from_waker(Waker::noop())) {
         Poll::Ready(Some(record)) => Ok(record),

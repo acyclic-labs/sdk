@@ -147,17 +147,17 @@ are errors. No per-file worker, directory scan or readiness probe is needed.
 Run the independent operation lifecycle and allocation witnesses with:
 
 ```sh
-cargo test --locked -p acyclic-observability --test operations one_terminal_sample_survives_retained_handles_and_producer_loss -- --exact
-cargo test --locked -p acyclic-observability --test operations disabled_operation_allocates_nothing_with_enabled_negative_control -- --exact
-cargo test --locked -p acyclic-observability --test operations credited_export_keeps_original_cause_and_cancellation_with_a_blocked_sink -- --exact
-cargo test --locked -p acyclic-observability --test operations admitted_identity_survives_original_worker_and_credited_terminal_retirement -- --exact --nocapture
+cargo test --locked -p acyclic-observability --test main operations::one_terminal_sample_survives_retained_handles_and_producer_loss -- --exact
+cargo test --locked -p acyclic-observability --test main operations::disabled_operation_allocates_nothing_with_enabled_negative_control -- --exact
+cargo test --locked -p acyclic-observability --test main operations::credited_export_keeps_original_cause_and_cancellation_with_a_blocked_sink -- --exact
+cargo test --locked -p acyclic-observability --test main operations::admitted_identity_survives_original_worker_and_credited_terminal_retirement -- --exact --nocapture
 ```
 
 On Linux with `strace`, count actual kernel crossings over the marked operation
 interval. The same binary's real file open/close is the negative control:
 
 ```sh
-cargo test --locked -p acyclic-observability --test operations disabled_operation_has_zero_syscalls_with_real_io_negative_control -- --ignored --exact
+cargo test --locked -p acyclic-observability --test main operations::disabled_operation_has_zero_syscalls_with_real_io_negative_control -- --ignored --exact
 ```
 
 `Sink::publication_details` opts into the fixed `Publication` projection from

@@ -46,7 +46,7 @@ The ordinary `acyclic-native-runtime` integration test replays all four retained
 corpus files through the same `check` function used by the fuzzer:
 
 ```sh
-cargo test --locked -p acyclic-native-runtime --test native_claim_record
+cargo test --locked -p acyclic-native-runtime --test main native_claim_record::
 ```
 
 It also checks every truncated prefix of each retained writer seed, preserving

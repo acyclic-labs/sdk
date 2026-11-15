@@ -13,7 +13,7 @@ admission decisions alongside generated option combinations and OS strings.
 Capture with:
 
 ```sh
-cargo test --locked -p acyclic-native-runtime --test node_process -- node_process_bridge_owns_real_input_output_and_descendant_cancellation --nocapture
+cargo test --locked -p acyclic-native-runtime --test main -- node_process::node_process_bridge_owns_real_input_output_and_descendant_cancellation --nocapture
 ```
 
 The `PROCESS_HOST_PORTABLE_CORPUS_BASE64` line retains the original JSON bytes.

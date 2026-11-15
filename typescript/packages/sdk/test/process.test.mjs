@@ -1,4 +1,4 @@
-// Run by the native-runtime node_process integration target, which supplies
+// Run by the native-runtime node_process integration module, which supplies
 // the shipped executable from CARGO_BIN_EXE_acyclic-process-host.
 import assert from 'node:assert/strict';
 import {fork, spawn} from 'node:child_process';
@@ -461,7 +461,7 @@ if (mode === 'signal-owner') {
   process.stdin.resume();
 } else {
   const host = process.env.ACYCLIC_PROCESS_HOST;
-  assert.ok(host, 'step=process-control-admission; recovery=run cargo test --locked -p acyclic-native-runtime --test node_process');
+  assert.ok(host, 'step=process-control-admission; recovery=run cargo test --locked -p acyclic-native-runtime --test main node_process::');
   const options = {host};
   await processSignalControls();
   await argumentControls(host);

@@ -22,7 +22,7 @@ actual full data flush. The same property must reject it at
 
 ```sh
 git apply rust/proofs/cached-flush-completion/mutation.patch
-cargo test --locked -p acyclic-native-runtime --test cached_flush public_leases_keep_unfinished_flushes_until_physical_close -- --exact
+cargo test --locked -p acyclic-native-runtime --test main cached_flush::public_leases_keep_unfinished_flushes_until_physical_close -- --exact
 # Restore descriptor/cache.rs from the tested commit and run the same control.
 ```
 

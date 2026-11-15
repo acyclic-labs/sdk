@@ -7,7 +7,7 @@ fn node_process_bridge_owns_real_input_output_and_descendant_cancellation() {
         use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
         use std::os::unix::process::ExitStatusExt as _;
 
-        let recovery = "step=native-argument-capture; recovery=cargo test --locked -p acyclic-native-runtime --test node_process -- node_process_bridge_owns_real_input_output_and_descendant_cancellation --exact --nocapture";
+        let recovery = "step=native-argument-capture; recovery=cargo test --locked -p acyclic-native-runtime --test main -- node_process::node_process_bridge_owns_real_input_output_and_descendant_cancellation --exact --nocapture";
         let mut records = Vec::new();
         // Node cannot pass an invalid UTF-8 OS string. Exercise the same
         // executable directly, then retain the original native argv bytes.
@@ -58,9 +58,9 @@ fn node_process_bridge_owns_real_input_output_and_descendant_cancellation() {
         .arg(script)
         .env("ACYCLIC_PROCESS_HOST", acyclic_test_support::cargo_binary!("acyclic-process-host"))
         .status()
-        .expect("step=node-process-control; recovery=install Node.js and rerun cargo test --locked -p acyclic-native-runtime --test node_process");
+        .expect("step=node-process-control; recovery=install Node.js and rerun cargo test --locked -p acyclic-native-runtime --test main node_process::");
     assert!(
         status.success(),
-        "step=node-process-control; recovery=inspect the original Node control failure and rerun cargo test --locked -p acyclic-native-runtime --test node_process after correction"
+        "step=node-process-control; recovery=inspect the original Node control failure and rerun cargo test --locked -p acyclic-native-runtime --test main node_process:: after correction"
     );
 }
