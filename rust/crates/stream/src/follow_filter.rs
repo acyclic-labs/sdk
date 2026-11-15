@@ -695,7 +695,7 @@ fn check_filters(
                 assert_eq!(marker_probes, probes, "classify the marker once");
                 assert_eq!(parsed_bytes, 0, "header matching must not decode the body");
                 let (preservation, allocations, marker_probes, parsed_bytes) =
-                    measure(|| filter.preserves(&record))?;
+                    measure(|| filter.preserves(record))?;
                 if valid {
                     assert_eq!(
                         allocations,
@@ -719,7 +719,7 @@ fn check_filters(
                     let projected = projected.as_ref().map_err(|error| error.clone())?;
                     let projected = projected.as_ref();
                     assert_eq!(matched, projected.is_some());
-                    assert_eq!(preservation, Ok(projected == Some(&record)));
+                    assert_eq!(preservation, Ok(projected == Some(record)));
                     if let Some(projected) = projected {
                         assert_eq!(filter.preserves(projected), Ok(true));
                         assert_eq!(projected.sequence, record.sequence);

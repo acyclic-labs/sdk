@@ -5,7 +5,7 @@ use crate::NativeStreamProviderExt as _;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 fn path() -> std::result::Result<StreamPath, StreamError> {
-    Ok(StreamPath::new("receipts")?)
+    StreamPath::new("receipts")
 }
 
 async fn append(provider: &LocalStream, record: &'static [u8]) -> Result {

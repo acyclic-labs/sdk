@@ -254,7 +254,7 @@ async fn input_revisions_follow_only_own_history_membership_and_grafts_across_re
 }
 
 fn path() -> std::result::Result<StreamPath, StreamError> {
-    Ok(StreamPath::new("revisions")?)
+    StreamPath::new("revisions")
 }
 
 async fn append(provider: &LocalStream, key: crate::IdempotencyKey) -> Result<crate::Revision> {

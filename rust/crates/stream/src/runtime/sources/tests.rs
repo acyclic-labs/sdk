@@ -312,7 +312,7 @@ fn late_cancelled_wakes_cannot_disarm_a_live_source()
 
 #[test]
 fn ready_records_reuse_the_registered_source_node() {
-    late_cancelled_wakes_cannot_disarm_a_live_source();
+    late_cancelled_wakes_cannot_disarm_a_live_source().unwrap();
     futures::executor::block_on(async {
         let provider = MemoryStream::default();
         let path = StreamPath::new("ready/allocation").unwrap();
