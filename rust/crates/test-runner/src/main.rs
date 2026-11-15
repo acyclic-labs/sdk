@@ -250,6 +250,66 @@ mod tests {
         }
     }
 
+    /// A case started by a runner whose own settings are set: it sees its source root and
+    /// executables, and none of the runner's settings.
+    #[test]
+    fn environment_case() {
+        if acting() {
+            for setting in SETTINGS {
+                assert_eq!(env::var_os(setting), None, "{setting} reached the case");
+            }
+            assert!(env::var_os("ACYCLIC_TEST_SOURCE_ROOT").is_some());
+            assert_eq!(
+                env::var_os("CARGO_BIN_EXE_fixture").map(PathBuf::from),
+                Some(env::current_exe().unwrap())
+            );
+        }
+    }
+
+    /// Acts as a runner started with its settings set, running `environment_case`.
+    #[test]
+    fn environment_runner() {
+        if acting()
+            && SETTINGS
+                .iter()
+                .all(|setting| env::var_os(setting).is_some())
+        {
+            let root = env::current_dir().unwrap();
+            let suite = Suite {
+                source: root.clone(),
+                executables: vec![("CARGO_BIN_EXE_fixture".into(), env::current_exe().unwrap())],
+                binary: env::current_exe().unwrap(),
+                package: root.clone(),
+                logs: root,
+                limit: Duration::from_secs(10),
+            };
+            let mut out = Vec::new();
+            let failed = run_suite(&suite, Some("tests::environment_case"), &mut out).unwrap();
+            let out = String::from_utf8(out).unwrap();
+            assert_eq!((failed, out.lines().count()), (0, 1), "{out}");
+        }
+    }
+
+    #[test]
+    fn cases_see_their_inputs_and_none_of_the_runner_settings() {
+        let dir = suite("environment").package;
+        let mut runner = Command::new(env::current_exe().unwrap());
+        runner
+            .args(["tests::environment_runner", "--exact", "--nocapture"])
+            .current_dir(&dir);
+        for setting in SETTINGS {
+            runner.env(setting, "runner setting");
+        }
+        let output = runner.output().unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     fn suite(name: &str) -> Suite {
         let dir =
             env::temp_dir().join(format!("acyclic-test-runner-{name}-{}", std::process::id()));
