@@ -1524,7 +1524,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     pub fn submit(
         &self,
         prepared: PreparedPublish,
-    ) -> impl std::future::Future<Output = Result<(), Error>> + Send + '_ {
+    ) -> impl std::future::Future<Output = Result<(), Error>> + '_ {
         self.submit_retained(prepared).map_ok(drop)
     }
 
@@ -1574,7 +1574,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     pub fn submit_retained(
         &self,
         mut prepared: PreparedPublish,
-    ) -> impl std::future::Future<Output = Result<Option<Snapshot>, Error>> + Send + '_ {
+    ) -> impl std::future::Future<Output = Result<Option<Snapshot>, Error>> + '_ {
         // Pin the retained publication once at its owner boundary. Forwarding
         // its large state through async wrappers multiplies stack use in every
         // caller, including native model coroutines.
