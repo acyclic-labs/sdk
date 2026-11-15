@@ -495,6 +495,49 @@ fn a_claim_check_counts_each_read_it_makes() -> io::Result<()> {
     Ok(())
 }
 
+/// Physical reads, by phase: an empty record its length and a rewind, a whole
+/// record one more read, and a dead owner at most the documented bound per
+/// observation, never a reread of the record or of its framing.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_metered_claim_check_reads_each_record_once() -> io::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("owner.lock");
+    let checked = |path: &Path| -> io::Result<(crate::ClaimCheck, u64)> {
+        let meter = Arc::new(super::ReadBudgetMeter::new(1000, 1024 * 1024));
+        let original: Arc<dyn NativeReadMeter> = meter.clone();
+        let file =
+            crate::FileLock::try_acquire(std::fs::File::open(path)?, crate::FileLockMode::Shared)?;
+        let check = StoreClaim::check_metered(&file, &original)?;
+        Ok((check, meter.read_attempts.load(Ordering::Acquire)))
+    };
+    std::fs::write(&path, b"")?;
+    assert_eq!(
+        checked(&path)?.1,
+        2,
+        "an empty record: its length, a rewind"
+    );
+    let claim = StoreClaim::acquire(&path)?;
+    assert_eq!(
+        checked(&path)?.1,
+        StoreClaim::OBSERVATION_READ_OPERATIONS,
+        "this process's own record, read once"
+    );
+    drop(claim);
+    std::fs::write(
+        &path,
+        lockless_record(directory.path(), u32::MAX, b"boot:1"),
+    )?;
+    let (check, reads) = checked(&path)?;
+    assert!(!check.claimed);
+    assert!(
+        reads <= StoreClaim::OBSERVATION_READ_OPERATIONS * check.read_operations,
+        "{reads} physical reads for {} observations",
+        check.read_operations
+    );
+    Ok(())
+}
+
 /// A real long record is read on the original request, with physical buffer
 /// custody retired before return. Explicit allocation refusal still prevents
 /// its allocator boundary, and malformed framing needs no payload allocation.

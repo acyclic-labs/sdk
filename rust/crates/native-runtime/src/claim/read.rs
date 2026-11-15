@@ -2,6 +2,9 @@
 
 use super::record::{CHECKSUM_BYTES, CHECKSUM_INITIAL, Contents, MAGIC, checksum, checksum_chunk};
 
+/// Scratch that holds a whole claim record, which then costs one read.
+const SCRATCH_BYTES: usize = 16 * 1024;
+
 /// Complete record storage; its buffer is destroyed before its original credit.
 pub(super) struct ReadRecord {
     bytes: Vec<u8>,
@@ -39,7 +42,8 @@ impl ReadRecord {
 
     // Inspect framing and checksum in constant scratch space before allocating.
     // A large sparse/corrupt claim file therefore cannot request its file size
-    // from the allocator. The same original meter pays for each actual read.
+    // from the allocator. The same original meter pays for each actual read:
+    // the length and a rewind, then one read of a file that fits scratch.
     pub(super) fn read(
         file: &mut (impl std::io::Read + std::io::Seek),
         meter: Option<&std::sync::Arc<dyn crate::NativeReadMeter>>,
@@ -56,6 +60,33 @@ impl ReadRecord {
             result.status = Some(Status::Empty);
             return Ok(result);
         }
+        let mut scratch = [0_u8; SCRATCH_BYTES];
+        if let Some(whole) = usize::try_from(length)
+            .ok()
+            .and_then(|count| scratch.get_mut(..count))
+        {
+            // A record that fits scratch is read once and classified there.
+            read_exact(file, whole, meter)?;
+            if let Some(meter) = meter {
+                meter.admit_codec(0, 0, length)?;
+            }
+            let status = match Contents::decode(whole) {
+                Contents::Empty => Status::Empty,
+                Contents::Torn => Status::Torn,
+                Contents::Malformed => Status::Malformed,
+                Contents::Record(_) => Status::Verified,
+            };
+            if let Some(meter) = meter {
+                meter.record_codec(0, 0, length)?;
+            }
+            if let Status::Verified = status {
+                result.allocate(whole.len(), meter)?;
+                result.bytes.extend_from_slice(whole);
+            }
+            result.status = Some(status);
+            return Ok(result);
+        }
+        // A longer file streams its framing and checksum through scratch first.
         let mut magic = [0_u8; MAGIC.len()];
         let prefix = usize::try_from(length.min(MAGIC.len() as u64))
             .map_err(|_| io::ErrorKind::InvalidData)?;
@@ -106,7 +137,6 @@ impl ReadRecord {
         }
         native_operation(meter, || file.seek(SeekFrom::Start(0)))?;
         let mut remaining = length - CHECKSUM_BYTES as u64;
-        let mut scratch = [0_u8; 16 * 1024];
         let mut hash = CHECKSUM_INITIAL;
         while remaining != 0 {
             let count = usize::try_from(remaining.min(scratch.len() as u64))
@@ -129,19 +159,7 @@ impl ReadRecord {
             return Ok(result);
         }
         let count = usize::try_from(length).map_err(|_| io::ErrorKind::InvalidData)?;
-        result._allocation = meter
-            .map(|meter| crate::ReadAllocation::new(meter, count))
-            .transpose()?;
-        result
-            .bytes
-            .try_reserve_exact(count)
-            .map_err(|error| match meter {
-                Some(meter) => meter.allocation_failed(error),
-                None => io::Error::from(io::ErrorKind::OutOfMemory),
-            })?;
-        if let Some(allocation) = &mut result._allocation {
-            allocation.reconcile_capacity(result.bytes.capacity())?;
-        }
+        result.allocate(count, meter)?;
         result.bytes.resize(count, 0);
         native_operation(meter, || file.seek(SeekFrom::Start(0)))?;
         read_exact(file, &mut result.bytes, meter)?;
@@ -164,6 +182,29 @@ impl ReadRecord {
             Status::Torn
         });
         Ok(result)
+    }
+}
+
+impl ReadRecord {
+    /// Admits, then reserves, the owned buffer of a `count`-byte record.
+    fn allocate(
+        &mut self,
+        count: usize,
+        meter: Option<&std::sync::Arc<dyn crate::NativeReadMeter>>,
+    ) -> std::io::Result<()> {
+        self._allocation = meter
+            .map(|meter| crate::ReadAllocation::new(meter, count))
+            .transpose()?;
+        self.bytes
+            .try_reserve_exact(count)
+            .map_err(|error| match meter {
+                Some(meter) => meter.allocation_failed(error),
+                None => std::io::Error::from(std::io::ErrorKind::OutOfMemory),
+            })?;
+        if let Some(allocation) = &mut self._allocation {
+            allocation.reconcile_capacity(self.bytes.capacity())?;
+        }
+        Ok(())
     }
 }
 

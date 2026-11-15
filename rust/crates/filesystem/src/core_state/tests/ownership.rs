@@ -150,10 +150,14 @@ fn measured_shared_admission_charges_its_claim_check() -> Result<(), Box<dyn std
     child.terminate_descendants()?;
     child.wait(Duration::from_secs(5))?;
     let probed = measured_admission_reads(&root);
-    // One probe while the owner's process lock remains, three once another
-    // process's sweep has removed it.
+    // The record read once, then one probe while the owner's process lock
+    // remains, three once another process's sweep has removed it: each
+    // observation within its documented physical reads.
+    use acyclic_native_runtime::StoreClaim;
     assert!(
-        probed > free && probed - free < acyclic_native_runtime::StoreClaim::CHECK_READ_OPERATIONS,
+        probed > free
+            && probed - free
+                <= StoreClaim::OBSERVATION_READ_OPERATIONS * StoreClaim::CHECK_READ_OPERATIONS,
         "free admission {free} reads, after a dead owner {probed}"
     );
     Ok(())
