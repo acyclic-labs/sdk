@@ -1,7 +1,7 @@
 //! Compare failure admission and recorded public codes through production codecs.
 #![no_main]
 
-use acyclic_stream::StreamError;
+use acyclic_stream::{StreamCategory, StreamError};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|input: &[u8]| {
@@ -16,8 +16,9 @@ fuzz_target!(|input: &[u8]| {
     );
     // Admission must hold even when the arbitrary input is not a valid code.
     // Select from the public values independently of the decoder under test.
-    let index = usize::from(input.first().copied().unwrap_or(0)) % StreamError::ALL.len();
-    let selected = StreamError::ALL.get(index);
+    let all = StreamCategory::ALL.map(StreamError::from);
+    let index = usize::from(input.first().copied().unwrap_or(0)) % all.len();
+    let selected = all.get(index);
     assert!(selected.is_some(), "public failure selection was absent");
     if let Some(error) = selected {
         let encoded = serde_json::to_vec(error);

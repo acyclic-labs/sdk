@@ -15,7 +15,7 @@
 use super::{ActorReference, Error, Store, StreamPath, StreamProvider};
 use acyclic_stream::{
     ChildrenPageRequest, CommitEffect, CommitMutation, CommitRequest, IdempotencyKey, ReadRequest,
-    StreamCategory, StreamError, StreamProviderExt as _,
+    StreamCategory, StreamProviderExt as _,
 };
 use futures::TryStreamExt as _;
 use sha2::{Digest, Sha256};
