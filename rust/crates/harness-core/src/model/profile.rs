@@ -113,6 +113,11 @@ impl ModelProfileBinding {
         })
     }
 
+    /// The one refusal for an effort selection whose model has no admitted
+    /// reasoning baseline, at settings admission and at step preparation.
+    pub const EFFORT_WITHOUT_BASELINE: &'static str =
+        "effort needs a selected model with an admitted reasoning baseline";
+
     /// Concrete baseline retained in the epoch header.
     pub const fn baseline_effort(&self) -> Option<Effort> {
         match self.reasoning {

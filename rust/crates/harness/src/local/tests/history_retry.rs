@@ -196,26 +196,31 @@ async fn a_refused_history_preparation_can_select_a_new_project_generation() -> 
     fs.require_head(&head, &mut guard, WorkBudget::UNBOUNDED, &cancel)
         .await
         .map_err(|failure| storage(failure.error))?;
+    // One required head is its exact lineage plus the absence of its
+    // retirement, so a retired source refuses even with an unchanged lineage.
     let [
         source_condition @ CommitCondition::Tail {
             path: source_path, ..
         },
+        retirement_condition @ CommitCondition::Absent { .. },
     ] = guard.request().effects[0].conditions.as_slice()
     else {
-        return Err(Error::Invalid(
-            "source head has no exact lineage condition".into(),
-        ));
+        return Err(Error::Invalid(format!(
+            "source head is not its exact lineage and live retirement: {:?}",
+            guard.request().effects[0].conditions
+        )));
     };
     let mut first = composer
         .open(&actor, previous, None, next, &participant)
         .map_err(storage)?;
     let original = first.seal(request.clone()).await.map_err(storage)?;
     let original_cut = retained(&original, root)?;
-    assert!(
-        original
-            .conditions()
-            .any(|condition| condition == source_condition)
-    );
+    for required in [source_condition, retirement_condition] {
+        assert!(
+            original.conditions().any(|condition| condition == required),
+            "the sealed preparation must carry {required:?}"
+        );
+    }
     workspace
         .write_text("/changed.md", "new generation")
         .await
