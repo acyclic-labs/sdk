@@ -632,6 +632,24 @@ impl<T> Retained<T> {
     }
 }
 
+impl<T: Copy> Retained<Vec<T>> {
+    /// Removes a copyable element while retaining the vector's backing credit.
+    /// Borrowed elements keep their original owner's lifetime; this operation
+    /// neither transfers owned payload nor refunds still-allocated capacity.
+    pub fn pop(
+        &mut self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Option<T>, crate::FsError> {
+        accounting.perform(
+            crate::WorkCounters {
+                items_examined: 1,
+                ..crate::WorkCounters::UNCHARGED
+            },
+            || self.value.pop(),
+        )
+    }
+}
+
 impl<T> std::ops::Deref for Retained<T> {
     type Target = T;
 
