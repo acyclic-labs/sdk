@@ -5,6 +5,7 @@ Docker, network or credential is used."""
 import copy
 import hashlib
 import json
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -76,7 +77,7 @@ class FeatureEval(unittest.TestCase):
                     # Harbor names a packaged task by its task.toml name, not its directory.
                     (trial / "result.json").write_text(json.dumps({
                         "task_name": "benchmark/" + task, "exception_info": None,
-                        "config": {"task": path[task]},
+                        "config": {"task": path[task], "agent": agent},
                         "verifier_result": {"rewards": {"reward": 1 if solved else 0}}}))
 
     def test_mock_tier_runs_plan_commands_and_scores_paired_arms(self):
@@ -88,7 +89,8 @@ class FeatureEval(unittest.TestCase):
         jobs_dir = self.root / "jobs"
         self.run_arms(plan, jobs_dir)
         # Trials answer for the task paths the plan wrote, whatever Harbor names them.
-        self.assertEqual(sorted(trials(jobs_dir / "r44-context-management-on")),
+        self.assertEqual(sorted(trials(jobs_dir / "r44-context-management-on",
+                                       plan["features"][0]["on"]["agents"][0])),
                          sorted(task["path"] for task in plan["features"][0]["on"]["tasks"]))
         (result,) = score(plan, jobs_dir)["features"]
         tasks = len(plan["task_names"])
@@ -116,6 +118,13 @@ class FeatureEval(unittest.TestCase):
         moved["features"][0]["off"]["agents"][0]["model_name"] = "openai/other"
         with self.assertRaisesRegex(ValueError, "differ outside their feature arm"):
             score(moved, jobs_dir)
+        # A later plan's jobs share these names; trials of another model are refused.
+        later = copy.deepcopy(plan)
+        for side in ("on", "off"):
+            later["features"][0][side]["agents"][0]["model_name"] = "openai/later"
+        later["model"] = "openai/later"
+        with self.assertRaisesRegex(ValueError, "did not run the planned agent"):
+            score(later, jobs_dir)
         shutil.rmtree(next((jobs_dir / "r44-context-management-on").iterdir()))
         with self.assertRaisesRegex(ValueError, "not the plan's tasks"):
             score(plan, jobs_dir)
@@ -141,6 +150,15 @@ class FeatureEval(unittest.TestCase):
         arguments, uploads = arm_arguments({"flags": [], "home_files": {"policy/a.md": "x"}}, "/s")
         self.assertEqual(arguments, ["--home-file", "policy/a.md=/s/home-files/0"])
         self.assertEqual(uploads, {"/s/home-files/0": "x"})
+        # Every home file reaches the command line as its own flag and value.
+        arguments, _ = arm_arguments(
+            {"flags": [], "home_files": {"policy/a.md": "x", "policy/b.md": "y"}}, "/s")
+        command = shlex.split(run_command("/g", "/s", "/l", "openai/fixture", "solve",
+                                          compaction=False, arguments=tuple(arguments)))
+        self.assertEqual([command[index + 1] for index, value in enumerate(command)
+                          if value == "--home-file"],
+                         ["policy/a.md=/s/home-files/0", "policy/b.md=/s/home-files/1"])
+        self.assertEqual(command.count("--no-compaction"), 1)
         # A counterless catalog already disables compaction: the pair would
         # compare one configuration with itself, so it is not planned.
         with self.assertRaisesRegex(ValueError, "effective arms are identical"):

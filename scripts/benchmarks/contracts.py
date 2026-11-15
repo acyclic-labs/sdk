@@ -164,7 +164,7 @@ def _invocation(binary: str, state: str, model: str, compaction: bool,
         "TMPDIR=" + str(PurePosixPath(state) / "tmp"),
         binary, "--catalog", str(PurePosixPath(state) / "catalog.json"),
         "--settings-root", home, "--model", model,
-    ] + list(dict.fromkeys(([] if compaction else ["--no-compaction"]) + arguments))
+    ] + ([] if compaction or "--no-compaction" in arguments else ["--no-compaction"]) + arguments
 
 
 def doctor_command(binary: str, state: str, model: str, *, compaction: bool = True,

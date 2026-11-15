@@ -71,12 +71,17 @@ def _tokens(path: Path):
     return totals
 
 
-def trials(job: Path) -> dict:
-    """task path -> (solved, tokens). A trial that raised or has no reward of 1 failed."""
+def trials(job: Path, agent: dict) -> dict:
+    """task path -> (solved, tokens). A trial that raised or has no reward of 1 failed.
+    Every trial must have run the planned agent: job names repeat across plans, so a
+    jobs directory from another plan's model, artifact or arm is refused, not relabelled."""
     result = {}
     for directory in sorted(path for path in job.iterdir() if path.is_dir()):
         record = json.loads((directory / "result.json").read_text())
         name = record["config"]["task"]["path"]
+        ran = record["config"].get("agent") or {}
+        if {key: ran.get(key) for key in agent} != agent:
+            raise ValueError("trial did not run the planned agent: " + name)
         if name in result:
             raise ValueError("more than one trial for task: " + name)
         rewards = (record.get("verifier_result") or {}).get("rewards") or {}
@@ -102,7 +107,7 @@ def score(plan: dict, jobs_dir: Path) -> dict:
     for feature in plan["features"]:
         arms = {}
         for side in ("on", "off"):
-            observed = trials(jobs_dir / feature[side]["job_name"])
+            observed = trials(jobs_dir / feature[side]["job_name"], feature[side]["agents"][0])
             # Both arms answer for the plan's exact tasks, or nothing is compared.
             if sorted(observed) != sorted(task["path"] for task in feature[side]["tasks"]):
                 raise ValueError(f"{feature['name']} {side} trials are not the plan's tasks")
