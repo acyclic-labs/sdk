@@ -851,6 +851,38 @@ fn attributed_unavailability_survives_transport_round_trips() {
         self::original(&Status::from(decoded)),
         self::original(&encoded)
     );
+    for body in [
+        br#"{ "reason":"poisoned", "component":"stream.lock", "requestId":"" }"#.as_slice(),
+        br#"{"component":"stream.lock","reason":"poisoned","requestId":"","extra":true}"#
+            .as_slice(),
+    ] {
+        let mut attributed = encoded.clone();
+        attributed.metadata_mut().insert_bin(
+            "acyclic-cause-v1-bin",
+            tonic::metadata::MetadataValue::from_bytes(body),
+        );
+        let decoded = status(&attributed);
+        assert!(decoded.member_refusal().unwrap().original().is_some());
+        assert_eq!(
+            self::original(&Status::from(decoded)),
+            self::original(&attributed)
+        );
+    }
+    let mut duplicated = encoded.clone();
+    let value = duplicated
+        .metadata()
+        .get_bin("acyclic-cause-v1-bin")
+        .unwrap()
+        .clone();
+    duplicated
+        .metadata_mut()
+        .append_bin("acyclic-cause-v1-bin", value);
+    let decoded = status(&duplicated);
+    assert!(decoded.member_refusal().unwrap().original().is_some());
+    assert_eq!(
+        self::original(&Status::from(decoded)),
+        self::original(&duplicated)
+    );
 }
 
 proptest::proptest! {

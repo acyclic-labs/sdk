@@ -219,7 +219,9 @@ impl Refusal {
         cause: Option<Cause>,
     ) -> Option<Self> {
         let reported = reported_cause(metadata);
-        let has_reported_cause = reported.is_some();
+        let has_reported_cause = reported
+            .as_ref()
+            .is_some_and(|cause| canonical_cause(metadata, cause));
         let cause = cause.or(reported);
         let original = differs(
             code,
@@ -254,7 +256,9 @@ impl Refusal {
         cause: Option<Cause>,
     ) -> Option<Self> {
         let reported = reported_cause(&parts.metadata);
-        let has_reported_cause = reported.is_some();
+        let has_reported_cause = reported
+            .as_ref()
+            .is_some_and(|cause| canonical_cause(&parts.metadata, cause));
         let cause = cause.or(reported);
         let original = differs(
             parts.code,
@@ -348,12 +352,7 @@ impl Refusal {
         if let Some(refusal) = refusal.filter(|refusal| refusal.original().is_none())
             && let Some(cause) = refusal.cause().filter(|_| !canonical.cause_is_embedded)
         {
-            let encode = || -> Result<http::HeaderValue, EncodeError> {
-                let bytes = serde_json::to_vec(cause)?;
-                let value = base64::engine::general_purpose::STANDARD.encode(bytes);
-                Ok(value.parse()?)
-            };
-            let value = encode().map_err(|source| EncodeFailure {
+            let value = encode_cause(cause).map_err(|source| EncodeFailure {
                 refusal: refusal.clone(),
                 source,
             })?;
@@ -385,6 +384,19 @@ pub enum EncodeError {
     Header(#[from] http::header::InvalidHeaderValue),
 }
 
+fn encode_cause(cause: &Cause) -> Result<http::HeaderValue, EncodeError> {
+    let bytes = serde_json::to_vec(cause)?;
+    let value = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(value.parse()?)
+}
+
+fn canonical_cause(metadata: &HeaderMap, cause: &Cause) -> bool {
+    let mut values = metadata.get_all(CAUSE_METADATA).iter();
+    let Some(value) = values.next() else {
+        return false;
+    };
+    values.next().is_none() && encode_cause(cause).is_ok_and(|encoded| encoded == *value)
+}
 fn reported_cause(metadata: &HeaderMap) -> Option<Cause> {
     let value = metadata.get(CAUSE_METADATA)?.to_str().ok()?;
     let bytes = base64::engine::general_purpose::STANDARD
