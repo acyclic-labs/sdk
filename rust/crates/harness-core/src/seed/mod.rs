@@ -187,33 +187,80 @@ mod tests {
         "yarn", "yq", "zsh",
     ];
 
-    /// The command-line tools named by model-visible instruction texts.
-    fn named_tools<'a>(texts: impl IntoIterator<Item = &'a str>) -> BTreeSet<&'static str> {
-        texts
-            .into_iter()
-            .flat_map(|text| text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')))
-            .filter_map(|word| COMMAND_TOOLS.iter().copied().find(|tool| *tool == word))
-            .collect()
+    /// The executables an instruction text tells the model to run, or an
+    /// error naming the first known tool it names outside the command form.
+    ///
+    /// An instruction names a command only as a code span `` `$ <tool> ...` ``,
+    /// whose first word is the executable, whatever that name is. A known
+    /// tool named anywhere else is refused, so a command cannot reach the
+    /// model in a form this check does not read.
+    fn commands(text: &str) -> std::result::Result<BTreeSet<&str>, String> {
+        let mut commands = BTreeSet::new();
+        let mut prose = String::new();
+        for (index, part) in text.split('`').enumerate() {
+            match part.strip_prefix("$ ").filter(|_| index % 2 == 1) {
+                Some(line) => {
+                    let tool = line.split_whitespace().next().unwrap_or_default();
+                    commands.insert(tool);
+                }
+                None => {
+                    prose.push_str(part);
+                    prose.push(' ');
+                }
+            }
+        }
+        // A word keeps its path characters, so `.git` or `src/rg` names a
+        // path, not a tool; only sentence punctuation is trimmed.
+        match prose
+            .split(|c: char| !(c.is_ascii_alphanumeric() || "_-./".contains(c)))
+            .map(|word| word.trim_end_matches('.'))
+            .find(|word| COMMAND_TOOLS.iter().any(|tool| tool == word))
+        {
+            Some(tool) => Err(format!("`{tool}` named outside a `$ ` command span")),
+            None => Ok(commands),
+        }
     }
 
-    // A seed instruction may name only a tool every task environment
-    // provides, and every provided tool is one some instruction relies on.
+    /// The executables `text` tells the model to run that no task
+    /// environment guarantees.
+    fn unprovided(text: &str) -> std::result::Result<Vec<&str>, String> {
+        let named = commands(text)?;
+        Ok(named
+            .into_iter()
+            .filter(|tool| {
+                !crate::context::TASK_TOOLS
+                    .iter()
+                    .any(|provided| provided == tool)
+            })
+            .collect())
+    }
+
+    // A seed instruction tells the model to run only executables every task
+    // environment provides, and names commands in no form that escapes this.
     #[test]
-    fn seed_instructions_name_exactly_the_task_tools() {
-        let instructions = tree()
-            .iter()
-            .filter(|(path, _)| path.ends_with(".md"))
-            .map(|(path, bytes)| std::str::from_utf8(bytes).unwrap_or_else(|_| panic!("{path}")));
-        let provided: BTreeSet<_> = crate::context::TASK_TOOLS.iter().copied().collect();
-        assert_eq!(named_tools(instructions), provided);
-        // Planted controls: a tool the environment lacks is detected, and
-        // ordinary prose names none.
-        let planted = named_tools(["Read relevant code with jq before editing; rg is fine."]);
+    fn seed_instructions_run_only_task_tools() {
+        for (path, bytes) in tree().iter().filter(|(path, _)| path.ends_with(".md")) {
+            let text = std::str::from_utf8(bytes).unwrap_or_else(|_| panic!("{path}"));
+            assert_eq!(unprovided(text), Ok(vec![]), "{path}");
+        }
+        // Planted controls: any executable outside the guarantee is
+        // refused, a known tool in prose is refused, and prose that only
+        // shares words with commands passes.
+        assert_eq!(unprovided("Run `$ make test` first."), Ok(vec!["make"]));
         assert_eq!(
-            planted.difference(&provided).copied().collect::<Vec<_>>(),
-            ["jq"]
+            unprovided("Search with `$ rg -n x`, then `$ jq .`."),
+            Ok(vec!["jq"])
         );
-        assert!(named_tools(["Make a tree of the tail and find the path."]).is_empty());
+        assert!(unprovided("Read relevant code with jq before editing.").is_err());
+        assert!(unprovided("Then use git.").is_err());
+        assert_eq!(
+            unprovided("Files under `.git` are project files."),
+            Ok(vec![])
+        );
+        assert_eq!(
+            unprovided("Make a tree of the tail and find the path."),
+            Ok(vec![])
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]
