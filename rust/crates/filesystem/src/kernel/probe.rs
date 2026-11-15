@@ -688,12 +688,27 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Option<FileId>, crate::FsError> {
+        let record = self
+            .record_with_accounting(generation, directory, accounting, cancellation)
+            .await?;
+        Ok(self
+            .entry_with_accounting(record, name, accounting, cancellation)
+            .await?
+            .map(|(file, _)| file))
+    }
+
+    /// The file and kind the directory `record` binds at `name`, if any.
+    async fn entry_with_accounting(
+        &self,
+        record: Option<FileRecord>,
+        name: &super::LogicalName,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<(FileId, super::FileKind)>, crate::FsError> {
         let Some(FileRecord {
             payload: FilePayload::Directory { entries },
             ..
-        }) = self
-            .record_with_accounting(generation, directory, accounting, cancellation)
-            .await?
+        }) = record
         else {
             return Ok(None);
         };
@@ -711,9 +726,91 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
             .as_ref()
             .map_or(0, |entry| usize_to_u64(entry.name.retained_bytes()));
         let entry = Owned::new(entry, allocation, retained);
-        let file = entry.value.as_ref().map(|entry| entry.file_id);
+        let file = entry
+            .value
+            .as_ref()
+            .map(|entry| (entry.file_id, entry.kind));
         entry.retire(accounting)?;
         Ok(file)
+    }
+
+    /// The kernel merge's directory fold, read from two generations and the
+    /// checkout's `working` file table: `base` binds nothing at the
+    /// candidate's `parents[1]`/`name`, `candidate` binds a directory there,
+    /// and the checkout binds a directory of its own at `parents[0]`/`name`
+    /// that neither generation has. The parents differ where an enclosing
+    /// directory already folds. Returns the checkout's directory, then the
+    /// candidate's.
+    pub(crate) async fn added_directories_with_accounting(
+        &self,
+        working: ObjectId,
+        [base, candidate]: [GenerationId; 2],
+        [ours_parent, theirs_parent]: [FileId; 2],
+        name: &super::LogicalName,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<(FileId, FileId)>, crate::FsError> {
+        if self
+            .bound_with_accounting(base, theirs_parent, name, accounting, cancellation)
+            .await?
+            .is_some()
+        {
+            return Ok(None);
+        }
+        let record = self
+            .record_with_accounting(candidate, theirs_parent, accounting, cancellation)
+            .await?;
+        let Some((theirs, super::FileKind::Directory)) = self
+            .entry_with_accounting(record, name, accounting, cancellation)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let record = self
+            .table_record_with_accounting(working, ours_parent, accounting, cancellation)
+            .await?;
+        let Some((ours, super::FileKind::Directory)) = self
+            .entry_with_accounting(record, name, accounting, cancellation)
+            .await?
+        else {
+            return Ok(None);
+        };
+        for generation in [base, candidate] {
+            if self
+                .record_with_accounting(generation, ours, accounting, cancellation)
+                .await?
+                .is_some()
+            {
+                return Ok(None);
+            }
+        }
+        Ok(Some((ours, theirs)))
+    }
+
+    /// The record the file table `table` holds for `file`, uncached: a
+    /// working table changes with every checkout write.
+    async fn table_record_with_accounting(
+        &self,
+        table: ObjectId,
+        file: FileId,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<FileRecord>, crate::FsError> {
+        cancellation.check()?;
+        accounting.check()?;
+        let (record, allocation) = super::file_table::lookup_file_record_async_with_accounting(
+            self.store,
+            table,
+            file,
+            self.limits.decode,
+            accounting,
+            cancellation,
+            self.data_custody,
+        )
+        .await?;
+        // A file record is scalar, including its fixed-capacity inline payload.
+        retire_allocation(allocation, 0, accounting)?;
+        Ok(record)
     }
 
     /// The kernel merge's replacement rule, read from two generations: `base`
@@ -771,21 +868,10 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<bool, crate::FsError> {
-        cancellation.check()?;
-        accounting.check()?;
-        let (record, allocation) = super::file_table::lookup_file_record_async_with_accounting(
-            self.store,
-            working,
-            file,
-            self.limits.decode,
-            accounting,
-            cancellation,
-            self.data_custody,
-        )
-        .await?;
-        // A file record is scalar, including its fixed-capacity inline payload.
-        retire_allocation(allocation, 0, accounting)?;
-        Ok(record.is_none())
+        Ok(self
+            .table_record_with_accounting(working, file, accounting, cancellation)
+            .await?
+            .is_none())
     }
 
     /// Resolves the full exact-region algorithm through nonblocking canonical I/O.
@@ -1252,6 +1338,18 @@ impl<S: AsyncObjectStore> super::rebase::AccountingRebaseProbe
     }
 
     // Generations alone carry no working tree.
+    async fn added_directories_with_accounting(
+        &self,
+        _generations: [GenerationId; 2],
+        _parents: [FileId; 2],
+        _name: &super::LogicalName,
+        _accounting: &mut KernelAccounting<'_>,
+        _cancellation: &CancellationToken,
+    ) -> Result<Option<(FileId, FileId)>, super::rebase::ClassifyRebaseFailure<Self::Error>> {
+        Ok(None)
+    }
+
+    // Generations alone carry no working tree.
     async fn removed_locally_with_accounting(
         &self,
         _file: FileId,
@@ -1296,6 +1394,27 @@ impl<S: AsyncObjectStore> super::rebase::AccountingRebaseProbe for WorkingRebase
     ) -> Result<Option<(FileId, FileId)>, super::rebase::ClassifyRebaseFailure<Self::Error>> {
         self.probe
             .replacement_with_accounting(base, candidate, directory, name, accounting, cancellation)
+            .await
+            .map_err(super::rebase::ClassifyRebaseFailure::Accounting)
+    }
+
+    async fn added_directories_with_accounting(
+        &self,
+        generations: [GenerationId; 2],
+        parents: [FileId; 2],
+        name: &super::LogicalName,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<(FileId, FileId)>, super::rebase::ClassifyRebaseFailure<Self::Error>> {
+        self.probe
+            .added_directories_with_accounting(
+                self.working,
+                generations,
+                parents,
+                name,
+                accounting,
+                cancellation,
+            )
             .await
             .map_err(super::rebase::ClassifyRebaseFailure::Accounting)
     }

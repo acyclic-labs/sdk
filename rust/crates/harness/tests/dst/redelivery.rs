@@ -9,14 +9,10 @@ use serde_json::json;
 
 const FILES: [(&str, &str); 1] = [("c.txt", "base\n")];
 
-/// The default seeds reach the variants that hold today. The open one
-/// follows them: `reorder` of a `running` target, whose concurrent delivery
-/// fails the other message's turn with a workspace publication conflict.
-/// `DST_SEED=8` reproduces it; its fix extends `SEEDS` over its variant and
-/// lowers `uncovered`.
-pub(super) const SEEDS: std::ops::Range<u64> = 0..8;
+/// The default seeds reach every variant.
+pub(super) const SEEDS: std::ops::Range<u64> = 0..9;
 
-/// Every (multiplicity, target) pair, the open ones last.
+/// Every (multiplicity, target) pair.
 const VARIANTS: [(&str, &str); 9] = [
     ("duplicate", "settled"),
     ("reorder", "settled"),
