@@ -252,7 +252,8 @@ async fn original_call_fold_preserves_scope_and_cancellation_disposition() -> Re
         assert!(project(source(), &journal, &call, call.log(), &foreign).is_err());
         let other = StreamPath::new("foreign/calls/cancel").map_err(export_error)?;
         assert!(project(source(), &journal, &call, &other, &record).is_err());
-        let foreign_agent = AgentPath::root(&crate::agent::AgentId::from_bytes([9; 16]));
+        let foreign_agent =
+            AgentPath::root(&acyclic_harness_core::agent::AgentId::from_bytes([9; 16]));
         assert!(
             project(
                 Source {
@@ -289,7 +290,6 @@ async fn original_call_fold_preserves_scope_and_cancellation_disposition() -> Re
             )
             .is_err()
         );
-        #[cfg(feature = "provenance-export")]
         {
             let mut encoded = Vec::new();
             super::super::provenance::write(&row, &mut encoded)?;
@@ -385,7 +385,7 @@ async fn original_session_loss_requires_the_call_terminal() -> Result<()> {
 #[tokio::test]
 async fn receipt_projection_neither_copies_nor_scans_opaque_results() -> Result<()> {
     let scope = StreamPath::new("research/scope").map_err(export_error)?;
-    let agent = AgentPath::root(&crate::agent::AgentId::from_bytes([1; 16]));
+    let agent = AgentPath::root(&acyclic_harness_core::agent::AgentId::from_bytes([1; 16]));
     let caller = StreamPath::new(agent.as_str()).map_err(export_error)?;
     let account = AccountId::new(b"original").map_err(export_error)?;
     for failure in [false, true] {

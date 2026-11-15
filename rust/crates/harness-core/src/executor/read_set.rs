@@ -230,7 +230,7 @@ pub async fn page(
 }
 
 fn index_required() -> Error {
-    Error::Unsupported("read-set projection requires the original tool admission index; recovery: run metrics::read_set::page with the original indexed execution journal".into())
+    Error::Unsupported("read-set projection requires the original tool admission index; recovery: run executor::read_set::page with the original indexed execution journal".into())
 }
 
 /// One version-1 JSONL artifact per turn, streamed a page at a time. Publish the
@@ -379,18 +379,6 @@ pub fn source<'a>(
         Ok::<_, std::io::Error>(Some((std::mem::take(&mut writer.writer), Some(writer))))
     });
     Ok(Box::pin(stream).into_async_read())
-}
-
-/// Projects one original read receipt into the existing edges table. The
-/// enclosing operation identifies the activity that used this generation;
-/// the source is an immutable reference, never a current path lookup.
-#[cfg(feature = "metrics-export")]
-pub fn project(
-    agent: &str,
-    operation: OperationId,
-    observation: &Observation,
-) -> Result<super::metrics::Batch> {
-    super::metrics::read_observation(agent, operation, observation)
 }
 
 #[cfg(test)]

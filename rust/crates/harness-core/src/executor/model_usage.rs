@@ -24,7 +24,9 @@ pub struct ModelTokenUsage {
 }
 
 impl ModelTokenUsage {
-    pub(crate) fn reported(metadata: &Value) -> Self {
+    /// Reads the provider-reported counters from original response metadata.
+    #[must_use]
+    pub fn reported(metadata: &Value) -> Self {
         let usage = &metadata["usage"];
         // Every lookup names a fixed provider field. No response/history scan,
         // aggregation, estimate, or default-zero conversion is performed.
@@ -93,19 +95,30 @@ pub struct ModelAbandonedOutput {
 /// until the original journal stages its bytes; no provider payload is copied.
 #[derive(Serialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ModelCallUsage<'a> {
+pub struct ModelCallUsage<'a> {
+    /// Record format.
     pub version: u32,
+    /// A terminal provider event was committed.
     pub completed: bool,
+    /// Original call identity.
     pub dispatch: crate::model::ModelDispatch,
+    /// Response or context-summary call.
     pub purpose: ModelPurpose,
+    /// Admitted provider binding.
     pub provider: &'a str,
+    /// Admitted model binding.
     pub model: &'a str,
+    /// Canonical agent path, unknown without an agent binding.
     pub agent_path: Option<&'a str>,
     /// Sampling from the original pinned request.
     pub sampling: crate::model::ModelSampling,
+    /// Provider-reported counters with missing values preserved.
     pub tokens: ModelTokenUsage,
+    /// Complete input reported by the admitted adapter.
     pub complete_input_tokens: Option<u64>,
+    /// Wall time at live provider dispatch, in Unix nanoseconds.
     pub started_at: Option<u64>,
+    /// Wall time when the terminal provider event arrived.
     pub completed_at: Option<u64>,
     /// Dispatch through receipt of the terminal event, including original
     /// journal backpressure between chunks. Excludes the terminal commit.
@@ -185,12 +198,18 @@ pub struct ModelUsageRecord {
 /// Borrowed identity shared by original-request and original-usage readers.
 /// Unknown fields retain their absence; completion measurements are excluded.
 #[derive(PartialEq)]
-pub(crate) struct ModelUsageAdmission<'a> {
+pub struct ModelUsageAdmission<'a> {
+    /// Original call identity.
     pub dispatch: crate::model::ModelDispatch,
+    /// Response or context-summary call.
     pub purpose: ModelPurpose,
+    /// Admitted provider binding.
     pub provider: &'a str,
+    /// Admitted model binding.
     pub model: &'a str,
+    /// Canonical agent path, unknown without an agent binding.
     pub agent_path: Option<&'a str>,
+    /// Sampling from the original pinned request.
     pub sampling: Option<crate::model::ModelSampling>,
 }
 
@@ -209,7 +228,9 @@ impl ModelUsageRecord {
         self.admission() == other.admission()
     }
 
-    pub(crate) fn admission(&self) -> ModelUsageAdmission<'_> {
+    /// The original admitted identity of this call.
+    #[must_use]
+    pub fn admission(&self) -> ModelUsageAdmission<'_> {
         ModelUsageAdmission {
             dispatch: self.dispatch,
             purpose: self.purpose,
@@ -383,7 +404,13 @@ pub async fn usage_page(
     })
 }
 
-pub(super) async fn project_record(
+/// Projects one committed journal record into its per-call usage row, loading
+/// only the usage artifact that record references. Other records project none.
+///
+/// # Errors
+///
+/// Returns the journal load or usage admission failure.
+pub async fn project_record(
     journal: &dyn ExecutionJournal,
     operation: OperationId,
     agent_path: &str,
@@ -440,7 +467,11 @@ pub(super) async fn project_record(
 /// One original terminal load and one optional immutable usage load. All
 /// exporters use this admission before treating accounting as completed.
 /// Missing accounting stays unknown; a nonterminal source cannot certify it.
-pub(super) async fn project_completion(
+///
+/// # Errors
+///
+/// Refuses a nonterminal record or usage foreign to its admission.
+pub async fn project_completion(
     journal: &dyn ExecutionJournal,
     operation: OperationId,
     agent_path: &str,

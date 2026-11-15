@@ -1,9 +1,9 @@
 //! Original caller-owned invocation receipts, without a parallel call fold.
 
 use super::{Batch, Row, Table, batch, digest, export_error};
-use crate::{Result, agent::AgentPath};
 use acyclic_actors::call::{CallPath, Journal, Outcome};
 use acyclic_auth::addressing::AccountId;
+use acyclic_harness_core::{Result, agent::AgentPath};
 use acyclic_stream::{Record, StreamPath};
 
 /// Authority supplied by the original authorized call reader.
@@ -71,7 +71,7 @@ pub fn project(
     }
     let mut row = Row::stream(
         source.agent.map(AgentPath::as_str),
-        crate::live::resources::Source::project(source.account, selected, record),
+        acyclic_harness_core::live::resources::Source::project(source.account, selected, record),
         "call_receipt",
     );
     row.scope_path = Some(source.scope.as_str().into());

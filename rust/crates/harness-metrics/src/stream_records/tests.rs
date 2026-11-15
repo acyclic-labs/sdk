@@ -156,7 +156,6 @@ async fn projection_allocation_cost_is_independent_of_record_value_size() -> Res
                 .value(0),
             length as u64
         );
-        #[cfg(feature = "provenance-export")]
         {
             let mut encoded = Vec::new();
             super::super::provenance::write(&observed, &mut encoded)?;

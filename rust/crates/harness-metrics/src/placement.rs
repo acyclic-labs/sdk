@@ -4,8 +4,8 @@
 //! and certifies neither physical topology nor resource measurements.
 
 use super::{Batch, Row, Table, batch, export_error};
-use crate::{Result, agent::AgentPath, machines::MachineBinding};
 use acyclic_auth::addressing::AccountId;
+use acyclic_harness_core::{Result, agent::AgentPath, machines::MachineBinding};
 use acyclic_stream::{Record, StreamPath};
 
 /// Projects the original settled binding at `agent.machine(target)` into agents.
@@ -31,7 +31,7 @@ pub fn project(
     let binding = MachineBinding::decode_selected(agent, selected, record)?;
     let mut row = Row::stream(
         Some(agent.as_str()),
-        crate::live::resources::Source::project(account, selected, record),
+        acyclic_harness_core::live::resources::Source::project(account, selected, record),
         "placement",
     );
     row.binding_version = Some(binding.version);

@@ -62,7 +62,10 @@ pub fn decode_payload(media: &str, bytes: &[u8], io: Option<&PreparationIo>) -> 
     Ok(event)
 }
 
-pub(crate) fn matches_turn(event: &ExecutionEvent, step: u32, purpose: ModelPurpose) -> bool {
+/// Whether `event` is a model completion or wait observation of this step and
+/// purpose.
+#[must_use]
+pub fn matches_turn(event: &ExecutionEvent, step: u32, purpose: ModelPurpose) -> bool {
     matches!(event,
         ExecutionEvent::Model { step: recorded, purpose: recorded_purpose, .. }
         | ExecutionEvent::ModelInline { step: recorded, purpose: recorded_purpose, .. }
@@ -71,7 +74,8 @@ pub(crate) fn matches_turn(event: &ExecutionEvent, step: u32, purpose: ModelPurp
 }
 
 #[derive(Debug)]
-pub(crate) struct ModelObservationReceipt {
+/// Receipt of one committed model observation.
+pub struct ModelObservationReceipt {
     #[cfg(feature = "research")]
     pub(crate) journal_cut: Option<ExecutionJournalCut>,
 }
@@ -103,7 +107,13 @@ async fn commit(
     })
 }
 
-pub(crate) async fn append(
+/// Appends one model observation, with its optional usage artifact, through the
+/// original producer path.
+///
+/// # Errors
+///
+/// Returns the journal validation, staging or append failure.
+pub async fn append(
     journal: &dyn ExecutionJournal,
     operation: OperationId,
     key: &str,

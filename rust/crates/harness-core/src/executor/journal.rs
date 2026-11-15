@@ -43,7 +43,9 @@ pub type IndexedExecutionFuture<'a> =
     crate::conversation::BoundedContentFuture<'a, Option<IndexedExecutionRecords>>;
 
 impl ExecutionRecordQuery<'_> {
-    pub(crate) fn step_bound(limits: Limits) -> Option<usize> {
+    /// Observation bound for one step under `limits`; `None` is unbounded.
+    #[must_use]
+    pub fn step_bound(limits: Limits) -> Option<usize> {
         limits
             .model_events_per_step
             // Two model chains, context/admission records and the response's

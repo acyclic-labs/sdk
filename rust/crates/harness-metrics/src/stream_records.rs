@@ -5,8 +5,8 @@
 //! provider. A shared logical reference does not prove physical bytes saved.
 
 use super::{Batch, Row, Table, batch, export_error};
-use crate::{Result, live::resources::Sharing};
 use acyclic_auth::addressing::AccountId;
+use acyclic_harness_core::{Result, live::resources::Sharing};
 use acyclic_stream::{Record, StreamPath};
 
 /// Projects one already-authorized original record into the existing edge table.

@@ -41,7 +41,7 @@ headers leaves an unfinished start, never a fabricated successful finish.
 Span deltas do not change model output, token counts or TTFT, and recovery
 retains the original deltas rather than assigning recovery-process timestamps.
 
-`metrics-export` separately enables `acyclic_harness::metrics`, an offline
+The `acyclic-harness-metrics` crate is an offline
 projection into Arrow IPC streams or uncompressed Parquet. It adds no work to
 execution. `journal_page` replays 32 original records once, loads only referenced
 terminal usage files, and returns independent table batches plus an exclusive
@@ -49,7 +49,7 @@ cursor. Model rows reconstruct one original admitted request for its replay key;
 the page does not load conversation history or tool payloads.
 `inbox`, `conversation` and `status` project one original agent record each.
 
-Schema v4 has six tables. `metrics::VERSION`, the row `version` and Arrow
+Schema v4 has six tables. `acyclic_harness_metrics::VERSION`, the row `version` and Arrow
 `acyclic.metrics.version` metadata identify this layout independently of the
 usage JSONL and cache-observation formats. Version 4 retains scope ownership,
 nullable agent ownership and creation provenance, and requires original call
@@ -104,7 +104,7 @@ shorter prefix that was hit. Original token counters remain authoritative.
 `cache_savings_nano_units` uses the existing price calculation as an exact signed
 Decimal128 value: cache creation premiums can make net savings negative.
 
-Write each returned batch with `metrics::write(&batch, writer, format)` as its own
+Write each returned batch with `acyclic_harness_metrics::write(&batch, writer, format)` as its own
 shard. This bounds Arrow and Parquet file indexes by one page. Union shards in
 the analysis tool. Durability and atomic publication belong to the caller's
 volume commit; the encoder performs no fsync, retry or remote call. At the current
@@ -112,10 +112,10 @@ tail, wait on the source stream's event rather than repeatedly requesting pages.
 Journal and writer failures propagate to the caller; no recovery loop is hidden
 inside the exporter.
 
-Compile this optional surface with
-`cargo check -p acyclic-harness-core --features metrics-export,research`.
+Compile it with `cargo check -p acyclic-harness-metrics --features research`;
+only consumers that depend on the crate build Arrow, Parquet and RDF.
 
-`provenance-export` adds `metrics::provenance::write(&batch, writer)`, a streaming
+`acyclic_harness_metrics::provenance::write(&batch, writer)` is a streaming
 [W3C PROV-O](https://www.w3.org/TR/prov-o/) projection in
 [RDF N-Triples](https://www.w3.org/TR/n-triples/). It consumes the same metrics
 batches, without another journal reader or capture mechanism. Each row produces
@@ -170,10 +170,11 @@ Gaps, repeated pages, foreign bindings and failed writes prevent successful
 finish. It performs no flush or publication itself. A short source page is an
 incomplete pinned prefix, never evidence of completion.
 
-`read_set::project` maps each receipt into the existing edges table, and PROV
-exports the original turn's `prov:used` relation to that generation. Shell,
-context, hook, search and failed-read coverage remains unknown. These functions
-reuse committed results and add no work to execution or read operations.
+`acyclic_harness_metrics::read_observation` maps each receipt into the existing
+edges table, and PROV exports the original turn's `prov:used` relation to that
+generation. Shell, context, hook, search and failed-read coverage remains
+unknown. These functions reuse committed results and add no work to execution
+or read operations.
 
 `executor::read_set::source` exposes the same artifact as a pull-based
 `ContentSource`, retaining one encoded page and source page. Cursor records
@@ -312,7 +313,7 @@ Existing object identity or `AlreadyExists` alone never
 proves zero physical writes, and overlapping sibling durations are not added
 into a critical path. Phase counts come from the primitive's `counts(range)`;
 no checkpoint resource accumulator or separate snapshot writer is used.
-With both features enabled, `metrics::inspect::Call` projects one original
+With `research` enabled, `acyclic_harness_metrics::inspect::Call` projects one original
 model admission into an Inspect JSON log, also accepted by Docent's Inspect
 JSON loader. Read `ExecutionPayloadField::AdmittedRequest` to reconstruct the
 request first; the stored `Request` in a later step can be a segment manifest.

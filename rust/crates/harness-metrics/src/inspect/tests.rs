@@ -1,7 +1,7 @@
 //! Generated codec controls; the reference file is real Inspect SDK output,
 //! not a provider fixture. Its capture procedure and digest are beside it.
 use super::*;
-use crate::{
+use acyclic_harness_core::{
     conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
     model::{Model, ModelDispatch, ModelSampling, ToolCall},
     resources::ProviderRef,
@@ -18,7 +18,7 @@ fn admission(request: &[u8]) -> Result<ExecutionRecord> {
             ProviderRef::new("acyclic".into(), "filesystem".into(), "2".into(), &mut None)?,
             "private".into(),
             VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(crate::AgentId::from_bytes([5; 16])),
+            VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes([5; 16])),
             &mut None,
         )?,
         "request.json".into(),
@@ -78,7 +78,7 @@ fn request(text: String) -> ModelRequest {
                     call_id: "generated-call".into(),
                     name: "read".into(),
                     content: ToolResultContent::Parts {
-                        parts: vec![crate::model::ModelDataPart::Text {
+                        parts: vec![acyclic_harness_core::model::ModelDataPart::Text {
                             text: "Generated tool text".into(),
                         }],
                     },
@@ -112,7 +112,7 @@ fn usage(call: &Call<'_>) -> ModelUsageRecord {
         model: call.request.model.name.clone(),
         agent_path: Some(call.source.agent_path.into()),
         sampling: Some(call.request.sampling),
-        tokens: super::super::super::ModelTokenUsage {
+        tokens: acyclic_harness_core::executor::ModelTokenUsage {
             input: Some(0),
             output: Some(u64::MAX),
             ..Default::default()
@@ -172,7 +172,7 @@ fn codec_preserves_sdk_tool_links_and_original_evidence() -> Result<()> {
     assert_eq!(sample["id"], sample["metadata"]["replay_key"]);
     assert_eq!(
         sample["id"],
-        crate::model::replay_key(&bytes)
+        acyclic_harness_core::model::replay_key(&bytes)
             .map(blake3::Hash::from)?
             .to_hex()
             .as_str()
@@ -235,7 +235,7 @@ fn codec_preserves_sdk_tool_links_and_original_evidence() -> Result<()> {
 
 #[test]
 fn admitted_grouped_results_and_refused_arguments_remain_exportable() -> Result<()> {
-    use crate::{conversation::Limits, model::PreparedModelRequest};
+    use acyclic_harness_core::{conversation::Limits, model::PreparedModelRequest};
     for arguments in [
         Value::Null,
         json!(false),
@@ -273,7 +273,7 @@ fn admitted_grouped_results_and_refused_arguments_remain_exportable() -> Result<
                             value: json!({"original":1}),
                         },
                         _ => ToolResultContent::Parts {
-                            parts: vec![crate::model::ModelDataPart::Text {
+                            parts: vec![acyclic_harness_core::model::ModelDataPart::Text {
                                 text: "Original text".into(),
                             }],
                         },
@@ -386,7 +386,7 @@ fn admitted_nested_tool_json_survives_the_shared_replay_key() -> Result<()> {
         &ModelContent::Text(String::new()),
         None,
     )?;
-    let log: Value = crate::contract::json_from_slice(&output).map_err(invalid)?;
+    let log: Value = acyclic_harness_core::contract::json_from_slice(&output).map_err(invalid)?;
     let ModelContent::Part(ModelContentPart::ToolCall(tool)) = &request.messages[1].content else {
         unreachable!("generated tool request")
     };
@@ -492,13 +492,13 @@ fn borrowed_encoding_has_no_history_sized_allocations() -> Result<()> {
 #[cfg(all(not(target_arch = "wasm32"), not(loom)))]
 #[tokio::test]
 async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_calls() -> Result<()> {
-    use crate::{
-        executor::{model_observation, model_usage::ModelCallUsage, stage_json},
+    use acyclic_harness_core::{
+        executor::producers::{ModelCallUsage, append_model_observation, stage_json},
         filesystem::MemoryHarnessStorage,
         model::ModelEvent,
     };
 
-    let storage = MemoryHarnessStorage::new(crate::AgentId::new(), 4096).await?;
+    let storage = MemoryHarnessStorage::new(acyclic_harness_core::AgentId::new(), 4096).await?;
     let journal = storage.journal();
     let operation = source().operation;
     journal
@@ -512,7 +512,7 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
         )?
         .await?;
     let request = request("generated committed request".into());
-    let bytes = crate::contract::canonical_json_bytes(&request)?;
+    let bytes = acyclic_harness_core::contract::canonical_json_bytes(&request)?;
     let request_file = stage_json(journal.as_ref(), operation, "request", &request, None).await?;
     journal
         .append(
@@ -545,7 +545,7 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
         model: &request.model.name,
         agent_path: Some("agents/generated-agent"),
         sampling: request.sampling,
-        tokens: super::super::super::ModelTokenUsage::reported(&metadata),
+        tokens: acyclic_harness_core::executor::ModelTokenUsage::reported(&metadata),
         complete_input_tokens: None,
         started_at: None,
         completed_at: None,
@@ -556,7 +556,7 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
         cache: None,
         abandoned: Default::default(),
     };
-    model_observation::append(
+    append_model_observation(
         journal.as_ref(),
         operation,
         "content",
@@ -568,7 +568,7 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
         None,
     )
     .await?;
-    model_observation::append(
+    append_model_observation(
         journal.as_ref(),
         operation,
         "terminal",
@@ -587,8 +587,13 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
     );
     let terminal = &records[3];
     let settlement = call.settlement(journal.as_ref(), terminal).await?;
-    let page =
-        crate::executor::usage_page(journal.as_ref(), operation, source().agent_path, 0).await?;
+    let page = acyclic_harness_core::executor::usage_page(
+        journal.as_ref(),
+        operation,
+        source().agent_path,
+        0,
+    )
+    .await?;
     assert_eq!(page.items.iter().filter(|usage| usage.completed).count(), 1);
     super::super::journal_page(journal.as_ref(), operation, source().agent_path, 0, |_| {
         None
@@ -624,7 +629,7 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
     foreign.operation_id = OperationId::new();
     assert!(call.settlement(journal.as_ref(), &foreign).await.is_err());
     assert!(
-        crate::executor::model_usage::project_record(
+        acyclic_harness_core::executor::project_model_usage(
             journal.as_ref(),
             operation,
             source().agent_path,
@@ -664,7 +669,7 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
     }
     assert!(call.settlement(journal.as_ref(), &changed).await.is_err());
     assert!(
-        crate::executor::model_usage::project_record(
+        acyclic_harness_core::executor::project_model_usage(
             journal.as_ref(),
             operation,
             source().agent_path,
@@ -680,14 +685,14 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
     let mut partial = records[2].clone();
     match &mut partial.event {
         ExecutionEvent::Model { usage, .. } | ExecutionEvent::ModelInline { usage, .. } => {
-            *usage = crate::executor::ExecutionPayloadField::Usage
+            *usage = acyclic_harness_core::executor::ExecutionPayloadField::Usage
                 .select(&terminal.event)
                 .cloned();
         }
         _ => unreachable!("original partial observation"),
     }
     assert!(
-        crate::executor::model_usage::project_record(
+        acyclic_harness_core::executor::project_model_usage(
             journal.as_ref(),
             operation,
             source().agent_path,
@@ -718,7 +723,7 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
     wrong_request.tokens.output = Some(17);
     wrong_request.dispatch.step = 3;
     wrong_request.dispatch.request_digest[0] ^= 1;
-    model_observation::append(
+    append_model_observation(
         journal.as_ref(),
         operation,
         "wrong-request-completion",

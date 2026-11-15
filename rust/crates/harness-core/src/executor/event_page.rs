@@ -164,13 +164,14 @@ pub async fn event_page(
     })
 }
 
-// One cursor rule, without another asynchronous reader or intermediate page.
-// A short page describes only the current tail, never settlement.
-pub(super) fn page_continuation(
-    after: u64,
-    count: usize,
-    maximum: u32,
-) -> Result<(u64, Option<u64>)> {
+/// End cursor and continuation of a page of `count` records read after `after`.
+/// One cursor rule, without another asynchronous reader or intermediate page.
+/// A short page describes only the current tail, never settlement.
+///
+/// # Errors
+///
+/// Refuses a cursor that would overflow.
+pub fn page_continuation(after: u64, count: usize, maximum: u32) -> Result<(u64, Option<u64>)> {
     let end = after.checked_add(count as u64).ok_or_else(|| Error::Invalid(
         "journal page cursor overflows; recovery: resume event_page with the original representable source cursor".into()
     ))?;

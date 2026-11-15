@@ -64,7 +64,12 @@ pub(in crate::executor) async fn stage_bytes(
     Ok(reference)
 }
 
-pub(crate) async fn stage_json<T: Serialize>(
+/// Stages one canonical JSON value as a private payload of this operation.
+///
+/// # Errors
+///
+/// Returns the journal staging failure.
+pub async fn stage_json<T: Serialize>(
     journal: &dyn ExecutionJournal,
     operation: OperationId,
     key: &str,

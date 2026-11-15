@@ -67,9 +67,7 @@
       "features": {
         "browser": "Browser bindings and browser-owned providers on wasm32.",
         "conformance": "Shared backend qualification and request-accounting probes.",
-        "metrics-export": "Optional Arrow/Parquet export format, independent of native execution.",
         "model-checking": "Loom and deterministic proof instrumentation, never a product provider selector.",
-        "provenance-export": "Optional RDF export format, independent of native execution.",
         "research": "Development research capture and analysis instrumentation.",
         "test-support": "Dev-only deterministic fixtures, injected failures and allocation observations.",
         "wasm": "Browser event-loop and JavaScript bindings on wasm32.",
@@ -96,9 +94,7 @@
       "features": {
         "browser": "Browser bindings and browser-owned providers on wasm32.",
         "conformance": "Shared backend qualification and request-accounting probes.",
-        "metrics-export": "Optional Arrow/Parquet export format, independent of native execution.",
         "model-checking": "Loom and deterministic proof instrumentation, never a product provider selector.",
-        "provenance-export": "Optional RDF export format, independent of native execution.",
         "research": "Development research capture and analysis instrumentation.",
         "test-support": "Dev-only deterministic fixtures, injected failures and allocation observations.",
         "wasm": "Browser event-loop and JavaScript bindings on wasm32."

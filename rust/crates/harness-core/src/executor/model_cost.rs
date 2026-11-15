@@ -202,7 +202,6 @@ fn charge(tokens: u64, rate: Option<u64>) -> Option<u128> {
 struct UsageEstimate<'a> {
     call: ModelUsageProjection<'a>,
     input_tokens: Option<u64>,
-    #[cfg(any(feature = "research", feature = "metrics-export"))]
     input_cost: Option<u128>,
 }
 
@@ -341,10 +340,15 @@ impl ModelUsageRecord {
             .map(|(ordinary, cached)| (ordinary - cached) / 1_000_000)
     }
 
-    // Both views use the one price admission, without duplicating billing or
-    // allocating an owned call. The counterfactual is evaluated only on demand.
-    #[cfg(any(feature = "research", feature = "metrics-export"))]
-    pub(crate) fn estimate_with_cache_savings<'a>(
+    /// Projects this call against one explicitly selected price, with the
+    /// signed cache savings against pricing every input token as ordinary input.
+    /// Both views use the one price admission, without duplicating billing or
+    /// allocating an owned call. The counterfactual is evaluated only on demand.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a price that does not admit this call.
+    pub fn estimate_with_cache_savings<'a>(
         &'a self,
         price: Option<&'a ModelPriceRecord>,
     ) -> Result<(ModelUsageProjection<'a>, Option<i128>), ModelPriceError> {
@@ -385,7 +389,6 @@ impl ModelUsageRecord {
             currency: None,
             token_nano_units: None,
         };
-        #[cfg(any(feature = "research", feature = "metrics-export"))]
         let mut input_cost = None;
         if let Some(price) = price {
             price.validate_for(self)?;
@@ -404,10 +407,7 @@ impl ModelUsageRecord {
                         ],
                     )?;
                     input_tokens = input.tokens;
-                    #[cfg(any(feature = "research", feature = "metrics-export"))]
-                    {
-                        input_cost = input.cost;
-                    }
+                    input_cost = input.cost;
                     let output = family_cost(
                         self.tokens.output,
                         price.output_nano_units_per_million,
@@ -424,7 +424,6 @@ impl ModelUsageRecord {
                 usage: Cow::Borrowed(self),
                 estimated_cost,
             },
-            #[cfg(any(feature = "research", feature = "metrics-export"))]
             input_cost,
         })
     }

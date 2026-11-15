@@ -29,6 +29,7 @@
   "acyclic-mcp",
   "acyclic-harness-core",
   "acyclic-harness-client",
+  "acyclic-harness-metrics",
   "acyclic-harness-search",
   "acyclic-machines-daytona",
   "acyclic-harness",
