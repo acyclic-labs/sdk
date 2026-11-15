@@ -77,6 +77,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
     }
     refusals(provider, &source, &forked, &adopted).await?;
     isolation(provider, &parent, &source).await?;
+    grafts(provider, &source).await?;
     // Release removes the subtree and every adopted path; followers of both
     // observe the loss.
     lease.settle().await?;
@@ -319,6 +320,69 @@ async fn refusals<P: StreamProvider + ?Sized>(
         return Err(violated!());
     }
     other.settle().await?;
+    Ok(())
+}
+
+/// A new graft supersedes the markers copied inside its source, at the same
+/// published revision: after a durable graft, and after another ephemeral one.
+/// Each inherited child names the new graft's source and publication.
+async fn grafts<P: StreamProvider + ?Sized>(
+    provider: &P,
+    source: &StreamPath,
+) -> Result<(), Failure> {
+    let fork = |from: &StreamPath, to: &StreamPath, retry: &'static [u8]| {
+        Ok::<_, Failure>(ForkRequest {
+            source: from.clone(),
+            destination: to.clone(),
+            exclude: Vec::new(),
+            at_tail: None,
+            idempotency_key: key(retry)?,
+        })
+    };
+    let durable = path("ephemeral-graft")?;
+    let nested = path("ephemeral/lease/nest")?;
+    for (target, retry) in [
+        (&durable, b"ephemeral/graft-durable".as_slice()),
+        (&nested, b"ephemeral/graft-nested".as_slice()),
+    ] {
+        provider
+            .append(AppendRequest {
+                path: target.clone(),
+                records: vec![Bytes::from_static(b"seed").into()],
+                if_tail: Some(0),
+                idempotency_key: key(retry)?,
+            })
+            .await?;
+    }
+    let cases = [
+        // The durable inner graft takes the decision the ephemeral one shares.
+        (
+            durable.clone(),
+            path("ephemeral/lease/after-durable")?,
+            b"ephemeral/graft-inner-durable".as_slice(),
+            b"ephemeral/graft-outer-durable".as_slice(),
+        ),
+        // Both grafts share the published decision.
+        (
+            nested,
+            path("ephemeral/lease/after-ephemeral")?,
+            b"ephemeral/graft-inner-ephemeral".as_slice(),
+            b"ephemeral/graft-outer-ephemeral".as_slice(),
+        ),
+    ];
+    for (parent, copy, inner_retry, outer_retry) in cases {
+        let inner = path(&format!("{}/inner", parent.as_str()))?;
+        provider.fork(fork(source, &inner, inner_retry)?).await?;
+        let outer = provider.fork(fork(&parent, &copy, outer_retry)?).await?;
+        let origin = provider
+            .head(path(&format!("{}/inner", copy.as_str()))?)
+            .await?
+            .origin
+            .ok_or(violated!())?;
+        if origin.source != inner || origin.inherited.commit_id != outer.commit_id {
+            return Err(violated!());
+        }
+    }
     Ok(())
 }
 
