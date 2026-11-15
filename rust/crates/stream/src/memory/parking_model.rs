@@ -322,19 +322,23 @@ pub(crate) fn abandon(
 
 /// Waits for `path` to hold a record: observe the head, return if a record is
 /// already there, otherwise subscribe from the observed head and take the
-/// first record. A publication racing the head read or the subscription lands
-/// at or after the observed sequence, so the inclusive follow delivers it.
+/// first record. A stream not yet created reads as an empty head and is
+/// followed until creation. A publication racing the head read or the
+/// subscription lands at or after the observed sequence, so the inclusive
+/// follow delivers it.
 async fn wait_for_record(provider: MemoryStream, path: StreamPath) -> Result<(), StreamError> {
     use futures::StreamExt as _;
-    let observed = provider.tail(path.clone()).await?;
+    let observed = match provider.tail(path.clone()).await {
+        Ok(tail) => tail,
+        Err(StreamError::NotFound) => 0,
+        Err(error) => return Err(error),
+    };
     if observed > 0 {
         return Ok(());
     }
-    let mut records = crate::records_only(
-        provider
-            .follow(crate::FollowRequest::new(path, observed))
-            .await?,
-    );
+    let mut request = crate::FollowRequest::new(path, observed);
+    request.when_absent = crate::WhenAbsent::Wait;
+    let mut records = crate::records_only(provider.follow(request).await?);
     match records.next().await {
         Some(record) => record.map(|_| ()),
         None => Err(StreamError::Unavailable),
