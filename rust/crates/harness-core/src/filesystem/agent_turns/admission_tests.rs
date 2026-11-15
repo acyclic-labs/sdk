@@ -152,7 +152,6 @@ async fn native_exact_grants_repair_a_retained_foreign_journal_as_its_owner() ->
     )?;
     let private = private_volume(provider.clone(), &path.id())?;
     let journal = crate::conversation::journal_volume(provider.clone(), &path.id())?;
-    // A retained journal whose saved policy is absent, so admission repairs it.
     let foreign = crate::conversation::journal_volume(provider.clone(), &other.id())?;
     let host =
         FilesystemHost::<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>::new(
@@ -163,6 +162,27 @@ async fn native_exact_grants_repair_a_retained_foreign_journal_as_its_owner() ->
     for volume in [&private, &journal, &foreign] {
         host.create_volume(volume).await?;
     }
+    // The retained journal's saved policy is stale, so admission repairs it.
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let workspace = host
+        .filesystem
+        .open_workspace(
+            foreign.storage_name(&mut None)?,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(|failure| Error::from(failure.error))?
+        .value;
+    let mut stale: acyclic_fs::access::Policy =
+        serde_json::from_slice(include_bytes!("../host/journal-policy.json"))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+    stale
+        .layers
+        .first_mut()
+        .ok_or_else(|| Error::Invalid("journal policy has no layers".into()))?
+        .retain(|rule| rule.id != "published-input");
+    replace_policy(&workspace, &stale).await?;
     let audience = Authority {
         kind: AggregateKind::Conversation,
         id: path.id().to_string(),
