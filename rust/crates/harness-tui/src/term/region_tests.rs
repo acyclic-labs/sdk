@@ -19,7 +19,10 @@ fn oracle(scroll: RegionScroll, area: Rect, cells: usize) -> Option<Range<usize>
     }
     let first = (top - screen_top) * u64::from(area.width);
     let last = (end - screen_top) * u64::from(area.width);
-    (last <= cells as u64).then_some(first as usize..last as usize)
+    if last > cells as u64 {
+        return None;
+    }
+    Some(usize::try_from(first).ok()?..usize::try_from(last).ok()?)
 }
 
 fn check(scroll: RegionScroll, area: Rect, cells: usize) {

@@ -220,6 +220,7 @@ fn negative_control_per_command_repeats_restate_the_cursor() {
 }
 
 /// Device writes and bytes of each frame after the first, exactly.
+#[cfg(test)]
 fn costs(scenes: &[Scene]) -> Vec<(usize, Vec<u8>)> {
     per_frame(scenes, false)
         .unwrap()
@@ -231,10 +232,10 @@ fn costs(scenes: &[Scene]) -> Vec<(usize, Vec<u8>)> {
 
 #[test]
 fn only_what_changed_reaches_the_device() {
-    let rows = vec!["hello".to_string(), "world".to_string()];
+    let rows = vec!["hello".to_owned(), "world".to_owned()];
     let base: Scene = (rows.clone(), Some((2, 1)));
     let moved: Scene = (rows.clone(), Some((3, 1)));
-    let hidden: Scene = (rows.clone(), None);
+    let hidden: Scene = (rows, None);
     let edited: Scene = (vec!["hellO".into(), "world".into()], Some((2, 1)));
     for n in [8, 16] {
         // N identical frames: no write and no byte, at N and 2N.
@@ -717,6 +718,7 @@ impl Present for Shared {
 
 /// The screen after a frame, an outside access, and the same frame again
 /// (at `resized` size when given).
+#[cfg(test)]
 fn after_outside_access(
     scene: &Scene,
     tracked: bool,
@@ -840,6 +842,7 @@ proptest! {
     }
 }
 
+#[cfg(test)]
 fn resume_inside_render<const CHECKED: bool>(hidden: bool, changed: bool) {
     let device = Device::default();
     let guard = Rc::new(RefCell::new(RestoreGuard::new(device.clone(), &caps(true))));

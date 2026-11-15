@@ -1,3 +1,4 @@
+#![cfg(test)]
 use super::*;
 
 fn cells(bytes: &[u8]) -> Vec<String> {

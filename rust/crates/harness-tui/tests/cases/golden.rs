@@ -1,5 +1,6 @@
 //! Full-screen goldens through the shipping encoder and an independent terminal.
 #![cfg(not(target_arch = "wasm32"))]
+#![cfg(test)]
 use acyclic_harness_tui::{
     BlockKind, Editor, Hyperlinks, PromptInput, RowLink, Screen, TranscriptRows, Viewport,
     config::ConfigView,
@@ -296,8 +297,7 @@ fn forced_ansi_code_has_contrast_against_opposite_terminal_defaults() -> io::Res
 #[test]
 fn views_match_terminal_goldens() -> Result<(), Box<dyn std::error::Error>> {
     let directory = std::env::var_os("GOLDEN_OUTPUT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| acyclic_test_support::crate_path!("tests/golden"));
+        .map_or_else(|| acyclic_test_support::crate_path!("tests/golden"), PathBuf::from);
     let update = std::env::var_os("UPDATE_GOLDEN").is_some();
     for view in VIEWS {
         for (mode, background) in [("dark", [0; 3]), ("light", [255; 3])] {

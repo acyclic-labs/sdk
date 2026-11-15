@@ -1,6 +1,8 @@
+#![cfg(test)]
 use super::*;
 use acyclic_harness_tui::term::ScreenMode;
 
+#[cfg(test)]
 fn check_contents<const KEEP_CELLS: bool>(during_render: bool, alternate: bool, supported: bool) {
     let scene: Scene = (vec!["Z".into()], Some((3, 2)));
     let expected = per_command(std::slice::from_ref(&scene))

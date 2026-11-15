@@ -254,14 +254,17 @@ fn full_scan_oracle_detects_a_cursor_before_the_cached_token() {
 fn press(editor: &mut Editor, key: usize, typed: &[&str]) {
     let cursor = editor.cursor();
     let text = editor.text();
-    let left = text[..cursor]
+    let left = text
         .char_indices()
-        .next_back()
-        .map_or(0, |(at, _)| at);
-    let right = text[cursor..]
-        .chars()
-        .next()
-        .map_or(cursor, |c| cursor + c.len_utf8());
+        .map(|(at, _)| at)
+        .take_while(|at| *at < cursor)
+        .last()
+        .unwrap_or(0);
+    let right = text
+        .char_indices()
+        .map(|(at, _)| at)
+        .find(|at| *at > cursor)
+        .unwrap_or(text.len());
     match key.checked_sub(typed.len()) {
         None => editor.insert(typed[key], 0),
         Some(0) => editor.delete(true, 0),

@@ -612,7 +612,9 @@ impl<D: Present> FrameTerminal<D> {
                     work.diff = shown.content.len().min(next.content.len());
                 }
                 for &index in repaired.iter() {
-                    next.content[index].diff_option = CellDiffOption::None;
+                    if let Some(cell) = next.content.get_mut(index) {
+                        cell.diff_option = CellDiffOption::None;
+                    }
                 }
                 std::mem::swap(shown, next);
                 #[cfg(test)]

@@ -1,10 +1,8 @@
+use super::super::session::status_flags;
 use super::*;
 use std::collections::VecDeque;
 use std::os::unix::fs::MetadataExt;
 use std::time::Duration;
-
-#[path = "../../tests/support/status_flags.rs"]
-mod status_flags;
 
 #[test]
 fn empty_input_returns_would_block_without_waiting_under_state() -> io::Result<()> {

@@ -1,3 +1,4 @@
+#![cfg(test)]
 use super::*;
 use std::path::Path;
 
@@ -38,7 +39,7 @@ fn fixtures() -> Vec<(Vec<u8>, Vec<String>)> {
                         last,
                         Some(RegionScroll {
                             region: band,
-                            rows: to as isize - from as isize,
+                            rows: to.cast_signed() - from.cast_signed(),
                         }),
                     ),
                 ],
@@ -170,8 +171,7 @@ pub(super) mod linux {
                     return Err(io::Error::new(
                         io::ErrorKind::BrokenPipe,
                         format!(
-                            "emulator producer closed or reported an error: {}; recovery: cargo test -p acyclic-harness-tui --test main terminal_regions::native_profiles::linux -- --nocapture",
-                            diagnostic
+                            "emulator producer closed or reported an error: {diagnostic}; recovery: cargo test -p acyclic-harness-tui --test main terminal_regions::native_profiles::linux -- --nocapture"
                         ),
                     ));
                 }
@@ -237,7 +237,11 @@ pub(super) mod linux {
             }
             control.read_exact(&mut header[1..])?;
             let begin = header[0];
-            let length = u64::from_le_bytes(header[1..].try_into().unwrap());
+            let length = u64::from_le_bytes(
+                header[1..]
+                    .try_into()
+                    .map_err(|_| io::Error::other("frame header length"))?,
+            );
             // Each capture starts at the same blank/default baseline as a new
             // terminal, including margins left by a negative-control frame.
             output.write_all(b"\x1b[0m\x1b[r\x1b[2J\x1b[H")?;
@@ -418,7 +422,7 @@ pub(super) mod linux {
                 checked(
                     Command::new(tool)
                         .env("SCREENDIR", root)
-                        .args(["-S", &name, "-X", "eval", &hardcopy, "stuff H"]),
+                        .args(["-S", name, "-X", "eval", &hardcopy, "stuff H"]),
                 );
                 session.wait(&control, deadline).unwrap();
                 control.read_exact(&mut consumed).unwrap();

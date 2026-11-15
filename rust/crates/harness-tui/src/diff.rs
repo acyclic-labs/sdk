@@ -128,41 +128,45 @@ impl DiffPage {
                 }
                 Row::Patch(_) if hidden => {}
                 Row::Patch(text) if text.starts_with('-') => {
-                    let removed = index;
-                    while matches!(self.rows.get(index), Some(Row::Patch(text)) if text.starts_with('-'))
-                    {
+                    let mut old = Vec::new();
+                    while let Some(Row::Patch(text)) = self.rows.get(index) {
+                        let Some(body) = text.strip_prefix('-') else {
+                            break;
+                        };
+                        old.push((text.as_str(), body));
                         index += 1;
                     }
-                    let added = index;
-                    while matches!(self.rows.get(index), Some(Row::Patch(text)) if text.starts_with('+'))
-                    {
+                    let mut new = Vec::new();
+                    while let Some(Row::Patch(text)) = self.rows.get(index) {
+                        let Some(body) = text.strip_prefix('+') else {
+                            break;
+                        };
+                        new.push((text.as_str(), body));
                         index += 1;
                     }
-                    let old = &self.rows[removed..added];
-                    let new = &self.rows[added..index];
                     let pairs = old.len().max(new.len());
                     let mut before = Vec::new();
                     let mut after = Vec::new();
                     for position in 0..pairs {
-                        let a = patch_text(old.get(position));
-                        let b = patch_text(new.get(position));
+                        let a = old.get(position).copied();
+                        let b = new.get(position).copied();
                         let (a_range, b_range) = match (a, b) {
-                            (Some(a), Some(b)) => changed_words(&a[1..], &b[1..]),
+                            (Some((_, a)), Some((_, b))) => changed_words(a, b),
                             _ => (0..0, 0..0),
                         };
                         if wide {
                             side_by_side(
                                 &mut result,
-                                a.map(|a| changed(a, a_range, false, theme)),
-                                b.map(|b| changed(b, b_range, true, theme)),
+                                a.map(|(a, _)| changed(a, a_range, false, theme)),
+                                b.map(|(b, _)| changed(b, b_range, true, theme)),
                                 columns,
                                 theme,
                             );
                         } else {
-                            if let Some(a) = a {
+                            if let Some((a, _)) = a {
                                 before.push(changed(a, a_range, false, theme));
                             }
-                            if let Some(b) = b {
+                            if let Some((b, _)) = b {
                                 after.push(changed(b, b_range, true, theme));
                             }
                         }
@@ -190,13 +194,6 @@ impl DiffPage {
     }
 }
 
-fn patch_text(row: Option<&Row>) -> Option<&str> {
-    match row {
-        Some(Row::Patch(text)) => Some(text),
-        _ => None,
-    }
-}
-
 // A linear replacement envelope at Unicode word boundaries: retain the common
 // word prefix and suffix and emphasize the replacement between them. This
 // needs neither a second edit algorithm nor a quadratic token comparison.
@@ -207,13 +204,16 @@ fn changed_words(old: &str, new: &str) -> (Range<usize>, Range<usize>) {
         .take_while(|(a, b)| a == b)
         .map(|(a, _)| a.len())
         .sum();
-    let suffix: usize = old[prefix..]
+    let suffix: usize = old
         .split_word_bounds()
         .rev()
-        .zip(new[prefix..].split_word_bounds().rev())
+        .zip(new.split_word_bounds().rev())
         .take_while(|(a, b)| a == b)
         .map(|(a, _)| a.len())
         .sum();
+    let suffix = suffix
+        .min(old.len() - prefix)
+        .min(new.len() - prefix);
     (prefix..old.len() - suffix, prefix..new.len() - suffix)
 }
 
@@ -225,13 +225,24 @@ fn changed(text: &str, range: Range<usize>, added: bool, theme: ThemeStyles) -> 
     });
     let start = range.start + 1;
     let end = range.end + 1;
+    let mut before = String::new();
+    let mut emphasized = String::new();
+    let mut after = String::new();
+    let mut at = 0;
+    for word in text.split_word_bounds() {
+        if at < start {
+            before.push_str(word);
+        } else if at < end {
+            emphasized.push_str(word);
+        } else {
+            after.push_str(word);
+        }
+        at += word.len();
+    }
     Line::from(vec![
-        Span::styled(text[..start].to_owned(), style),
-        Span::styled(
-            text[start..end].to_owned(),
-            style.add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(text[end..].to_owned(), style),
+        Span::styled(before, style),
+        Span::styled(emphasized, style.add_modifier(Modifier::BOLD)),
+        Span::styled(after, style),
     ])
 }
 
