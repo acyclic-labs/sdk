@@ -131,7 +131,13 @@ impl MemoryStream {
         request: &crate::HeadsRequest,
         durability: HeadDurability,
     ) -> Result<crate::Heads, StreamError> {
-        Ok(self.capture_owned_heads(request, durability).await?.view)
+        // The view is filled in place and returned once; no capture wrapper
+        // carries it through another result.
+        let mut view = self.empty_heads(request);
+        let mut ephemeral = Vec::new();
+        self.capture_into(request, durability, &mut view, &mut ephemeral)
+            .await?;
+        Ok(view)
     }
 
     /// Deferred durability needs the ownership from the original observation.
@@ -140,12 +146,24 @@ impl MemoryStream {
         request: &crate::HeadsRequest,
         durability: HeadDurability,
     ) -> Result<HeadCapture, StreamError> {
-        let mut allocation = None;
         let mut view = self.empty_heads(request);
+        let mut ephemeral = Vec::new();
+        self.capture_into(request, durability, &mut view, &mut ephemeral)
+            .await?;
+        Ok(HeadCapture { view, ephemeral })
+    }
+
+    async fn capture_into(
+        &self,
+        request: &crate::HeadsRequest,
+        durability: HeadDurability,
+        view: &mut crate::Heads,
+        ephemeral: &mut Vec<bool>,
+    ) -> Result<(), StreamError> {
+        let mut allocation = None;
         view.heads
             .try_reserve_exact(request.paths.len())
             .map_err(|_| StreamError::Capacity)?;
-        let mut ephemeral = Vec::new();
         let needs_ownership = durability == HeadDurability::Deferred
             && (request.projection != crate::HeadProjection::Tail
                 || request.durable_through.is_some());
@@ -154,17 +172,15 @@ impl MemoryStream {
                 .try_reserve_exact(request.paths.len())
                 .map_err(|_| StreamError::Capacity)?;
         }
-        let ownership = needs_ownership.then_some(&mut ephemeral);
         self.capture_heads_into(
             request,
             durability,
-            &mut view,
-            ownership,
+            view,
+            needs_ownership.then_some(ephemeral),
             None,
             &mut allocation,
         )
-        .await?;
-        Ok(HeadCapture { view, ephemeral })
+        .await
     }
 
     fn empty_heads(&self, request: &crate::HeadsRequest) -> crate::Heads {
