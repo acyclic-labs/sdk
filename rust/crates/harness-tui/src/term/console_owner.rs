@@ -54,13 +54,6 @@ pub(crate) struct Owner<W: Write, N = ()> {
     closed: N,
 }
 
-#[cfg(test)]
-impl<W: Write + Send + 'static> Owner<W> {
-    pub(crate) fn new(guard: RestoreGuard<W>, cancel: fn(&JoinHandle<()>)) -> Arc<Self> {
-        Self::notifying(guard, cancel, ())
-    }
-}
-
 impl<W: Write + Send + 'static, N: CloseWake + 'static> Owner<W, N> {
     /// Read profile metadata without borrowing the guard for driver work.
     /// Lock order: owner only; unknown ownership conservatively disables hints.
@@ -415,6 +408,12 @@ impl<W: Write + Send + 'static, N: CloseWake + 'static> Owner<W, N> {
 #[cfg(loom)]
 mod tests {
     use super::*;
+
+    impl<W: Write + Send + 'static> Owner<W> {
+        fn new(guard: RestoreGuard<W>, cancel: fn(&JoinHandle<()>)) -> Arc<Self> {
+            Self::notifying(guard, cancel, ())
+        }
+    }
     use crate::term::{Capabilities, ModeState};
     use loom::sync::atomic::{AtomicBool, Ordering};
 

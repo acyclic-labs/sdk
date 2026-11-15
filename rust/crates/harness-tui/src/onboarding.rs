@@ -53,6 +53,8 @@ impl Drop for Input<'_> {
 }
 
 impl<'a> Input<'a> {
+    /// Negotiates terminal input capabilities and enables bracketed paste.
+    /// Returns an error if terminal negotiation or mode setup fails.
     pub fn new(terminal: &'a mut crate::term::Tty) -> io::Result<Self> {
         terminal.negotiate(&crate::term::Environment::capture())?;
         terminal.enable_mode(2004)?;
