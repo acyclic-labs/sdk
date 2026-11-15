@@ -71,10 +71,6 @@ pub async fn read_file_range_async<S: AsyncObjectStore>(
         .map_err(|error| failed(file_error(error), accounting.spent()))
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "This state transition keeps admission, effects and resource retirement in one frame."
-)]
 pub(crate) async fn read_file_range_with_accounting<S: AsyncObjectStore>(
     store: &S,
     request: FileRangeRequest,

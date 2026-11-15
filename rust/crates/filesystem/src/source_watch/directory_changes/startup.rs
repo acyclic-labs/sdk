@@ -37,10 +37,6 @@ impl NativeSourceWatch {
             work,
         )
     }
-    #[allow(
-        clippy::too_many_lines,
-        reason = "This state transition keeps admission, effects and resource retirement in one frame."
-    )]
     pub(super) fn open_watch_growing_to<W: SourceDemandReadWork>(
         root: std::os::windows::io::BorrowedHandle<'_>,
         delivery: Arc<Delivery>,

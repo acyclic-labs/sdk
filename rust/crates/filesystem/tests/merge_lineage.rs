@@ -2,7 +2,6 @@
 #![allow(
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::too_many_lines,
     reason = "test fixtures use explicit fatal assertions for impossible setup failures"
 )]
 

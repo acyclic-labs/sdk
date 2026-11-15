@@ -168,10 +168,6 @@ pub(super) fn checked_js_string(value: JsValue, field: &str) -> Result<String, J
         .ok_or_else(|| JsValue::from_str(&format!("{field} must be a string")))
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one exhaustive traversal owns JS JSON admission"
-)]
 fn snapshot_js_json(
     value: &JsValue,
     ancestors: Option<&JsValue>,

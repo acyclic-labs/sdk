@@ -1,15 +1,12 @@
 # large_futures ceiling: the same value and rationale as the workspace clippy.toml.
 future-size-threshold = 131072
 # Thresholds for the lints enabled in [workspace.lints.clippy] (Cargo.toml).
-too-many-lines-threshold = 100
 cognitive-complexity-threshold = 30
-# Product and vendor names doc_markdown would otherwise want in backticks.
-# `..` keeps clippy's built-in list (GitHub, macOS, JavaScript, ...).
-doc-valid-idents = ["OpenAI", "ChatGPT", "MoonshotAI", ".."]
-# Tests may unwrap, expect and panic; the workspace denies them elsewhere.
+# Tests may unwrap, expect, panic and index; the workspace denies them elsewhere.
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
 # The working directory belongs to the whole process: changing it moves every
 # other thread's relative paths and the directory each later child starts in.
 # Give a child its own directory with `Command::current_dir` instead.

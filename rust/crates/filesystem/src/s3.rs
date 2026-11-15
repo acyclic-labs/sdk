@@ -753,7 +753,6 @@ fn direct_child_seek(options: &S3ListOptions, frontier_key: &str) -> Option<Boun
 /// Merges directory-page lower bounds and object keys in flattened UTF-8 order.
 #[allow(
     clippy::too_many_arguments,
-    clippy::too_many_lines,
     reason = "one merge of directory-page bounds and object keys needs the query, frontier, and prefix state together"
 )]
 async fn list_objects_lazy<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(

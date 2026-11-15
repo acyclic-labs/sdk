@@ -3,10 +3,6 @@
 use super::*;
 
 #[tokio::test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one ordered persistent scenario retains the exact source, result and user head across provider drop"
-)]
 async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes() -> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let options = acyclic_fs::LocalOptions::new(directory.path().join("filesystem"));

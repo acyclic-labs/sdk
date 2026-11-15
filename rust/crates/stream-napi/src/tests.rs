@@ -263,10 +263,6 @@ async fn await_tcp_event(
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the real TCP lifecycle test keeps connection, follow, close, and server-drop assertions together"
-)]
 #[tokio::test]
 async fn real_tcp_follow_close_releases_the_server_stream() {
     let result = async {

@@ -211,10 +211,6 @@ struct Machine<'a, 'accounting, F: Format> {
 }
 
 impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "The constructor admits and initializes its bounded seek state before exposing it."
-    )]
     fn new_with_accounting(
         query: (
             ObjectId,

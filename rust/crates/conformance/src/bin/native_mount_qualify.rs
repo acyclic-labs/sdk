@@ -189,10 +189,6 @@ fn option(args: &[std::ffi::OsString], name: &str) -> Option<String> {
     })
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "qualification admission, case selection, and receipt emission form one CLI transaction"
-)]
 fn qualify(args: &[std::ffi::OsString]) -> Result<(), Failure> {
     let output = option(args, "--output").map(PathBuf::from);
     let checkout_root = option(args, "--checkout-root").map(PathBuf::from);

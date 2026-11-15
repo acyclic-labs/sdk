@@ -794,10 +794,6 @@ impl NativeEventDelivery {
         Ok(())
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "The event transition holds the watcher state lock through queue admission and commit."
-    )]
     fn event_with_work<W: crate::demand::SourceDemandReadWork>(
         &self,
         relative: &Path,
@@ -965,10 +961,6 @@ fn namespace_hint_with_work<W: crate::demand::SourceDemandReadWork>(
     )
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "This state transition keeps admission, effects and resource retirement in one frame."
-)]
 fn namespace_hint_names_with_work<'a, W: crate::demand::SourceDemandReadWork>(
     names: impl Iterator<Item = Result<HintName<'a>, crate::demand::DemandError>> + Clone,
     profile: FilesystemProfile,
@@ -1982,10 +1974,6 @@ impl NativeWatch {
         .map_err(demand_watch_error)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "This state transition keeps admission, effects and resource retirement in one frame."
-    )]
     fn open_with_profile_engine<W: crate::demand::SourceDemandReadWork>(
         requested_root: &Path,
         profile: FilesystemProfile,
@@ -2900,10 +2888,6 @@ impl NativeWatch {
         Ok(current == Some(identity))
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "This state transition keeps admission, effects and resource retirement in one frame."
-    )]
     fn forget_removed_directories_with_work<W: crate::demand::SourceDemandReadWork>(
         &mut self,
         changes: &[WatchChange],
@@ -3305,10 +3289,6 @@ impl NativeWatch {
         self.exclude_subtrees_with_work(subtrees, &mut source, Some(work))
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "This state transition keeps admission, effects and resource retirement in one frame."
-    )]
     fn exclude_subtrees_with_work<W: crate::demand::SourceDemandReadWork>(
         &mut self,
         subtrees: &[NamespacePath],
@@ -4012,10 +3992,6 @@ impl NativeWatch {
         ))
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "This state transition keeps admission, effects and resource retirement in one frame."
-    )]
     fn poll_with_work<W, F>(
         &mut self,
         maximum_changes: u32,
@@ -4425,10 +4401,6 @@ fn watch_host_name_with_work<W: crate::demand::SourceDemandReadWork>(
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "This state transition keeps admission, effects and resource retirement in one frame."
-)]
 #[cfg(any(test, not(windows)))]
 fn accept_native_event(
     event: &notify::Result<Event>,

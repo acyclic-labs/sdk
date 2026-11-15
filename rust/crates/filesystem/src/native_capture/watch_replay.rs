@@ -3,10 +3,6 @@ use super::*;
 /// Replays one watcher batch with the caller's full original native resource.
 /// The interval remains owned by the argument, including a shared retry owner;
 /// only paths copied into the private candidate consume this invocation's work.
-#[allow(
-    clippy::too_many_lines,
-    reason = "Admission, rename validation, replay and commit share one funded candidate frame."
-)]
 pub async fn capture_watch_batch<
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,

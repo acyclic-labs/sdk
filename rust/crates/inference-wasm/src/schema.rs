@@ -140,10 +140,6 @@ fn field_bytes(value: &Value) -> Option<usize> {
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "one exhaustive match over protobuf field kinds"
-)]
 fn validate_message(message: &DynamicMessage, path: &str) -> Option<String> {
     let descriptor = message.descriptor();
     for field in descriptor.fields() {
@@ -340,10 +336,6 @@ fn valid_integer(value: &JsValue, minimum: f64, maximum: f64) -> bool {
     })
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "one exhaustive match over protobuf field kinds"
-)]
 fn validate_runtime_message(
     descriptor: &prost_reflect::MessageDescriptor,
     value: &JsValue,

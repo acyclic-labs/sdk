@@ -349,10 +349,6 @@ async fn stock_approval_wait_returns_refusals_to_the_next_model_step() -> Result
 }
 
 #[tokio::test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one actual retained two-call batch and later-call recovery controls"
-)]
 async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> Result<()> {
     let model = Arc::new(
         ScriptedModelProvider::new([

@@ -192,10 +192,6 @@ pub(super) fn mark_sparse(
     clippy::too_many_arguments,
     reason = "writes one sparse file from the reader under the options, budget, cancellation, and shared receipt"
 )]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one ordered pass reads, writes, and punches every extent of the file"
-)]
 pub(super) async fn materialize_sparse_file<A, O, E, F, Fut>(
     reader: &PinnedReader<A, O>,
     path: &NamespacePath,

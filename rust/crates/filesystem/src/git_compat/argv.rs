@@ -2,10 +2,6 @@ use super::*;
 
 /// Parses one facade command without performing filesystem effects.
 #[allow(
-    clippy::too_many_lines,
-    reason = "the argv compatibility matrix is intentionally exhaustive and centralized"
-)]
-#[allow(
     clippy::cognitive_complexity,
     reason = "the argv compatibility matrix is intentionally exhaustive and centralized"
 )]

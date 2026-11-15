@@ -1,9 +1,5 @@
 use super::*;
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the benchmark's setup, timed loops, commit, and report are one straight-line procedure"
-)]
 pub(super) fn kernel_bench(args: &[String]) -> Result<(), Failure> {
     use acyclic_fs::AuthoredMutation;
     use acyclic_fs::kernel::{FileMetadata, LogicalName, NameEncoding, NamespacePath};

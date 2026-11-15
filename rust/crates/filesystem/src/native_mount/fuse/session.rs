@@ -160,10 +160,6 @@ impl FuseSession {
         self.invalidator.is_some()
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "Startup retains its admitted worker, mount and rollback controls in one frame."
-    )]
     pub(in crate::native_mount) fn start_into(
         request: &NativeMountRequest,
         source: Arc<dyn MountFilesystem>,

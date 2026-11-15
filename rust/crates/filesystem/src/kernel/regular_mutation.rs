@@ -422,10 +422,6 @@ fn validate_mutation(mutation: RegularMutation) -> Result<(), RegularMutationErr
     Ok(())
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "Inline mutation validation and writes form one bounded operation."
-)]
 async fn try_inline<S: AsyncObjectStore>(
     store: &S,
     data: InlineFileData,
@@ -557,10 +553,6 @@ async fn sparse_storage<S: AsyncObjectStore>(
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "This state transition keeps admission, effects and resource retirement in one frame."
-)]
 async fn promote_inline<S: AsyncObjectStore>(
     store: &S,
     data: InlineFileData,
@@ -685,10 +677,6 @@ async fn promote_inline<S: AsyncObjectStore>(
     })
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "This state transition keeps admission, effects and resource retirement in one frame."
-)]
 async fn apply_sparse<S: AsyncObjectStore>(
     store: &S,
     payload: FilePayload,
@@ -833,7 +821,6 @@ async fn apply_sparse<S: AsyncObjectStore>(
 
 #[allow(
     clippy::too_many_arguments,
-    clippy::too_many_lines,
     reason = "This state transition keeps admission, effects and resource retirement in one frame."
 )]
 async fn apply_sparse_preallocation<S: AsyncObjectStore>(

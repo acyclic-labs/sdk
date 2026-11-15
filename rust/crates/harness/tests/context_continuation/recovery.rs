@@ -1,10 +1,6 @@
 use super::*;
 
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one real-journal admission, retry and operation-isolation timeline"
-)]
 pub(super) async fn local_journal_compaction_preserves_context_settlement_and_retry_admission()
 -> Result<()> {
     use acyclic_harness::executor::{ExecutionEvent, ModelPurpose};

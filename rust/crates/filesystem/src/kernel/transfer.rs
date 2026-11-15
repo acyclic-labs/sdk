@@ -173,10 +173,6 @@ pub async fn authenticate_generation_export_manifest_async<S: AsyncObjectStore>(
 }
 
 /// Reads one resumable manifest page using the backend's ordered batch primitive.
-#[allow(
-    clippy::too_many_lines,
-    reason = "This state transition keeps admission, effects and resource retirement in one frame."
-)]
 pub async fn export_generation_batch_async<S: AsyncObjectStore + ?Sized>(
     store: &S,
     manifest: &GenerationExportManifest,

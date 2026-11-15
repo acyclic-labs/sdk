@@ -226,10 +226,6 @@ impl ProjectionState {
         })
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "One listing frame owns the pending reply and releases any unlisted lookup reference on failure."
-    )]
     pub(super) fn list_directory(
         &mut self,
         source: &dyn MountFilesystem,

@@ -9,10 +9,6 @@ fn is_extent_regular(record: Option<FileRecord>) -> bool {
     clippy::too_many_arguments,
     reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
 )]
-#[allow(
-    clippy::too_many_lines,
-    reason = "The merge frame retains both sides and their admitted data until the merged record is complete."
-)]
 fn merge_regular_record_async<'a, 'accounting, S: AsyncObjectStore>(
     store: &'a S,
     base: FileRecord,

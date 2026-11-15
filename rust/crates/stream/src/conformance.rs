@@ -46,7 +46,6 @@ const _: () = assert!(!SUITE.is_empty(), "conformance inventory is empty");
 
 /// Exercises the complete provider-independent hierarchical Stream contract.
 #[allow(
-    clippy::too_many_lines,
     clippy::cognitive_complexity,
     reason = "one public contract walkthrough"
 )]

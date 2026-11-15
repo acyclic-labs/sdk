@@ -6,10 +6,6 @@ const CONTENT_WORK_BUDGET: acyclic_fs::WorkBudget =
     acyclic_fs::performance::work_budget(100_000, 16_000_000);
 
 #[tokio::test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "production-backed lost delivery, reopen, immutable retry and adversarial bounds"
-)]
 async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost_ack() -> Result<()>
 {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;

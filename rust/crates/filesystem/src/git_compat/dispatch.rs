@@ -1,9 +1,5 @@
 use super::*;
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "one exhaustive dispatch over every supported Git command"
-)]
 pub(super) fn execute_command<E: std::error::Error + 'static>(
     state: &mut GitCompatState,
     command: GitCommand,

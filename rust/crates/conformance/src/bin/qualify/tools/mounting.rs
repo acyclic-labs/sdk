@@ -1,9 +1,5 @@
 use super::*;
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the gate's mount, write, unmount, and verify steps are one straight-line procedure"
-)]
 pub(super) fn mount_smoke(args: &[String]) -> Result<(), Failure> {
     use acyclic_fs::{
         CheckoutMountSource, NativeMountRequest, SharedCheckout, mount_native, probe_native_mount,

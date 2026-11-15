@@ -126,10 +126,6 @@ impl Shared {
     }
 
     /// [`Self::read_events_and_deliver`] under a held cursor.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "One locked event drain retains its cursor, accounting and failure state together."
-    )]
     fn read_events_and_deliver_locked<W: SourceDemandReadWork>(
         &self,
         reading: &mut RawReads,

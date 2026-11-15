@@ -3,6 +3,7 @@ future-size-threshold = 131072
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
 disallowed-macros = [
     { path = "std::env", reason = "configuration is an explicit input" },
     { path = "std::option_env", reason = "configuration is an explicit input" },

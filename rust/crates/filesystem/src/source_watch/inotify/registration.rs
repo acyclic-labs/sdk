@@ -54,10 +54,6 @@ pub(super) fn proc_fd_path(descriptor: i32) -> ([u8; 24], usize) {
     }
     (path, prefix.len() + digits.as_bytes().len())
 }
-#[allow(
-    clippy::too_many_lines,
-    reason = "Ancestor registration keeps its admitted allocations and rollback in one frame."
-)]
 pub(super) fn watch_ancestors<W: SourceDemandReadWork>(
     watch: &Shared,
     root: BorrowedFd<'_>,
@@ -292,10 +288,6 @@ impl Shared {
         result
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "Admission keeps watch registration and its exact rollback in one frame."
-    )]
     pub(super) fn admit_with_work<W: SourceDemandReadWork>(
         &self,
         directory: &Path,

@@ -615,10 +615,6 @@ async fn report_linux_compiler_workflow_costs() -> Result<(), Box<dyn std::error
 }
 
 #[tokio::test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one local-only source-view comparison"
-)]
 async fn report_linux_lazy_mount_read_costs() -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{Read as _, Seek as _, SeekFrom};
 
@@ -947,10 +943,6 @@ fn write_changed_working_set_files(
 }
 
 #[tokio::test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "keep one local-only profiling sample self-contained"
-)]
 async fn report_linux_exact_materializer_costs() -> Result<(), Box<dyn std::error::Error>> {
     fn counters() -> Result<(u64, u64, u64), Box<dyn std::error::Error>> {
         let mut cpu = 0_u64;

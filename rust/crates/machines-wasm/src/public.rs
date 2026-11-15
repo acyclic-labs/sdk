@@ -1100,10 +1100,6 @@ pub struct UsageIn {
     end_unix_ms: SafeNumber,
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the public WASM operation dispatch is the stable ABI route table"
-)]
 pub async fn dispatch<P: MachinesProvider>(
     provider: &P,
     operation_name: &str,
