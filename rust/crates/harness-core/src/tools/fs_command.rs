@@ -77,8 +77,15 @@ pub(crate) struct ScopeGrep<'a> {
 impl FsCommand {
     /// The scoped history query, when this command selects one.
     pub(crate) fn scope_grep(&self) -> Option<Result<ScopeGrep<'_>>> {
+        // `--scope` before any `--` selects history search; every other grep,
+        // including `grep PATTERN PATH` and flagged forms, stays the volume's.
         let mut arguments = self.arguments.iter().map(String::as_str);
-        if arguments.next() != Some("grep") {
+        if arguments.next() != Some("grep")
+            || !arguments
+                .clone()
+                .take_while(|argument| *argument != "--")
+                .any(|argument| argument == "--scope")
+        {
             return None;
         }
         let (mut scope, mut pattern, mut size, mut cursor) = (None, None, None, None);
@@ -205,12 +212,17 @@ mod tests {
                 .get(),
             64
         );
-        assert!(
-            parse_fs_command("grep needle")
-                .unwrap()
-                .scope_grep()
-                .is_none()
-        );
+        for volume in [
+            "grep needle",
+            "grep needle src/",
+            "grep -n needle src/",
+            "grep -- --scope",
+        ] {
+            assert!(
+                parse_fs_command(volume).unwrap().scope_grep().is_none(),
+                "{volume}"
+            );
+        }
         for invalid in [
             "grep --scope . needle extra",
             "grep --scope . --scope . needle",
