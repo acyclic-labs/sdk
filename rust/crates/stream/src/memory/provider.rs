@@ -52,13 +52,24 @@ impl MemoryStream {
         }
     }
 
+    /// The view is filled in place by the capture below, so this is the only
+    /// future on the path that returns it.
     pub(crate) async fn heads_inner(
         &self,
         request: crate::HeadsRequest,
     ) -> Result<crate::Heads, StreamError> {
         request.validate()?;
         self.revisions.wait(&request.at_least).await?;
-        self.capture_heads(&request, HeadDurability::Volatile).await
+        let mut view = self.empty_heads(&request);
+        let mut ephemeral = Vec::new();
+        self.capture_into(
+            &request,
+            HeadDurability::Volatile,
+            &mut view,
+            &mut ephemeral,
+        )
+        .await?;
+        Ok(view)
     }
 
     pub(crate) async fn inspect_idempotency_inner(
@@ -691,13 +702,22 @@ impl StreamProvider for MemoryStream {
         Ok(self.ephemeral_mask(std::slice::from_ref(path)).await == [true])
     }
 
-    async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
-        acyclic_observability::async_operation!(
+    // The trait's boxed future is the observed capture itself: no forwarding
+    // async body polls it, so the view is returned through one fewer frame.
+    fn heads<'life0, 'async_trait>(
+        &'life0 self,
+        request: crate::HeadsRequest,
+    ) -> crate::BoxProviderFuture<'async_trait, Result<crate::Heads, StreamError>>
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(acyclic_observability::operation_future!(
             "acyclic.stream.heads",
             StreamError::code,
             acyclic_native_runtime::obs::OperationSpan::new,
             self.heads_inner(request)
-        )
+        ))
     }
 
     async fn inspect_idempotency(
