@@ -38,7 +38,7 @@ const fn observation_action(method: StreamMethod) -> Action {
     );
     match admitted {
         [action] => *action,
-        _ => unreachable!("Session observations require exactly one declared action"),
+        _ => panic!(),
     }
 }
 

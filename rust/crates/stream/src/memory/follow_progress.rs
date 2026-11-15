@@ -118,7 +118,7 @@ impl MemoryStream {
         anchor: Option<CommitId>,
         when_absent: crate::WhenAbsent,
         filter: crate::FollowFilter,
-        window: super::follow::FollowWindow,
+        window: FollowWindow,
     ) -> Result<crate::FollowStream, StreamError> {
         let (snapshot, selection, changed, cursor) = self
             .prepare_progress(

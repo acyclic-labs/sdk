@@ -408,13 +408,13 @@ fn namespace_page<'a>(
         }
     }
     let start = start.saturating_add(offset);
+    let limit = u64::try_from(limit).map_err(|_| StreamError::Capacity)?;
     let available = (width(index) as u64).saturating_sub(start);
     Ok(NamespacePage {
         index,
         start,
-        length: usize::try_from(available.min(u64::from(limit)))
-            .map_err(|_| StreamError::Capacity)?,
-        has_more: available > u64::from(limit),
+        length: usize::try_from(available.min(limit)).map_err(|_| StreamError::Capacity)?,
+        has_more: available > limit,
     })
 }
 impl NamespacePage<'_> {

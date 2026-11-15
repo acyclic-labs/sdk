@@ -515,7 +515,7 @@ async fn scan<P: StreamProvider + ?Sized, M: Matcher>(
                 frame.sequence += 1;
                 break;
             }
-            if work == count {
+            if work == window.count {
                 return Ok(work);
             }
         }
