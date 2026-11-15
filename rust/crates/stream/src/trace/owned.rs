@@ -101,11 +101,11 @@ impl OwnedRecording {
     /// incomplete. Ready admission supplies the original parent for the
     /// remaining polls.
     pub(super) fn child<F: std::future::Future>(
-        request: super::Request,
+        request: &super::Request,
         work: F,
     ) -> Accompany<'static, F, StreamError> {
         Accompany {
-            admission: Admission::Child(request),
+            admission: Admission::Child(super::Request { ..*request }),
             recording: None,
             work,
         }

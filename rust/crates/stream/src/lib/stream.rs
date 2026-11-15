@@ -310,7 +310,7 @@ impl<P: StreamProvider + ?Sized> Replay<P> {
         parent: Option<crate::trace::SpanId>,
     ) -> crate::trace::Observed<Option<Vec<Record>>, StreamError, P> {
         let observed = crate::trace::Recorder::observe(
-            &recorder,
+            recorder,
             crate::trace::Request {
                 name: "stream.replay_page",
                 mechanism: crate::trace::Mechanism::Io,

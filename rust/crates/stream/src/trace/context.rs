@@ -119,7 +119,7 @@ pub async fn accompany<T>(
     request: Request,
     work: impl Future<Output = T>,
 ) -> (T, Option<OwnedRecording>) {
-    OwnedRecording::accompany(child(request), work).await
+    OwnedRecording::accompany(child(&request), work).await
 }
 /// Record [`super::observe_value`]'s already live work under the active
 /// owner's child span. The classifier runs only for an admitted span.
@@ -216,7 +216,7 @@ pub fn accompany_sync<T>(
     work: impl FnOnce() -> T,
 ) -> (T, Option<OwnedRecording>) {
     use futures::FutureExt as _;
-    let recording = child(request)
+    let recording = child(&request)
         .and_then(|admission| admission.now_or_never())
         .and_then(Result::ok);
     let result = if let Some(recording) = &recording {
