@@ -682,7 +682,7 @@ impl wire::blobs_service_server::BlobsService for BlobsServer {
         let events = crate::route::availability_frames(observation).map(move |event| {
             // The original verified account resolver also enforces current
             // permission before each disclosure, including terminal frames.
-            resolve(&metadata).map_err(status)?;
+            resolve(&metadata).map_err(|error| status(&error))?;
             event.map_err(|error| status(&error))
         });
         Ok(tonic::Response::new(Box::pin(events)))
