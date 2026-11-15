@@ -27,7 +27,7 @@ rust_library(
         "@crates//pin-project-lite-0.2.17",
         "@crates//prettyplease-0.3.0",
         "@crates//rcgen-0.14.10",
-        "@crates//syn-3.0.9",
+        "@crates//syn_3_0_9-3.0.9",
         "@crates//tempfile-3.27.0",
         "@crates//tokio-1.54.1",
         "@crates//tonic-0.14.9",
