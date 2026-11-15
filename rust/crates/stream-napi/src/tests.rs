@@ -360,7 +360,7 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
                 None,
             )
             .await
-            .map_err(|error| error.message)?
+            .map_err(|error| NativeStreamErrorMetadata::from(error).message)?
             .0,
         );
         let pending = tokio::spawn({
