@@ -210,7 +210,7 @@ async fn unavailability_observers_survive_hibernation_and_cancelled_attempts() -
         .take()
         .ok_or("missing original delivery work")?;
     assert!(runtime.release(&address));
-    runtime.deliver(&address, &slot, Some(work)).await?;
+    runtime.deliver(&address, &slot, Some(work), false).await?;
     let shard = store.scheduling_shard(&address);
     assert!(
         runtime.ready[0].failed(shard).contains(&address),
@@ -502,6 +502,7 @@ fn a_delivery_runs_on_a_small_worker_stack() -> TestResult {
         &'a ActorReference,
         &'a Arc<Slot>,
         Option<Work<ActorReference>>,
+        bool,
     ) -> BoxProviderFuture<'a, Result<bool, Error>> = Runtime::deliver;
     const STACK_BYTES: usize = 256 * 1024;
     std::thread::Builder::new()
