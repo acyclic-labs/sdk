@@ -149,14 +149,6 @@ pub(super) struct Cell<'a> {
     execution_count: Option<&'a RawValue>,
 }
 
-/// Publication outcomes consume these facts while the original source is live.
-/// Inserts have no prior cell; their index is the resolved insertion boundary.
-pub(super) struct EditFacts<'a> {
-    pub(super) index: u64,
-    pub(super) prior: Option<Decoded<Cell<'a>>>,
-    pub(super) language: Option<Decoded<Cow<'a, str>>>,
-}
-
 struct EachCell<F>(F);
 struct CellCount(u64);
 impl crate::HeapLayout for CellCount {
@@ -429,11 +421,11 @@ fn convert_cell(
     Ok(())
 }
 
-pub(super) fn edit<'a>(
-    source: &'a str,
+pub(super) fn edit(
+    source: &str,
     operation: &NotebookEdit,
     work: acyclic_fs::NativeWork<'_>,
-) -> Result<(String, acyclic_fs::NativeCustody, EditFacts<'a>)> {
+) -> Result<(String, acyclic_fs::NativeCustody)> {
     let notebook = notebook(source, work)?;
     let (target, after) = match operation {
         NotebookEdit::Replace { cell, .. } | NotebookEdit::Delete { cell } => (cell, false),
@@ -531,7 +523,6 @@ pub(super) fn edit<'a>(
     let mut substitutions: Substitutions<'_> = [None; 6];
     let _replacement_hold;
     let replacement;
-    let mut prior = None;
     match operation {
         NotebookEdit::Replace {
             source: new_source,
@@ -563,7 +554,7 @@ pub(super) fn edit<'a>(
             if let Some(kind) = cell_type {
                 convert_cell(source, raw, &cell, kind, &mut substitutions, work)?;
             }
-            prior = Some(cell);
+            drop(cell);
         }
         NotebookEdit::Insert {
             id,
@@ -615,14 +606,15 @@ pub(super) fn edit<'a>(
         }
         NotebookEdit::Delete { .. } => {
             let raw = selected.ok_or_else(|| executor::rejection(work, "cell is missing"))?;
-            prior = Some(match selected_cell {
+            let cell = match selected_cell {
                 Some(cell) => cell,
                 None => decode(
                     JsonObject(std::marker::PhantomData::<Cell<'_>>),
                     raw.get(),
                     work,
                 )?,
-            });
+            };
+            drop(cell);
             let (start, end) = span(source, raw);
             substitutions[0] = Some(if let Some(previous) = previous {
                 (previous, end, "")
@@ -633,7 +625,7 @@ pub(super) fn edit<'a>(
             });
         }
     }
-    let language = language(&notebook, work)?;
+    drop(language(&notebook, work)?);
     substitutions.sort_unstable_by_key(|entry| entry.map_or(usize::MAX, |entry| entry.0));
     let extra = substitutions
         .iter()
@@ -673,13 +665,5 @@ pub(super) fn edit<'a>(
             .get(cursor..)
             .ok_or_else(|| executor::rejection(work, "invalid notebook span"))?,
     );
-    Ok((
-        text,
-        hold,
-        EditFacts {
-            index,
-            prior,
-            language,
-        },
-    ))
+    Ok((text, hold))
 }
