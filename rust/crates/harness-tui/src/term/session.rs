@@ -246,7 +246,7 @@ impl Drop for Tty {
 /// Restoration tests compare descriptor flags only through this helper.
 #[cfg(test)]
 #[path = "../../tests/support/status_flags.rs"]
-mod status_flags;
+pub(super) mod status_flags;
 
 #[cfg(test)]
 mod tests {

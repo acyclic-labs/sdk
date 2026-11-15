@@ -89,7 +89,11 @@ impl Checkpoints {
 
     /// The latest checkpoint at or before `at <= scanned`.
     fn before(&self, at: usize) -> usize {
-        match self.spans[..self.spans.partition_point(|span| span.start < at)].last() {
+        match self
+            .spans
+            .get(..self.spans.partition_point(|span| span.start < at))
+            .and_then(|spans| spans.last())
+        {
             Some(span) if span.end > at => span.start,
             _ => at,
         }

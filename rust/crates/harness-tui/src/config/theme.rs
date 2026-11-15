@@ -259,10 +259,11 @@ pub(super) fn resolve(value: &Value, profile: &Capabilities) -> ThemeStyles {
         .background
         .unwrap_or(if light { [255; 3] } else { [0; 3] });
     let muted = tokens["muted"].as_str().and_then(rgb).unwrap_or(background);
-    let band = std::array::from_fn(|i| {
-        u8::try_from((7 * u16::from(background[i]) + u16::from(muted[i])) / 8)
-            .unwrap_or(background[i])
-    });
+    let mut band = [0u8; 3];
+    for ((slot, background), muted) in band.iter_mut().zip(background).zip(muted) {
+        *slot = u8::try_from((7 * u16::from(background) + u16::from(muted)) / 8)
+            .unwrap_or(background);
+    }
     let [red, green, blue] = band;
     let code = match profile.colour {
         ColourDepth::Monochrome => Style::new().add_modifier(Modifier::REVERSED),

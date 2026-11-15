@@ -76,13 +76,13 @@ impl Block {
                 parser.push(source);
                 self.parsed = Some((width, parser));
             }
-            if let Some((columns, parser)) = &mut self.parsed {
-                if *columns != width {
-                    parser.set_width(
-                        u16::try_from(width.saturating_sub(1).max(1)).unwrap_or(u16::MAX),
-                    );
-                    *columns = width;
-                }
+            if let Some((columns, parser)) = &mut self.parsed
+                && *columns != width
+            {
+                parser.set_width(
+                    u16::try_from(width.saturating_sub(1).max(1)).unwrap_or(u16::MAX),
+                );
+                *columns = width;
             }
             let parsed = self
                 .parsed
@@ -295,29 +295,34 @@ impl TranscriptRows {
         if let Some(text) = text.filter(|text| !text.is_empty()) {
             let width = self.width.max(1);
             let text = settled(text);
-            if let Some((columns, parser)) = &mut self.tail_parser {
-                if *columns != width {
-                    parser.set_width(
-                        u16::try_from(width.saturating_sub(1).max(1)).unwrap_or(u16::MAX),
-                    );
-                    *columns = width;
+            if let Some((columns, parser)) = &mut self.tail_parser
+                && *columns != width
+            {
+                parser.set_width(
+                    u16::try_from(width.saturating_sub(1).max(1)).unwrap_or(u16::MAX),
+                );
+                *columns = width;
+            }
+            let delta = match self
+                .tail_parser
+                .as_ref()
+                .and_then(|(_, parser)| text.strip_prefix(parser.source()))
+            {
+                Some(delta) => delta,
+                None => {
+                    self.tail_parser = Some((
+                        width,
+                        acyclic_markdown::Markdown::with_deferred_code_in(
+                            u16::try_from(width.saturating_sub(1).max(1)).unwrap_or(u16::MAX),
+                            self.code_cache.clone(),
+                        ),
+                    ));
+                    text
                 }
-            }
-            if self.tail_parser.as_ref().is_none_or(|(columns, parser)| {
-                *columns != width || !text.starts_with(parser.source())
-            }) {
-                self.tail_parser = Some((
-                    width,
-                    acyclic_markdown::Markdown::with_deferred_code_in(
-                        u16::try_from(width.saturating_sub(1).max(1)).unwrap_or(u16::MAX),
-                        self.code_cache.clone(),
-                    ),
-                ));
-            }
+            };
             let rows = match &mut self.tail_parser {
                 Some((_, parser)) => {
-                    let end = parser.source().len();
-                    parser.push(&text[end..]);
+                    parser.push(delta);
                     wrap_rendered(
                         BlockKind::Answer,
                         crate::markdown::render_lines(parser.lines(), &self.theme),
@@ -343,8 +348,9 @@ impl TranscriptRows {
         if query.is_empty() {
             return None;
         }
-        self.lines[..before.min(self.lines.len())]
+        self.lines
             .iter()
+            .take(before)
             .rposition(|line| {
                 line.spans
                     .iter()
@@ -786,7 +792,9 @@ mod tests {
         assert!(
             shown.ends_with("e\u{301}end"),
             "{}",
-            &shown[shown.len() - 32..]
+            shown
+                .get(shown.len().saturating_sub(32)..)
+                .unwrap_or(shown)
         );
         assert!(!shown.contains('…'));
     }
