@@ -50,6 +50,8 @@ impl PlatformExecutor {
     where
         F: std::future::Future<Output = ()> + crate::ProviderTask + Unpin + 'static,
     {
+        #[cfg(feature = "serde")]
+        let future = crate::trace::inherit(future);
         #[cfg(not(target_arch = "wasm32"))]
         acyclic_native_runtime::spawn_eager(future);
         #[cfg(all(target_arch = "wasm32", feature = "wasm"))]
