@@ -172,10 +172,12 @@ pub(super) fn linux_shared_views_are_independent_namespaces_of_one_mount()
     let worker_retired = worker.upgrade().is_none();
     // Retain main's original-handle control: after readers retire, the same
     // kernel connection must refuse a call instead of waiting forever.
+    // Probe a name never looked up: the kernel answers a cached negative entry
+    // (b/file above) itself, without asking the connection.
     let unserved = worker_retired.then(|| {
         rustix::fs::openat(
             &held_last,
-            "file",
+            "never-looked-up",
             rustix::fs::OFlags::RDONLY,
             rustix::fs::Mode::empty(),
         )
