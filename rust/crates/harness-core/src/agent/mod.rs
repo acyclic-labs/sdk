@@ -220,7 +220,8 @@ impl Error {
             | Self::UnsupportedRecordVersion(_)
             | Self::NoSuchAgent
             | Self::SpawnRefused(_)
-            | Self::Conflict(_) => false,
+            | Self::Conflict(_)
+            | Self::CreationConflict(_) => false,
         }
     }
 
@@ -235,7 +236,7 @@ impl Error {
             Self::UnsupportedRecordVersion(_) => "unsupported_record_version",
             Self::NoSuchAgent => "no_such_agent",
             Self::SpawnRefused(_) => "spawn_refused",
-            Self::Conflict(_) => "agent_conflict",
+            Self::Conflict(_) | Self::CreationConflict(_) => "agent_conflict",
             Self::Unknown(_) => "agent_unknown",
             Self::Stream(cause) => cause.code(),
             Self::Actor(_) => "agent_runtime_error",
