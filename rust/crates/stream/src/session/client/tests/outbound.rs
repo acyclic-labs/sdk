@@ -104,7 +104,8 @@ async fn paused_peer() -> Result<
         resume: Arc::clone(&resume),
         closed: Arc::clone(&closed),
     };
-    let (server, server_ended) = fixture::serve(
+    let server = fixture::serve(
+        Arc::clone(&counts),
         tonic::transport::Server::builder()
             .add_service(StreamSessionServiceServer::new(host))
             .serve_with_incoming(incoming),
@@ -121,7 +122,6 @@ async fn paused_peer() -> Result<
             tls_client: None,
             counts,
             server,
-            server_ended,
             connections,
         },
         resume,

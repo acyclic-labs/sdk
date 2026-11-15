@@ -47,6 +47,30 @@ mod fixture {
 }
 use fixture::{Counts, Fixture};
 impl Fixture {
+    // Only these tests drop connections or wait on server counts; the search
+    // tests share the fixture without either.
+    pub(super) fn reset(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.connections.reset()?;
+        Ok(())
+    }
+    pub(super) async fn until(&self, ready: impl Fn(&Counts) -> bool) -> Result<(), StreamError> {
+        loop {
+            // Registered before both checks, so neither a count change nor
+            // the server's end between them is missed.
+            let changed = self.counts.changed.notified();
+            if ready(&self.counts) {
+                return Ok(());
+            }
+            if self
+                .counts
+                .server_ended
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return Err(StreamError::Unavailable);
+            }
+            changed.await;
+        }
+    }
     pub(super) async fn open<P: StreamProvider>(
         provider: Arc<P>,
         node: &str,

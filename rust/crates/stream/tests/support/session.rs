@@ -12,7 +12,7 @@ use futures::{
 use prost::Message as _;
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use tonic::{
     Request, Response as Reply, Status, Streaming,
@@ -143,18 +143,23 @@ impl tokio::io::AsyncWrite for Socket {
 }
 
 /// Retain the actual serving task's completion, including abort or unwind.
+/// Serves until the task ends, completes or is aborted; its end is recorded
+/// in `counts` and wakes every waiter on them.
 pub(super) fn serve(
+    counts: Arc<Counts>,
     serving: impl std::future::Future<Output = Result<(), tonic::transport::Error>> + Send + 'static,
-) -> (
-    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-    tokio::sync::watch::Receiver<()>,
-) {
-    let (alive, ended) = tokio::sync::watch::channel(());
-    let server = tokio::spawn(async move {
-        let _alive = alive;
+) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
+    struct Ended(Arc<Counts>);
+    impl Drop for Ended {
+        fn drop(&mut self) {
+            self.0.server_ended.store(true, Ordering::Release);
+            self.0.changed.notify_waiters();
+        }
+    }
+    tokio::spawn(async move {
+        let _ended = Ended(counts);
         serving.await
-    });
-    (server, ended)
+    })
 }
 
 pub(super) struct Options {
@@ -202,6 +207,7 @@ pub(super) struct Counts {
     pub(super) acknowledgements: AtomicUsize,
     pub(super) windows: AtomicUsize,
     pub(super) changed: tokio::sync::Notify,
+    pub(super) server_ended: AtomicBool,
     // Fixture-only lock: never nested, and never held across an await.
     pub(super) resumes: Mutex<Vec<(u64, u64, u64)>>,
     pub(super) guards: Mutex<Vec<(u64, u64, Bytes)>>,
@@ -414,7 +420,6 @@ pub(super) struct Fixture {
     pub(super) tls_client: Option<grpc::Client>,
     pub(super) counts: Arc<Counts>,
     pub(super) server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-    pub(super) server_ended: tokio::sync::watch::Receiver<()>,
     pub(super) connections: Arc<Connections>,
 }
 impl Fixture {
@@ -471,7 +476,7 @@ impl Fixture {
             )
             .add_service(StreamSessionServiceServer::new(host))
             .serve_with_incoming(incoming);
-        let (server, server_ended) = serve(serving);
+        let server = serve(Arc::clone(&counts), serving);
         let tls_client = match pem.as_ref() {
             Some(pem) => Some(
                 grpc::Client::connect_eager_with_ca_certificate(&endpoint, "fixture", pem).await?,
@@ -496,26 +501,8 @@ impl Fixture {
             tls_client,
             counts,
             server,
-            server_ended,
             connections,
         })
-    }
-    pub(super) fn reset(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.connections.reset()?;
-        Ok(())
-    }
-    pub(super) async fn until(&self, ready: impl Fn(&Counts) -> bool) -> Result<(), StreamError> {
-        let mut ended = self.server_ended.clone();
-        loop {
-            let changed = self.counts.changed.notified();
-            if ready(&self.counts) {
-                return Ok(());
-            }
-            tokio::select! {
-                _ = changed => {},
-                _ = ended.changed() => return Err(StreamError::Unavailable),
-            }
-        }
     }
 }
 impl Drop for Fixture {
