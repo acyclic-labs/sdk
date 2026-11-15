@@ -243,9 +243,10 @@ struct ForkMarker {
     snapshot: Arc<NamespaceNode>,
     forked_at: u64,
     commit_id: CommitId,
-    // Existing canonical decision order distinguishes a new nested graft from
-    // markers shared inside its source. It is not a separate history or index.
-    decision: u64,
+    // The revision this graft is visible at, then its ephemeral issue (zero when
+    // durable). This order distinguishes a new nested graft from markers shared
+    // inside its source; its revision never exceeds the published decision.
+    order: (u64, u64),
 }
 struct Branch {
     name: Segment,

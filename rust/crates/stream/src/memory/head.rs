@@ -7,7 +7,7 @@ impl PathObservation<'_> {
         self.node
             .data
             .changed_at
-            .max(self.origin.map_or(0, |(origin, _)| origin.decision))
+            .max(self.origin.map_or(0, |(origin, _)| origin.order.0))
     }
 }
 impl Namespace {
@@ -28,7 +28,7 @@ impl Namespace {
             end += usize::from(node.is_some()) + part.len();
             if let Some(candidate) = &current.origin
                 && origin.is_none_or(|(previous, _): (&ForkMarker, usize)| {
-                    candidate.decision >= previous.decision
+                    candidate.order >= previous.order
                 })
             {
                 origin = Some((candidate, end));
