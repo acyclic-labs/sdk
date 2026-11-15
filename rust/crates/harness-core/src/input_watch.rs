@@ -53,7 +53,11 @@ impl InputWatch {
         let mut registered = BTreeSet::new();
         let mut pending = self.paths.clone();
         let mut resolved = BTreeSet::new();
-        while let Some(path) = pending.pop() {
+        // Arming observes a tree that may change while it is read. An entry
+        // that vanishes after it was chosen, or an intermediate created before
+        // the registration that would have reported it, is a change rather
+        // than a failure: that path resolves again from the tree as it is now.
+        'paths: while let Some(path) = pending.pop() {
             let mut directory = path.parent().unwrap_or(Path::new("."));
             while !directory.is_dir() {
                 directory = directory
@@ -72,8 +76,10 @@ impl InputWatch {
             for entry in entries {
                 let alias = match std::fs::symlink_metadata(entry) {
                     Ok(metadata) => metadata.file_type().is_symlink(),
-                    Err(error) if entry == path && error.kind() == std::io::ErrorKind::NotFound => {
-                        false
+                    Err(error) if entry == path && vanished(&error) => false,
+                    Err(error) if vanished(&error) => {
+                        pending.push(path.clone());
+                        continue 'paths;
                     }
                     Err(_) => {
                         return Err(Error::Storage("cannot inspect input watch ancestor".into()));
@@ -92,9 +98,14 @@ impl InputWatch {
                         .parent()
                         .ok_or_else(|| Error::Storage("input watch entry has no parent".into()))?
                 };
-                let root = parent
-                    .canonicalize()
-                    .map_err(|_| Error::Storage("cannot resolve input watch root".into()))?;
+                let root = match parent.canonicalize() {
+                    Ok(root) => root,
+                    Err(error) if vanished(&error) && gone(parent) => {
+                        pending.push(path.clone());
+                        continue 'paths;
+                    }
+                    Err(_) => return Err(Error::Storage("cannot resolve input watch root".into())),
+                };
                 let relative = entry
                     .strip_prefix(parent)
                     .map_err(|_| Error::Storage("input watch path is outside its ancestor".into()))?
@@ -112,21 +123,61 @@ impl InputWatch {
                             registered.remove(&registration);
                             continue;
                         }
+                        // NotFound alone is not a change: registration can
+                        // also fail persistently (no /proc on Linux) while
+                        // the root is still there.
+                        Err(acyclic_fs::demand::DemandError::Io(error))
+                            if vanished(&error) && gone(&registration.0) =>
+                        {
+                            registered.remove(&registration);
+                            pending.push(path.clone());
+                            continue 'paths;
+                        }
                         Err(_) => return Err(Error::Storage("cannot register input watch".into())),
                     }
                     after_hold(entry)?;
+                }
+                // The final path is watched from its nearest existing ancestor.
+                // A missing intermediate created before that registration raised
+                // no event for it, so it is checked only after registering.
+                // No livelock: every restart needs a fresh observation that the
+                // tree changed since the walk chose `directory`: an entry that
+                // symlink_metadata now finds gone or no longer a link, or a
+                // directory that is_dir() now finds, the walk's own predicate.
+                // A persistent error on an unchanged tree is returned, and a
+                // stable tree resolves in one more walk.
+                if entry == path
+                    && let Some(created) = path
+                        .ancestors()
+                        .skip(1)
+                        .find(|ancestor| ancestor.parent() == Some(directory))
+                    && created.is_dir()
+                {
+                    pending.push(path.clone());
+                    continue 'paths;
                 }
                 if alias {
                     let suffix = path.strip_prefix(entry).map_err(|_| {
                         Error::Storage("input watch alias is outside its source".into())
                     })?;
-                    if !resolved.insert((identity, suffix.to_owned())) {
+                    let resolution = (identity, suffix.to_owned());
+                    if !resolved.insert(resolution.clone()) {
                         continue;
                     }
                     // Register every alias before reading its target, including
                     // directory links hidden by canonicalizing the final parent.
-                    let target = std::fs::read_link(entry)
-                        .map_err(|_| Error::Storage("cannot read input watch alias".into()))?;
+                    let target = match std::fs::read_link(entry) {
+                        Ok(target) => target,
+                        // Removed or replaced by a non-link after inspection.
+                        Err(_) if !is_link(entry) => {
+                            resolved.remove(&resolution);
+                            pending.push(path.clone());
+                            continue 'paths;
+                        }
+                        Err(_) => {
+                            return Err(Error::Storage("cannot read input watch alias".into()));
+                        }
+                    };
                     let target = if target.is_absolute() {
                         target
                     } else {
@@ -229,9 +280,108 @@ impl InputWatch {
     }
 }
 
+fn vanished(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::NotFound
+}
+
+/// Observes the entry itself, so a restart rests on a change, never an error.
+fn gone(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_err_and(|error| vanished(&error))
+}
+
+fn is_link(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_os = "macos"))]
+    fn link_directory(target: &Path, alias: &Path) -> Result<()> {
+        #[cfg(unix)]
+        let result = std::os::unix::fs::symlink(target, alias);
+        #[cfg(windows)]
+        let result = std::os::windows::fs::symlink_dir(target, alias);
+        result.map_err(Error::process_io)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn unarmed(path: PathBuf) -> InputWatch {
+        InputWatch {
+            paths: vec![path],
+            changed: tokio::sync::watch::channel(InputRevision::default()).0,
+            held: Mutex::new(Vec::new()),
+        }
+    }
+
+    // Both races are driven from the after-hold point of the home directory's
+    // registration. On macOS that point does not exist: the shared FSEvents
+    // hub reports ancestor moves through its recursive root stream, so arming
+    // skips registering ordinary ancestors (the `cfg!(target_os = "macos")`
+    // skip above). The re-resolution under test is the same code on every OS.
+
+    /// An ancestor removed after the walk chose it is a change, not a failure:
+    /// arming resolves from what remains and observes the ancestor's return.
+    #[cfg(not(target_os = "macos"))]
+    #[tokio::test]
+    async fn an_ancestor_removed_while_arming_is_watched_for_its_return() -> Result<()> {
+        acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
+        let home = tempfile::tempdir().map_err(Error::process_io)?;
+        let outside = tempfile::tempdir().map_err(Error::process_io)?;
+        let alias = home.path().join("alias");
+        link_directory(outside.path(), &alias)?;
+        let watch = unarmed(alias.join("shell.cancel"));
+        let mut removed = false;
+        watch.arm_after_hold(|entry| {
+            if entry == home.path() && !removed {
+                removed = true;
+                #[cfg(unix)]
+                std::fs::remove_file(&alias).map_err(Error::process_io)?;
+                #[cfg(windows)]
+                std::fs::remove_dir(&alias).map_err(Error::process_io)?;
+            }
+            Ok(())
+        })?;
+        assert!(removed, "the home registration never ran");
+        let changed = watch.credential_watch();
+        link_directory(outside.path(), &alias)?;
+        changed
+            .await
+            .map_err(|_| Error::Storage("input watch closed".into()))?;
+        Ok(())
+    }
+
+    /// An intermediate created before the registration that would report it is
+    /// resolved through, not left behind a watch that cannot see its target.
+    #[cfg(not(target_os = "macos"))]
+    #[tokio::test]
+    async fn an_intermediate_created_while_arming_is_resolved_through() -> Result<()> {
+        acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
+        let home = tempfile::tempdir().map_err(Error::process_io)?;
+        let outside = tempfile::tempdir().map_err(Error::process_io)?;
+        let alias = home.path().join("alias");
+        let watch = unarmed(alias.join("shell.cancel"));
+        let mut registered = Vec::new();
+        watch.arm_after_hold(|entry| {
+            registered.push(entry.to_owned());
+            if entry == home.path() {
+                link_directory(outside.path(), &alias)?;
+            }
+            Ok(())
+        })?;
+        assert!(
+            registered.contains(&alias),
+            "the alias created while arming was never registered: {registered:?}"
+        );
+        let changed = watch.credential_watch();
+        std::fs::write(outside.path().join("shell.cancel"), b"cancel")
+            .map_err(Error::process_io)?;
+        changed
+            .await
+            .map_err(|_| Error::Storage("input watch closed".into()))?;
+        Ok(())
+    }
 
     #[tokio::test]
     async fn aliased_inputs_report_target_writes_and_alias_retargets() -> Result<()> {
