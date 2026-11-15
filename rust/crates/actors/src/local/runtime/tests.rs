@@ -1270,10 +1270,17 @@ async fn interrupt_over_wire(
     );
     runtime.host(address.clone())?;
     runtime.wake(&address);
-    let (failures, ()) = tokio::join!(runtime.drain(), async {
-        guest.asked.notified().await;
-        guest.release.add_permits(1);
-    });
+    // The guest's answer releases the held delivery; a host that cancels
+    // without asking ends it first.
+    let drain = core::pin::pin!(runtime.drain());
+    let asked = core::pin::pin!(guest.asked.notified());
+    let failures = match futures::future::select(drain, asked).await {
+        futures::future::Either::Left((failures, _)) => failures,
+        futures::future::Either::Right(((), drain)) => {
+            guest.release.add_permits(1);
+            drain.await
+        }
+    };
     assert!(failures.is_empty(), "{failures:?}");
     assert_eq!(
         store
