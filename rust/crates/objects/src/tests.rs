@@ -103,6 +103,45 @@ async fn a_full_bounded_account_can_still_delete() -> Result<(), Box<dyn std::er
 }
 
 #[tokio::test]
+async fn injected_read_faults_fail_only_the_matching_calls_in_their_class()
+-> Result<(), Box<dyn std::error::Error>> {
+    let blobs = crate::MemoryObjects::memory();
+    let mut digests = Vec::new();
+    for body in [&b"transient"[..], b"corrupt", b"untouched"] {
+        let put = blobs
+            .put(OwnedBytes::from(body.to_vec()), Vec::new())
+            .await?;
+        digests.push(put.verified().ok_or("a put verifies")?.digest);
+    }
+    let [transient, corrupt, untouched]: [Digest; 3] =
+        digests.try_into().map_err(|_| "three puts")?;
+    let read = |digest| blobs.get(digest, ByteRange::FULL, 64);
+    let once = blobs
+        .medium()
+        .inject(crate::Fault::Transient, Some(1), |bytes| {
+            bytes == b"transient"
+        });
+    let always = blobs
+        .medium()
+        .inject(crate::Fault::Corrupt, None, |bytes| bytes == b"corrupt");
+    // A transient fault fails exactly its armed call; the retry reads cleanly.
+    let failed = read(transient).await.err().ok_or("the armed read fails")?;
+    assert_eq!(failed.code, ErrorCode::Unavailable);
+    assert_eq!(&read(transient).await?.body()[..], b"transient");
+    assert_eq!(once.hits(), 1);
+    // Damage at rest is permanent: every retry reports the same corruption.
+    for hits in 1..=2 {
+        let failed = read(corrupt).await.err().ok_or("a damaged read fails")?;
+        assert_eq!(failed.code, ErrorCode::Corrupt);
+        assert_eq!(always.hits(), hits);
+    }
+    // Negative control: reads the matchers reject are untouched.
+    assert_eq!(&read(untouched).await?.body()[..], b"untouched");
+    assert_eq!((once.hits(), always.hits()), (1, 2));
+    Ok(())
+}
+
+#[tokio::test]
 async fn releases_and_sweeps_commit_revisions() -> Result<(), Box<dyn std::error::Error>> {
     let blobs = crate::MemoryObjects::memory();
     let put = blobs.put(OwnedBytes::from(vec![3; 8]), Vec::new()).await?;

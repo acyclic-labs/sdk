@@ -52,6 +52,8 @@ pub use acyclic_stream::SealedBytes as Sealed;
 pub use availability::{Availability, AvailabilityCursor, AvailabilitySource};
 pub use blob::{ByteRange, Digest, Kind, Manifest, Part};
 pub use error::Error;
+#[cfg(any(test, feature = "test-support"))]
+pub use medium::{Fault, Injected};
 pub use medium::{Medium, MediumError, MemoryMedium};
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_error::{NativeObjectsCause, NativeObjectsError};

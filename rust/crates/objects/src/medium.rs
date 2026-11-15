@@ -123,6 +123,49 @@ pub struct MemoryMedium {
 struct Shared {
     keys: RwLock<Keys>,
     source: ObservationSource,
+    #[cfg(any(test, feature = "test-support"))]
+    faults: std::sync::Mutex<Vec<Armed>>,
+}
+
+/// A read failure a test injects into [`MemoryMedium`], typed by how a
+/// correct caller must treat it.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fault {
+    /// A transport failure a retry can clear: the read fails without effect,
+    /// which the engine reports as `Unavailable`.
+    Transient,
+    /// Bytes damaged at rest: the read returns them with one byte changed, so
+    /// a verified read reports `Corrupt` and a retry reads the same damage.
+    Corrupt,
+}
+
+/// Counts the reads one [`MemoryMedium::inject`] call has failed, so a test
+/// proves its fault reached the medium rather than a cache above it.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug)]
+pub struct Injected {
+    hits: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Injected {
+    /// The reads this fault has failed so far.
+    #[must_use]
+    pub fn hits(&self) -> usize {
+        self.hits.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+type Matcher = Box<dyn Fn(&[u8]) -> bool + Send + Sync>;
+
+#[cfg(any(test, feature = "test-support"))]
+struct Armed {
+    fault: Fault,
+    matches: Matcher,
+    remaining: Option<usize>,
+    hits: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[derive(Default)]
@@ -155,6 +198,66 @@ impl MemoryMedium {
         Self {
             shared: Arc::default(),
             budget: Some(budget),
+        }
+    }
+
+    /// Arms `fault` for [`Medium::read`] calls whose stored value `matching`
+    /// accepts: the next `calls` of them, or every one when `calls` is `None`.
+    /// A matching read takes the earliest armed fault still live; reads it
+    /// does not match are untouched. Every adapter's failures reach the engine
+    /// as these two classes, so any crate's test can prove its caller retries
+    /// the one and surfaces the other.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn inject(
+        &self,
+        fault: Fault,
+        calls: Option<usize>,
+        matching: impl Fn(&[u8]) -> bool + Send + Sync + 'static,
+    ) -> Injected {
+        let hits = Arc::default();
+        self.shared
+            .faults
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Armed {
+                fault,
+                matches: Box::new(matching),
+                remaining: calls,
+                hits: Arc::clone(&hits),
+            });
+        Injected { hits }
+    }
+
+    /// `stored` as this read observes it under the armed faults.
+    #[cfg(any(test, feature = "test-support"))]
+    fn injected(&self, stored: &OwnedBytes) -> Result<OwnedBytes, MediumError> {
+        let mut faults = self
+            .shared
+            .faults
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(armed) = faults
+            .iter_mut()
+            .find(|armed| armed.remaining != Some(0) && (armed.matches)(&stored[..]))
+        else {
+            return Ok(stored.clone());
+        };
+        if let Some(remaining) = &mut armed.remaining {
+            *remaining -= 1;
+        }
+        armed.hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        match armed.fault {
+            Fault::Transient => Err(MediumError::Failed(std::io::Error::other(
+                "injected transient read fault",
+            ))),
+            Fault::Corrupt => {
+                let mut damaged = stored.to_vec();
+                match damaged.first_mut() {
+                    Some(first) => *first ^= 0xff,
+                    None => damaged.push(0),
+                }
+                Ok(damaged.into())
+            }
         }
     }
 
@@ -214,6 +317,9 @@ impl Medium for MemoryMedium {
         let Some(value) = keys.keys.get(key) else {
             return Ok(None);
         };
+        #[cfg(any(test, feature = "test-support"))]
+        let bytes = &self.injected(&value.bytes)?;
+        #[cfg(not(any(test, feature = "test-support")))]
         let bytes = &value.bytes;
         let Some(range) = range else {
             return Ok(Some(bytes.clone()));
