@@ -1574,37 +1574,39 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     pub fn submit_retained(
         &self,
         mut prepared: PreparedPublish,
-    ) -> impl std::future::Future<Output = Result<Option<Snapshot>, Error>> + '_ {
+    ) -> acyclic_stream::BoxProviderFuture<'_, Result<Option<Snapshot>, Error>> {
         // Pin the retained publication once at its owner boundary. Forwarding
         // its large state through async wrappers multiplies stack use in every
         // caller, including native model coroutines.
-        Box::pin(acyclic_observability::operation_future!(
-            "acyclic.actors.submit",
-            Error::kind,
-            acyclic_native_runtime::obs::OperationSpan::new,
-            async move {
-                // Committed custody is durable state: every publication from
-                // its cut, a retry by the same owner included, finishes it
-                // first, and a failure leaves it committed for the next one.
-                if let Some((path, record)) = &prepared.unsettled {
-                    self.settle_custody(path, *record).await?;
-                    prepared.unsettled = None;
-                }
-                if !prepared.sealed {
-                    if let Some(composition) = &mut prepared.composition {
-                        // Compare canonical requests: a participant's own
-                        // validation may reorder equivalent fork exclusions.
-                        acyclic_stream::request::validate_commit(&mut prepared.request)?;
-                        let original = &prepared.request;
-                        let request = composition.seal(original.clone()).await.map_err(
-                            |error| match error.category() {
-                                GuestError::PreconditionChanged => {
-                                    Error::PreconditionChanged(Vec::new())
-                                }
-                                _ => Error::Handler(error),
-                            },
-                        )?;
-                        if !extends(original, &request, &self.root)
+        acyclic_stream::erase_provider_future(move || {
+            acyclic_observability::operation_future!(
+                "acyclic.actors.submit",
+                Error::kind,
+                acyclic_native_runtime::obs::OperationSpan::new,
+                async move {
+                    // Committed custody is durable state: every publication from
+                    // its cut, a retry by the same owner included, finishes it
+                    // first, and a failure leaves it committed for the next one.
+                    if let Some((path, record)) = &prepared.unsettled {
+                        self.settle_custody(path, *record).await?;
+                        prepared.unsettled = None;
+                    }
+                    if !prepared.sealed {
+                        if let Some(composition) = &mut prepared.composition {
+                            // Compare canonical requests: a participant's own
+                            // validation may reorder equivalent fork exclusions.
+                            acyclic_stream::request::validate_commit(&mut prepared.request)?;
+                            let original = &prepared.request;
+                            let request =
+                                composition.seal(original.clone()).await.map_err(|error| {
+                                    match error.category() {
+                                        GuestError::PreconditionChanged => {
+                                            Error::PreconditionChanged(Vec::new())
+                                        }
+                                        _ => Error::Handler(error),
+                                    }
+                                })?;
+                            if !extends(original, &request, &self.root)
                             || prepared.own.as_ref().is_some_and(|own| {
                                 request.mutations().filter(|mutation| {
                                     matches!(mutation, CommitMutation::Append { path, .. } if path == own)
@@ -1639,94 +1641,95 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                         {
                             return Err(Error::Invalid("composition changed the actor publication"));
                         }
-                        prepared.request = request;
+                            prepared.request = request;
+                        }
+                        prepared.sealed = true;
                     }
-                    prepared.sealed = true;
-                }
-                let outcome = self.provider.commit(prepared.request.clone()).await;
-                if matches!(&outcome, Ok(CommitOutcome::Committed(_))) {
-                    prepared = self.confirm_durable(prepared).await?;
-                }
-                // A retry refusal cannot undo an earlier attempt that may have applied.
-                if prepared.acknowledgement_unknown {
-                    if let Err(source) = &outcome {
+                    let outcome = self.provider.commit(prepared.request.clone()).await;
+                    if matches!(&outcome, Ok(CommitOutcome::Committed(_))) {
+                        prepared = self.confirm_durable(prepared).await?;
+                    }
+                    // A retry refusal cannot undo an earlier attempt that may have applied.
+                    if prepared.acknowledgement_unknown {
+                        if let Err(source) = &outcome {
+                            return Err(Error::Unknown {
+                                publication: Box::new(prepared),
+                                source: source.clone(),
+                            });
+                        }
+                    }
+                    if let Err(source) = &outcome
+                        && matches!(
+                            source.category(),
+                            StreamError::Unavailable | StreamError::InvalidResponse
+                        )
+                    {
+                        prepared.acknowledgement_unknown = true;
                         return Err(Error::Unknown {
                             publication: Box::new(prepared),
                             source: source.clone(),
                         });
                     }
-                }
-                if let Err(source) = &outcome
-                    && matches!(
-                        source.category(),
-                        StreamError::Unavailable | StreamError::InvalidResponse
-                    )
-                {
-                    prepared.acknowledgement_unknown = true;
-                    return Err(Error::Unknown {
-                        publication: Box::new(prepared),
-                        source: source.clone(),
-                    });
-                }
-                let retained = match &outcome {
-                    Ok(CommitOutcome::Committed(receipt)) => prepared.retained(receipt),
-                    Ok(CommitOutcome::Conflict(_)) | Err(_) => Ok(None),
-                };
-                let revalidate = match &outcome {
-                    Ok(CommitOutcome::Conflict(conflicts)) => {
-                        conflicts.iter().all(|conflict| {
-                            let path = match conflict {
-                                acyclic_stream::CommitConflict::Missing { path }
-                                | acyclic_stream::CommitConflict::Head { path, .. }
-                                | acyclic_stream::CommitConflict::Tail { path, .. }
-                                | acyclic_stream::CommitConflict::Exists { path } => path,
-                            };
-                            prepared.own.as_ref() != Some(path)
-                        }) && (prepared.revalidate_foreign
-                            || prepared
-                                .composition
-                                .as_ref()
-                                .is_some_and(|composition| composition.revalidate(conflicts)))
-                    }
-                    _ => false,
-                };
-                let settled = prepared.call.filter(|(call, _)| matches!(&outcome,
+                    let retained = match &outcome {
+                        Ok(CommitOutcome::Committed(receipt)) => prepared.retained(receipt),
+                        Ok(CommitOutcome::Conflict(_)) | Err(_) => Ok(None),
+                    };
+                    let revalidate = match &outcome {
+                        Ok(CommitOutcome::Conflict(conflicts)) => {
+                            conflicts.iter().all(|conflict| {
+                                let path = match conflict {
+                                    acyclic_stream::CommitConflict::Missing { path }
+                                    | acyclic_stream::CommitConflict::Head { path, .. }
+                                    | acyclic_stream::CommitConflict::Tail { path, .. }
+                                    | acyclic_stream::CommitConflict::Exists { path } => path,
+                                };
+                                prepared.own.as_ref() != Some(path)
+                            }) && (prepared.revalidate_foreign
+                                || prepared
+                                    .composition
+                                    .as_ref()
+                                    .is_some_and(|composition| composition.revalidate(conflicts)))
+                        }
+                        _ => false,
+                    };
+                    let settled = prepared.call.filter(|(call, _)| matches!(&outcome,
                     Ok(CommitOutcome::Conflict(conflicts)) if !conflicts.is_empty()
                         && conflicts.iter().all(|conflict| matches!(conflict,
                             acyclic_stream::CommitConflict::Exists { path } if path == call.settled()))));
-                let composed = prepared.composition.is_some();
-                if let Some(composition) = prepared.composition {
-                    if let Err(source) = composition.settle(outcome.as_ref()).await {
-                        return Err(Error::Settlement { outcome, source });
+                    let composed = prepared.composition.is_some();
+                    if let Some(composition) = prepared.composition {
+                        if let Err(source) = composition.settle(outcome.as_ref()).await {
+                            return Err(Error::Settlement { outcome, source });
+                        }
                     }
-                }
-                if let (Ok(CommitOutcome::Committed(receipt)), Some(own)) =
-                    (&outcome, &prepared.own)
-                {
-                    if composed {
-                        self.settled().insert(own.clone(), receipt.commit_id);
-                    } else {
-                        self.settled().remove(own);
+                    if let (Ok(CommitOutcome::Committed(receipt)), Some(own)) =
+                        (&outcome, &prepared.own)
+                    {
+                        if composed {
+                            self.settled().insert(own.clone(), receipt.commit_id);
+                        } else {
+                            self.settled().remove(own);
+                        }
                     }
+                    if let Some((call, trigger)) = settled {
+                        return Err(Error::CallSettled { call, trigger });
+                    }
+                    if revalidate {
+                        return Err(Error::PreconditionChanged(match outcome {
+                            Ok(CommitOutcome::Conflict(conflicts)) => conflicts,
+                            _ => Vec::new(),
+                        }));
+                    }
+                    if let Err(source) = &outcome
+                        && let Some(authority_unix_ms) = source.not_before_authority()
+                    {
+                        return Err(Error::AlarmNotDue { authority_unix_ms });
+                    }
+                    PreparedPublish::settle(&outcome?)?;
+                    retained
                 }
-                if let Some((call, trigger)) = settled {
-                    return Err(Error::CallSettled { call, trigger });
-                }
-                if revalidate {
-                    return Err(Error::PreconditionChanged(match outcome {
-                        Ok(CommitOutcome::Conflict(conflicts)) => conflicts,
-                        _ => Vec::new(),
-                    }));
-                }
-                if let Err(source) = &outcome
-                    && let Some(authority_unix_ms) = source.not_before_authority()
-                {
-                    return Err(Error::AlarmNotDue { authority_unix_ms });
-                }
-                PreparedPublish::settle(&outcome?)?;
-                retained
-            }
-        ))
+            )
+        })
     }
 
     /// The one constructor of every state write. Committed custody is
