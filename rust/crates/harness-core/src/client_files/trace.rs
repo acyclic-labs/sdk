@@ -88,7 +88,7 @@ impl<P: StreamProvider + ?Sized> FileView<P> for TraceFiles<P> {
         if *stream == source(agent)? {
             Ok(Some(Box::new(self.registry.subscribe(
                 StreamPath::new(agent.as_str())?,
-                stream.clone(),
+                stream,
             )?)))
         } else {
             Ok(None)

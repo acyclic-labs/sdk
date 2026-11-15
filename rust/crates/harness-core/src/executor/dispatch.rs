@@ -706,7 +706,7 @@ impl StockExecution<'_> {
                     Either::Left(continuation) => continuation.next().map(Ok),
                     Either::Right(stream) => {
                         acyclic_stream::trace::observe_value(
-                            acyclic_stream::trace::Request {
+                            &acyclic_stream::trace::Request {
                                 name: "provider-event",
                                 mechanism: acyclic_stream::trace::Mechanism::Wait,
                                 parent: None,
@@ -797,7 +797,7 @@ impl StockExecution<'_> {
                 };
                 let writer = self.journal_writes.lock().await;
                 let receipt = acyclic_stream::trace::observe(
-                    acyclic_stream::trace::Request {
+                    &acyclic_stream::trace::Request {
                         name: "journal-commit",
                         mechanism: acyclic_stream::trace::Mechanism::Wait,
                         parent: None,
