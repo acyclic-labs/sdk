@@ -138,7 +138,7 @@ fn hosted_publication_keeps_original_payload_until_device_write_and_stop_joins_i
     drop(send);
     device.wait_mounted()?;
     let io = Arc::new(HostIo::host(
-        Device::Hosted {
+        Device {
             device,
             allocation,
             maximum_write: page,

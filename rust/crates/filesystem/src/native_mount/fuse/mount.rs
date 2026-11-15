@@ -40,19 +40,13 @@ pub(super) struct Mount {
     detachment_poll: Option<Box<dyn FnMut(i32) -> io::Result<bool> + Send>>,
 }
 
-pub(super) enum Device {
-    Hosted {
-        device: PacketDevice,
-        allocation: crate::NativeAllocation,
-        maximum_write: u32,
-    },
-    #[cfg(test)]
-    InProcess(File),
-}
-
-#[cfg(test)]
-pub(super) fn in_process_negative_control<T>(operation: impl FnOnce() -> T) -> T {
-    tests::with_in_process(operation)
+/// The /dev/fuse device, always held by the external host process. No thread
+/// of a process that can enter the mount ever holds it: a killed owner whose
+/// thread waits on its own mount would otherwise pin the connection forever.
+pub(super) struct Device {
+    pub(super) device: PacketDevice,
+    pub(super) allocation: crate::NativeAllocation,
+    pub(super) maximum_write: u32,
 }
 
 impl Mount {
@@ -93,12 +87,6 @@ impl Mount {
             })?;
         // Transfer before installing the namespace: the owner must never hold
         // /dev/fuse while another of its threads can enter the mounted volume.
-        #[cfg(test)]
-        if tests::in_process() {
-            tests::mount_in_process(path, writable, &file, mode)?;
-            *device = Some(Device::InProcess(file));
-            return Ok(());
-        }
         let funded = super::host_io::fund_device(work)?;
         let hosted = PacketDevice::prepare(file, funded.capacity)?;
         match hosted.mount_fuse(
@@ -109,7 +97,7 @@ impl Mount {
             writable,
         ) {
             Ok(()) => {
-                *device = Some(Device::Hosted {
+                *device = Some(Device {
                     device: hosted,
                     allocation: funded.allocation,
                     maximum_write: funded.maximum_write,
@@ -205,7 +193,7 @@ impl Mount {
         let received = hosted.wait_mounted();
         let received_device = received.is_ok();
         if received_device {
-            *device = Some(Device::Hosted {
+            *device = Some(Device {
                 device: hosted,
                 allocation: funded.allocation,
                 maximum_write: funded.maximum_write,

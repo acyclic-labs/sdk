@@ -382,7 +382,7 @@ pub(super) fn linux_server_loss_and_owner_death_retire_the_original_connection_a
 fn original_connection_retires_after_server_loss() -> Result<(), Box<dyn std::error::Error>> {
     // A live facade and its notification sinks retain control, never the
     // physical device. Stop must retire the external connection before a fresh
-    // lookup; the pending-owner proof covers the old in-process negative.
+    // lookup; the pending-owner proof covers a killed owner mid-request.
     let device_count = || -> std::io::Result<usize> {
         let mut count = 0;
         for entry in std::fs::read_dir("/proc/self/fd")? {

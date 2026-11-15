@@ -108,15 +108,11 @@ impl HostIo {
         device: super::mount::Device,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Self, super::NativeMountError> {
-        let (device, allocation, maximum_write) = match device {
-            super::mount::Device::Hosted {
-                device,
-                allocation,
-                maximum_write,
-            } => (device, allocation, maximum_write),
-            #[cfg(test)]
-            super::mount::Device::InProcess(device) => return Self::new(device, work),
-        };
+        let super::mount::Device {
+            device,
+            allocation,
+            maximum_write,
+        } = device;
         let (stream, retirement) = device.into_parts();
         Self::from_stream(stream, Some((retirement, allocation)), maximum_write, work)
     }

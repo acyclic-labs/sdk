@@ -392,7 +392,7 @@ mod tests {
             funded.capacity,
         )?;
         let io = Arc::new(super::super::host_io::HostIo::host(
-            super::super::mount::Device::Hosted {
+            super::super::mount::Device {
                 device,
                 allocation: funded.allocation,
                 maximum_write: funded.maximum_write,
