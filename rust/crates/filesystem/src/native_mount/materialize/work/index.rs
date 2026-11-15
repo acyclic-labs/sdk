@@ -183,9 +183,6 @@ impl<K: Ord, V> Tree for GenerationIndex<K, V> {
     fn invalid() -> Self::Error {
         crate::NativeTreeMaterializationError::InvalidLayout.into()
     }
-    fn root(&self) -> Option<usize> {
-        self.root
-    }
     fn put_root(&mut self, root: Option<usize>, copied: &mut usize) -> Result<(), Self::Error> {
         self.root = root;
         *copied += std::mem::size_of::<Option<usize>>();

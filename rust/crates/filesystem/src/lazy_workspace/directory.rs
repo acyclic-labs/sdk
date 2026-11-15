@@ -17,7 +17,12 @@ pub struct LazyDirectoryEntry {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LazyDirectoryNode {
     /// Exact authored identity and kind at the selected immutable generation.
-    Authored { file_id: FileId, kind: FileKind },
+    Authored {
+        /// The authored file.
+        file_id: FileId,
+        /// The authored file's kind.
+        kind: FileKind,
+    },
     /// Source metadata captured by this bounded page.
     Source(SourceNode),
 }
@@ -250,7 +255,7 @@ impl<
         result
     }
     /// Lists a mounted unpublished checkout.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(test)]
     pub(crate) async fn list_directory_in_checkout(
         &self,
         checkout: &mut crate::Checkout<A, O>,

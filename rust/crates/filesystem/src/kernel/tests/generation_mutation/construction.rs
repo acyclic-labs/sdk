@@ -30,7 +30,6 @@ fn transaction_construction_rejects_every_contradictory_sparse_seed()
         TransactionState::new(
             plan,
             lookups,
-            config(),
             &mut MutationLeaf {
                 accounting: &mut accounting,
                 allocation: &mut allocation,

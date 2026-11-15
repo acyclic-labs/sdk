@@ -26,6 +26,7 @@ impl WorkspaceName {
     }
 
     /// Validates through the canonical parser without retaining an owned name.
+    #[cfg(all(not(loom), any(test, feature = "fuzzing")))]
     pub(crate) fn validate_with_accounting(
         name: &str,
         accounting: &mut KernelAccounting<'_>,

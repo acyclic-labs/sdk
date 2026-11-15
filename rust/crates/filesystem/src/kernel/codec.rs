@@ -472,6 +472,7 @@ impl<'a> Decoder<'a> {
             .len())
     }
 
+    #[cfg(test)]
     pub(crate) fn skip_bounded_bytes(
         &mut self,
         maximum: u32,

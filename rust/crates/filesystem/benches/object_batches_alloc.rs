@@ -1,3 +1,4 @@
+//! Object batch benchmarks, with allocation profiling.
 #[path = "support/object_batches.rs"]
 mod object_batches;
 

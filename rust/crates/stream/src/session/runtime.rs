@@ -1,8 +1,6 @@
 //! Session tracing context and stream boxing.
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) use acyclic_native_runtime::obs::OperationSpan;
-#[cfg(not(target_arch = "wasm32"))]
-pub(super) use acyclic_native_runtime::obs::waiting;
 #[cfg(target_arch = "wasm32")]
 pub(super) use context::OperationSpan;
 

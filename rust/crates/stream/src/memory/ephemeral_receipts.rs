@@ -91,11 +91,6 @@ impl EphemeralReplay {
     fn is_live(&self) -> bool {
         self.live.load(std::sync::atomic::Ordering::Acquire)
     }
-    fn envelope(&self) -> &CommittedEnvelope {
-        self.fact.envelope().unwrap_or_else(|| {
-            unreachable!("successful append, fork and commit retain their original envelope")
-        })
-    }
 }
 
 struct ReceiptProbe<F>(F);

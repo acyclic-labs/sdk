@@ -489,7 +489,7 @@ pub(crate) mod publish_probe {
     use std::cell::Cell;
 
     /// The steps a kill can follow: created, half written, closed, renamed.
-    #[cfg(target_os = "linux")]
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) const STEPS: usize = 4;
     const KILLED: &str = "killed during record publication";
 
@@ -503,7 +503,7 @@ pub(crate) mod publish_probe {
             const { std::cell::RefCell::new(None) };
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn duplicate_parent_handles(duplicate: bool) {
         DUPLICATE_PARENTS.set(duplicate);
     }
@@ -512,11 +512,12 @@ pub(crate) mod publish_probe {
         DUPLICATE_PARENTS.get()
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn omit_parent_sync(omit: bool) {
         SKIP_PARENT_SYNC.set(omit);
     }
 
+    #[cfg(test)]
     pub(crate) fn omit_reader_sync(omit: bool) {
         SKIP_READER_SYNC.set(omit);
     }
@@ -528,7 +529,7 @@ pub(crate) mod publish_probe {
         SKIP_READER_SYNC.get()
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn before_directory_sync(hook: impl FnOnce() + 'static) {
         AFTER_RENAME.set(Some(Box::new(hook)));
     }
@@ -540,12 +541,13 @@ pub(crate) mod publish_probe {
     }
 
     /// Kills the next publication on this thread after `step`.
+    #[cfg(test)]
     pub(crate) fn kill_at(step: Option<usize>) {
         KILL_AT.set(step);
     }
 
     /// Negative control: publish by writing the record in place.
-    #[cfg(target_os = "linux")]
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn tear(torn: bool) {
         TORN.set(torn);
     }

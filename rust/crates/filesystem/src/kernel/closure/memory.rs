@@ -255,6 +255,7 @@ impl ProofGuard {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn retained_bytes(&self) -> u64 {
         match self {
             ProofGuard::Standalone { bytes, .. } => *bytes,

@@ -24,6 +24,7 @@ path = "tests/computed_folds.rs"
 [[test]]
 name = "hosted_sources"
 path = "tests/hosted_sources.rs"
+required-features = ["test-support"]
 
 [[test]]
 name = "browser_commit"

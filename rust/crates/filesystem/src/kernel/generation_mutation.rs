@@ -255,7 +255,6 @@ async fn apply_generation_mutations_validated<S: AsyncObjectStore>(
     let state = TransactionState::new(
         &plan.value,
         &lookups,
-        config,
         &mut MutationLeaf {
             accounting,
             allocation: &mut allocation,
@@ -1037,7 +1036,6 @@ struct TransactionState {
     records: Vec<RecordState>,
     directory_edits: Vec<DirectoryEdit>,
     removed_directories: Vec<FileId>,
-    config: VolumeConfig,
 }
 
 struct MutationLeaf<'a, 'work> {
@@ -1072,7 +1070,6 @@ impl TransactionState {
     fn new(
         plan: &MutationPlan,
         lookups: &InitialLookups,
-        config: VolumeConfig,
         leaf: &mut MutationLeaf<'_, '_>,
     ) -> Result<Self, crate::FsError> {
         let lookup = &lookups.paths.value;
@@ -1256,7 +1253,6 @@ impl TransactionState {
             records,
             directory_edits,
             removed_directories,
-            config,
         })
     }
 

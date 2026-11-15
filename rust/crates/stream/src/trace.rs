@@ -17,7 +17,7 @@ pub use context::{
     accompany, accompany_sync, observe, observe_outcome, observe_sync, observe_value,
 };
 #[cfg(feature = "serde")]
-pub(crate) use context::{any_source, inherit, inherit_stream, is_source, records, source_matches};
+pub(crate) use context::{inherit, inherit_stream, is_source, records, source_matches};
 #[cfg(feature = "serde")]
 mod guard;
 #[cfg(feature = "serde")]

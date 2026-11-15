@@ -1,3 +1,4 @@
+//! Object batch benchmarks.
 #[path = "support/object_batches.rs"]
 mod object_batches;
 

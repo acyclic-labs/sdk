@@ -163,7 +163,7 @@ impl Cancelled<'_> {
 impl Cancelled<'static> {
     /// Arms a blocking primitive's event without allocating another waker.
     /// Notifications may be coalesced or repeated, like ordinary task wakeups.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(test)]
     pub(crate) fn notify(&mut self, notify: fn()) {
         let previous = self.waiter.as_ref().and_then(|waiter| {
             waiter

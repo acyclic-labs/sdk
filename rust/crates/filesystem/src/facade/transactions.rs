@@ -34,14 +34,6 @@ impl AuthoredTransactionInput<'_> {
         }
     }
 
-    pub(super) fn capacity(&self) -> usize {
-        match self {
-            Self::Owned { capacity, .. } => *capacity,
-            #[cfg(all(not(target_arch = "wasm32"), any(test, not(target_arch = "wasm32"))))]
-            Self::Borrowed(mutations) => mutations.len(),
-        }
-    }
-
     pub(super) fn retire(self, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
         match self {
             Self::Owned {

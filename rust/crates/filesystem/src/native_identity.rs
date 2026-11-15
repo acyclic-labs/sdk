@@ -46,10 +46,6 @@ impl NativeRootIdentity {
         native_root_identity(file)
     }
 
-    pub(crate) fn from_metadata(metadata: &cap_std::fs::Metadata) -> std::io::Result<Self> {
-        native_metadata_identity(metadata)
-    }
-
     /// Returns the canonical platform-neutral 16-byte identity encoding.
     #[must_use]
     pub fn to_bytes(self) -> [u8; 16] {
@@ -73,17 +69,6 @@ impl NativeRootIdentity {
     }
 }
 
-#[cfg(unix)]
-fn native_metadata_identity(
-    metadata: &cap_std::fs::Metadata,
-) -> std::io::Result<NativeRootIdentity> {
-    use cap_std::fs::MetadataExt;
-    Ok(NativeRootIdentity {
-        device: metadata.dev(),
-        object: metadata.ino(),
-    })
-}
-
 #[cfg(windows)]
 fn native_metadata_identity(
     metadata: &cap_std::fs::Metadata,
@@ -105,14 +90,6 @@ fn native_metadata_identity(
         device: u64::from(device),
         object,
     })
-}
-
-#[cfg(not(any(unix, windows)))]
-fn native_metadata_identity(_: &cap_std::fs::Metadata) -> std::io::Result<NativeRootIdentity> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "stable host file identity is unavailable on this platform",
-    ))
 }
 
 #[cfg(unix)]

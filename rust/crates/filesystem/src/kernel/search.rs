@@ -49,6 +49,7 @@ pub(crate) fn binary_search_with_accounting<T>(
 /// Follows the ordinary whole-slice binary-search decision tree. Slots before
 /// `known_before` are already known to compare Less, so those comparisons can
 /// be inferred. Every actual probe is a subsequence of the baseline probes.
+#[cfg(test)]
 pub(crate) fn binary_search_from_with_accounting<T>(
     items: &[T],
     known_before: usize,
@@ -65,6 +66,7 @@ pub(crate) fn binary_search_from_with_accounting<T>(
 
 /// The same probe plan for any rank-addressable collection. Navigation to a
 /// rank examines integer topology only; payload comparison follows admission.
+#[cfg(test)]
 pub(crate) fn binary_search_indexed_with_accounting(
     len: usize,
     known_before: usize,
