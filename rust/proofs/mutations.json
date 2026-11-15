@@ -11,6 +11,12 @@
   "evidence": [
     "rust/proofs/spawn-slots/evidence/20261027/source-join.patch"
   ],
+  "runner": [
+    {
+      "patch": "rust/proofs/native-line-eof/runner-single-property.patch",
+      "test": "rust/proofs/native-line-eof/qualification.test.mjs"
+    }
+  ],
   "selfTest": {
     "claim": "planted-unobservable",
     "step": "unchanged oracle rejects production mutation",

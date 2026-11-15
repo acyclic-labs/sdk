@@ -1,18 +1,19 @@
 diff --git a/rust/proofs/qualify.mjs b/rust/proofs/qualify.mjs
+index c9ca0ae129c..3c47f5602ff 100644
 --- a/rust/proofs/qualify.mjs
 +++ b/rust/proofs/qualify.mjs
-@@ -1711,7 +1711,7 @@ if (claim === "--help" && extra.length === 0) {
- } else {
-   const [source, crate, test, diagnostic, features, options = {}] = claims[claim];
+@@ -143,7 +143,7 @@ function qualify(claim, entry, instrumented, from, detail = false) {
    const environment = { ...process.env, ...options.env };
+   // A mutation gated on environment holds its variables only while it is checked.
+   let mutationEnv = {};
 -  const tests = [test, ...(options.additionalTests ?? [])];
 +  const tests = [test];
-   const sourcePath = new URL(source, new URL("../../", import.meta.url));
-   const patch = claim === "work-mixed"
-     ? "rust/proofs/work-arithmetic/mixed-mutation.patch"
-@@ -1843,7 +1843,7 @@ if (claim === "--help" && extra.length === 0) {
-         }
+   const patch = defaultPatch(claim, options);
+   const target = options.target ?? ["--lib"];
+   let fuzzTarget;
+@@ -273,7 +273,7 @@ function qualify(claim, entry, instrumented, from, detail = false) {
          step = `unchanged oracle rejects production mutation: ${mutation.patch}`;
+         mutationEnv = mutation.env ?? {};
          const mutated = check(mutation.label, mutation.command ?? command, mutation.source ?? source);
 -        const diagnostics = [mutation.diagnostic, ...(mutation.additionalDiagnostics ?? options.additionalDiagnostics ?? [])];
 +        const diagnostics = [mutation.diagnostic];

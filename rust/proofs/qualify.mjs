@@ -50,6 +50,8 @@ function report() {
     }
   }
   for (const mutation of manifest.selfTest.entry[5].mutations) listed.set(mutation.patch, manifest.selfTest.claim);
+  // Runner mutations change this runner; their named node test must reject them.
+  for (const { patch, test } of manifest.runner) listed.set(patch, test);
   const evidence = new Set(manifest.evidence);
   let stale = 0, unlisted = 0;
   for (const patch of retainedPatches()) {
