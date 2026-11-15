@@ -173,6 +173,7 @@ mod wall_alarm;
 pub use wall_alarm::{AlarmCallback, AlarmWait, WallAlarm};
 mod blocking;
 mod blocking_future;
+pub mod cost;
 #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
 pub mod resources;
 mod task;

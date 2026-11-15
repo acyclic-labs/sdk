@@ -80,7 +80,7 @@ fn sync_file_target(
 ) -> io::Result<Durability> {
     let run = || sync_file_impl(target, durability, meter);
     #[cfg(feature = "test-support")]
-    return testing::durable_operation(trace_name("file:sync", durability), run);
+    return testing::durable_flush(trace_name("file:sync", durability), run);
     #[cfg(not(feature = "test-support"))]
     run()
 }
@@ -191,7 +191,7 @@ pub(crate) fn sync_cached_data(
 
 fn sync_data_target(target: SyncTarget<'_>, durability: Durability) -> io::Result<Durability> {
     #[cfg(feature = "test-support")]
-    return testing::durable_operation(trace_name("file:sync_data", durability), || {
+    return testing::durable_flush(trace_name("file:sync_data", durability), || {
         sync_data_impl(target, durability)
     });
     #[cfg(not(feature = "test-support"))]
@@ -226,7 +226,7 @@ fn sync_data_impl(target: SyncTarget<'_>, durability: Durability) -> io::Result<
 /// elsewhere, where a caller flushes each file instead.
 pub fn sync_filesystem(path: &Path) -> io::Result<()> {
     #[cfg(feature = "test-support")]
-    return testing::durable_operation("file:sync_filesystem", || sync_filesystem_impl(path));
+    return testing::durable_flush("file:sync_filesystem", || sync_filesystem_impl(path));
     #[cfg(not(feature = "test-support"))]
     sync_filesystem_impl(path)
 }
@@ -261,9 +261,7 @@ fn sync_filesystem_impl(path: &Path) -> io::Result<()> {
 /// Flushes the directory entry namespace on platforms exposing directory flushes.
 pub fn sync_parent(path: &Path, durability: Durability) -> io::Result<()> {
     #[cfg(feature = "test-support")]
-    return testing::durable_operation("file:sync_parent", || {
-        sync_parent_ordered(path, durability)
-    });
+    return testing::durable_flush("file:sync_parent", || sync_parent_ordered(path, durability));
     #[cfg(not(feature = "test-support"))]
     sync_parent_ordered(path, durability)
 }

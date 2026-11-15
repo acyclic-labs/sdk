@@ -277,6 +277,17 @@ pub fn durable_write(
     result
 }
 
+/// A [`durable_operation`] that flushes to stable storage: the one site that
+/// charges [`Cost::Fsync`](crate::cost::Cost::Fsync). Every flush names itself
+/// here, so the ledger never infers flushes from operation names.
+pub fn durable_flush<T>(
+    operation: &'static str,
+    work: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    super::ledger::charge(crate::cost::Cost::Fsync, 0);
+    durable_operation(operation, work)
+}
+
 /// Runs the original flush, truncation or namespace operation without changing
 /// its durability policy. A torn non-data operation fails before dispatch.
 pub fn durable_operation<T>(

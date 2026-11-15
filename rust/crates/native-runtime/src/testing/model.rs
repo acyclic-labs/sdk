@@ -23,6 +23,7 @@ fn context(schedule: &Schedule) -> Context {
         owned: false,
         detail: Arc::new(Mutex::new(Arc::from(""))),
         host: None,
+        operation: None,
     }
 }
 
