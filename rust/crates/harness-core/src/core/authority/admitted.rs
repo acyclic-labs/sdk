@@ -45,14 +45,15 @@ pub enum ScopeDerivation<'a> {
         reader: AgentId,
     },
     /// An agent's workload under its admission: every parent label except
-    /// `HARNESS_HOST` and the structured `filesystem:` ceiling. The ceiling's
-    /// `volume: None` is the host's selection, so a guest holding it could
-    /// select another agent's journal or private volume by role. It is
+    /// `HARNESS_HOST`, with the structured `filesystem:` ceiling resolved by
+    /// `ceiling_grants`. A ceiling naming only exact volumes is kept. A
+    /// ceiling's `volume: None` is the host's selection, so a guest holding it
+    /// could select another agent's journal or private volume by role: it is
     /// replaced by explicit labels for the agent's own bindings within its
     /// actions, and a reading ceiling adds the agent's [`OwnJournalRead`].
     /// Nothing else is added, so a workload never widens its parent; a
-    /// ceiling the explicit labels cannot carry exactly refuses the derivation
-    /// (`ceiling_grants`). Admitted agents derive only this way.
+    /// ceiling the explicit labels cannot carry exactly refuses the
+    /// derivation. Admitted agents derive only this way.
     ///
     /// [`OwnJournalRead`]: crate::conversation::OwnJournalRead
     Workload {
@@ -130,12 +131,6 @@ impl<'a> ScopeDerivation<'a> {
                     )?;
                     grants.retain(|label| !denied.iter().any(|prefix| label.starts_with(prefix)));
                     grants.extend(selected);
-                    if !denied.contains(&VolumeOperation::Read.capability_prefix()) {
-                        grants.push(
-                            crate::conversation::OwnJournalRead::of(journal.provider(), *owner)?
-                                .into_label(),
-                        );
-                    }
                 }
                 Ok((Cow::Owned(Capabilities::new(grants)), Some(*owner)))
             }

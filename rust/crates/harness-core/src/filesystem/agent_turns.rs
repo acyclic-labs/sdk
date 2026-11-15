@@ -558,24 +558,30 @@ fn seed(volumes: &[WorkspaceEntry]) -> Result<Option<VolumeRef>> {
 }
 
 /// A workload's selection under a structured `filesystem:` `ceiling` held by
-/// its admission. The ceiling's `volume: None` stands for the host's
-/// authenticated volume selection, which for a workload is its own binding
-/// table: [`volume_grants`] for `owner` and its provider's seed layer, each
-/// operation only where the ceiling allows every action its explicit label
-/// carries. The label itself never reaches the workload, so no guest holds a
-/// grant that names volumes by role and could reach another agent's journal
-/// or private volume.
+/// its admission.
+///
+/// A ceiling whose every grant names an exact volume reaches only those
+/// volumes, so it carries to the workload unchanged, as every other parent
+/// label does; each volume's persisted policy still decides its paths.
+///
+/// A ceiling's `volume: None` instead stands for the host's authenticated
+/// volume selection, which for a workload is its own binding table:
+/// [`volume_grants`] for `owner`, its provider's seed layer and its
+/// [`crate::conversation::OwnJournalRead`], each operation only where the
+/// ceiling allows every action its explicit label carries. That label never
+/// reaches the workload, so no guest holds a grant that names volumes by role
+/// and could reach another agent's journal or private volume.
 ///
 /// Also returns the label prefixes the ceiling forbids: the workload drops
 /// every parent label with one of them, so an explicit label never grants an
-/// operation the ceiling withheld. Whether the ceiling reads decides the
-/// agent's journal reads.
+/// operation the ceiling withheld.
 ///
 /// # Errors
-/// When `ceiling` restricts paths, volumes, lineage or expiry, or allows
-/// every [`super::workspace_access::RAW_WORKSPACE_LABELS`] operation without
-/// their [`super::workspace_access::RAW_WORKSPACE_ACTIONS`]: explicit volume
-/// labels cannot carry any of these.
+/// When a `volume: None` ceiling mixes with exact volumes, restricts paths,
+/// lineage or expiry, or allows every
+/// [`super::workspace_access::RAW_WORKSPACE_LABELS`] operation without their
+/// [`super::workspace_access::RAW_WORKSPACE_ACTIONS`]: explicit volume labels
+/// cannot carry any of these.
 pub(crate) fn ceiling_grants(
     ceiling: &str,
     volumes: &[WorkspaceEntry],
@@ -590,6 +596,15 @@ pub(crate) fn ceiling_grants(
             layers: Vec::new(),
             expires_at: None,
         });
+    if !capability.layers.is_empty()
+        && capability
+            .layers
+            .iter()
+            .flatten()
+            .all(|grant| grant.resource.volume.is_some())
+    {
+        return Ok((vec![ceiling.to_owned()], Vec::new()));
+    }
     if capability.expires_at.is_some() {
         return Err(Error::Unauthorized(
             "a workload's filesystem ceiling cannot carry its own expiry".into(),
@@ -603,7 +618,8 @@ pub(crate) fn ceiling_grants(
         .any(|grant| grant.resource != whole.layers[0][0].resource)
     {
         return Err(Error::Unauthorized(
-            "a workload derives only from a whole-volume filesystem ceiling".into(),
+            "a workload derives only from an exact-volume or whole-volume filesystem ceiling"
+                .into(),
         ));
     }
     let allows = |set: ActionSet| {
@@ -645,6 +661,8 @@ pub(crate) fn ceiling_grants(
         if let Some(seed) = seed(volumes)? {
             grants.push(seed.capability(VolumeOperation::Read, &mut None)?);
         }
+        grants
+            .push(crate::conversation::OwnJournalRead::of(journal.provider(), owner)?.into_label());
     } else {
         denied.extend([
             acyclic_fs::access::FILE_READ_PREFIX,

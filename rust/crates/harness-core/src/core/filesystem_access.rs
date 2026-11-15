@@ -73,7 +73,8 @@ pub(crate) enum ReadGrant<'p> {
 /// each path to the volume's persisted policy. Its `volume: None` stands for
 /// the host's authenticated selection, so only host-held scopes carry one: a
 /// workload's admission replaces it with explicit labels for the agent's own
-/// bindings (`ScopeDerivation::Workload`).
+/// bindings (`ScopeDerivation::Workload`). A workload keeps only a structured
+/// label naming exact volumes, whose compiled grants reach nothing else.
 pub(crate) fn structured_grant(
     grants: &crate::Capabilities,
     volume: &crate::conversation::VolumeRef,

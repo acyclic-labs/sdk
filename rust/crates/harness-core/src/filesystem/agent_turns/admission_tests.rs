@@ -2251,11 +2251,6 @@ fn within_parent(
             crate::filesystem::ceiling_grants(ceiling, volumes, journal, &[], owner)?;
         allowed.retain(|label| !denied.iter().any(|prefix| label.starts_with(prefix)));
         allowed.extend(selected);
-        if !denied.contains(&VolumeOperation::Read.capability_prefix()) {
-            allowed.push(
-                crate::conversation::OwnJournalRead::of(journal.provider(), owner)?.into_label(),
-            );
-        }
     }
     Ok(derived.capabilities().iter().all(|label| {
         allowed.iter().any(|held| held == label)
