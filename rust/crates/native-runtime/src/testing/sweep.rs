@@ -147,8 +147,16 @@ pub fn sweep_parallel<T: Send>(
         for _ in 0..workers {
             scope.spawn(|| {
                 loop {
-                    let seed = next.fetch_add(1, Ordering::Relaxed);
-                    if seed >= seeds.end || seed > failed_at.load(Ordering::Relaxed) {
+                    // Bounded: the counter stops at the range's end, so it
+                    // never wraps past `u64::MAX` into unrequested seeds.
+                    let Ok(seed) =
+                        next.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |seed| {
+                            (seed < seeds.end).then(|| seed + 1)
+                        })
+                    else {
+                        break;
+                    };
+                    if seed > failed_at.load(Ordering::Relaxed) {
                         break;
                     }
                     let outcome = run(seed, &world);
@@ -273,5 +281,8 @@ mod tests {
         );
         let (swept, values) = sweep_parallel("example", 3..64, Ok).expect("every seed passes");
         assert_eq!((swept.seeds, values), (61, (3..64).collect::<Vec<_>>()));
+        // A range ending at u64::MAX runs exactly its seeds and no others.
+        let (_, values) = sweep_parallel("example", u64::MAX - 2..u64::MAX, Ok).expect("passes");
+        assert_eq!(values, [u64::MAX - 2, u64::MAX - 1]);
     }
 }

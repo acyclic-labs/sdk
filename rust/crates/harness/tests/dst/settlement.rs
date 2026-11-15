@@ -105,6 +105,21 @@ fn effects_match(history: &[Settled]) -> std::result::Result<(), String> {
             .find(|settled| settled.call.name == "read" && settled.path() == Some(path))
             .ok_or_else(|| format!("the check never read {path}"))
     };
+    // Every entry must have worked: a world where all four tools fail
+    // would otherwise match unchanged files.
+    let read = history
+        .iter()
+        .any(|settled| settled.path() == Some("a.txt") && settled.succeeded());
+    for (entry, worked) in [
+        ("read", read),
+        ("write", successes("write") > 0),
+        ("edit", successes("edit") > 0),
+        ("remove", successes("remove") > 0),
+    ] {
+        if !worked {
+            return Err(format!("no {entry} call succeeded: {history:?}"));
+        }
+    }
     let edited = check("c.txt")?.rendered();
     let applied = oracle::edits(&edited).ok_or_else(|| format!("c.txt lost its base: {edited}"))?;
     if applied != successes("edit") {

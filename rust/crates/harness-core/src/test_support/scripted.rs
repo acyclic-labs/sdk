@@ -189,9 +189,13 @@ impl ScriptedModelProvider {
     /// stays unreconciled.
     #[must_use]
     pub fn reopened(&self) -> Self {
+        // The model's own settings survive; host state and observers do not.
         let mut provider = Self::new([]);
         provider.responder.clone_from(&self.responder);
         provider.answered = Arc::clone(&self.answered);
+        provider.capacity = self.capacity;
+        provider.token_counter.clone_from(&self.token_counter);
+        provider.reads_content = self.reads_content;
         provider
     }
 
@@ -531,7 +535,11 @@ impl ModelProvider for ScriptedModelProvider {
             let mut state = self.lock();
             state.reconciliations.push(dispatch);
             if self.responder.is_some() && state.recoveries.is_empty() {
-                // A responding model reconciles from its own answers.
+                // A responding model reconciles from its own answers, after
+                // the same check a scripted recovery passes.
+                if let Some(observer) = &self.reconciliation_observer {
+                    observer(dispatch)?;
+                }
                 return Ok(self.replay(dispatch, observed));
             }
             if state.dispatches.iter().any(|original| {
