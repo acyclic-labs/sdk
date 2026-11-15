@@ -185,15 +185,20 @@ where
     let allocation = root.1;
     let root = root.0;
     let operation = operation.0;
-    let actual = publication_root_identity(&root, &operation, &request, work)?;
+    // The layout proof (one mount, no nesting) buys rename safety, so it runs
+    // once on each path that reaches an effect, before that path's first one.
+    // A publication without effects reads no host topology.
     let store = state.materialization(work.clone());
     let mut journal = if let Some(journal) = store.load(request.operation_id).await? {
         validate_generation_journal(&journal, &request)?;
         check_native_plan(&journal.plan, work)?;
         work.set_original_work(journal.work);
         if journal.phase == MaterializationPhase::Applied && journal.plan.edits.is_empty() {
+            // A retry still answers for the checkout it names now.
+            matched_root_identity(work.root_identity(&root)?, &request)?;
             return Ok((None, journal));
         }
+        publication_root_identity(&root, &operation, &request, work)?;
         journal
     } else {
         let (plan, custody) =
@@ -202,6 +207,7 @@ where
             // Equal generations stay empty on every retry, independent of
             // later host edits. Changed generations still need a durable
             // acknowledgement even when their files already match the host.
+            // Planning held the root and matched its identity to the request.
             return Ok((
                 None,
                 MaterializationJournal {
@@ -209,7 +215,7 @@ where
                     version: JOURNAL_VERSION,
                     revision: 1,
                     plan,
-                    root_identity: Some(actual.to_bytes()),
+                    root_identity: Some(request.source_root_identity.to_bytes()),
                     preparation_identity: None,
                     preparation_progress: None,
                     preimages: Vec::new(),
@@ -221,6 +227,7 @@ where
                 },
             ));
         }
+        let actual = publication_root_identity(&root, &operation, &request, work)?;
         let parent = super::directory_preparation::prepare_publication_parent(
             &operation,
             work,
@@ -355,7 +362,16 @@ fn publication_root_identity(
     request: &NativeWorkspacePublication<'_>,
     work: &NativeMaterializationWork,
 ) -> Result<crate::NativeRootIdentity, NativeWorkspacePublicationError> {
-    let actual = validate_native_preparation_location(root, operation, work)?;
+    matched_root_identity(
+        validate_native_preparation_location(root, operation, work)?,
+        request,
+    )
+}
+
+fn matched_root_identity(
+    actual: crate::NativeRootIdentity,
+    request: &NativeWorkspacePublication<'_>,
+) -> Result<crate::NativeRootIdentity, NativeWorkspacePublicationError> {
     if actual != request.source_root_identity {
         return Err(NativeTreeMaterializationError::AllocationChanged {
             expected: request.source_root_identity,
