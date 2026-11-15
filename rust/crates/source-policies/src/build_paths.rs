@@ -33,22 +33,86 @@ const ALLOWED: [(&str, usize); 3] = [
     ("rust/crates/stream/tests/credential_javascript.rs", 1),
 ];
 
-/// `text` with Rust's insignificant spacing removed: whitespace survives only as one space
-/// between two word characters, so each token sequence has one spelling.
+/// `text` with Rust's insignificant spacing and comments removed: whitespace survives only as
+/// one space between two word characters, and a comment counts as whitespace, so each token
+/// sequence has one spelling. String and character literals are kept whole, so a `//` inside
+/// one starts no comment.
 fn squeeze(text: &str) -> String {
     let word = |c: char| c.is_alphanumeric() || c == '_';
     let mut squeezed = String::with_capacity(text.len());
     let mut spaced = false;
-    for c in text.chars() {
-        if c.is_whitespace() {
-            spaced = true;
-            continue;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (c, chars.peek()) {
+            ('/', Some('/')) => {
+                chars.by_ref().take_while(|c| *c != '\n').for_each(drop);
+                spaced = true;
+                continue;
+            }
+            ('/', Some('*')) => {
+                chars.next();
+                let (mut depth, mut last) = (1, ' ');
+                for c in chars.by_ref() {
+                    match (last, c) {
+                        ('/', '*') => (depth, last) = (depth + 1, ' '),
+                        ('*', '/') => (depth, last) = (depth - 1, ' '),
+                        _ => last = c,
+                    }
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                spaced = true;
+                continue;
+            }
+            _ if c.is_whitespace() => {
+                spaced = true;
+                continue;
+            }
+            _ => {}
         }
         if spaced && squeezed.ends_with(word) && word(c) {
             squeezed.push(' ');
         }
         spaced = false;
         squeezed.push(c);
+        // A string or character literal is copied through its closing quote. A lifetime has
+        // no closing quote within two characters and is copied as written.
+        if c == '"' {
+            let stem = squeezed[..squeezed.len() - 1].trim_end_matches('#');
+            let hashes = squeezed.len() - 1 - stem.len();
+            let prefix = &stem[stem.trim_end_matches(word).len()..];
+            if matches!(prefix, "r" | "br" | "cr") {
+                // A raw string ends at a quote followed by its own number of hashes.
+                let close = format!("\"{}", "#".repeat(hashes));
+                for c in chars.by_ref() {
+                    squeezed.push(c);
+                    if squeezed.ends_with(&close) && squeezed.len() > stem.len() + 2 * hashes + 1 {
+                        break;
+                    }
+                }
+                continue;
+            }
+        }
+        let quote = match c {
+            '"' => Some('"'),
+            '\'' if chars.clone().take(3).any(|c| c == '\'') || chars.peek() == Some(&'\\') => {
+                Some('\'')
+            }
+            _ => None,
+        };
+        if let Some(quote) = quote {
+            let mut escaped = false;
+            for c in chars.by_ref() {
+                squeezed.push(c);
+                match c {
+                    _ if escaped => escaped = false,
+                    '\\' => escaped = true,
+                    _ if c == quote => break,
+                    _ => {}
+                }
+            }
+        }
     }
     squeezed
 }
@@ -69,7 +133,12 @@ fn executable_tempdirs(text: &str) -> usize {
     let mut names = vec!["current_exe".to_owned()];
     for (at, _) in text.match_indices("current_exe()") {
         let statement = &text[text[..at].rfind([';', '{', '}']).map_or(0, |end| end + 1)..at];
-        if let Some(binding) = statement.strip_prefix("let ") {
+        // Attributes may precede the `let`; comments are already gone.
+        let binding = statement
+            .match_indices("let ")
+            .find(|(start, _)| !statement[..*start].ends_with(word))
+            .map(|(start, keyword)| &statement[start + keyword.len()..]);
+        if let Some(binding) = binding {
             let binding = binding.strip_prefix("mut ").unwrap_or(binding);
             let name: String = binding.chars().take_while(|c| word(*c)).collect();
             if !name.is_empty() {
@@ -191,6 +260,7 @@ fn planted_build_location_paths_fail_the_scan() {
     for plant in [
         format!("include_str!(concat!({manifest}, \"/x.txt\"))"),
         format!("include_bytes!(concat!(\n    {manifest},\n    \"/x.bin\"\n))"),
+        format!("// Not {manifest} at run time."),
     ] {
         assert!(scan(target, &plant).is_empty(), "{plant}");
     }
@@ -199,6 +269,13 @@ fn planted_build_location_paths_fail_the_scan() {
         "let executable = std::env::current_exe()?;\nlet d = Builder::new().tempdir_in(executable.parent().expect(\"parent\"));",
         "let mut exe = env::current_exe()?; tempfile::tempdir_in(exe.parent().unwrap())",
         "let executable =\n    std::env::current_exe()?;\ntempfile::tempdir_in (\n    executable.parent().unwrap())",
+        // Comments and attributes before the binding decide nothing.
+        "// The running binary.\nlet executable = std::env::current_exe()?;\ntempfile::tempdir_in(executable.parent().unwrap())",
+        "/* the binary; its */ let executable = std::env::current_exe()?;\ntempfile::tempdir_in(executable.parent().unwrap())",
+        "#[cfg(unix)]\nlet executable = std::env::current_exe()?;\ntempfile::tempdir_in(executable.parent().unwrap())",
+        "let quote = '\"'; let raw = r#\"\" // \"#; let executable = std::env::current_exe()?;
+tempfile::tempdir_in(executable.parent().unwrap())",
+        "let url = \"https://x\"; let executable = std::env::current_exe()?;\ntempfile::tempdir_in(executable.parent().unwrap())",
     ] {
         assert_eq!(
             scan(target, plant),
@@ -211,6 +288,8 @@ fn planted_build_location_paths_fail_the_scan() {
     for plant in [
         "let executable = std::env::current_exe()?; let d = tempfile::tempdir_in(base)?;",
         "let executable_dir = x; tempfile::tempdir_in(executable_dir)",
+        // A commented-out use is no use.
+        "// tempfile::tempdir_in(std::env::current_exe()?.parent().unwrap())",
     ] {
         assert!(scan(target, plant).is_empty(), "{plant}");
     }
