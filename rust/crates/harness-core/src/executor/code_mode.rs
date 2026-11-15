@@ -375,7 +375,6 @@ impl StockExecution<'_> {
                                 let _ = worker.await;
                                 return Ok(ExecutionProgress::Pending(operation));
                             }
-                            ExecutionProgress::Failed(reason) => return Ok(ExecutionProgress::Failed(reason)),
                             ExecutionProgress::PreDispatchFailed(failure) => return Ok(ExecutionProgress::PreDispatchFailed(failure)),
                         };
                         let ok = result.is_ok();
@@ -625,7 +624,6 @@ impl StockExecution<'_> {
             ExecutionProgress::Pending(operation) => {
                 return Ok(ExecutionProgress::Pending(operation));
             }
-            ExecutionProgress::Failed(reason) => return Ok(ExecutionProgress::Failed(reason)),
             ExecutionProgress::PreDispatchFailed(failure) => {
                 return Ok(ExecutionProgress::PreDispatchFailed(failure));
             }

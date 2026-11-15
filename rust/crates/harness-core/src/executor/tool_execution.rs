@@ -57,12 +57,11 @@ struct CallTarget {
     device: Option<Arc<crate::runtime::Target>>,
     filesystem: Option<[u8; 32]>,
 }
-/// A settled call can be shown to the model; an interrupted effect ends the turn.
+/// A settled call, refusals and interruptions included, is shown to the model.
 enum ToolInvocationOutcome<'a> {
     Controlled(crate::supervision::Control),
     Settled(crate::model::ToolResultContent, Option<ToolReceipt<'a>>),
     Pending(OperationId),
-    Interrupted,
 }
 
 /// One settled invocation, retaining its original result and replay credit.
@@ -670,12 +669,6 @@ impl<'io> StockExecution<'io> {
         // One match over every record state: a settlement replays whether or not it has a
         // start, so the turn's scan never stops at a settled call.
         let (content, receipt) = match recorded {
-            RecordedCall::Failed {
-                reason: ToolFailureKind::Interrupted,
-                ..
-            } => {
-                return Ok(ExecutionProgress::Failed(ToolFailureKind::Interrupted));
-            }
             RecordedCall::Failed { reason, cause, .. } => {
                 (tool_failure_content(reason, cause, self.io)?, None)
             }
@@ -738,6 +731,7 @@ impl<'io> StockExecution<'io> {
                             return Ok(ExecutionProgress::Pending(invocation.operation_id));
                         }
                         Some(Err(error)) => return Err(error),
+                        // The turn's own stop: record the call and end the turn.
                         None => {
                             self.reject_tool_call(
                                 journal,
@@ -748,7 +742,9 @@ impl<'io> StockExecution<'io> {
                                 Error::InteractionRejected(crate::InteractionRejection::Cancelled),
                             )
                             .await?;
-                            return Ok(ExecutionProgress::Failed(ToolFailureKind::Interrupted));
+                            return Err(Error::InteractionRejected(
+                                crate::InteractionRejection::Cancelled,
+                            ));
                         }
                     }
                 }
@@ -838,9 +834,6 @@ impl<'io> StockExecution<'io> {
                     ToolInvocationOutcome::Settled(content, receipt) => (content, receipt),
                     ToolInvocationOutcome::Controlled(control) => {
                         return Ok(ExecutionProgress::Controlled(control));
-                    }
-                    ToolInvocationOutcome::Interrupted => {
-                        return Ok(ExecutionProgress::Failed(ToolFailureKind::Interrupted));
                     }
                     ToolInvocationOutcome::Pending(operation) => {
                         return Ok(ExecutionProgress::Pending(operation));

@@ -549,3 +549,139 @@ async fn semantic_tool_preflight_replays_a_failure_but_native_infrastructure_sta
     }
     Ok(())
 }
+
+// GC-309: an interaction cancelled during a call, or a call whose run ended
+// before its outcome was recorded, is the model's failed tool result. The turn
+// goes on to its next model request, and a replay settles the same result
+// without dispatching or reconciling again. Only the turn's own stop ends it,
+// before another call or model request can start.
+#[tokio::test]
+async fn interrupted_and_cancelled_calls_settle_and_the_turn_continues() -> Result<()> {
+    struct Interrupted {
+        execute: fn() -> Error,
+        stop: Option<tokio_util::sync::CancellationToken>,
+        calls: AtomicUsize,
+        reconciles: AtomicUsize,
+    }
+    impl ToolExecutor for Interrupted {
+        fn execute<'a>(
+            &'a self,
+            _: ToolInvocation,
+            _: Option<crate::runtime::ToolContext>,
+        ) -> BoxFuture<'a, Result<ToolResult>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(stop) = &self.stop {
+                stop.cancel();
+            }
+            let error = (self.execute)();
+            Box::pin(async move { Err(error) })
+        }
+        // The process is gone and its outcome was never recorded.
+        fn reconcile<'a>(
+            &'a self,
+            _: ToolInvocation,
+            _: Option<crate::runtime::ToolContext>,
+        ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+            self.reconciles.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async {
+                Err::<Option<ToolResult>, _>(Error::InteractionRejected(
+                    crate::InteractionRejection::Cancelled,
+                ))
+            })
+        }
+    }
+    let cancelled: fn() -> Error =
+        || Error::InteractionRejected(crate::InteractionRejection::Cancelled);
+    // A lost response leaves the effect uncertain: the delivery ends and the
+    // next one reconciles the started call.
+    let lost: fn() -> Error = || Error::Cancelled;
+    for (execute, executions, expected, stops) in [
+        (cancelled, 1, (1, 0), false),
+        (lost, 2, (1, 1), false),
+        // The turn is stopped while the first of two calls runs.
+        (cancelled, 1, (1, 0), true),
+    ] {
+        let journal = Journal::default();
+        let scope = RuntimeScope::new(
+            crate::Capabilities::new(["model:generate", "tool:call:example.echo"]),
+            Limits::default(),
+        )?;
+        let original = admitted_context(scope.clone())?;
+        let tool = Arc::new(Interrupted {
+            execute,
+            stop: stops.then(|| journal.10.clone()),
+            calls: AtomicUsize::new(0),
+            reconciles: AtomicUsize::new(0),
+        });
+        let tools = echo_tools(
+            tool.clone(),
+            json!({"type":"object"}),
+            json!({"type":"object"}),
+            crate::tool::json_projection_schema(json!({"type":"object"})),
+        )?;
+        // A stopped turn starts no later call from the same response.
+        let model = Arc::new(if stops {
+            ScriptedModelProvider::new([
+                tool_turn([
+                    echo_call("call-1", json!({"value":"hello"})),
+                    echo_call("call-2", json!({"value":"hello"})),
+                ]),
+                done_turn(),
+            ])
+        } else {
+            scripted_model()
+        });
+        let operation = OperationId::new();
+        let executor = StockExecutor::new(
+            Model::new("fixture".into(), "exact".into(), "1".into())?,
+            model.clone(),
+            ContextPipeline::default(),
+            tools,
+        )
+        .with_tool_authority(scope, allowed()?)?
+        .with_compaction_policy(crate::context::CompactionPolicy::Disabled)
+        .with_task_context(&original, operation)?;
+        let input = TurnInput {
+            max_steps: None,
+            operation_id: operation,
+            input: ModelContent::Text("input".into()),
+            selected_context: None,
+        };
+        for _ in 1..executions {
+            assert!(executor.execute(input.clone(), &journal).await.is_err());
+        }
+        if stops {
+            assert!(matches!(
+                executor.execute(input, &journal).await,
+                Err(Error::InteractionRejected(
+                    crate::InteractionRejection::Cancelled
+                ))
+            ));
+            assert_eq!(model.requests().len(), 1, "a stopped turn asks no more");
+        } else {
+            let settled = executor.execute(input.clone(), &journal).await?;
+            assert_eq!(settled.text, "done");
+            assert_eq!(settled, executor.execute(input, &journal).await?);
+            let text = super::tools_1::tool_error_text(&model.requests()[1].messages, "call-1")
+                .expect("the next model request carries the call's failure");
+            assert!(
+                text.starts_with(ToolFailureKind::Interrupted.message())
+                    && text.ends_with("interaction cancelled"),
+                "{text}"
+            );
+        }
+        assert!(journal.0.lock().unwrap().iter().any(|record| matches!(
+            &record.event,
+            ExecutionEvent::ToolFailed { call_id, reason: ToolFailureKind::Interrupted, .. }
+                if call_id == "call-1"
+        )));
+        assert_eq!(
+            (
+                tool.calls.load(Ordering::SeqCst),
+                tool.reconciles.load(Ordering::SeqCst)
+            ),
+            expected
+        );
+    }
+    Ok(())
+}

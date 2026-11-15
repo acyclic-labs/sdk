@@ -439,9 +439,6 @@ impl StockExecution<'_> {
                         ExecutionProgress::Pending(wait) => {
                             return Ok(ExecutionProgress::Pending(wait));
                         }
-                        ExecutionProgress::Failed(reason) => {
-                            return Ok(ExecutionProgress::Failed(reason));
-                        }
                         ExecutionProgress::PreDispatchFailed(failure) => {
                             return Err(failure.into_error());
                         }
@@ -489,7 +486,6 @@ impl StockExecution<'_> {
             }
             ExecutionProgress::Controlled(control) => Ok(ExecutionProgress::Controlled(control)),
             ExecutionProgress::Pending(wait) => Ok(ExecutionProgress::Pending(wait)),
-            ExecutionProgress::Failed(reason) => Ok(ExecutionProgress::Failed(reason)),
             ExecutionProgress::PreDispatchFailed(failure) => Err(failure.into_error()),
         }
     }

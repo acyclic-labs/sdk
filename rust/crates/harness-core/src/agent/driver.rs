@@ -1668,19 +1668,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         drops: None,
                     });
                 }
-                ExecutionProgress::Failed(kind) => {
-                    self.host.settle(agent, turn).await.map_err(host_error)?;
-                    return failed(
-                        agent,
-                        &open,
-                        turn,
-                        inbox,
-                        input,
-                        notices,
-                        kind.message().into(),
-                    )
-                    .await;
-                }
                 ExecutionProgress::PreDispatchFailed(failure) => {
                     self.host.settle(agent, turn).await.map_err(host_error)?;
                     let message = failure.message().to_owned();
