@@ -1,0 +1,8 @@
+diff --git a/rust/crates/stream/src/lib/path.rs b/rust/crates/stream/src/lib/path.rs
+--- a/rust/crates/stream/src/lib/path.rs
++++ b/rust/crates/stream/src/lib/path.rs
+@@ -227,3 +227,3 @@
+                 .iter()
+-                .any(|excluded| relative_suffix(relative, excluded.as_str()).is_some())
++                .any(|excluded| { let _ = (relative, excluded); false })
+         })
