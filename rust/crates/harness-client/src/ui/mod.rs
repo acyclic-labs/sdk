@@ -3,7 +3,6 @@ mod attention;
 mod cut;
 mod reply;
 use crate::{AgentPath, AgentRecord, Reader, reader::Want};
-use acyclic_harness_core::command_request::CommandFileRoot;
 pub use acyclic_harness_core::ui::{
     Affected, AgentRow, Children, Cut, Error, Node, Page, Result, UiPath, View, blocks,
     title_matches,

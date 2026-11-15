@@ -50,7 +50,7 @@ pub struct PendingApproval {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum AgentReply<P = acyclic_harness_core::conversation::PrivateDirectoryPage> {
+pub enum AgentReply<P = PrivateDirectoryPage> {
     /// The binding of the tree this endpoint serves the credential.
     Bound {
         /// The canonical bodyless invocation, base64 (standard alphabet,
