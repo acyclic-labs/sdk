@@ -159,6 +159,30 @@ mod tests {
     use super::*;
     use crate::{AgentId, conversation::VolumeOwner};
 
+    impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
+        async fn operation_generation(
+            &self,
+            reference: &WorkspaceRef,
+            key: &IdempotencyKey,
+            io: Option<&PreparationIo>,
+        ) -> Result<Option<Generation<A, O>>> {
+            let owned;
+            let io = if let Some(io) = io {
+                io
+            } else {
+                owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                &owned
+            };
+            let workspace = self.open(reference, Some(io)).await?;
+            let key = bounded_io::operation_key(key, Some(io))?;
+            io.sdk(
+                workspace
+                    .operation_generation(key, io, io.cancellation())
+                    .await,
+            )
+        }
+    }
+
     #[tokio::test]
     async fn seed_receipt_preserves_edits_deletions_and_all_preexisting_files() -> Result<()> {
         let provider = ProviderRef::new("seed".into(), "filesystem".into(), "1".into(), &mut None)?;
