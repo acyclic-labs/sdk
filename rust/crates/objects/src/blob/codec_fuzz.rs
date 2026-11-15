@@ -90,10 +90,10 @@ fn check_codec<T: PartialEq>(
 ) -> bool {
     // Arbitrary malformed bytes may be refused, but the actual writer's value
     // must be admitted unchanged. Otherwise a reject-all decoder passes fuzzing.
-    let Ok(written) = encode(&written) else {
+    let Ok(encoded_written) = encode(&written) else {
         return false;
     };
-    if !decode(&written).is_ok_and(|decoded| decoded == written) {
+    if !decode(&encoded_written).is_ok_and(|decoded| decoded == written) {
         return false;
     }
     let Ok(value) = decode(bytes) else {
@@ -386,7 +386,7 @@ pub fn check(bytes: &[u8]) -> bool {
         BATCH_MAGIC,
         references,
         decode_batch,
-        |value| encode_batch(value),
+        |value| Ok(encode_batch(value)),
         |end| end >= BATCH_MAGIC.len() && (end - BATCH_MAGIC.len()) % 32 == 0,
     ) && check_codec(
         bytes,
@@ -396,14 +396,14 @@ pub fn check(bytes: &[u8]) -> bool {
             word(16),
         ),
         decode_incarnation,
-        |&(incarnation, run)| encode_incarnation(incarnation, run),
+        |&(incarnation, run)| Ok(encode_incarnation(incarnation, run)),
         |_| false,
     ) && check_codec(
         bytes,
         EPOCH_MAGIC,
         word(24),
         decode_epoch,
-        |&epoch| encode_epoch(epoch),
+        |&epoch| Ok(encode_epoch(epoch)),
         |_| false,
     )
 }
@@ -458,5 +458,6 @@ mod tests {
                     .expect("retained historical writer capture");
             assert!(super::check(&bytes), "persisted fuzz oracle: {name}");
         }
+        Ok(())
     }
 }
