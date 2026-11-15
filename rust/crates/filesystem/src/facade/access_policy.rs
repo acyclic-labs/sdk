@@ -454,15 +454,7 @@ fn compile_cached_policy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         // The capacity is fixed on this Fs's first policy use, derived
         // from its host memory ceiling, never from head generations or
         // principal count. A standalone embedding supplies its budget.
-        #[cfg(not(target_arch = "wasm32"))]
-        let capacity = accounting
-            .native_work()
-            .map_or(accounting.remaining()?.peak_allocation_bytes / 4, |work| {
-                work.shared_cache_capacity()
-            });
-        #[cfg(target_arch = "wasm32")]
-        let capacity = accounting.remaining()?.peak_allocation_bytes / 4;
-        cache.initialize(capacity)?;
+        cache.initialize(accounting.shared_cache_capacity())?;
         compiled.cache_charge = Some(cache.charge(bytes)?);
         Ok(Arc::new(compiled))
     })();
