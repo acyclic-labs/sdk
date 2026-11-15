@@ -224,7 +224,8 @@ export interface DefinitionDeployment {
 export function definitionHandler<State, Bindings>(definition: ActorDefinition<State, Bindings>,
   deployment: DefinitionDeployment, env: Bindings): {
   manifest(): Promise<Uint8Array>;
-  onRecord(bytes: Uint8Array, signal?: AbortSignal, socketHost?: GuestContext<Bindings>["socketHost"]): Promise<Uint8Array>;
+  onRecord(bytes: Uint8Array, signal?: AbortSignal, interrupt?: AbortSignal,
+    socketHost?: GuestContext<Bindings>["socketHost"]): Promise<Uint8Array>;
 } {
   if (definition.abiVersion !== GUEST_ABI_VERSION) throw new Error("unsupported guest ABI");
   const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -236,7 +237,8 @@ export function definitionHandler<State, Bindings>(definition: ActorDefinition<S
       return wasm.encodeManifest(Uint8Array.from(deployment.code), identity.name, identity.version,
         [...deployment.subscriptions], limits?.handlerTimeoutMillis, limits?.memoryBytes, limits?.checkpointBytes);
     },
-    async onRecord(bytes, signal, socketHost) {
+    // A definition declares no interrupts, so its host never aborts `interrupt`.
+    async onRecord(bytes, signal, _interrupt, socketHost) {
       const wasm = await loadWasmModule();
       const delivery = wasm.decodeDelivery(bytes);
       const actor = ActorReference.decode(delivery.actor);

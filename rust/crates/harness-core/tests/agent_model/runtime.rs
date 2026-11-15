@@ -469,7 +469,7 @@ async fn cancelling_an_injected_input_preserves_the_original_and_later_turns() -
     let interrupt_handler = handler.clone();
     let remote = wire::Remote::new(
         wire::decode_manifest(&wire::encode_manifest(handler.manifest()))?,
-        move |bytes: Vec<u8>, cancellation| -> GuestFuture<'static, Vec<u8>> {
+        move |_request, bytes: Vec<u8>, cancellation| -> GuestFuture<'static, Vec<u8>> {
             let handler = handler.clone();
             Box::pin(async move {
                 let (delivery, checkpoint) = wire::decode_delivery(&bytes)?;
@@ -479,7 +479,7 @@ async fn cancelling_an_injected_input_preserves_the_original_and_later_turns() -
                 wire::encode_transition(&transition)
             })
         },
-        move |query| -> acyclic_actors::guest::GuestFuture<'static, bool> {
+        move |_request, query| -> acyclic_actors::guest::GuestFuture<'static, bool> {
             let handler = interrupt_handler.clone();
             Box::pin(async move { wire::accepts_interrupt(handler.as_ref(), &query).await })
         },

@@ -24,9 +24,12 @@ timeout; timeout drops the handler and leaves the input unconsumed.
 
 Agent handlers declare canonical Cancel/Archive prefixes. Execution journals
 wait on the runtime's token, replacing `TurnStop` and its second inbox follow.
-The strict guest manifest carries the same filters. `onRecord` takes separate
-abort and cooperative-interrupt signals, so a cancelled guest can settle while
-a timed-out guest is aborted. The adapter retains only its existing primitives.
+The strict guest manifest carries the same filters. `onRecord(delivery,
+signal, interrupt)` takes separate abort and cooperative-interrupt signals, so
+a cancelled guest can settle while a timed-out guest is aborted. The host
+raises `interrupt` only after the guest's `acceptsInterrupt(query, signal)`
+accepts the matching record; `wire::Remote` names the delivery's request on
+both calls. The adapter retains only its existing primitives.
 Multiple filtered subscriptions share a polling budget and rotate the starting
 subscription after budget exhaustion (#1710). Lookahead keeps the original cut
 and releases provider futures on cancellation. AgentHandler uses one inbox.
