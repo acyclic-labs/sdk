@@ -9,7 +9,7 @@ proptest::proptest! {
         payload in proptest::collection::vec(proptest::num::u8::ANY, 1..128),
         identity in proptest::collection::vec(proptest::num::u8::ANY, 1..32),
     ) {
-        use super::StreamProvider as _;
+        use acyclic_stream::StreamProvider as _;
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
         runtime.block_on(async {
             for hosted in [false, true] {
@@ -27,11 +27,11 @@ proptest::proptest! {
                 let probe = std::sync::Arc::new(Probe::default());
                 let attested = super::Attested::new(probe.clone(), Some(attestor.clone()), admission.clone());
                 let path = super::StreamPath::new("proof/source").expect("path");
-                let append = super::AppendRequest {
+                let append = acyclic_stream::AppendRequest {
                     path: path.clone(), records: vec![bytes::Bytes::copy_from_slice(&payload).into()],
                     if_tail: Some(0), idempotency_key: super::IdempotencyKey::new(identity.clone()).expect("key"),
                 };
-                let fork = super::ForkRequest {
+                let fork = acyclic_stream::ForkRequest {
                     source: path.clone(), destination: super::StreamPath::new("proof/fork").expect("path"),
                     at_tail: Some(0), exclude: vec![], idempotency_key: append.idempotency_key.clone(),
                 };
