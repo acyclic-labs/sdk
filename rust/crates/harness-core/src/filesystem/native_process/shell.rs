@@ -207,7 +207,9 @@ pub fn workspace_environment<T>(
             )
         })
         .map_err(|error| Error::Storage(error.to_string()))?;
-    let temporary = held.join(relative).join("tmp");
+    // The process sees its temporary directory under the home it is given,
+    // alias included, as `$HOME/tmp`.
+    let temporary = home.join("tmp");
     let utf8 = |path: &Path, what: &str| {
         path.to_str()
             .map(str::to_owned)
