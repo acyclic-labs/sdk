@@ -27,7 +27,7 @@ struct CancellationState {
 
 enum CancellationWake {
     Future(Waker),
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(test, not(target_arch = "wasm32")))]
     Notification(fn()),
 }
 
@@ -35,7 +35,7 @@ impl CancellationWake {
     fn wake(self) {
         match self {
             Self::Future(waker) => waker.wake(),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(test, not(target_arch = "wasm32")))]
             Self::Notification(notify) => notify(),
         }
     }
@@ -43,7 +43,7 @@ impl CancellationWake {
     fn will_wake(&self, other: &Waker) -> bool {
         match self {
             Self::Future(waker) => waker.will_wake(other),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(test, not(target_arch = "wasm32")))]
             Self::Notification(_) => false,
         }
     }

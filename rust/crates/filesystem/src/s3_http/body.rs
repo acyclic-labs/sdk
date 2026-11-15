@@ -259,6 +259,7 @@ async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
 /// Persisted multipart refusal, projected only at the S3 service boundary.
 #[derive(Debug, thiserror::Error)]
 enum MultipartDecodeError {
+    #[cfg(any(test, feature = "test-support"))]
     #[error("multipart upload does not exist")]
     NoSuchUpload,
     #[error("multipart record is malformed")]
@@ -272,6 +273,7 @@ type MultipartDecodeResult<T = ()> = Result<T, MultipartDecodeError>;
 impl From<MultipartDecodeError> for s3s::S3Error {
     fn from(error: MultipartDecodeError) -> Self {
         match error {
+            #[cfg(any(test, feature = "test-support"))]
             MultipartDecodeError::NoSuchUpload => s3s::s3_error!(NoSuchUpload),
             MultipartDecodeError::Malformed => s3s::s3_error!(InvalidRequest),
             MultipartDecodeError::UnsupportedVersion(_) => s3s::s3_error!(NotImplemented),

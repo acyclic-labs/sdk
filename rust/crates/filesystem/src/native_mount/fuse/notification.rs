@@ -24,10 +24,6 @@ impl CacheNotifier {
         encode_field(&mut packet, 24, &offset.to_ne_bytes())?;
         self.0.publish(&[IoSlice::new(&packet)])
     }
-
-    pub(super) fn inval_attributes(&self, inode: u64) -> io::Result<()> {
-        self.inode(inode, -1)
-    }
 }
 
 impl KernelCacheNotifier for CacheNotifier {

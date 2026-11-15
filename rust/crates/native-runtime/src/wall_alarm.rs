@@ -154,7 +154,7 @@ fn retained_error(error: &Arc<io::Error>) -> io::Error {
 }
 
 fn fail(index: &Mutex<Index>, error: io::Error) -> Arc<io::Error> {
-    let (error, mut pending) = {
+    let (error, pending) = {
         let mut index = locked(index);
         let error = Arc::clone(index.failure.get_or_insert_with(|| Arc::new(error)));
         (error, std::mem::take(&mut index.entries))

@@ -158,6 +158,7 @@ where
     open_with_directory(work).map(|(_, file)| file)
 }
 
+#[cfg(any(test, loom))]
 pub(super) fn open_with_directory<W: crate::native_host::NativeHostWork>(
     work: &mut W,
 ) -> Result<(cap_std::fs::Dir, fence_io::MountLockFile), NativeMountError>

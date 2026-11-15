@@ -218,6 +218,7 @@ impl Collection {
         Ok(hold)
     }
 
+    #[cfg(test)]
     pub(crate) async fn begin(self: &Arc<Self>) -> Collecting {
         let running = self.run().await;
         self.begin_then(running, || {}).await

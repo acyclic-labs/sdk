@@ -2,6 +2,7 @@
 
 mod original;
 pub use original::MetadataDecodeError;
+#[cfg(feature = "test-support")]
 pub(crate) use original::from_slice;
 
 /// Backend adapter for the original work and allocation owner. Failures remain

@@ -1,5 +1,4 @@
 use super::*;
-use acyclic_fs_wire::wire::filesystem::v2::filesystem_service_server::FilesystemService as _;
 
 #[tokio::test]
 async fn admitted_import_prefix_preserves_closure_and_rejects_changed_scope()

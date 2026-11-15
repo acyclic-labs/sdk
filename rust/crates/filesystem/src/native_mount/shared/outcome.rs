@@ -49,6 +49,7 @@ impl CallbackFailure {
 }
 
 /// A reply refusal whose invocation remains usable, including retained causes.
+#[cfg(any(test, windows))]
 pub(crate) fn source_refusal(error: &MountSourceError) -> Option<CallbackFailure> {
     (!source_stops_mount(error)).then(|| source_failure(error))
 }
@@ -188,6 +189,7 @@ pub(crate) fn callback_failure(error: &NativeMountError) -> CallbackFailure {
 
 #[cfg(any(test, target_os = "linux", target_os = "macos"))]
 pub(crate) use retention::callback_is_terminal as stops_mount;
+#[cfg(any(test, windows))]
 pub(crate) use retention::source_is_terminal as source_stops_mount;
 #[cfg(all(test, not(loom)))]
 mod tests;
