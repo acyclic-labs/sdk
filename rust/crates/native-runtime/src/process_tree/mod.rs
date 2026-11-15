@@ -415,11 +415,14 @@ impl ProcessTree {
         custody: &mut Option<Self>,
     ) -> io::Result<()> {
         Self::spawn_metered(command, meter, custody, |command, slot| {
+            // Every Linux tree runs under its warden, the child subreaper that
+            // kills and reaps each remaining descendant before it exits, so
+            // terminating the tree joins every member, not only its leader.
             #[cfg(target_os = "linux")]
-            if command.boundary.is_some() {
-                return platform::adopt(meter, slot, || runner::start_unrecorded(command));
+            {
+                platform::adopt(meter, slot, || runner::start_unrecorded(command))
             }
-            #[cfg(unix)]
+            #[cfg(all(unix, not(target_os = "linux")))]
             {
                 let boundary = command.boundary.take();
                 #[cfg(target_os = "macos")]
@@ -1309,7 +1312,11 @@ impl ProcessTree {
         }
     }
 
-    /// Terminates containment and reaps the direct child.
+    /// Terminates containment and reaps the direct child. On Linux every tree
+    /// from [`Self::spawn`], [`Self::spawn_controlled`], [`Self::spawn_granted`]
+    /// or [`Self::spawn_in_custody`] runs under its warden: this returns only
+    /// after every member of the tree's process group, including descendants
+    /// that outlived the root, is killed and reaped.
     pub fn terminate(&mut self, meter: Option<&dyn crate::NativeReadMeter>) -> io::Result<()> {
         if meter.is_some() {
             return self.capture_terminate(meter, &mut None);

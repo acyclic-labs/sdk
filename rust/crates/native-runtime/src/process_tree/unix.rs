@@ -2,12 +2,15 @@ use super::events::OwnedSource;
 use std::io;
 use std::io::{Read, Write};
 pub(super) use std::os::fd::AsRawFd as Pipe;
+#[cfg(not(target_os = "linux"))]
 use std::os::unix::process::CommandExt as _;
 use std::os::unix::process::ExitStatusExt as _;
-use std::process::{ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus};
+#[cfg(not(target_os = "linux"))]
+use std::process::Command;
+use std::process::{ChildStderr, ChildStdin, ChildStdout, ExitStatus};
 
-/// The direct child of a tree, reaped by PID: started by std, or cloned for
-/// this owner by the custody runner.
+/// The direct child of a tree, reaped by PID. On Linux it is the tree's
+/// warden, cloned for this owner by the runner; elsewhere std may start it.
 pub(super) struct Child {
     pub(super) stdin: Option<OwnedSource<ChildStdin>>,
     pub(super) stdout: Option<OwnedSource<ChildStdout>>,
@@ -16,8 +19,6 @@ pub(super) struct Child {
     status: Option<ExitStatus>,
     #[cfg(target_os = "linux")]
     pub(super) completion_report: Option<std::fs::File>,
-    #[cfg(target_os = "linux")]
-    pub(super) supervised: bool,
 }
 
 impl Child {
@@ -35,11 +36,10 @@ impl Child {
             status: None,
             #[cfg(target_os = "linux")]
             completion_report: None,
-            #[cfg(target_os = "linux")]
-            supervised: false,
         }
     }
 
+    #[cfg(not(target_os = "linux"))]
     fn from_std(mut child: std::process::Child) -> Self {
         // A Unix Child ID originated as pid_t at this same SDK boundary.
         let pid = child.id() as libc::pid_t;
@@ -363,6 +363,7 @@ impl SpawnResources {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 pub(super) fn spawn_controlled(
     command: &mut Command,
     meter: Option<&dyn crate::NativeReadMeter>,
@@ -376,6 +377,7 @@ pub(super) fn spawn_controlled(
 
 /// Retains the direct child `start` returns as a new tree whose process
 /// group it leads, even when `start` also reports that its exec failed.
+/// On Linux that child is always the tree's warden.
 pub(super) fn adopt(
     meter: Option<&dyn crate::NativeReadMeter>,
     custody: &mut Option<super::ProcessTree>,
@@ -385,15 +387,13 @@ pub(super) fn adopt(
     super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
         let (child, started) = start()?;
         let process_group = child.pid;
-        #[cfg(target_os = "linux")]
-        let supervised = child.supervised;
         *custody = Some(super::ProcessTree {
             child: Some(child),
             guard: Guard {
                 process_group,
                 active: true,
                 #[cfg(target_os = "linux")]
-                supervised,
+                supervised: true,
             },
             output_taken: false,
             native_child: None,

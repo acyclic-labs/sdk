@@ -419,7 +419,6 @@ fn start_inner(
         stderr.map(Into::into),
     );
     child.completion_report = report;
-    child.supervised = activity.is_none();
     Ok((child, failure.map_or(Ok(()), Err)))
 }
 
