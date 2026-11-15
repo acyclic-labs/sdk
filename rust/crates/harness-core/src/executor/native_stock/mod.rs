@@ -4,7 +4,6 @@ use super::*;
 mod allocation;
 pub(crate) use allocation::*;
 mod diagnostics;
-pub(in crate::executor) use diagnostics::*;
 pub(super) mod journal;
 pub(crate) use journal::*;
 mod session;

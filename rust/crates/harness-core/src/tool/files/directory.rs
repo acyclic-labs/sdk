@@ -22,12 +22,19 @@ pub enum DirectoryEntryKind {
     Dir,
     /// Symbolic link, without following its target.
     Symlink,
+    /// Named pipe.
     Fifo,
+    /// Local socket.
     Socket,
+    /// Character device node.
     CharacterDevice,
+    /// Block device node.
     BlockDevice,
+    /// Windows reparse point other than a symbolic link.
     ReparsePoint,
+    /// Another mount's root, which the listing does not cross.
     MountBoundary,
+    /// A kind this host does not report.
     Unsupported,
 }
 

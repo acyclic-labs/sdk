@@ -1,6 +1,6 @@
 use super::*;
 use crate::executor::{ToolErrorClass, ToolFailureCause, ToolFailureKind};
-use acyclic_stream::StreamProviderExt as _;
+use acyclic_stream::{StreamProvider as _, StreamProviderExt as _};
 use futures::TryStreamExt as _;
 
 fn refusal(step: u32) -> ExecutionEvent {

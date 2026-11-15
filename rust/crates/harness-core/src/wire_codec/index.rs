@@ -27,7 +27,7 @@ impl IndexWork for OwnedIndexWork<'_> {
     }
 
     fn claim(&mut self, bytes: u64) -> Result<Self::Allocation> {
-        { self.0.map(|mut io| io.claim(bytes)).transpose() }
+        self.0.map(|mut io| io.claim(bytes)).transpose()
     }
 }
 

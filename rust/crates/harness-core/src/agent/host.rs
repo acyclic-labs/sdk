@@ -20,8 +20,7 @@ use acyclic_actors::{
     local::{Clock, Runtime, Store},
 };
 use acyclic_stream::{
-    CommitRequest, ReadRequest, StreamCategory, StreamError, StreamPath, StreamProvider,
-    StreamProviderExt as _,
+    CommitRequest, ReadRequest, StreamCategory, StreamError, StreamPath, StreamProviderExt as _,
 };
 use futures::TryStreamExt as _;
 use std::{convert::Infallible, sync::Arc};

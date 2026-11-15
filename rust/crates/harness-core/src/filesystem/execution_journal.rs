@@ -20,9 +20,9 @@ use crate::{
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
+use acyclic_stream::StreamError;
 #[cfg(test)]
 use acyclic_stream::{AppendOutcome, IdempotencyKey as StreamKey};
-use acyclic_stream::{StreamError, StreamProvider};
 #[cfg(test)]
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};

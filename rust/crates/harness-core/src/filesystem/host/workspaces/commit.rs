@@ -1,6 +1,7 @@
 use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
+    #[cfg(test)]
     pub(in crate::filesystem) fn apply_generation<'a>(
         &'a self,
         reference: &'a WorkspaceRef,
@@ -50,6 +51,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )
     }
 
+    #[cfg(test)]
     fn publish_generation<'a>(
         &'a self,
         reference: &'a WorkspaceRef,

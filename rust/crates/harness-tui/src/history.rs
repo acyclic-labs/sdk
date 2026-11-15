@@ -171,6 +171,7 @@ pub struct PromptHistory {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Navigation {
     // Only the native prompt editor restores saved navigation.
+    /// The projection this session navigated; restoring onto another resets.
     #[cfg(not(target_arch = "wasm32"))]
     generation: u64,
     index: Option<usize>,

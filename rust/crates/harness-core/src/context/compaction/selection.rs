@@ -247,19 +247,6 @@ pub(crate) fn mandatory_messages(
     Ok(messages)
 }
 
-pub(crate) fn mandatory_message_count(
-    context: &Context,
-    covered: usize,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<usize> {
-    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-    let (selected, groups) = mandatory_flags(context, covered, &mut quota)?;
-    let count = selected.iter().filter(|keep| **keep).count();
-    retire_vector(groups, &mut quota)?;
-    retire_vector(selected, &mut quota)?;
-    Ok(count)
-}
-
 pub(crate) fn compact_context(
     context: &Context,
     maximum: usize,

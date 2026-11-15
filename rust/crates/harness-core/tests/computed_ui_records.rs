@@ -2,7 +2,7 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use acyclic_fs::{
-    CancellationToken, NativeMaterializationWork, WorkBudget, WorkCounters,
+    CancellationToken, NativeMaterializationWork, WorkBudget,
     demand::{DemandError, DemandSource},
     kernel::{KernelAccounting, MetadataDecodeError, NativeAccounting, RetainedAllocation},
 };

@@ -8,6 +8,8 @@ pub(crate) enum HeadDurability {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct HeadCapture {
     pub(crate) view: crate::Heads,
+    /// Lease ownership of each path, read by the native durability cut.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) ephemeral: Vec<bool>,
 }
 

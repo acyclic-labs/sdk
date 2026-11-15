@@ -1,6 +1,5 @@
 //! Large summary cells span authenticated pages without changing record limits.
 use super::*;
-use acyclic_stream::StreamProviderExt as _;
 use read::ReadNode;
 
 const LINK_BYTES: usize = 41;
@@ -267,6 +266,7 @@ pub(super) mod codec_fuzz {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acyclic_stream::StreamProviderExt as _;
 
     #[test]
     fn segmented_header_rejects_impossible_allocations_before_reading_pages() -> Result<()> {

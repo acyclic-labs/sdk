@@ -113,7 +113,7 @@ impl Default for CompactionPolicy {
 
 mod exchanges;
 mod selection;
-pub(crate) use selection::{compact_context, mandatory_message_count, mandatory_messages};
+pub(crate) use selection::{compact_context, mandatory_messages};
 mod copying;
 pub(crate) use copying::{clone_context, clone_context_range, clone_messages, clone_metadata};
 mod allocation;

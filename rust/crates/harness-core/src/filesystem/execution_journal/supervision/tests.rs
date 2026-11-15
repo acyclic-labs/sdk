@@ -1,6 +1,7 @@
 //! Original journal publications, not a second observer or copied history.
 use super::*;
 use crate::supervision::{Action, Kind};
+use acyclic_stream::StreamProvider as _;
 
 async fn authored_workspace<P, A, O>(
     journal: &FilesystemExecutionJournal<P, A, O>,

@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::StreamProviderExt as _;
 
 #[tokio::test]
 async fn atomic_cut_confirms_context_and_epoch_contributions_at_original_positions() -> Result<()> {
@@ -707,7 +708,7 @@ impl acyclic_stream::StreamProvider for RefusedAcknowledgment {
     fn write(
         &self,
         request: acyclic_stream::WriteRequest,
-    ) -> futures::future::BoxFuture<
+    ) -> acyclic_stream::BoxProviderFuture<
         '_,
         std::result::Result<acyclic_stream::WriteOutcome, StreamError>,
     > {

@@ -162,6 +162,7 @@ impl Cut<'_> {
 
     /// Consumes the entire unsent batch on refusal. Its original request,
     /// filesystem holds and construction quota are dropped together on error.
+    #[cfg(test)]
     pub(super) fn contribute<'a, 'b>(
         &self,
         mut prepared: (
@@ -454,6 +455,7 @@ impl Cut<'_> {
 
     /// The original filesystem owner has already authenticated every canonical
     /// caller member. Confirm this Cut without repeating whole-request validation.
+    #[cfg(test)]
     pub(super) fn confirm_composed(
         &self,
         prepared: &acyclic_fs::PreparedFilesystemCommit,

@@ -53,6 +53,8 @@ impl Drop for Input<'_> {
 }
 
 impl<'a> Input<'a> {
+    /// Negotiates the terminal's input protocol and enables bracketed paste
+    /// (mode 2004) before any event is read.
     pub fn new(terminal: &'a mut crate::term::Tty) -> io::Result<Self> {
         terminal.negotiate(&crate::term::Environment::capture())?;
         terminal.enable_mode(2004)?;

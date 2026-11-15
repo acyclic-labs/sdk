@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_fs::Digest;
 
 use crate::core::{AggregateKind, Authority, AuthorityRoot};
 use crate::{

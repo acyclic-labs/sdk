@@ -1,6 +1,5 @@
 use super::*;
 use crate::hooks::{HookEvent, HookFailure, HookRule, HookSpec, Hooks};
-use crate::tool::ToolRegistry;
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},

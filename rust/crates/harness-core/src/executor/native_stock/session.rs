@@ -170,7 +170,7 @@ impl<'a> StockExecution<'a> {
     }
 
     pub(in crate::executor) fn native_work(&self) -> acyclic_fs::NativeWork<'_> {
-        { self.io.and_then(PreparationIo::original_native_work) }
+        self.io.and_then(PreparationIo::original_native_work)
     }
     pub(in crate::executor) fn original_context(&self) -> Option<&crate::runtime::TaskContext> {
         self.context.map(|(context, _)| context.as_ref())

@@ -1,7 +1,6 @@
 //! Lazy summary entries and incremental immutable-page publication.
 use super::*;
 use acyclic_stream::OwnedBytes;
-use acyclic_stream::StreamProviderExt as _;
 use persistent_index::{NodeRef, Reader, Writer};
 use summary_map::{SummaryKey, SummaryMap};
 
@@ -434,6 +433,7 @@ fn changed(io: Option<&PreparationIo>) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acyclic_stream::StreamProviderExt as _;
 
     #[test]
     fn scalar_cells_use_exact_binary_widths_and_reject_json_or_padding() -> Result<()> {

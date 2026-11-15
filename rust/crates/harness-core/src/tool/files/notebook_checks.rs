@@ -40,8 +40,8 @@ proptest! {
         let replace = NotebookEdit::Replace { cell:NotebookCell::Index {index:index as u64, id:Some(id.clone())}, source:new_source.clone(), cell_type:None };
         let (edited, _hold, facts) = edit(&source, &replace, None).unwrap();
         prop_assert_eq!(facts.index, index as u64);
-        prop_assert_eq!(facts.language.as_ref().map(|value| value.as_ref()), declared);
-        let prior = facts.prior.as_ref().unwrap();
+        prop_assert_eq!(facts._language.as_ref().map(|value| value.as_ref()), declared);
+        let prior = facts._prior.as_ref().unwrap();
         prop_assert_eq!(prior.id.as_deref(), Some(id.as_str()));
         prop_assert_eq!(prior.cell_type.as_ref(), "code");
         prop_assert_eq!(serde_json::from_str::<Value>(prior.source.get()).unwrap(), json!([sources[index]]));
@@ -64,11 +64,11 @@ proptest! {
         let insert = NotebookEdit::Insert { cell:NotebookCell::Index {index:insert_at as u64,id:None},after:false,id:"inserted".into(),cell_type:"markdown".into(),source:new_source };
         let (inserted, _insert_hold, facts) = edit(&source, &insert, None).unwrap();
         prop_assert_eq!(facts.index, insert_at as u64);
-        prop_assert_eq!(facts.language.as_ref().map(|value| value.as_ref()), declared);
-        prop_assert!(facts.prior.is_none());
+        prop_assert_eq!(facts._language.as_ref().map(|value| value.as_ref()), declared);
+        prop_assert!(facts._prior.is_none());
         let (removed, _remove_hold, facts) = edit(&inserted, &NotebookEdit::Delete {cell:NotebookCell::Id {id:"inserted".into()}}, None).unwrap();
         prop_assert_eq!(facts.index, insert_at as u64);
-        prop_assert_eq!(facts.prior.as_ref().unwrap().id.as_deref(), Some("inserted"));
+        prop_assert_eq!(facts._prior.as_ref().unwrap().id.as_deref(), Some("inserted"));
         prop_assert_eq!(&serde_json::from_str::<Value>(&removed).unwrap(), &original);
         prop_assert!(edit(&source, &NotebookEdit::Insert {cell:NotebookCell::Index {index:0,id:None},after:false,id,cell_type:"raw".into(),source:String::new()}, None).is_err(), "duplicate cell id accepted");
 
@@ -78,7 +78,7 @@ proptest! {
         };
         let (inserted, _hold, facts) = edit(&source, &after, None).unwrap();
         prop_assert_eq!(facts.index, index as u64 + 1);
-        prop_assert!(facts.prior.is_none());
+        prop_assert!(facts._prior.is_none());
         let inserted: Value = serde_json::from_str(&inserted).unwrap();
         prop_assert_eq!(&inserted["cells"][index + 1]["id"], &json!("after"));
         let mut expected = original.clone();
@@ -105,7 +105,7 @@ proptest! {
             source:"code".into(),cell_type:Some("code".into()),
         };
         let (restored, _hold, facts) = edit(&converted, &restore, None).unwrap();
-        prop_assert_eq!(facts.prior.as_ref().unwrap().cell_type.as_ref(), "markdown");
+        prop_assert_eq!(facts._prior.as_ref().unwrap().cell_type.as_ref(), "markdown");
         let selected = expected["cells"][index].as_object_mut().unwrap();
         selected.insert("source".into(), json!("code"));
         selected.insert("cell_type".into(), json!("code"));
@@ -178,7 +178,7 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
     .unwrap();
     assert!(native.live_allocation_bytes() > baseline);
     assert_eq!(facts.index, 0);
-    let prior = facts.prior.as_ref().unwrap();
+    let prior = facts._prior.as_ref().unwrap();
     assert_eq!(prior.id.as_deref(), Some("a"));
     assert_eq!(prior.cell_type, "code");
     assert_eq!(
@@ -227,10 +227,10 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
         };
         let (text, hold, facts) = edit(&source, &operation, Some(&native)).unwrap();
         assert_eq!(
-            facts.language.as_ref().map(|value| value.as_ref()),
+            facts._language.as_ref().map(|value| value.as_ref()),
             expected
         );
-        if let Some(language) = &facts.language {
+        if let Some(language) = &facts._language {
             assert_eq!(matches!(**language, Cow::Owned(_)), owned);
         }
         assert!(text.ends_with(&format!(r#""metadata":{metadata}}}"#)));
@@ -296,7 +296,7 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
         )
         .unwrap();
         assert_eq!(facts.index, 0);
-        assert_eq!(facts.prior.as_ref().unwrap().id.as_deref(), Some("a"));
+        assert_eq!(facts._prior.as_ref().unwrap().id.as_deref(), Some("a"));
         let value: Value = serde_json::from_str(&text).unwrap();
         let cell = &value["cells"][0];
         assert_eq!(cell["cell_type"], kind);
@@ -340,7 +340,7 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
             )
         );
         assert_eq!(
-            facts.language.as_ref().map(|value| value.as_ref()),
+            facts._language.as_ref().map(|value| value.as_ref()),
             Some("python")
         );
         serde_json::from_str::<&serde_json::value::RawValue>(&text).unwrap();
