@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { qualification, qualified } from "./qualification.mjs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import { readdir, readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 
 test("external acceptance requires executed tests, not a successful empty or ignored selection", () => {
   const result = stdout => ({ code: 0, stdout, stderr: "" });
@@ -52,4 +54,27 @@ test("installed hosts are refused before launch without an admitted host executa
   const fixture = { workspace: "/fixture/workspace", env: { E2E_PI: "relative/pi" } };
   await assert.rejects(qualification(processes, { format: "installed-host", host: "pi" }, fixture, () => {}), /step=admit E2E_PI/);
   await assert.rejects(qualification(processes, { format: "installed-host", host: "shell" }, fixture, () => {}), /step=admit native host/);
+});
+
+test("every exact libtest qualification names tests that exist and requires all of them", async () => {
+  const root = fileURLToPath(new URL("../../", import.meta.url));
+  const functions = new Set();
+  for (const entry of await readdir(join(root, "rust/crates"), { recursive: true, withFileTypes: true }))
+    if (entry.isFile() && entry.name.endsWith(".rs"))
+      for (const [, name] of (await readFile(join(entry.parentPath, entry.name), "utf8")).matchAll(/\bfn ([a-z0-9_]+)\s*[<(]/g))
+        functions.add(name);
+  const cases = join(root, "scripts/graphcoder-e2e/cases");
+  let checked = 0;
+  for (const file of await readdir(cases)) {
+    if (!file.endsWith(".json")) continue;
+    for (const input of JSON.parse(await readFile(join(cases, file), "utf8")).inputs ?? []) {
+      if (input.format !== "libtest" || !input.args?.includes("--exact")) continue;
+      const names = input.args.filter(argument => !argument.startsWith("--"));
+      assert.equal(input.minimum_tests, names.length, `${file}: an exact selection requires every named test`);
+      for (const name of names)
+        assert.ok(functions.has(name.split("::").at(-1)), `${file}: ${name} is not a test in the tree`);
+      checked++;
+    }
+  }
+  assert.ok(checked > 0, "no exact libtest qualification was checked");
 });
