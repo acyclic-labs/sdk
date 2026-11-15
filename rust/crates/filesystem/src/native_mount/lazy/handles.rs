@@ -108,7 +108,7 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    adapter::ordinary_file_callbacks!(self, self._allocation.work());
+    adapter::ordinary_file_callbacks!(self, &self.cancellation, self._allocation.work());
 
     fn clone_source(
         &self,

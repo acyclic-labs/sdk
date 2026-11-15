@@ -149,7 +149,7 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
-    adapter::ordinary_file_callbacks!(self, self._allocation.work());
+    adapter::ordinary_file_callbacks!(self, self.authored.cancellation(), self._allocation.work());
 
     fn clone_source(
         &self,

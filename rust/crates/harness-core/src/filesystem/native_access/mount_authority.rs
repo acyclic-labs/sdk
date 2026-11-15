@@ -430,6 +430,26 @@ mod tests {
                 .decide(acyclic_fs::access::Action::Write, "private/key", now)
                 .allowed
         );
+        assert_eq!(source.read_range(&path, 0, 5)?.as_ref(), b"after");
+        let opened = source.open_file(&path)?;
+        assert_eq!(opened.read_range(0, 5)?.as_ref(), b"after");
+        source.cancel();
+        let before = work.receipt();
+        assert!(source.read_range(&path, 0, 5).is_err());
+        assert!(opened.read_range(0, 5).is_err());
+        assert!(
+            source
+                .write_range(&path, 0, bytes::Bytes::from_static(b"denied"))
+                .is_err()
+        );
+        assert_eq!(
+            work.receipt().backend_read_operations,
+            before.backend_read_operations
+        );
+        assert_eq!(
+            work.receipt().backend_write_operations,
+            before.backend_write_operations
+        );
         issuer.revoke_workload(&port.scope)?;
         assert!(
             port.mount_options(&workspace, None, "", true, &work)

@@ -55,7 +55,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         operation: impl FnOnce(&crate::NativeMaterializationWork) -> Result<T, MountSourceError>,
     ) -> Result<T, MountSourceError> {
         let work = self.operation_work()?;
-        callback_boundary(&work, operation)
+        callback_boundary(&self.cancellation, &work, operation)
     }
 
     fn operation_work(&self) -> Result<crate::NativeMaterializationWork, MountSourceError> {
@@ -82,16 +82,20 @@ pub(super) fn boundary<T>(
     operation: impl FnOnce(&crate::NativeMaterializationWork) -> Result<T, MountSourceError>,
 ) -> Result<T, MountSourceError> {
     let work = capture_meter(WorkBudget::UNBOUNDED, cancellation)?;
-    callback_boundary(&work, operation)
+    callback_boundary(cancellation, &work, operation)
 }
 
 pub(in crate::native_mount) fn callback_boundary<T>(
+    cancellation: &CancellationToken,
     work: &crate::NativeMaterializationWork,
     operation: impl FnOnce(&crate::NativeMaterializationWork) -> Result<T, MountSourceError>,
 ) -> Result<T, MountSourceError> {
     #[cfg(test)]
     CALLBACK_BOUNDARIES.with(|count| count.set(count.get() + 1));
-    operation(work)
+    NativeDemandCarrier::Native(work).check(work.cancellation(), Some(cancellation))?;
+    let result = operation(work);
+    NativeDemandCarrier::Native(work).check(work.cancellation(), Some(cancellation))?;
+    result
 }
 
 impl NativeDemandCarrier<'_> {

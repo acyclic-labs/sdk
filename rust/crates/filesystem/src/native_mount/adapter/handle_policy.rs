@@ -46,6 +46,8 @@ where
         }
         drop(current);
         invoke(&self.runtime, work, || async {
+            NativeDemandCarrier::Native(work)
+                .check(work.cancellation(), Some(&self.cancellation))?;
             access::check_callback_authority(self.guard.as_deref(), work).await?;
             let revision =
                 access::observe_current_policy(&self.checkout, &self.cancellation, work).await?;

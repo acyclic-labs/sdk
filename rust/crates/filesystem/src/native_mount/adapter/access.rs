@@ -156,6 +156,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         if super::tests::return_fence::omitted() {
             return result;
         }
+        NativeDemandCarrier::Native(work).check(work.cancellation(), Some(&self.cancellation))?;
         check_callback_authority(self.native_callback_guard.as_deref(), work).await?;
         let revision = observe_current_policy(&self.checkout, &self.cancellation, work).await?;
         let valid = self
@@ -198,6 +199,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         &self,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Arc<crate::access::PathTrie>, MountSourceError> {
+        NativeDemandCarrier::Native(work).check(work.cancellation(), Some(&self.cancellation))?;
         check_callback_authority(self.native_callback_guard.as_deref(), work).await?;
         let published = self
             .access_view
