@@ -1,5 +1,4 @@
 use super::super::*;
-use crate::StreamCategory;
 
 fn frames(
     count: u64,

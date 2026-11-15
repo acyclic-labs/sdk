@@ -4,7 +4,7 @@ use crate::{
     decode_agent_reply, encode_agent_reply,
 };
 use acyclic_actors::{domain, wire};
-use acyclic_stream::{StreamCategory, StreamError, session::Client};
+use acyclic_stream::{StreamError, session::Client};
 use bytes::Bytes;
 use prost::Message as _;
 use std::borrow::Cow;
@@ -877,7 +877,7 @@ mod tests {
 
     #[test]
     fn exchange_preserves_every_session_failure_code_and_cause() {
-        for cause in StreamCategory::ALL.map(StreamError::from) {
+        for cause in acyclic_stream::StreamCategory::ALL.map(StreamError::from) {
             let error = AgentExchangeError::Session(cause.clone());
             assert_eq!(error.code(), cause.code());
             assert!(matches!(error, AgentExchangeError::Session(original) if original == cause));

@@ -1,8 +1,8 @@
 //! Durable fork publication debt: one stream and one lazy cursor per workspace.
 use super::*;
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, IdempotencyKey, ReadRequest, StreamCategory, StreamError,
-    StreamPath, StreamProvider, StreamProviderExt,
+    AppendOutcome, AppendRequest, IdempotencyKey, ReadRequest, StreamCategory, StreamPath,
+    StreamProvider, StreamProviderExt,
 };
 use futures::TryStreamExt as _;
 

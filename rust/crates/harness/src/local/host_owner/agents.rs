@@ -23,7 +23,7 @@ use crate::{
     },
 };
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
-use acyclic_stream::{ReadRequest, StreamCategory, StreamError, StreamProvider as _};
+use acyclic_stream::{ReadRequest, StreamCategory, StreamProvider as _};
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
 
