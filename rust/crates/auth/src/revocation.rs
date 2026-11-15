@@ -10,7 +10,7 @@ use prost::Message;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
-/// Domain and version for the canonical SignedRevocation with signature cleared.
+/// Domain and version for the canonical `SignedRevocation` with signature cleared.
 pub const REVOCATION_DOMAIN: &[u8] = b"acyclic.auth.v1/revocation\0";
 
 /// Exact immutable publication transcript; also used by remote key custodians.

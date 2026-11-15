@@ -95,21 +95,24 @@ impl CredentialChannel {
     }
 }
 
-/// Dispatch adds no allocation to the maintained channel's future.
+/// Immediate credential checks and direct transport calls add no allocation.
+/// Waiting for a credential owner allocates one admission state.
 /// A foreign owner retains the already-ready channel until admission completes.
 pub struct CredentialDispatch(Dispatch);
 
 enum Dispatch {
     Refused(Ready<Result<http::Response<Body>, Status>>),
-    Admission {
-        check: CredentialPending<()>,
-        channel: Channel,
-        request: http::Request<Body>,
-        context: Option<crate::operation::Context>,
-    },
+    Admission(Box<Admission>),
     Transport(<Channel as Service<http::Request<Body>>>::Future),
     /// Held only while a ready admission moves its request to the transport.
     Moving,
+}
+
+struct Admission {
+    check: CredentialPending<()>,
+    channel: Channel,
+    request: http::Request<Body>,
+    context: Option<crate::operation::Context>,
 }
 
 impl Future for CredentialDispatch {
@@ -121,22 +124,22 @@ impl Future for CredentialDispatch {
                 Dispatch::Transport(result) => {
                     return Pin::new(result).poll(cx).map_err(transport_error);
                 }
-                Dispatch::Admission { check, .. } => {
-                    let result = futures::ready!(check.as_mut().poll(cx));
+                Dispatch::Admission(admission) => {
+                    let result = futures::ready!(admission.check.as_mut().poll(cx));
                     let admission = std::mem::replace(&mut self.0, Dispatch::Moving);
                     self.0 = match (result, admission) {
-                        (
-                            Ok(()),
-                            Dispatch::Admission {
+                        (Ok(()), Dispatch::Admission(admission)) => {
+                            let Admission {
                                 mut channel,
                                 request,
                                 context,
                                 ..
-                            },
-                        ) => match check_context(context.as_ref()) {
-                            Ok(()) => Dispatch::Transport(channel.call(request)),
-                            Err(error) => Dispatch::Refused(std::future::ready(Err(error))),
-                        },
+                            } = *admission;
+                            match check_context(context.as_ref()) {
+                                Ok(()) => Dispatch::Transport(channel.call(request)),
+                                Err(error) => Dispatch::Refused(std::future::ready(Err(error))),
+                            }
+                        }
                         (Err(error), _) => {
                             Dispatch::Refused(std::future::ready(Err(credential_error(error))))
                         }
@@ -184,12 +187,12 @@ impl Service<http::Request<Body>> for CredentialChannel {
                     // clone must acquire its own reservation on the next call.
                     let replacement = self.channel.clone();
                     let channel = std::mem::replace(&mut self.channel, replacement);
-                    return CredentialDispatch(Dispatch::Admission {
+                    return CredentialDispatch(Dispatch::Admission(Box::new(Admission {
                         check,
                         channel,
                         request,
                         context: self.context.clone(),
-                    });
+                    })));
                 }
             }
         }

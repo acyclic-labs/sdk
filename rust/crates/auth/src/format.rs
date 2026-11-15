@@ -45,13 +45,19 @@ pub fn decimal_header<'a, E>(
     let mut remaining = version;
     loop {
         start -= 1;
-        rendered[start] = b'0' + (remaining % 10) as u8;
+        let Some(digit) = rendered.get_mut(start) else {
+            return Err(invalid());
+        };
+        *digit = b'0' + (remaining % 10) as u8;
         remaining /= 10;
         if remaining == 0 {
             break;
         }
     }
-    header(encoded, domain, &rendered[start..], invalid, unsupported)
+    let Some(version) = rendered.get(start..) else {
+        return Err(invalid());
+    };
+    header(encoded, domain, version, invalid, unsupported)
 }
 
 #[cfg(test)]
@@ -67,10 +73,10 @@ mod tests {
             });
             assert_eq!(allocation.count_total, 0);
             let payload = admitted.unwrap().unwrap();
-            assert_eq!(payload.as_ptr(), encoded.as_bytes()[header.len()..].as_ptr());
+            assert_eq!(payload.as_ptr(), encoded.as_bytes().get(header.len()..).expect("rendered header prefix").as_ptr());
             assert_eq!(super::decimal_header(encoded.as_bytes(), b"format:", version.wrapping_add(1), b',', || false, || true), Err(true));
             for cut in 0..header.len() {
-                assert_eq!(super::decimal_header(&encoded.as_bytes()[..cut], b"format:", version, b',', || false, || true), Err(false));
+                assert_eq!(super::decimal_header(encoded.as_bytes().get(..cut).expect("truncated header prefix"), b"format:", version, b',', || false, || true), Err(false));
             }
         }
     }

@@ -36,7 +36,7 @@ impl GuestAdmissionKind {
 /// Implemented by the trusted original admission custodian, never by decoded
 /// guest input. Its check includes current trust, original expiry/cancellation
 /// and exact caller/recipient. Its event is that owner's real trust publication;
-/// producer loss resolves SourceClosed. No detached channel is permitted.
+/// producer loss resolves `SourceClosed`. No detached channel is permitted.
 pub trait GuestAdmissionOwner: ChangeSource {
     /// Preserve the custodian's typed refusal.
     type Error;

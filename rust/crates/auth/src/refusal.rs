@@ -31,7 +31,7 @@ const CAUSE_METADATA: &str = "acyclic-cause-v1-bin";
 
 /// A server's attribution of one remote failure, shared by every service error.
 ///
-/// `component` and `reason` are closed snake_case tokens the server chooses,
+/// `component` and `reason` are closed `snake_case` tokens the server chooses,
 /// such as `objects.medium` and `failed`: never prose, paths or topology.
 /// `request_id` names the server's request. An empty part was not reported.
 /// A service error exposes its cause through [`std::error::Error::source`],

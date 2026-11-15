@@ -8,7 +8,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     render(&root.join("rust/crates/auth/proto"))?;
     let mut typescript =
         String::from("// Generated from acyclic-auth contract-derive declarations.\n");
-    for declaration in [
+    for declaration in declarations() {
+        typescript.push_str("export ");
+        typescript.push_str(&declaration);
+        typescript.push('\n');
+    }
+    let path = root.join("typescript/packages/auth/src/contract.ts");
+    fs::create_dir_all(path.parent().ok_or("missing output parent")?)?;
+    let typescript = typescript
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    fs::write(path, typescript)?;
+    let vectors = root.join("typescript/packages/auth/generated/conformance");
+    fs::create_dir_all(&vectors)?;
+    fs::write(
+        vectors.join("secrets-v1.json"),
+        acyclic_auth::secrets::conformance::SUITE,
+    )?;
+    if std::env::args_os().nth(2).as_deref() == Some(std::ffi::OsStr::new("--wire-baseline")) {
+        fs::write(
+            root.join("compatibility/descriptors/auth-v1.bin"),
+            acyclic_auth::FILE_DESCRIPTOR_SET,
+        )?;
+    }
+    Ok(())
+}
+
+fn declarations() -> impl IntoIterator<Item = String> {
+    [
         acyclic_auth::guest::GuestAdmissionKind::decl(&ts_rs::Config::default()),
         acyclic_auth::secrets::binding::VerifyHmacRequest::decl(&ts_rs::Config::default()),
         PrincipalKind::decl(&ts_rs::Config::default()),
@@ -89,31 +119,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         IssuanceUnknown::decl(&ts_rs::Config::default()),
         IssuanceDecision::decl(&ts_rs::Config::default()),
         IssuanceReply::decl(&ts_rs::Config::default()),
-    ] {
-        typescript.push_str("export ");
-        typescript.push_str(&declaration);
-        typescript.push('\n');
-    }
-    let path = root.join("typescript/packages/auth/src/contract.ts");
-    fs::create_dir_all(path.parent().ok_or("missing output parent")?)?;
-    let typescript = typescript
-        .lines()
-        .map(str::trim_end)
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n";
-    fs::write(path, typescript)?;
-    let vectors = root.join("typescript/packages/auth/generated/conformance");
-    fs::create_dir_all(&vectors)?;
-    fs::write(
-        vectors.join("secrets-v1.json"),
-        acyclic_auth::secrets::conformance::SUITE,
-    )?;
-    if std::env::args_os().nth(2).as_deref() == Some(std::ffi::OsStr::new("--wire-baseline")) {
-        fs::write(
-            root.join("compatibility/descriptors/auth-v1.bin"),
-            acyclic_auth::FILE_DESCRIPTOR_SET,
-        )?;
-    }
-    Ok(())
+    ]
 }

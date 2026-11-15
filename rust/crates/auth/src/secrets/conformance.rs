@@ -168,11 +168,20 @@ pub async fn verify<T: Transport, U: Transport>(
         return Err("secrets/list continued a listing across a mutation");
     }
 
+    verify_empty_after_delete(allowed, scope, plain.name, third.generation).await
+}
+
+async fn verify_empty_after_delete<T: Transport>(
+    allowed: &Client<T>,
+    scope: &str,
+    name: String,
+    generation: u64,
+) -> Result<(), &'static str> {
     let fourth = allowed
         .delete(&SecretDeleteRequest {
             scope: scope.into(),
-            name: plain.name,
-            expected_generation: third.generation,
+            name,
+            expected_generation: generation,
         })
         .await
         .map_err(|_| "secrets/delete plain failed")?;

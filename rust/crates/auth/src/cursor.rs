@@ -85,9 +85,15 @@ mod tests {
         assert!(CursorKey::new()?.open(b"caller/query", &cursor).is_err());
         for index in 0..cursor.len() {
             let mut changed = cursor.clone();
-            changed[index] ^= 1;
+            *changed.get_mut(index).ok_or(crate::Error::Invalid)? ^= 1;
             assert!(key.open(b"caller/query", &changed).is_err());
-            assert!(key.open(b"caller/query", &cursor[..index]).is_err());
+            assert!(
+                key.open(
+                    b"caller/query",
+                    cursor.get(..index).ok_or(crate::Error::Invalid)?
+                )
+                .is_err()
+            );
         }
         Ok(())
     }

@@ -415,6 +415,7 @@ impl Default for AccountEntry {
     }
 }
 
+#[derive(Clone, Copy)]
 enum Target<'a> {
     Environment,
     Account(&'a str),
@@ -443,7 +444,7 @@ impl Follower {
     }
 
     /// Original environment-record failure behind the retryable refusal fence.
-    /// This is a diagnostic, never an AccessDenied verdict on a caller.
+    /// This is a diagnostic, never an `AccessDenied` verdict on a caller.
     pub fn environment_refusal(&self) -> Option<VerifyError> {
         self.environment_refusal
             .read()
@@ -689,8 +690,7 @@ impl Follower {
         };
         match &result {
             Ok((Applied::Changed, _)) if release => account.poisoned = false,
-            Ok((Applied::Changed, _)) => {}
-            Ok((Applied::Duplicate, _)) => {}
+            Ok((Applied::Changed | Applied::Duplicate, _)) => {}
             Err(_) => account.poisoned = true,
         }
         result

@@ -367,6 +367,7 @@ impl CapabilityProto {
 
 /// Borrowed proof bytes for a canonical envelope writer. This grants no
 /// authentication or signing authority and retains no secret storage.
+#[derive(Clone, Copy)]
 pub enum TipProofRef<'a> {
     /// Append secret, borrowed from its custodian.
     Secret(&'a [u8; 32]),

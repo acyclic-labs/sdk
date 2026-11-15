@@ -237,18 +237,17 @@ impl CredentialProvider {
 
     /// Subscribe before resolving or accepting cached reader state, then check
     /// the admitted request's binding and validity. Custodians must publish a
-    /// changed/unavailable revision and call CredentialCache::invalidate on
+    /// changed/unavailable revision and call `CredentialCache::invalidate` on
     /// source events. Raw callbacks return None, never a fabricated identity.
     pub fn watch(&self) -> CredentialAction<Option<CredentialWatch>> {
         match &self.0 {
-            Source::Raw(_) => Ok(None).into(),
+            Source::Raw(_) | Source::TransportIdentity => Ok(None).into(),
             Source::Cached(cache) => cache
                 .watch()
                 .map(Some)
                 .map_err(CredentialError::from)
                 .into(),
             Source::Custodian(source) => source.watch(),
-            Source::TransportIdentity => Ok(None).into(),
         }
     }
 
@@ -324,21 +323,28 @@ pub fn valid_credential(value: &str) -> bool {
 
 /// Encodes admitted bearer text as the shared WebSocket subprotocol.
 /// The original credential and encoded backing remain caller-owned secrets.
-#[must_use]
-pub fn websocket_protocol(credential: &str) -> Zeroizing<String> {
+///
+/// # Errors
+/// [`CredentialError::Provider`] carrying the original allocation failure,
+/// returned before any secret is written.
+pub fn websocket_protocol(credential: &str) -> Result<Zeroizing<String>, CredentialError> {
     use base64::Engine as _;
     const PREFIX: &str = "acyclic.bearer.";
     // A str holds at most isize::MAX bytes, so its unpadded base64 length
-    // plus the prefix always fits in usize: the fallback is never taken.
+    // plus the prefix always fits in usize; were it not, reserving usize::MAX
+    // fails below as a refused allocation rather than a panic.
     let capacity = base64::encoded_len(credential.len(), false)
         .and_then(|length| length.checked_add(PREFIX.len()))
         .unwrap_or(usize::MAX);
     // Reserve before writing any secret so growth cannot leave an old backing.
-    let mut protocol = Zeroizing::new(String::with_capacity(capacity));
+    let mut protocol = Zeroizing::new(String::new());
+    protocol
+        .try_reserve_exact(capacity)
+        .map_err(|error| CredentialError::Provider(Box::new(error)))?;
     protocol.push_str(PREFIX);
     base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode_string(credential.as_bytes(), &mut protocol);
-    protocol
+    Ok(protocol)
 }
 
 /// The one text form of an encoded capability: unpadded base64url, as a

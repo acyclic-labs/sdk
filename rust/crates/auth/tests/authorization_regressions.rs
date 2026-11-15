@@ -1,6 +1,5 @@
 //! Properties for record admission, segmented authority and typed socket grants.
-#[path = "common/mod.rs"]
-mod common;
+use crate::signed::claims as common;
 use acyclic_auth::{authority::*, contract::*, socket::*, *};
 use common::*;
 use proptest::prelude::*;

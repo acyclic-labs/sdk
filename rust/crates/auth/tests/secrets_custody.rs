@@ -56,14 +56,16 @@ impl PausedOwner {
         if self.phase != phase {
             return Ok(()).into();
         }
-        self.entered
-            .lock()
-            .unwrap()
-            .take()
-            .unwrap()
-            .send(())
-            .unwrap();
-        let resume = self.resume.lock().unwrap().take().unwrap();
+        let resume = (|| {
+            crate::required_credential_event(&self.entered)?
+                .send(())
+                .map_err(|_| CredentialError::Invalid)?;
+            crate::required_credential_event(&self.resume)
+        })();
+        let resume = match resume {
+            Ok(resume) => resume,
+            Err(error) => return Err(error).into(),
+        };
         CredentialAction::Pending(Box::pin(async move {
             resume.await.map_err(|_| CredentialError::Invalid)
         }))
@@ -103,7 +105,10 @@ impl CredentialSource for PausedSource {
     }
     fn watch(&self) -> CredentialAction<Option<CredentialWatch>> {
         let paused = self.owner.at(Phase::Watch);
-        let changed = self.changed.lock().unwrap().take().unwrap();
+        let changed = match crate::required_credential_event(&self.changed) {
+            Ok(changed) => changed,
+            Err(error) => return Err(error).into(),
+        };
         CredentialAction::Pending(Box::pin(async move {
             let changed =
                 Box::pin(
@@ -166,7 +171,7 @@ async fn source_loss_ends_owner_wait(phase: Phase, end: End) -> TestResult {
             if count == 0 {
                 return Err(std::io::Error::other("fixture request closed"));
             }
-            request.extend_from_slice(&bytes[..count]);
+            request.extend_from_slice(bytes.get(..count).ok_or(std::io::ErrorKind::InvalidData)?);
         }
         let body = br#"{"generation":1,"variables":[],"nextCursor":null}"#;
         socket
@@ -193,9 +198,13 @@ async fn source_loss_ends_owner_wait(phase: Phase, end: End) -> TestResult {
     // the call, while its resolution/check producer remains deliberately held.
     match end {
         End::Source => drop(source),
-        End::Caller(Some(reason)) => stop.send(reason).unwrap(),
+        End::Caller(Some(reason)) => stop
+            .send(reason)
+            .map_err(|_| "original stop receiver lost")?,
         End::Caller(None) => drop(stop),
-        End::Detached => stop.send(Stopped::Cancelled).unwrap(),
+        End::Detached => stop
+            .send(Stopped::Cancelled)
+            .map_err(|_| "original stop receiver lost")?,
     }
     let result = response.as_mut().now_or_never();
     if matches!(end, End::Detached) {
@@ -250,7 +259,7 @@ async fn source_change_ends_response_wait(body: bool, end: End) -> TestResult {
             if count == 0 {
                 return Err(std::io::Error::other("fixture request closed"));
             }
-            request.extend_from_slice(&bytes[..count]);
+            request.extend_from_slice(bytes.get(..count).ok_or(std::io::ErrorKind::InvalidData)?);
         }
         if body {
             socket
@@ -266,9 +275,13 @@ async fn source_change_ends_response_wait(body: bool, end: End) -> TestResult {
     };
     match end {
         End::Source => cache.invalidate()?,
-        End::Caller(Some(reason)) => stop.send(reason).unwrap(),
+        End::Caller(Some(reason)) => stop
+            .send(reason)
+            .map_err(|_| "original stop receiver lost")?,
         End::Caller(None) => drop(stop),
-        End::Detached => stop.send(Stopped::Cancelled).unwrap(),
+        End::Detached => stop
+            .send(Stopped::Cancelled)
+            .map_err(|_| "original stop receiver lost")?,
     }
     let result = response.as_mut().now_or_never();
     if matches!(end, End::Detached) {
@@ -307,7 +320,8 @@ async fn source_change_cancels_original_http_response_waits() -> TestResult {
     let calls = Arc::new(AtomicUsize::new(0));
     for missing in [true, false] {
         let (context, stop) = crate::operation_context::invocation();
-        stop.send(Stopped::Cancelled).unwrap();
+        stop.send(Stopped::Cancelled)
+            .map_err(|_| "original stop receiver lost")?;
         let counter = calls.clone();
         let client = Client::new(
             HttpTransport::new("http://127.0.0.1:1")?,

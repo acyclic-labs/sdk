@@ -14,11 +14,16 @@ mod corpus;
 fn capture() -> Result<(), Box<dyn Error>> {
     let signed = testing::root(|_| {});
     let verified = verify::verify(&signed, &testing::Snapshot::default(), 100)?;
-    let claims = verified.blocks()[0]
+    let claims = verified
+        .blocks()
+        .first()
+        .ok_or("signed root block absent")?
         .certificates
         .as_ref()
         .ok_or("missing certificates")?
-        .keys[0]
+        .keys
+        .first()
+        .ok_or("signed certificate absent")?
         .key
         .clone();
     let key = SigningKey::from_bytes(&[2; 32]);

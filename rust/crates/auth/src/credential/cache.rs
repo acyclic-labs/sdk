@@ -116,7 +116,7 @@ impl std::fmt::Debug for CredentialSnapshot {
 
 impl CredentialSnapshot {
     /// Use only expiry/revision authenticated or owned by the source custodian.
-    /// Credentials without known validity should use a raw CredentialProvider.
+    /// Credentials without known validity should use a raw `CredentialProvider`.
     pub fn new(
         token: String,
         revision: CredentialRevision,
@@ -315,12 +315,13 @@ impl CredentialCache {
             .revision
             .as_ref()
             .ok_or(CredentialCacheError::Unavailable)?;
-        if let Some(snapshot) = self.0.current.load() {
-            if valid(&snapshot, &validity).is_ok() && self.0.current.matches(&snapshot) {
-                return Ok(snapshot);
-            }
+        if let Some(snapshot) = self.0.current.load()
+            && valid(&snapshot, &validity).is_ok()
+            && self.0.current.matches(&snapshot)
+        {
+            return Ok(snapshot);
         }
-        let waiter = match self.waiter(validity)? {
+        let waiter = match self.waiter(&validity)? {
             Resolution::Ready(snapshot) => return Ok(snapshot),
             Resolution::Pending(waiter) => waiter,
         };
@@ -362,7 +363,7 @@ impl CredentialCache {
         result
     }
 
-    fn waiter(&self, validity: CredentialValidity) -> Result<Resolution, CredentialCacheError> {
+    fn waiter(&self, validity: &CredentialValidity) -> Result<Resolution, CredentialCacheError> {
         // Declared before the guard so a retired flight drops outside the lock.
         let mut _retired = None;
         let current;
@@ -375,7 +376,7 @@ impl CredentialCache {
         current = self.0.current.load();
         if current
             .as_ref()
-            .is_some_and(|snapshot| valid(snapshot, &validity).is_ok())
+            .is_some_and(|snapshot| valid(snapshot, validity).is_ok())
         {
             drop(state);
             return current
@@ -564,7 +565,7 @@ mod tests {
     use super::*;
     use std::sync::{
         Weak,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU8, AtomicUsize, Ordering},
     };
 
     struct Reenter {
@@ -583,7 +584,7 @@ mod tests {
                 self.locked.fetch_add(1, Ordering::SeqCst);
                 return;
             }
-            CredentialCache(inner).invalidate().unwrap();
+            assert!(CredentialCache(inner).invalidate().is_ok());
             self.drops.fetch_add(1, Ordering::SeqCst);
         }
     }
@@ -636,7 +637,7 @@ mod tests {
             let owner = Arc::new(Mutex::new(Weak::new()));
             let drops = Arc::new(AtomicUsize::new(0));
             let locked = Arc::new(AtomicUsize::new(0));
-            let revision = Arc::new(AtomicUsize::new(1));
+            let revision = Arc::new(AtomicU8::new(1));
             let cache = CredentialCache::new(
                 {
                     let (owner, drops, locked, revision) = (
@@ -655,7 +656,7 @@ mod tests {
                                     locked: locked.clone(),
                                 },
                             )),
-                            CredentialRevision::Bytes([revision.load(Ordering::SeqCst) as u8; 32]),
+                            CredentialRevision::Bytes([revision.load(Ordering::SeqCst); 32]),
                             100,
                         ))
                     }
@@ -665,7 +666,7 @@ mod tests {
                     move || CredentialValidity {
                         now_unix_seconds: 1,
                         revision: Some(CredentialRevision::Bytes(
-                            [revision.load(Ordering::SeqCst) as u8; 32],
+                            [revision.load(Ordering::SeqCst); 32],
                         )),
                     }
                 },
