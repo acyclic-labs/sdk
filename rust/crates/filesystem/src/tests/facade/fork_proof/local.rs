@@ -100,9 +100,27 @@ async fn retained_source_fork_work(
     })
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn registered_source_proofs_survive_collection_without_rewalking_the_closure()
+#[test]
+fn registered_source_proofs_survive_collection_without_rewalking_the_closure()
 -> Result<(), Box<dyn Error>> {
+    // Work is charged by index depth, which depends on each key's bits. A seeded
+    // world gives every run the same keys, so its exact counts are constants.
+    let seed = 89;
+    acyclic_native_runtime::testing::seeded_runtime(seed)?.block_on(async {
+        tokio::time::pause();
+        let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::seeded(seed);
+        let proofs = schedule.scope(registered_source_proofs());
+        tokio::pin!(proofs);
+        loop {
+            tokio::select! {
+                result = &mut proofs => return result,
+                event = events.recv() => event.ok_or("lost native boundary")?.release(),
+            }
+        }
+    })
+}
+
+async fn registered_source_proofs() -> Result<(), Box<dyn Error>> {
     let mut previous = None;
     for files in [4, 32] {
         let directory = tempfile::tempdir()?;
@@ -174,6 +192,7 @@ async fn registered_source_proofs_survive_collection_without_rewalking_the_closu
             fs.collect_local_pass(None, true, &cancel).await?;
         }
         // A new observation after the epoch changed cannot inherit the stale summary.
+        // It forks into the forgotten probe's destination, so both charge the same keys.
         let late = workspace.head(B, &cancel).await?.value;
         let mut accounting =
             crate::kernel::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
@@ -183,7 +202,7 @@ async fn registered_source_proofs_survive_collection_without_rewalking_the_closu
             retained_source_fork_work(&fs, &forgotten, "forgotten", &mut accounting, &cancel)
                 .await?;
         let late_work =
-            retained_source_fork_work(&fs, &late, "late", &mut accounting, &cancel).await?;
+            retained_source_fork_work(&fs, &late, "forgotten", &mut accounting, &cancel).await?;
         let native_work = {
             let mut accounting =
                 crate::kernel::allocation::KernelAccounting::native(&original, &cancel);
