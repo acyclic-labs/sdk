@@ -412,13 +412,9 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
     }
 }
 pub(super) struct Fixture {
-    pub(super) controls: tokio::sync::broadcast::Sender<Result<wire::SessionFrame, Status>>,
     // Retains the raw transport for consumer-specific RPC fault probes.
     pub(super) _channel: TransportChannel,
-    pub(super) tls_client: Option<grpc::Client>,
-    pub(super) counts: Arc<Counts>,
     pub(super) server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-    pub(super) server_ended: tokio::sync::watch::Receiver<()>,
     pub(super) connections: Arc<Connections>,
 }
 impl Fixture {
@@ -475,7 +471,7 @@ impl Fixture {
             )
             .add_service(StreamSessionServiceServer::new(host))
             .serve_with_incoming(incoming);
-        let (server, server_ended) = serve(serving);
+        let (server, _server_ended) = serve(serving);
         let tls_client = match pem.as_ref() {
             Some(pem) => Some(
                 grpc::Client::connect_eager_with_ca_certificate(&endpoint, "fixture", pem).await?,
@@ -495,31 +491,10 @@ impl Fixture {
             endpoint.connect().await?
         };
         Ok(Self {
-            controls,
             _channel: channel,
-            tls_client,
-            counts,
             server,
-            server_ended,
             connections,
         })
-    }
-    pub(super) fn reset(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.connections.reset()?;
-        Ok(())
-    }
-    pub(super) async fn until(&self, ready: impl Fn(&Counts) -> bool) -> Result<(), StreamError> {
-        let mut ended = self.server_ended.clone();
-        loop {
-            let changed = self.counts.changed.notified();
-            if ready(&self.counts) {
-                return Ok(());
-            }
-            tokio::select! {
-                _ = changed => {},
-                _ = ended.changed() => return Err(StreamError::Unavailable),
-            }
-        }
     }
 }
 impl Drop for Fixture {
