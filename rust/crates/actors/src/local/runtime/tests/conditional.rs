@@ -369,21 +369,30 @@ async fn a_lost_delivery_publication_readmits_only_within_its_placement() -> Tes
                 vec![Bytes::from_static(b"r0")],
                 "a refused delivery published its effects"
             );
+            // A new owner's refusal releases the actor.
+            assert_eq!(runtime.counts(), (0, 0));
         } else {
-            assert!(failures.is_empty(), "{failures:?}");
-            // The refused attempt, then exactly one re-admission from the
-            // changed cut: its publication is conditioned on that cut, so
-            // it keeps the competing write and consumes the input once.
-            assert_eq!(provider.inner().writes.load(Ordering::SeqCst) - before, 2);
-            assert_eq!(calls.load(Ordering::SeqCst), 3);
-            assert_eq!(state.cursor("inbox"), Some(2));
-            assert_eq!(
-                records(&**provider, "out/publish-conflict").await?,
-                vec![Bytes::from_static(b"r0"), Bytes::from_static(b"r1")],
-                "the refused attempt published, or the re-admission did not"
+            let out = records(&**provider, "out/publish-conflict").await?;
+            // (a) The refused attempt published nothing: at most the one
+            // re-admitted delivery's output follows the original.
+            assert!(
+                out.iter().filter(|record| record.as_ref() == b"r1").count() <= 1,
+                "the refused attempt published its effects: {out:?}"
             );
+            // (b) Exactly one re-admission from the changed cut. Its
+            // publication is conditioned on that cut, so it keeps the
+            // competing write and consumes the input once.
+            assert_eq!(calls.load(Ordering::SeqCst), 3, "{failures:?}");
+            assert_eq!(
+                out,
+                vec![Bytes::from_static(b"r0"), Bytes::from_static(b"r1")]
+            );
+            assert!(failures.is_empty(), "{failures:?}");
+            assert_eq!(provider.inner().writes.load(Ordering::SeqCst) - before, 2);
+            assert_eq!(state.cursor("inbox"), Some(2));
+            // The actor stays placed.
+            assert_eq!(runtime.counts(), (1, 0));
         }
-        assert_eq!(runtime.counts(), (0, 0));
     }
     Ok(())
 }
