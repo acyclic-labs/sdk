@@ -13,6 +13,7 @@ pub type DirectoryCredit<'a> = dyn FnMut(
     + Sync
     + 'a;
 
+/// One directory page selection: its cut, continuation, size and authority.
 #[derive(Clone, Copy)]
 pub struct DirectoryOptions<'a> {
     /// Exact selected generation, or the current head.

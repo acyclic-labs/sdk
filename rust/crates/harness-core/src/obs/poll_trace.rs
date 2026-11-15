@@ -3,6 +3,7 @@ use super::OperationSpan;
 use std::pin::Pin;
 
 /// Own one payload while acquiring its tracing parent on the first poll.
+#[cfg(test)]
 pub(crate) fn traced_on_poll<'a, T: 'a>(
     build: impl FnMut() -> OperationSpan + acyclic_stream::ProviderTask + 'a,
     future: impl Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a,

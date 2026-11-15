@@ -4,13 +4,15 @@ use super::{model_selection as selection, workspace};
 use crate as harness;
 
 mod model;
+#[cfg(feature = "test-support")]
 pub use model::exercise as check_model_selection;
 #[cfg(not(target_arch = "wasm32"))]
 mod settings;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 pub use settings::exercise as check_settings;
 #[path = "validation/workspace.rs"]
 mod workspace_contract;
+#[cfg(feature = "test-support")]
 pub use workspace_contract::exercise as check_workspace;
 
 #[cfg(test)]

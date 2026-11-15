@@ -5,7 +5,7 @@ use crate::{
 };
 use crate::{Result, store::HistoryIo};
 use acyclic_stream::OwnedBytes;
-use acyclic_stream::{ReadRequest, Record, RecordStream, StreamError, StreamPath, StreamProvider};
+use acyclic_stream::{ReadRequest, Record, RecordStream, StreamError, StreamPath};
 use std::sync::Arc;
 
 mod codec;

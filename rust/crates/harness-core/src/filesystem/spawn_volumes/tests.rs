@@ -1,5 +1,6 @@
 //! Inheritance is proved against real volume contents and one Streams decision.
 use super::*;
+use crate::agent::InboxRecord;
 use crate::{
     agent::{AgentId, ForkAdopted, WorkspaceKind, WorkspaceMode, WorkspaceRole},
     resources::ProviderRef,

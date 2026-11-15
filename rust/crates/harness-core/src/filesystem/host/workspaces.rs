@@ -547,6 +547,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )
     }
 
+    #[cfg(test)]
     pub(in crate::filesystem) async fn operation_generation(
         &self,
         reference: &WorkspaceRef,

@@ -1,5 +1,6 @@
 use super::instruction_tests::file;
 use super::*;
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 use proptest::prelude::*;
 
 fn exchange(file: &FileRef, range: Option<(u64, u64)>) -> [ModelMessage; 2] {

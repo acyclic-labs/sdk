@@ -9,8 +9,8 @@
 use super::FilesystemHost;
 use crate::{
     agent::{
-        AgentPath, AgentRecord as _, AgentState, Error, InboxRecord, Out, SpawnVolumes,
-        WorkspaceEntry, WorkspaceInherit, WorkspaceSource,
+        AgentPath, AgentState, Error, Out, SpawnVolumes, WorkspaceEntry, WorkspaceInherit,
+        WorkspaceSource,
     },
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
 };

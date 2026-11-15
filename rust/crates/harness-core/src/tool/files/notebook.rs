@@ -149,12 +149,14 @@ pub(super) struct Cell<'a> {
     execution_count: Option<&'a RawValue>,
 }
 
-/// Publication outcomes consume these facts while the original source is live.
-/// Inserts have no prior cell; their index is the resolved insertion boundary.
+/// The decoded prior cell and language stay owned until the publication that
+/// consumed the original source settles. Inserts have no prior cell; their
+/// index, observed only by the edit checks, is the resolved insertion boundary.
 pub(super) struct EditFacts<'a> {
+    #[cfg(test)]
     pub(super) index: u64,
-    pub(super) prior: Option<Decoded<Cell<'a>>>,
-    pub(super) language: Option<Decoded<Cow<'a, str>>>,
+    pub(super) _prior: Option<Decoded<Cell<'a>>>,
+    pub(super) _language: Option<Decoded<Cow<'a, str>>>,
 }
 
 struct EachCell<F>(F);
@@ -677,9 +679,10 @@ pub(super) fn edit<'a>(
         text,
         hold,
         EditFacts {
+            #[cfg(test)]
             index,
-            prior,
-            language,
+            _prior: prior,
+            _language: language,
         },
     ))
 }
