@@ -242,14 +242,6 @@ where
         .map_err(Error::from)
     }
 
-    async fn plan_join(
-        &self,
-        source: &ManagedWorkspace<P, O>,
-        rebase: bool,
-    ) -> crate::Result<acyclic_fs::JoinPlan<acyclic_fs::StreamAuthorityStore<P>, O>> {
-        self.plan_join_at(source, None, rebase).await
-    }
-
     async fn plan_join_at(
         &self,
         source: &ManagedWorkspace<P, O>,

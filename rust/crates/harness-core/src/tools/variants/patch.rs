@@ -16,10 +16,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
-#[derive(schemars::JsonSchema)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct PatchInput {
-    patch: String,
+struct PatchInput<'a> {
+    patch: &'a str,
 }
 
 #[derive(Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout)]
@@ -40,14 +40,15 @@ impl crate::filesystem::UploadRecord for PatchResult {
 }
 
 pub(crate) fn input(arguments: &Value) -> Result<&str> {
-    let object = arguments
+    if !arguments
         .as_object()
-        .filter(|object| object.len() == 1)
-        .ok_or_else(|| Error::tool_rejected("apply_patch requires exactly patch"))?;
-    object
-        .get("patch")
-        .and_then(Value::as_str)
-        .ok_or_else(|| Error::tool_rejected("apply_patch.patch must be text"))
+        .is_some_and(|object| object.len() == 1)
+    {
+        return Err(Error::tool_rejected("apply_patch requires exactly patch"));
+    }
+    PatchInput::deserialize(arguments)
+        .map(|input| input.patch)
+        .map_err(|_| Error::tool_rejected("apply_patch.patch must be text"))
 }
 
 struct Plan<'a> {
@@ -68,7 +69,7 @@ pub fn apply_patch() -> Result<Tool> {
     let mut definition = ToolDefinition {
         name: "apply_patch".into(), revision: "openai-v4a-1".into(),
         description: "Apply exact V4A add, update, delete and move operations in one atomic publication. Start with *** Begin Patch and finish with *** End Patch; update hunks use @@ and exact context".into(),
-        input_schema: schema::input::<PatchInput>()?,
+        input_schema: schema::input::<PatchInput<'_>>()?,
         output_schema: schema::output::<PatchResult>()?,
         projection_schema: schema::text_projection_schema()?,
     };
